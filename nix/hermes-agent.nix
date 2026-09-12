@@ -102,7 +102,7 @@ let
     ffmpeg
     tirith
   ]
-  ++ lib.optionals stdenv.isLinux [
+  ++ lib.optionals stdenv.hostPlatform.isLinux [
     wl-clipboard
     xclip
   ];
@@ -256,7 +256,7 @@ stdenv.mkDerivation (finalAttrs: {
         ++ [
           devPython
         ]
-        ++ lib.optionals stdenv.isLinux [
+        ++ lib.optionals stdenv.hostPlatform.isLinux [
           cage # for running e2e tests without popping windows
         ];
     };

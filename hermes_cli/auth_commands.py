@@ -371,7 +371,8 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCre
     creds = spec.login(args)
     token = spec.token(creds)
     label = (getattr(args, "label", None) or "").strip() or label_from_token(
-        token, f"{provider}-oauth-{len(pool.entries()) + 1}")
+        token, f"{provider}-oauth-{len(pool.entries()) + 1}",
+        id_token=creds.get("tokens", {}).get("id_token", "") if provider == "openai-codex" else "")
     # Every account gets a distinct, self-contained pool entry instead of routing through a
     # singleton save path (which collapsed every added account into the latest login).
     # ``manual:*`` entries refresh from their own token pair, so they need no singleton shadow.

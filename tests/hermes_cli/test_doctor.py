@@ -889,6 +889,59 @@ def test_run_doctor_fix_reports_when_npx_warmup_fails(monkeypatch, tmp_path):
     assert "Warmed npx cache for agent-browser" not in out
 
 
+def _raise_unregistered_cloud_provider():
+    raise ValueError(
+        "browser is configured to use 'browserbase' (set via hermes tools), but no "
+        "registered browser plugin has that name (install the corresponding plugin or "
+        "fix the config key spelling). Run 'hermes tools' to change it."
+    )
+
+
+def test_check_chromium_reports_misconfigured_cloud_provider_instead_of_crashing(monkeypatch):
+    """A browser.cloud_provider naming no registered plugin (stale pointer left after the
+    plugin was disabled) must surface as a doctor warning, never a ValueError traceback."""
+    import tools.browser_tool as bt
+    import tools.browser_tool_cdp as bt_cdp
+    import tools.browser_tool_cloud as bt_cloud
+    import tools.browser_tool_lightpanda_fallback as bt_lp
+
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(bt_cdp, "_get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr(bt_lp, "_using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", _raise_unregistered_cloud_provider)
+    chromium_calls = []
+    monkeypatch.setattr(
+        bt_install, "_chromium_installed", lambda: chromium_calls.append(1) or True
+    )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_tools._check_chromium()  # must not raise
+    out = buf.getvalue()
+
+    assert "browser.cloud_provider misconfigured" in out
+    assert not chromium_calls
+
+
+def test_run_doctor_survives_misconfigured_browser_cloud_provider(monkeypatch, tmp_path):
+    """End-to-end of the reported crash: node + agent-browser present, but
+    browser.cloud_provider names a disabled plugin — run_doctor must warn, not traceback."""
+    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+
+    import tools.browser_tool_cloud as bt_cloud
+
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", _raise_unregistered_cloud_provider)
+    monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "/usr/bin/agent-browser")
+    monkeypatch.setattr(doctor_tools, "agent_browser_runnable", lambda _p: True)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))  # must not raise
+    out = buf.getvalue()
+
+    assert "browser.cloud_provider misconfigured" in out
+
+
 def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

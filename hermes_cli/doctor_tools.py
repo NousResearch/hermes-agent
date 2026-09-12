@@ -305,7 +305,16 @@ def _check_chromium() -> None:
         from tools.browser_tool_lightpanda_fallback import _using_lightpanda_engine
     except Exception:
         return
-    if _is_camofox_mode() or bool(_get_cdp_override_raw()) or _get_cloud_provider() is not None or _using_lightpanda_engine():
+    if _is_camofox_mode() or bool(_get_cdp_override_raw()):
+        return
+    try:
+        if _get_cloud_provider() is not None:
+            return
+    except ValueError as e:
+        check_warn("browser.cloud_provider misconfigured", f"({e})")
+        check_info("Fix: Run 'hermes tools' → Browser Automation, or set browser.cloud_provider: local")
+        return
+    if _using_lightpanda_engine():
         return
     if not check_bool(_chromium_installed(), ("Playwright Chromium", "(browser engine)"),
                       ("Playwright Chromium not installed", "(browser_* tools will be hidden from the agent)")):

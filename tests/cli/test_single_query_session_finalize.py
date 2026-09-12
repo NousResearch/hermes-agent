@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import cli
+from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 
 
 @pytest.fixture(autouse=True)
@@ -131,6 +132,70 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
         "summary",
         ("finalize", "single-query-session"),
     ]
+
+
+@pytest.mark.parametrize("failure_stage", ["credentials", "agent-init"])
+def test_human_single_query_main_exits_nonzero_for_setup_failure(
+    monkeypatch, failure_stage
+):
+    calls = []
+
+    class _Console:
+        def print(self, *_args, **_kwargs):
+            calls.append("query-label")
+
+    class FakeCLI(CLIChatTurnMixin):
+        def __init__(self, **_kwargs):
+            self.console = _Console()
+            self.session_id = "failed-query-session"
+            self.agent = None
+            self._active_agent_route_signature = "same-route"
+            self._secret_capture_callback = lambda *_args, **_kwargs: None
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            calls.append(("claim", surface, stderr))
+            return True
+
+        def _show_security_advisories(self):
+            calls.append("advisories")
+
+        def _ensure_runtime_credentials(self):
+            calls.append("credentials")
+            return failure_stage != "credentials"
+
+        def _resolve_turn_agent_config(self, message):
+            calls.append(("resolve", message))
+            return {
+                "signature": "same-route",
+                "model": None,
+                "runtime": None,
+                "request_overrides": None,
+            }
+
+        def _init_agent(self, **_kwargs):
+            calls.append("agent-init")
+            return False
+
+        def _print_exit_summary(self, clear_screen=True):
+            calls.append("summary")
+
+    monkeypatch.setattr(cli, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "set_secret_capture_callback", lambda _callback: None)
+    monkeypatch.setattr(cli, "_cprint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "_finalize_single_query",
+        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(query="hello", quiet=False, toolsets="terminal")
+
+    assert exc_info.value.code == 1
+    assert "summary" not in calls
+    assert ("agent-init" in calls) is (failure_stage == "agent-init")
+    assert calls[-1] == ("finalize", "failed-query-session")
 
 
 def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatch):

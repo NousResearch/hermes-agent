@@ -861,11 +861,14 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return rc
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
+    override_git_facts = getattr(args, "override_git_facts", None)
     # Handoff fields are per-run; refuse to copy them across N runs.
-    if len(ids) > 1 and (summary or raw_meta):
-        return _err("kanban: --summary / --metadata are per-task and can't be used "
-                    "with multiple ids (would apply the same handoff to every task). "
+    if len(ids) > 1 and (summary or raw_meta or override_git_facts):
+        return _err("kanban: handoff and override options are per-task and can't be used "
+                    "with multiple ids. "
                     "Complete tasks one at a time, or drop the flags for the bulk close.", 2)
+    if override_git_facts is not None and not override_git_facts.strip():
+        return _err("kanban: --override-git-facts requires a non-empty audit reason", 2)
     metadata, rc = _parse_metadata_flag(raw_meta)
     if rc:
         return rc
@@ -881,7 +884,8 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
             return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
+                                    expected_run_id=_worker_run_id_for(tid),
+                                    override_git_facts=override_git_facts)
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 

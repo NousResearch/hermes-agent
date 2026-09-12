@@ -1567,6 +1567,14 @@ def _dispatch_lane_task(
     _kbw.set_workspace_path(conn, claimed.id, str(workspace))
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        from hermes_cli.kanban_completion_facts import record_workspace_baseline
+        if not record_workspace_baseline(conn, claimed.id, workspace):
+            if _record_task_failure(
+                conn, claimed.id, "workspace: could not capture the starting git HEAD",
+                outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            ):
+                result.auto_blocked.append(claimed.id)
+            return False
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
     if lane == "review":
         # Force-load sdlc-review; the kanban lifecycle is already in every

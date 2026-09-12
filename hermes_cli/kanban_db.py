@@ -2530,7 +2530,7 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True,
+    fire_lifecycle_hook: bool = True, override_git_facts: Optional[str] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2546,12 +2546,21 @@ def complete_task(
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+    from hermes_cli.kanban_completion_facts import (
+        attach_receipt, prepare_completion_facts, record_completion_facts,
+    )
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
     handoff_summary = summary if summary is not None else result
+    facts = prepare_completion_facts(
+        conn, task_id, expected_run_id, metadata, summary, result, override_git_facts,
+    )
+    if facts is False:
+        return False
+    metadata = attach_receipt(metadata, facts)
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
@@ -2559,6 +2568,8 @@ def complete_task(
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
+            return False
+        if not record_completion_facts(conn, task_id, facts):
             return False
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False

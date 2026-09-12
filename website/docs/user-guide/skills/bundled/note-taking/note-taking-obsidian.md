@@ -1,14 +1,14 @@
 ---
-title: "Obsidian — Read, search, create, and edit notes in the Obsidian vault"
+title: "Obsidian — Edit vault notes and wikilinks directly"
 sidebar_label: "Obsidian"
-description: "Read, search, create, and edit notes in the Obsidian vault"
+description: "Edit vault notes and wikilinks directly"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Obsidian
 
-Read, search, create, and edit notes in the Obsidian vault.
+Edit vault notes and wikilinks directly.
 
 ## Skill metadata
 

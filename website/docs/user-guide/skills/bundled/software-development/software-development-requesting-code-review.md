@@ -1,14 +1,14 @@
 ---
-title: "Requesting Code Review — Pre-commit review: security scan, quality gates, auto-fix"
+title: "Requesting Code Review — Review code pre-commit: security, quality, and auto-fix"
 sidebar_label: "Requesting Code Review"
-description: "Pre-commit review: security scan, quality gates, auto-fix"
+description: "Review code pre-commit: security, quality, and auto-fix"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Requesting Code Review
 
-Pre-commit review: security scan, quality gates, auto-fix.
+Review code pre-commit: security, quality, and auto-fix.
 
 ## Skill metadata
 

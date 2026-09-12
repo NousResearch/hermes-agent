@@ -1,6 +1,6 @@
 ---
 name: godmode
-description: "Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN."
+description: Jailbreak API-served LLMs with prompt techniques.
 version: 1.0.0
 author: Hermes Agent + Teknium
 license: MIT

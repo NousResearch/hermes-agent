@@ -1,14 +1,14 @@
 ---
-title: "Chroma — Embedding database for RAG and semantic search"
+title: "Chroma — Store and search embeddings for local RAG"
 sidebar_label: "Chroma"
-description: "Embedding database for RAG and semantic search"
+description: "Store and search embeddings for local RAG"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Chroma
 
-Embedding database for RAG and semantic search.
+Store and search embeddings for local RAG.
 
 ## Skill metadata
 

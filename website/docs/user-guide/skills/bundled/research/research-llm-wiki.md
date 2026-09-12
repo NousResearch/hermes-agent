@@ -1,14 +1,14 @@
 ---
-title: "Llm Wiki — Karpathy's LLM Wiki: build/query interlinked markdown KB"
+title: "Llm Wiki — Build or query an interlinked Markdown knowledge base"
 sidebar_label: "Llm Wiki"
-description: "Karpathy's LLM Wiki: build/query interlinked markdown KB"
+description: "Build or query an interlinked Markdown knowledge base"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Llm Wiki
 
-Karpathy's LLM Wiki: build/query interlinked markdown KB.
+Build or query an interlinked Markdown knowledge base.
 
 ## Skill metadata
 

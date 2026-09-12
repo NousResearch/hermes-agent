@@ -1,14 +1,14 @@
 ---
-title: "Docx — Create, read, edit, template, and review Word .docx files"
+title: "Docx — Create, edit, review, or template Word .docx files"
 sidebar_label: "Docx"
-description: "Create, read, edit, template, and review Word .docx files"
+description: "Create, edit, review, or template Word .docx files"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Docx
 
-Create, read, edit, template, and review Word .docx files.
+Create, edit, review, or template Word .docx files.
 
 ## Skill metadata
 

@@ -1,14 +1,14 @@
 ---
-title: "Obliteratus — OBLITERATUS: abliterate LLM refusals (diff-in-means)"
+title: "Obliteratus — Remove refusals from open-weight language models"
 sidebar_label: "Obliteratus"
-description: "OBLITERATUS: abliterate LLM refusals (diff-in-means)"
+description: "Remove refusals from open-weight language models"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Obliteratus
 
-OBLITERATUS: abliterate LLM refusals (diff-in-means).
+Remove refusals from open-weight language models.
 
 ## Skill metadata
 

@@ -214,6 +214,12 @@ class SlashCommandsMixin:
 
     def _cmd_reset(self, args: str, state: SessionState) -> str:
         state.history.clear()
+        # A reset is a clean slate: queued prompts would otherwise fire into
+        # the cleared session when the turn loop drains them.
+        with state.runtime_lock:
+            state.queued_prompts.clear()
+            state.interrupted_prompt_text = ""
+            state.current_prompt_text = ""
         try:
             reset_session_state = getattr(state.agent, "reset_session_state", None)
             if callable(reset_session_state):

@@ -163,6 +163,27 @@ async def test_acp_cancel_publishes_hard_stop_while_holding_runtime_lock():
     assert state.interrupted_prompt_text == "original request"
 
 
+def test_reset_clears_queued_and_partial_prompts():
+    """RESET is a clean slate: queued prompts must not fire into the
+    cleared session when the turn loop drains them."""
+    from acp_adapter.commands import SlashCommandsMixin, _queue_prompt
+    from acp_adapter.session import SessionState
+
+    mixin = SlashCommandsMixin()
+    mixin.session_manager = SimpleNamespace(save_session=lambda sid: None)
+    state = SessionState(session_id="s1", agent=None)
+    state.history.append({"role": "user", "content": "hello"})
+    _queue_prompt(state, "later work")
+    state.interrupted_prompt_text = "partial"
+    state.current_prompt_text = "current"
+
+    assert mixin._cmd_reset("", state) == "Conversation history cleared."
+    assert state.history == []
+    assert state.queued_prompts == []
+    assert state.interrupted_prompt_text == ""
+    assert state.current_prompt_text == ""
+
+
 
 
 

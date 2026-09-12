@@ -237,7 +237,20 @@ def _resolve_child_credential_pool(
             return _loaded_pool(child_key)
         if parent_pool is not None and effective_provider == parent_provider:
             return parent_pool
-        return _loaded_pool(effective_provider)
+        pool = _loaded_pool(effective_provider)
+        if pool is not None:
+            return pool
+        # A bare custom-provider name (e.g. "deepseek-subagent") never equals the literal
+        # "custom" and has no pool of its own under that name — the real key is
+        # "custom:<name>". Try the same name/endpoint matching the "custom" branch above
+        # uses before giving up, so a pinned bare name doesn't silently fall back to the
+        # parent's credential. See #108951.
+        from agent.credential_pool import custom_provider_pool_key_candidates
+        for candidate_key in custom_provider_pool_key_candidates(effective_base_url, effective_provider):
+            pool = _loaded_pool(candidate_key)
+            if pool is not None:
+                return pool
+        return None
     except Exception as exc:
         if effective_provider == "custom":
             logger.debug("Could not resolve custom credential pool for child endpoint '%s': %s", effective_base_url, exc)

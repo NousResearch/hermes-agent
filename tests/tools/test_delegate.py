@@ -1281,6 +1281,32 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         result = _resolve_child_credential_pool("openrouter", parent)
         self.assertIs(result, mock_pool)
 
+    def test_bare_custom_provider_name_resolves_to_its_pool(self):
+        """A bare custom-provider name (e.g. delegation.provider: deepseek-subagent)
+        must resolve the same pool as its canonical "custom:<name>" key, instead of
+        silently returning None and making the child inherit the parent's credential.
+        See issue #108951."""
+        parent = _make_mock_parent()
+        parent.provider = "anthropic"
+        parent._credential_pool = MagicMock()  # parent's own pool must NOT be returned
+
+        child_pool = MagicMock()
+        child_pool.has_credentials.return_value = True
+        with patch(
+            "agent.credential_pool.custom_provider_pool_key_candidates",
+            return_value=["custom:deepseek-subagent"],
+        ), patch("agent.credential_pool.load_pool") as mock_load_pool:
+            def _load(key):
+                return child_pool if key == "custom:deepseek-subagent" else MagicMock(has_credentials=lambda: False)
+            mock_load_pool.side_effect = _load
+
+            result = _resolve_child_credential_pool(
+                "deepseek-subagent", parent, "https://api.example.com/v1",
+            )
+
+        self.assertIs(result, child_pool)
+        self.assertIsNot(result, parent._credential_pool)
+
     # --- Custom-endpoint identity resolution (issue #7833) ---
 
 

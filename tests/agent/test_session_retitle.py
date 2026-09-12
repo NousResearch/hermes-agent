@@ -52,7 +52,10 @@ def test_recent_context_reuses_existing_total_input_budget():
 
 
 def test_generate_retitle_accepts_cjk_title_without_word_count_gate():
-    with patch("agent.session_retitle.call_llm", return_value=_response('{"title":"修复会话标题生成"}')):
+    with (
+        patch("agent.session_retitle._title_language", return_value=""),
+        patch("agent.session_retitle.call_llm", return_value=_response('{"title":"修复会话标题生成"}')),
+    ):
         title = generate_retitle("User: 继续修复标题生成\nAssistant: 已定位到上下文选择逻辑")
 
     assert title == "修复会话标题生成"

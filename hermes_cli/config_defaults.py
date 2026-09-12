@@ -884,6 +884,7 @@ DEFAULT_CONFIG = {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},
             "slack": {"streaming": False},
+            "feishu": {"cot_messages": "off"},
             # WeCom native streaming (msgtype "stream" via aibot_respond_msg).
             "wecom": {"streaming": True},
         },

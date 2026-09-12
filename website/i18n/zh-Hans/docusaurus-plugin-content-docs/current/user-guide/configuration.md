@@ -1297,9 +1297,13 @@ display:
       tool_progress: verbose  # 在 Telegram 上详细进度
     slack:
       tool_progress: 'off'    # 在共享 Slack 工作区中保持安静
+    feishu:
+      cot_messages: brief     # off | brief | detailed；飞书原生过程详情
 ```
 
 没有覆盖的平台回退到全局 `tool_progress` 值。有效平台键：`telegram`、`discord`、`slack`、`signal`、`whatsapp`、`matrix`、`mattermost`、`email`、`sms`、`homeassistant`、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot`。旧版 `display.tool_progress_overrides` 键仍可加载以向后兼容，但已弃用，并在首次加载时迁移到 `display.platforms`。
+
+`display.platforms.feishu.cot_messages` 控制飞书/Lark 原生过程详情消息，默认 `off`。`brief` 展示 Agent 的可见阶段说明和工具名称/摘要；`detailed` 还会展示经过强制脱敏并裁剪到 1,200 字符的工具参数与结果。布尔值 `true`、`on` 和 `simple` 可作为 `brief` 的兼容写法；布尔值 `false` 表示 `off`。过程详情绝不包含 provider 的隐藏 reasoning/thinking 字段，最终答案会作为另一条普通消息独立发送。原生 COT 创建成功后，本轮不再重复发送普通工具进度气泡，且不受 `display.tool_progress` 开关影响；创建失败也不会阻断正常最终答复。
 
 `interim_assistant_messages` 仅限 gateway。启用后，Hermes 将已完成的轮次中 assistant 更新作为单独的聊天消息发送。这与 `tool_progress` 无关，不需要 gateway 流式传输。
 

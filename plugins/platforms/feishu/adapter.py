@@ -1211,6 +1211,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._settings = self._load_settings(config.extra or {})
         self._apply_settings(self._settings)
         self._client: Optional[Any] = None
+        self._cot_client: Optional[Any] = None
         # Adapter-owned pool for blocking SDK calls, recreated on demand: a torn-down default
         # executor can no longer wedge sends with "Executor shutdown has been called".
         # See issue #10849.
@@ -1472,11 +1473,25 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_thread_loop = None
         self._loop = None
         self._event_handler = None
+        if self._cot_client is not None:
+            await self._cot_client.close()
+            self._cot_client = None
         self._shutdown_sdk_executor()
         self._persist_seen_message_ids()
         await self._release_app_lock()
         self._mark_disconnected()
         logger.info("[Feishu] Disconnected")
+
+    async def start_native_cot(
+        self, chat_id: str, origin_message_id: str | None, mode: str, input_preview: str = ""
+    ) -> Any:
+        from plugins.platforms.feishu.cot import FeishuCOTClient
+
+        if self._cot_client is None:
+            self._cot_client = FeishuCOTClient(self._app_id, self._app_secret, self._domain_name)
+        return await self._cot_client.start(
+            chat_id, origin_message_id, mode, input_preview=input_preview
+        )
 
     async def _teardown_ws_thread(self, ws_client: Any, ws_thread_loop: Any) -> None:
         """CLOSE frame → cancel the WS thread's tasks → wait for the thread future."""

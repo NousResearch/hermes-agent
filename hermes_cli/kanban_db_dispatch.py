@@ -719,13 +719,14 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
 
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
-    # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the work itself succeeded and only the
+    # ``kanban_complete`` / ``kanban_block`` / ``kanban_request_review``. Overwhelmingly the work itself succeeded and only the
     # paperwork was skipped, so a retry usually completes; the corrective sentence below is surfaced to the
     # retry worker via the prior-attempt error in ``build_worker_context`` (guidance approach from #61817).
-    "worker exited cleanly (rc=0) without calling "
-    "kanban_complete or kanban_block — protocol violation. "
+    "worker exited cleanly (rc=0) without a terminal kanban call "
+    "(kanban_complete, kanban_block or kanban_request_review) — protocol violation. "
     "If the prior run already did the work, verify it and "
-    "report the result via kanban_complete; a run that ends "
+    "report the result via kanban_complete, or call "
+    "kanban_request_review if it is ready for review; a run that ends "
     "without a terminal kanban call counts as failed no "
     "matter what it did."
 )

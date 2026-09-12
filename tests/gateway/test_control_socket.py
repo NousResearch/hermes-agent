@@ -403,3 +403,59 @@ def test_runtime_inventory_prefers_socket_supervisor(tmp_path: Path, monkeypatch
     # supervisor comes from the gateway's own declaration, not a PID scan
     assert gws[0].supervisor == "systemd"
     assert gws[0].code_sha == "SHA555"
+
+
+# ---------------------------------------------------------------------------
+# Supervisor declaration — wrapped launchd gateways
+# ---------------------------------------------------------------------------
+
+def test_launch_context_supervisor_wrapped_launchd_resolves_launchd():
+    """A gateway wrapped in the stderr-timestamp logger still declares launchd.
+
+    Generated macOS plists launch the logger wrapper, not the gateway: launchd stamps
+    ``XPC_SERVICE_NAME=<label>`` only on its direct child, so the gateway grandchild sees
+    ``"0"`` and used to degrade to the generic ``--external-supervisor`` claim.
+    """
+    from gateway.control_socket import _supervisor_from_launch_context
+
+    assert (
+        _supervisor_from_launch_context(
+            {"XPC_SERVICE_NAME": "0"},
+            ["hermes", "gateway", "run", "--external-supervisor"],
+            is_darwin=True,
+            ancestor_xpc_labels=["ai.hermes.gateway"],
+        )
+        == "launchd"
+    )
+
+
+def test_launch_context_supervisor_direct_evidence_and_foreign_ancestry():
+    from gateway.control_socket import _supervisor_from_launch_context
+
+    # Direct positive env evidence outranks ancestry (unchanged precedence).
+    assert (
+        _supervisor_from_launch_context(
+            {"INVOCATION_ID": "abc"},
+            [],
+            is_darwin=True,
+            ancestor_xpc_labels=["ai.hermes.gateway"],
+        )
+        == "systemd"
+    )
+    # Ancestry only resolves Hermes-managed labels; a foreign wrapper stays "external".
+    assert (
+        _supervisor_from_launch_context(
+            {},
+            ["hermes", "gateway", "run", "--external-supervisor"],
+            is_darwin=True,
+            ancestor_xpc_labels=["com.example.other"],
+        )
+        == "external"
+    )
+    # Off-darwin the ancestry path never fires.
+    assert (
+        _supervisor_from_launch_context(
+            {}, [], is_darwin=False, ancestor_xpc_labels=["ai.hermes.gateway"]
+        )
+        == "manual"
+    )

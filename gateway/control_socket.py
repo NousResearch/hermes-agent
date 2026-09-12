@@ -19,6 +19,7 @@ import socket
 import sys
 import tempfile
 import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -76,22 +77,72 @@ def resolve_client_socket_path(home: Path) -> Optional[Path]:
     return None
 
 
+_LAUNCHD_ANCESTRY_MAX_HOPS = 4
+
+
+def _ancestor_xpc_service_labels(max_hops: int = _LAUNCHD_ANCESTRY_MAX_HOPS) -> list[str]:
+    """Non-empty ``XPC_SERVICE_NAME`` labels found in this process's ancestry, nearest first.
+
+    launchd stamps ``XPC_SERVICE_NAME=<job label>`` only on its direct child. Generated macOS
+    plists wrap the gateway in the ``hermes_cli.stderr_timestamp`` logger, so the gateway
+    grandchild sees ``XPC_SERVICE_NAME=0`` (the wrapper's own docstring documents the same) and
+    ``_detect_supervisor`` below used to degrade to the generic ``--external-supervisor`` claim.
+    Best-effort psutil walk, bounded; every failure just returns fewer labels.
+    """
+    labels: list[str] = []
+    try:
+        import psutil
+
+        proc = psutil.Process()
+        for _ in range(max_hops):
+            parent = proc.parent()
+            if parent is None or parent.pid <= 1:
+                break
+            with contextlib.suppress(Exception):
+                label = str(parent.environ().get("XPC_SERVICE_NAME", "")).strip()
+                if label and label != "0":
+                    labels.append(label)
+            proc = parent
+    except Exception:
+        pass
+    return labels
+
+
 def _detect_supervisor() -> str:
     """Supervisor kind for THIS process from its own launch env (not inferred outside-in).
+
+    Thin env-reading wrapper; the decision core is :func:`_supervisor_from_launch_context`
+    (platform as data) so the wrapped-launchd contract is testable on every host.
 
     Unlike the outside-in `_detect_supervisor_for_pid` scan, this answers from the process's own launch
     context — which is exactly the provenance the 92091 design wants declared rather than inferred. See
     #92091.
     """
-    env = os.environ
+    return _supervisor_from_launch_context(
+        os.environ, sys.argv,
+        is_darwin=sys.platform == "darwin",
+        ancestor_xpc_labels=_ancestor_xpc_service_labels() if sys.platform == "darwin" else (),
+    )
+
+
+def _supervisor_from_launch_context(
+    env: Mapping[str, str], argv: Sequence[str], *, is_darwin: bool,
+    ancestor_xpc_labels: Sequence[str] = (),
+) -> str:
+    """Decision core of :func:`_detect_supervisor`; pure, platform passed as data."""
     if env.get("INVOCATION_ID"):
         return "systemd"
-    if sys.platform == "darwin" and (env.get("XPC_SERVICE_NAME", "").startswith("ai.hermes")
-                                     or env.get("LAUNCHD_SOCKET")):
-        return "launchd"
+    if is_darwin:
+        if env.get("XPC_SERVICE_NAME", "").startswith("ai.hermes") or env.get("LAUNCHD_SOCKET"):
+            return "launchd"
+        # Generated launchd plists wrap the gateway in the stderr-timestamp logger; launchd stamps
+        # XPC_SERVICE_NAME only on the wrapper, so the gateway itself sees "0". Resolve the wrapped
+        # case through the wrapper's own env instead of degrading to the generic external claim.
+        if any(label.startswith("ai.hermes") for label in ancestor_xpc_labels):
+            return "launchd"
     if env.get("HERMES_DESKTOP_MANAGED"):
         return "desktop"
-    return "external" if "--external-supervisor" in sys.argv else "manual"
+    return "external" if "--external-supervisor" in argv else "manual"
 
 
 def build_identify_payload() -> dict[str, Any]:

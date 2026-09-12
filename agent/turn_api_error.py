@@ -306,9 +306,11 @@ def settle_unrecovered_error(
                 retry_count = 0
                 return _verdict("continue")
         # ``should_fallback=False`` marks a deterministic failure no other provider can fix (the
-        # model's own malformed tool-call JSON, #12770): skip the cascade. Local validation errors
-        # carry no classifier verdict and keep their historical fallback.
-        if classified.should_fallback or is_local_validation_error:
+        # model's own malformed tool-call JSON, #12770; MoA preset/adapter faults, #55933): skip
+        # the cascade. An UNCLASSIFIED local ValueError/TypeError keeps its historical fallback;
+        # a recognised verdict that opts out wins even when the exception is a ValueError subclass.
+        _unclassified_local = is_local_validation_error and classified.reason == FailoverReason.unknown
+        if classified.should_fallback or _unclassified_local:
             # Announce the fallback only when a chain exists, else "trying fallback..." lies
             # before a silent abort.
             if agent._has_pending_fallback():

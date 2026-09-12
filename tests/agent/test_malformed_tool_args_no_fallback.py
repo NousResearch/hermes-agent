@@ -55,21 +55,39 @@ class _Agent:
         return lambda *args, **kwargs: None
 
 
-def test_client_error_settlement_skips_fallback_when_classifier_says_so():
-    agent = _Agent()
+def _settle(agent, err, provider, status_code):
     retry = SimpleNamespace(copilot_stale_cred_retry_attempted=False, primary_recovery_attempted=False)
-    err = _Err("invalid tool call arguments")
-    classified = classify_api_error(err, provider="ollama")
-
+    classified = classify_api_error(err, provider=provider)
     with patch("agent.conversation_loop._is_copilot_provider", lambda a: False):
-        verdict = settle_unrecovered_error(
-            agent, api_error=err, classified=classified, _retry=retry, status_code=400, error_msg=str(err),
+        return settle_unrecovered_error(
+            agent, api_error=err, classified=classified, _retry=retry, status_code=status_code, error_msg=str(err),
             is_context_length_error=False, is_rate_limited=False, _is_zai_coding_overload=False,
-            _provider="ollama", _base="http://127.0.0.1:11434/v1", _model="glm", messages=[], api_messages=[],
+            _provider=provider, _base="http://127.0.0.1:11434/v1", _model="glm", messages=[], api_messages=[],
             api_kwargs={}, active_system_prompt="", conversation_history=None, approx_tokens=10,
             retry_count=0, max_retries=3, compression_attempts=0, api_call_count=1,
         )
 
+
+def test_client_error_settlement_skips_fallback_when_classifier_says_so():
+    agent = _Agent()
+    verdict = _settle(agent, _Err("invalid tool call arguments"), "ollama", 400)
     assert verdict.action == "return"
     assert verdict.result["failure_reason"] == FailoverReason.format_error.value
     assert agent.activated == []
+
+
+def test_fallback_free_verdict_wins_over_local_valueerror_shape():
+    """A recognised no-fallback verdict raised as a ValueError subclass (MoA preset missing,
+    #55933) must not sneak through the unclassified-local-error fallback allowance; a truly
+    unclassified ValueError keeps it."""
+    from agent.errors import MoAPresetNotFoundError
+
+    agent = _Agent()
+    verdict = _settle(agent, MoAPresetNotFoundError("MoA preset 'old' was not found"), "moa", None)
+    assert verdict.action == "return"
+    assert agent.activated == []
+
+    agent = _Agent()
+    verdict = _settle(agent, ValueError("some local bug"), "openai", None)
+    assert verdict.action == "break"
+    assert agent.activated == [True]

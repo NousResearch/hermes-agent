@@ -16,6 +16,21 @@ from typing import BinaryIO, Sequence, TextIO
 EXTERNAL_SUPERVISOR_FLAG = "--external-supervisor"
 
 _TIMESTAMP_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?:\s|$)")
+_BENIGN_MALLOC_STACK_LOGGING = re.compile(
+    r"^(?:[Pp]ython\([0-9]+\) )?"
+    r"MallocStackLogging: can't turn off malloc stack logging "
+    r"because it was not enabled\.$"
+)
+
+
+def _is_benign_darwin_malloc_stack_logging_line(
+    line: str, *, platform: str | None = None
+) -> bool:
+    """Match only the known-benign whole-line Darwin libmalloc diagnostic."""
+    if (sys.platform if platform is None else platform) != "darwin":
+        return False
+    rendered = line.removesuffix("\n").removesuffix("\r")
+    return bool(_BENIGN_MALLOC_STACK_LOGGING.fullmatch(rendered))
 
 
 def _timestamp() -> str:
@@ -38,7 +53,10 @@ def _open_log(log_path: Path) -> TextIO:
 def _copy_stderr_with_timestamps(stderr: BinaryIO, log_path: Path) -> None:
     with _open_log(log_path) as log_file:
         for raw_line in iter(stderr.readline, b""):
-            _write_timestamped_line(log_file, raw_line.decode("utf-8", errors="replace"))
+            line = raw_line.decode("utf-8", errors="replace")
+            if _is_benign_darwin_malloc_stack_logging_line(line):
+                continue
+            _write_timestamped_line(log_file, line)
 
 
 def _install_signal_forwarders(proc: subprocess.Popen[bytes]) -> dict[int, object]:

@@ -179,7 +179,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._delivery_info_order: Deque[tuple[float, str]] = deque()
         self.gateway_runner = None  # set externally; needed for cross-platform delivery
         # Idempotency: TTL cache of recently processed delivery IDs.
-        self._seen_deliveries: Dict[str, float] = {}
+        self._seen_deliveries: Dict[tuple, float] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
         self._seen_deliveries_next_prune_at: float = 0.0
         self._rate_counts: Dict[str, Deque[float]] = {}  # per-route hit timestamps in a fixed window
@@ -305,13 +305,16 @@ class WebhookAdapter(BasePlatformAdapter):
         window.append(now)
         return True
 
-    def _record_delivery_id(self, delivery_id: str, now: float) -> bool:
-        """Return True when this delivery should be processed."""
-        if (seen_at := self._seen_deliveries.get(delivery_id)) is not None and now - seen_at < self._idempotency_ttl:
+    def _record_delivery_id(self, route_name: str, delivery_id: str, now: float) -> bool:
+        """Return True when this delivery should be processed.  Keyed by
+        ``(route, delivery)`` so one delivery ID fanning out to several routes
+        processes once per route; same-route retries still dedupe (#7448)."""
+        key = (route_name, delivery_id)
+        if (seen_at := self._seen_deliveries.get(key)) is not None and now - seen_at < self._idempotency_ttl:
             return False
         if seen_at is not None:
-            self._seen_deliveries.pop(delivery_id, None)
-        self._seen_deliveries[delivery_id] = now
+            self._seen_deliveries.pop(key, None)
+        self._seen_deliveries[key] = now
         if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
             self._prune_seen_deliveries(now)
         return True
@@ -567,7 +570,7 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
             "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
-        if not self._record_delivery_id(delivery_id, now):
+        if not self._record_delivery_id(route_name, delivery_id, now):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
         if route_config.get("deliver_only"):

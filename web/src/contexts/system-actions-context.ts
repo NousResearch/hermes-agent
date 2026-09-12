@@ -1,5 +1,5 @@
 import { createContext } from "react";
-import type { ActionStatusResponse } from "@/lib/api";
+import type { ActionStatusResponse } from "@/lib/api-types";
 
 export const SystemActionsContext = createContext<SystemActionsState | null>(
   null,

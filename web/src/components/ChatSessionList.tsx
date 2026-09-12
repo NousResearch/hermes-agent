@@ -26,7 +26,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 
 import { useI18n } from "@/i18n";
-import { api, type SessionInfo } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { SessionInfo } from "@/lib/api-types";
 import { cn, timeAgo } from "@/lib/utils";
 
 const SESSION_LIMIT = 30;

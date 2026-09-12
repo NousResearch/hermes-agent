@@ -32,7 +32,7 @@ import type {
   MessagingPlatformUpdate,
   TelegramOnboardingStartResponse,
   WhatsAppOnboardingStartResponse,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";

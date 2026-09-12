@@ -10,7 +10,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { api } from "@/lib/api";
-import type { AutomationBlueprint, AutomationBlueprintField } from "@/lib/api";
+import type { AutomationBlueprint, AutomationBlueprintField } from "@/lib/api-types";
 import { cn, themedBody } from "@/lib/utils";
 
 interface AutomationBlueprintsProps {

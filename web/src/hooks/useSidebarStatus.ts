@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { StatusResponse } from "@/lib/api";
+import type { StatusResponse } from "@/lib/api-types";
 
 const POLL_MS = 10_000;
 

@@ -59,7 +59,7 @@ import type {
   CuratorStatus,
   PortalStatus,
   DebugShareResponse,
-} from "@/lib/api";
+} from "@/lib/api-types";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;

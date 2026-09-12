@@ -38,7 +38,7 @@ import type {
   SkillHubInstalledEntry,
   SkillHubPreview,
   SkillHubScan,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";

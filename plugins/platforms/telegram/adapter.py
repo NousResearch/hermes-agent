@@ -367,6 +367,18 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
+class _PollingStartupConflict(RuntimeError):
+    """A 409 seen during the cold-start readiness gate, with a backlog to keep.
+
+    Distinct from the conflict the background handler recovers from. That
+    ladder restarts polling with ``drop_pending_updates=True`` to evict the
+    competing getUpdates session, which also discards everything Telegram has
+    queued. When ``extra.preserve_backlog`` is on, that queue is the whole
+    point of the setting, so startup stops and reports instead of recovering
+    into the one action the operator asked us not to take.
+    """
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
@@ -439,6 +451,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # but skips rich draft rendering; the final reply still lands via sendRichMessage.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
+        self._preserve_backlog: bool = self._coerce_bool_extra("preserve_backlog", False)
         self._rich_send_disabled = self._rich_draft_disabled = False  # latched after a capability failure
         # Transient sendChatAction failures recur on every keep-typing tick; back off per chat.
         self._telegram_typing_cooldown_until: Dict[str, float] = {}
@@ -1798,7 +1811,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _await_cold_start_readiness(self, progress: asyncio.Event, strict_error_event: asyncio.Event, strict_error: list) -> None:
         """Cold start: wait for THIS generation's first getUpdates success or the first polling error;
-        raises OSError so GatewayRunner disposes the partial adapter and retries fresh."""
+        raises OSError so GatewayRunner disposes the partial adapter and retries fresh.
+
+        Progress establishes readiness, not exclusive token ownership. A conflict
+        captured while the gate is open wins even if progress also fired, and is
+        terminal under extra.preserve_backlog so recovery cannot discard the queue.
+        """
         progress_wait = asyncio.ensure_future(progress.wait())
         error_wait = asyncio.ensure_future(strict_error_event.wait())
         try:
@@ -1816,6 +1834,41 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not fut.done():
                     fut.cancel()
             await asyncio.gather(progress_wait, error_wait, return_exceptions=True)
+        # A first successful getUpdates is readiness, not proof that
+        # we own the token: Telegram can answer one getUpdates and
+        # 409 the next (#75017). So a conflict captured while the gate
+        # was open decides the outcome even when progress also fired,
+        # rather than losing the race to it.
+        if (
+            strict_error
+            # getattr: partially constructed adapters reach this gate
+            # in tests and during early teardown.
+            and getattr(self, "_preserve_backlog", False)
+            and self._looks_like_polling_conflict(strict_error[0])
+        ):
+            message = (
+                "Another process is already polling this bot token. "
+                "Startup stopped instead of recovering, because "
+                "conflict recovery restarts polling with "
+                "drop_pending_updates=True and would discard the "
+                "queued updates that extra.preserve_backlog exists to "
+                "keep. Stop the other instance, then start this one."
+            )
+            logger.error(
+                "[%s] %s Original error: %s",
+                self.name,
+                message,
+                _redact_telegram_error_text(strict_error[0]),
+            )
+            # Same code and retryability as the exhausted-retry
+            # escalation, so the conflict reads identically in runtime
+            # status either way. It also fences _handle_polling_conflict,
+            # whose entry guard returns early on this code, in case a
+            # later generation still schedules one.
+            self._set_fatal_error(
+                "telegram_polling_conflict", message, retryable=False
+            )
+            raise _PollingStartupConflict(message) from strict_error[0]
         if strict_error and not progress.is_set():
             raise OSError(
                 "Telegram polling errored before first getUpdates success during initial connect: "
@@ -2903,8 +2956,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._polling_error_callback_ref = _polling_error_callback  # reused by _handle_polling_conflict
         polling_started = await self._start_polling_resilient(
-            # Cold first boot drops the stale Bot API queue; a watcher reconnect preserves it.
-            drop_pending_updates=not is_reconnect, error_callback=_polling_error_callback, require_progress=not is_reconnect)
+            # Opted-in cold boots and all watcher reconnects preserve the queued updates.
+            drop_pending_updates=not (is_reconnect or self._preserve_backlog),
+            error_callback=_polling_error_callback, require_progress=not is_reconnect)
         if not polling_started:
             logger.warning(
                 "[%s] Connected in degraded Telegram mode: gateway is alive, polling will be retried in the background", self.name)
@@ -2912,8 +2966,9 @@ class TelegramAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect via long polling, or a webhook server if ``TELEGRAM_WEBHOOK_URL`` is set.
 
-        ``is_reconnect``: False = cold boot (drop the stale Bot API queue); True = watcher reconnect (preserve queued
-        updates, else every message sent during the outage is lost). Webhook env: TELEGRAM_WEBHOOK_URL,
+        Cold polling boots drop queued updates unless extra.preserve_backlog is enabled.
+        Watcher reconnects always preserve queued updates. Webhook behavior is unchanged.
+        Webhook env: TELEGRAM_WEBHOOK_URL,
         TELEGRAM_WEBHOOK_PORT (8443), TELEGRAM_WEBHOOK_HOST, TELEGRAM_WEBHOOK_SECRET."""
         # Explicit connect() is the only operation allowed to reopen polling after a completed teardown.
         self._polling_teardown_started = False
@@ -2993,6 +3048,16 @@ class TelegramAdapter(BasePlatformAdapter):
             safe_error = _redact_telegram_error_text(e)
             # Classify by exception TYPE (never message text): auth failures can never self-heal, so
             # marking them retryable put agents into a silent eternal reconnect loop.
+            if isinstance(e, _PollingStartupConflict):
+                # The readiness gate already recorded the terminal conflict
+                # with the operator-facing message. Reclassifying it as a
+                # generic startup failure below would mark it retryable and
+                # put the gateway back into the very reconnect loop this
+                # exception exists to stop.
+                logger.error(
+                    "[%s] Failed to connect to Telegram: %s", self.name, safe_error
+                )
+                return False
             if self._looks_like_auth_error(e):
                 message = (
                     f"Telegram bot token rejected: {safe_error}. "

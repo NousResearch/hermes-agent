@@ -661,19 +661,35 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an email reply to the given address."""
-        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
+        subject_override = (metadata or {}).get("subject") or None
+        return await self._run_send(self._send_email, (chat_id, content, reply_to, subject_override), "[Email] Send failed to %s: %s", chat_id)
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
         return (self._address.rsplit("@", 1)[-1] if "@" in self._address else "") or "localhost"
 
-    def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
-                   attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
-        """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
-        msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
+    def _resolve_subject(self, to_addr: str, override: Optional[str] = None) -> str:
+        """Subject for an outbound email (#102884).
+
+        An explicit override (e.g. ``send_message(subject=...)`` via
+        ``metadata["subject"]``) is used verbatim — a fresh send has no
+        thread, so no ``Re:`` is forced. Otherwise the IMAP thread context
+        applies with the historical ``Re:`` fallback for replies.
+        """
+        if override:
+            return override
+        ctx = self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
+        return subject
+
+    def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
+                   attach_empty_body: bool = False, subject_override: Optional[str] = None) -> Tuple[MIMEMultipart, str, str]:
+        """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
+        msg = MIMEMultipart()
+        ctx = self._thread_context.get(to_addr, {})
+        subject = self._resolve_subject(to_addr, subject_override)
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
@@ -696,18 +712,18 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
+    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, subject_override: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
-        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
+        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True, subject_override=subject_override)
         self._smtp_send(msg)
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
     def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool,
-                         reply_to_msg_id: Optional[str] = None) -> str:
+                         reply_to_msg_id: Optional[str] = None, subject_override: Optional[str] = None) -> str:
         """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising.
         An explicit *reply_to_msg_id* threads the mail like ``_send_email`` does (#10131)."""
-        msg, msg_id, _ = self._new_reply(to_addr, body, reply_to_msg_id)
+        msg, msg_id, _ = self._new_reply(to_addr, body, reply_to_msg_id, subject_override=subject_override)
         for path, name in files:
             try:
                 _attach_file(msg, path, name)
@@ -742,29 +758,30 @@ class EmailAdapter(BasePlatformAdapter):
         if not local_paths and not body_parts:
             return SendResult(success=False, error="no valid images in batch")
         try:
-            message_id = await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
+            subject_override = (metadata or {}).get("subject") or None
+            message_id = await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths, subject_override)
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
             return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         return SendResult(success=True, message_id=message_id)
 
-    def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:
+    def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str], subject_override: Optional[str] = None) -> str:
         """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""
-        msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True)
+        msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True, subject_override=subject_override)
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
         return msg_id
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             file_name: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
         """Send a file as an email attachment."""
-        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name, reply_to),
-                                    "[Email] Send document failed: %s")
+        subject_override = (kwargs or {}).get("subject") or None
+        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name, reply_to, subject_override), "[Email] Send document failed: %s")
 
     def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None,
-                                    reply_to_msg_id: Optional[str] = None) -> str:
+                                    reply_to_msg_id: Optional[str] = None, subject_override: Optional[str] = None) -> str:
         """Send an email with a single file attachment via SMTP (raises if unattachable)."""
         return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False,
-                                     reply_to_msg_id=reply_to_msg_id)
+                                     reply_to_msg_id=reply_to_msg_id, subject_override=subject_override)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the email chat."""
@@ -772,7 +789,7 @@ class EmailAdapter(BasePlatformAdapter):
 
 
 # Plugin glue: register() exposes the platform via the registry; EMAIL_* env → PlatformConfig seeding stays in core.
-async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False, subject=None):
     """Out-of-process Email delivery via SMTP (one-shot); standalone_sender_fn contract."""
     extra = getattr(pconfig, "extra", {}) or {}
     address, password = extra.get("address") or _get_secret("EMAIL_ADDRESS", ""), _get_secret("EMAIL_PASSWORD", "")
@@ -783,7 +800,9 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
+        # Standalone sends are fresh (no thread context out-of-process):
+        # explicit subject verbatim, else the plain default with no Re:.
+        for key, value in (("From", address), ("To", chat_id), ("Subject", subject or "Hermes Agent"), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

@@ -949,11 +949,30 @@ def _maybe_preregister_client(storage: "HermesTokenStorage", cfg: dict, client_m
 
 def humanize_oauth_registration_error(
     server_name: str, exc: BaseException | str, *, server_url: str | None = None) -> str | None:
-    """Turn a DCR 403/Forbidden into a useful next step; None for anything else so the caller keeps the
-    original text. Figma gates DCR on exact ``client_name`` (auto-set to ``Claude Code``), so this fires
-    when the user overrode it or an older Hermes is running."""
+    """Turn a DCR 403/Forbidden, or a redirect_uri-rejected 400, into a useful next step; None for
+    anything else so the caller keeps the original text. Figma gates DCR on exact ``client_name``
+    (auto-set to ``Claude Code``), so the 403 branch fires when the user overrode it or an older
+    Hermes is running. The 400 branch fires for providers (e.g. Gamma) whose DCR endpoint requires a
+    publicly reachable HTTPS redirect_uri and rejects Hermes' default loopback callback outright --
+    unlike a loopback the browser merely can't reach (already handled by the paste-back prompt in
+    ``_announce_authorization_url``), registration itself fails before any browser step exists to
+    fall back on, so the raw "redirect_uri not allowed" 400 was the only thing a headless user saw."""
     msg = str(exc)
     lowered = msg.lower()
+
+    looks_like_redirect_rejection = (
+        "redirect_uri" in lowered
+        and ("not allowed" in lowered or "invalid" in lowered)
+        and ("400" in msg or "bad request" in lowered))
+    if looks_like_redirect_rejection:
+        return (
+            f"'{server_name}' rejected Hermes' OAuth redirect_uri during client registration (DCR) — it "
+            "requires a publicly reachable HTTPS callback, which a bare loopback (http://127.0.0.1:<port>) "
+            "can never satisfy, headless or not. Options: configure oauth.redirect_uri to an HTTPS URL you "
+            "control that proxies back to this host (mcp_servers.<name>.oauth.redirect_uri in config.yaml), "
+            "or use the provider's stdio / API-key / header-auth server instead if one exists "
+            f"(hermes mcp add {server_name} --auth header).")
+
     looks_like_registration = ("403" in msg or "forbidden" in lowered) and (
         any(k in lowered for k in ("regist", "dcr", "dynamic client"))
         or lowered.strip() in {"forbidden", "403 forbidden", "http 403: forbidden"}

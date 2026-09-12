@@ -209,6 +209,12 @@ SESSION_SEARCH_GUIDANCE = (
     "context exists, use session_search to recall it before asking them to repeat themselves."
 )
 
+TOOL_SEARCH_GUIDANCE = (
+    "Additional MCP/plugin tools may be available via tool_search even when they are not listed "
+    "in your visible tools. If you expect a tool you do not see, search for it with tool_search "
+    "before concluding it is missing or the server is disconnected."
+)
+
 # The opening sentence is worded deliberately: Anthropic's server-side filter rejected the previous phrasing
 # ("After completing a complex task (5+ tool calls)... save the approach as a skill...") on subscription OAuth
 # credentials, surfacing as a billing-shaped HTTP 400. If you rewrite it, re-verify with a subscription OAuth

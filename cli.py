@@ -4522,6 +4522,17 @@ def main(
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
 
+    # Give the plugin manager a CLI reference as soon as the instance exists,
+    # before we branch into query vs. interactive execution. Interactive mode
+    # re-sets this inside ``HermesCLI.run()``, but single-query (`-q`) mode
+    # calls ``cli.chat()`` directly and never enters ``run()`` — so without
+    # this, ``PluginContext.dispatch_tool()`` cannot resolve ``parent_agent``
+    # (its ``_cli_ref`` stays ``None``) and agent-context tools like
+    # ``delegate_task`` lose the active agent in query mode (#67597).
+    from hermes_cli.plugins import get_plugin_manager as _get_plugin_manager
+
+    _get_plugin_manager()._cli_ref = cli
+
     # Join the background worktree creation before anything consumes TERMINAL_CWD.
     # A requested worktree whose setup failed aborts: never silently run without isolation.
     wt_info = _join_worktree() if _join_worktree is not None else None

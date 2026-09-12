@@ -254,6 +254,7 @@ scripts/run_tests.sh
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+- 🔌 [Phoenix](https://github.com/xyaz1313/phoenix) — Plugin adding tiered model routing, circuit-breaker guardrails, self-healing error recovery, checkpoint reminders, and adaptive approval trust to Hermes Agent, via official plugin hooks only.
 
 ---
 

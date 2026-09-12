@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state_common import FTS_CJK_STALE_KEY
+from hermes_state_common import FTS_CJK_STALE_KEY, _FTS_CJK_TRIGGERS
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "native" / "fts5_cjk" / "fts5_cjk.c"
@@ -322,3 +322,47 @@ def test_integrity_after_lifecycle(db):
             "INSERT INTO messages_fts_cjk(messages_fts_cjk) "
             "VALUES('integrity-check')"
         )
+
+
+def test_writer_self_heals_when_cjk_triggers_outlive_the_tokenizer(cjk_so, tmp_path, monkeypatch):
+    """#108841: a writer opened before the .so existed keeps writing after a later,
+    tokenizer-capable connection installs the cjk triggers (database-level objects
+    firing on a connection that never registered cjk_unicode61). The write path
+    self-heals: breadcrumb, drop the cjk triggers, land the message — only the cjk
+    index degrades; messages_fts keeps syncing."""
+    db_path = tmp_path / "state.db"
+    # 1) The writer opens while the extension is absent: no cjk index is created.
+    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(tmp_path / "absent.so"))
+    writer = SessionDB(db_path=db_path)
+    assert not writer._fts_cjk_loaded
+    writer.create_session(session_id="s1", source="cli", model="m")
+    writer.append_message("s1", role="user", content="written before the extension existed")
+
+    # 2) A connection opened after the install creates the index DDL + triggers.
+    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(cjk_so))
+    late = SessionDB(db_path=db_path)
+    assert late._fts_cjk_loaded
+    late.close()
+
+    probe = sqlite3.connect(str(db_path))
+    def triggers():
+        return {r[0] for r in probe.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()}
+    assert triggers() & set(_FTS_CJK_TRIGGERS), "the late connection must have installed the cjk triggers"
+
+    # 3) The old writer's INSERT now fires a trigger its connection cannot parse.
+    writer.append_message("s1", role="user", content="must land despite the dead trigger")
+
+    stale = probe.execute(
+        "SELECT value FROM state_meta WHERE key = ?", (FTS_CJK_STALE_KEY,)
+    ).fetchone()
+    assert stale and stale[0] == "1"
+    assert not (triggers() & set(_FTS_CJK_TRIGGERS)), "the heal must drop the cjk triggers"
+    assert triggers(), "base FTS triggers must survive (only the cjk index degrades)"
+    n = probe.execute(
+        "SELECT COUNT(*) FROM messages WHERE session_id = ?", ("s1",)
+    ).fetchone()[0]
+    assert n == 2, "both messages must be in the transcript"
+    probe.close()
+    writer.close()

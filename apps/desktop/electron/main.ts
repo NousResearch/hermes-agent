@@ -425,9 +425,10 @@ import { AppInstallerStrategy } from './updater/app-installer'
 import {
   createCheckoutStrategy
 } from './updater/checkout'
+import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
 import { createMacStrategy } from './updater/mac-client'
-import { consumePendingRelaunch, registerUpdateRelaunch } from './updater/relaunch'
+import { type ConsumedRelaunch, consumePendingRelaunch, registerUpdateRelaunch, type RelaunchRegistration } from './updater/relaunch'
 import { startRelaunchWaiter } from './updater/relaunch-waiter'
 import { createStoreStrategy } from './updater/store-client'
 import { isHermesOwnedVenvDaemon } from './venv-holder-select'
@@ -3121,8 +3122,8 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
       emitUpdateProgress,
       appVersion: app.getVersion(),
       quit: () => app.quit(),
-      registerPendingRelaunch: fromVersion =>
-        registerUpdateRelaunch(HERMES_HOME, fromVersion, {
+      registerPendingRelaunch: (fromVersion: string): Promise<RelaunchRegistration> =>
+        registerUpdateRelaunch(app, fromVersion, {
           // The relaunch mechanism: a detached waiter, external to the dying
           // process. It snapshots the OLD package, signals the handshake,
           // waits for this process to exit and for the OS to swap the
@@ -3163,7 +3164,7 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
       restore: restoreBundledBackend,
       emitProgress: emitUpdateProgress,
       quit: () => app.quit(),
-      registerPendingRelaunch: fromVersion => registerUpdateRelaunch(HERMES_HOME, fromVersion, {
+      registerPendingRelaunch: (fromVersion: string): Promise<RelaunchRegistration> => registerUpdateRelaunch(app, fromVersion, {
         relaunch: () => startRelaunchWaiter({
           processId: process.pid,
           processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
@@ -3197,6 +3198,12 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
     directoryExists,
     readCanonicalInstallStamp,
     readDesktopUpdateConfig,
+    readSourceUpdate: (updateRoot: string): Promise<SourceUpdate> => readSourceUpdate({
+      python: findPythonForRoot(updateRoot),
+      git: resolveGitBinary(),
+      updateRoot,
+      hermesHome: HERMES_HOME
+    }),
     resolveUpdateRoot,
     resolveUpdaterBinary,
     resolveHealedBranch,
@@ -17207,7 +17214,8 @@ async function detectRendererSkew() {
 function showAboutPanelFresh(): void {
   void Promise.all([detectRendererSkew(), resolveHermesVersion()]).then(([skew, version]) => {
     const info: AppVersionInfo = appVersionInfo(INSTALL_STAMP, version, app.getVersion())
-    const display: string = info.channel ? `${info.appVersion} (${info.channel})` : info.appVersion
+    // The product name already identifies canary and commit builds.
+    const display: string = info.appVersion
     app.setAboutPanelOptions({
       applicationName: APP_NAME,
       applicationVersion: skew.outOfSync
@@ -17730,7 +17738,7 @@ app.whenReady().then(() => {
   // an OS package swap, consume it here — the renderer toasts "Hermes
   // updated to vX.Y.Z" once its bridge is up. Same-version markers (update
   // never landed) are deleted silently.
-  const relaunchInfo = consumePendingRelaunch(HERMES_HOME, app.getVersion())
+  const relaunchInfo: ConsumedRelaunch = consumePendingRelaunch(app, app.getVersion())
 
   if (relaunchInfo.wasUpdateRelaunch) {
     rememberLog(`[updates] post-update relaunch detected (from ${relaunchInfo.fromVersion})`)

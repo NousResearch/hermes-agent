@@ -69,7 +69,10 @@ including through `hermes update` or `hermes update --check`. They explain:
 Separate applications still share Hermes profiles, configuration, and sessions
 under the same Hermes home. Running different builds against one profile is not
 schema isolation: newer builds can change stored data that an older build cannot
-read. Back up shared data before testing. The `hermes://` URL scheme remains
+read. Back up shared data before testing. The desktop and standalone CLI warn
+when another live installation uses the same profile; this is advisory, not a
+lock. Desktop post-update notices are scoped to the application, so launching
+canary cannot consume stable's pending notice. The `hermes://` URL scheme remains
 shared; the application that most recently registered it handles links.
 
 ### Source channels and install identity
@@ -93,7 +96,9 @@ published release for that channel and update the checkout to its exact Git
 commit. Canary does not mean the current tip of `main`, and an unpublished tag
 is not a release. Switching a source channel does not install a desktop package.
 Per-install records live under `update.installs` in configuration, so one
-checkout's choice does not change another installation's channel.
+checkout's choice does not change another installation's channel. The source-built
+desktop uses that same selection for checks and update handoffs; it does not
+replace a selected release channel with its default branch.
 
 Packaged desktop feed channels derive from their build tag and package owner.
 Changing a source channel is not an MSIX or Store channel switch. Canary builds

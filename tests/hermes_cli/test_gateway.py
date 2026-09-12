@@ -607,10 +607,13 @@ class TestReapUnsupervisedGatewayOrphansMacOS:
         monkeypatch.setattr(gateway, "is_macos", lambda: True)
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
 
-        # _get_service_pids returns the launchd-managed gateway PID.
-        # (accepts all_profiles: the reaper asks for the whole fleet, #74075)
         monkeypatch.setattr(
-            gateway, "_get_service_pids", lambda all_profiles=False: {launchd_pid}
+            gateway,
+            "_strict_launchd_gateway_service_snapshot",
+            lambda: ({launchd_pid}, True),
+        )
+        monkeypatch.setattr(
+            gateway, "_supervised_service_tree_pids", lambda roots: set(roots)
         )
         # No pidfile-recorded gateway in this scenario.
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -645,7 +648,12 @@ class TestReapUnsupervisedGatewayOrphansMacOS:
         monkeypatch.setattr(gateway, "is_macos", lambda: True)
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(
-            gateway, "_get_service_pids", lambda all_profiles=False: {launchd_pid}
+            gateway,
+            "_strict_launchd_gateway_service_snapshot",
+            lambda: ({launchd_pid}, True),
+        )
+        monkeypatch.setattr(
+            gateway, "_supervised_service_tree_pids", lambda roots: set(roots)
         )
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
 
@@ -663,6 +671,175 @@ class TestReapUnsupervisedGatewayOrphansMacOS:
 
         assert result is False  # no orphans reaped
         assert killed_pids == []  # nothing was killed
+
+    def test_macos_excludes_launchd_wrapper_descendants_without_pidfile(self, monkeypatch):
+        """A launchd label reports the stderr wrapper PID, while the process
+        scan sees both wrapper and gateway child.  Losing the pidfile during a
+        Desktop quit race must not make that child reapable (#105938)."""
+        wrapper_pid = 52615
+        gateway_pid = 52616
+        orphan_pid = 99998
+
+        monkeypatch.setattr(gateway, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(
+            gateway,
+            "_strict_launchd_gateway_service_snapshot",
+            lambda: ({wrapper_pid}, True),
+        )
+        monkeypatch.setattr("gateway.status._pid_from_record", lambda _record: None)
+        monkeypatch.setattr("gateway.status._read_pid_record", lambda: None)
+        monkeypatch.setattr("gateway.status._read_gateway_lock_record", lambda: None)
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid", lambda cleanup_stale=False: None
+        )
+
+        wrapper = SimpleNamespace(
+            pid=wrapper_pid,
+            children=lambda recursive=False: [SimpleNamespace(pid=gateway_pid)],
+        )
+        fake_psutil = SimpleNamespace(Process=lambda pid: wrapper if pid == wrapper_pid else (_ for _ in ()).throw(KeyError(pid)))
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        monkeypatch.setattr(
+            gateway,
+            "find_gateway_pids",
+            lambda exclude_pids=None: [
+                p
+                for p in [wrapper_pid, gateway_pid, orphan_pid]
+                if p not in (exclude_pids or set())
+            ],
+        )
+        killed_pids = []
+        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: None)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr("time.monotonic", lambda: 1.0)
+
+        assert gateway._reap_unsupervised_gateway_orphans() is True
+        killed = [pid for pid, _ in killed_pids]
+        assert orphan_pid in killed
+        assert wrapper_pid not in killed
+        assert gateway_pid not in killed
+
+    def test_macos_reaper_fails_closed_when_launchd_tree_is_uncertain(self, monkeypatch):
+        """A live launchd service plus an unreadable process tree is not
+        permission to SIGTERM anything that merely resembles a gateway."""
+        wrapper_pid = 52615
+        monkeypatch.setattr(gateway, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(
+            gateway,
+            "_strict_launchd_gateway_service_snapshot",
+            lambda: ({wrapper_pid}, True),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "psutil",
+            SimpleNamespace(Process=lambda _pid: (_ for _ in ()).throw(PermissionError())),
+        )
+        monkeypatch.setattr(
+            gateway,
+            "find_gateway_pids",
+            lambda exclude_pids=None: (_ for _ in ()).throw(
+                AssertionError("uncertain supervised tree must prevent process scanning")
+            ),
+        )
+        killed_pids = []
+        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
+
+        assert gateway._reap_unsupervised_gateway_orphans() is False
+        assert killed_pids == []
+
+    def test_macos_reaper_fails_closed_when_service_discovery_errors(self, monkeypatch):
+        monkeypatch.setattr(gateway, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(
+            gateway,
+            "_strict_launchd_gateway_service_snapshot",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            gateway,
+            "find_gateway_pids",
+            lambda exclude_pids=None: (_ for _ in ()).throw(
+                AssertionError("failed service discovery must prevent process scanning")
+            ),
+        )
+
+        assert gateway._reap_unsupervised_gateway_orphans() is False
+
+    def test_strict_launchd_snapshot_reads_wrapper_pid_and_known_absent_domain(self, monkeypatch):
+        wrapper_pid = 52615
+        monkeypatch.setattr(gateway, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway, "launchd_gateway_labels_for_install", lambda: set())
+        monkeypatch.setattr(gateway.os, "getuid", lambda: 501)
+
+        def fake_run(command, **_kwargs):
+            if command == ["launchctl", "list"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="52615\t0\tai.hermes.gateway\n",
+                    stderr="",
+                )
+            target = command[-1]
+            if target == "gui/501/ai.hermes.gateway":
+                return SimpleNamespace(returncode=0, stdout=f"pid = {wrapper_pid}\n", stderr="")
+            assert target == "user/501/ai.hermes.gateway"
+            return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
+
+        monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+        assert gateway._strict_launchd_gateway_service_snapshot() == ({wrapper_pid}, True)
+
+    def test_strict_launchd_snapshot_fails_closed_on_partial_timeout(self, monkeypatch):
+        monkeypatch.setattr(gateway, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway, "launchd_gateway_labels_for_install", lambda: set())
+        monkeypatch.setattr(gateway.os, "getuid", lambda: 501)
+
+        def fake_run(command, **_kwargs):
+            if command == ["launchctl", "list"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="52615\t0\tai.hermes.gateway\n",
+                    stderr="",
+                )
+            if command[-1].startswith("gui/"):
+                return SimpleNamespace(returncode=0, stdout="pid = 52615\n", stderr="")
+            raise subprocess.TimeoutExpired(command, 5)
+
+        monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+        assert gateway._strict_launchd_gateway_service_snapshot() is None
+
+    def test_strict_launchd_snapshot_fails_when_any_loaded_label_has_no_pid(self, monkeypatch):
+        monkeypatch.setattr(gateway, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway, "launchd_gateway_labels_for_install", lambda: set())
+        monkeypatch.setattr(gateway.os, "getuid", lambda: 501)
+
+        def fake_run(command, **_kwargs):
+            if command == ["launchctl", "list"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=(
+                        "52615\t0\tai.hermes.gateway\n"
+                        "-\t0\tai.hermes.gateway-renamed\n"
+                    ),
+                    stderr="",
+                )
+            target = command[-1]
+            if target == "gui/501/ai.hermes.gateway":
+                return SimpleNamespace(returncode=0, stdout="pid = 52615\n", stderr="")
+            if target == "user/501/ai.hermes.gateway":
+                return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
+            if target == "gui/501/ai.hermes.gateway-renamed":
+                return SimpleNamespace(returncode=0, stdout="state = waiting\n", stderr="")
+            raise AssertionError(target)
+
+        monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+        assert gateway._strict_launchd_gateway_service_snapshot() is None
 
 
 class TestReapUnsupervisedGatewayOrphansWindows:
@@ -865,7 +1042,7 @@ class TestReaperCandidateIsSupervisorOwned:
         # No pidfile => get_running_pid() returns None.
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
         # _get_service_pids() is empty on Windows.
-        monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway, "_get_service_pids", lambda all_profiles=False: set())
 
         # Parent chain: gateway -> bootstrap -> services.exe (Task Scheduler).
         services = SimpleNamespace(pid=4, parent=lambda: None, name=lambda: "services.exe")
@@ -916,7 +1093,11 @@ class TestReaperCandidateIsSupervisorOwned:
         monkeypatch.setattr(gateway, "is_windows", lambda: False)
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-        monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(
+            gateway,
+            "_strict_launchd_gateway_service_snapshot",
+            lambda: (set(), False),
+        )
 
         # Realistic macOS topology: the orphan's parent IS launchd (PID 1).
         launchd = SimpleNamespace(pid=1, parent=lambda: None, name=lambda: "launchd")
@@ -1058,7 +1239,7 @@ class TestWindowsScheduledTaskSupervisorGuard:
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway, "_windows_scheduled_task_supervises", lambda name: False)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-        monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway, "_get_service_pids", lambda all_profiles=False: set())
 
         monkeypatch.setattr(
             gateway,

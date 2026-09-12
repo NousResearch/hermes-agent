@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, IO, Mapping
+from typing import Any, Callable, IO, Mapping
 
 
 DEFAULT_MODEL = "gemini-3.8-flash-low"
@@ -27,6 +27,40 @@ DEFAULT_TIMEOUT_SECONDS = 120.0
 DEFAULT_MAX_INPUT_BYTES = 262_144
 DEFAULT_MAX_OUTPUT_BYTES = 131_072
 _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+_CONTROLLED_ARG_PREFIXES = (
+    "--dangerously-skip-permissions",
+    "--model",
+    "--effort",
+    "--mode",
+    "--sandbox",
+    "--disable-slash-commands",
+    "--output-format",
+    "--print-timeout",
+    "--json-schema",
+)
+_UNSUPPORTED_SCHEMA_KEYWORDS = frozenset(
+    {
+        "$ref",
+        "$dynamicRef",
+        "$recursiveRef",
+        "$defs",
+        "definitions",
+        "if",
+        "then",
+        "else",
+        "dependentRequired",
+        "dependentSchemas",
+        "patternProperties",
+        "propertyNames",
+        "contains",
+        "minContains",
+        "maxContains",
+        "prefixItems",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "format",
+    }
+)
 
 # Deliberately not inherited: HERMES_*, ANTIGRAVITY_*, provider keys, messaging
 # tokens, and arbitrary parent variables.  HOME/config locations are required
@@ -123,15 +157,30 @@ class AntigravityWorker:
         self,
         *,
         command: str | os.PathLike[str] = "agy",
+        model: str = DEFAULT_MODEL,
+        effort: str = "low",
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_input_bytes: int = DEFAULT_MAX_INPUT_BYTES,
         max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+        extra_args: list[str] | None = None,
     ) -> None:
         if timeout_seconds <= 0 or not math.isfinite(timeout_seconds):
             raise ValueError("timeout_seconds must be finite and positive")
         if max_input_bytes <= 0 or max_output_bytes <= 0:
             raise ValueError("byte limits must be positive")
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("model must be a non-empty string")
+        if not isinstance(effort, str) or not effort.strip():
+            raise ValueError("effort must be a non-empty string")
         self._command = os.fspath(command)
+        self._model = model
+        self._effort = effort
+        self._extra_args = list(extra_args or [])
+        if any(
+            any(arg == prefix or arg.startswith(prefix + "=") for prefix in _CONTROLLED_ARG_PREFIXES)
+            for arg in self._extra_args
+        ):
+            raise ValueError("extra_args cannot override the sandbox contract")
         self._timeout_seconds = float(timeout_seconds)
         self._max_input_bytes = int(max_input_bytes)
         self._max_output_bytes = int(max_output_bytes)
@@ -142,13 +191,25 @@ class AntigravityWorker:
         self._closed = False
 
     def run(
-        self, *, goal: str, context: str, output_schema: dict | None
+        self,
+        *,
+        goal: str,
+        context: str,
+        output_schema: dict | None,
+        on_process_started: Callable[[], None] | None = None,
     ) -> AntigravityResult:
         started = time.monotonic()
         if not isinstance(goal, str) or not isinstance(context, str):
             return self._failure(started, "invalid_input", "goal and context must be strings")
         if output_schema is not None and not isinstance(output_schema, dict):
             return self._failure(started, "invalid_schema", "output_schema must be an object")
+        unsupported = _unsupported_schema_keyword(output_schema) if output_schema is not None else None
+        if unsupported is not None:
+            return self._failure(
+                started,
+                "invalid_schema",
+                f"output_schema keyword {unsupported!r} is not supported by the parent validator",
+            )
 
         try:
             schema_bytes = (
@@ -171,7 +232,13 @@ class AntigravityWorker:
                 if self._closed:
                     return self._failure(started, "closed", "worker is closed")
                 self._cancel_event.clear()
-            return self._run_locked(started, prompt_bytes, output_schema, schema_bytes)
+            return self._run_locked(
+                started,
+                prompt_bytes,
+                output_schema,
+                schema_bytes,
+                on_process_started,
+            )
         finally:
             self._run_lock.release()
 
@@ -195,6 +262,7 @@ class AntigravityWorker:
         prompt: bytes,
         output_schema: dict | None,
         schema_bytes: bytes | None,
+        on_process_started: Callable[[], None] | None,
     ) -> AntigravityResult:
         workspace = Path(tempfile.mkdtemp(prefix="hermes-antigravity-"))
         os.chmod(workspace, 0o700)
@@ -206,9 +274,9 @@ class AntigravityWorker:
                 self._command,
                 "--print",
                 "--model",
-                DEFAULT_MODEL,
+                self._model,
                 "--effort",
-                "low",
+                self._effort,
                 "--mode",
                 "plan",
                 "--sandbox",
@@ -216,8 +284,9 @@ class AntigravityWorker:
                 "--output-format",
                 "json",
                 "--print-timeout",
-                "120s",
+                f"{self._timeout_seconds:g}s",
             ]
+            argv.extend(self._extra_args)
             if output_schema is not None:
                 schema_path = (workspace / "output-schema.json").resolve()
                 assert schema_bytes is not None
@@ -240,6 +309,17 @@ class AntigravityWorker:
 
             with self._state_lock:
                 self._process = process
+            if on_process_started is not None:
+                try:
+                    on_process_started()
+                except Exception:
+                    self._terminate_and_drain(process)
+                    return self._failure(
+                        started,
+                        "process_start_callback_failed",
+                        "Antigravity process start could not be recorded",
+                        process.returncode,
+                    )
             assert process.stdin is not None
             assert process.stdout is not None
             assert process.stderr is not None
@@ -527,6 +607,34 @@ class AntigravityWorker:
             error_code=code,
             error_message=message,
         )
+
+
+def _unsupported_schema_keyword(schema: Mapping[str, Any]) -> str | None:
+    for keyword in _UNSUPPORTED_SCHEMA_KEYWORDS:
+        if keyword in schema:
+            return keyword
+    for key in ("not", "items", "additionalProperties"):
+        child = schema.get(key)
+        if isinstance(child, Mapping):
+            found = _unsupported_schema_keyword(child)
+            if found is not None:
+                return found
+    for key in ("allOf", "anyOf", "oneOf"):
+        children = schema.get(key)
+        if isinstance(children, list):
+            for child in children:
+                if isinstance(child, Mapping):
+                    found = _unsupported_schema_keyword(child)
+                    if found is not None:
+                        return found
+    properties = schema.get("properties")
+    if isinstance(properties, Mapping):
+        for child in properties.values():
+            if isinstance(child, Mapping):
+                found = _unsupported_schema_keyword(child)
+                if found is not None:
+                    return found
+    return None
 
 
 def _schema_error(instance: Any, schema: Mapping[str, Any], path: str = "$") -> str | None:

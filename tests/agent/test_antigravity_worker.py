@@ -275,3 +275,76 @@ def test_result_is_frozen(fake_agy: Path):
     result = make_worker(fake_agy).run(goal="ok", context="", output_schema=None)
     with pytest.raises(FrozenInstanceError):
         setattr(result, "status", "changed")
+
+
+def test_runtime_model_effort_timeout_and_safe_extra_args_are_configurable(fake_agy: Path):
+    result = make_worker(
+        fake_agy,
+        model="gemini-test",
+        effort="medium",
+        timeout_seconds=17,
+        extra_args=["--no-gui"],
+    ).run(goal="Return text", context="", output_schema=None)
+
+    assert result.status == "success"
+    assert result.raw_envelope is not None
+    argv = result.raw_envelope["capture"]["argv"]
+    assert argv[argv.index("--model") + 1] == "gemini-test"
+    assert argv[argv.index("--effort") + 1] == "medium"
+    assert argv[argv.index("--print-timeout") + 1] == "17s"
+    assert argv[-1] == "--no-gui"
+
+
+def test_process_started_callback_runs_after_spawn(fake_agy: Path):
+    observations = []
+    result = make_worker(fake_agy).run(
+        goal="Return text",
+        context="",
+        output_schema=None,
+        on_process_started=lambda: observations.append("started"),
+    )
+    assert result.status == "success"
+    assert observations == ["started"]
+
+
+def test_process_started_callback_failure_terminates_child(fake_agy: Path):
+    def fail_callback():
+        raise RuntimeError("ledger unavailable")
+
+    result = make_worker(fake_agy).run(
+        goal="SLEEP",
+        context="",
+        output_schema=None,
+        on_process_started=fail_callback,
+    )
+    assert result.status == "failed"
+    assert result.error_code == "process_start_callback_failed"
+
+
+def test_unsupported_json_schema_fails_closed_before_spawn(fake_agy: Path):
+    called = []
+    result = make_worker(fake_agy).run(
+        goal="Return JSON",
+        context="",
+        output_schema={
+            "$defs": {"answer": {"type": "string"}},
+            "$ref": "#/$defs/answer",
+        },
+        on_process_started=lambda: called.append(True),
+    )
+    assert result.status == "failed"
+    assert result.error_code == "invalid_schema"
+    assert called == []
+
+
+def test_dangerous_or_contract_overriding_extra_args_are_rejected(fake_agy: Path):
+    for arg in (
+        "--dangerously-skip-permissions",
+        "--mode",
+        "--sandbox=false",
+        "--output-format=text",
+        "--disable-slash-commands=false",
+        "--json-schema=elsewhere.json",
+    ):
+        with pytest.raises(ValueError):
+            make_worker(fake_agy, extra_args=[arg])

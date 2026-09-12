@@ -391,13 +391,13 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing,
         # existing null/unknown -> default normalization stands.
         from hermes_cli.kanban_role_map import canonical_assignee_for_title
 
-        _lane_profile = canonical_assignee_for_title(title, valid_names=valid_names)
+        _lane_profile = canonical_assignee_for_title(title, valid_names=routing.valid_names)
         if _lane_profile is not None:
             chosen = _lane_profile
         if (
             isinstance(assignee, str)
             and assignee.strip()
-            and assignee.strip() not in valid_names
+            and assignee.strip() not in routing.valid_names
         ):
             logger.info(
                 "decompose: task %s child %d picked unknown assignee %r — "

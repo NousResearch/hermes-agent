@@ -2676,6 +2676,10 @@ def _handle_attachments(args: dict, **kw) -> str:
         return tool_error(f"kanban_attachments: {e}")
 
 
+def _opt_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+    return int(value) if value is not None else default
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
@@ -2838,6 +2842,7 @@ def _handle_create(args: dict, **kw) -> str:
                 ),
                 initial_status=str(initial_status),
                 block_kind=("operator_hold" if hold else None),
+                points=_opt_int(args.get("points")),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
                 _assignee_parked=_parked,

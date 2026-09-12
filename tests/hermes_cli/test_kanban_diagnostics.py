@@ -210,6 +210,22 @@ def _triage_task():
     return _task(id="t_triage1", status="triage")
 
 
+def test_triage_aux_status_defaults_auto_decompose_to_disabled():
+    status = kd.triage_aux_status({"kanban": {}, "model": "configured"})
+
+    assert status is not None
+    assert status["auto_decompose"] is False
+
+
+def test_triage_aux_status_preserves_explicit_auto_decompose_true():
+    status = kd.triage_aux_status(
+        {"kanban": {"auto_decompose": True}, "model": "configured"}
+    )
+
+    assert status is not None
+    assert status["auto_decompose"] is True
+
+
 
 
 

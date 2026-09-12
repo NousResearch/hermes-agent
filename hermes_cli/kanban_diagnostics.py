@@ -225,8 +225,8 @@ def triage_aux_status(config: Optional[dict]) -> Optional[dict]:
         return None
     aux = aux if isinstance(aux, dict) else {}
     return {
-        # ``auto_decompose`` defaults to True per kanban DEFAULT_CONFIG.
-        "auto_decompose": bool(kanban_cfg["auto_decompose"]) if "auto_decompose" in kanban_cfg else True,
+        # Auto-decompose is opt-in, matching kanban DEFAULT_CONFIG.
+        "auto_decompose": bool(kanban_cfg["auto_decompose"]) if "auto_decompose" in kanban_cfg else False,
         "decomposer_explicit": _aux_slot_explicit(aux.get("kanban_decomposer")),
         "specifier_explicit": _aux_slot_explicit(aux.get("triage_specifier")),
         "main_model_visible": _main_model_visible(config),

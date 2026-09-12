@@ -14,16 +14,15 @@ import pytest
 from gateway.kanban_watchers_common import _resolve_auto_decompose_settings
 
 
-def test_enabled_by_default_when_key_absent():
+def test_disabled_by_default_when_key_absent():
     enabled, per_tick = _resolve_auto_decompose_settings(lambda: {"kanban": {}})
-    assert enabled is True
+    assert enabled is False
     assert per_tick == 3
 
 
-def test_disabled_when_flag_false():
+def test_enabled_when_flag_explicitly_true():
     enabled, per_tick = _resolve_auto_decompose_settings(
-        lambda: {"kanban": {"auto_decompose": False}}
+        lambda: {"kanban": {"auto_decompose": True}}
     )
-    assert enabled is False
-
+    assert enabled is True
 

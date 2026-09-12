@@ -1757,9 +1757,9 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
-        # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
-        # decompose <id>` or the dashboard's Decompose button.
-        "auto_decompose": True,
+        # Opt in to running the decomposer on Triage tasks every tick. False = manual via
+        # `hermes kanban decompose <id>` or the dashboard's Decompose button.
+        "auto_decompose": False,
         # Max triage tasks decomposed per tick, bounding the aux-LLM burst from a bulk load. Excess
         # defers to the next tick.
         "auto_decompose_per_tick": 3,

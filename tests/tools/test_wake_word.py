@@ -217,14 +217,17 @@ def _install_fake_openwakeword(monkeypatch):
 
 
 def test_openwakeword_ensures_base_models_for_custom_path(monkeypatch):
-    # Regression: a custom ``.onnx`` path used to skip download_models entirely,
+    # Regression: a custom model path used to skip download_models entirely,
     # so a fresh install crashed at load time on a missing melspectrogram.onnx.
     # The base feature models must be ensured for a custom path too.
     calls = _install_fake_openwakeword(monkeypatch)
+    # Fake the runtime dependency, not the host's required inference backend.
+    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: True)
+    model_path = "/models/hey_hermes." + ww.default_inference_framework()
     eng = ww._OpenWakeWordEngine(
-        {"provider": "openwakeword", "openwakeword": {"model": "/models/hey_hermes.onnx"}}
+        {"provider": "openwakeword", "openwakeword": {"model": model_path}}
     )
-    assert calls["download"] == [["/models/hey_hermes.onnx"]]
+    assert calls["download"] == [[model_path]]
     assert eng._labels == ["hey_hermes"]
 
 

@@ -950,6 +950,10 @@ def _send_media_via_adapter(
             except TimeoutError:
                 future.cancel()
                 raise
+            if job.get("monitor_commit_policy") == "safe_retry":
+                if not (_confirm_adapter_delivery(result, job_ref["id"], require_message_id=True)):
+                    _note_target_error(job_ref, "media acknowledgement unavailable; outcome unknown", errors)
+                continue
             if result and not getattr(result, "success", True):
                 _note_target_error(
                     job_ref,
@@ -971,7 +975,9 @@ def _result_field(send_result, key: str, default=None):
 
 
 def _confirm_adapter_delivery(
-    send_result, job_id: str = "?", unverified: Optional[list] = None) -> bool:
+    send_result, job_id: str = "?", unverified: Optional[list] = None,
+    *, require_message_id: bool = False,
+) -> bool:
     """Return True only if ``send_result`` unambiguously confirms delivery. ``None`` or no
     ``success`` attr/key is NOT success (would log "delivered" while nothing was sent).
     ``delivered is False`` REJECTS even with truthy ``success`` (the silence-narration filter
@@ -995,6 +1001,15 @@ def _confirm_adapter_delivery(
         return False
     if _result_field(send_result, "delivered") is False:
         return False
+    if require_message_id:
+        if _result_field(send_result, "success") is not True:
+            return False
+        message_id = _result_field(send_result, "message_id")
+        if (type(message_id) not in (str, int) or not str(message_id).strip()
+                or (type(message_id) is int and message_id <= 0)):
+            if unverified is not None:
+                unverified.append(True)
+            return False
     if (
         _result_field(send_result, "message_id") is None
         and not _result_field(send_result, "raw_response")
@@ -1270,6 +1285,10 @@ def _live_send_text(
     try:
         send_result = future.result(timeout=60)
     except TimeoutError:
+        if job.get("monitor_commit_policy") == "safe_retry":
+            delivery_errors.append("monitor delivery acknowledgement timed out; outcome unknown")
+            unverified_targets.append(t.where)
+            return False, True, None
         # Slow confirmation != failure; future.cancel() disambiguates. False -> already in flight,
         # cannot be un-sent, standalone resend would DUPLICATE: assume delivered. True -> never
         # started (loop wedged): MUST fall through to standalone or it is silently dropped.
@@ -1295,7 +1314,9 @@ def _live_send_text(
     send_raw_response = _result_field(send_result, "raw_response")
     delivered_message_id = _result_field(send_result, "message_id")
     _evidence_gap: list = []
-    send_success = _confirm_adapter_delivery(send_result, job["id"], _evidence_gap)
+    send_success = _confirm_adapter_delivery(
+        send_result, job["id"], _evidence_gap,
+        require_message_id=job.get("monitor_commit_policy") == "safe_retry")
     if send_success and _evidence_gap:
         unverified_targets.append(t.where)
 
@@ -1448,7 +1469,8 @@ def _deliver_via_live_adapter(
                 route_thread_id if route_thread_id is not None else "-",
                 delivered_message_id if delivered_message_id is not None else "-")
             delivered = True
-            _seed_live_delivery_sessions(t, delivered_message_id)
+            if not (job.get("monitor_commit_policy") == "safe_retry" and timed_out):
+                _seed_live_delivery_sessions(t, delivered_message_id)
     except Exception as e:
         err_msg = f"live adapter delivery to {t.where} failed: {e}"
         if not any(err_msg in err for err in target_errors):
@@ -1488,6 +1510,22 @@ def _standalone_send(
     if not content.strip() and not media_files:
         return _warned(f"standalone send skipped (empty text and no media) for {t.where}")
     coro = _send()
+    if job.get("monitor_commit_policy") == "safe_retry":
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                return asyncio.run(coro), None
+            except Exception as exc:
+                return _failed(exc)  # possibly dispatched: never call _send a second time
+        coro.close()  # created but never started; choose the thread lane before dispatch
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(timeout=30), None
+        except Exception as exc:
+            return _failed(exc)
+        finally:
+            pool.shutdown(wait=False)
     try:
         return asyncio.run(coro), None
     except RuntimeError as run_err:
@@ -1533,6 +1571,10 @@ def _deliver_standalone(
         target_errors.append(err)
         delivery_errors.extend(target_errors)
         return
+    if job.get("monitor_commit_policy") == "safe_retry":
+        if not (_confirm_adapter_delivery(result, job["id"], require_message_id=True)):
+            delivery_errors.append("standalone acknowledgement unavailable; outcome unknown")
+            return
     # Standalone senders report per-file attachment failures in ``warnings`` while returning
     # success; surface them so a vanished attachment doesn't mark the run ok.
     for _w in (result.get("warnings") if isinstance(result, dict) else None) or []:
@@ -1705,6 +1747,8 @@ def _deliver_result(
         from cron.jobs import get_job
         refreshed = get_job(job["id"]) or {}
         job["last_delivery_queued"] = refreshed.get("last_delivery_queued")
+        if job.get("monitor_commit_policy") == "safe_retry":
+            job["last_delivery_unverified"] = refreshed.get("last_delivery_unverified")
         return error
 
     from gateway.config import load_gateway_config
@@ -1793,6 +1837,9 @@ def _deliver_result(
             target_errors=target_errors, delivery_errors=delivery_errors,
             unverified_targets=unverified_targets,
         )
+        if not delivered and t.live_adapter_ready and job.get("monitor_commit_policy") == "safe_retry":
+            delivery_errors.extend(target_errors or ["live delivery outcome unknown"])
+            continue  # failure/exception does not prove that a fallback send is safe
         if not delivered:
             _deliver_standalone(
                 t, cleaned_delivery_content, media_files, target_errors, delivery_errors)

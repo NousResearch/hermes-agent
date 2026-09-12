@@ -574,6 +574,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             no_agent=_no_agent, attach_to_session=a["attach_to_session"],
             monitor_script=_normalize_optional_job_value(a["monitor_script"]),
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
+            monitor_commit_policy=a["monitor_commit_policy"],
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"],
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
@@ -749,6 +750,9 @@ def _update_script_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[
     if (monitor_script is not None or monitor_url is not None) and (
         _pick(updates, job, "monitor_script") and _pick(updates, job, "monitor_url")):
         return("monitor_script and monitor_url are mutually exclusive — clear one before setting the other.")
+    if a["monitor_commit_policy"] is not None:
+        # update_job validates the value and drops it when no monitor source survives the merge.
+        updates["monitor_commit_policy"] = a["monitor_commit_policy"]
     return None
 
 
@@ -877,6 +881,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    monitor_commit_policy: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
     task_id: str = None,
@@ -977,6 +982,11 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "description": "Optional change-detector that gates the agent: an http(s) URL (fetched each tick) or a script path (same rules as `script`, run each tick) — cheap, no LLM. Output identical to the previous tick skips the agent run entirely; changed output wakes the agent with a diff injected into the prompt. First tick always runs (baseline). Output must be deterministic (no timestamps) or every tick looks changed. Incompatible with no_agent. On update, '' clears."
             },
+            "monitor_commit_policy": {
+                "type": "string",
+                "enum": ["detection_time", "after_delivery", "safe_retry"],
+                "description": "Optional commit boundary for monitor state. detection_time (default) advances the stored hash as soon as the change is detected. after_delivery keeps the prior hash until the triggered agent run AND its delivery succeed, so a transient failure retries the same change next tick instead of losing it. safe_retry retains unresolved work and allows at most two attempts only after confirmed pre-effect failures. Requires a monitor."
+            },
             "no_agent": {
                 "type": "boolean",
                 "default": False,
@@ -1028,7 +1038,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason")
+    "monitor_commit_policy", "paused_reason")
 
 
 def _cronjob_handler(args, **kw):

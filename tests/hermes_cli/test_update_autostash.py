@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from hermes_cli.update_inventory import UpdatePlan
 from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 from hermes_cli import update_cmd
@@ -61,7 +62,9 @@ def _patch_gateway_discovery():
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
          patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
-         patch("hermes_cli.update_inventory.collect_runtime_inventory", return_value=None), \
+         patch("hermes_cli.gateway.launchd_gateway_labels_for_install", return_value=[]), \
+         patch("hermes_cli.update_cmd._finish_dashboard_update_cleanup", return_value=None), \
+         patch("hermes_cli.update_inventory.collect_runtime_inventory", side_effect=lambda: UpdatePlan(install_method="git")), \
          patch("hermes_cli.update_inventory.report_unaccounted_runtimes", return_value=False), \
          patch.object(hermes_main, "_fleet_probe_expected_runtimes", lambda *a, **kw: False), \
          patch.object(hermes_main, "_purge_stale_hermes_modules", lambda *a, **kw: None), \

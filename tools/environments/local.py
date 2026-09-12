@@ -691,6 +691,12 @@ def _kill_process_group_posix(proc) -> None:
                 proc.wait(timeout=0.2)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # macOS can refuse a signal while the last group member exits.
+        # Reap our child and prove the entire group absent; an alive or
+        # inaccessible group still fails, even when its leader has exited.
+        if proc.poll() is None or not _wait_for_group_exit(proc, pgid, 0):
+            raise
     _sweep_escaped_descendants(descendants, pgid)
 
 

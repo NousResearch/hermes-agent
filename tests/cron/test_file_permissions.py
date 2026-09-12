@@ -105,7 +105,8 @@ class TestConfigFilePermissions(unittest.TestCase):
             self.assertEqual(file_mode, 0o600)
 
     def test_ensure_hermes_home_sets_0700(self):
-        home = Path(self.tmpdir) / ".hermes"
+        # Test an ordinary directory, not macOS /var -> /private/var ownership.
+        home = (Path(self.tmpdir) / ".hermes").resolve()
         with patch("hermes_cli.config.get_hermes_home", return_value=home):
             from hermes_cli.config import ensure_hermes_home
             ensure_hermes_home()

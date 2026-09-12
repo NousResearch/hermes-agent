@@ -112,3 +112,34 @@ def test_kill_switch_routes_search_back_to_the_shell(tree, ops_factory, monkeypa
     assert result.total_count == 4
     assert any(c.startswith("test -e") for c in calls)
     assert any("pipefail" in c and "rg" in c for c in calls)
+
+
+@pytest.mark.macos_only
+def test_native_search_retains_group_identity_after_child_exit(tree, ops_factory, monkeypatch):
+    """Force the poll/getpgid race with a real, already reaped child."""
+    import shlex
+    import subprocess
+
+    ops = ops_factory(tree, [])
+    real_popen = subprocess.Popen
+
+    def completed_child(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        proc.wait(timeout=2)
+        real_poll = proc.poll
+        calls = 0
+
+        def stale_poll():
+            nonlocal calls
+            calls += 1
+            return None if calls == 1 else real_poll()
+
+        proc.poll = stale_poll
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", completed_child)
+    result = ops._run_rg_native([
+        shlex.quote(sys.executable), "-c", shlex.quote("print('needle')"),
+    ], 5, timeout=2)
+    assert result.exit_code == 0
+    assert result.stdout == "needle\n"

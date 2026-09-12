@@ -1192,3 +1192,39 @@ Cron jobs run in a completely fresh agent session. The prompt must contain every
 ## Security
 
 Scheduled task prompts are scanned for prompt-injection and credential-exfiltration patterns at creation and update time. Prompts containing invisible Unicode tricks, SSH backdoor attempts, or obvious secret-exfiltration payloads are blocked.
+
+## Retaining unfinished monitor observations
+
+A monitor normally records a changed source at detection time. Choose a commit
+policy explicitly when the observation must survive a failed agent run:
+
+```bash
+hermes cron edit <job_id> --monitor-commit-policy safe_retry
+```
+
+`safe_retry` retains the exact pending input and allows at most two attempts
+within the job's existing schedule/dispatch limits. An automatic second attempt
+requires a completed, structured agent failure before any tool started. A
+watchdog worker still running, a tool-bearing failure, a restart during an
+attempt, and an uncertain delivery require reconciliation instead. New source
+observations cannot overwrite pending work. The already-generated response is
+retained privately when delivery cannot be confirmed; it is not regenerated.
+
+A timeout does not establish that a send was cancelled before dispatch. In this
+mode the scheduler does not switch from a failed live send to a standalone
+resend, and an acknowledgement-free result does not advance the monitor hash.
+Partial, empty, or incomplete agent results also cannot acknowledge an event.
+The explicit `[MONITOR_RETRY]` response can request a bounded retry only before
+any tool activity.
+
+Pending observations live in the profile's private `cron/monitor_pending.db`.
+Do not delete this file, reset the output hash, or recreate a job to recover it.
+Pause the job and establish the actual execution/delivery outcome before
+reconciliation. Changing the job's inference, source, prompt, destination, or
+commit policy while an observation remains unresolved is rejected.
+
+The default `detection_time` policy and the existing `after_delivery` policy
+remain available. `after_delivery` reoffers a changed source after downstream
+failure without the conservative pending-attempt protection of `safe_retry`.
+
+Native Codex app-server and ACP runtimes do not qualify for automatic pre-effect retry: their external tool activity may precede its notification. Failed outcomes from those runtimes remain pending for reconciliation.

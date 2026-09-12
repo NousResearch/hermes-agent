@@ -32,18 +32,27 @@ def test_real_read_tool_binaries_confirm_option_ownership(
     assert completed.stdout == expected_output
 
 
-@pytest.mark.parametrize(
-    ("tool", "args", "stdin", "needs_tty"),
-    [
-        ("rg", ["--pre", "-payload-marker", "needle", "{input}"], None, False),
-        ("rg", ["--hostname-bin=-payload-marker", "needle", "{input}"], None, False),
-        ("sort", ["--buffer-size=1K", "--compress-program", "-payload-marker"], "{bulk}", False),
-        ("ag", ["--pager=-payload-marker", "needle", "{input}"], None, True),
-        ("man", ["--pager", "-payload-marker", "ls"], None, True),
-        ("man", ["-P", "-payload-marker", "ls"], None, True),
-    ],
-)
-def test_real_binaries_execute_leading_dash_program_payload(
+@pytest.mark.parametrize("args", [
+    ["--pre", "-payload-marker", "needle", "{input}"],
+    ["--hostname-bin=-payload-marker", "needle", "{input}"],
+])
+def test_real_rg_executes_leading_dash_program_payload(tmp_path, args):
+    _assert_leading_dash_program_payload(tmp_path, "rg", args, None, False)
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize(("tool", "args", "stdin", "needs_tty"), [
+    ("sort", ["--buffer-size=1K", "--compress-program", "-payload-marker"], "{bulk}", False),
+    ("ag", ["--pager=-payload-marker", "needle", "{input}"], None, True),
+    ("man", ["--pager", "-payload-marker", "ls"], None, True),
+    ("man", ["-P", "-payload-marker", "ls"], None, True),
+])
+def test_real_gnu_tools_execute_leading_dash_program_payload(tmp_path, tool, args, stdin, needs_tty):
+    # GNU sort/man and util-linux script grammar is not BSD/macOS grammar.
+    _assert_leading_dash_program_payload(tmp_path, tool, args, stdin, needs_tty)
+
+
+def _assert_leading_dash_program_payload(
     tmp_path, tool, args, stdin, needs_tty
 ):
     """A PATH marker proves these binaries do not reparse '-program' as an option."""

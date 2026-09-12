@@ -60,6 +60,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Monitor mode: http(s) URL fetched with a bounded GET each tick "
             "instead of a script. Same hash-suppression semantics as "
             "--monitor-script.")
+    cron_create.add_argument("--monitor-commit-policy",
+        choices=("detection_time", "after_delivery", "safe_retry"),
+        help="Monitor state commit boundary. detection_time (default) commits the new hash as "
+            "soon as the change is detected; after_delivery retries the same change until the "
+            "triggered agent run and its delivery succeed. safe_retry retains uncertain outcomes "
+            "and bounds retries after confirmed pre-effect failures.")
     cron_create.add_argument("--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
@@ -123,6 +129,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "--monitor-script`). Pass empty string to clear.")
     cron_edit.add_argument("--monitor-url", dest="monitor_url",
         help=("Set/replace the monitor source URL. Pass empty string to clear."))
+    cron_edit.add_argument("--monitor-commit-policy",
+        choices=("detection_time", "after_delivery", "safe_retry"),
+        help="Set the monitor state commit boundary.")
     cron_edit.add_argument("--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
     )

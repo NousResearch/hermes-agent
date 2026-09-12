@@ -1,6 +1,7 @@
 """Tests for the dangerous command approval module."""
 
 import os
+import shlex
 import threading
 import time
 from pathlib import Path
@@ -93,14 +94,12 @@ class TestDetectDangerousRm:
             assert "delete" in desc.lower()
 
 
-    def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
-        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+    def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self, tmp_path):
+        canonical_temp = tmp_path.resolve()
+        with mock_patch("tempfile.gettempdir", return_value=str(canonical_temp)):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
-                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
-                    False,
-                    None,
-                    None,
-                )
+                target = shlex.quote(str(canonical_temp / f"{prefix}example.py"))
+                assert detect_dangerous_command(f"rm -f {target}") == (False, None, None)
 
     def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
         real_temp = tmp_path / "real-temp"

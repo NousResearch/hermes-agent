@@ -8,6 +8,7 @@ the guest entry point applies it directly.
 """
 
 import sqlite3
+import sys
 
 import pytest
 
@@ -40,14 +41,17 @@ def test_guest_barriers_apply_configured_synchronous(monkeypatch, tmp_path):
         conn.close()
 
 
-def test_guest_barriers_leave_synchronous_alone_when_unset(monkeypatch, tmp_path):
+def test_guest_barriers_keep_native_safety_default_when_unset(monkeypatch, tmp_path):
     _config(monkeypatch, {})
     conn = sqlite3.connect(tmp_path / "state.db")
     try:
         conn.execute("PRAGMA journal_mode=DELETE")
         conn.execute("PRAGMA synchronous=1")
         apply_durability_barriers(conn)
-        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1
+        # macOS retains its mandatory FULL barrier even without an override;
+        # other hosts retain the caller's NORMAL setting.
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == (2 if sys.platform == "darwin" else 1)
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
     finally:
         conn.close()
 

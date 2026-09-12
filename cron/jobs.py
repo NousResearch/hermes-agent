@@ -1641,6 +1641,24 @@ def _normalized_inference_axes(
     )
 
 
+_MONITOR_COMMIT_POLICIES = {"detection_time", "after_delivery", "safe_retry"}
+
+
+def _normalize_monitor_commit_policy(
+    value: Optional[str], *, monitor_script: Optional[str], monitor_url: Optional[str],
+) -> Optional[str]:
+    """Validate the optional monitor commit boundary shared by create_job/update_job."""
+    normalized = str(value).strip().lower() if value is not None else ""
+    if not normalized:
+        return None
+    if normalized not in _MONITOR_COMMIT_POLICIES:
+        choices = ", ".join(sorted(_MONITOR_COMMIT_POLICIES))
+        raise ValueError(f"monitor_commit_policy must be one of: {choices}")
+    if not (monitor_script or monitor_url):
+        raise ValueError("monitor_commit_policy requires monitor_script or monitor_url")
+    return normalized
+
+
 def _validate_job_mode_invariants(
     monitor_script: Optional[str],
     monitor_url: Optional[str],
@@ -1707,6 +1725,7 @@ def create_job(
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
+    monitor_commit_policy: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1715,7 +1734,9 @@ def create_job(
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    incompatible with ``no_agent``). monitor_commit_policy: ``detection_time`` (default, eager) or
+    ``after_delivery``, which retries a changed observation until the triggered agent run AND its
+    delivery succeed. reasoning_effort: per-job pin; capability NOT validated."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1739,6 +1760,11 @@ def create_job(
     normalized_skills = _normalize_skill_list(skill, skills)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
+    normalized_monitor_commit_policy = _normalize_monitor_commit_policy(
+        monitor_commit_policy,
+        monitor_script=f["monitor_script"],
+        monitor_url=f["monitor_url"],
+    )
 
     _validate_job_mode_invariants(f["monitor_script"], f["monitor_url"], f["no_agent"], f["script"])
     prompt_text = _coerce_job_text(prompt).strip()
@@ -1803,6 +1829,7 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]),
+        ("monitor_commit_policy", normalized_monitor_commit_policy),
     ):
         if value is not None:
             job[key] = value
@@ -1969,11 +1996,31 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
     def apply(jobs, i, job):
+        if job.get("monitor_commit_policy") == "safe_retry":
+            from cron import monitor_pending
+            desired = {**job, **updates}
+            if (desired.get("monitor_commit_policy") != "safe_retry"
+                    or monitor_pending._binding(desired) != monitor_pending._binding(job)):
+                pending = monitor_pending.inspect(job)
+                if pending and pending["state"] != "acked":
+                    raise ValueError("Monitor recovery is pending; reconcile its outcome before changing the job")
         _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
         previous_inference_axes = _normalized_inference_axes(job)
         updated = _apply_skill_fields({**job, **updates})
         _reject_terminal_activation(job, updated, job_id)
+        if {"monitor_script", "monitor_url", "monitor_commit_policy"}.intersection(updates):
+            # Re-validate on the MERGED record: clearing the last monitor source must also drop a
+            # policy that is only meaningful for monitor jobs.
+            normalized_policy = _normalize_monitor_commit_policy(
+                updated.get("monitor_commit_policy"),
+                monitor_script=updated.get("monitor_script") or None,
+                monitor_url=updated.get("monitor_url") or None,
+            )
+            if normalized_policy is None:
+                updated.pop("monitor_commit_policy", None)
+            else:
+                updated["monitor_commit_policy"] = normalized_policy
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
         if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
             _validate_job_mode_invariants(

@@ -221,7 +221,9 @@ def test_unreadable_schema_without_cli_names_the_sqlite3_requirement(
 
     import hermes_cli.session_lost_and_found as laf
 
-    monkeypatch.setattr(laf, "find_sqlite3_cli", lambda: None)
+    # Exercise the real capability reader so its refusal reason is reset;
+    # stubbing only its return leaves an earlier host-probe refusal cached.
+    monkeypatch.setattr(laf.shutil, "which", lambda command: None)
     with pytest.raises(SessionRecoverySourceError) as excinfo:
         recover_session_database(
             source,

@@ -413,9 +413,9 @@ class TestDelegateTask(unittest.TestCase):
                 child_db = kwargs["session_db"]
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
-                self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
-                )
+                # Compare the actual database file: macOS resolves /tmp to
+                # /private/tmp when opening the child's dedicated handle.
+                self.assertTrue(Path(child_db.db_path).samefile(parent_db.db_path))
             finally:
                 if child_db is not None:
                     child_db.close()

@@ -30,7 +30,7 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
-from utils import atomic_replace, atomic_yaml_write, fast_safe_load
+from utils import atomic_replace, atomic_yaml_write, fast_safe_load, open_text_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +79,16 @@ def _warn_config_parse_failure(
     if key in _CONFIG_PARSE_WARNED:
         return
     _CONFIG_PARSE_WARNED.add(key)
-    from hermes_cli.config_backups import backup_config
-    backup_path = backup_config(config_path, "corrupt")
-    msg = f"Failed to parse {config_path}: {exc}. " + _PARSE_FAILURE_FALLBACK_MSG.get(
+    # A blocked read (EACCES/EPERM while another process rewrites the file, or a scanner holds it)
+    # is NOT a broken YAML — the bytes on disk are intact. Snapshotting them as "corrupt" misleads
+    # the user and litters backups/config/, so only a real parse failure takes a snapshot.
+    _read_failure = isinstance(exc, OSError)
+    backup_path = None
+    if not _read_failure:
+        from hermes_cli.config_backups import backup_config
+        backup_path = backup_config(config_path, "corrupt")
+    msg = (f"Could not read {config_path}: {exc}. " if _read_failure
+           else f"Failed to parse {config_path}: {exc}. ") + _PARSE_FAILURE_FALLBACK_MSG.get(
         fallback, _PARSE_FAILURE_DEFAULTS_MSG)
     if backup_path is not None:
         msg += f" A copy of the corrupted file was saved to {backup_path}."
@@ -476,7 +483,7 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
 
     config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open_text_with_retry(config_path) as f:
             data = fast_safe_load(f)
     except FileNotFoundError:
         return
@@ -994,7 +1001,7 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
         return latest, latest
 
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open_text_with_retry(config_path) as f:
             config = fast_safe_load(f)
     except Exception as e:
         _warn_config_parse_failure(config_path, e)
@@ -1871,7 +1878,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             return copy.deepcopy(cached[2]) if want_deepcopy else cached[2]
 
         try:
-            with open(config_path, encoding="utf-8") as f:
+            with open_text_with_retry(config_path) as f:
                 data = fast_safe_load(f) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
@@ -1899,7 +1906,7 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
     if config_path is None:
         config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open_text_with_retry(config_path) as f:
             data = fast_safe_load(f) or {}
     except FileNotFoundError:
         return {}
@@ -1937,7 +1944,7 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         raise _refuse_overwrite(config_path, "cannot be accessed", exc, _FIX_PERMS) from exc
 
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open_text_with_retry(config_path) as f:
             loaded = fast_safe_load(f)
     except OSError as exc:
         raise _refuse_overwrite(config_path, "cannot be read", exc, _FIX_PERMS) from exc
@@ -2172,7 +2179,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         if user_sig is not None:
             try:
-                with open(config_path, encoding="utf-8") as f:
+                with open_text_with_retry(config_path) as f:
                     user_config = fast_safe_load(f) or {}
 
                 if "max_turns" in user_config:

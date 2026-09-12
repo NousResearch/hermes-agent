@@ -3727,9 +3727,12 @@ class GatewayTurnMixin:
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result=None, fail_exc="Failed to edit streamed message for session %s: %s",
                 )
-        elif _sc is not None:
+        elif _sc is not None and getattr(_sc, "receives_deltas", True):
             # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log the
-            # decision inputs ("signal never set" vs "ack-pending race").
+            # decision inputs ("signal never set" vs "ack-pending race"). Only meaningful for a consumer
+            # deltas were actually routed to: a commentary-only consumer (text streaming off, interim
+            # assistant messages on) never receives the final, so its flags are False every turn by
+            # construction and the warning would be a permanent false positive.
             logger.warning(
                 "Normal final-send NOT suppressed despite active stream consumer for session %s: "
                 "streamed=%s previewed=%s content_delivered=%s transformed=%s final_len=%d — "

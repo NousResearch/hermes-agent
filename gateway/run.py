@@ -2319,7 +2319,7 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
         model_cfg = data.get("model", {})
         if isinstance(model_cfg, dict):
             configured_model = model_cfg.get("default") or model_cfg.get("model")
-            raw_ctx = model_cfg.get("context_length")
+            raw_ctx = model_cfg.get("context_length") or model_cfg.get("context_window")
             if raw_ctx is not None:
                 with suppress(TypeError, ValueError):
                     config_context_length = int(raw_ctx)
@@ -4270,7 +4270,7 @@ class GatewayRunner(
     # cached agent or a mid-gateway edit is silently ignored. Add new baked-in settings here.
     # _MAX_INTERRUPT_DEPTH = 3  # Cap recursive interrupt handling (#816)
     _CACHE_BUSTING_CONFIG_KEYS: tuple = (
-        ("model", "context_length"), ("compression", "enabled"),
+        ("model", "context_length"), ("model", "context_window"), ("compression", "enabled"),
         ("compression", "progress_notices"), ("compression", "threshold"),
         ("compression", "model_thresholds"), ("compression", "threshold_tokens"),
         ("compression", "codex_gpt55_autoraise"), ("compression", "codex_app_server_auto"),

@@ -1531,7 +1531,7 @@ class GatewayInboundMixin:
             _msg_cfg = _load_gateway_config()
             _msg_model_cfg = _msg_cfg.get("model", {})
             if isinstance(_msg_model_cfg, dict):
-                _msg_raw_ctx = _msg_model_cfg.get("context_length")
+                _msg_raw_ctx = _msg_model_cfg.get("context_length") or _msg_model_cfg.get("context_window")
                 if _msg_raw_ctx is not None:
                     _msg_config_ctx = int(_msg_raw_ctx)
             try:

@@ -1680,7 +1680,7 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
     _model_cfg = _agent_cfg.get("model", {})
     _model_section = _model_cfg if isinstance(_model_cfg, dict) else {}
 
-    _config_context_length = _model_section.get("context_length")
+    _config_context_length = _model_section.get("context_length") or _model_section.get("context_window")
     if _config_context_length is not None:
         try:
             _config_context_length = int(_config_context_length)

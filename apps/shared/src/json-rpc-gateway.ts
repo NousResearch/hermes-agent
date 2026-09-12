@@ -100,6 +100,19 @@ const DEFAULT_HEARTBEAT_DEADLINE_MS = 45_000
 // handshake doesn't land in this window, fail to 'error' so callers can retry.
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 
+/** True for a `ws://` / `wss://` URL string — the only thing `JsonRpcGatewayClient.connect()` will dial. */
+export function isGatewayWebSocketUrl(value: unknown): value is string {
+  if (typeof value !== 'string') {return false}
+
+  try {
+    const protocol = new URL(value).protocol
+
+    return protocol === 'ws:' || protocol === 'wss:'
+  } catch {
+    return false
+  }
+}
+
 export class JsonRpcGatewayClient {
   private nextId = 0
   private pending = new Map<GatewayRequestId, PendingCall>()
@@ -162,19 +175,7 @@ export class JsonRpcGatewayClient {
       return new Error(`gateway connect() requires a ws:// or wss:// URL string, got ${got}`)
     }
 
-    if (typeof wsUrl !== 'string') {
-      throw invalidUrl()
-    }
-
-    let url: URL
-
-    try {
-      url = new URL(wsUrl)
-    } catch {
-      throw invalidUrl()
-    }
-
-    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+    if (!isGatewayWebSocketUrl(wsUrl)) {
       throw invalidUrl()
     }
 

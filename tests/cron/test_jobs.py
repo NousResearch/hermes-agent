@@ -438,6 +438,37 @@ class TestJobCRUD:
         with pytest.raises(ValueError, match="Invalid repeat"):
             update_job(job["id"], {"repeat": "banana"})
 
+    def test_oneshot_turned_recurring_becomes_forever(self, tmp_cron_dir):
+        """A one-shot budget must not survive a schedule change to a recurring kind.
+
+        create_job derives repeat from the schedule kind; update_job must honour
+        the same contract when the kind flips, otherwise a job "fixed" from a
+        one-shot to `every 15m` keeps times=1 and retires after its first fire.
+        An explicit repeat in the same update still wins over the re-derived default.
+        """
+        from cron.jobs import update_job
+
+        job = create_job(prompt="poll", schedule="in 15m")
+        assert job["repeat"]["times"] == 1
+
+        updated = update_job(job["id"], {"schedule": "every 15m"})
+        assert updated["schedule"]["kind"] == "interval"
+        assert updated["repeat"]["times"] is None
+
+        explicit = create_job(prompt="poll", schedule="in 15m")
+        assert update_job(explicit["id"], {"schedule": "every 15m", "repeat": 3})["repeat"]["times"] == 3
+
+    def test_recurring_turned_oneshot_becomes_once(self, tmp_cron_dir):
+        """The reverse flip must gain the one-shot default instead of staying forever."""
+        from cron.jobs import update_job
+
+        job = create_job(prompt="poll", schedule="every 15m")
+        assert job["repeat"]["times"] is None
+
+        updated = update_job(job["id"], {"schedule": "in 15m"})
+        assert updated["schedule"]["kind"] == "once"
+        assert updated["repeat"]["times"] == 1
+
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
@@ -829,12 +860,15 @@ class TestAdvanceNextRun:
         due_before = get_due_jobs()
         assert len(due_before) == 1
 
-        # Advance (simulating what tick() does before run_job)
+        # Advance + claim (what tick() does before run_job); the claim is the point after which
+        # side effects may exist, so a restart after it must not re-fire (#3396). A restart
+        # BEFORE the claim restores the occurrence instead (#107485, test_missed_window_catchup).
         advance_next_run(job["id"])
+        assert claim_job_for_fire(job["id"])
 
-        # Now the job should NOT be due (simulates restart after crash)
+        # Now the job should NOT be due (simulates restart after a mid-run crash)
         due_after = get_due_jobs()
-        assert len(due_after) == 0, "Job should not be due after advance_next_run"
+        assert len(due_after) == 0, "Job should not be due after advance + claim"
 
 
 class TestGetDueJobs:

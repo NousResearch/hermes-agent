@@ -9,7 +9,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
-from tools.file_operations import ShellFileOperations, _parse_search_context_line
+from tools.file_operations import ShellFileOperations
+from tools.file_operations_search import _parse_search_context_line
 
 
 # =========================================================================

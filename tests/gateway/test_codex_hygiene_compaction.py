@@ -312,6 +312,7 @@ def _slash_host(agent, session_key="tg:123"):
         return await asyncio.get_running_loop().run_in_executor(None, fn)
 
     host._run_in_executor_with_context = _run_in_executor_with_context
+    host._cached_agent_for = GatewaySlashCommandsMixin._cached_agent_for.__get__(host)
     host._compress_codex_app_server_session = (
         GatewaySlashCommandsMixin._compress_codex_app_server_session.__get__(host)
     )

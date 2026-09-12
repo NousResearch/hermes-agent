@@ -5,6 +5,7 @@ timestamp column (#102399, #102352, #99959). Never monkeypatch the coercion help
 """
 
 import argparse
+import hashlib
 import logging
 import sqlite3
 
@@ -15,7 +16,7 @@ from hermes_cli.session_export import iter_user_prompt_records
 from hermes_cli.session_export_html import generate_multi_session_html_export
 from hermes_cli.session_export_md import _iso_timestamp
 from hermes_cli.sessions_cmd import _cmd_list
-from hermes_state import SessionDB
+from hermes_state import SessionDB, _corruption_warned_fingerprints
 
 
 @pytest.fixture
@@ -85,6 +86,7 @@ def test_corrupt_prompt_row_degrades_instead_of_killing_session_queries(tmp_path
         ).fetchone()[0]
         assert kind == "text"
 
+        _corruption_warned_fingerprints.clear()  # module-level dedup: start from a known state
         with caplog.at_level(logging.WARNING, logger="hermes_state"):
             rich = {s["id"]: s["system_prompt"] for s in db.list_sessions_rich()}
             loaded_bad = db.get_session("bad")["system_prompt"]
@@ -96,11 +98,72 @@ def test_corrupt_prompt_row_degrades_instead_of_killing_session_queries(tmp_path
         assert rich["bad"] == "You are Hermes \ufffd"
         assert loaded_bad == rich["bad"]
         assert searched == rich
-        # The warning carries the raw byte head so the corrupt row can be located on disk.
-        assert any(
-            "degraded to U+FFFD" in rec.getMessage() and "\\xe2\\x9c" in rec.getMessage()
-            for rec in caplog.records
-        )
+        # The warning is content-free: sha256 fingerprint (no raw bytes — cells can hold secrets),
+        # and it fires once per distinct bad value — a second read pass stays silent.
+        fingerprint = hashlib.sha256(b"You are Hermes \xe2\x9c").hexdigest()[:16]
+        warned = [r for r in caplog.records if "degraded to U+FFFD" in r.getMessage()]
+        assert warned and fingerprint in warned[0].getMessage()
+        assert not any("\\xe2\\x9c" in r.getMessage() for r in caplog.records)
+        caplog.clear()
+        db.list_sessions_rich()
+        assert not [r for r in caplog.records if "degraded to U+FFFD" in r.getMessage()]
+    finally:
+        db.close()
+
+
+def test_corrupt_model_config_aborts_mutation_instead_of_rewriting(tmp_path):
+    """A malformed model_config cell must abort a read-modify-write (the writer connection stays
+    strict), never tolerate-decode to a JSON parse failure that turns into {} and lets the patch
+    overwrite the original field (#109450 review: `{"keep":"yes"}\\xff` became only `{"new":1}`)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("bad", "cli")
+        raw = b'{"keep": "yes"}\xff'
+
+        def _corrupt(conn):
+            conn.execute(
+                "UPDATE sessions SET model_config = CAST(? AS TEXT) WHERE id = 'bad'", (raw,)
+            )
+
+        db._execute_write(_corrupt)
+        assert db._conn.execute(
+            "SELECT typeof(model_config) FROM sessions WHERE id = 'bad'"
+        ).fetchone()[0] == "text"
+
+        with pytest.raises(sqlite3.OperationalError):
+            db.patch_session_model_config("bad", {"new": 1})
+
+        # Fail closed: the mutation aborted, the malformed cell is byte-identical, "keep" survived.
+        stored = db._read_one(
+            "SELECT CAST(model_config AS BLOB) FROM sessions WHERE id = 'bad'"
+        )[0]
+        assert bytes(stored) == raw
+    finally:
+        db.close()
+
+
+def test_blob_stored_prompt_reads_back_as_bytes(tmp_path):
+    """BLOB storage bypasses text_factory by sqlite3 contract: a value stored as BLOB reads back
+    as ``bytes`` (pre-existing behavior, unchanged by this fix), unlike malformed TEXT which
+    degrades to U+FFFD on read."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("bad", "cli", system_prompt="placeholder tail")
+        raw = b"You are Hermes \xe2\x9c"
+
+        def _store_blob(conn):
+            row = conn.execute(
+                "SELECT hash FROM system_prompts WHERE prompt LIKE '%placeholder tail%'"
+            ).fetchone()
+            # No CAST: binding bytes stores a BLOB, which text_factory never sees.
+            conn.execute("UPDATE system_prompts SET prompt = ? WHERE hash = ?", (raw, row["hash"]))
+
+        db._execute_write(_store_blob)
+        assert db._conn.execute(
+            "SELECT typeof(sp.prompt) FROM system_prompts sp"
+            " JOIN sessions s ON s.system_prompt_hash = sp.hash WHERE s.id = 'bad'"
+        ).fetchone()[0] == "blob"
+        assert db.get_session("bad")["system_prompt"] == raw  # bytes in, bytes out
     finally:
         db.close()
 

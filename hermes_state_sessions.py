@@ -49,6 +49,22 @@ def _parse_model_config(raw: Any) -> Dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
+def _strict_model_config_text(raw: Any, session_id: str) -> Any:
+    """Fail-closed decode for the read-modify-write seam: a malformed model_config cell must
+    abort the mutation with OperationalError (sqlite3's strict-decode failure type) instead of
+    degrading to U+FFFD, parsing away to {} and letting the patch overwrite the stored field
+    (#109450 review: a `{"keep":"yes"}\\xff` cell patched to only `{"new":1}` under a tolerant factory)."""
+    if isinstance(raw, bytes):
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise sqlite3.OperationalError(
+                f"session '{session_id}': model_config is not valid UTF-8; aborting the config "
+                f"patch so the stored field is not rewritten (fail closed): {exc}"
+            ) from exc
+    return raw
+
+
 def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
     # ``_``/``%`` are LIKE wildcards but ordinary path characters: unescaped, a
@@ -676,12 +692,14 @@ class SessionSessionsMixin:
         """SELECT + tolerant-parse + merge ``patch`` into model_config (the one place that keeps
         ``_branched_from``/``_delegate_from`` alive); ``None`` deletes a key. Returns serialized JSON
         (``None`` when empty) or ``_MODEL_CONFIG_ROW_MISSING`` (``on_missing="raise"`` → ValueError)."""
-        row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        row = conn.execute(
+            "SELECT CAST(model_config AS BLOB) FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
         if row is None:
             if on_missing == "raise":
                 raise ValueError(f"Session not found: {session_id}")
             return _MODEL_CONFIG_ROW_MISSING
-        config = _parse_model_config(row[0])
+        config = _parse_model_config(_strict_model_config_text(row[0], session_id))
         for key, value in patch.items():
             if value is None:
                 config.pop(key, None)

@@ -73,18 +73,32 @@ logger = logging.getLogger(__name__)
 
 _MAX_SAFE_MESSAGES = 20_000  # resume/export guard default
 
+# One warning per distinct corrupt value per process: repeated reads of the same bad cell stay silent.
+_corruption_warned_fingerprints: set = set()
+
 
 def _tolerant_text_factory(data: bytes) -> str:
     """Decode a TEXT cell strictly when possible; undecodable bytes (e.g. a multi-byte
     character truncated by a mid-write process death) degrade to U+FFFD in that one cell
-    instead of aborting every session-list/load query with OperationalError (#109450)."""
+    instead of aborting every session-list/load query with OperationalError (#109450).
+
+    Read/display surfaces stay tolerant on every connection (the read pool and the writer,
+    which _read_ctx degrades display queries onto when WAL is off or the pool is exhausted).
+    Read-modify-write seams instead decode strictly at the seam via BLOB casts
+    (_merge_model_config_json), so a malformed cell aborts the mutation instead of being
+    U+FFFD-rewritten over the original data. The warning is content-free (length + sha256
+    fingerprint, comparable against suspect cells via python) and fires once per distinct
+    bad value per process."""
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
-        logger.warning(
-            "state.db: undecodable UTF-8 stored text (len=%d, head=%r) degraded to U+FFFD",
-            len(data), bytes(data[:32]),
-        )
+        fingerprint = hashlib.sha256(data).hexdigest()[:16]
+        if fingerprint not in _corruption_warned_fingerprints:
+            _corruption_warned_fingerprints.add(fingerprint)
+            logger.warning(
+                "state.db: undecodable UTF-8 stored text (len=%d, sha256[:16]=%s) degraded to U+FFFD on read",
+                len(data), fingerprint,
+            )
         return data.decode("utf-8", errors="replace")
 
 
@@ -635,6 +649,11 @@ class SessionDB(
         try:
             conn.row_factory = sqlite3.Row
             conn.text_factory = _tolerant_text_factory
+            # Tolerant here too (not just the read pool): _read_ctx degrades display/list queries
+            # onto the writer when WAL is off, the pool is exhausted, or a pooled open failed
+            # (slower beats EMFILE) — those surfaces must survive a corrupt cell (#109450).
+            # Read-modify-write seams stay fail-closed via strict BLOB casts at the seam itself
+            # (see _merge_model_config_json), not via connection-wide strict decoding.
             mode = apply_wal_with_fallback(conn, db_label="state.db")
             # "wal" is also the *assumed* mode when the on-disk probe was blocked by a concurrent opener
             # (#86515): the lock-free mode=ro read pool needs a confirmed WAL header, so confirm it here.

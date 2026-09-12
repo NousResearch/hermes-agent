@@ -1720,7 +1720,7 @@ def _strict_launchd_gateway_service_snapshot() -> tuple[set[int], bool] | None:
             labels.add(parts[-1])
     roots: set[int] = set()
     any_loaded = False
-    uid = os.getuid()  # windows-footgun: macOS-only caller
+    uid = getattr(os, "getuid", lambda: 0)()
     for label in labels:
         for domain in (f"gui/{uid}", f"user/{uid}"):
             try:

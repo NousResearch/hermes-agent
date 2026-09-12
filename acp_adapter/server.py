@@ -894,6 +894,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 logger.debug("Could not emit ACP provenance update after rotation for %s", session_id, exc_info=True)
 
         final_response = result.get("final_response", "")
+        failed = bool(result.get("failed"))
         cancelled = bool(state.cancel_event and state.cancel_event.is_set())
         # The local "waiting for model" interrupt status is metadata, not prose; stop_reason carries it.
         from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
@@ -901,7 +902,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         interrupted = bool(result.get("interrupted")) or cancelled
         suppress = interrupted and final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
         # Send the final text unless already streamed — or if a plugin hook transformed it after.
-        if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
+        if final_response and conn and not suppress and (
+            failed or not streamed_message or result.get("response_transformed")
+        ):
             await conn.session_update(session_id, acp.update_agent_message_text(final_response))
 
         # Go idle before draining so recursive prompt() calls can acquire the session.
@@ -925,7 +928,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 cached_read_tokens=result.get("cache_read_tokens"),
             )
         await self._send_usage_update(state)
-        return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn", usage=usage)
+        stop_reason = "cancelled" if cancelled else "refusal" if failed else "end_turn"
+        return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     # ---- Session settings (ACP protocol methods) -----------------------------
 

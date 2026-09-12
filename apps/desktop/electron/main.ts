@@ -17063,27 +17063,31 @@ ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWat
 // merged picture. Keyed by webContents id so a closed window stops counting.
 const activeWorkByWebContents = new Map<number, ActiveWork>()
 
-// The same merged picture drives background throttling: chat windows run
-// unthrottled while any turn is in flight (streaming must paint while hidden)
-// and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
+// Background throttling is renderer-scoped: the window that reports live work
+// keeps painting while hidden, without waking every sibling profile/window.
+// The quit guard below still uses the globally merged picture.
 const streamThrottle = createStreamThrottle()
-
-function updateStreamThrottleFromActiveWork() {
-  streamThrottle.update(mergeActiveWork(activeWorkByWebContents.values()).count > 0)
-}
 
 ipcMain.on('hermes:active-work', (event, payload) => {
   const id = event.sender.id
+  const win = BrowserWindow.fromWebContents(event.sender)
 
   if (!activeWorkByWebContents.has(id)) {
     event.sender.once('destroyed', () => {
       activeWorkByWebContents.delete(id)
-      updateStreamThrottleFromActiveWork()
+
+      if (win) {
+        streamThrottle.update(win, false)
+      }
     })
   }
 
-  activeWorkByWebContents.set(id, normalizeActiveWork(payload))
-  updateStreamThrottleFromActiveWork()
+  const activeWork = normalizeActiveWork(payload)
+  activeWorkByWebContents.set(id, activeWork)
+
+  if (win) {
+    streamThrottle.update(win, activeWork.count > 0)
+  }
 })
 
 ipcMain.on('hermes:titlebar-theme', (_event, payload) => {

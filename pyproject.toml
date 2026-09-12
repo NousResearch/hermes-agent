@@ -644,9 +644,4 @@ select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
 # Each entry is an EXISTING violation being fixed in its own PR; do NOT add
 # new files here.  Remove the entry when the file's sites are fixed.
 # ---------------------------------------------------------------------------
-# Detached restart watchers: Popen of a fully-detached, fire-and-forget
-# process (no wait), an accepted momentary spawn cost pending a dedicated
-# async-subprocess sweep.
-"gateway/run.py" = ["ASYNC220"]
-"gateway/slash_commands.py" = ["ASYNC220"]
 # Legacy blocking spawn sites in platform adapters, pending their own fixes.

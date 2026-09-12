@@ -347,6 +347,9 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     monkeypatch.setattr(
         "hermes_cli.gateway.find_gateway_pids", lambda **k: []
     )
+    monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
+    monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
+    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
     monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
 
     # An empty PID scan is insufficient; both supervisor scopes must answer empty.

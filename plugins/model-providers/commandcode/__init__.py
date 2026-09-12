@@ -62,6 +62,11 @@ commandcode = CommandCodeProfile(
         "xiaomi/mimo-v2.5-pro", "google/gemini-3.5-flash", "gpt-5.5",
     ),
     default_aux_model="deepseek/deepseek-v4-flash",
+    # /provider/v1 accepts images in user messages but 400s on list-type
+    # tool content: relocate tool-result images into a following user
+    # message instead of dropping them to a text summary.
+    supports_vision_tool_messages=False,
+    relocate_tool_result_images=True,
 )
 
 commandcode_anthropic = CommandCodeAnthropicProfile(

@@ -114,6 +114,47 @@ class TestSupportsMediaInToolResults:
         finally:
             clear_runtime_main()
 
+    def test_relocating_profile_is_not_a_veto(self):
+        """``relocate_tool_result_images=True`` supersedes the hard veto:
+        the tool-result envelope is made safe by the request-build
+        projection, so the native fast path stays available."""
+        from tools.vision_tools import _profile_rejects_tool_media
+        from types import SimpleNamespace
+
+        fake = SimpleNamespace(
+            relocate_tool_result_images=True,
+            supports_vision_tool_messages=False,
+            supports_vision=False,
+        )
+        with patch("providers.get_provider_profile", return_value=fake):
+            assert _profile_rejects_tool_media("commandcode") is False
+
+    def test_fast_path_stays_on_for_relocating_profile(self):
+        """An opted-in profile + vision-capable model keeps the native fast
+        path even though list-type tool content is rejected."""
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+        from types import SimpleNamespace
+
+        fake = SimpleNamespace(
+            relocate_tool_result_images=True,
+            supports_vision_tool_messages=False,
+            supports_vision=False,
+        )
+        set_runtime_main("commandcode", "deepseek/deepseek-v4-pro")
+        try:
+            with patch(
+                "providers.get_provider_profile", return_value=fake
+            ), patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch.object(
+                image_routing, "_lookup_supports_vision", return_value=True
+            ):
+                assert _should_use_native_vision_fast_path() is True
+        finally:
+            clear_runtime_main()
+
 
 # ─── _build_native_vision_tool_result ────────────────────────────────────────
 

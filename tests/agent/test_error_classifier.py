@@ -1323,6 +1323,55 @@ class TestMultimodalToolContentUnsupported:
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
 
 
+class TestMessagesContentParamRejection:
+    """Gateways (CommandCode ``/provider/v1``) that reject list-type tool
+    content with ``param: messages.<N>.content``.
+
+    The signature carries no "tool message" wording — only the param path
+    points at the offending content field — so it needs its own matcher.
+    Recovery: relocate the tool images into a following user message.
+    """
+
+    def test_repr_body_param_path(self):
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'Invalid input', 'type': "
+            "'invalid_request_error', 'param': 'messages.2.content'}}",
+            status_code=400,
+            body={
+                "message": "Invalid input",
+                "type": "invalid_request_error",
+                "param": "messages.2.content",
+            },
+        )
+        result = classify_api_error(
+            e, provider="commandcode", model="deepseek/deepseek-v4-pro"
+        )
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
+    def test_json_style_param_path(self):
+        e = MockAPIError(
+            'Error code: 400 - {"message": "Invalid input", "param": '
+            '"messages.5.content"}',
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="commandcode", model="m")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_uppercase_param_path_normalized(self):
+        e = MockAPIError("PARAM: 'MESSAGES.7.CONTENT'", status_code=400)
+        result = classify_api_error(e, provider="commandcode", model="m")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_unrelated_param_not_misclassified(self):
+        e = MockAPIError(
+            "Error code: 400 - {'message': 'Invalid input', 'param': 'temperature'}",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openrouter", model="m")
+        assert result.reason != FailoverReason.multimodal_tool_content_unsupported
+
+
 class TestOpenRouterUpstreamRateLimit:
     """Distinguish upstream-provider 429 from account-level 429 on OpenRouter.
 

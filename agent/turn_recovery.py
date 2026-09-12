@@ -511,19 +511,31 @@ def recover_after_classification(
             "or shrink didn't reduce size; surfacing original error."
         )
 
-    # Strict OpenAI-spec providers 400 on list-type tool content: strip images, mark
-    # (provider, model) no-list-tool-content for the session, retry once.
-    if (
-        classified.reason == FailoverReason.multimodal_tool_content_unsupported
-        and not _retry.multimodal_tool_content_retry_attempted
-    ):
-        _retry.multimodal_tool_content_retry_attempted = True
-        if agent._try_strip_image_parts_from_tool_messages(api_messages):
-            _vlines(agent, "📐 Provider rejected list-type tool content — downgraded screenshots to text and retrying...")
-            return True, recovered_with_pool
+    # Providers that 400 on list-type tool content recover in three one-shot
+    # steps: relocate the images into a following user message (keeps the
+    # pixels for gateways that accept user media), then strip tool rows to
+    # text, then strip already-relocated user rows (gateway rejects user
+    # media too). Strip outcomes record (provider, model) in
+    # _no_list_tool_content_models so the session converges to text-only.
+    if classified.reason == FailoverReason.multimodal_tool_content_unsupported:
+        if not _retry.multimodal_relocation_attempted:
+            _retry.multimodal_relocation_attempted = True
+            if agent._try_relocate_image_parts_to_user_message(api_messages):
+                _vlines(agent, "📐 Provider rejected tool-message images — relocated them to a user message and retrying...")
+                return True, recovered_with_pool
+        if not _retry.multimodal_tool_content_retry_attempted:
+            _retry.multimodal_tool_content_retry_attempted = True
+            if agent._try_strip_image_parts_from_tool_messages(api_messages):
+                _vlines(agent, "📐 Provider rejected list-type tool content — downgraded screenshots to text and retrying...")
+                return True, recovered_with_pool
+        if not _retry.multimodal_user_strip_attempted:
+            _retry.multimodal_user_strip_attempted = True
+            if agent._try_strip_relocated_images_from_user_messages(api_messages):
+                _vlines(agent, "📐 Provider rejected relocated images — removed them and retrying with text...")
+                return True, recovered_with_pool
         logger.info(
-            "multimodal-tool-content recovery: no list-type tool "
-            "messages with image parts found; surfacing original error."
+            "multimodal-tool-content recovery: no relocatable or strippable "
+            "tool images found; surfacing original error."
         )
 
     # Reasoning-mandatory route (Nous Portal / OpenRouter, e.g. GLM-5.3) 400s on

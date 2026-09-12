@@ -801,6 +801,20 @@ class TestEnvironmentHints:
         _pb._BACKEND_PROBE_CACHE.clear()
         assert f"Current working directory: {tmp_path}" in _pb.build_environment_hints()
 
+    def test_build_environment_hints_marks_cwd_as_the_tool_workspace(self, monkeypatch, tmp_path):
+        """A model must not mistake the adjacent home-directory hint for its workspace."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.chdir(tmp_path)
+        hints = _pb.build_environment_hints()
+
+        assert hints.index(f"Current working directory: {tmp_path}") < hints.index("User home directory:")
+        assert "resolve terminal and file-tool paths from the current working directory above" in hints
+        assert "Do not substitute the user home directory" in hints
+
 
     def test_probe_remote_backend_imports_real_factory(self, monkeypatch):
         """Regression for #53667: the probe imported a nonexistent

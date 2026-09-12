@@ -177,6 +177,18 @@ def run_oneshot(
     the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
     by this turn. Returns the exit code; the caller owns process termination.
     """
+    # A local one-shot is workspace-scoped to the directory from which it was
+    # launched (after --in/resume handling in main.py). A stale TERMINAL_CWD
+    # loaded from legacy environment config otherwise overrides os.getcwd() in
+    # the system prompt and every terminal/file tool, so the agent can write a
+    # correct patch into the wrong checkout while claiming success.
+    terminal_env = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    if terminal_env in {"", "local"}:
+        try:
+            os.environ["TERMINAL_CWD"] = os.getcwd()
+        except OSError:
+            pass
+
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
     logging.disable(logging.CRITICAL)

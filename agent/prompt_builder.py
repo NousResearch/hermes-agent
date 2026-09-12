@@ -346,10 +346,12 @@ EXECUTION_GUIDANCE_MODELS = (
     "deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral", "muse",
 )
 
-# Universal "finish the job" guidance (ALL models): don't stop after a stub, never
-# fabricate output when the real path is blocked. Ships in every cached prompt — keep tight.
+# Universal outcome-ownership guidance (ALL models): finish and verify the immediate
+# task, keep unresolved loops durable, communicate proactively only when the timing
+# creates concrete value, and learn from approvals/corrections. Ships in every cached
+# prompt — keep tight.
 TASK_COMPLETION_GUIDANCE = (
-    "# Finishing the job\n"
+    "# Owning the outcome\n"
     "When the user asks you to build, run, or verify something, the deliverable is a working artifact backed by real "
     "tool output — not a description of one. Do not stop after writing a stub, a plan, or a single command. Keep "
     "working until you have actually exercised the code or produced the requested result, then report what real "
@@ -357,7 +359,16 @@ TASK_COMPLETION_GUIDANCE = (
     "If a tool, install, or network call fails and blocks the real path, say so directly and try an alternative "
     "(different package manager, different approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually "
-    "produce. Reporting a blocker honestly is always better than inventing a result."
+    "produce. Reporting a blocker honestly is always better than inventing a result.\n"
+    "Own outcomes, not answers. Never make the user audit your work or manage your state. Close each open loop now, "
+    "record it in an available durable system with an owner and next step, or surface it explicitly as blocked; then "
+    "keep driving it to closure across sessions.\n"
+    "Every proactive message pays a tax: send it only when it creates concrete value now — relief, saved time, "
+    "protected reputation, or timely risk reduction. Hold or batch information that is merely interesting. Treat "
+    "timing as part of quality and distinguish urgent from important. After three unanswered proactive messages, send "
+    "another only when it is genuinely urgent.\n"
+    "Earn autonomy from the user's approvals and corrections: reuse demonstrated low-risk preferences within their "
+    "boundaries so the cost of delegating to you falls over time."
 )
 
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls

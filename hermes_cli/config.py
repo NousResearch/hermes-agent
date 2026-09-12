@@ -93,6 +93,32 @@ def _warn_config_parse_failure(
         pass
 
 
+_CONFIG_DEGRADATION_LOG = "config-degraded.log"
+
+
+def _record_config_degradation(config_path: Path, exc: Exception) -> None:
+    """Record the one config failure that silently drops EVERY user override.
+
+    No last-known-good plus an unreadable config leaves the process on ``DEFAULT_CONFIG``:
+    ``approvals.deny``, the fallback chain and model routing are gone, and nothing else in the
+    system can tell afterwards. Log at ERROR and append a durable line to
+    ``logs/config-degraded.log`` so a monitoring job can count events after log rotation.
+    Best-effort — failing to record must never mask the original failure.
+    """
+    logger.error(
+        "config.yaml unreadable and no last-known-good config in this process: running on "
+        "DEFAULTS without user overrides (approvals.deny, fallback chain, model routing). "
+        "path=%s error=%s", config_path, exc)
+    try:
+        logs_dir = get_hermes_home() / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        with open(logs_dir / _CONFIG_DEGRADATION_LOG, "a", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} path={config_path} "
+                     f"{type(exc).__name__}: {exc}\n")
+    except Exception:
+        logger.debug("could not append the config degradation marker", exc_info=True)
+
+
 def get_active_config_parse_failure() -> Optional[str]:
     """Return the recorded parse error while the ACTIVE config.yaml is still byte-identical
     (mtime_ns + size) to the file that failed to parse; else None."""
@@ -2120,6 +2146,7 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
     _warn_config_parse_failure(
         config_path, exc, fallback="last-known-good" if lkg is not None else "defaults")
     if lkg is None:
+        _record_config_degradation(config_path, exc)
         return None
     # save_config() stores the pre-expansion dict (templates preserved); the load path stores the
     # expanded one. Expand defensively — idempotent when already expanded.

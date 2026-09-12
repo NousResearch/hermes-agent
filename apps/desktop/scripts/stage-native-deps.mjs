@@ -14,11 +14,14 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
   chmodSync,
+  closeSync,
   cpSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   rmSync,
   writeFileSync
 } from 'node:fs'
@@ -138,13 +141,18 @@ function copyBuildRelease(srcDir, destDir) {
  * or the file cannot be read.
  */
 export function classifyNativeBinary(filePath) {
-  let buf
+  let fd
   try {
-    buf = readFileSync(filePath, { start: 0, end: 63 }) // first 64 bytes
+    fd = openSync(filePath, 'r')
   } catch {
     return null
   }
-  if (buf.length < 4) return null
+  try {
+    const buf = Buffer.alloc(64)
+    const bytesRead = readSync(fd, buf, 0, 64, 0)
+    if (bytesRead < 4) return null
+    // Only the bytes actually read are relevant; slice to avoid
+    // interpreting zero-filled tail as valid magic.
 
   // ELF: \x7f E L F
   if (buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46) {
@@ -179,6 +187,11 @@ export function classifyNativeBinary(filePath) {
     return 'win32'
   }
   return null
+  } catch {
+    return null
+  } finally {
+    try { closeSync(fd) } catch {}
+  }
 }
 
 /**
@@ -618,6 +631,23 @@ export function stageGetWindows(
 // Allow direct CLI invocation: node scripts/stage-native-deps.mjs [platform] [arch]
 if (isMain(import.meta.url)) {
   const [platform, arch] = process.argv.slice(2)
-  stageNodePty({ platform, arch })
-  stageGetWindows({ platform, arch })
+  const targetLabel = `${platform || process.platform}-${arch || process.arch}`
+  try {
+    stageNodePty({ platform, arch })
+  } catch (err) {
+    const msg = err instanceof Error ? err.stack || err.message : String(err)
+    console.error(`[stage-native-deps] FAILED staging node-pty for ${targetLabel}: ${msg}`)
+    // node-pty is required for terminal; fail the build with actionable diagnostics
+    // instead of an unhandled exception that surfaces as a bare 0xC0000005 AV.
+    process.exit(1)
+  }
+  try {
+    stageGetWindows({ platform, arch })
+  } catch (err) {
+    const msg = err instanceof Error ? err.stack || err.message : String(err)
+    console.error(`[stage-native-deps] FAILED staging get-windows for ${targetLabel}: ${msg}`)
+    // get-windows is optional on linux / win32-arm64 (handled inside stageGetWindows),
+    // otherwise it is required — fail with a clear message.
+    process.exit(1)
+  }
 }

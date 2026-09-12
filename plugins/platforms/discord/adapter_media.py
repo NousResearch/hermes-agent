@@ -103,6 +103,10 @@ class DiscordMediaMixin:
                         captions.append(alt_text)
                     if image_url.startswith("file://"):
                         local_path = _unquote(image_url[7:])
+                        # ``Path.as_uri()`` emits ``file:///C:/...`` on Windows;
+                        # slicing the URI leaves an extra leading slash.
+                        if os.name == "nt" and local_path.startswith("/") and len(local_path) > 2 and local_path[2] == ":":
+                            local_path = local_path[1:]
                         if not os.path.exists(local_path):
                             logger.warning("[%s] Skipping missing image: %s", self.name, local_path)
                             continue

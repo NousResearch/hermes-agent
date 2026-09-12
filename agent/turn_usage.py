@@ -116,6 +116,16 @@ def record_response_usage(
         getattr(compressor, "_verify_compaction_cleared_threshold", False)
     )
     compressor.update_from_response(usage_dict)
+    # Host-side consume of the boundary latch. The built-in engine clears it inside
+    # update_from_response() (one-shot); a plugin context engine's contract method knows
+    # nothing of the private latch, so without this a successful plugin compaction leaves
+    # the latch armed forever and ANY later below-threshold response refunds an
+    # ineffective attempt that should stay burnt (anti-thrash backstop #11529). Setting
+    # False here is idempotent for the built-in and restores one-shot for plugins.
+    if _completed_compaction_pending and hasattr(
+        compressor, "_verify_compaction_cleared_threshold"
+    ):
+        compressor._verify_compaction_cleared_threshold = False
     # Usage-anchored accounting: snapshot exact provider usage against the durable
     # transcript (main-loop ONLY; MoA uses pre-fold aggregator usage). The display meter
     # anchors on the turn's FIRST response: later same-turn responses inflate

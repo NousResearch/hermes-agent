@@ -24,6 +24,7 @@ increments ``reoffer_count`` instead, so contention never consumes an attempt.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import re
@@ -35,6 +36,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from hermes_cli.active_sessions import _FileLock
+
+logger = logging.getLogger(__name__)
 
 DELIVERY_DIR_NAME = "bot_delivery"
 QUEUE_DIR = "queue"
@@ -148,6 +151,15 @@ STATUS_DETAIL_TARGET_BUSY = "target_busy: turn slot held by another turn; delive
 STATUS_DETAIL_LIVE_OWNER = "live_owner_present"
 STATUS_DETAIL_LEASE_CONTENDED = "lease_contended"
 STATUS_DETAIL_QUEUE_FULL = "queue_full"
+#: A queued delivery whose target slot is FREE -- a different cause from
+#: TARGET_BUSY, and the one a receipt must not misreport (VERIFICATION D2).
+STATUS_DETAIL_BACKLOG = (
+    "target_free: turn slot free, delivery queued behind earlier deliveries"
+)
+
+#: Which cap :func:`check_capacity`/:func:`admit` refused on (VERIFICATION D6).
+LIMIT_PER_PROFILE = "per_profile"
+LIMIT_PER_SENDER = "per_sender"
 
 REASON_QUEUED_EXPIRED = "queued_expired"
 
@@ -247,6 +259,63 @@ def drainer_delay(n: int, *, rng: Any = random) -> float:
 
 
 # --------------------------------------------------------------------------
+# observed turn-slot state (spec 3.1; VERIFICATION D2/D7)
+# --------------------------------------------------------------------------
+def _log(event: str, record: dict[str, Any] | None = None, **fields: Any) -> None:
+    """One log line per delivery decision.
+
+    The drain is a background path: without these, production has no way to
+    tell an accepted-but-waiting delivery from a dropped one (VERIFICATION D5).
+    """
+    parts = []
+    if record is not None:
+        parts.append(f"delivery_id={record.get('delivery_id')}")
+        for key_ in ("status", "target_profile", "sender_profile"):
+            if record.get(key_):
+                parts.append(f"{key_}={record.get(key_)}")
+    parts.extend(f"{key_}={value}" for key_, value in sorted(fields.items()))
+    logger.info("bot_delivery %s %s", event, " ".join(parts))
+
+
+def busy_from_detail(record: dict[str, Any]) -> bool:
+    """Whether the record's own ``status_detail`` says the slot is held.
+
+    Deriving ``busy`` from the same field the envelope prints is what stops a
+    replayed envelope from contradicting its own cause (VERIFICATION D7).
+    """
+    return record.get("status_detail") == STATUS_DETAIL_TARGET_BUSY
+
+
+def slot_held(home: str | os.PathLike[str], profile: str) -> bool:
+    """Whether ``profile``'s turn slot is currently held by another turn.
+
+    The lock is the durable relay lock, so this sees a holder that is not a
+    queue consumer at all -- a desktop or card session mid-turn holds the same
+    slot. Imported lazily because :mod:`tools.bot_relay` imports this module.
+    Never raises: an unreadable lock reads as free (a probe failure must not
+    expire a delivery, and it cannot authorise a claim either).
+    """
+    try:
+        from tools.bot_mode_probe import _hermes_root
+        from tools.bot_relay import TurnBusyError, acquire_delivery_turn_lock
+
+        try:
+            with acquire_delivery_turn_lock(_hermes_root(Path(home)), profile):
+                return False
+        except TurnBusyError:
+            return True
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def observed_detail(home: str | os.PathLike[str], profile: str) -> str:
+    """The honest ``status_detail`` for a queued delivery, observed now."""
+    if slot_held(home, profile):
+        return STATUS_DETAIL_TARGET_BUSY
+    return STATUS_DETAIL_BACKLOG
+
+
+# --------------------------------------------------------------------------
 # user-facing strings
 # --------------------------------------------------------------------------
 def expired_detail(ttl_seconds: float | None = None) -> str:
@@ -255,12 +324,27 @@ def expired_detail(ttl_seconds: float | None = None) -> str:
 
 
 def queue_full_detail(
-    per_profile: int | None = None, retry_after: float | None = None
+    per_profile: int | None = None,
+    retry_after: float | None = None,
+    *,
+    limit_kind: str = LIMIT_PER_PROFILE,
+    limit: int | None = None,
 ) -> str:
-    cap = max_per_profile() if per_profile is None else per_profile
+    """Name the cap that actually refused the send (VERIFICATION D6).
+
+    A send refused by the per-sender cap was previously reported as
+    ``queue full (32 per profile)`` -- an operator would raise the wrong limit.
+    """
+    if limit is not None:
+        cap = int(limit)
+    elif per_profile is None:
+        cap = max_per_profile()
+    else:
+        cap = int(per_profile)
     after = QUEUE_FULL_RETRY_AFTER_SECONDS if retry_after is None else retry_after
+    scope = "per profile" if limit_kind == LIMIT_PER_PROFILE else "pending from this sender"
     return (
-        f"queue full ({int(cap)} per profile); no reservation was taken — "
+        f"queue full ({cap} {scope}); no reservation was taken — "
         f"safe to retry with the same idempotency_key after {int(after)}s"
     )
 
@@ -300,16 +384,22 @@ class QueueFullError(RuntimeError):
         self,
         profile: str,
         *,
+        limit_kind: str = LIMIT_PER_PROFILE,
+        limit: int | None = None,
         message: str | None = None,
         retry_after_seconds: float | None = None,
     ) -> None:
         self.profile = profile
+        self.limit_kind = limit_kind
+        self.limit = limit
         self.retry_after_seconds = (
             QUEUE_FULL_RETRY_AFTER_SECONDS
             if retry_after_seconds is None
             else float(retry_after_seconds)
         )
-        super().__init__(message or queue_full_detail())
+        super().__init__(
+            message or queue_full_detail(limit_kind=limit_kind, limit=limit)
+        )
 
 
 # --------------------------------------------------------------------------
@@ -526,12 +616,20 @@ def admit(
             return dict(existing)
 
         if _pending(root, target_profile=target_profile) >= max_per_profile():
-            raise QueueFullError(target_profile)
+            raise QueueFullError(
+                target_profile,
+                limit_kind=LIMIT_PER_PROFILE,
+                limit=max_per_profile(),
+            )
         if (
             _pending(root, target_profile=target_profile, sender_profile=sender_profile)
             >= max_per_sender()
         ):
-            raise QueueFullError(target_profile)
+            raise QueueFullError(
+                target_profile,
+                limit_kind=LIMIT_PER_SENDER,
+                limit=max_per_sender(),
+            )
 
         sequence = max(int(sequence_hint or 0), _high_water(root) + 1)
         record: dict[str, Any] = {
@@ -558,6 +656,7 @@ def admit(
         }
         record["queue_position"] = _queue_position(root, record) or 1
         _write(root / QUEUE_DIR / f"{key_id}.json", record)
+        _log("admitted", record, queue_position=record["queue_position"])
         return dict(record)
 
 
@@ -596,6 +695,7 @@ def claim_next(
             updated["updated_at"] = now_ns
             updated["status_detail"] = STATUS_DETAIL_LEASE_CONTENDED
             _write(root / QUEUE_DIR / f"{record['delivery_id']}.json", updated)
+            _log("reoffer", updated, reoffer_count=updated["reoffer_count"])
             return None
 
         updated = dict(record)
@@ -621,6 +721,7 @@ def claim_next(
         )
         _write(root / CLAIMED_DIR / f"{record['delivery_id']}.json", updated)
         _fsync_dir(root / QUEUE_DIR)
+        _log("claimed", updated, attempt=updated["attempts"])
         return dict(updated)
 
 
@@ -661,6 +762,7 @@ def requeue(
         updated["queue_position"] = _queue_position(root, updated) or 1
         _write(queued_path, updated)
         _fsync_dir(root / CLAIMED_DIR)
+        _log("requeued", updated, reoffer_count=updated["reoffer_count"])
         return dict(updated)
 
 
@@ -703,6 +805,7 @@ def requeue_unstarted(
         updated["queue_position"] = _queue_position(root, updated) or 1
         _write(queued_path, updated)
         _fsync_dir(root / CLAIMED_DIR)
+        _log("requeued", updated, reoffer_count=updated["reoffer_count"])
         return dict(updated)
 
 
@@ -756,6 +859,7 @@ def settle(
         os.replace(claimed_path, settled_path)
         _write(settled_path, updated)
         _fsync_dir(root / CLAIMED_DIR)
+        _log("settled", updated, attempt=updated.get("attempts"))
         return dict(updated)
 
 
@@ -863,15 +967,41 @@ def read_record(
         return _find(root, key_id)
 
 
-def sweep_delivery_queue(
-    home: str | os.PathLike[str], *, now_ns: int | None = None
-) -> int:
-    """Hourly hook: recover orphaned claims, then expire over-age records.
+def cleanup_bot_delivery_queue(max_age_hours: float | None = None) -> int:
+    """Hourly housekeeping hook (spec 3.1 trigger 4): sweep THIS home's queue.
 
+    ``max_age_hours`` exists only for signature parity with the other
+    ``cleanup_*`` chores; the queue's own TTL governs expiry.
+    """
+    del max_age_hours
+    try:
+        from tools.bot_mode_probe import _default_home
+
+        return sweep_delivery_queue(Path(_default_home()))
+    except Exception:  # pragma: no cover - housekeeping must not raise
+        logger.debug("bot_delivery sweep failed", exc_info=True)
+        return 0
+
+
+def sweep_delivery_queue(
+    home: str | os.PathLike[str],
+    *,
+    now_ns: int | None = None,
+    slot_held_fn: Any = None,
+) -> int:
+    """Recover orphaned claims, then expire over-age records.
+
+    Runs hourly and on every 30s drainer tick (VERIFICATION D1 trigger 4).
     Returns the number of records it acted on.
+
+    An over-age record is expired only while its target's turn slot is FREE. A
+    target mid-turn (a desktop session can hold the slot for a whole lease wait)
+    must not have its inbound delivery expire underneath it: the slot holder is
+    exactly the turn that will drain it next.
     """
     now_ns = time.time_ns() if now_ns is None else int(now_ns)
     ttl = queue_ttl_seconds()
+    held = slot_held if slot_held_fn is None else slot_held_fn
     actions = 0
     with _locked(home) as root:
         # 1. a claim renamed the file but crashed before rewriting it
@@ -893,6 +1023,9 @@ def sweep_delivery_queue(
                     continue
                 if queued_seconds(record, now_ns=now_ns) <= ttl:
                     continue
+                if held(home, record.get("target_profile") or ""):
+                    _log("age_kept_slot_held", record)
+                    continue
                 updated = dict(record)
                 updated["status"] = STATUS_EXPIRED
                 updated["reason"] = REASON_QUEUED_EXPIRED
@@ -902,8 +1035,25 @@ def sweep_delivery_queue(
                 path = root / QUEUE_DIR / f"{updated['delivery_id']}.json"
                 os.replace(path, root / SETTLED_DIR / f"{updated['delivery_id']}.json")
                 _write(root / SETTLED_DIR / f"{updated['delivery_id']}.json", updated)
+                _log("expired", updated, reason=REASON_QUEUED_EXPIRED)
                 actions += 1
+    _log("swept", None, actions=actions, ttl_seconds=ttl)
     return actions
+
+
+def queued_target_profiles(home: str | os.PathLike[str]) -> list[str]:
+    """Distinct target profiles that have a queued delivery in this home's queue.
+
+    Trigger 3 has to ask "what can be drained?" without a profile in hand
+    (VERIFICATION D1).
+    """
+    with _locked(home) as root:
+        profiles: list[str] = []
+        for record in _list(root, QUEUE_DIR):
+            profile = str(record.get("target_profile") or "")
+            if profile and profile not in profiles:
+                profiles.append(profile)
+    return profiles
 
 
 def check_capacity(
@@ -920,12 +1070,20 @@ def check_capacity(
     """
     with _locked(home) as root:
         if _pending(root, target_profile=target_profile) >= max_per_profile():
-            raise QueueFullError(target_profile)
+            raise QueueFullError(
+                target_profile,
+                limit_kind=LIMIT_PER_PROFILE,
+                limit=max_per_profile(),
+            )
         if (
             _pending(root, target_profile=target_profile, sender_profile=sender_profile)
             >= max_per_sender()
         ):
-            raise QueueFullError(target_profile)
+            raise QueueFullError(
+                target_profile,
+                limit_kind=LIMIT_PER_SENDER,
+                limit=max_per_sender(),
+            )
 
 
 def queue_depth(home: str | os.PathLike[str], target_profile: str | None = None) -> int:
@@ -952,12 +1110,19 @@ def build_envelope(
     record: dict[str, Any],
     *,
     send_id: str | None = None,
-    busy: bool = False,
+    busy: bool | None = None,
     waited_seconds: float = 0.0,
     replayed: bool = False,
 ) -> dict[str, Any]:
-    """Build the 23-field sender-visible envelope for a durable record."""
+    """Build the 23-field sender-visible envelope for a durable record.
+
+    ``busy`` defaults to what the record's own ``status_detail`` asserts, so a
+    replayed envelope cannot contradict the cause it prints (VERIFICATION D7)
+    and a receipt for a free-slot backlog never claims the slot was held (D2).
+    """
     status = record.get("status") or STATUS_QUEUED
+    if busy is None:
+        busy = busy_from_detail(record)
     result = _result_for_status(status)
     reason = record.get("reason")
     is_retryable = result == RESULT_FAILED and reason in RETRYABLE_REASONS
@@ -974,7 +1139,13 @@ def build_envelope(
     elif status == STATUS_AMBIGUOUS:
         detail = unknown_detail(record.get("idempotency_key"))
     elif reason == "queue_full":
-        detail = queue_full_detail()
+        # Report the cap that ACTUALLY refused the send (VERIFICATION D6): the
+        # per-sender cap (8) used to be reported as the per-profile cap (32), so an
+        # operator would raise the wrong limit. Absent the fired limit, the
+        # per-profile reading is the historical one.
+        detail = queue_full_detail(
+            limit_kind=str(record.get("limit_kind") or LIMIT_PER_PROFILE),
+            limit=record.get("limit"))
     elif result == RESULT_RECEIPT:
         detail = DETAIL_RECEIPT
     else:
@@ -1019,15 +1190,20 @@ def build_envelope(
 def build_receipt(
     record: dict[str, Any],
     *,
+    busy: bool | None = None,
     replayed: bool = False,
     waited_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """The acceptance receipt for a queued/busy delivery (``result: receipt``)."""
+    """The acceptance receipt for a queued delivery (``result: receipt``).
+
+    ``busy`` is the OBSERVED slot state (VERIFICATION D2): a receipt handed out
+    while the target's turn slot is free must not report it as held.
+    """
     waited = receipt_after_seconds() if waited_seconds is None else waited_seconds
     envelope = build_envelope(
         record,
         send_id=uuid.uuid4().hex,
-        busy=True,
+        busy=busy,
         waited_seconds=waited,
         replayed=replayed,
     )

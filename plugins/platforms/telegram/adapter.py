@@ -5399,7 +5399,10 @@ class TelegramAdapter(BasePlatformAdapter):
         bot_username = self._current_bot_username()
         if not text or not bot_username:
             return text
-        cleaned = re.sub(rf"(?i)@{re.escape(bot_username)}\b[,:\-]*\s*", "", text).strip()
+        pattern = rf"(?i)@{re.escape(bot_username)}\b[,:\-]*"
+        if not text.startswith("/"):
+            pattern += r"\s*"
+        cleaned = re.sub(pattern, "", text).strip()
         return cleaned or text
 
     def _topic_gates_pass(self, thread_id, *, warn_non_numeric: bool) -> Optional[bool]:

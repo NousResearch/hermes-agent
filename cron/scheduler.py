@@ -39,7 +39,7 @@ from hermes_constants import get_hermes_home
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
-    _expand_env_vars, load_config, resolve_cron_model_drift_defaults)
+    _expand_env_vars, load_config, load_config_readonly, resolve_cron_model_drift_defaults)
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
@@ -3052,15 +3052,11 @@ def _wait_for_external_cron_worker(
 def _launch_external_cron_worker(job: dict) -> bool:
     """Launch *job* outside the managed gateway process when required.
 
-    Returns ``False`` when the caller is not a managed systemd gateway and the
-    existing in-process path should be used.  In managed topology the job is
-    always handed to an external worker with the #101940 ownership handoff:
-    either inside a transient user scope (isolated) or - when no user D-Bus
-    session exists and ``cron.require_restart_safe_scope`` is false (the
-    default) - as a direct subprocess (process separation without cgroup
-    isolation).  Setting ``cron.require_restart_safe_scope: true`` restores
-    fail-closed.  Falling back to in-process in managed topology would
-    recreate the restart interruption this handoff exists to prevent.
+    Returns ``False`` outside a managed systemd gateway (in-process path).  In
+    managed topology the job always goes to an external worker with the #101940
+    ownership handoff: in a transient user scope, or — when no user D-Bus
+    session exists and ``cron.require_restart_safe_scope`` is false — as a
+    direct subprocess (process separation kept, cgroup isolation lost).
     """
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
@@ -3090,12 +3086,12 @@ def _launch_external_cron_worker(job: dict) -> bool:
         systemd_user_bus_env,
     )
 
-    cfg = load_config() or {}
-    require_restart_safe_scope = bool(
-        ((cfg.get("cron") or {}) if isinstance(cfg, dict) else {}).get(
-            "require_restart_safe_scope", False
+    try:
+        require_restart_safe_scope = bool(
+            (load_config_readonly().get("cron") or {}).get("require_restart_safe_scope", False)
         )
-    )
+    except Exception:
+        require_restart_safe_scope = False
     multiplex_active = is_multiplex_active()
     dispatch = restart_safe_gateway_child_argv(
         command,
@@ -3103,16 +3099,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         require_restart_safe_scope=require_restart_safe_scope,
     )
     if dispatch.mode == "in_process":
-        # Not a managed systemd gateway: keep the existing in-process path.
         return False
-    # "scoped" AND "degraded" both launch an external worker with the same
-    # #101940 ownership handoff below.  Degraded only differs in isolation:
-    # the direct command runs in the gateway cgroup (documented in the
-    # warning), so a mid-job gateway restart kills it — but the execution
-    # ledger still records exactly what happened (failed/unknown) instead of
-    # the job silently never running.  Never fall back to in-process here:
-    # that would recreate the restart-interruption edge #101940 closed.
-    launch_command = dispatch.argv
 
     if mark_execution_handoff_pending(execution_id) is None:
         raise RuntimeError(
@@ -3155,7 +3142,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     worker_env = systemd_user_bus_env(worker_env)
     try:
         process = subprocess.Popen(
-            launch_command,
+            dispatch.argv,
             cwd=str(Path(__file__).resolve().parent.parent),
             env=worker_env,
             stdin=subprocess.DEVNULL,

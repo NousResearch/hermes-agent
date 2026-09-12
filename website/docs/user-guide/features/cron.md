@@ -329,6 +329,19 @@ On each tick Hermes:
 
 A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch.
 
+### Restart-safe workers under systemd
+
+When the gateway runs as a systemd service, each due job is handed to an external worker process launched in a transient user scope (`systemd-run --user --scope`), so restarting the gateway mid-job does not kill the job. Creating that scope needs a user systemd session; hosts without one (containers, minimal LXCs, a service user without linger) cannot provide it.
+
+By default cron then **degrades**: the job still runs as a separate external process with the same execution handoff, but without cgroup isolation, so a gateway restart during the job kills it (the execution ledger records that). One warning is logged per gateway process. To fail closed instead — skip the job and record the error on the job row — set:
+
+```yaml
+cron:
+  require_restart_safe_scope: true
+```
+
+The lasting fix is a user session for the gateway user: `sudo loginctl enable-linger <gateway-user>` (and `XDG_RUNTIME_DIR` / `DBUS_SESSION_BUS_ADDRESS` in the unit for system-level installs), then restart the gateway. Kanban workers always require a scope and fail closed regardless of this key.
+
 ### Execution history
 
 Hermes records each claimed cron attempt in the profile-local

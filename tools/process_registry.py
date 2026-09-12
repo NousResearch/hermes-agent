@@ -291,62 +291,37 @@ def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[s
     return _systemd_scope_argv(binary, f"hermes-worker-{unit_suffix}", *shell_argv)
 
 
-# --- restart-safe gateway child dispatch --------------------------------------
-# A systemd-supervised gateway restart kills every process in the service cgroup, so
-# children that must survive it are launched outside that cgroup via a transient user
-# scope (systemd-run --user --scope) when one can be created. Hosts with no user
-# systemd session at all (containers, LXCs without linger) cannot create scopes; the
-# callers set policy explicitly through ``require_restart_safe_scope`` (cron reads
-# ``cron.require_restart_safe_scope`` from config.yaml; kanban always requires a scope).
-
 _scope_degraded_warned = False
 
 
-def _warn_scope_degraded_once(unit_suffix: str) -> None:
-    """Emit the degrade warning once per process.
-
-    The scope-availability verdict is cached, so without this guard the warning
-    would fire on every dispatch (every cron fire on a bus-less host).
-    """
+def _warn_scope_degraded_once(unit_suffix: str, detail: str) -> None:
+    """Warn once per process: the probe verdict is cached, so this would otherwise
+    fire on every cron dispatch on a bus-less host."""
     global _scope_degraded_warned
     if _scope_degraded_warned:
         return
     _scope_degraded_warned = True
     logger.warning(
-        "%s: systemd-run --user --scope is unavailable (no user D-Bus session at "
-        "/run/user/%d/bus); dispatching the gateway child as a direct external "
-        "subprocess without restart-safe cgroup isolation. The job still runs "
-        "outside the gateway process, but will be killed if the gateway restarts "
-        "mid-job. Remediate with `sudo loginctl enable-linger <gateway-user>` (plus "
-        "XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS in the service unit), or set "
-        "cron.require_restart_safe_scope=true in config.yaml to fail closed instead.",
-        unit_suffix, os.getuid(),
+        "%s: %s; dispatching the gateway child as a direct external subprocess "
+        "without restart-safe cgroup isolation (killed if the gateway restarts mid-job). "
+        "Set cron.require_restart_safe_scope=true in config.yaml to fail closed instead.",
+        unit_suffix, detail,
     )
 
 
 class GatewayChildDispatch(NamedTuple):
-    """How a managed-gateway child should be launched.
+    """How a managed-gateway child is launched.
 
-    Three mutually exclusive topologies - the whole point of this type is
-    that (1) and (3) must never collapse into the same value:
-
-    - ``"in_process"`` - not a managed systemd gateway (standalone process,
-      non-systemd supervisor, non-Linux host). The caller keeps its existing
-      in-process path. ``argv is command`` holds, preserving the historical
-      passthrough contract.
-    - ``"scoped"`` - managed gateway with a working user bus. ``argv`` is the
-      ``systemd-run --user --scope`` wrapper; the caller launches it as an
-      external worker with the #101940 ownership handoff.
-    - ``"degraded"`` - managed gateway WITHOUT a user bus. ``argv`` is the
-      direct command, but the caller MUST still launch it as an external
-      subprocess (same ownership handoff as ``"scoped"``) - never fall back
-      to the in-process path, which would recreate the restart-interruption
-      edge #101940 closed. Isolation is lost but process separation is kept.
+    ``in_process``: not a managed systemd gateway, ``argv is command``, the caller
+    keeps its in-process path.  ``scoped``: ``argv`` is the systemd-run wrapper.
+    ``degraded``: no user scope could be created; ``argv`` is the direct command but
+    the caller MUST still launch it as an external subprocess — the distinct mode
+    exists so this case can never collapse into ``in_process`` and recreate the
+    restart interruption #101940 closed.
     """
 
     mode: Literal["in_process", "scoped", "degraded"]
     argv: List[str]
-    reason: str = ""
 
 
 def restart_safe_gateway_child_argv(
@@ -354,51 +329,35 @@ def restart_safe_gateway_child_argv(
 ) -> GatewayChildDispatch:
     """Place a managed-systemd gateway child outside the gateway cgroup.
 
-    Returns a :class:`GatewayChildDispatch` distinguishing three topologies -
-    never the bare command list, so callers cannot mistake a degraded dispatch
-    for "not managed, stay in-process".
-
-    Children that must survive an intentional gateway restart cannot rely on
-    ``start_new_session`` alone: systemd still kills every process in the
-    service cgroup.  In that topology, prefer a transient user scope.
-
-    When a user systemd session is genuinely absent (containers, minimal LXCs,
-    macOS-style supervisors) the scope cannot be created, but hard failing takes
-    down every scheduled job on the host - a silent cron outage with no
-    operator-visible symptom beyond skipped executions (the #101940 durability
-    contract covers the restart case, not the never-had-a-bus case).  Callers
-    therefore state their policy explicitly: ``require_restart_safe_scope=True``
-    raises when no scope can be established (fail-closed, the kanban contract);
-    ``False`` degrades to a direct external subprocess with a once-per-process
-    warning (the cron default behind ``cron.require_restart_safe_scope``).
-
-    Standalone processes, non-systemd supervisors, and non-Linux hosts return
-    ``mode == "in_process"`` - the caller keeps its existing in-process path.
+    A systemd-supervised gateway restart kills every process in the service
+    cgroup, so children that must survive it run in a transient user scope.
+    Hosts with no user systemd session (containers, LXCs without linger) cannot
+    create one; hard-failing there is a silent cron outage, so callers state the
+    policy: ``require_restart_safe_scope=True`` raises (kanban's long-lived
+    workers), ``False`` degrades to a direct external subprocess with a
+    once-per-process warning (cron, behind ``cron.require_restart_safe_scope``).
     """
     if not _IS_LINUX:
         return GatewayChildDispatch("in_process", command)
     if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
         return GatewayChildDispatch("in_process", command)
-    if not _systemd_run_user_scope_available():
+
+    def _degrade(detail: str) -> GatewayChildDispatch:
         if require_restart_safe_scope:
             # Stored as the cron execution's error and shown on the job row: name the remedy.
-            raise RuntimeError(
-                "cannot create restart-safe systemd scope for gateway child: "
-                "systemd-run --user --scope is unavailable (usually no reachable user D-Bus session at "
-                f"/run/user/{os.getuid()}/bus). On a system-level service install, run "  # windows-footgun: ok — behind the _IS_LINUX return above
-                "`sudo loginctl enable-linger <gateway-user>` and restart the gateway."
-            )
-        _warn_scope_degraded_once(unit_suffix)
-        return GatewayChildDispatch("degraded", command, "no-user-bus")
+            raise RuntimeError(f"cannot create restart-safe systemd scope for gateway child: {detail}")
+        _warn_scope_degraded_once(unit_suffix, detail)
+        return GatewayChildDispatch("degraded", command)
+
+    if not _systemd_run_user_scope_available():
+        return _degrade(
+            "systemd-run --user --scope is unavailable (usually no reachable user D-Bus session at "
+            f"/run/user/{os.getuid()}/bus). On a system-level service install, run "  # windows-footgun: ok — behind the _IS_LINUX return above
+            "`sudo loginctl enable-linger <gateway-user>` and restart the gateway."
+        )
     scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
     if scoped == command:
-        if require_restart_safe_scope:
-            raise RuntimeError(
-                "cannot create restart-safe systemd scope for gateway child: "
-                "systemd-run disappeared after the availability probe"
-            )
-        _warn_scope_degraded_once(unit_suffix)
-        return GatewayChildDispatch("degraded", command, "scope-binary-vanished")
+        return _degrade("systemd-run disappeared after the availability probe")
     return GatewayChildDispatch("scoped", scoped)
 
 

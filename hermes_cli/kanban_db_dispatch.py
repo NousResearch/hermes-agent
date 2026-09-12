@@ -2148,10 +2148,8 @@ def _open_worker_log(task: Task, board: Optional[str]):
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     """Wrap a managed-gateway worker in the shared restart-safe scope.
 
-    Kanban workers are long-lived agentic runs, so unlike bounded cron jobs
-    they are never dispatched in the degraded (unsupervised) mode: a managed
-    gateway with no user systemd session fails closed through the shared
-    helper's raise (remedy text included).  See #102431.
+    Kanban workers are long-lived agentic runs, so they never take cron's
+    degraded mode: ``require_restart_safe_scope=True`` makes the helper raise.
     """
     from tools.process_registry import restart_safe_gateway_child_argv
 
@@ -2164,7 +2162,7 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
             unit_suffix=f"kanban-{task.id}-run-missing",
             require_restart_safe_scope=True,
         )
-        if dispatch.mode == "scoped":
+        if dispatch.mode != "in_process":
             raise RuntimeError(
                 "cannot create restart-safe systemd scope for Kanban worker: "
                 "the claimed task has no current run id"

@@ -531,6 +531,70 @@ def contains_launchctl_submit_command(command: str) -> bool:
     return False
 
 
+def _strip_inert_hash_comments(text: str) -> str:
+    """Remove unquoted, word-start ``#`` comments from referenced-script text.
+
+    Applied only before recursing into a referenced script so help/hint
+    documentation cannot false-positive (#106723). Top-level command and cron
+    prompt scanning is unchanged — ``then run hermes gateway restart`` still
+    blocks.
+
+    Word-start rule matches POSIX (and ``tools.shell_heredoc``): ``#`` begins a
+    comment at the start of a word — beginning of the text, after whitespace,
+    or after ``;&|()``. ``echo $#``, ``${#var}``, and ``foo#bar`` stay intact.
+    Fail-closed: an unclosed quote leaves the remainder visible.
+    """
+    if not text or "#" not in text:
+        return text
+    out: list[str] = []
+    in_single = in_double = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_single:
+            out.append(ch)
+            if ch == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_double = False
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(ch)
+            out.append(text[i + 1])
+            i += 2
+            continue
+        if ch == "'":
+            in_single = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_double = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "#" and (i == 0 or text[i - 1].isspace() or text[i - 1] in ";&|()"):
+            newline = text.find("\n", i)
+            if newline == -1:
+                return "".join(out)
+            out.append("\n")
+            i = newline + 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _mask_data_sink_arguments(text: str) -> str:
     """Replace data-sink executables' arguments with a neutral placeholder.
 
@@ -952,6 +1016,11 @@ def _contains_unsafe_gateway_action(
                 return True
         if not script_text:
             continue
+        # `#` comments in a referenced script are documentation, not executed.
+        # Strip them before the recursive scan so help/hint text cannot
+        # false-positive (#106723). Top-level command/prompt scanning is
+        # unchanged.
+        script_text = _strip_inert_hash_comments(script_text)
         # Relative references inside a script resolve against that script's directory, not the cwd.
         if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd):
             return True

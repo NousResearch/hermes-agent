@@ -44,12 +44,13 @@ def _build_agent(tmp_path, monkeypatch):
     return agent
 
 
-def _reasoning_only_response(*, finish_reason="stop"):
+def _reasoning_only_response(*, finish_reason="stop", reasoning=None):
+    reasoning = reasoning or "The answer is 42 because of the calculation above."
     return SimpleNamespace(
         choices=[SimpleNamespace(
             message=SimpleNamespace(
                 content="",
-                reasoning="The answer is 42 because of the calculation above.",
+                reasoning=reasoning,
                 reasoning_content=None,
                 reasoning_details=None,
                 tool_calls=None,
@@ -97,6 +98,31 @@ def test_clean_stop_reasoning_is_promoted_without_retry(tmp_path, monkeypatch):
     assert calls == 1
     assert result["messages"][-1]["content"] == expected
     assert result["messages"][-1]["reasoning"] == expected
+
+
+def test_clean_stop_promotion_removes_prior_thinking_prefill(tmp_path, monkeypatch):
+    agent = _build_agent(tmp_path, monkeypatch)
+    responses = [
+        _reasoning_only_response(
+            finish_reason="tool_calls",
+            reasoning="Still working through the request.",
+        ),
+        _reasoning_only_response(reasoning="The completed answer."),
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: responses.pop(0),
+    )
+
+    result = agent.run_conversation("what is the answer?")
+
+    assert result["final_response"] == "The completed answer."
+    assert result["turn_exit_reason"] == "reasoning_response(clean_stop)"
+    assert not responses
+    assert not any(message.get("_thinking_prefill") for message in result["messages"])
+    roles = [message["role"] for message in result["messages"]]
+    assert all(left != right for left, right in zip(roles, roles[1:]))
 
 
 def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):

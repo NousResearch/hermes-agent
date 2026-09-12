@@ -189,6 +189,12 @@ def recover_empty_response(
         agent._emit_pending_fallback_notice()
         agent._clear_status_buffer()
         agent._drop_trailing_empty_response_scaffolding(messages)
+        while (
+            messages
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("_thinking_prefill")
+        ):
+            messages.pop()
         final_msg = agent._build_assistant_message(assistant_message, finish_reason)
         final_msg["content"] = _reasoning_text
         append_message(messages, final_msg)

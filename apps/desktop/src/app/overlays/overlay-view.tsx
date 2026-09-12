@@ -9,12 +9,18 @@ import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 
 // Shared top clearance for overlay content that sits *beside* the floating
-// close button (which is absolute at `0.1875rem + titlebar/2`, -translate-y-1/2,
+// close button (a titlebar-height no-drag row at `top: 0.1875rem`, items-center,
 // so it costs no layout space): a Panel's header and the split layout's left
 // sidebar links. They ride up next to the X on the same line across every
 // overlay (settings, system, agents, cron, …) — change it here, not per-surface.
 // Main content sits *under* the X (top-right) and keeps its own taller pad.
 export const OVERLAY_TOP_CLEARANCE = 'pt-[calc(var(--titlebar-height)/2-0.4375rem)]'
+
+// Electron's no-drag carve-out of transformed descendants inside a drag region
+// is unreliable, so these hit targets must be positioned with top/left/right
+// + flex alignment only — no translate-*.
+const overlayTitlebarHitRowClass =
+  'pointer-events-auto flex h-[var(--titlebar-height)] items-center [-webkit-app-region:no-drag]'
 
 interface OverlayViewProps {
   children: ReactNode
@@ -115,12 +121,12 @@ export function OverlayView({
         >
           <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-[calc(var(--titlebar-height)+0.1875rem)] [-webkit-app-region:drag]">
             {headerContent && (
-              <div className="pointer-events-auto absolute left-1/2 top-[calc(0.5rem+var(--titlebar-height)/2)] -translate-x-1/2 -translate-y-1/2 [-webkit-app-region:no-drag]">
-                {headerContent}
+              <div className="pointer-events-none absolute inset-x-0 top-2 flex h-[var(--titlebar-height)] items-center justify-center">
+                <div className={overlayTitlebarHitRowClass}>{headerContent}</div>
               </div>
             )}
 
-            <div className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] flex -translate-y-1/2 items-center gap-1.5 [-webkit-app-region:no-drag]">
+            <div className={cn(overlayTitlebarHitRowClass, 'absolute right-3 top-[0.1875rem] gap-1.5')}>
               {titlebarActions}
 
               <Button

@@ -150,6 +150,16 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "platform.wecom_callback": ("defusedxml==0.7.1",),
     # Teams pulls a heavy tree (msal, dependency-injector); also the `teams` extra.
     "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),
+    # Google Chat adapter — Pub/Sub subscriptions + Chat API.
+    "platform.google_chat": (
+        "google-cloud-pubsub==2.39.0",
+        "google-api-python-client==2.194.0",
+        "google-auth==2.55.1",
+        "google-auth-oauthlib==1.3.1",
+        "google-auth-httplib2==0.3.1",
+        "httplib2==0.32.0",
+        "pyasn1==0.6.4",
+    ),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),

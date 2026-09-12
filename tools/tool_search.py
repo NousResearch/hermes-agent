@@ -479,7 +479,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
                            connector_describe: Optional[Any] = None) -> str:
     """Execute the ``tool_describe`` bridge tool -> JSON ``{tools: {name: {description,
     parameters}}, not_found: [...]  (unknown / not in this assembly; never fails the call),
-    errors: {name: msg}  (registered but non-deferrable)}``. Duplicates dedupe silently."""
+    errors: {name: msg}  (registered direct or session-disabled)}``. Duplicates dedupe silently."""
     config = config or load_config_readonly()
     names, err = _string_list_arg(
         args, "names", dedupe=True, max_items=_MAX_DESCRIBE_NAMES_PER_CALL,
@@ -488,6 +488,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
         return err
     deferrable = _deferrable_in(current_tool_defs)
     by_name = {name: _fn(td) for td, name in zip(deferrable, _tool_def_names(deferrable)) if name}
+    current_names = frozenset(_tool_def_names(current_tool_defs))
     remote_schemas = remote_schemas_for(names, current_tool_defs, connector_describe)
 
     tools: Dict[str, Dict[str, Any]] = {}
@@ -506,10 +507,14 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
             not_found.append(name)
         elif _registry_entry(name) is not None and not is_deferrable_tool_name(
             name, load_config_readonly().effective_defer_tools):
-            # Registered but bridge/core/GUI-surface: a real name, wrong door.
-            errors[name] = (
-                f"'{name}' is not a deferrable tool. If you see it in the tools list "
-                "already, call it directly; otherwise check the spelling against tool_search.")
+            if name in current_names:
+                errors[name] = (
+                    f"'{name}' is not a deferrable tool. If you see it in the tools list "
+                    "already, call it directly; otherwise check the spelling against tool_search.")
+            else:
+                errors[name] = (
+                    f"'{name}' is a known tool, but it is not enabled for this session/platform "
+                    "and is not callable this turn.")
         else:
             not_found.append(name)
     result: Dict[str, Any] = {"tools": tools}
@@ -530,7 +535,9 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
                      if n and is_deferrable_tool_name(n, defer_tools))
 
 
-def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
+def resolve_underlying_call(
+    args: Dict[str, Any], *, current_tool_defs: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
     Used by:
@@ -560,6 +567,16 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
+        if current_tool_defs is not None and name not in frozenset(_tool_def_names(current_tool_defs)):
+            if _registry_entry(name) is not None:
+                return None, {}, (
+                    f"'{name}' is a known tool, but it is not enabled for this session/platform "
+                    "and is not callable this turn."
+                )
+            return None, {}, (
+                f"'{name}' is not available in this session. "
+                "Use tool_search to find tools you can call."
+            )
         return None, {}, (
             f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
             "list already, call it directly instead of via tool_call."

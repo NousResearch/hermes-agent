@@ -247,3 +247,56 @@ class TestAnnotationCaptureAtDiscovery:
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace()
         ) is False
+
+    def test_snake_case_annotations_are_honoured(self):
+        """MCP SDK 2.x exposes ``read_only_hint``; the wire/cache uses camelCase.
+
+        Reading only ``readOnlyHint`` classified every tool of an SDK-2.x
+        server as write-capable, so ``trust: untrusted`` gated read-only tools
+        and consulted the approval path for them as well.
+        """
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=True))
+        ) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations={"read_only_hint": True})
+        ) is True
+        # camelCase keeps working, and anything not exactly True stays
+        # write-capable (fail closed).
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(
+                annotations=SimpleNamespace(readOnlyHint=True, read_only_hint=False)
+            )
+        ) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=False))
+        ) is False
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint="yes"))
+        ) is False
+
+    def test_registration_records_snake_case_hints(self):
+        """Discovery stores the hint of an SDK-2.x-only server as read-only."""
+        from tools.registry import ToolRegistry
+
+        server = mcp_tool.MCPServerTask("srv")
+        server.session = MagicMock()
+        server._tools = [
+            self._make_tool(
+                "get_dataset", SimpleNamespace(read_only_hint=True)
+            ),
+            self._make_tool(
+                "upsert_dataset", SimpleNamespace(read_only_hint=False)
+            ),
+        ]
+        config = {
+            "trust": "untrusted",
+            "tools": {"resources": False, "prompts": False},
+        }
+        with patch("tools.registry.registry", ToolRegistry()), \
+             patch("tools.mcp_tool_registration._track_mcp_tool_server"):
+            _mcp_registration._register_server_tools("srv", server, config)
+
+        hints = mcp_tool._tool_read_only_hints["srv"]
+        assert hints.get("get_dataset") is True
+        assert not hints.get("upsert_dataset")

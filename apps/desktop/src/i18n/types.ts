@@ -2231,6 +2231,9 @@ export interface Translations {
     results: string
     pinned: string
     sessions: string
+
+    stepUp: string
+    stepDown: string
     cronJobs: string
     groupAriaGrouped: string
     groupAriaUngrouped: string

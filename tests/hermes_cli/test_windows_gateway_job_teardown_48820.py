@@ -189,3 +189,29 @@ class TestResumeLivenessGate:
         with patch("builtins.print"):
             _resume_windows_gateways_after_update(_token({"work": 2222}))
         assert seen.get("all_profiles") is True
+
+
+def test_at_exit_resume_reports_failure_without_raising(monkeypatch):
+    """The registered atexit hook must never raise.
+
+    The resume stays retryable on purpose (a failed service start / launcher refresh leaves
+    ``resume_needed`` True), so this hook re-runs it after the main path already recorded the
+    outcome. An exception raised here has no caller: CPython prints "Exception ignored in atexit
+    callback" plus a traceback into update.log, which reads as a second, unrelated failure and
+    buries the outcome the main path set.
+    """
+    import hermes_cli.update_cmd as update_cmd
+
+    # ``_m()`` resolves hermes_cli.main at call time, and main is where the resume name is
+    # bound — patching update_cmd_windows would leave the real resume running.
+    monkeypatch.setattr(
+        hm,
+        "_resume_windows_gateways_after_update",
+        lambda _token: (_ for _ in ()).throw(RuntimeError("resume blew up")),
+    )
+    logged: list[str] = []
+    monkeypatch.setattr(update_cmd, "_log_only_write", logged.append)
+
+    update_cmd._resume_windows_gateways_at_exit({"resume_needed": True})
+
+    assert any("resume blew up" in entry for entry in logged)

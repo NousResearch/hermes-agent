@@ -486,6 +486,13 @@ host.state.profile          // ReadableAtom<string>
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
 ```
 
+`gatewayActivationEpoch` is a named SDK export: `import { gatewayActivationEpoch } from '@hermes/plugin-sdk'`.
+It reads the canonical activation counter, which changes on every active route
+selection, including same-profile source swaps. Capture `const epoch = gatewayActivationEpoch()`
+alongside the route before asynchronous work, then check both the captured route
+and `gatewayActivationEpoch() === epoch` before mutation or UI publication. This
+read-only counter is not a credential, permission grant, or durable gateway/session identity.
+
 `host.state.gateway` is the WebSocket connection, not whether a chat turn is
 running. A session can be mid-turn while the socket is `open`; another session
 can be idle at the same time. Disable composer or plugin actions from the

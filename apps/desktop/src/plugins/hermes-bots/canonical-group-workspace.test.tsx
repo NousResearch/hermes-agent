@@ -27,7 +27,9 @@ afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.h
 
 it('restores a frozen send after remount and retires only its acknowledged exact retry', async () => {
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'restore' }
-  const entry = await prepareCanonicalGroupSend(binding, { text: 'Original', attachments: [{ path: '/owner/image.png', mime_type: 'image/png' }] })
+  const entry = await prepareCanonicalGroupSend(binding, { text: 'Original', attachments: [{
+    attachment_id: 'att_00000000000000000000000000000001', kind: 'image', name: 'image.png', mime: 'image/png', size: 1
+  }] })
   request.mockImplementation(async (_route, method) => {
     if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
 

@@ -20,11 +20,25 @@ vi.mock('./canonical-group-labels', async () => {
 })
 
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
+import { CanonicalGroupHistory } from './canonical-group-history'
 
 const binding = { connectionId: 'original-owner', profile: 'reviewer', roomId: 'room-one' }
 const manifest = { attachment_id: 'att_00000000000000000000000000000001', kind: 'file', name: 'notes.txt', mime: 'text/plain', size: 1 }
 const originalDesktop = window.hermesDesktop
 afterEach(() => { cleanup(); request.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear(); window.hermesDesktop = originalDesktop })
+
+it('shows the canonical event speaker without consulting another roster or profile', () => {
+  const view = render(<CanonicalGroupHistory binding={binding} events={[
+    { seq: 1, kind: 'message.member', actor: { kind: 'member', id: 'writer', profile: 'default' }, payload: { text: 'First' } },
+    { seq: 2, kind: 'message.member', actor: { kind: 'member', id: 'reviewer', display_name: 'Reviewer on remote' }, payload: { text: 'Second' } },
+    { seq: 3, kind: 'message.user', actor: { kind: 'user', id: 'local-owner', display_name: 'Owner' }, payload: { text: 'Third' } },
+    { seq: 4, kind: 'message.member', actor: { member_id: 'legacy-member' }, payload: { text: 'Fourth' } }
+  ]} />)
+  expect([...view.container.querySelectorAll('strong')].map(element => element.textContent)).toEqual([
+    'writer: ', 'Reviewer on remote: ', 'Owner: ', 'legacy-member: '
+  ])
+  expect(request).not.toHaveBeenCalled()
+})
 
 it('keeps a committed file downloadable in history after Send clears the composer (F31)', async () => {
   const observed = observeDownloads()

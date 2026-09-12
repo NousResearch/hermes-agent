@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -8,13 +8,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
+import { HoverScroll } from '@/components/ui/marquee'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Search } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
-import { foldIncludes, normalize } from '@/lib/text'
+import { compareModelIds, displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { normalize, searchFold } from '@/lib/text'
+import { useDebouncedValue } from '@/lib/use-debounced-value'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -26,6 +28,79 @@ import {
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
+
+/** Render cap per provider — filtering thousands of ids is cheap, mounting
+ *  thousands of toggle rows is not. The expander below lifts it per provider. */
+const DIALOG_RENDER_CAP = 200
+
+/** One toggle row, memoized so a switch flips one row instead of re-rendering
+ *  hundreds (the per-row toggle closure is intentionally excluded from the
+ *  compare — it reads fresh stores itself). No pills: the id line below
+ *  already carries the upstream verbatim. */
+const VisibilityRow = memo(
+  function VisibilityRow({
+    checked,
+    familyId,
+    onToggle,
+    provider,
+    search,
+    terms
+  }: {
+    checked: boolean
+    familyId: string
+    onToggle: () => void
+    provider: ModelOptionProvider
+    search: string
+    terms: string | string[]
+  }) {
+    const [go, setGo] = useState(false)
+    const { name } = modelDisplayParts(familyId)
+    const caps = provider.capabilities?.[familyId]
+
+    const details = [familyId, caps?.fast ? 'fast' : null, caps && !caps.reasoning ? 'no reasoning' : null]
+      .filter(Boolean)
+      .join(' · ')
+
+    return (
+      <label className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs hover:bg-(--ui-control-active-background)">
+        <span
+          className="block min-w-0 flex-1 overflow-hidden"
+          onMouseOut={event => {
+            if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              return
+            }
+
+            setGo(false)
+          }}
+          onMouseOver={() => setGo(true)}
+          title={details}
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            <HoverScroll className="min-w-0 flex-1" go={go} marqueeKey={`name:${familyId}`}>
+              <span data-row-label>
+                <HighlightMatches query={terms} text={name} />
+              </span>
+            </HoverScroll>
+          </span>
+          <HoverScroll
+            className="font-mono text-[0.65rem] font-normal text-(--ui-text-tertiary)"
+            go={go}
+            marqueeKey={`id:${familyId}`}
+          >
+            <HighlightMatches query={terms} text={familyId} />
+          </HoverScroll>
+        </span>
+        <Switch checked={checked} onCheckedChange={onToggle} size="xs" />
+      </label>
+    )
+  },
+  (prev, next) =>
+    prev.checked === next.checked &&
+    prev.familyId === next.familyId &&
+    prev.provider === next.provider &&
+    prev.search === next.search &&
+    prev.terms === next.terms
+)
 
 interface ModelVisibilityDialogProps {
   gw?: HermesGateway
@@ -48,9 +123,20 @@ export function ModelVisibilityDialog({
 }: ModelVisibilityDialogProps) {
   const { t } = useI18n()
   const copy = t.modelVisibility
-  const [search, setSearch] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  // Filtering runs on the settled query; the input itself stays instant.
+  const search = useDebouncedValue(searchInput, 150)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const stored = useStore($visibleModels)
   const collapsedProviders = useStore($collapsedProviders)
+
+  // Order snapshot per open: toggling a switch must not reshuffle the list
+  // under the pointer — enablement ranks freeze when the modal opens.
+  const rankRef = useRef<Set<string> | null>(null)
+
+  if (!open) {
+    rankRef.current = null
+  }
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
@@ -65,6 +151,12 @@ export function ModelVisibilityDialog({
 
   const visible = effectiveVisibleKeys(stored, providers)
 
+  if (open && rankRef.current === null) {
+    rankRef.current = new Set(visible)
+  }
+
+  const rank = rankRef.current ?? visible
+
   const toggle = (provider: ModelOptionProvider, model: string) => {
     setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model))
   }
@@ -75,8 +167,31 @@ export function ModelVisibilityDialog({
 
   const q = normalize(search)
 
+  // Token-AND index (`deepseek v4 flash opencode` finds
+  // `opencode/deepseek-v4-flash` regardless of order), folded once per
+  // catalog so keystrokes only scan cheap substrings. Highlighting reuses the
+  // tokens only for multi-token queries — single-token queries keep the raw
+  // string so separator folding highlights one contiguous range.
+  const queryTokens = useMemo(() => searchFold(q).split(/\s+/).filter(Boolean), [q])
+  const highlightQuery = queryTokens.length > 1 && /\s/.test(search) ? queryTokens : search
+
+  const haystacks = useMemo(() => {
+    const map = new Map<string, string>()
+
+    for (const provider of providers) {
+      for (const model of provider.models ?? []) {
+        map.set(
+          `${provider.slug}::${model}`,
+          searchFold(`${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`)
+        )
+      }
+    }
+
+    return map
+  }, [providers])
+
   const matches = (provider: ModelOptionProvider, model: string) =>
-    !q || foldIncludes(`${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`, q)
+    queryTokens.every(token => (haystacks.get(`${provider.slug}::${model}`) ?? '').includes(token))
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -90,10 +205,10 @@ export function ModelVisibilityDialog({
           <input
             autoFocus
             className="h-5 w-full bg-transparent text-xs text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-none"
-            onChange={event => setSearch(event.target.value)}
+            onChange={event => setSearchInput(event.target.value)}
             placeholder={copy.search}
             type="text"
-            value={search}
+            value={searchInput}
           />
         </div>
 
@@ -104,13 +219,23 @@ export function ModelVisibilityDialog({
             </div>
           ) : (
             providers.map(provider => {
-              const models = collapseModelFamilies(provider.models ?? []).filter(family => matches(provider, family.id))
+              const allFamilies = collapseModelFamilies(provider.models ?? [])
+              // A–Z, same order as the model menu; the raw id stays searchable
+              // so an upstream prefix (`cmd/…`) filters even when the pretty
+              // name hides it.
+              // Enabled first, then A–Z — ranked by the open-time snapshot so
+              // toggling never reshuffles.
+              const enabledRank = (id: string) => (rank.has(modelVisibilityKey(provider.slug, id)) ? 0 : 1)
+
+              const models = allFamilies
+                .filter(family => matches(provider, family.id))
+                .sort((a, b) => enabledRank(a.id) - enabledRank(b.id) || compareModelIds(a.id, b.id))
 
               if (models.length === 0) {
                 return null
               }
 
-              const allFamilies = collapseModelFamilies(provider.models ?? [])
+              const shown = expanded.has(provider.slug) ? models : models.slice(0, DIALOG_RENDER_CAP)
 
               const onCount = allFamilies.filter(family =>
                 visible.has(modelVisibilityKey(provider.slug, family.id))
@@ -131,6 +256,9 @@ export function ModelVisibilityDialog({
                       <span className="min-w-0 truncate">
                         <HighlightMatches foldSeparators query={search} text={provider.name} />
                       </span>
+                      <span className="shrink-0 font-normal normal-case tracking-normal">
+                        {onCount}/{allFamilies.length}
+                      </span>
                       <DisclosureCaret
                         className="shrink-0 opacity-0 transition group-hover/label:opacity-100"
                         open={!collapsed}
@@ -143,27 +271,33 @@ export function ModelVisibilityDialog({
                     />
                   </div>
                   {!collapsed &&
-                    models.map(family => {
-                      const { name, tag } = modelDisplayParts(family.id)
-                      const key = modelVisibilityKey(provider.slug, family.id)
+                    shown.map(family => (
+                      <VisibilityRow
+                        checked={visible.has(modelVisibilityKey(provider.slug, family.id))}
+                        familyId={family.id}
+                        key={modelVisibilityKey(provider.slug, family.id)}
+                        onToggle={() => toggle(provider, family.id)}
+                        provider={provider}
+                        search={search}
+                        terms={highlightQuery}
+                      />
+                    ))}
+                  {!collapsed && shown.length < models.length ? (
+                    <button
+                      className="w-full px-3 py-1 text-left text-[0.65rem] text-(--ui-text-tertiary) hover:text-foreground"
+                      onClick={() =>
+                        setExpanded(prev => {
+                          const next = new Set(prev)
+                          next.add(provider.slug)
 
-                      return (
-                        <label
-                          className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs hover:bg-(--ui-control-active-background)"
-                          key={key}
-                        >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
-                          </span>
-                          <Switch
-                            checked={visible.has(key)}
-                            onCheckedChange={() => toggle(provider, family.id)}
-                            size="xs"
-                          />
-                        </label>
-                      )
-                    })}
+                          return next
+                        })
+                      }
+                      type="button"
+                    >
+                      Show all {models.length.toLocaleString()} — {models.length - shown.length} more
+                    </button>
+                  ) : null}
                 </div>
               )
             })

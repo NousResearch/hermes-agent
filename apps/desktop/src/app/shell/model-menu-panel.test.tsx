@@ -172,7 +172,9 @@ describe('ModelMenuPanel search', () => {
   // Highlighted labels are split across <mark> nodes, so single-text-node
   // queries miss them — match on the row span's composed textContent.
   const rowWithText = (content: ReturnType<typeof renderPanel>['content'], pattern: RegExp) =>
-    content.queryByText((_, element) => element?.tagName === 'SPAN' && pattern.test(element.textContent ?? ''))
+    content.queryByText(
+      (_, element) => element?.hasAttribute?.('data-row-label') === true && pattern.test(element.textContent ?? '')
+    )
 
   it('hides the non-matching current model while a query is active', async () => {
     $currentProvider.set('deepseek')
@@ -185,9 +187,9 @@ describe('ModelMenuPanel search', () => {
     fireEvent.change(input, { target: { value: 'gemini' } })
 
     await vi.waitFor(() => {
-      expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
+      expect(rowWithText(content, /Deepseek V4 Pro/i)).toBeNull()
     })
-    expect(rowWithText(content, /Deepseek V4 Pro/i)).toBeNull()
+    expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
   })
 
   it('Enter in the search field commits the first match', async () => {
@@ -199,15 +201,16 @@ describe('ModelMenuPanel search', () => {
     fireEvent.change(input, { target: { value: 'gemini' } })
 
     await vi.waitFor(() => {
-      expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
+      expect(rowWithText(content, /Deepseek V4 Pro/i)).toBeNull()
     })
 
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    // First matching family of the first (alphabetical) matching provider.
+    // First matching family of the first (alphabetical) matching provider;
+    // families read A–Z, so 2.5 Flash leads 3.1 Pro.
     await vi.waitFor(() => {
       expect(onSelectModel).toHaveBeenCalledWith({
-        model: 'gemini-3.1-pro',
+        model: 'gemini-2.5-flash',
         provider: 'google',
         sessionId: 'runtime-1'
       })
@@ -235,7 +238,7 @@ describe('ModelMenuPanel search', () => {
     fireEvent.change(input, { target: { value: 'gemini' } })
 
     await vi.waitFor(() => {
-      expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
+      expect(rowWithText(content, /Deepseek V4 Pro/i)).toBeNull()
     })
 
     // First match auto-selected; ↓ steps to the second match.
@@ -244,7 +247,7 @@ describe('ModelMenuPanel search', () => {
 
     await vi.waitFor(() => {
       expect(onSelectModel).toHaveBeenCalledWith({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.5-pro',
         provider: 'google',
         sessionId: 'runtime-1'
       })
@@ -273,9 +276,9 @@ describe('ModelMenuPanel search', () => {
     fireEvent.change(input, { target: { value: 'beast' } })
 
     await vi.waitFor(() => {
-      expect(rowWithText(content, /MoA: BeastMode/)).not.toBeNull()
+      expect(rowWithText(content, /MoA: default/)).toBeNull()
     })
-    expect(rowWithText(content, /MoA: default/)).toBeNull()
+    expect(rowWithText(content, /MoA: BeastMode/)).not.toBeNull()
 
     // The surviving preset IS the first row, so Enter commits it.
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -353,7 +356,9 @@ describe('ModelMenuPanel provider collapse', () => {
     await vi.waitFor(() => {
       expect(
         content.queryByText(
-          (_, element) => element?.tagName === 'SPAN' && (element.textContent ?? '').startsWith('Deepseek V4 Pro')
+          (_, element) =>
+            element?.hasAttribute?.('data-row-label') === true &&
+            (element.textContent ?? '').startsWith('Deepseek V4 Pro')
         )
       ).not.toBeNull()
     })

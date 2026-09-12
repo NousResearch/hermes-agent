@@ -60,12 +60,12 @@ afterEach(() => {
 
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu() {
+function renderMenu(current: ModelMenuController['current'] = { effort: '', fast: false, model: '', provider: '' }) {
   const select = vi.fn()
 
   const controller: ModelMenuController = {
     applyPreset: vi.fn(),
-    current: { effort: '', fast: false, model: '', provider: '' },
+    current,
     presetFor: () => ({}),
     select,
     setOptions: vi.fn()
@@ -118,7 +118,9 @@ describe('the catalog owns model curation', () => {
       // row label span carries it (plus the effort meta suffix).
       expect(
         screen.getByText((_, element) =>
-          Boolean(element?.classList.contains('truncate') && (element?.textContent ?? '').startsWith('Gemini 3.1 pro'))
+          Boolean(
+            element?.hasAttribute?.('data-row-label') && (element?.textContent ?? '').startsWith('Gemini 3.1 pro')
+          )
         )
       ).toBeDefined()
     })
@@ -131,6 +133,165 @@ describe('the catalog owns model curation', () => {
     fireEvent.click(screen.getByText('Edit models…'))
 
     expect($modelVisibilityOpen.get()).toBe(true)
+  })
+
+  it('focuses the search field on open so typing filters immediately', async () => {
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    await vi.waitFor(() => {
+      expect(document.activeElement?.getAttribute('placeholder')).toBe('Search models')
+    })
+  })
+})
+
+describe('multi-upstream rows stay distinguishable', () => {
+  const LOCAL_MODELS = ['cmd/deepseek/deepseek-v4-flash', 'cbai/deepseek-v4-flash', 'auto/best-coding']
+
+  function renderLocal(total = 5973, current?: ModelMenuController['current']) {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: LOCAL_MODELS, name: 'Local', slug: 'local', total_models: total }]
+    })
+    renderMenu(current)
+  }
+
+  it('shows the upstream in the id line, no pills', async () => {
+    renderLocal()
+    await screen.findByText('Best Coding')
+
+    // No qualifier pills — the id line carries the upstream verbatim.
+    expect(screen.getByText('cmd/deepseek/deepseek-v4-flash')).toBeDefined()
+    expect(screen.getByText('cbai/deepseek-v4-flash')).toBeDefined()
+    expect(screen.queryByText('cmd/deepseek')).toBeNull()
+  })
+
+  it('meters the effort as text next to the name', async () => {
+    renderLocal()
+    await screen.findByText('Best Coding')
+    // Native tooltip carries the exact id — truncated rows reveal on hover.
+    const row = screen.getByTitle('cmd/deepseek/deepseek-v4-flash')
+
+    expect(row).toBeDefined()
+    // Medium effort renders as a text suffix on the row.
+    expect(row.textContent).toContain('Med')
+  })
+
+  it('lists families A–Z by default', async () => {
+    renderLocal()
+    await screen.findByText('Best Coding')
+    const names = [...document.querySelectorAll('[data-row-label]')].map(el => el.textContent)
+
+    // Tie on "Deepseek V4 Flash" breaks by id: cbai before cmd.
+    expect(names).toEqual(['Best Coding', 'Deepseek V4 Flash', 'Deepseek V4 Flash'])
+  })
+
+  it('badges the provider header with shown-of-total counts', async () => {
+    renderLocal()
+    await screen.findByText('3 of 5,973')
+  })
+
+  it('still pins the active model first while searching', async () => {
+    renderLocal(5973, { effort: '', fast: false, model: 'cmd/deepseek/deepseek-v4-flash', provider: 'local' })
+    await screen.findByText('Best Coding')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'flash' } })
+
+    await vi.waitFor(() => {
+      const rows = [...document.querySelectorAll('[data-row-label]')]
+
+      // Alphabetically cbai would lead — the active cmd pick stays on top.
+      expect(rows.map(el => el.textContent)).toEqual(['Deepseek V4 Flash', 'Deepseek V4 Flash'])
+      expect(rows[0].closest('span[title]')?.getAttribute('title')).toContain('cmd/deepseek/deepseek-v4-flash')
+    })
+  })
+
+  it('pins the active model first, rest stays A–Z', async () => {
+    renderLocal(5973, { effort: '', fast: false, model: 'cbai/deepseek-v4-flash', provider: 'local' })
+    await screen.findByText('Best Coding')
+    const names = [...document.querySelectorAll('[data-row-label]')]
+
+    expect(names.map(el => el.textContent)).toEqual(['Deepseek V4 Flash', 'Best Coding', 'Deepseek V4 Flash'])
+    expect(names[0].closest('span[title]')?.getAttribute('title')).toContain('cbai/deepseek-v4-flash')
+  })
+
+  it('glides a clipped label on hover and snaps back on leave', async () => {
+    renderLocal()
+    await screen.findByText('Best Coding')
+    const marquee = document.querySelector('[data-marquee="name:cmd/deepseek/deepseek-v4-flash"]') as HTMLElement
+    const inner = marquee.firstElementChild as HTMLElement
+
+    // jsdom reports zero sizes — stage a 200px overflow.
+    Object.defineProperty(inner, 'scrollWidth', { configurable: true, value: 300 })
+    Object.defineProperty(marquee, 'clientWidth', { configurable: true, value: 100 })
+
+    // Hover bubbles to the row, which scrolls every clipped line together.
+    fireEvent.mouseOver(marquee)
+    await vi.waitFor(() => {
+      expect(inner.style.transform).toContain('translateX(-200px)')
+    })
+
+    fireEvent.mouseOut(marquee)
+    expect(inner.style.transform).toBe('')
+  })
+
+  it('leaves fitting labels put on hover', async () => {
+    renderLocal()
+    await screen.findByText('Best Coding')
+    const marquee = document.querySelector('[data-marquee="name:auto/best-coding"]') as HTMLElement
+    const inner = marquee.firstElementChild as HTMLElement
+
+    fireEvent.mouseOver(marquee)
+    expect(inner.style.transform).toBe('')
+  })
+
+  it('renders the variant tag instead of dropping it', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['deepseek/deepseek-v4-pro-thinking'], name: 'Local', slug: 'local' }]
+    })
+    renderMenu()
+    await screen.findByText('Deepseek V4 Pro')
+    expect(screen.getByText('Thinking')).toBeDefined()
+  })
+})
+
+describe('token search', () => {
+  it('matches unordered tokens across id and upstream', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { models: ['opencode/deepseek-v4-flash', 'cmd/deepseek/deepseek-v4-flash'], name: 'Mixed', slug: 'mixed' }
+      ]
+    })
+    renderMenu()
+    await screen.findAllByText('Deepseek V4 Flash')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), {
+      target: { value: 'deepseek v4 flash opencode' }
+    })
+
+    await vi.waitFor(() => {
+      const names = [...document.querySelectorAll('[data-row-label]')].map(el => el.textContent)
+
+      expect(names).toEqual(['Deepseek V4 Flash'])
+    })
+    // The survivor is the opencode route.
+    expect(screen.getByTitle('opencode/deepseek-v4-flash')).toBeDefined()
+  })
+})
+
+describe('search render cap', () => {
+  const MANY = Array.from({ length: 250 }, (_, i) => `zz-model-${String(i).padStart(3, '0')}`)
+
+  it('renders the first 100 matches with a narrowing note', async () => {
+    getGlobalModelOptions.mockResolvedValue({ providers: [{ models: MANY, name: 'Many', slug: 'many' }] })
+    renderMenu()
+    await screen.findByText('Zz Model 000')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'zz-model' } })
+
+    await vi.waitFor(() => {
+      expect(screen.getByText(/keep typing to narrow/i)).toBeDefined()
+    })
+    expect(document.querySelectorAll('[data-row-label]').length).toBe(100)
   })
 })
 

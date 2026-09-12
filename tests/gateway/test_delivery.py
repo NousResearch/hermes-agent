@@ -402,3 +402,66 @@ def test_local_delivery_writes_non_ascii_on_windows_codepage(tmp_path, monkeypat
     written = Path(result["path"]).read_text(encoding="utf-8")
     assert "完了 ✅ café" in written
     assert "日次レポート" in written
+
+class EmailCronSubjectAdapter:
+    """Minimal EMAIL adapter stub recording send metadata (cron-subject injection tests)."""
+
+    splits_long_messages = True
+
+    def __init__(self):
+        self.calls = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return {"success": True}
+
+
+@pytest.mark.asyncio
+async def test_cron_email_delivery_gets_fresh_subject_not_sender_thread(tmp_path, monkeypatch):
+    """Cron deliveries to email without a thread anchor must not inherit the sender's last
+    inbound subject (Gmail would thread the report into that conversation); they get an explicit
+    fresh-conversation subject instead."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = EmailCronSubjectAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.EMAIL: adapter})
+    target = DeliveryTarget.parse("email:user@test.com")
+
+    await router._deliver_to_platform(
+        target, "Nightly backup report",
+        metadata={"job_id": "job1", "job_name": "hermes-nightly-backup"},
+    )
+
+    meta = adapter.calls[0]["metadata"]
+    assert meta.get("subject") == "Cronjob Response: hermes-nightly-backup"
+
+
+@pytest.mark.asyncio
+async def test_cron_email_delivery_falls_back_to_job_id(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = EmailCronSubjectAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.EMAIL: adapter})
+    target = DeliveryTarget.parse("email:user@test.com")
+
+    await router._deliver_to_platform(
+        target, "Weekly report", metadata={"job_id": "weekly-report"},
+    )
+
+    meta = adapter.calls[0]["metadata"]
+    assert meta.get("subject") == "Cronjob Response: weekly-report"
+
+
+@pytest.mark.asyncio
+async def test_cron_email_delivery_with_thread_anchor_keeps_thread(tmp_path, monkeypatch):
+    """Thread-anchored email deliveries keep their thread and are NOT stamped with a cron subject."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = EmailCronSubjectAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.EMAIL: adapter})
+    target = DeliveryTarget.parse("email:user@test.com")
+
+    await router._deliver_to_platform(
+        target, "Re: floor plans",
+        metadata={"job_id": "job1", "thread_id": "floor-plans-3"},
+    )
+
+    meta = adapter.calls[0]["metadata"]
+    assert "subject" not in meta  # subject resolution stays with the adapter's thread context

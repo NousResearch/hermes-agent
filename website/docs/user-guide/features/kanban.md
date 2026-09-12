@@ -577,6 +577,10 @@ hermes kanban create "Translate the docs site to French" \
 
 Use it for open-ended, multi-step, or "keep going until X is true" cards. Skip it for cheap one-shot work — the per-turn judge overhead isn't worth it, and the dispatcher's existing retry/circuit-breaker already handles transient worker failures. The judge is only as good as your goal text, so write the body as **explicit acceptance criteria**.
 
+:::tip Judge outage ≠ "not done yet" — the delivery fallback
+When the judge itself is unreachable (provider transport/auth errors), a completion request can't be judged at all. Because goal-mode workers finish *only* through `kanban_complete`, treating that infra failure as a content rejection would wedge the card forever. So on a judge **transport** failure, `kanban_complete` may instead hand the terminal decision to pre-created **downstream children**: cards linked with `parents=[<this card>]`, still open, and assigned to a *different* profile (so the worker can't rubber-stamp itself — the child re-runs verification). The completion is stamped with `goal_delivery_fallback` metadata (trigger, judge error, released children) for audit. Fail-closed everywhere else: no eligible child, a judge that answers with a real verdict, or a `kanban request-review` handoff all reject exactly as before. Practical consequence: if you run goal-mode cards behind a flaky auxiliary provider, pre-create the verification child (`assignee qa`, `parents=[implementation-card]`) so a judge outage releases work to QA instead of parking it.
+:::
+
 :::note Goal-mode cards borrow the `/goal` engine — they don't connect to it
 `--goal` runs the continuation loop *inside that one card's worker session*. It shares the engine with the [`/goal` slash command](./goals), not the state: setting a `/goal` in a chat session never creates, claims, or moves a kanban card, and a goal-mode card's loop is invisible to any chat session's `/goal status`. If you want this conversation to keep iterating, use [`/goal`](./goals); if you want work on the board, create a card.
 :::

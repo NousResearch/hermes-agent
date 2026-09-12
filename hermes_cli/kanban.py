@@ -806,17 +806,13 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
 def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     """Goal judge for every terminal worker handoff (including review).
 
-    Returns ``(verdict, reason_or_None)``: ``"done"`` allows; ``"blocked"`` = judge ruled the goal
-    unachievable; ``"continue"``/``"wait"`` reject with the judge's reason. Judge failures allow
-    the handoff (logged).
-
-    See #100954.
-    ``{"done", None}`` means the judge allows the handoff; anything else is a rejection whose verdict
-    disambiguates the guidance the caller gives the worker (``continue`` = not done yet, ``blocked`` =
-    judged unachievable — see #100954).
+    Returns ``(verdict, reason_or_None, transport_failed)``: ``"done"`` allows; ``"blocked"`` = judge
+    ruled the goal unachievable; ``"continue"``/``"wait"`` reject with the judge's reason. Judge
+    failures allow the handoff (logged). ``transport_failed`` marks an infra failure (the judge was
+    unreachable), which callers distinguish from a content rejection — see #100954.
     """
     if task is None or not task.goal_mode:
-        return ("done", None)
+        return ("done", None, False)
     try:
         from agent.auxiliary_client import get_text_auxiliary_client
 
@@ -824,34 +820,56 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     except Exception:
         client, model = None, None
     if client is None or not model:
-        return ("done", None)
+        return ("done", None, False)
 
     from hermes_cli.goals import judge_goal
 
-    verdict, reason = "done", ""
+    verdict, reason, transport_failed = "done", "", False
     try:
-        verdict, reason, _, _, _ = judge_goal(goal=f"{task.title}\n\n{task.body or ''}".strip(),
-                                              last_response=evidence.strip())
+        verdict, reason, _, _, transport_failed = judge_goal(
+            goal=f"{task.title}\n\n{task.body or ''}".strip(),
+            last_response=evidence.strip())
     except Exception as judge_exc:
         import logging as _logging
 
         _logging.getLogger(__name__).warning("goal judge check failed, allowing lifecycle handoff: %s",
                                              judge_exc, exc_info=True)
-    return (verdict, None if verdict == "done" else reason)
+    return (verdict, None if verdict == "done" else reason, transport_failed)
 
 
 def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: str,
-                     continue_hint: str) -> Optional[str]:
+                     continue_hint: str) -> tuple[Optional[str], Optional[dict]]:
     """Goal-mode judge gate shared by ``complete`` / ``request-review`` (mirrors tools/kanban_tools.py);
-    applied to every terminal handoff so request-review can't bypass it. Returns the error line, or
-    None to allow."""
-    verdict, rejection = _goal_mode_handoff_rejection(kb.get_task(conn, tid), evidence)
+    applied to every terminal handoff so request-review can't bypass it. Returns
+    ``(error_line_or_None, delivery_fallback_stamp_or_None)``.
+
+    A judge *transport* failure is infra, not content (#100954): for ``completion`` only, when a
+    live downstream child owned by a different profile exists, the handoff is allowed and a
+    ``goal_delivery_fallback`` payload is returned for the caller to stamp into the completion
+    metadata (audit trail; ``recompute_ready`` promotes the child so verification still happens).
+    Every other non-done verdict — and a transport failure without an eligible child — rejects
+    exactly as before."""
+    task = kb.get_task(conn, tid)
+    verdict, rejection, transport_failed = _goal_mode_handoff_rejection(task, evidence)
+    if verdict == "done":
+        return None, None
+    if transport_failed and handoff == "completion":
+        children = kb.eligible_delivery_children(conn, tid, task.assignee) if task else []
+        if children:
+            return None, {
+                "trigger": "goal_judge_transport_failed",
+                "judge_error": rejection,
+                "released_children": children,
+            }
+        return (f"kanban: goal {handoff} of {tid} rejected: judge unreachable (transport "
+                f"failure) — {rejection}. No eligible downstream child to hand verification to; "
+                f"retry later or record the block with kanban block. {continue_hint}"), None
     if verdict == "blocked":
         return (f"kanban: goal {handoff} of {tid} rejected: judge ruled "
-                f"the goal unachievable — {rejection}. {blocked_hint}")
+                f"the goal unachievable — {rejection}. {blocked_hint}"), None
     if rejection is not None:
-        return f"kanban: goal {handoff} of {tid} rejected by judge: {rejection}. {continue_hint}"
-    return None
+        return f"kanban: goal {handoff} of {tid} rejected by judge: {rejection}. {continue_hint}", None
+    return None, None
 
 
 def _cmd_complete(args: argparse.Namespace) -> int:
@@ -872,15 +890,21 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def op(tid):
-            gate_err = _goal_gate_error(
+            gate_err, delivery_stamp = _goal_gate_error(
                 conn, tid, (summary or args.result or "").strip(), "completion",
                 "Re-scope with kanban edit, or record the block with kanban block instead of completing.",
                 "Provide evidence matching the task's acceptance criteria.")
             if gate_err:
                 fail_msg[tid] = gate_err
                 return False
+            if delivery_stamp:
+                merged = dict(metadata) if isinstance(metadata, dict) else {}
+                # System-owned audit key: overwrite any caller-supplied value.
+                merged["goal_delivery_fallback"] = delivery_stamp
+            else:
+                merged = metadata
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
-            return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
+            return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=merged,
                                     expected_run_id=_worker_run_id_for(tid))
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
@@ -960,10 +984,12 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
     if rc:
         return rc
     with kbc.connect_closing() as conn:
-        gate_err = _goal_gate_error(
+        gate_err, _delivery_stamp = _goal_gate_error(
             conn, tid, summary or "", "review handoff",
             "Record the block with kanban block instead of requesting review.",
             "Provide acceptance evidence matching the task.")
+        # review handoff never gets the transport-failure fallback (only ``completion``
+        # does — see _goal_gate_error), so the stamp is always None here.
         if gate_err:
             return _err(gate_err)
         ok, reason = kb.request_review(

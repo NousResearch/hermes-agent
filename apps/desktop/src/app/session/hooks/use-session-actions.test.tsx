@@ -3025,6 +3025,85 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await resumePromise
   })
 
+  it('publishes an answerable pending clarify row even when the warm cache has no validated provenance (#108718)', async () => {
+    // Unlike the proven-cache case above, this cache carries no
+    // transcriptProvenance at all — the realistic shape for a session whose
+    // warm cache was never hydrated with a matching persisted-display
+    // provenance. That gap suppresses the whole pre-hydration transcript
+    // (suppressTranscriptForView), which must not also hide the answerable
+    // clarify row.
+    setSessions([storedSession({ id: 'stored-A', message_count: 1 })])
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [{ id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] }]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const persistedTranscript = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persistedTranscript.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          pending_clarify: {
+            choices: ['safe', 'fast'],
+            question: 'Which path?',
+            request_id: 'req-navigation'
+          },
+          resumed: 'stored-A',
+          running: true,
+          session_id: 'rt-A',
+          session_key: 'stored-A'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const viewSyncs: ClientSessionState[] = []
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onViewSync={(_sessionId, syncedState) => viewSyncs.push(syncedState)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+
+    // The REST transcript promise never resolves in this assertion window, so
+    // any answerable row seen here was published before hydration settled.
+    await waitFor(() => expect(viewSyncs.some(syncedState => syncedState.needsInput)).toBe(true))
+
+    const preHydrationState = viewSyncs.find(syncedState => syncedState.needsInput)
+
+    const answerableBeforeRest =
+      preHydrationState?.messages.filter(
+        message =>
+          message.pending && message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify')
+      ) ?? []
+
+    expect(answerableBeforeRest).toHaveLength(1)
+
+    persistedTranscript.resolve({ messages: [], session_id: 'stored-A' } as never)
+    await resumePromise
+  })
+
   it.each([
     ['with a stale request-store entry', true],
     ['after the request store was already cleared', false]

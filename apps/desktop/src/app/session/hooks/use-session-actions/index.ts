@@ -1300,18 +1300,24 @@ export function useSessionActions({
               // synthetic row into that pipeline would leave a duplicate
               // once the persisted transcript carries the same call under a
               // different message id.
+              //
+              // An unproven warm cache (no matching persisted-display
+              // provenance) still has its history suppressed pending REST
+              // proof, but the clarify projection must survive that gate: it
+              // is derived from the just-returned activate snapshot, not from
+              // the unverified cache, so it is projected onto the (possibly
+              // empty) suppressed transcript rather than being wiped with it.
+              const earlyClarifyBase = suppressUnprovenWarmTranscript ? [] : activatedMessages
+
               const earlyClarifyProjection = pendingClarify
-                ? restorePendingClarifyToolCall(activatedMessages, pendingClarifyToolPayload(pendingClarify))
+                ? restorePendingClarifyToolCall(earlyClarifyBase, pendingClarifyToolPayload(pendingClarify))
                 : null
 
               syncSessionStateToView(
                 cachedRuntimeId,
-                suppressTranscriptForView(
-                  earlyClarifyProjection
-                    ? { ...activatedLivenessState, messages: earlyClarifyProjection.messages }
-                    : activatedLivenessState,
-                  suppressUnprovenWarmTranscript
-                )
+                earlyClarifyProjection
+                  ? { ...activatedLivenessState, messages: earlyClarifyProjection.messages }
+                  : suppressTranscriptForView(activatedLivenessState, suppressUnprovenWarmTranscript)
               )
 
               // session.activate is the ordering barrier for reconnect recovery:

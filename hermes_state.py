@@ -817,6 +817,11 @@ class SessionDB(
         # settlement unknown and must propagate — this helper owns non-idempotent transcript/counter
         # mutations, not just idempotent UPSERTs.
         ioerr_begin_retried = False
+        # One retry for a cjk trigger firing on a tokenizer-less writer (#108841):
+        # the heal drops the cjk triggers (breadcrumb first), after which the replayed
+        # callback runs trigger-free. The rollback above already undid the failed
+        # attempt, so replaying fn is exactly the locked/busy retry contract.
+        cjk_heal_attempted = False
         while True:
             self._raise_if_db_corrupt()
             # NOTE: the replaced/generation live probe runs INSIDE the lock below,
@@ -894,6 +899,13 @@ class SessionDB(
                         # Retry on the SAME connection: close()+reopen would cancel this process's
                         # POSIX locks for every sibling (howtocorrupt §2.2).
                         ioerr_begin_retried = True
+                        continue
+                    # A cjk trigger installed by a connection that could load the tokenizer
+                    # aborts THIS writer's INSERTs ("no such tokenizer" is not a lock): the
+                    # mismatch is a known, self-healable degradation, not a failed write
+                    # (#108841). Falls through to raise when the heal declines (or repeats).
+                    if not cjk_heal_attempted and self._enter_cjk_tokenizer_fail_open(exc):
+                        cjk_heal_attempted = True
                         continue
                     raise  # non-lock error, callback already ran, or patience exhausted
                 if isinstance(exc, sqlite3.DatabaseError):

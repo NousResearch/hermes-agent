@@ -1,0 +1,17 @@
+name: hermes-talk
+repo: https://github.com/TheSmokeDev/hermes-talk
+sha: efebeebfe26f6d1ea9b79dd3e7da80a2f8f418b8
+description: Realtime voice for Hermes through terminal, Discord, and dashboard interfaces.
+maintainer: TheSmokeDev
+tier: community
+docs_url: https://github.com/TheSmokeDev/hermes-talk/blob/efebeebfe26f6d1ea9b79dd3e7da80a2f8f418b8/README.md
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_end
+    - subagent_start
+    - subagent_stop
+    - post_tool_call
+    - pre_approval_request
+  provides_middleware: []
+  requires_env: []

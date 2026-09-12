@@ -373,6 +373,8 @@ def _notif_poll_kanban(sid: str, session: dict) -> None:
         _emit("status.update", sid, {"kind": "process", "text": text})
     if texts:
         session.setdefault("_kanban_pending", []).extend(texts)
+    if session.get("agent") is None:
+        return
     if not session.get("_kanban_pending") or not _notif_claim_turn(session):
         return
     with session["history_lock"]:

@@ -172,11 +172,15 @@ class TestShouldExclude:
         assert _should_exclude(Path("profiles/clean/models/big.gguf"))
         assert _should_exclude(Path("profiles/clean/runtimes/llamacpp/x.dll"))
 
-    def test_excludes_regenerable_cache_at_profile_roots(self):
-        """Live browser/tool caches are mutable and unsafe to snapshot."""
+    def test_excludes_regenerable_cache_but_keeps_durable_artifacts(self):
+        """Catalogs and live browser profiles are rebuilt on demand; delivered media and the
+        citation ledger are not, so they stay in the archive."""
         from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("cache/model_catalog.json"))
         assert _should_exclude(Path("cache/chrome-debug/Default/Cookies"))
         assert _should_exclude(Path("profiles/sage/cache/chrome-debug/cache.db"))
+        assert not _should_exclude(Path("cache/images/x.png"))
+        assert not _should_exclude(Path("profiles/sage/cache/citations/ledger.json"))
         assert not _should_exclude(Path("skills/example/cache/notes.md"))
 
     def test_keeps_nested_dirs_named_like_runtime_trees(self):
@@ -240,29 +244,31 @@ class TestIterBackupFiles:
         assert str(Path("models/big.gguf")) not in selected
         assert not any(s.startswith("hermes-agent") for s in selected)
 
-    def test_prunes_profile_root_caches_but_keeps_nested_user_cache(self, tmp_path):
+    def test_prunes_regenerable_caches_but_keeps_durable_and_nested(self, tmp_path):
         from hermes_cli.backup import _iter_backup_files
 
         root = tmp_path / ".hermes"
         root.mkdir()
-        root_cache = root / "cache" / "browser"
-        profile_cache = root / "profiles" / "sage" / "cache" / "browser"
-        nested_cache = root / "skills" / "example" / "cache"
-        for directory in (root_cache, profile_cache, nested_cache):
-            directory.mkdir(parents=True)
-            (directory / "state.db").write_bytes(b"cache contents")
+        files = {
+            "cache/model_catalog.json": False,
+            "cache/chrome-debug/Default/Cookies": False,
+            "profiles/sage/cache/chrome-debug/cache.db": False,
+            "cache/images/x.png": True,
+            "cache/citations/ledger.json": True,
+            "profiles/sage/cache/images/y.png": True,
+            "skills/example/cache/state.db": True,
+        }
+        for rel in files:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(b"x")
 
         skipped: set = set()
-        selected = {
-            str(rel)
-            for _, rel in _iter_backup_files(root, tmp_path / "out.zip", skipped)
-        }
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip", skipped)}
 
-        assert str(Path("cache/browser/state.db")) not in selected
-        assert str(Path("profiles/sage/cache/browser/state.db")) not in selected
-        assert str(Path("skills/example/cache/state.db")) in selected
-        assert "cache" in skipped
-        assert str(Path("profiles/sage/cache")) in skipped
+        assert {rel for rel, keep in files.items() if keep} == {s.replace(os.sep, "/") for s in selected}
+        assert str(Path("cache/chrome-debug")) in skipped
+        assert str(Path("profiles/sage/cache/chrome-debug")) in skipped
+        assert "cache" not in skipped
 
     def test_skipped_dirs_collected_for_summary(self, tmp_path):
         from hermes_cli.backup import _iter_backup_files

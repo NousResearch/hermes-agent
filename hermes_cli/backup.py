@@ -60,20 +60,28 @@ _EXCLUDED_DIRS = {
     ".cache", ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 }
 
-# Hermes-managed runtime downloads (GGUF models, llama.cpp runtimes, managed Node) and caches are
-# regenerable. Runtime trees routinely reach tens to hundreds of GB; live browser/tool caches may
-# also contain locked SQLite databases that cannot be snapshotted consistently. Match these names
-# ONLY at the root of HERMES_HOME and at ``profiles/<name>/`` — a deeper directory of the same name
-# (for example, a skill's ``models/`` or ``cache/``) is user data and must survive.
-_EXCLUDED_ROOT_DIRS = {"cache", "models", "runtimes", "node"}
+# Hermes-managed runtime downloads (GGUF models, llama.cpp runtimes, managed Node): re-downloaded
+# on demand and routinely tens to hundreds of GB. Matched ONLY at the root of HERMES_HOME and at
+# ``profiles/<name>/`` — a deeper dir of the same name (a skill's ``models/``) is user data.
+_EXCLUDED_ROOT_DIRS = {"models", "runtimes", "node"}
+
+# ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
+# profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
+# the gateway delivered to or received from the user (``gateway.platforms.base``'s media-delivery
+# subdirs) and the grounded-citations evidence ledger. Only these subdirs are archived.
+_KEPT_CACHE_SUBDIRS = {"images", "audio", "videos", "documents", "screenshots", "citations"}
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
     """True when *rel_path* is inside a regenerable tree at a profile-home root."""
     parts = rel_path.parts
-    return bool(parts) and (
-        parts[0] in _EXCLUDED_ROOT_DIRS
-        or (len(parts) >= 3 and parts[0] == "profiles" and parts[2] in _EXCLUDED_ROOT_DIRS))
+    if len(parts) >= 3 and parts[0] == "profiles":
+        parts = parts[2:]
+    if not parts:
+        return False
+    if parts[0] in _EXCLUDED_ROOT_DIRS:
+        return True
+    return parts[0] == "cache" and len(parts) >= 2 and parts[1] not in _KEPT_CACHE_SUBDIRS
 
 
 # SQLite sidecars are excluded because ``*.db`` is snapshotted via ``sqlite3.backup()``:

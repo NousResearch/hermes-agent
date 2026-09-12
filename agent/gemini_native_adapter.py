@@ -172,10 +172,17 @@ def _coerce_content_to_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
-def _inline_data_part(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """``inlineData`` part for an ``image_url`` item carrying a ``data:`` URL; None otherwise."""
-    url = (item.get("image_url") or {}).get("url") or ""
-    if item.get("type") != "image_url" or not isinstance(url, str) or not url.startswith("data:"):
+def _inline_data_part(item: Dict[str, Any], *, allow_video: bool = False) -> Optional[Dict[str, Any]]:
+    """``inlineData`` part for an ``image_url`` (and, when *allow_video*, ``video_url``) item
+    carrying a ``data:`` URL; None otherwise. ``video_analyze`` ships whole videos as OpenAI
+    ``video_url`` data URLs, which Gemini's native API accepts as ``inlineData``. Tool results
+    keep videos disabled: the API rejects video in ``functionResponse.parts``."""
+    is_video = item.get("type") == "video_url"
+    if is_video and not allow_video:
+        return None
+    block_key = "video_url" if is_video else "image_url"
+    url = (item.get(block_key) or {}).get("url") or ""
+    if item.get("type") not in (("image_url", "video_url") if allow_video else ("image_url",)) or not isinstance(url, str) or not url.startswith("data:"):
         return None
     try:
         header, encoded = url.split(",", 1)
@@ -185,16 +192,16 @@ def _inline_data_part(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _multimodal_part(item: Any) -> Optional[Dict[str, Any]]:
+def _multimodal_part(item: Any, *, allow_video: bool = False) -> Optional[Dict[str, Any]]:
     text = _text_of(item)
     if text or isinstance(item, str):
         return {"text": text}
-    return _inline_data_part(item) if isinstance(item, dict) else None
+    return _inline_data_part(item, allow_video=allow_video) if isinstance(item, dict) else None
 
 
-def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
+def _extract_multimodal_parts(content: Any, *, allow_video: bool = False) -> List[Dict[str, Any]]:
     if isinstance(content, list):
-        return [p for p in map(_multimodal_part, content) if p]
+        return [p for p in (_multimodal_part(item, allow_video=allow_video) for item in content) if p]
     text = _coerce_content_to_text(content)
     return [{"text": text}] if text else []
 
@@ -315,7 +322,7 @@ def _build_gemini_contents(
             part = _translate_tool_result_to_gemini(msg, tool_name_by_call_id, include_tool_call_ids, is_gemini3=is_gemini3)
             contents.append({"role": "user", "parts": [part]})
             continue
-        parts = _extract_multimodal_parts(msg.get("content"))
+        parts = _extract_multimodal_parts(msg.get("content"), allow_video=True)
         tool_calls = msg.get("tool_calls") or []
         for tool_call in (tc for tc in tool_calls if isinstance(tc, dict)) if isinstance(tool_calls, list) else ():
             tool_name = str((tool_call.get("function") or {}).get("name") or "")

@@ -124,8 +124,14 @@ authentication; manage sign-in from the registered connection controls.
        - **Session token** — paste the dashboard session token from the
          remote gateway. When editing, *"Leave blank to keep the saved
          token."*
-       - **OAuth** — sign in through the Nous Portal browser flow; no token
-         to paste.
+       - **OAuth** — the common browser sign-in path, not limited to Nous Portal.
+         The app probes the entered gateway URL and normally labels
+         the action **Sign in with `<provider>`**. If all advertised providers
+         are password-based, it instead shows the generic **Sign in** action,
+         which opens the username/password flow. If probing fails or returns
+         no providers, the action remains **Sign in with your identity
+         provider**; the registry does not guess at password auth or add
+         username/password fields.
    - *SSH only:*
      - **SSH host** — one composite field in `user@host:22` form (user and
        port optional). Your SSH key is used; the app adopts a dashboard

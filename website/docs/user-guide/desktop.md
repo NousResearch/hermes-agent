@@ -378,7 +378,7 @@ The connection has two halves: on the backend you protect it with an **auth prov
 
 **Pick a provider based on where the backend lives:**
 
-- **OAuth (Nous Portal) — preferred for anything reachable beyond your own machine.** Logins are verified against your Nous account, so this is the option suitable for a VPS, a public host, or any remote backend. Register the dashboard with `hermes dashboard register` (or the Portal [`/local-dashboards`](https://portal.nousresearch.com/local-dashboards) page) to provision its OAuth client, then sign in from the app with **Sign in with Nous Research**. A self-hosted OIDC provider works the same way if you run your own identity provider.
+- **OAuth — preferred for anything reachable beyond your own machine.** This is the browser sign-in path for a VPS, public host, or other remote backend, and it is not tied to one identity provider. Nous Research is the common hosted option: register the dashboard with `hermes dashboard register` (or the Portal [`/local-dashboards`](https://portal.nousresearch.com/local-dashboards) page) to provision its OAuth client. A self-hosted OIDC provider works the same way.
 - **Username/password — local / trusted-network use only.** The simplest option when the backend is on the same trusted LAN or reachable only over a VPN (e.g. Tailscale). It protects a single shared credential with no external identity provider, so **do not use it for a dashboard exposed to the public internet** — reach for OAuth there instead.
 
 The rest of this section shows the username/password path because it's the quickest to stand up on a trusted network; for the OAuth path see [Web Dashboard → Default provider: Nous Research](./features/web-dashboard.md#default-provider-nous-research).
@@ -413,27 +413,45 @@ Prefer not to keep a plaintext password at rest? Set `HERMES_DASHBOARD_BASIC_AUT
 Running the backend as a systemd service? Give the unit `EnvironmentFile=%h/.hermes/.env` so the credentials are in the environment at boot.
 
 :::warning
-The backend reads and writes your `.env` (API keys, secrets) and can run agent commands. The **username/password** setup shown above is for a trusted network — never expose a password-protected backend directly to the open internet; put it behind a VPN. [Tailscale](https://tailscale.com/) is the clean option: bind to the machine's tailscale IP (`--host <tailscale-ip>`) and use `http://<tailscale-ip>:9119` as the Remote URL so only your tailnet can reach it. To reach a backend over the public internet, use the **OAuth (Nous Portal)** provider instead.
+The backend reads and writes your `.env` (API keys, secrets) and can run agent commands. The **username/password** setup shown above is for a trusted network — never expose a password-protected backend directly to the open internet; put it behind a VPN. [Tailscale](https://tailscale.com/) is the clean option: bind to the machine's tailscale IP (`--host <tailscale-ip>`) and use `http://<tailscale-ip>:9119` as the Remote URL so only your tailnet can reach it. To reach a backend over the public internet, use an OAuth identity provider instead.
 :::
 
 ### In the app
 
-**Settings → Gateways → Remote gateway:**
+In **Settings → Gateways → Registered gateways**, click **Add connection**, then
+choose **Remote gateway**:
 
-1. **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` work if you front it with a reverse proxy)
-2. **Sign in** — the app detects which provider the backend advertises and adapts the button. For a username/password backend it shows a **Sign in** button that opens a credential form (enter the credentials from step 1). For an OAuth backend it shows **Sign in with `<provider>`** (e.g. *Sign in with Nous Research*), which runs the provider's browser sign-in. Either way the app ends up with an authenticated session against the backend.
-3. **Save and reconnect** — switches the desktop shell onto the remote backend. The session refreshes automatically; you stay signed in across restarts when `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is set.
+1. Enter a unique **Name** and the **Gateway URL**, such as
+   `http://<backend-host>:9119` (reverse-proxy path prefixes such as `/hermes`
+   work).
+2. Under **Authentication**, choose **Session token** or **OAuth**. These are
+   the only two controls. The registry does not expose separate username or password fields.
+   - **Session token** — paste the dashboard session token used for REST and
+     WebSocket access. When editing a saved connection, leave the field blank
+     to keep its existing token.
+   - **OAuth** — the app probes the entered gateway URL for its advertised
+     providers. A normal OAuth provider gets **Sign in with `<provider>`** and
+     opens its browser flow. If every advertised provider is a password-only provider,
+     the action becomes the generic **Sign in** action and opens the
+     username/password flow. If the probe fails or returns no providers, the
+     app retains **Sign in with your identity provider**; it does not assume
+     password auth or invent username/password fields in the registry.
+3. Complete sign-in when using OAuth, then click **Save connection**. Use
+   **Test** on the saved row to verify both its HTTP and WebSocket legs.
 
 You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_URL` environment variable before launching the app (it overrides the in-app setting); you still sign in from the Gateways settings panel.
 
-:::note Per-profile remote hosts
-The remote gateway host is configured per [profile](./profiles.md), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
+:::note Gateway and profile scope
+Gateway connections are registered at the machine level. After connecting,
+Desktop discovers the profiles on that gateway; switching profiles does not
+rewrite the saved gateway URL or authentication method.
 :::
 
 ### Troubleshooting
 
 - **Sign-in fails with 401 / "Invalid credentials"** — the username or password doesn't match the backend's `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. The backend returns the same generic error for an unknown user and a wrong password (no enumeration oracle), so double-check both. Confirm the gate is on with `curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'` — it should report `true` and include `"basic"`.
-- **No "Sign in" button — it asks for a session token instead** — the backend's username/password provider isn't active. `/api/status` won't list `"basic"` in `auth_providers`. Make sure both the username and a password (or password hash) are set in `~/.hermes/.env` and that the dashboard process actually loaded them.
+- **OAuth shows “Sign in with your identity provider”** — provider probing failed or the gateway advertised no providers. This is a fail-open label fallback: the app keeps the generic identity-provider OAuth path instead of guessing that the gateway uses password auth. Check the URL and reachability, then retry; no username/password fields should appear in the registry.
+- **Expected a username/password prompt** — select **OAuth**, not **Session token**, and check that the entered gateway advertises only password-based providers (for the built-in provider, `/api/status` includes `"basic"` in `auth_providers`). The registry then shows the generic **Sign in** action, which opens the credential flow. If any advertised provider is not password-based, the provider-labelled OAuth path is retained.
 - **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value. Without it the token-signing key is regenerated per boot, invalidating all sessions.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
 

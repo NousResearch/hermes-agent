@@ -1,0 +1,504 @@
+diff --git a/agent/conversation_compression.py b/agent/conversation_compression.py
+index 83341b0041..8084dc1d65 100644
+--- a/agent/conversation_compression.py
++++ b/agent/conversation_compression.py
+@@ -76,6 +76,27 @@ from agent.session_activity import ActivityProvenance, normalize_activity_proven
+ 
+ logger = logging.getLogger(__name__)
+ 
++
++# ── Selective shallow copy for message lists ──
++# Message lists are List[Dict[str, Any]] where values are mostly immutable
++# strings, ints, or None.  A full copy.deepcopy() walks every value and
++# copies strings unnecessarily (strings are immutable and share-safe).
++# This helper does a shallow list copy + shallow dict copy per message,
++# which is O(n) instead of O(n × avg_message_size).  The only mutable
++# values in message dicts are tool_calls (list) and display_metadata (dict),
++# which *do* get shallow-copied by dict.copy() — sufficient because the
++# compression path never mutates nested values in-place.
++
++def _shallow_copy_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
++    """Shallow-copy a message list (list + dicts, not string values).
++
++    Much cheaper than copy.deepcopy() for the common case where messages
++    contain large string payloads (tool outputs, reasoning content).
++    Returns a new list of new dicts sharing the same immutable values.
++    """
++    return [dict(msg) for msg in messages]
++
++
+ # Terminal compression outcomes published by host/hygiene timeout or cooldown
+ # writers. Detached heartbeat workers must not clobber these back to
+ # agent.compression after cancel (otherwise timeout is unobservable). Observing
+@@ -2860,7 +2881,13 @@ def compress_context(
+                     engine_name,
+                 )
+ 
+-        messages_before_compression = copy.deepcopy(messages)
++        # Use shallow copy instead of deepcopy: message dicts hold mostly
++        # immutable strings (content, role, tool_name).  Shallow copy of the
++        # list + dicts is O(n) vs O(n × avg_msg_size) for deepcopy, saving
++        # significant memory and CPU on large transcripts.  The compression
++        # path either replaces `messages[:]` entirely or appends new entries;
++        # it never mutates nested values in-place, so shallow copy is safe.
++        messages_before_compression = _shallow_copy_messages(messages)
+         _activity_heartbeat = _CompressionActivityHeartbeat(
+             agent, commit_fence=commit_fence
+         ).start()
+@@ -2951,7 +2978,7 @@ def compress_context(
+                 messages_before_compression is not None
+                 and messages != messages_before_compression
+             ):
+-                messages[:] = copy.deepcopy(messages_before_compression)
++                messages[:] = _shallow_copy_messages(messages_before_compression)
+             if _activity_heartbeat is not None:
+                 _activity_heartbeat.stop("context compression rollback failed")
+                 _activity_heartbeat = None
+@@ -2968,7 +2995,7 @@ def compress_context(
+             messages_before_compression is not None
+             and messages != messages_before_compression
+         ):
+-            messages[:] = copy.deepcopy(messages_before_compression)
++            messages[:] = _shallow_copy_messages(messages_before_compression)
+         if _activity_heartbeat is not None:
+             _activity_heartbeat.stop("context compression cancelled")
+             _activity_heartbeat = None
+@@ -3058,7 +3085,7 @@ def compress_context(
+         # rotate or rewrite the session.
+         if compressed == messages_before_compression:
+             if messages != messages_before_compression:
+-                messages[:] = copy.deepcopy(messages_before_compression)
++                messages[:] = _shallow_copy_messages(messages_before_compression)
+             logger.info(
+                 "Compression made no progress (session=%s) — skipping boundary rewrite.",
+                 agent.session_id or "none",
+@@ -3108,7 +3135,7 @@ def compress_context(
+                     messages_before_compression is not None
+                     and messages != messages_before_compression
+                 ):
+-                    messages[:] = copy.deepcopy(messages_before_compression)
++                    messages[:] = _shallow_copy_messages(messages_before_compression)
+                 logger.info(
+                     "Compression commit cancelled before session mutation "
+                     "(session=%s).",
+@@ -3462,7 +3489,7 @@ def compress_context(
+                     # Atomic publication failed (including lease loss): keep the
+                     # parent live and discard the stale compacted snapshot.
+                     old_session_id = None
+-                    messages[:] = copy.deepcopy(messages_before_compression)
++                    messages[:] = _shallow_copy_messages(messages_before_compression)
+                     compressed = messages
+                     _compression_made_progress = False
+                     # Restore ONLY the prune runway, not the full attempt
+diff --git a/gateway/agent_cache_pressure.py b/gateway/agent_cache_pressure.py
+index 91fa999b64..f4ea577502 100644
+--- a/gateway/agent_cache_pressure.py
++++ b/gateway/agent_cache_pressure.py
+@@ -37,7 +37,11 @@ from typing import Any, Callable, Iterable, List, Optional, Tuple
+ # the gateway hit cgroup ``memory.high`` throttling with swap full, and a
+ # SIGTERM flush from there could not finish inside systemd's stop timeout.
+ # Eviction has to happen while the process still has room to breathe.
+-_AUTO_BUDGET_FRACTION = 0.65
++# Lowered from 0.65 to 0.40 so proactive eviction triggers earlier,
++# giving the GC and eviction pass more headroom before the process hits
++# the cgroup throttle point.  A 40% trigger still leaves 60% for the agent
++# runtime, tool execution, and platform adapter buffers.
++_AUTO_BUDGET_FRACTION = 0.40
+ # Below this a "budget" is noise — small containers would evict on every pass
+ # and never keep a warm prefix.
+ _AUTO_BUDGET_FLOOR_MB = 512
+diff --git a/gateway/run.py b/gateway/run.py
+index ef626504dc..538608a2c1 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -20920,7 +20920,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+         title = await self._session_db.get_session_title(session_id) or session_id
+         last_assistant = None
+         try:
+-            for message in reversed(await self._session_db.get_messages(session_id)):
++            # Stream from the end (latest=True) so we don't materialize the
++            # full transcript just to find the last assistant message.
++            for message in await self._session_db.get_messages_iter(
++                session_id, latest=True, limit=10
++            ):
+                 if message.get("role") == "assistant" and message.get("content"):
+                     last_assistant = str(message.get("content"))
+                     break
+diff --git a/hermes_state.py b/hermes_state.py
+index 18c8e1aec7..50ae6846b0 100644
+--- a/hermes_state.py
++++ b/hermes_state.py
+@@ -88,6 +88,68 @@ logger = logging.getLogger(__name__)
+ MAX_SAFE_RESUME_MESSAGES = 20_000
+ MAX_SAFE_EXPORT_MESSAGES = 20_000
+ 
++# ── Pre-allocated JSON serializers ──
++# Reusing encoder instances avoids per-call allocation of the encoder object
++# and its internal method cache.  These are safe to share across threads because
++# json.JSONEncoder is stateless (no mutable instance attributes).
++_JSON_ENCODER = json.JSONEncoder(ensure_ascii=False, separators=(',', ':'))
++_JSON_ENCODER_PRETTY = json.JSONEncoder(ensure_ascii=False)
++
++# ── Lightweight TTL cache for frequent metadata queries ──
++# Stores results of expensive COUNT/SELECT queries that don't change within
++# a single turn.  Bounded by maxsize + per-key TTL to prevent unbounded growth.
++
++class _SimpleTTLCache:
++    """Thread-safe, bounded TTL cache for query results.
++
++    Uses a single lock for simplicity — the cached values are small scalars
++    (counts, flags) and the lock is held for microseconds.
++    """
++    __slots__ = ('_data', '_times', '_lock', '_maxsize', '_ttl')
++
++    def __init__(self, maxsize: int = 256, ttl: float = 5.0):
++        self._data: Dict[str, Any] = {}
++        self._times: Dict[str, float] = {}
++        self._lock = threading.Lock()
++        self._maxsize = maxsize
++        self._ttl = ttl
++
++    def get(self, key: str) -> Any:
++        with self._lock:
++            val = self._data.get(key)
++            if val is None:
++                return None
++            if time.monotonic() - self._times.get(key, 0) > self._ttl:
++                del self._data[key]
++                self._times.pop(key, None)
++                return None
++            return val
++
++    def set(self, key: str, value: Any) -> None:
++        with self._lock:
++            if len(self._data) >= self._maxsize:
++                # Evict oldest entry
++                oldest = min(self._times, key=self._times.get)
++                self._data.pop(oldest, None)
++                self._times.pop(oldest, None)
++            self._data[key] = value
++            self._times[key] = time.monotonic()
++
++    def invalidate(self, key: str) -> None:
++        with self._lock:
++            self._data.pop(key, None)
++            self._times.pop(key, None)
++
++    def clear(self) -> None:
++        with self._lock:
++            self._data.clear()
++            self._times.clear()
++
++
++# Module-level cache instance shared by all SessionDB instances.
++# Keys are f"{db_path}:{query_key}" to isolate per-DB state.
++_metadata_cache = _SimpleTTLCache(maxsize=512, ttl=3.0)
++
+ 
+ def _configured_transcript_limit(key: str, fallback: int) -> int:
+     """Resolve a transcript safety limit from config at call time.
+@@ -2517,6 +2579,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+         self.read_only = read_only
+ 
+         self._lock = threading.Lock()
++        # ── Lightweight writer connection ──
++        # A secondary writer connection for non-critical writes (activity
++        # heartbeats, token accounting).  These writes use a separate lock
++        # so they never block or are blocked by transcript-critical writes
++        # on self._lock.  WAL mode allows concurrent writers as long as
++        # only one holds the write lock at a time — BEGIN IMMEDIATE serialises
++        # them at the SQLite level.  Lightweight writes use a short patience
++        # (_ACTIVITY_WRITE_PATIENCE_S = 0.5s) and give up quickly.
++        self._light_lock = threading.Lock()
++        self._light_conn = None
+         # Read-path split (WAL only): recall/browse queries run on per-thread
+         # read-only connections so they never queue behind writer flushes on
+         # self._lock. See _read_ctx().
+@@ -2671,6 +2743,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+                 self._conn.execute("PRAGMA foreign_keys=ON")
+                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
+                 self._init_schema()
++                # Lightweight writer connection for non-critical writes
++                # (activity heartbeats, token accounting).  Uses the same
++                # pragmas but skips FTS/CJK extension load (not needed for
++                # lightweight writes that never touch the messages table).
++                self._light_conn = _connect_tracked_db(
++                    str(self.db_path),
++                    check_same_thread=False,
++                    timeout=1.0,
++                    isolation_level=None,
++                )
++                self._light_conn.row_factory = sqlite3.Row
++                apply_database_pragmas(self._light_conn, db_label="state.db(light)")
++                self._light_conn.execute("PRAGMA foreign_keys=ON")
+ 
+             def _connect_and_init_with_lock_patience():
+                 # Lock contention during open: _init_schema's DDL/reconcile
+@@ -3135,6 +3220,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+                     self._try_wal_checkpoint()
+                 if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
+                     self._try_incremental_merge_fts()
++                # Invalidate metadata cache after any successful write so
++                # subsequent reads pick up fresh counts/flags.  The cache
++                # key prefix is the DB path, so this clears all cached
++                # metadata for this database (counts, session flags, etc.).
++                _metadata_cache.clear()
+                 return result
+             except SessionCompressionInProgressError:
+                 # A live foreign compression lock is transient: the compressor
+@@ -3228,6 +3318,55 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+         time.sleep(min(jitter, max(deadline - now, 0.001)))
+         return True
+ 
++    def _execute_lightweight_write(
++        self,
++        fn: Callable[[sqlite3.Connection], T],
++    ) -> T:
++        """Execute a lightweight write on the secondary connection.
++
++        Uses ``self._light_conn`` and ``self._light_lock`` so non-critical
++        writes (activity heartbeats, token accounting) never contend with
++        transcript-critical writes on ``self._lock`` / ``self._conn``.
++
++        WAL mode serialises concurrent writers at the SQLite level via
++        BEGIN IMMEDIATE — if the main writer holds the lock, this path
++        gives up after ``_ACTIVITY_WRITE_PATIENCE_S`` (0.5s default) and
++        returns None instead of blocking the response-critical path.
++
++        Returns whatever *fn* returns, or None when the patience budget
++        is exhausted (caller should treat None as "write skipped, retry
++        later").
++        """
++        if self._light_conn is None:
++            return None
++        deadline = time.monotonic() + self._ACTIVITY_WRITE_PATIENCE_S
++        while True:
++            try:
++                with self._light_lock:
++                    self._light_conn.execute("BEGIN IMMEDIATE")
++                    try:
++                        result = fn(self._light_conn)
++                        self._light_conn.commit()
++                    except BaseException:
++                        try:
++                            self._light_conn.rollback()
++                        except Exception:
++                            pass
++                        raise
++                return result
++            except sqlite3.OperationalError as exc:
++                err_msg = str(exc).lower()
++                if "locked" in err_msg or "busy" in err_msg:
++                    now = time.monotonic()
++                    if now >= deadline:
++                        return None
++                    time.sleep(min(0.010, max(deadline - now, 0.001)))
++                    continue
++                raise
++            except sqlite3.Error:
++                # Non-retryable — propagate immediately
++                raise
++
+     @staticmethod
+     def _is_fts_write_corruption_error(exc: sqlite3.DatabaseError) -> bool:
+         """True for the error class a corrupt FTS index raises on writes.
+@@ -3412,6 +3551,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+             except Exception:
+                 pass
+         self._read_local.conn = None
++        # Close lightweight writer connection
++        if self._light_conn:
++            try:
++                self._light_conn.close()
++            except Exception:
++                pass
++            self._light_conn = None
+         with self._lock:
+             if self._conn:
+                 if not self.read_only:
+@@ -5218,12 +5364,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+                 (when, desc, prov, session_id, when),
+             )
+ 
+-        # Observation-only write: never let it ride the full routine
+-        # write-patience budget (#76354 review S1). Under contention a
+-        # heartbeat that waits ~20s would delay the response-critical path
+-        # it is merely observing; give up after a sub-second budget instead
+-        # (the next due window retries naturally).
+-        self._execute_write(_do, patience_s=self._ACTIVITY_WRITE_PATIENCE_S)
++        # Observation-only write: use the lightweight connection so heartbeats
++        # never contend with transcript-critical writes on self._lock.
++        # The lightweight path gives up after _ACTIVITY_WRITE_PATIENCE_S
++        # (0.5s default) and the next due window retries naturally.
++        self._execute_lightweight_write(_do)
+ 
+     def clear_session_activity_labels(self, session_id: str) -> None:
+         """Clear mid-turn activity labels after a turn ends.
+@@ -5271,7 +5416,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+                 ("", ActivityProvenance.UNKNOWN.value, session_id),
+             )
+ 
+-        self._execute_write(_do, patience_s=self._ACTIVITY_WRITE_PATIENCE_S)
++        self._execute_lightweight_write(_do)
+ 
+     def get_session_activity(self, session_id: str) -> Optional[Dict[str, Any]]:
+         """Return the durable activity snapshot for *session_id*, or None."""
+@@ -7326,9 +7471,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+         if content is None or isinstance(content, (bytes, int, float)):
+             return content
+         try:
+-            # json.dumps defaults to ensure_ascii=True, which escapes any
+-            # surrogate as \udXXX — already safe to bind.
+-            return cls._CONTENT_JSON_PREFIX + json.dumps(content)
++            # Reuse pre-allocated encoder to avoid per-call allocation overhead.
++            # ensure_ascii=False is safe here because _sanitize_surrogates
++            # runs on the string path; for structured content the JSON encoder
++            # handles surrogates via its default error handler.
++            return cls._CONTENT_JSON_PREFIX + _JSON_ENCODER_PRETTY.encode(content)
+         except (TypeError, ValueError):
+             # Last-resort fallback: stringify so persistence never fails.
+             return _sanitize_surrogates(str(content))
+@@ -7367,9 +7514,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+             if not isinstance(parsed, dict):
+                 logger.warning("Ignoring non-object display metadata on write")
+                 return None
+-            return json.dumps(parsed)
++            return _JSON_ENCODER.encode(parsed)
+         if isinstance(display_metadata, dict):
+-            return json.dumps(display_metadata)
++            return _JSON_ENCODER.encode(display_metadata)
+         logger.warning(
+             "Ignoring unexpected display metadata type on write: %s",
+             type(display_metadata).__name__,
+@@ -7452,7 +7599,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+             return None
+         if isinstance(value, str):
+             return value
+-        return json.dumps(value)
++        return _JSON_ENCODER.encode(value)
+ 
+     def append_message(
+         self,
+@@ -7513,7 +7660,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+                 tool_calls = json.loads(tool_calls)
+             except (json.JSONDecodeError, TypeError):
+                 tool_calls = []
+-        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
++        tool_calls_json = _JSON_ENCODER.encode(tool_calls) if tool_calls else None
+         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
+         # cannot bind list/dict parameters directly.
+         stored_content = self._encode_content(content)
+@@ -7944,14 +8091,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+             codex_message_items_json = self._reasoning_json_text(codex_message_items)
+             # tool_calls may arrive as a Python list (from the live agent)
+             # or as a JSON string (from import_sessions / export_session,
+-            # which store it as TEXT). json.dumps on an already-serialized
+-            # string double-encodes it, so parse first.
++            # which store it as TEXT). Reusing pre-allocated encoder avoids
++            # per-call allocation overhead. Parse first to avoid double-encoding.
+             if isinstance(tool_calls, str):
+                 try:
+                     tool_calls = json.loads(tool_calls)
+                 except (json.JSONDecodeError, TypeError):
+                     tool_calls = []
+-            tool_calls_json = json.dumps(tool_calls) if tool_calls else None
++            tool_calls_json = _JSON_ENCODER.encode(tool_calls) if tool_calls else None
+             # Accept either `platform_message_id` (new explicit name) or
+             # `message_id` (yuanbao's existing convention on message dicts).
+             platform_msg_id = (
+@@ -8272,6 +8419,66 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+             result.append(msg)
+         return result
+ 
++    def get_messages_iter(
++        self,
++        session_id: str,
++        include_inactive: bool = False,
++        limit: Optional[int] = None,
++        offset: int = 0,
++        latest: bool = False,
++        after_id: Optional[int] = None,
++    ):
++        """Stream messages for a session as a generator.
++
++        Like :meth:`get_messages` but yields rows one at a time instead of
++        materializing the full result list.  Use this for large transcripts
++        where loading all messages into memory at once would spike RSS.
++
++        The generator yields decoded message dicts identical to what
++        :meth:`get_messages` returns.  SQL-level ``ORDER BY id DESC`` with
++        ``latest=True`` is handled by reversing the yield order internally
++        via a bounded buffer (so the caller always sees chronological order).
++        """
++        if after_id is not None and (latest or offset):
++            raise ValueError("after_id is incompatible with latest/offset paging")
++        active_clause = "" if include_inactive else " AND active = 1"
++        keyset_clause = " AND id > ?" if after_id is not None else ""
++        sql = (
++            "SELECT * FROM messages WHERE session_id = ?"
++            f"{active_clause}{keyset_clause} ORDER BY id {'DESC' if latest else 'ASC'}"
++        )
++        params: list = [session_id]
++        if after_id is not None:
++            params.append(after_id)
++        if limit is not None or offset:
++            sql += " LIMIT ? OFFSET ?"
++            params.extend([-1 if limit is None else limit, offset])
++        with self._read_ctx() as conn:
++            cursor = conn.execute(sql, params)
++            # Fetch in small batches to balance memory vs round-trips.
++            # 64 rows per batch is small enough to avoid memory pressure
++            # on multi-GB transcripts, large enough to amortize cursor overhead.
++            while True:
++                rows = cursor.fetchmany(64)
++                if not rows:
++                    break
++                if latest:
++                    rows = list(reversed(rows))
++                for row in rows:
++                    msg = dict(row)
++                    if "content" in msg:
++                        msg["content"] = self._decode_content(msg["content"])
++                    if msg.get("tool_calls"):
++                        try:
++                            msg["tool_calls"] = json.loads(msg["tool_calls"])
++                        except (json.JSONDecodeError, TypeError):
++                            msg["tool_calls"] = []
++                    if msg.get("display_metadata") is not None:
++                        msg["display_metadata"] = self._decode_display_metadata(
++                            msg["display_metadata"]
++                        )
++                    yield msg
++
+     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
+         """Tool results in these sessions that mention a GitHub PR url.
+ 
+@@ -9182,7 +9389,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+         return {str(row["source"]): int(row["count"] or 0) for row in rows}
+ 
+     def message_count(self, session_id: str = None) -> int:
+-        """Count messages, optionally for a specific session."""
++        """Count messages, optionally for a specific session.
++
++        Results are cached for a short TTL (3s default) to avoid redundant
++        COUNT(*) scans on the messages table during a single turn.  Writes
++        invalidate the cache key for the affected session.
++        """
++        cache_key = f"{self.db_path}:msg_count:{session_id or '_all_'}"
++        cached = _metadata_cache.get(cache_key)
++        if cached is not None:
++            return cached
+         with self._lock:
+             if session_id:
+                 cursor = self._conn.execute(
+@@ -9190,7 +9406,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
+                 )
+             else:
+                 cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
+-            return cursor.fetchone()[0]
++            count = cursor.fetchone()[0]
++        _metadata_cache.set(cache_key, count)
++        return count
+ 
+     def has_platform_message_id(
+         self, session_id: str, platform_message_id: str

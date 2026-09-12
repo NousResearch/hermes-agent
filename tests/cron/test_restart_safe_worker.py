@@ -146,6 +146,9 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
             observed_homes.append(get_hermes_home().resolve()) or True
         )
     )
+    disable_capture = Mock()
+    monkeypatch.setattr(scheduler, "disable_external_worker_stderr_capture", disable_capture)
+    monkeypatch.setenv(scheduler.EXTERNAL_WORKER_STDERR_CAPTURE_ENV, "1")
     monkeypatch.setattr("cron.executions.adopt_claimed_execution", adopted)
     monkeypatch.setattr(scheduler, "run_one_job", run)
 
@@ -153,6 +156,8 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
 
     adopted.assert_called_once_with("exec-1")
     run.assert_called_once()
+    disable_capture.assert_called_once_with()
+    assert scheduler.EXTERNAL_WORKER_STDERR_CAPTURE_ENV not in os.environ
     assert run.call_args.args[0]["id"] == "job-1"
     expected_home = (tmp_path / "profile").resolve()
     assert observed_homes == [expected_home, expected_home]
@@ -263,6 +268,78 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     assert payloads[0]["multiplex_active"] is True
     # Once the attempt is terminal the parent reaps its own handoff artifacts.
     assert not (tmp_path / "cron/external-workers/exec-1.json").exists()
+
+
+def test_external_worker_reports_redacted_stderr_before_ack(
+    tmp_path, monkeypatch, caplog
+):
+    import cron.scheduler as scheduler
+
+    job = {"id": "job-startup", "execution_id": "exec-startup", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, *, unit_suffix: ["scope", "--", *command],
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "mark_execution_handoff_pending",
+        lambda _execution_id: {"id": "exec-startup", "handoff_pending": 1},
+    )
+
+    secret = "sk-abcdefghijklmnopqrstuvwxyz"
+
+    class FakeProcess:
+        returncode = 9
+
+        def poll(self):
+            return self.returncode
+
+    def popen(_command, **kwargs):
+        assert kwargs["stderr"] is not subprocess.DEVNULL
+        kwargs["stderr"].write(f"worker bootstrap failed: API_KEY={secret}\n".encode())
+        kwargs["stderr"].flush()
+        return FakeProcess()
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(RuntimeError, match="exited before ownership acknowledgement"):
+            scheduler._launch_external_cron_worker(job)
+
+    assert "worker bootstrap failed" in caplog.text
+    assert secret not in caplog.text
+    assert "API_KEY=***" in caplog.text
+    assert not (tmp_path / "cron/external-workers/exec-startup.stderr").exists()
+
+
+def test_external_worker_wait_reports_delayed_stderr_and_cleans_it(
+    tmp_path, monkeypatch, caplog
+):
+    import cron.scheduler as scheduler
+
+    stderr_path = tmp_path / "worker.stderr"
+    secret = "ghp_abcdefghijklmnopqrstuvwxyz"
+    stderr_path.write_bytes(f"worker stayed alive: TOKEN={secret}\n".encode())
+    process = Mock()
+    process.wait.return_value = 0
+    monkeypatch.setattr(
+        scheduler,
+        "get_execution",
+        lambda _execution_id: {"status": "completed"},
+    )
+
+    with caplog.at_level("ERROR"):
+        assert scheduler._wait_for_external_cron_worker(
+            process,
+            execution_id="exec-delayed",
+            stderr_path=stderr_path,
+            report_stderr=True,
+        ) is True
+
+    assert "worker stayed alive" in caplog.text
+    assert secret not in caplog.text
+    assert not stderr_path.exists()
 
 
 def test_external_worker_exit_rechecks_exact_execution_before_failure(monkeypatch):

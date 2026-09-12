@@ -3031,6 +3031,8 @@ def _wait_for_external_cron_worker(
     execution_id: str,
     job_id: Optional[str] = None,
     handoff_files: tuple[Path, ...] = (),
+    stderr_path: Optional[Path] = None,
+    report_stderr: bool = False,
 ) -> bool:
     try:
         return _wait_for_external_cron_worker_body(
@@ -3042,7 +3044,14 @@ def _wait_for_external_cron_worker(
                 _restart_safe_waiter_job_ids.discard(job_id)
         # The execution is terminal or its worker is dead: nobody will read a
         # payload or acknowledgement left behind by a late/unread handoff.
-        for stale in handoff_files:
+        if report_stderr and stderr_path is not None:
+            report_external_worker_stderr(stderr_path, execution_id=execution_id)
+        cleanup_files = (
+            (*handoff_files, stderr_path)
+            if stderr_path is not None
+            else handoff_files
+        )
+        for stale in cleanup_files:
             try:
                 stale.unlink(missing_ok=True)
             except OSError:
@@ -3062,6 +3071,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     handoff_dir = _get_hermes_home() / "cron" / "external-workers"
     payload_path = handoff_dir / f"{execution_id}.json"
     ack_path = handoff_dir / f"{execution_id}.ready"
+    stderr_path = handoff_dir / f"{execution_id}.stderr"
     command = [
         sys.executable,
         "-m",
@@ -3132,19 +3142,31 @@ def _launch_external_cron_worker(job: dict) -> bool:
     finally:
         reset_secret_scope(secret_token)
     worker_env = systemd_user_bus_env(worker_env)
+    worker_env[EXTERNAL_WORKER_STDERR_CAPTURE_ENV] = "1"
+    stderr_fd: Optional[int] = None
     try:
-        process = subprocess.Popen(
-            scoped_command,
-            cwd=str(Path(__file__).resolve().parent.parent),
-            env=worker_env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            creationflags=windows_hide_flags(),
+        stderr_fd = os.open(
+            stderr_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
         )
+        with os.fdopen(stderr_fd, "wb") as stderr_file:
+            stderr_fd = None
+            process = subprocess.Popen(
+                scoped_command,
+                cwd=str(Path(__file__).resolve().parent.parent),
+                env=worker_env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+                start_new_session=True,
+                creationflags=windows_hide_flags(),
+            )
     except BaseException:
+        if stderr_fd is not None:
+            os.close(stderr_fd)
         payload_path.unlink(missing_ok=True)
+        stderr_path.unlink(missing_ok=True)
         raise
 
     with _running_lock:
@@ -3166,6 +3188,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     execution_id=execution_id,
                     job_id=job_id,
                     handoff_files=(payload_path,),
+                    stderr_path=stderr_path,
+                    report_stderr=True,
                 )
             finally:
                 ack_path.unlink(missing_ok=True)
@@ -3183,6 +3207,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     execution_id=execution_id,
                     job_id=job_id,
                     handoff_files=(payload_path,),
+                    stderr_path=stderr_path,
+                    report_stderr=True,
                 )
             logger.info(
                 "Cron job '%s' handed to restart-safe worker pid=%s execution=%s",
@@ -3195,12 +3221,15 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 execution_id=execution_id,
                 job_id=job_id,
                 handoff_files=(payload_path,),
+                stderr_path=stderr_path,
             )
         returncode = process.poll()
         if returncode is not None:
+            report_external_worker_stderr(stderr_path, execution_id=execution_id)
             with _running_lock:
                 _restart_safe_waiter_job_ids.discard(job_id)
             payload_path.unlink(missing_ok=True)
+            stderr_path.unlink(missing_ok=True)
             raise RuntimeError(
                 f"cron external worker exited before ownership acknowledgement "
                 f"(exit {returncode})"
@@ -3221,6 +3250,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
         execution_id=execution_id,
         job_id=job_id,
         handoff_files=(payload_path, ack_path),
+        stderr_path=stderr_path,
+        report_stderr=True,
     )
 
 
@@ -3287,6 +3318,8 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                     execution_id,
                 )
                 return False
+            if os.environ.pop(EXTERNAL_WORKER_STDERR_CAPTURE_ENV, None) == "1":
+                disable_external_worker_stderr_capture()
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
@@ -3798,6 +3831,11 @@ from cron.scheduler_prompt import (  # noqa: E402
 from cron.scheduler_preflight import (  # noqa: E402
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,
     _is_transient_provider_resolve_error, _preflight_job_config,
+)
+from cron.scheduler_external_worker import (
+    EXTERNAL_WORKER_STDERR_CAPTURE_ENV,
+    disable_external_worker_stderr_capture,
+    report_external_worker_stderr,
 )
 
 

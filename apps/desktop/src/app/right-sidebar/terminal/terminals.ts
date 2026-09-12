@@ -1,7 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { readKey, writeKey } from '@/lib/storage'
-import { $currentCwd } from '@/store/session'
+import { $currentCwd, $freshDraftReady, workspaceCwdBelongsToSelectedSession } from '@/store/session'
 
 import { setTerminalTakeover } from '../store'
 
@@ -159,7 +159,9 @@ const newId = () =>
 
 /** Append a fresh terminal and focus it. Captures the current cwd once (its only
  *  tie to session/project state); pass an explicit cwd to override. Returns the id. */
-export function createTerminal(cwd: string = $currentCwd.get()): string {
+export function createTerminal(
+  cwd: string = !$freshDraftReady.get() && workspaceCwdBelongsToSelectedSession() ? $currentCwd.get() : ''
+): string {
   const id = newId()
   $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd, kind: 'user' }])
   $activeTerminalId.set(id)

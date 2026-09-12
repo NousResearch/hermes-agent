@@ -50,6 +50,7 @@ import {
   $sessions,
   $sessionStartedAt,
   $turnStartedAt,
+  $workspaceCwdOwner,
   idsShareLineage,
   sessionMatchesStoredId
 } from '@/store/session'
@@ -94,6 +95,7 @@ export function useStatusbarItems({
   commandCenterOpen,
   extraLeftItems,
   extraRightItems,
+  freshDraftReady,
   gatewayState,
   inferenceStatus,
   openAgents,
@@ -123,6 +125,7 @@ export function useStatusbarItems({
   const gatewayRestarting = useStore($gatewayRestarting)
   const primarySessionStartedAt = useStore($sessionStartedAt)
   const primaryTurnStartedAt = useStore($turnStartedAt)
+  const workspaceCwdOwner = useStore($workspaceCwdOwner)
 
   // The indicator must speak the same scope as the Spawn-tree panel it opens:
   // every session's subagents, never background system actions. Only two
@@ -181,6 +184,9 @@ export function useStatusbarItems({
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const primaryFocused = !focusedStoredSessionId || focusedStoredSessionId === selectedStoredSessionId
 
+  const primaryWorkspaceOwned =
+    !freshDraftReady && (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
+
   const activeSessionId = primaryFocused ? primaryActiveSessionId : (focusedRuntimeId ?? null)
   const busy = primaryFocused ? primaryBusy : focusedBusy
 
@@ -238,7 +244,7 @@ export function useStatusbarItems({
   const currentCwd = (
     (liveCwdBelongsToFocus ? focusedStateCwd : '') ||
     focusedRowCwd ||
-    (primaryFocused ? primaryCwd : '') ||
+    (primaryFocused && primaryWorkspaceOwned ? primaryCwd : '') ||
     ''
   ).trim()
 

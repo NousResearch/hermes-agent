@@ -91,6 +91,5 @@ def check_daily_budget(*, base_url: str = "", api_key: str = "") -> Optional[str
         return None
     return (
         f"Codex daily quota guard: {spent:.1f}% of the weekly allowance has been used "
-        f"today (daily limit {budget:.1f}%). New Codex requests are blocked until tomorrow. "
-        "No fallback provider was selected."
+        f"today (daily limit {budget:.1f}%). New Codex requests are blocked until tomorrow."
     )

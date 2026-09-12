@@ -46,6 +46,24 @@ user-activated extensions. If you tighten `desktop-slash-commands.ts`, keep
 `isDesktopSlashExtensionCommand` flowing into both paths. Test: from `apps/desktop`,
 `npx vitest run src/lib/desktop-slash-commands.test.ts` (workspace deps install at the repo root).
 
+## Plugin native text submission
+
+`host.submitPrompt` is the SDK door to a focused conversation's native composer.
+Keep the exact runtime/connection/profile check and synchronous single-surface
+claim: a stale or disabled target refuses without navigation. Preserve the local
+draft and attachments. Busy sends join the existing FIFO, never steer or cancel.
+Carry `confirmedExternal` through foreground/background drains: the native
+transport uses server-side queueing with no resume/busy/timeout retry. Persist
+and verify the queued entry's `dispatchStarted` before its one attempt; an
+uncertain entry stays held across reload and cannot be manually steered/resubmitted.
+Only a proven pre-transmission `false` may release the claim for later FIFO drain;
+accept both real server acknowledgement forms (`streaming` and `queued`).
+Acceptance, renderer queueing and agent completion are different observations;
+an unknown outcome is never retried automatically. Raw gateway `prompt.submit`
+is not a substitute for the native transcript projection. Contract and limits:
+`website/docs/developer-guide/desktop-plugin-sdk.md`; behavioral tests beside
+`use-composer-submit.ts`.
+
 ## Bot Mode (`src/plugins/hermes-bots/`) — one bot = ONE canonical forever-chat, identified by NAME
 
 Each bot is a Hermes **profile** with a persistent identity. This invariant regressed repeatedly,

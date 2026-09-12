@@ -16,15 +16,19 @@ export interface QueuedPromptEntry {
   displayKind?: 'hidden'
   attachments: ComposerAttachment[]
   queuedAt: number
+  confirmedExternal?: boolean
+  dispatchStarted?: boolean
 }
 
 /** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
  *  not a slash command — the same gate `steerDraft` applies to the live draft
  *  (attachments can't ride a redirect; slash commands execute, not steer). */
-export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>): boolean => {
+export const isSteerableEntry = (
+  entry: Pick<QueuedPromptEntry, 'attachments' | 'text' | 'confirmedExternal'>
+): boolean => {
   const text = entry.text.trim()
 
-  return Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
+  return !entry.confirmedExternal && Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>
@@ -128,7 +132,13 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }
+  payload: {
+    text: string
+    attachments: ComposerAttachment[]
+    displayText?: string
+    displayKind?: 'hidden'
+    confirmedExternal?: boolean
+  }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -142,7 +152,8 @@ export const enqueueQueuedPrompt = (
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
     ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
     attachments: cloneAttachments(payload.attachments),
-    queuedAt: Date.now()
+    queuedAt: Date.now(),
+    ...(payload.confirmedExternal ? { confirmedExternal: true } : {})
   }
 
   writeSession(sid, [...queueFor(sid), entry])
@@ -152,6 +163,63 @@ export const enqueueQueuedPrompt = (
   setParked(sid, false)
 
   return entry
+}
+
+/** Durable intent before dispatch; an uncertain confirmed instruction cannot be replayed. */
+export const claimConfirmedQueuedPrompt = (key: string, id: string): boolean => {
+  const entries = queueFor(key)
+  const entry = entries.find(item => item.id === id)
+
+  if (!entry || entry.dispatchStarted) {
+    return false
+  }
+  const next = {
+    ...$queuedPromptsBySession.get(),
+    [key]: entries.map(item => (item.id === id ? { ...item, dispatchStarted: true } : item))
+  }
+
+  try {
+    const payload = JSON.stringify(next)
+    window.localStorage.setItem(STORAGE_KEY, payload)
+
+    if (window.localStorage.getItem(STORAGE_KEY) !== payload) {
+      return false
+    }
+  } catch {
+    return false
+  }
+
+  $queuedPromptsBySession.set(next)
+
+  return true
+}
+
+/** Only a pre-dispatch false result may release a confirmed entry. Throws and
+ * lost acknowledgements must retain dispatchStarted forever until reconciled. */
+export const releaseConfirmedQueuedPrompt = (key: string, id: string): void => {
+  const entries = queueFor(key)
+  const entry = entries.find(item => item.id === id)
+
+  if (!entry?.confirmedExternal || !entry.dispatchStarted) {
+    return
+  }
+  const next = {
+    ...$queuedPromptsBySession.get(),
+    [key]: entries.map(item => (item.id === id ? { ...item, dispatchStarted: false } : item))
+  }
+
+  try {
+    const payload = JSON.stringify(next)
+    window.localStorage.setItem(STORAGE_KEY, payload)
+
+    if (window.localStorage.getItem(STORAGE_KEY) !== payload) {
+      return
+    }
+  } catch {
+    return
+  }
+
+  $queuedPromptsBySession.set(next)
 }
 
 export const dequeueQueuedPrompt = (key: string | null | undefined): null | QueuedPromptEntry => {

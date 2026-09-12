@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
-import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
+import { $queuedPromptsBySession, clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
 import { $gateway } from '@/store/gateway'
 import {
   clearAllPrompts,
@@ -15,7 +15,7 @@ import {
   setSudoRequest
 } from '@/store/prompts'
 
-import { type ComposerTarget, requestComposerSubmit } from '../focus'
+import { type ComposerTarget, requestComposerSubmit, requestNativeComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useComposerSubmit } from './use-composer-submit'
@@ -147,6 +147,72 @@ function renderSubmitHook({
 }
 
 describe('useComposerSubmit external request routing', () => {
+  it('acknowledges only the addressed native submit without consuming the local draft or attachments', async () => {
+    const main = renderSubmitHook({
+      text: 'unsent local draft',
+      attachments: [{ id: 'private', kind: 'file', label: 'local.txt' }]
+    })
+
+    const hidden = renderSubmitHook({ visible: false })
+
+    const send = (sessionId = 'runtime-session') =>
+      requestNativeComposerSubmit('confirmed instruction', { sessionId, target: 'main' })
+
+    expect(await send('wrong-runtime')).toEqual({ status: 'rejected' })
+    expect(main.onSubmit).not.toHaveBeenCalled()
+    expect(await send()).toEqual({ status: 'accepted' })
+    expect(main.onSubmit).toHaveBeenCalledExactlyOnceWith(
+      'confirmed instruction',
+      expect.objectContaining({
+        attachments: [],
+        composerScope: 'stored-session',
+        confirmedExternal: true,
+        sessionId: 'runtime-session',
+        storedSessionId: 'stored-session'
+      })
+    )
+    expect(hidden.onSubmit).not.toHaveBeenCalled()
+    expect(main.clearDraft).not.toHaveBeenCalled()
+    main.onSubmit.mockRejectedValueOnce(new Error('connection lost after dispatch'))
+    expect(await send()).toEqual({ status: 'unknown' })
+    expect(main.onSubmit).toHaveBeenCalledTimes(2)
+    let release!: (accepted: boolean) => void
+    main.onSubmit.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          release = resolve
+        })
+    )
+    const pending = send()
+    expect((await send()).status).toBe('queued')
+    expect(main.onSubmit).toHaveBeenCalledTimes(3)
+    release(true)
+    expect((await pending).status).toBe('accepted')
+    $queuedPromptsBySession.set({})
+    act(() => main.setPaneVisible(false))
+    expect(await send()).toEqual({ status: 'rejected' })
+  })
+
+  it('queues native requests in order while busy without steering or bypassing disabled input', async () => {
+    $queuedPromptsBySession.set({})
+    const main = renderSubmitHook({ busy: true })
+    const first = await requestNativeComposerSubmit('first', { sessionId: 'runtime-session', target: 'main' })
+    const second = await requestNativeComposerSubmit('second', { sessionId: 'runtime-session', target: 'main' })
+    expect(first.status).toBe('queued')
+    expect(second.status).toBe('queued')
+    expect(getQueuedPrompts('stored-session').map(entry => entry.text)).toEqual(['first', 'second'])
+    expect(main.onSubmit).not.toHaveBeenCalled()
+    expect(main.onSteer).not.toHaveBeenCalled()
+    expect(main.onCancel).not.toHaveBeenCalled()
+    main.hook.unmount()
+    const disabled = renderSubmitHook({ inputDisabled: true })
+    expect(await requestNativeComposerSubmit('blocked', { sessionId: 'runtime-session', target: 'main' })).toEqual({
+      status: 'rejected'
+    })
+    expect(disabled.onSubmit).not.toHaveBeenCalled()
+    $queuedPromptsBySession.set({})
+  })
+
   afterEach(() => {
     cleanup()
     clearQueuedPrompts('stored-session')

@@ -18,7 +18,7 @@ from hermes_cli.web_server_profiles import _plugin_terminal_backend_rows
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     TerminalBackendSelect, ToolsetEnvUpdate, ToolsetModelSelect, ToolsetPostSetup,
-    ToolsetProviderSelect, ToolsetToggle)
+    ToolsetProviderSelect, ToolsetSync, ToolsetToggle)
 from hermes_cli.web_routers._common import (
     _CONFIG_MUTATION_LOCK, _profile_cli_args, _profile_scope, _spawn_hermes_action,
     config_write_scope, log as _log, scoped_to_thread, spawn_profile_action)
@@ -323,6 +323,100 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
     return {
         "ok": True, "name": name, "platform": target_platform, "enabled": body.enabled,
         "post_setup_started": post_setup_started}
+
+
+@router.post("/api/tools/toolsets/sync-platforms")
+async def sync_toolsets_to_platforms(body: ToolsetSync, profile: Optional[str] = None):
+    """Apply the desktop/CLI toolset selection to every enabled platform.
+
+    The interactive counterpart is ``hermes tools`` → "Configure all platforms
+    (global)" (``_configure_platforms(..., all_platforms=True)``): one checklist
+    saved via ``_save_platform_tools`` over ``_get_enabled_platforms()``. There
+    is no TTY here, so the checklist is replaced by the already-persisted
+    ``cli`` selection and the key prompts by ``needs_setup`` in the response —
+    newly enabled toolsets still missing provider/API-key setup are reported
+    instead of interactively configured.
+
+    Per-platform saves re-read the platform's list first: reconciling
+    ``agent.disabled_toolsets`` for one platform can change what the next
+    platform resolves to (same reason ``_configure_platforms`` re-reads inside
+    its loop). A platform restricted away from every toolset in the source
+    selection (e.g. telegram and the discord-only toolsets) is reported as
+    unchanged instead of being emptied.
+    """
+    from hermes_cli.tools_config import (
+        _CONFIG_ONLY_TOOLSETS,
+        _get_enabled_platforms,
+        _get_platform_tools,
+        _save_platform_tools,
+        _toolset_allowed_for_platform,
+        _toolset_configuration_platform,
+        _toolsets_needing_setup,
+    )
+
+    scope_profile = body.profile or profile
+
+    def _run():
+        platforms: List[str] = []
+        synced: List[Dict[str, Any]] = []
+        needs_setup: List[str] = []
+        with config_write_scope(scope_profile):
+            config = load_config()
+            source_platform = "cli"
+            source = _get_platform_tools(
+                config, source_platform, include_default_mcp_servers=False
+            )
+            for platform in _get_enabled_platforms():
+                if platform == source_platform:
+                    continue
+                platforms.append(platform)
+                # Re-read per platform: the previous save's disabled-toolsets
+                # reconciliation changes what this platform resolves to.
+                prev = _get_platform_tools(
+                    config, platform, include_default_mcp_servers=False
+                )
+                target = {
+                    ts for ts in source if _toolset_allowed_for_platform(ts, platform)
+                }
+                if target == prev:
+                    synced.append({
+                        "platform": platform,
+                        "changed": False,
+                        "enabled": sorted(prev),
+                        "added": [],
+                        "removed": [],
+                    })
+                    continue
+                _save_platform_tools(config, platform, target)
+                config = load_config()
+                added = sorted(target - prev)
+                synced.append({
+                    "platform": platform,
+                    "changed": True,
+                    "enabled": sorted(target),
+                    "added": added,
+                    "removed": sorted(prev - target),
+                })
+            if any(entry["changed"] for entry in synced):
+                config = load_config()
+                needs_setup = _toolsets_needing_setup(
+                    {
+                        ts
+                        for ts in source
+                        if ts not in _CONFIG_ONLY_TOOLSETS
+                        and _toolset_configuration_platform(ts) == "cli"
+                    },
+                    config,
+                )
+        return {
+            "ok": True,
+            "source_platform": source_platform,
+            "platforms": platforms,
+            "synced": synced,
+            "needs_setup": needs_setup,
+        }
+
+    return await asyncio.to_thread(_run)
 
 
 @router.get("/api/tools/toolsets/{name}/config")

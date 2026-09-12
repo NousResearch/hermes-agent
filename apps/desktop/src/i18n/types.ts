@@ -1425,6 +1425,10 @@ export interface Translations {
     disableUnused: string
     bulkUpdated: (count: number) => string
     bulkNoChange: string
+    syncAll: string
+    syncAllUpdated: (platforms: number) => string
+    syncAllNoChange: string
+    syncAllNeedsSetup: (toolsets: string) => string
     usageCount: (count: number | string) => string
     provenance: Record<'agent' | 'bundled' | 'hub', string>
     emptyNoneFound: (noun: string) => string

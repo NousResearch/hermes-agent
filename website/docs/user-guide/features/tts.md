@@ -57,6 +57,7 @@ tts:
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
     speed: 1.0                  # 0.25 - 4.0
+    speed_mode: "forward"       # "local" applies pitch-preserving speed with ffmpeg
     # language: "es"            # Sent as lang_code — only for OpenAI-compatible endpoints that support it (e.g. Kokoro)
   minimax:
     region: "global"           # "global" or "cn"; see selection rules below
@@ -113,6 +114,8 @@ MiniMax TTS selects its region, endpoint, and credential together:
 - An explicitly selected region must have its matching credential. Hermes never borrows the other region's key. A `base_url` override does not change the selected credential, and an override pointing at the other region's official endpoint is rejected.
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+OpenAI-compatible endpoints receive the speed value directly by default (`tts.openai.speed_mode: "forward"`). If an endpoint's own speed processing degrades audio quality, set `speed_mode: "local"`. Hermes will request normal-speed audio and apply the configured multiplier afterward with ffmpeg's pitch-preserving `atempo` filter. Local mode requires ffmpeg and reports an actionable error when processing cannot complete; it never silently falls back to endpoint-side speed.
 
 ### Gemini Persona Prompts
 

@@ -82,7 +82,8 @@ def _has_openai_audio_backend() -> bool:
 def _generate_openai_tts(
     text: str, output_path: str, tts_config: Dict[str, Any], *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, model: Optional[str] = None, voice: Optional[str] = None,
-    speed: Optional[float] = None, instructions: Optional[str] = None) -> str:
+    speed: Optional[float] = None, speed_mode: Optional[str] = None,
+    instructions: Optional[str] = None) -> str:
     """Generate audio via the OpenAI ``audio.speech.create`` SDK shape.
 
     Explicit kwargs let OpenAI-compatible backends (DeepInfra) supply credentials/model/voice
@@ -105,6 +106,11 @@ def _generate_openai_tts(
     if speed is None:
         speed_default = tts_config.get("speed", 1.0) if isinstance(tts_config, dict) else 1.0
         speed = float(oai_config.get("speed", speed_default))
+    speed = max(0.25, min(4.0, speed))
+    if speed_mode is None:
+        speed_mode = str(oai_config.get("speed_mode", "forward")).strip().lower()
+    if speed_mode not in {"forward", "local"}:
+        raise ValueError("tts.openai.speed_mode must be 'forward' or 'local'")
     # The managed gateway only proxies MANAGED_OPENAI_TTS_MODELS; coerce a direct-OpenAI
     # model (e.g. "tts-1-hd") unless the user redirected base_url to their own endpoint.
     if is_managed and not explicit_base_url and not config_base_url and model not in MANAGED_OPENAI_TTS_MODELS:
@@ -118,8 +124,8 @@ def _generate_openai_tts(
         "model": model, "voice": voice, "input": text,
         "response_format": _tts_response_format_from_path(output_path),
         "extra_headers": {"x-idempotency-key": str(uuid.uuid4())}}
-    if speed != 1.0:
-        create_kwargs["speed"] = max(0.25, min(4.0, speed))
+    if speed_mode == "forward" and speed != 1.0:
+        create_kwargs["speed"] = speed
     if instructions:
         create_kwargs["instructions"] = instructions
     if oai_config.get("language"):
@@ -127,11 +133,13 @@ def _generate_openai_tts(
     client = _origin()._import_openai_client()(api_key=api_key, base_url=base_url)
     try:
         client.audio.speech.create(**create_kwargs).stream_to_file(output_path)
-        return output_path
     finally:
         close = getattr(client, "close", None)
         if callable(close):
             close()
+    if speed_mode == "local" and speed != 1.0:
+        return _origin()._apply_local_tempo(output_path, speed)
+    return output_path
 
 
 def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -154,4 +162,4 @@ def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, A
     return _origin()._generate_openai_tts(
         text, output_path, tts_config, api_key=api_key, base_url=deepinfra_base_url(di_config),
         model=model, voice=di_config.get("voice", DEFAULT_DEEPINFRA_TTS_VOICE),
-        speed=float(di_config.get("speed", tts_config.get("speed", 1.0))))
+        speed=float(di_config.get("speed", tts_config.get("speed", 1.0))), speed_mode="forward")

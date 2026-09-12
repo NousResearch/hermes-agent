@@ -1480,6 +1480,9 @@ platform_toolsets:
 # tts:
 #   provider: "gemini"
 #   speed: 1.0              # global speed multiplier (provider-specific overrides this)
+#   openai:
+#     speed: 1.0            # 0.25-4.0
+#     speed_mode: "forward" # "local" preserves pitch with ffmpeg instead of forwarding speed
 #   gemini:
 #     model: "gemini-3.1-flash-tts-preview"
 #     voice: "Kore"

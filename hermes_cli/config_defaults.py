@@ -1011,6 +1011,8 @@ DEFAULT_CONFIG = {
             # gpt-4o-mini-tts voices: alloy, ash, ballad, cedar, coral, echo, fable, marin, nova,
             # onyx, sage, shimmer, verse
             "voice": "alloy",
+            # "forward" sends speed to the endpoint; "local" uses ffmpeg atempo instead.
+            "speed_mode": "forward",
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",

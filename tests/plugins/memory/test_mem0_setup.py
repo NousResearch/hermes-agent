@@ -184,6 +184,39 @@ class TestWriteEnv:
         assert "OPENAI_API_KEY=new" in content
 
 
+class TestWriteEnvPermissions:
+    """`.env` holds provider API keys in plaintext (and, once #79850 lands, the pgvector
+    password), so a file this wizard creates must not be umask-default world-readable."""
+
+    @staticmethod
+    def _mode(path):
+        import stat
+
+        return stat.S_IMODE(path.stat().st_mode)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses ACLs")
+    def test_a_new_env_file_is_created_owner_only(self, tmp_path):
+        env_path = tmp_path / ".env"
+        _write_env(env_path, {"MEM0_API_KEY": "m0-secret"})
+        assert self._mode(env_path) == 0o600
+        assert "MEM0_API_KEY=m0-secret" in env_path.read_text(encoding="utf-8")
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses ACLs")
+    def test_an_existing_file_keeps_the_mode_the_operator_gave_it(self, tmp_path):
+        """`hermes profile create` already seeds .env 0600; a hand-managed file is the
+        operator's call either way, so this writer never re-modes what it did not create."""
+        import os
+
+        for existing_mode in (0o600, 0o644):
+            env_path = tmp_path / f"env-{existing_mode:o}"
+            env_path.write_text("EXISTING=1\n", encoding="utf-8")
+            os.chmod(env_path, existing_mode)
+            _write_env(env_path, {"MEM0_API_KEY": "m0-secret"})
+            assert self._mode(env_path) == existing_mode
+            content = env_path.read_text(encoding="utf-8")
+            assert "EXISTING=1" in content and "MEM0_API_KEY=m0-secret" in content
+
+
 class TestPromptApiKey:
 
     def test_existing_key_found_behind_bom(self, tmp_path, monkeypatch):

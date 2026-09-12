@@ -5150,7 +5150,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _is_group_chat(self, message: Message) -> bool:
         chat = getattr(message, "chat", None)
-        return bool(chat) and self._chat_type_str(chat) in {"group", "supergroup"}
+        # Channel posts must take the gated path instead of the unrestricted DM path.
+        return bool(chat) and self._chat_type_str(chat) in {"group", "supergroup", "channel"}
 
     @classmethod
     def _effective_message_thread_id(cls, message: Message) -> Optional[str]:
@@ -5392,8 +5393,12 @@ class TelegramAdapter(BasePlatformAdapter):
             for pattern in self._mention_patterns)
 
     def _is_guest_mention(self, message: Message) -> bool:
-        """Guest-mode bypass: explicit bot mention (caller already verified group chat)."""
-        return self._telegram_guest_mode() and self._message_mentions_bot(message)
+        """Only groups/supergroups may bypass the chat allowlist through guest mode."""
+        return (
+            self._chat_type_str(getattr(message, "chat", None)) in {"group", "supergroup"}
+            and self._telegram_guest_mode()
+            and self._message_mentions_bot(message)
+        )
 
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
         bot_username = self._current_bot_username()
@@ -5633,8 +5638,8 @@ class TelegramAdapter(BasePlatformAdapter):
         return bot_id is None or sender_id is None or sender_id != bot_id
 
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
-        """Apply Telegram group trigger rules: DMs unrestricted; group messages pass ``allowed_chats`` (hard gate; only
-        the ``guest_mode`` @mention bypass crosses it) and then any of free_response chat/topic, ``require_mention``
+        """Apply Telegram group/channel trigger rules: DMs unrestricted; messages pass ``allowed_chats`` (hard gate;
+        only groups/supergroups may cross it via ``guest_mode``) and then any of free_response chat/topic, ``require_mention``
         off, reply to the bot, @mention (incl. ``/cmd@botname``), or a wake-word match."""
         # Learn the live handle BEFORE any mention gate routes on it, then drop our own echoed messages.
         # Filter out the bot's own messages (returned by getUpdates in some environments like
@@ -5653,9 +5658,8 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id_str = self._chat_id_str(message)
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
-        # Resolve once; _message_mentions_bot is not re-called below in guest mode.
         guest_mention = self._is_guest_mention(message)
-        # allowed_chats whitelist: outside chats pass only via the guest-mode explicit mention.
+        # Guest mentions bypass the allowlist only for groups, never broadcast channels.
         allowed = self._telegram_allowed_chats()
         if allowed and chat_id_str not in allowed:
             return guest_mention
@@ -5671,7 +5675,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         if not self._telegram_require_mention() or self._is_reply_to_bot(message):
             return True
-        if not self._telegram_guest_mode() and self._message_mentions_bot(message):
+        if self._message_mentions_bot(message):
             return True
         return self._message_matches_mention_patterns(message)
 

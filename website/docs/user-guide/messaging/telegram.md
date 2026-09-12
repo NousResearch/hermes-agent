@@ -1112,6 +1112,8 @@ Default: `false`.
 
 With `guest_mode: true`, a message from a non-allowlisted group is processed **only** if it explicitly @mentions the bot. The mention is required every turn — there's no session stickiness for guest interactions, so the bot never auto-engages in a friend group thread it isn't pinged into.
 
+This guest bypass applies only to groups and supergroups, never broadcast channels. A channel outside a non-empty `allowed_chats` list remains blocked even if its post @mentions the bot. Allowlisted channels still follow the normal trigger rules, including `require_mention`, regardless of `guest_mode`.
+
 DMs and allowlisted groups behave exactly as before.
 
 ## Slash Command Access Control

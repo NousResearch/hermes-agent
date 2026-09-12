@@ -3,6 +3,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.event import MessageType
 from gateway.session import SessionSource
@@ -131,6 +133,27 @@ def _dm_message(text="hello", *, from_user_id=111):
         message_thread_id=None,
         chat=SimpleNamespace(id=from_user_id, type="private", full_name="Alice Example", title=None, is_forum=False),
         from_user=SimpleNamespace(id=from_user_id, full_name="Alice Example", first_name="Alice"),
+        reply_to_message=None,
+        date=None,
+    )
+
+
+def _channel_message(text="hello", *, chat_id=-1002, thread_id=None):
+    """A Telegram broadcast-channel post.
+
+    Channel posts arrive via ``update.channel_post`` and carry no
+    ``from_user`` — they are authored by the channel itself.
+    """
+    return SimpleNamespace(
+        message_id=44,
+        text=text,
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=thread_id,
+        is_topic_message=False,
+        chat=SimpleNamespace(id=chat_id, type="channel", title="Broadcast Channel", is_forum=False),
+        from_user=None,
         reply_to_message=None,
         date=None,
     )
@@ -524,6 +547,41 @@ def test_bot_self_messages_are_ignored_in_dm_and_group():
     # Same guard applies in groups/supergroups.
     self_group = _group_message("status tick", chat_id=-100, from_user_id=999)
     assert adapter._should_process_message(self_group) is False
+
+
+@pytest.mark.parametrize("chat_type", ["group", "supergroup", "channel"])
+@pytest.mark.parametrize("guest_mode", [False, True])
+def test_guest_mentions_only_bypass_chat_allowlist_for_groups(chat_type, guest_mode):
+    adapter = _make_adapter(require_mention=True, allowed_chats=["-100"], guest_mode=guest_mode)
+    message = _channel_message("hi @hermes_bot", chat_id=-200) if chat_type == "channel" else _group_message(
+        "hi @hermes_bot", chat_id=-200)
+    message.chat.type = chat_type
+    message.entities = [_mention_entity(message.text)]
+
+    # Guest access belongs to groups, never broadcast channels.
+    assert adapter._should_process_message(message) is (guest_mode and chat_type != "channel")
+    message.chat.id = -100
+    assert adapter._should_process_message(message) is True
+    message.text, message.entities = "ordinary post", []
+    assert adapter._should_process_message(message) is False
+    adapter.config.extra["require_mention"] = False
+    assert adapter._should_process_message(message) is True
+    message.chat.id = -200
+    assert adapter._should_process_message(message) is False
+
+    if chat_type != "channel":
+        message.text = "hi @hermes_bot"
+        message.entities = [_mention_entity(message.text)]
+        message.chat.is_forum = True
+        message.is_topic_message = True
+        message.message_thread_id = 8
+        adapter.config.extra["allowed_topics"] = ["8"]
+        assert adapter._should_process_message(message) is guest_mode
+        message.message_thread_id = 9
+        assert adapter._should_process_message(message) is False
+        message.message_thread_id = 8
+        adapter.config.extra["ignored_threads"] = [8]
+        assert adapter._should_process_message(message) is False
 
 
 def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):

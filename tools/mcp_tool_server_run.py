@@ -394,6 +394,10 @@ class MCPServerRunMixin:
         return True
 
     async def _backoff_sleep(self, budget: "_RetryBudget") -> None:
+        if not self._native_config_managed:
+            await asyncio.sleep(_jittered(budget.backoff))
+            budget.backoff = min(budget.backoff * 2, _core._MAX_BACKOFF_SECONDS)
+            return
         deadline = time.monotonic() + _jittered(budget.backoff)
         while True:
             remaining = deadline - time.monotonic()

@@ -2256,7 +2256,15 @@ class GatewayTurnMixin:
             images, media_files, text_content = [], [], ""
             if response:
                 media_files, response = adapter.extract_media(response)
-                media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+                # Same reasoning as _deliver_media_from_response: this runs
+                # after the background task's own run scope has exited, so
+                # thread the task's own source identity explicitly rather
+                # than depend on the ambient active profile (#64889, #94441).
+                media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                    media_files,
+                    session_key=self._session_key_for_source(source),
+                    profile=getattr(source, "profile", None),
+                )
                 images, text_content = adapter.extract_images(response)
             if text_content:
                 await adapter.send(chat_id=source.chat_id, content=header + text_content, metadata=_thread_metadata)

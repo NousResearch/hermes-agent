@@ -914,7 +914,14 @@ def _send_media_via_adapter(
     job_ref = {"id": job.get("id", "?")}
     errors: list = []
     requested = [(str(p), v) for p, v in (media_files or [])]
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # job["id"] is the same task_id run_job() passes into
+    # agent.run_conversation(), so this resolves the job's own Docker
+    # environment directly instead of falling back to the shared "default"
+    # sandbox for any isolated (per-task) sandbox produced during the run
+    # (#64889).
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(
+        media_files, session_key=str(job.get("id") or "")
+    )
     # Report paths the safety filter dropped (missing file, denied prefix, strict-mode miss).
     kept = {p for p, _ in media_files}
     for raw_path, _v in requested:
@@ -1740,7 +1747,14 @@ def _deliver_result(
     apply_media_policy_env(user_cfg)
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     requested_media = len(media_files)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # job["id"] is the same task_id run_job() passes into
+    # agent.run_conversation(), so this resolves the job's own Docker
+    # environment directly instead of falling back to the shared "default"
+    # sandbox for any isolated (per-task) sandbox produced during the run
+    # (#64889).
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(
+        media_files, session_key=str(job.get("id") or "")
+    )
     # Policy-dropped attachments will never be sent on ANY lane — record them in run status.
     _policy_dropped = requested_media - len(media_files)
     policy_drop_errors = [

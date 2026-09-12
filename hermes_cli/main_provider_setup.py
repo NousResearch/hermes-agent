@@ -484,10 +484,10 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
 
 def _remove_custom_provider(config):
     """Let the user remove a saved custom provider from config.yaml."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import get_compatible_custom_providers, load_config, save_config
     cfg = load_config()
-    providers = cfg.get("custom_providers") or []
-    if not isinstance(providers, list) or not providers:
+    providers = get_compatible_custom_providers(cfg)
+    if not providers:
         print("No custom providers configured.")
         return
 
@@ -516,10 +516,52 @@ def _remove_custom_provider(config):
         print("No change.")
         return
 
-    removed = providers.pop(idx)
-    cfg["custom_providers"] = providers
+    removed = providers[idx]
+
+    def _normalize_identifier(value):
+        return str(value or "").strip().rstrip("/").lower()
+
+    removed_provider_key = _normalize_identifier(removed.get("provider_key"))
+    removed_name = _normalize_identifier(removed.get("name"))
+    removed_base_url = _normalize_identifier(removed.get("base_url"))
+    removed_model = _normalize_identifier(removed.get("model"))
+
+    def _matches_removed_provider(entry, provider_key=""):
+        if not isinstance(entry, dict):
+            return False
+        entry_provider_key = _normalize_identifier(provider_key or entry.get("provider_key"))
+        entry_base_url = _normalize_identifier(
+            entry.get("base_url") or entry.get("url") or entry.get("api")
+        )
+        entry_model = _normalize_identifier(
+            entry.get("model") or entry.get("default_model")
+        )
+        if removed_provider_key and entry_provider_key == removed_provider_key:
+            return True
+        return (
+            _normalize_identifier(entry.get("name")) == removed_name
+            and entry_base_url == removed_base_url
+            and entry_model == removed_model
+        )
+
+    legacy_providers = cfg.get("custom_providers")
+    if isinstance(legacy_providers, list):
+        cfg["custom_providers"] = [
+            entry for entry in legacy_providers if not _matches_removed_provider(entry)
+        ]
+
+    providers_cfg = cfg.get("providers")
+    if isinstance(providers_cfg, dict):
+        cfg["providers"] = {
+            key: entry
+            for key, entry in providers_cfg.items()
+            if not _matches_removed_provider(entry, provider_key=key)
+        }
+
     save_config(cfg)
-    removed_name = removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
+    removed_name = (
+        removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
+    )
     print(f'✅ Removed "{removed_name}" from custom providers.')
 
 

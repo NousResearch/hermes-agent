@@ -101,8 +101,10 @@ def _board_conn(board: Optional[str]) -> Iterator[tuple[Optional[str], sqlite3.C
 
 def _with_board_pinned(board: Optional[str], fn: Callable[[], Any]) -> Any:
     """Run ``fn`` with the board pinned context-locally, not via the process-global
-    ``HERMES_KANBAN_BOARD`` env var (concurrent requests for different boards would cross-write)."""
-    with kanban_db.scoped_current_board(_resolve_board(board) or kanban_db.DEFAULT_BOARD):
+    ``HERMES_KANBAN_BOARD`` env var (concurrent requests for different boards would cross-write).
+    An omitted ``board`` means the active board, as on every other route (#107718 K11) — not
+    ``default``, which sent specify/decompose to a different board than the rest of the UI."""
+    with kanban_db.scoped_current_board(_resolve_board(board) or kanban_db.get_current_board()):
         return fn()
 
 

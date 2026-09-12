@@ -4234,6 +4234,13 @@ class SlackAdapter(BasePlatformAdapter):
         if command_probe_text != original_text.lstrip():
             original_text = command_probe_text
         is_command_text = command_probe_text.startswith("/")
+        if is_command_text:
+            # Slack can append composer padding to a bare command. Trim that
+            # padding without changing argument bytes for commands that have
+            # an authored argument segment.
+            trimmed_command = command_probe_text.rstrip()
+            if not any(char.isspace() for char in trimmed_command):
+                command_probe_text = trimmed_command
         text = original_text
         # Quoted/forwarded block text is absent from flat ``text``. Skipped for commands: after
         # the ``!``→``/`` rewrite it no longer dedupes and would become bogus arguments.

@@ -710,7 +710,7 @@ def _python_operand(arguments: list[str]) -> tuple[Optional[str], Optional[str]]
             return "python", arguments[index + 1] if index + 1 < len(arguments) else None
         if argument.startswith("-c"):
             return "python", argument[2:]
-        if argument in {"-W", "-X"}:
+        if argument in {"-W", "-X", "--check-hash-based-pycs"}:
             index += 2
             continue
         if not argument.startswith("-"):

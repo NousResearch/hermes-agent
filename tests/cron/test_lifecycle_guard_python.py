@@ -28,7 +28,13 @@ class SyntheticRemote:
 
 
 @pytest.mark.parametrize("backend", ["local", "remote"])
-@pytest.mark.parametrize("invocation", ["./report", "python3 report"])
+@pytest.mark.parametrize("invocation", [
+    "./report",
+    "python3 report",
+    "python3 --check-hash-based-pycs always report",
+    "python3 --check-hash-based-pycs never report",
+    "python3 --check-hash-based-pycs default report",
+])
 @pytest.mark.parametrize("data_size", [32, 2 * guard._MAX_REFERENCED_SCRIPT_BYTES])
 def test_python_data_does_not_consume_script_budget(
     tmp_path, monkeypatch, backend, invocation, data_size,
@@ -93,9 +99,15 @@ def test_python_data_does_not_consume_script_budget(
 
 
 @pytest.mark.parametrize("backend", ["local", "remote"])
+@pytest.mark.parametrize("invocation", [
+    "python3 wrapper.py",
+    "python3 --check-hash-based-pycs always wrapper.py",
+    "python3 --check-hash-based-pycs never wrapper.py",
+    "python3 --check-hash-based-pycs default wrapper.py",
+])
 @pytest.mark.parametrize("shell", [False, True])
 def test_python_literal_process_descendants_keep_interpretation(
-    tmp_path, monkeypatch, backend, shell,
+    tmp_path, monkeypatch, backend, invocation, shell,
 ):
     from tools import process_registry
     from tools.terminal_tool_guards import gateway_lifecycle_block
@@ -117,7 +129,7 @@ def test_python_literal_process_descendants_keep_interpretation(
             path.write_text(text, encoding="utf-8")
             path.chmod(0o755)
 
-    def verdict(command="python3 wrapper.py"):
+    def verdict(command=invocation):
         return gateway_lifecycle_block(
             command=command, env=remote, env_type="ssh" if remote else "local",
             cwd=str(cwd), workdir=str(cwd), session_key="python-descendant",

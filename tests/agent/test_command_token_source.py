@@ -14,6 +14,7 @@ behaviours that make the feature work:
 
 from __future__ import annotations
 
+import sys
 import time
 from types import SimpleNamespace
 
@@ -88,6 +89,80 @@ class TestNoCredentialLeak:
         with pytest.raises(CommandTokenError) as excinfo:
             source()
         assert "SENTINEL" not in str(excinfo.value)
+
+    def test_helper_env_scrubs_hermes_secrets_without_losing_runtime_config(
+        self, tmp_path, monkeypatch
+    ):
+        """The real helper child loses Hermes secrets, not normal CLI config."""
+        planted_secrets = {
+            "OPENAI_API_KEY": "security-test-openai",
+            "XAI_API_KEY": "security-test-xai",
+            "TELEGRAM_BOT_TOKEN": "security-test-telegram",
+            "AUXILIARY_REVIEW_API_KEY": "security-test-auxiliary",
+            "BUZZ_PRIVATE_KEY": "security-test-buzz",
+        }
+        helper_config = {
+            "KEY_CMD_HELPER_CONFIG": "profile-prod",
+            "CLOUDSDK_CONFIG": str(tmp_path / "gcloud"),
+            "AZURE_CONFIG_DIR": str(tmp_path / "azure"),
+            "VAULT_ADDR": "https://vault.invalid",
+            "DATABRICKS_CONFIG_FILE": str(tmp_path / "databrickscfg"),
+            "AWS_PROFILE": "prod",
+        }
+        for name, value in (planted_secrets | helper_config).items():
+            monkeypatch.setenv(name, value)
+
+        helper = tmp_path / "inspect_key_cmd_env.py"
+        helper.write_text(
+            f"""\
+import os
+
+blocked = {tuple(planted_secrets)!r}
+expected = {helper_config!r}
+secrets_absent = not any(name in os.environ for name in blocked)
+config_preserved = all(
+    os.environ.get(name) == value for name, value in expected.items()
+)
+runtime_preserved = bool(os.environ.get("PATH") and os.environ.get("HOME"))
+print(
+    "scoped-token"
+    if secrets_absent and config_preserved and runtime_preserved
+    else "unsafe-or-broken"
+)
+""",
+            encoding="utf-8",
+        )
+
+        source = CommandTokenSource(f'"{sys.executable}" "{helper}"', "dbx")
+        assert source() == "scoped-token"
+
+    def test_env_builder_failure_never_falls_back_to_full_inheritance(
+        self, monkeypatch
+    ):
+        """A broken scrub boundary must stop the helper rather than fail open."""
+        from tools.environments import local as local_env
+
+        helper_started = False
+
+        def fail_to_build_env(*, inherit_credentials=False):
+            assert inherit_credentials is False
+            raise RuntimeError("env-builder-failure-sentinel")
+
+        def unexpected_run(*args, **kwargs):
+            nonlocal helper_started
+            helper_started = True
+            return SimpleNamespace(returncode=0, stdout="token", stderr="")
+
+        monkeypatch.setattr(local_env, "hermes_subprocess_env", fail_to_build_env)
+        monkeypatch.setattr(
+            "agent.command_token_source.subprocess.run", unexpected_run
+        )
+
+        with pytest.raises(CommandTokenError, match="credential-scoped") as excinfo:
+            _mint("printf token", "dbx")
+
+        assert helper_started is False
+        assert "env-builder-failure-sentinel" not in str(excinfo.value)
 
 
 class TestCaching:

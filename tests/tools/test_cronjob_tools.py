@@ -222,6 +222,73 @@ class TestCronjobRequirements:
         assert check_cronjob_requirements() is False
 
 
+class TestCronjobRequirementsInCronSession:
+    """HERMES_CRON_SESSION is a per-task ContextVar (cron/scheduler.py's session-context
+    binding), not a real os.environ var — a cron job's own agent session must still be able
+    to see cronjob_manage (self-chaining, e.g. ship-task's reschedule-self pattern), so
+    check_cronjob_requirements must read it via get_session_env, not env_var_enabled/os.getenv."""
+
+    def test_cron_session_contextvar_grants_access(self, monkeypatch):
+        from gateway.session_context import _VAR_MAP
+
+        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+            monkeypatch.delenv(v, raising=False)
+        var = _VAR_MAP["HERMES_CRON_SESSION"]
+        token = var.set("1")
+        try:
+            assert check_cronjob_requirements() is True
+        finally:
+            var.reset(token)
+
+    def test_no_cron_session_and_no_other_flag_denies_access(self, monkeypatch):
+        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+            monkeypatch.delenv(v, raising=False)
+        assert check_cronjob_requirements() is False
+
+
+class TestCronjobRequirementsNotCheckFnCached:
+    """check_cronjob_requirements must be registered via @no_cache_check_fn.
+
+    Regression test for a real bug: the registry's check_fn TTL cache (~30s) is keyed by
+    (fn, profile) with no session-type dimension, so a single-profile process (the common
+    case — multiplexing is opt-in) shares ONE cache slot across every session type. Without
+    @no_cache_check_fn, a non-cron probe evaluating False gets cached and served right back
+    to a genuinely-cron session's own call moments later (HERMES_CRON_SESSION binding is
+    irrelevant to the stale cache) — cronjob_manage silently vanishes from every cron job's
+    toolset despite the ContextVar being correctly set. Reproduced live against a real
+    BigCaptain VPS deployment before this test existed."""
+
+    def test_registered_as_no_cache_check_fn(self):
+        from tools.cronjob_tools import check_cronjob_requirements
+        from tools.registry import _NO_CACHE_CHECK_FNS
+
+        assert check_cronjob_requirements in _NO_CACHE_CHECK_FNS
+
+    def test_stale_false_from_other_session_does_not_poison_cron_session(self, monkeypatch):
+        """A prior non-cron call evaluating False must not suppress a cron session's own
+        call made immediately after, within the same TTL window."""
+        from gateway.session_context import _VAR_MAP
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+            monkeypatch.delenv(v, raising=False)
+        invalidate_check_fn_cache()
+
+        # Prime the cache with a False result (no session flags set at all).
+        assert registry.get_definitions({"cronjob_manage"}) == []
+
+        # Immediately after, in the same process/TTL window, bind the cron-session
+        # ContextVar exactly as cron/scheduler.py's _CronRunScope.enter() does.
+        var = _VAR_MAP["HERMES_CRON_SESSION"]
+        token = var.set("1")
+        try:
+            defs = registry.get_definitions({"cronjob_manage"})
+            assert len(defs) == 1
+            assert defs[0]["function"]["name"] == "cronjob_manage"
+        finally:
+            var.reset(token)
+
+
 class TestUnifiedCronjobTool:
     @pytest.fixture(autouse=True)
     def _setup_cron_dir(self, tmp_path, monkeypatch):

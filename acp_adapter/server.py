@@ -878,7 +878,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         streamed_message: bool,
     ) -> PromptResponse:
         """Persist, emit provenance/final text, drain queued prompts, report usage."""
-        if result.get("messages"):
+        # Key presence, not truthiness: ``messages=[]`` is a legitimate cleared transcript (#10844);
+        # only a result without the key leaves the history untouched.
+        if "messages" in result and isinstance(result["messages"], list):
             state.history = result["messages"]
             self.session_manager.save_session(session_id)
 

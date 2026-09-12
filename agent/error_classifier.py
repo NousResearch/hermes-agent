@@ -304,7 +304,9 @@ _AUTH_PATTERNS = (
 # transient refresh failure genuinely can differ on the next attempt.
 _TRANSPORT_CREDENTIAL_MISSING_PATTERNS = (
     "no subscription token",
-    "revoked or missing subscription token",
+    # The bridge also exits 0 having written nothing, and the client's own
+    # advisory names the cause; the longer "revoked or missing subscription
+    # token" wording is subsumed by this form.
     "missing subscription token",
 )
 

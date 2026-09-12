@@ -118,8 +118,9 @@ class TestTickReapsDeadOwnerClaims:
     def test_reap_is_throttled_between_ticks(self, monkeypatch, executions):
         calls = []
         monkeypatch.setattr(
+            # on_recovered: the reclaimed-unknown visibility hook (#108802).
             "cron.executions.recover_interrupted_executions",
-            lambda: calls.append(1) or 0,
+            lambda *args, **kwargs: calls.append(1) or 0,
         )
 
         _run_tick()

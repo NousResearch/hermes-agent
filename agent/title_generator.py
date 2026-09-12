@@ -356,37 +356,129 @@ def auto_title_session(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    retry_of_failed_upgrade: bool = False,
 ) -> None:
-    """Generate and store the model title (daemon-thread target); skips sessions already carrying an
-    ``llm``/``user`` title (a ``derived`` one is expected — upgrading it is the point). Never lets an
-    exception escape (the threading excepthook would spray a traceback into the terminal); the canonical
-    trigger is the post-``hermes update`` window where lazy imports read NEW source against OLD modules."""
+    """Generate and store the model title for a session.
+
+    Called on a background thread. Silently skips if:
+    - session_db is None
+    - the session already carries an ``llm`` or ``user`` title
+    - title generation fails
+    - runtime_validator returns False (model was switched)
+
+    ``retry_of_failed_upgrade`` marks a retry of the stage-2 upgrade on a later
+    turn (opening-turn attempt failed). The session already holds a derived
+    title in that case; when the LLM call fails again, leave that title as-is
+    instead of re-deriving from the latest message — churn without quality.
+
+    Never lets an exception escape: this is a daemon-thread target, and an
+    escaping exception would spray a raw traceback into the user's terminal
+    via the default threading excepthook. The canonical trigger is the
+    post-``hermes update`` stale-module window, where this function's lazy
+    imports read NEW source from disk while already-cached modules
+    (``agent.portal_tags`` etc.) are still the OLD version — the resulting
+    ImportError repeats on every auto-title attempt until the long-running
+    process restarts.
+    """
     try:
-        if not session_db or not session_id or _has_upgraded_title(session_db, session_id):
+        _auto_title_session(
+            session_db,
+            session_id,
+            user_message,
+            failure_callback=failure_callback,
+            main_runtime=main_runtime,
+            title_callback=title_callback,
+            runtime_validator=runtime_validator,
+            retry_of_failed_upgrade=retry_of_failed_upgrade,
+        )
+    except Exception as e:
+        # WARNING (not debug) so operators see it in agent.log; the message
+        # names the likely cause so "restart the process" is discoverable.
+        logger.warning(
+            "Auto-title failed (harmless; if this started after an update, "
+            "restart the running Hermes process): %s",
+            e,
+        )
+        logger.debug("Auto-title traceback", exc_info=True)
+        if failure_callback is not None:
+            try:
+                failure_callback("title generation", e)
+            except Exception:
+                logger.debug("Auto-title failure_callback raised", exc_info=True)
+
+
+def _auto_title_session(
+    session_db,
+    session_id: str,
+    user_message: str,
+    failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict = None,
+    title_callback: Optional[TitleCallback] = None,
+    runtime_validator: Optional[RuntimeValidator] = None,
+    retry_of_failed_upgrade: bool = False,
+) -> None:
+    """Body of :func:`auto_title_session` — see its docstring."""
+    if not session_db or not session_id:
+        return
+
+    # Skip when a title of at least LLM authority is already stored. A derived
+    # title is expected here — upgrading it is the whole point of this call.
+    try:
+        source_fn = getattr(session_db, "get_session_title_source", None)
+        if source_fn is not None:
+            existing_source = source_fn(session_id)
+            if existing_source is not None and existing_source != "derived":
+                return
+        elif session_db.get_session_title(session_id):
             return
-        # This thread starts AFTER the turn's ambient context was reset; republish it so the call carries
-        # the same Portal ``conversation=`` tag (root-of-lineage) and bills usage to this session.
-        from agent.aux_accounting import set_accounting_context
-        from agent.portal_tags import set_conversation_context
-        conversation_id = session_id
-        with suppress(Exception):
-            conversation_id = session_db.get_conversation_root(session_id) or session_id
-        set_conversation_context(conversation_id)
-        # Same for the accounting context, so the title call's token usage is recorded against this session
-        # (task='title_generation', #23270).
-        set_accounting_context(session_db, session_id)
-        title, source = generate_title(
-            user_message, failure_callback=failure_callback, main_runtime=main_runtime, runtime_validator=runtime_validator,
-        ), "llm"
-        if not title:  # the inline attempt declined collisions; off the critical path the lineage scan is affordable
-            title, source = derive_title(user_message), "derived"
+    except Exception:
+        return
+
+    # This runs on a bare daemon thread spawned AFTER the turn's ambient
+    # conversation context was reset, so publish it here from the session id
+    # we already hold — the title-generation LLM call then carries the same
+    # ``conversation=`` Portal tag as the turn it titles. Root-of-lineage for
+    # consistency with the agent loop.
+    from agent.aux_accounting import set_accounting_context
+    from agent.portal_tags import set_conversation_context
+
+    conversation_id = session_id
+    try:
+        conversation_id = session_db.get_conversation_root(session_id) or session_id
+    except Exception:
+        pass
+    set_conversation_context(conversation_id)
+    # Same for the accounting context, so the title call's token usage is
+    # recorded against this session (task='title_generation', #23270).
+    set_accounting_context(session_db, session_id)
+
+    title = generate_title(
+        user_message,
+        failure_callback=failure_callback,
+        main_runtime=main_runtime,
+        runtime_validator=runtime_validator,
+    )
+    if not title:
+        if retry_of_failed_upgrade:
+            # Model failed again on a retry: keep the existing derived title
+            # instead of churning the sidebar with a re-derivation of the
+            # latest message.
+            return
+        # No model title on the opening turn, so the derived one has to hold —
+        # and it may never have been written, since the inline attempt declines
+        # a name collision rather than scan the lineage on the turn's critical
+        # path. Off that path the scan is affordable, so spend it here and leave
+        # the session named rather than nameless.
+        title = derive_title(user_message)
+        source = "derived"
         if not title:
             return
-        try:
-            persisted = _persist_session_title(session_db, session_id, title, source=source)
-        except Exception as e:
-            logger.debug("Failed to set auto-generated title: %s", e)
-            return
+    else:
+        source = "llm"
+
+    try:
+        persisted = _persist_session_title(session_db, session_id, title, source=source)
+        if persisted is None:            return
         if persisted is not None:
             logger.debug("Auto-generated session title: %s", persisted)
             _notify_title(title_callback, persisted, source, "Auto-title")
@@ -403,6 +495,45 @@ def _is_real_user_turn(message: Any) -> bool:
         return False
     content = message.get("content")
     return is_titleable_user_message(content if isinstance(content, str) else flatten_message_text(content))
+
+
+# Cooldown between LLM-upgrade retries for a session whose title is still
+# ``derived`` (stage-2 failed on the opening turn — rate limit, exhausted
+# fallback chain, timeout). In-memory, per process: worst case after a restart
+# is one extra attempt on the next turn, which is exactly the behavior we want.
+_RETRY_COOLDOWN_S = 600
+_derived_retry_last: dict = {}
+
+
+def _session_title_source_is_derived(session_db, session_id: str) -> bool:
+    """Whether the stored title exists but only at ``derived`` authority.
+
+    Stage 2 of titling is a single attempt on the opening turn. When it fails
+    (aux-provider 500s, rate limits, a dead fallback chain), the session keeps
+    its low-quality derived name for life. This detects that state so a later
+    turn can retry the upgrade.
+    """
+    source_fn = getattr(session_db, "get_session_title_source", None)
+    if not callable(source_fn):
+        return False
+    try:
+        return source_fn(session_id) == "derived"
+    except Exception:
+        logger.debug("Derived-title check failed for %s", session_id, exc_info=True)
+        return False
+
+
+def _derived_retry_allowed(session_id: str) -> bool:
+    """Cooldown gate so a multi-turn session spends at most one upgrade call
+    per cooldown window."""
+    import time
+    last = _derived_retry_last.get(session_id, 0)
+    return (time.time() - last) >= _RETRY_COOLDOWN_S
+
+
+def _mark_derived_retry(session_id: str) -> None:
+    import time
+    _derived_retry_last[session_id] = time.time()
 
 
 def _session_is_untitled(session_db, session_id: str) -> bool:
@@ -431,16 +562,47 @@ def maybe_auto_title(
     # History may be pre- or post-message. Skip only when BOTH past the opening turn AND named: count alone
     # left a machinery-opened session nameless; title alone never titles on an old store.
     user_msg_count = sum(1 for m in (conversation_history or []) if _is_real_user_turn(m))
-    if (user_msg_count > 1 and not _session_is_untitled(session_db, session_id)) or not is_titleable_user_message(user_message):
+    if user_msg_count > 1 and not _session_is_untitled(session_db, session_id):
+        # Named already — but a ``derived``-only title means the opening-turn
+        # LLM upgrade failed (rate limit, dead fallback chain, timeout) and the
+        # session kept its low-quality slice-of-the-opener name forever. Retry
+        # the upgrade on a cooldown, titling from the CURRENT user message:
+        # after several turns it carries far more signal than the opener did.
+        if not _session_title_source_is_derived(session_db, session_id):
+            return
+        if not _derived_retry_allowed(session_id):
+            return
+        _mark_derived_retry(session_id)
+
+    if not is_titleable_user_message(user_message):
         return
-    if not _auto_title_enabled():  # config read after the cheap guards so the file isn't touched every turn
+
+    # Config read comes after the cheap guards so the file isn't touched on
+    # every subsequent turn of a long session.
+    if not _auto_title_enabled():
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
-    apply_instant_title(session_db, session_id, user_message, title_callback)
-    threading.Thread(
+
+    # Retry of a failed upgrade: the session already holds a derived title, so
+    # skip the instant re-derive (it would just churn the sidebar) and mark the
+    # background call so its failure leaves the current title untouched.
+    is_derived_retry = (
+        user_msg_count > 1
+        and _session_title_source_is_derived(session_db, session_id)
+    )
+
+    if not is_derived_retry:
+        apply_instant_title(session_db, session_id, user_message, title_callback)
+
+    thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message),
-        kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback, runtime_validator=runtime_validator),
-        daemon=True,
+        kwargs={
+            "failure_callback": failure_callback,
+            "main_runtime": main_runtime,
+            "title_callback": title_callback,
+            "runtime_validator": runtime_validator,
+            "retry_of_failed_upgrade": is_derived_retry,
+        },        daemon=True,
         name="auto-title",
     ).start()

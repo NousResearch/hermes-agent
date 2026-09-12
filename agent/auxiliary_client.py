@@ -5345,9 +5345,10 @@ def _is_probe_stub_client(client: Any, *, _depth: int = 0) -> bool:
     Probe stubs must never be cached or served: a later hit would hand a
     non-functional client to a runtime caller (see #87654). Adapter wrappers
     such as ``CodexAuxiliaryClient`` / ``AnthropicAuxiliaryClient`` keep the
-    leaf client in ``_real_client``, so unwrap a couple of levels. A stub
-    refuses attribute introspection with ``RuntimeError`` (not
-    ``AttributeError``), so an introspection refusal also means stub-backed.
+    leaf client in ``_real_client``, so unwrap a couple of levels. A failed
+    lookup proves nothing (lazy proxies may reject unknown private
+    attributes the same way), so only a successful lookup implicating the
+    leaf counts.
     """
     if client is None:
         return False

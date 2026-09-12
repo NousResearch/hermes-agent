@@ -4,6 +4,9 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 
 from __future__ import annotations
 
+import json
+
+import contextlib
 import threading
 
 from .method_ctx import bind_module
@@ -168,6 +171,26 @@ def _wire_callbacks(sid: str):
     set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
     set_project_workspace_callback(_apply_project_workspace)
     set_secret_capture_callback(secret_cb)
+    # External password-manager unlock: the renderer shows a masked master-password card; the
+    # answer is consumed by the manager CLI on stdin and only a session token stays in memory.
+    from agent.vault_backends.unlock import (set_code_prompt_callback, set_current_session_id,
+                                             set_save_login_prompt_callback, set_unlock_prompt_callback)
+    set_current_session_id(sid)  # an unlock made on this turn belongs to this session (released with it)
+    set_unlock_prompt_callback(lambda backend, display_name: _block(
+        "vault.unlock.request", sid, {"backend": backend, "display_name": display_name}, timeout=120))
+
+    def save_login_cb(origin, site):
+        # The renderer shows identifier + masked password; the JSON answer goes straight to the vault store.
+        raw = _block("vault.save_login.request", sid, {"origin": origin, "site": site}, timeout=180)
+        try:
+            data = json.loads(raw) if raw else None
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) and data.get("password") else None
+
+    set_save_login_prompt_callback(save_login_cb)
+    set_code_prompt_callback(lambda site, hint: _block(
+        "vault.code.request", sid, {"site": site, "hint": hint}, timeout=180))
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:
@@ -275,7 +298,9 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "reasoning_config": g("reasoning_config") or _load_reasoning_config(str(g("model", "") or "")),
         "service_tier": g("service_tier") or _load_service_tier(),
         "request_overrides": dict(g("request_overrides", {}) or {}),
-        "platform": "tui", "session_db": _get_db(), "fallback_model": fallback}
+        # The side agent persists into the PARENT's store: a named-profile chat's ``bg_*`` rows
+        # belong to that profile's state.db, not the launch handle.
+        "platform": "tui", "session_db": getattr(agent, "_session_db", None) or _get_db(), "fallback_model": fallback}
 
 
 def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:
@@ -356,7 +381,53 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
         "status_callback": lambda kind, text=None: progress(text if text is not None else kind)}
 
 
+def _rebuild_session_agent(sid: str, session: dict, **kwargs):
+    """Prepare and install a replacement on the session's profile, then transfer DB ownership.
+
+    An unscoped _make_agent defaults to the launch store: named-profile Bot Chat turns then disappear
+    from the profile's replay even though they were successfully written to another database (#104079).
+    """
+    old_agent = session.get("agent")
+    profile_home = session.get("profile_home")
+    session_db = getattr(old_agent, "_session_db", None)
+    # No live agent to inherit from (rebuild before the deferred build ran): open the profile's store the
+    # same FAIL-CLOSED way _start_agent_build does rather than letting _make_agent reach for the launch db.
+    opened = session_db is None and bool(profile_home)
+    scopes = _bind_build_profile_scopes(profile_home) if profile_home else None
+    try:
+        # Resolve fallible config before allocating a replacement or moving its handle.
+        config_model_seen = _config_model_target()
+        if opened:
+            session_db = _open_profile_session_db(profile_home)
+        agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
+    except BaseException:
+        if opened and session_db is not None:
+            with contextlib.suppress(Exception):
+                session_db.close()
+        raise
+    finally:
+        if scopes is not None:
+            _release_build_profile_scopes(scopes)
+    # Only a DEDICATED handle carries ownership; the shared launch handle outlives every agent and
+    # _transfer_db_to_agent refuses it.
+    with _sessions_lock:
+        session.update(agent=agent, config_model_seen=config_model_seen)
+        owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
+        if owned and _transfer_db_to_agent(agent, session_db):
+            if old_agent is not None:
+                old_agent._owns_session_db = False
+        elif opened:
+            with contextlib.suppress(Exception):
+                session_db.close()
+    return agent
+
+
 def _reset_session_agent(sid: str, session: dict) -> dict:
+    updates = dict(
+        attached_images=[], queued_prompt=None,
+        _queued_prompt_generation=int(session.get("_queued_prompt_generation", 0)) + 1,
+        edit_snapshots={}, image_counter=0, running=False, show_reasoning=_load_show_reasoning(),
+        tool_progress_mode=_load_tool_progress_mode(), tool_started_at={})
     tokens = _set_session_context(session["session_key"])
     try:
         # /new is a full conversation boundary: session-scoped runtime overrides (/model,
@@ -364,18 +435,13 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         # resurrect them. Global process state is never touched (see _apply_model_switch).
         for k in ("model_override", "create_reasoning_override", "create_service_tier_override", "one_turn_model_restore"):
             session.pop(k, None)
-        new_agent = _make_agent(
-            sid, session["session_key"], session_id=session["session_key"],
+        new_agent = _rebuild_session_agent(
+            sid, session, session_id=session["session_key"],
             platform_override=_session_source(session),
             context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
     finally:
         _clear_session_context(tokens)
-    session.update(
-        agent=new_agent, config_model_seen=_config_model_target(), attached_images=[],
-        queued_prompt=None,
-        _queued_prompt_generation=int(session.get("_queued_prompt_generation", 0)) + 1,
-        edit_snapshots={}, image_counter=0, running=False, show_reasoning=_load_show_reasoning(),
-        tool_progress_mode=_load_tool_progress_mode(), tool_started_at={})
+    session.update(updates)
     session.pop("queued_prompts", None)
     with session["history_lock"]:
         session["history"] = []

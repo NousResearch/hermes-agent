@@ -75,7 +75,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
                          base_url_env_var="GMI_BASE_URL"),
     "fireworks": HermesOverlay(extra_env_vars=("FIREWORKS_API_KEY",),
                                base_url_override="https://api.fireworks.ai/inference/v1"),
-    "actual": HermesOverlay(transport="codex_responses", extra_env_vars=("ACTUAL_API_KEY", "ACTUAL_BASE_URL"),
+    "actual": HermesOverlay(transport="chat_completions", extra_env_vars=("ACTUAL_API_KEY",),
                             base_url_override="https://api.actual.inc/v1", base_url_env_var="ACTUAL_BASE_URL"),
     "upstage": HermesOverlay(extra_env_vars=("UPSTAGE_API_KEY",), base_url_override="https://api.upstage.ai/v1",
                              base_url_env_var="UPSTAGE_BASE_URL"),
@@ -165,6 +165,14 @@ def normalize_provider(name: str) -> str:
     """Resolve aliases and normalise casing to a canonical provider id."""
     key = name.strip().lower()
     return ALIASES.get(key, key)
+
+
+def is_actual_route(provider: str = "", base_url: str = "") -> bool:
+    """Identify Actual by provider/alias or its hosted endpoint, including custom routes."""
+    return (
+        normalize_provider(provider or "") == "actual"
+        or base_url_hostname(base_url) == "api.actual.inc"
+    )
 
 
 def _models_dev_info(canonical: str, allow_network: bool = True):
@@ -289,6 +297,8 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
         return None
     url_lower = base_url.rstrip("/").lower()
     hostname = base_url_hostname(base_url)
+    if hostname == "api.actual.inc":
+        return "chat_completions"
     # Exact-hostname matching only — never bare substring — so lookalike hosts
     # (api.openai.com.attacker.test) and path-segment spoofs (proxy.test/api.openai.com/v1) are NOT treated
     # as the real endpoint. (#32243)
@@ -309,18 +319,42 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
 
 
 def nous_api_mode(model: str = "") -> str:
-    """Wire protocol for a Nous Portal model: Portal serves its ``anthropic/*`` catalog on a native
-    Messages route alongside OpenAI-compatible chat/completions for everything else. Empty/unknown
-    model defaults to ``chat_completions`` (the historical Nous transport) as the safer path."""
+    """Wire protocol for a Nous Portal model. Portal serves its ``anthropic/*`` catalog on a native
+    Messages route alongside OpenAI-compatible chat/completions for everything else.
+
+    ``anthropic/*`` rides chat/completions by default for now (``nous.anthropic_wire``). Measured
+    2026-09-06, 20 concurrent sessions x 6 tool calls on Fable 5.1, same account and hour: the
+    native route re-wrote the previous turn on 14-20% of consecutive calls (4 runs; the cache read
+    stopped at the prior breakpoint with byte-identical prefixes), chat/completions 0 of 320 pairs.
+    That is 15-20% of a fan-out's cache-write bill. The cause is inside the portal's native route
+    (NousResearch/api#227 carries the diagnostics); flip the default back to ``native`` when it is
+    fixed. Cost of ``chat``: prior-turn thinking travels as OpenAI-style reasoning fields instead of
+    signed native blocks, and cache_control scopes are translated by the portal's adapter.
+    Empty/unknown model defaults to ``chat_completions`` (the historical Nous transport)."""
     if str(model or "").strip().lower().startswith("anthropic/"):
-        return "anthropic_messages"
+        # ``auto`` starts on chat too: it is safe on every upstream, and ``agent/nous_wire.py``
+        # promotes the session to native from the first response when the upstream allows it.
+        return "anthropic_messages" if _nous_anthropic_wire() == "native" else "chat_completions"
     return "chat_completions"
+
+
+def _nous_anthropic_wire() -> str:
+    """``nous.anthropic_wire``: ``"chat"`` (default), ``"native"``, or ``"auto"`` (chat, then per-session
+    promotion decided from the first response; see ``agent/nous_wire.py``). Anything else reads as ``chat``."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        value = str(((load_config_readonly().get("nous") or {}).get("anthropic_wire")) or "chat").strip().lower()
+    except Exception:
+        return "chat"
+    return value if value in ("native", "auto") else "chat"
 
 
 def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> str:
     """API mode (wire protocol) for a provider/endpoint: host-mandated mode, then Nous dual-wire
     (model-derived — the overlay alone says openai_chat and would pin Claude on the wrong wire),
     then the known provider's transport, then bedrock, else ``chat_completions``."""
+    if is_actual_route(provider, base_url):
+        return "chat_completions"
     mandated = host_mandated_api_mode(base_url)
     if mandated is not None:
         return mandated

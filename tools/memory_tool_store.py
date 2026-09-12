@@ -130,6 +130,13 @@ class MemoryStore:
             # Deduplicate (order-preserving, first occurrence wins).
             entries = list(dict.fromkeys(self._read_file(path)))
             self._set_entries(target, entries)
+            # External writers (MCP bridges, hand edits) can exceed the cap; the limit only fires on
+            # add/replace, so the oversized block would silently ride in the prompt while every later
+            # add is refused with no visible cause (#10877). Warn; never truncate a user's memories.
+            if (count := self._char_count(target)) > (limit := self._char_limit(target)):
+                logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
+                               "further additions are blocked until it is back under the limit.",
+                               path.name, count, limit)
             self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
 
     @staticmethod
@@ -317,6 +324,17 @@ class MemoryStore:
                                            (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:
                     return self._failure_with_entries(target, msg + " No operations were applied (batch is all-or-nothing).")
+            if entries and not working:
+                # #103419: a consolidation batch that removes the last entry would
+                # commit an empty file as a normal successful write. Refuse; single
+                # remove() is the deliberate-wipe path.
+                label = self._path_for(target).name
+                return self._failure_with_entries(target, (
+                    f"Refusing to empty {label}: this batch would remove every entry from a "
+                    f"previously non-empty store. Nothing was applied (batch is all-or-nothing). "
+                    f"Keep at least one entry — merge overlapping entries into a shorter one instead "
+                    f"of removing the last one (see current_entries below). To delete the final entry "
+                    f"deliberately, use single remove() calls."))
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
             if new_total > limit:
                 return self._failure_with_entries(target, (

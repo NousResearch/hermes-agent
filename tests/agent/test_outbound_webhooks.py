@@ -246,6 +246,24 @@ class TestParseConfig:
         )
         assert targets[0].secret is None
 
+    def test_secret_env_resolves_from_profile_scope_under_multiplex(self, monkeypatch):
+        """Per-profile registration: a secondary's ``.env`` secret signs its deliveries; the DEFAULT
+        profile's environ value must never be borrowed when the secondary's scope lacks the var."""
+        from agent import secret_scope
+
+        monkeypatch.setenv("MY_HOOK_SECRET", "from-default-profile-env")
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({"MY_HOOK_SECRET": "from-secondary-scope"})
+        try:
+            raw = _cfg({"url": "https://example.com", "events": ["on_session_end"], "secret_env": "MY_HOOK_SECRET"})
+            assert outbound_webhooks.iter_configured_targets(raw)[0].secret == "from-secondary-scope"
+            secret_scope.reset_secret_scope(token)
+            token = secret_scope.set_secret_scope({})
+            assert outbound_webhooks.iter_configured_targets(raw)[0].secret is None
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
 
 # ── matcher behaviour ─────────────────────────────────────────────────────
 

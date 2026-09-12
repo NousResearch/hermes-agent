@@ -10,9 +10,19 @@ import type { ReactNode } from 'react'
  * fences get promoted whether or not the model asked), directives are
  * addressed (nothing renders unless a plugin claimed the name).
  *
- * The parse is deliberately narrow — a directive must be the entire
- * paragraph, so it can never hijack mid-prose text, and an unclaimed or
- * malformed directive falls back to the plain paragraph it always was.
+ * The product parser requires the entire paragraph to be one directive, so
+ * mid-prose text and malformed or unclaimed directives stay prose.
+ *
+ * For the guided chat segmenter, the guard is the CLAIM, not its position:
+ * a name nobody registered — and a malformed one — stays exactly the text it
+ * always was. Position used to be the guard too (a directive had to be the
+ * whole paragraph), and that cost more than it bought: a model that wrote the
+ * directive at the end of its sentence instead of alone under it put raw
+ * `::onboarding{step="look"}` in front of the user AND swallowed the card,
+ * which on a step whose card is the only way forward stops the conversation
+ * dead. So a directive is recognised wherever it starts a word, and the
+ * paragraph around it keeps rendering as prose.
+ *
  * Attributes are untrusted model output: plugins validate their own fields.
  */
 
@@ -44,9 +54,16 @@ export interface ParsedTranscriptDirective {
   source: string
 }
 
+export type TranscriptParagraphSegment =
+  { kind: 'prose'; text: string } | { kind: 'directive'; directive: ParsedTranscriptDirective }
+
 // The whole paragraph, nothing else on the line: `::name` or `::name{...}`.
 // Length caps bound the attr scan on adversarial input.
 const DIRECTIVE_RE = /^::([a-z][a-z0-9-]{0,63})(?:\{([^{}]{0,1024})\})?$/
+
+// `::name` or `::name{...}`, anywhere a word can start — so `std::vector` is
+// never a directive. Length caps bound the attr scan on adversarial input.
+const SEGMENT_RE = /(?<=^|\s)::([a-z][a-z0-9-]{0,63})(?:\{([^{}]{0,1024})\})?/g
 
 // `key="value"` pairs; single quotes accepted for model sloppiness.
 const ATTR_RE = /([a-z][\w-]{0,63})=(?:"([^"]*)"|'([^']*)')/gi
@@ -79,4 +96,84 @@ export function parseTranscriptDirective(text: string): ParsedTranscriptDirectiv
   }
 
   return { name: match[1], attrs, source: trimmed }
+}
+
+function parseAttrs(body: string | undefined): ParsedTranscriptDirective['attrs'] {
+  const attrs: Record<string, string> = {}
+
+  for (const pair of (body ?? '').matchAll(ATTR_RE)) {
+    attrs[pair[1].toLowerCase()] = pair[2] ?? pair[3] ?? ''
+  }
+
+  return attrs
+}
+
+/**
+ * True when a STILL-STREAMING paragraph should be withheld as a directive in
+ * progress. Deltas land ~3 chars at a time, and `::ask{question="Wha` cannot
+ * parse until the final `}` lands — exactly the window where raw directive
+ * text used to flash. A lone `:` is the same line one delta earlier. The
+ * check covers the paragraph-leading case (the authored shape for onboarding
+ * cards); a directive a model appends mid-sentence streams as prose until it
+ * completes, which reads as ordinary typing rather than leaked markup.
+ *
+ * Only ever consult this while the message is streaming: a SETTLED paragraph
+ * that starts with `::` but doesn't parse is an authoring bug the user should
+ * see as text, and callers must keep that behavior.
+ */
+export function isDirectiveInProgress(text: string): boolean {
+  const trimmed = text.trimStart()
+
+  return trimmed === ':' || trimmed.startsWith('::')
+}
+
+/**
+ * Split a paragraph into its prose runs and the directives embedded in them,
+ * in the order they were written. Null when it holds no directive at all.
+ *
+ * Pure and synchronous — safe to call during render. Deciding which of these
+ * are real is the caller's job: only a claimed name becomes a card, so an
+ * unregistered `::whatever` is folded straight back into the prose it came in.
+ */
+export function segmentTranscriptDirectives(text: string): TranscriptParagraphSegment[] | null {
+  if (!text.includes('::') || text.length > 4800) {
+    return null
+  }
+
+  const out: TranscriptParagraphSegment[] = []
+  let cursor = 0
+
+  SEGMENT_RE.lastIndex = 0
+
+  for (const match of text.matchAll(SEGMENT_RE)) {
+    const start = match.index ?? 0
+
+    // A brace the attr group refused (unclosed, or past the length cap) means
+    // the name matched but its attributes did not. Half of a directive is not
+    // one: render a card with the attributes silently dropped and it is broken
+    // in a way nobody can see. Leave the whole thing as the text it is.
+    if (match[2] === undefined && text[start + match[0].length] === '{') {
+      continue
+    }
+
+    if (start > cursor) {
+      out.push({ kind: 'prose', text: text.slice(cursor, start) })
+    }
+
+    out.push({
+      kind: 'directive',
+      directive: { name: match[1], attrs: parseAttrs(match[2]), source: match[0] }
+    })
+    cursor = start + match[0].length
+  }
+
+  if (out.length === 0) {
+    return null
+  }
+
+  if (cursor < text.length) {
+    out.push({ kind: 'prose', text: text.slice(cursor) })
+  }
+
+  return out
 }

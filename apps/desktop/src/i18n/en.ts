@@ -11,12 +11,6 @@ export const en: Translations = {
     retry: 'Try again',
     grant: 'Reconnect',
     connected: 'Connected',
-    checking: 'Checking your apps…',
-    waitingSignIn: 'Waiting for you to finish signing in…',
-    notConnected: "Didn't connect",
-    notAvailable: 'Not available',
-    startWith: count => `Start the task with ${count} ${count === 1 ? 'app' : 'apps'} connected`,
-    startWithout: 'Start without connections',
     skipped: 'Skipped',
     disabled: 'Unavailable',
     failed: 'Could not connect',
@@ -32,9 +26,10 @@ export const en: Translations = {
     ownerMissing: 'Reopen this conversation to manage its connections.',
     search: 'Find an app',
     empty: 'No matching apps',
+    continue: 'Continue in chat',
+    continueBusy: 'Waiting for this turn to finish',
+    continueFailed: 'Could not continue. Try again.',
     disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
-    connectTitle: app => `Connect ${app}?`,
-    describe: app => `Hermes signs in to ${app} in your browser and asks before reading anything there.`,
     execution: 'Connector tools'
   },
 
@@ -251,11 +246,7 @@ export const en: Translations = {
       transcriptionFailed: 'Voice transcription failed',
       transcriptionUnavailable: 'Voice transcription is not available yet.',
       tryRecordingAgain: 'Try recording again.',
-      unavailable: 'Voice unavailable',
-      liveEnded: 'Live voice session ended',
-      liveError: 'Live voice',
-      liveDelegationFailed: 'Could not hand the request to Hermes',
-      liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`
+      unavailable: 'Voice unavailable'
     },
     native: {
       approvalTitle: 'Approval needed',
@@ -754,11 +745,10 @@ export const en: Translations = {
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
       tipsDesc:
-        'Occasional hints from the app and Hermes. Each tip appears once. Turns off automatically after your first 30 days; you can turn it back on.',
+        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Each tip appears once.',
       tipsReset: (count: number) => `Show ${count} ${count === 1 ? 'tip' : 'tips'} again`,
       toursTitle: 'Guided Tours',
-      toursDesc:
-        'Let Hermes spotlight each step as it guides you through the app. Turns off automatically after your first 30 days; you can turn it back on.',
+      toursDesc: 'Let Hermes walk you through the app, dimming the screen and spotlighting each step.',
       composerPopoutTitle: 'Floating Composer',
       composerPopoutDesc: 'Allow dragging the composer out of its dock. Turn this off to keep it locked at the bottom.',
       vibeHeartsTitle: 'Vibe Hearts',
@@ -2711,6 +2701,10 @@ export const en: Translations = {
       export: 'Export',
       branchFrom: 'Branch',
       rename: 'Rename…',
+      regenerateTitle: 'Regenerate title',
+      regeneratingTitle: 'Regenerating session title...',
+      regenerateTitleSuccess: 'Session title regenerated',
+      regenerateTitleFailed: 'Could not regenerate session title',
       archive: 'Archive',
       newWindow: 'New window',
       openInTerminal: 'Open in terminal',
@@ -2802,13 +2796,6 @@ export const en: Translations = {
     stopDictation: 'Stop dictation',
     transcribingDictation: 'Transcribing dictation',
     voiceControls: 'Voice',
-    voiceEngine: 'Voice chat engine',
-    voiceEngineChained: 'Speech-to-text + Hermes voice',
-    voiceEngineLive: 'GPT-Live (full-duplex, delegates to Hermes)',
-    voiceEngineLiveNeedsKey: 'Needs an OpenAI API key',
-    voiceEngineChangeFailed: 'Could not change the voice chat engine',
-    voiceEngineChainedShort: 'speech-to-text',
-    voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: 'Voice dictation',
     speakReplies: 'Read replies aloud',
     stopSpeakingReplies: 'Stop reading replies aloud',
@@ -2849,7 +2836,6 @@ export const en: Translations = {
     queuedPaused: count => `${count} Queued — paused`,
     attachmentOnly: 'Attachment-only turn',
     emptyTurn: 'Empty turn',
-    hiddenQueued: 'Setup note',
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',
@@ -3175,16 +3161,6 @@ export const en: Translations = {
     }
   },
 
-  handoffTour: {
-    profileTitle: 'Your first task runs on the default profile',
-    profileText:
-      'This rail switches profiles. The one lit up now is default, where the task session lives. The other one is the setup profile, where the welcome chat lives.',
-    sessionsTitle: 'Each profile keeps its own sessions',
-    sessionsText:
-      'This list belongs to the default profile. New session starts one on whichever profile is selected. Switch profiles on the rail and the list changes with it.',
-    stayTitle: 'Hermes is one click away',
-    stayText: 'Switch to the setup profile and open Welcome to Hermes whenever you want a hand. It stays there.'
-  },
   guidedGreeting: {
     line: "Hey, come on in. I'm Hermes. Give me two minutes to set the place up around you, then we'll put me to work on something you actually want done.\n\nFirst though, what should I call you?",
     nameSuggestion: (name: string) => `(I can also just call you ${name}, if you prefer.)`

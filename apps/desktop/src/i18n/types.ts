@@ -59,12 +59,6 @@ export interface Translations {
     retry: string
     grant: string
     connected: string
-    checking: string
-    waitingSignIn: string
-    notConnected: string
-    notAvailable: string
-    startWith: (count: number) => string
-    startWithout: string
     skipped: string
     disabled: string
     failed: string
@@ -80,9 +74,10 @@ export interface Translations {
     ownerMissing: string
     search: string
     empty: string
+    continue: string
+    continueBusy: string
+    continueFailed: string
     disclaimer: string
-    connectTitle: (app: string) => string
-    describe: (app: string) => string
     execution: string
   }
   sessionImport: {
@@ -290,10 +285,6 @@ export interface Translations {
       transcriptionUnavailable: string
       tryRecordingAgain: string
       unavailable: string
-      liveEnded: string
-      liveError: string
-      liveDelegationFailed: string
-      liveUnavailable: (reason: string) => string
     }
     // Native OS notification copy (titles + generic fallback bodies). Dynamic
     // bodies (the agent's reply, a command, an error) are passed through raw.
@@ -2333,6 +2324,10 @@ export interface Translations {
       export: string
       branchFrom: string
       rename: string
+      regenerateTitle: string
+      regeneratingTitle: string
+      regenerateTitleSuccess: string
+      regenerateTitleFailed: string
       archive: string
       newWindow: string
       openInTerminal: string
@@ -2408,13 +2403,6 @@ export interface Translations {
     stopDictation: string
     transcribingDictation: string
     voiceControls: string
-    voiceEngine: string
-    voiceEngineChained: string
-    voiceEngineLive: string
-    voiceEngineLiveNeedsKey: string
-    voiceEngineChangeFailed: string
-    voiceEngineChainedShort: string
-    voiceEngineLiveShort: string
     voiceDictation: string
     speakReplies: string
     stopSpeakingReplies: string
@@ -2439,7 +2427,6 @@ export interface Translations {
     queuedPaused: (count: number) => string
     attachmentOnly: string
     emptyTurn: string
-    hiddenQueued: string
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string
@@ -2737,14 +2724,6 @@ export interface Translations {
    *  model is told to speak the user's language from its first real turn, and
    *  an English opener above a Japanese reply reads as two different agents.
    *  `nameSuggestion` offers the OS account name as a default. */
-  handoffTour: {
-    profileTitle: string
-    profileText: string
-    sessionsTitle: string
-    sessionsText: string
-    stayTitle: string
-    stayText: string
-  }
   guidedGreeting: {
     line: string
     nameSuggestion: (name: string) => string

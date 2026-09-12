@@ -382,6 +382,85 @@ class TestAllowPrivateUrlsIntegration:
             assert is_safe_url("https://nonexistent.example.com") is False
 
 
+class TestAllowedPrivateIpsWhitelist:
+    """security.allowed_private_ips — selective whitelist that keeps general private-IP
+    blocking active while letting user-chosen destinations through."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def _with_config(self, entries):
+        cfg = {"security": {"allowed_private_ips": entries}}
+        return patch("hermes_cli.config.read_raw_config", return_value=cfg)
+
+    def test_literal_ip_whitelisted(self):
+        with self._with_config(["10.0.1.125"]), _resolves_to("10.0.1.125"):
+            assert is_safe_url("http://10.0.1.125/") is True
+
+    def test_hostname_resolving_to_whitelisted_ip_allowed(self):
+        """A hostname that DNS-resolves to a whitelisted IP is allowed."""
+        with self._with_config(["10.0.1.125"]), _resolves_to("10.0.1.125"):
+            assert is_safe_url("http://nas.local/") is True
+
+    def test_cidr_range_whitelisted(self):
+        with self._with_config(["192.168.1.0/24"]), _resolves_to("192.168.1.42"):
+            assert is_safe_url("http://router.lan/") is True
+
+    def test_cidr_does_not_cover_outside_ips(self):
+        with self._with_config(["192.168.1.0/24"]), _resolves_to("192.168.2.5"):
+            assert is_safe_url("http://other.lan/") is False
+
+    def test_hostname_entry_allows_its_private_resolution(self):
+        """Plain hostname entry trusts local split-horizon DNS."""
+        with self._with_config(["nas.lan"]), _resolves_to("10.9.9.9"):
+            assert is_safe_url("http://nas.lan:8080/") is True
+
+    def test_at_prefixed_hostname_requires_explicit_ip_match(self):
+        """@host matches the name only; resolved IP must pass its own ip/cidr rule."""
+        # Host matches but resolution not whitelisted -> blocked
+        with self._with_config(["@nas.lan"]), _resolves_to("10.9.9.9"):
+            assert is_safe_url("http://nas.lan/") is False
+        # Same host + matching IP whitelist -> allowed
+        with self._with_config(["@nas.lan", "10.9.9.9"]), _resolves_to("10.9.9.9"):
+            assert is_safe_url("http://nas.lan/") is True
+
+    def test_unlisted_private_ip_still_blocked(self):
+        with self._with_config(["10.0.1.125"]), _resolves_to("10.0.1.126"):
+            assert is_safe_url("http://other.local/") is False
+
+    def test_empty_list_blocks_everything_private(self):
+        with self._with_config([]), _resolves_to("10.0.0.5"):
+            assert is_safe_url("http://internal.local/") is False
+
+    def test_unparseable_entries_are_ignored_with_warning(self, caplog):
+        with self._with_config(["not-an-ip/99", "", "  "]), _resolves_to("10.0.1.125"):
+            assert is_safe_url("http://x.local/") is False
+
+    def test_metadata_still_blocked_even_when_listed(self):
+        """The always-blocked floor beats the whitelist."""
+        with self._with_config(["169.254.169.254"]):
+            assert is_safe_url("http://169.254.169.254/latest/meta-data") is False
+
+    def test_connect_time_enforcement_for_whitelisted_ip(self):
+        """Direct httpx connect path honours the whitelist too (DNS rebinding guard)."""
+        with self._with_config(["10.0.1.125"]):
+            ips = _resolved_http_connect_ips("10.0.1.125", 80, "http")
+        assert ips == ["10.0.1.125"]
+
+    def test_connect_time_blocked_for_non_whitelisted(self):
+        with self._with_config(["10.0.1.125"]), pytest.raises(SSRFConnectionBlocked):
+            _resolved_http_connect_ips("10.0.1.126", 80, "http")
+
+    def test_global_toggle_and_whitelist_compose(self, monkeypatch):
+        """allow_private_urls=true wins (broader); whitelist does not narrow it."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with self._with_config(["10.0.1.125"]), _resolves_to("192.168.99.5"):
+            assert is_safe_url("http://anything.local/") is True
+
+
 class TestIsAlwaysBlockedUrl:
     """The always-blocked floor — cloud metadata only, narrower than is_safe_url."""
 

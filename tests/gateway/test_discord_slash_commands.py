@@ -204,6 +204,26 @@ async def test_auto_registers_plugin_commands_for_discord(adapter):
 
 
 @pytest.mark.asyncio
+async def test_auto_registered_skills_forwards_write_approval_arguments(adapter):
+    """The Discord /skills command must forward its review arguments."""
+    adapter._run_simple_slash = AsyncMock()
+
+    with patch(
+        "hermes_cli.commands._resolve_config_gates",
+        return_value={"skills"},
+    ):
+        adapter._register_slash_commands()
+
+    skills_cmd = adapter._client.tree.commands["skills"]
+    interaction = SimpleNamespace()
+    await skills_cmd.callback(interaction, args="approve a1b2c3d4")
+
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction, "/skills approve a1b2c3d4"
+    )
+
+
+@pytest.mark.asyncio
 async def test_plugin_command_name_conflict_skipped(adapter):
     """A plugin command that collides with a built-in must not override it."""
     adapter._run_simple_slash = AsyncMock()

@@ -101,3 +101,24 @@ def test_takeover_during_an_admitted_action_discards_its_result(monkeypatch):
     monkeypatch.setattr(tool, "_dispatch", _dispatch_then_takeover)
     res = json.loads(tool.handle_computer_use({"action": "capture"}))
     assert res["code"] == "human_has_control" and "SECRET" not in json.dumps(res)
+
+
+def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason(tmp_path):
+    """Missing file = fresh profile (agent). A file that exists but cannot be parsed must not read as
+    "agent holds": a torn write must never let the agent act on a human's screen. Taking over after a
+    request keeps the agent's reason so the human still sees WHY while they act."""
+    from hermes_constants import hermes_home_key
+
+    home = str(tmp_path)
+    assert lease.get(profile_key=home).holder == lease.AGENT
+    path = lease._path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ torn", encoding="utf-8")
+    assert lease.get(profile_key=home).holder == lease.HUMAN
+    lease.release(profile_key=home)  # a successful write repairs it
+    assert lease.get(profile_key=home).holder == lease.AGENT
+
+    lease.request_handoff("log in to the bank, 2FA on your phone", profile_key=home)
+    held = lease.acquire("desk-1", profile_key=home)
+    assert held.pending_handoff is None and held.reason == "log in to the bank, 2FA on your phone"
+    assert hermes_home_key(home)  # sanity: the key derivation used by the bridge is available

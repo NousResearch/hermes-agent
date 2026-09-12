@@ -11,7 +11,7 @@
  */
 
 import { host, resolveSiblingWsUrl } from '@hermes/plugin-sdk'
-import type { PluginProfileRoute } from '@hermes/plugin-sdk'
+import type { PluginProfileRoute, RpcEvent } from '@hermes/plugin-sdk'
 
 import { botConnectionRoute } from './routing'
 import type { RosterRow } from './types'
@@ -52,6 +52,24 @@ export const VIEWER_ID = `desktop-${Math.random().toString(36).slice(2, 10)}`
 /** Bare-profile fallback so a v1 local bot (no registry route) still resolves. */
 export function botScreenRoute(bot: RosterRow): PluginProfileRoute | string {
   return botConnectionRoute(bot) ?? bot.name
+}
+
+/**
+ * Does a `display.*` event belong to `bot`'s screen? Two hosts can share the same
+ * `~/.hermes` path, so the profile key alone is ambiguous: the event must also have
+ * arrived on the bot's registry connection (local/legacy events carry no tag).
+ */
+export function isEventForBotScreen(bot: RosterRow, event: RpcEvent, profileKey: null | string | undefined): boolean {
+  const payload = event.payload as { profile_key?: string } | undefined
+
+  if (!profileKey || payload?.profile_key !== profileKey) {
+    return false
+  }
+
+  const expected = botConnectionRoute(bot)?.connectionId ?? null
+  const actual = event.connectionId ?? null
+
+  return expected === actual || (expected === 'local' && actual === null)
 }
 
 export function displayRequest<T>(bot: RosterRow, method: string, params: Record<string, unknown> = {}): Promise<T> {

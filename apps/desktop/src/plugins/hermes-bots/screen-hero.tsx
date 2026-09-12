@@ -17,14 +17,19 @@ import { type PortalTone, useScreenPortalState } from './screen-portal'
 import type { BotMeta, RosterRow } from './types'
 
 const REFRESH_MS = 4000
+const STALE_AFTER = 3
 
 function useLiveThumbnail(bot: RosterRow, running: boolean) {
   const [dataUrl, setDataUrl] = useState<string | null>(null)
+  // Consecutive failed refreshes; past STALE_AFTER the frame is shown dimmed as "last seen" so a
+  // dead gateway never keeps looking live. Success resets it.
+  const [misses, setMisses] = useState(0)
   const boxRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
     if (!running) {
       setDataUrl(null)
+      setMisses(0)
 
       return
     }
@@ -59,10 +64,13 @@ function useLiveThumbnail(bot: RosterRow, running: boolean) {
         .then(result => {
           if (!cancelled) {
             setDataUrl(result.data_url)
+            setMisses(0)
           }
         })
         .catch(() => {
-          /* transient: the next tick retries; the last good frame stays up */
+          if (!cancelled) {
+            setMisses(prev => prev + 1) // the last good frame stays up, marked stale past STALE_AFTER
+          }
         })
         .finally(() => {
           if (!cancelled) {
@@ -83,7 +91,7 @@ function useLiveThumbnail(bot: RosterRow, running: boolean) {
     }
   }, [bot, running])
 
-  return { dataUrl, boxRef }
+  return { dataUrl, boxRef, stale: misses >= STALE_AFTER }
 }
 
 const TONE_RING: Partial<Record<PortalTone, string>> = {
@@ -95,13 +103,13 @@ export function ScreenHero({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
   const t = useBots()
   const { tone } = useScreenPortalState(bot)
   const running = tone === 'live' || tone === 'human' || tone === 'other'
-  const { dataUrl, boxRef } = useLiveThumbnail(bot, running)
+  const { dataUrl, boxRef, stale } = useLiveThumbnail(bot, running)
 
   if (tone === 'unsupported') {
     return null
   }
 
-  const caption = {
+  const caption = stale ? t.screen.heroStale : {
     live: t.screen.portalWatching,
     human: t.screen.portalYouControl,
     other: t.screen.portalOtherControls,
@@ -123,7 +131,7 @@ export function ScreenHero({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
       type="button"
     >
       {dataUrl ? (
-        <img alt="" className="absolute inset-0 size-full object-cover" draggable={false} src={dataUrl} />
+        <img alt="" className={stale ? 'absolute inset-0 size-full object-cover opacity-40 grayscale' : 'absolute inset-0 size-full object-cover'} draggable={false} src={dataUrl} />
       ) : (
         <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(ellipse_at_center,rgba(255,255,255,0.08),transparent_70%)]">
           <Codicon className="text-[2.25rem] text-white/30" name={running ? 'loading' : tone === 'missing' ? 'cloud-download' : 'vm'} />
@@ -131,7 +139,7 @@ export function ScreenHero({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
       )}
 
       <span className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/85 to-black/0 px-2.5 pb-2 pt-6 text-white">
-        <span className={`size-2 shrink-0 rounded-full ${running ? (tone === 'live' ? 'bg-emerald-400' : tone === 'human' ? 'bg-red-400' : 'bg-amber-400') : 'bg-white/40'}`} />
+        <span className={`size-2 shrink-0 rounded-full ${running && !stale ? (tone === 'live' ? 'bg-emerald-400' : tone === 'human' ? 'bg-red-400' : 'bg-amber-400') : 'bg-white/40'}`} />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-xs font-medium">{t.screen.portalTitle}</span>
           <span className="block truncate text-[0.65rem] text-white/70">{caption}</span>

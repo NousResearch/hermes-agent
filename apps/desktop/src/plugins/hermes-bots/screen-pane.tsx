@@ -15,7 +15,7 @@ import type { RpcEvent } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
-import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, resolveScreenWsUrl, VIEWER_ID } from './screen-connection'
+import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isEventForBotScreen, resolveScreenWsUrl, VIEWER_ID } from './screen-connection'
 import { ScreenInstallCard } from './screen-install'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus } from './screen-state'
 import type { RosterRow } from './types'
@@ -70,9 +70,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     void refresh()
 
     return host.onEvent('display.lease', (event: RpcEvent) => {
-      const payload = event.payload as { profile_key?: string; lease?: DisplayLease } | undefined
+      const payload = event.payload as { lease?: DisplayLease } | undefined
 
-      if (payload?.lease && payload.profile_key && payload.profile_key === status?.profile_key) {
+      if (payload?.lease && isEventForBotScreen(bot, event, status?.profile_key)) {
         setScreenLease(bot, payload.lease)
       }
     })
@@ -256,6 +256,11 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         {lease?.pending_handoff ? (
           <span className="rounded bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400" title={lease.pending_handoff}>
             <Codicon name="bell" /> {t.screen.handoffRequested}
+          </span>
+        ) : lease?.holder === 'human' && lease.reason ? (
+          // The agent's ask stays readable WHILE the human acts, not only before Take over.
+          <span className="max-w-[40%] truncate rounded bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400" title={lease.reason}>
+            <Codicon name="bell" /> {lease.reason}
           </span>
         ) : null}
         {iHold ? (

@@ -13,11 +13,12 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { GenerateButton } from '@/components/ui/generate-button'
-import { Input } from '@/components/ui/input'
+import { SanitizedInput } from '@/components/ui/sanitized-input'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-idea-templates'
+import { projectName } from '@/lib/sanitize'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import {
@@ -68,7 +69,7 @@ export function ProjectDialog() {
 
   useEffect(() => {
     if (open) {
-      setName(state?.name ?? '')
+      setName(projectName(state?.name ?? ''))
       setFolders([])
       setIdea('')
       setTemplates(randomIdeaTemplates())
@@ -186,10 +187,9 @@ export function ProjectDialog() {
         </DialogHeader>
 
         {mode !== 'add-folder' && (
-          <Input
+          <SanitizedInput
             autoFocus
             disabled={submitting}
-            onChange={event => setName(event.target.value)}
             onKeyDown={event => {
               if (event.key === 'Enter') {
                 event.preventDefault()
@@ -198,8 +198,10 @@ export function ProjectDialog() {
                 onOpenChange(false)
               }
             }}
+            onValueChange={setName}
             placeholder={p.namePlaceholder}
             ref={nameRef}
+            sanitize={projectName}
             value={name}
           />
         )}

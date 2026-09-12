@@ -32,6 +32,13 @@ export const WS_HEARTBEAT_DEAD_MS = 45_000
 // Exponential backoff for reconnect attempts after a transport drop.
 export const RECONNECT_BASE_MS = 1_000
 export const RECONNECT_MAX_MS = 30_000
+// A child that dies within seconds of spawn is crash-looping, not a transient
+// drop: keep the backoff counter so reconnects slow toward RECONNECT_MAX_MS
+// instead of hammering at 1s. Duplicate start() calls inside the window below
+// are the same race (reconnect timer + UI subscriber + in-flight request all
+// firing at once) — the second one just orphans a booting child on Windows.
+export const QUICK_EXIT_MS = 10_000
+const SPAWN_DEBOUNCE_MS = 1_500
 
 const getWebSocketCtor = (): typeof WebSocket =>
   typeof WebSocket === 'undefined' ? (UndiciWebSocket as unknown as typeof WebSocket) : WebSocket
@@ -164,6 +171,7 @@ export class GatewayClient extends EventEmitter {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempts = 0
+  private lastSpawnAt = 0
   private lastActivityAt = 0
   private heartbeatSeq = 0
   private heartbeatPendingId: string | null = null
@@ -485,6 +493,7 @@ export class GatewayClient extends EventEmitter {
     env.HERMES_PYTHON_SRC_ROOT = root
     this.startReadyTimer(python, cwd)
     this.proc = spawn(python, ['-m', 'tui_gateway.entry'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
+    this.lastSpawnAt = Date.now()
     this.lifecycle(`[lifecycle] spawned gateway child ${describeChild(this.proc)} python=${python} cwd=${cwd}`)
 
     this.stdoutRl = createInterface({ input: this.proc.stdout! })
@@ -655,8 +664,26 @@ export class GatewayClient extends EventEmitter {
   }
 
   start() {
+    // Debounce racing restarts: a transport exit fans out to the reconnect
+    // timer, the UI recovery subscriber, and in-flight request() calls, which
+    // can each invoke start() within milliseconds (three spawned children in
+    // 8ms observed). Killing a child that is still booting orphans it on
+    // Windows, and each orphan later dies on its severed stdin pipe.
+    if (!resolveGatewayAttachUrl() && this.proc && !this.proc.killed && this.proc.exitCode === null
+        && Date.now() - this.lastSpawnAt < SPAWN_DEBOUNCE_MS) {
+      this.lifecycle(`[lifecycle] debounced duplicate start (${describeChild(this.proc)})`)
+      return
+    }
     this.disposed = false
-    this.clearReconnect()
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    // Preserve backoff across fast-crash loops: only a child that lived a
+    // healthy life resets the counter, otherwise reconnects back off 1s→30s.
+    if (this.lastSpawnAt === 0 || Date.now() - this.lastSpawnAt > QUICK_EXIT_MS) {
+      this.reconnectAttempts = 0
+    }
 
     const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
     const attachUrl = resolveGatewayAttachUrl()
@@ -665,12 +692,12 @@ export class GatewayClient extends EventEmitter {
     this.attachUrl = attachUrl
     this.sidecarUrl = sidecarUrl
     this.resetStartupState()
-    this.clearReconnect()
     this.stopHeartbeat()
 
     if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
-      this.lifecycle(`[lifecycle] replacing live gateway child ${describeChild(this.proc)}`)
-      this.proc.kill()
+      const target = describeChild(this.proc)
+      const killed = this.proc.kill()
+      this.lifecycle(`[lifecycle] replacing live gateway child ${target} killResult=${killed ?? 'none'}`)
     }
 
     this.proc = null

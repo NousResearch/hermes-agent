@@ -142,7 +142,9 @@ class ApiErrorSummaryMixin:
                 )
             current = current.__cause__ or current.__context__
 
-        if isinstance(error, ValueError) and "expected ident at line" in raw.lower():
+        if isinstance(error, ValueError) and any(
+            marker in raw.lower() for marker in ("expected ident at line", "expected value at line")
+        ):
             return f"Malformed provider streaming response: {raw[:300]}"
 
         prefix = _http_prefix(error)

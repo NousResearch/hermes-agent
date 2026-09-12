@@ -1096,6 +1096,52 @@ class TestAnthropicStreamCallbacks:
         assert mock_rebuild.call_count == 0
         assert agent._anthropic_client.close.call_count >= 1
 
+    def test_anthropic_malformed_tool_json_falls_back_to_buffered_message(self):
+        """Malformed fine-grained tool JSON uses Anthropic's buffered response."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+
+        class _MalformedToolStream:
+            response = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(
+                    type="content_block_start",
+                    content_block=SimpleNamespace(type="tool_use", name="cronjob_manage"),
+                )
+                raise ValueError("expected value at line 1 column 11")
+
+        repaired_message = SimpleNamespace(
+            content=[SimpleNamespace(type="tool_use", name="cronjob_manage", input={"names": "cronjob_manage"})],
+            stop_reason="tool_use",
+        )
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.return_value = _MalformedToolStream()
+        agent._anthropic_client.messages.create.return_value = repaired_message
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
+
+        response = agent._interruptible_streaming_api_call({"model": agent.model})
+
+        assert response is repaired_message
+        assert agent._anthropic_client.messages.stream.call_count == 1
+        assert agent._anthropic_client.messages.create.call_count == 1
+
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
         self, mock_replace, monkeypatch,

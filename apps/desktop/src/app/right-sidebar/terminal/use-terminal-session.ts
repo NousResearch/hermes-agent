@@ -927,6 +927,12 @@ export function useTerminalSession({
         webgl.onContextLoss(() => {
           webgl.dispose()
           webglRef.current = null
+          try {
+            fitRef.current?.(initialActiveRef.current)
+            term.refresh(0, term.rows - 1)
+          } catch {
+            // Best-effort DOM repaint fallback after WebGL context loss
+          }
         })
         term.loadAddon(webgl)
         webglRef.current = webgl
@@ -991,7 +997,11 @@ export function useTerminalSession({
       // The WebGL renderer caches glyph colors in a texture atlas, so a
       // light/dark switch leaves already-drawn cells stale until the atlas is
       // cleared. No-op for the DOM fallback.
-      webglRef.current?.clearTextureAtlas()
+      try {
+        webglRef.current?.clearTextureAtlas()
+      } catch {
+        // WebGL context lost or uninitialized
+      }
     })
 
     return () => cancelAnimationFrame(raf)
@@ -1038,7 +1048,11 @@ export function useTerminalSession({
       onActivate: () => {
         const term = termRef.current
 
-        webglRef.current?.clearTextureAtlas()
+        try {
+          webglRef.current?.clearTextureAtlas()
+        } catch {
+          // WebGL context lost or uninitialized
+        }
         term?.refresh(0, term.rows - 1)
         term?.focus()
       }

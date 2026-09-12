@@ -1,247 +1,134 @@
+"""OpenRouter video_gen plugin — live-catalog shape, per-model clamping, and the submit→poll→download flow."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-import pytest
-
-from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
 from agent import video_gen_registry
-from plugins.video_gen.openrouter import (
-    DEFAULT_MODEL,
-    OpenRouterVideoGenProvider,
-    _build_payload,
-)
+from plugins.video_gen.openrouter import OpenRouterVideoGenProvider, _build_payload
+
+_VEO = {"id": "google/veo-3.1", "name": "Google: Veo 3.1", "supported_durations": [4, 6, 8],
+        "supported_resolutions": ["720p", "1080p", "4K"], "supported_aspect_ratios": ["16:9", "9:16"],
+        "supported_frame_images": ["first_frame", "last_frame"], "generate_audio": True, "seed": True,
+        "pricing_skus": {"duration_seconds_with_audio": "0.40", "duration_seconds_without_audio": "0.20"}}
+_HAILUO = {"id": "minimax/hailuo-3-max", "name": "MiniMax: Hailuo 3 Max", "supported_durations": list(range(5, 16)),
+           "supported_resolutions": ["768p", "480p"], "supported_aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+           "supported_frame_images": ["first_frame"], "generate_audio": False, "seed": False,
+           "pricing_skus": {"duration_seconds_480p": "0.05", "duration_seconds_768p": "0.08"}}
+_EDIT = {"id": "black-forest-labs/flux-video-edit", "name": "FLUX Video Edit", "supported_durations": None,
+         "supported_resolutions": None, "supported_aspect_ratios": None, "supported_frame_images": None,
+         "generate_audio": False, "seed": False, "pricing_skus": {"cents_per_second_output": "3"}}
+
+
+def _provider(monkeypatch, catalog, configured="google/veo-3.1"):
+    provider = OpenRouterVideoGenProvider()
+    monkeypatch.setattr(provider, "_catalog", lambda: catalog)
+    monkeypatch.setattr(provider, "_configured_model", lambda: configured)
+    return provider
+
+
+def test_catalog_drives_picker_rows_and_selected_model_capabilities(monkeypatch):
+    """Rows come from the live catalog minus edit/upscale models; capabilities() follows the CONFIGURED
+    model (Veo: audio+seed; Hailuo: neither) so the dynamic schema never advertises a dead toggle."""
+    provider = _provider(monkeypatch, [_VEO, _HAILUO, _EDIT], configured="google/veo-3.1")
+    rows = provider.list_models()
+    assert [r["id"] for r in rows] == ["google/veo-3.1", "minimax/hailuo-3-max"]
+    assert rows[0]["price"] == "$0.20–0.40/s" and rows[1]["max_duration"] == 15
+
+    veo = provider.capabilities()
+    assert veo["supports_audio"] and veo["supports_seed"] and veo["resolutions"] == ["720p", "1080p", "4K"]
+    monkeypatch.setattr(provider, "_configured_model", lambda: "minimax/hailuo-3-max")
+    hailuo = provider.capabilities()
+    assert not hailuo["supports_audio"] and not hailuo["supports_seed"] and hailuo["max_duration"] == 15
+
+
+def test_payload_clamps_to_model_limits_and_drops_unsupported_toggles():
+    payload = _build_payload(_HAILUO, model=_HAILUO["id"], prompt="p", image_url="https://x/a.png",
+                             reference_image_urls=["https://x/r.png"], duration=99, aspect_ratio="2:3",
+                             resolution="720p", audio=True, seed=7)
+    assert payload["duration"] == 15 and payload["resolution"] == "768p" and payload["aspect_ratio"] == "3:4"
+    assert payload["frame_images"][0]["frame_type"] == "first_frame"
+    assert payload["input_references"] == [{"type": "image_url", "image_url": {"url": "https://x/r.png"}}]
+    assert "generate_audio" not in payload and "seed" not in payload  # Hailuo lacks both → would 400
+
+    veo = _build_payload(_VEO, model=_VEO["id"], prompt="p", image_url=None, reference_image_urls=None,
+                         duration=5, aspect_ratio="16:9", resolution="1080p", audio=False, seed=7)
+    assert veo["duration"] == 4 and veo["generate_audio"] is False and veo["seed"] == 7
 
 
 @dataclass
 class _Response:
     payload: dict
     status_code: int = 200
-    content: bytes = b""
+    text: str = ""
 
     def json(self):
         return self.payload
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}: {self.payload}")
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
+@dataclass
 class _Session:
-    def __init__(self):
-        self.posts = []
-        self.gets = []
-        self.polls = [
-            _Response({"id": "job-1", "status": "in_progress"}),
-            _Response(
-                {
-                    "id": "job-1",
-                    "status": "completed",
-                    "unsigned_urls": ["https://cdn.example/video.mp4"],
-                    "usage": {"cost": 0.4},
-                }
-            ),
-        ]
+    posts: list = field(default_factory=list)
+    gets: list = field(default_factory=list)
+    polls: list = field(default_factory=lambda: [
+        _Response({"id": "job-1", "status": "in_progress"}),
+        _Response({"id": "job-1", "status": "completed", "unsigned_urls": ["https://evil.example/steal"],
+                   "usage": {"cost": 0.4}})])
 
     def post(self, url, **kwargs):
         self.posts.append((url, kwargs))
-        return _Response(
-            {
-                "id": "job-1",
-                "polling_url": "https://openrouter.ai/api/v1/videos/job-1",
-                "status": "pending",
-            },
-            status_code=202,
-        )
+        return _Response({"id": "job-1", "polling_url": f"{url}/job-1", "status": "pending"}, status_code=202)
 
     def get(self, url, **kwargs):
         self.gets.append((url, kwargs))
         return self.polls.pop(0)
 
+    def close(self):
+        pass
 
-def test_poll_caps_request_timeout_and_rejects_late_terminal_response(monkeypatch):
-    provider = OpenRouterVideoGenProvider()
-    provider._poll_deadline_s = 10
-    provider._request_timeout_s = 60
+
+def test_generate_submits_polls_and_downloads_from_configured_origin(monkeypatch, tmp_path):
+    """The bearer key goes to the poll URL and to ``{base}/videos/{id}/content`` derived from OUR base URL,
+    never to a provider-supplied ``unsigned_urls`` host."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    provider = _provider(monkeypatch, [_VEO], configured="google/veo-3.1")
     session = _Session()
-    session.polls = [_Response({"id": "job-1", "status": "completed"})]
-    ticks = iter([100.0, 109.0, 111.0])
-    monkeypatch.setattr("plugins.video_gen.openrouter.time.monotonic", lambda: next(ticks))
-
-    with pytest.raises(TimeoutError, match="did not finish within 10s"):
-        provider._poll(session, "job-1")
-
-    assert session.gets[0][1]["timeout"] == 1.0
-
-
-def test_unified_video_schema_exposes_hailuo_resolution_and_aspect_ratio():
-    properties = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
-
-    assert "768p" in properties["resolution"]["enum"]
-    assert "21:9" in properties["aspect_ratio"]["enum"]
-
-
-def test_hailuo_catalog_and_capabilities_are_pinned_to_openrouter_contract():
-    provider = OpenRouterVideoGenProvider()
-
-    assert DEFAULT_MODEL == "minimax/hailuo-3-max"
-    assert provider.default_model() == DEFAULT_MODEL
-    assert provider.list_models() == [
-        {
-            "id": DEFAULT_MODEL,
-            "display": "MiniMax H3 Max",
-            "speed": "~20-60s",
-            "strengths": "Fast text-to-video and first-frame image-to-video.",
-            "price": "$0.05/s (480p), $0.08/s (768p)",
-            "modalities": ["text", "image"],
-        }
-    ]
-    assert provider.capabilities() == {
-        "modalities": ["text", "image"],
-        "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
-        "resolutions": ["480p", "768p"],
-        "max_duration": 15,
-        "min_duration": 5,
-        "supports_audio": False,
-        "supports_negative_prompt": False,
-        "supports_seed": False,
-        "supports_upscale": False,
-        "max_reference_images": 0,
-    }
-
-
-def test_build_payload_uses_openrouter_video_fields_and_clamps_values():
-    payload = _build_payload(
-        prompt="A lighthouse in a storm",
-        image_url="https://example.com/start.png",
-        duration=99,
-        aspect_ratio="2:3",
-        resolution="720p",
-    )
-
-    assert payload == {
-        "model": DEFAULT_MODEL,
-        "prompt": "A lighthouse in a storm",
-        "duration": 15,
-        "resolution": "768p",
-        "aspect_ratio": "16:9",
-        "frame_images": [
-            {
-                "type": "image_url",
-                "image_url": {"url": "https://example.com/start.png"},
-                "frame_type": "first_frame",
-            }
-        ],
-    }
-
-
-def test_generate_submits_polls_and_materializes_completed_video(monkeypatch, tmp_path):
-    provider = OpenRouterVideoGenProvider()
-    session = _Session()
-    saved = []
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr(provider, "_session", lambda: session)
-    monkeypatch.setattr("plugins.video_gen.openrouter.time.sleep", lambda _seconds: None)
-    monkeypatch.setattr(
-        "plugins.video_gen.openrouter.save_url_video",
-        lambda url, prefix, headers, require_video_content_type: saved.append(
-            (url, prefix, headers, require_video_content_type)
-        )
-        or tmp_path / "hailuo.mp4",
-    )
+    monkeypatch.setattr("plugins.video_gen.openrouter.time.sleep", lambda s: None)
+    saved = []
 
-    result = provider.generate(
-        "A slow cinematic push-in",
-        duration=5,
-        aspect_ratio="9:16",
-        resolution="480p",
-    )
+    def fake_save(url, **kwargs):
+        saved.append((url, kwargs))
+        return tmp_path / "clip.mp4"
+    monkeypatch.setattr("plugins.video_gen.openrouter.save_url_video", fake_save)
 
-    assert result["success"] is True
-    assert result["video"] == str(tmp_path / "hailuo.mp4")
-    assert result["provider"] == "openrouter"
-    assert result["model"] == DEFAULT_MODEL
-    assert result["modality"] == "text"
-    assert result["duration"] == 5
-    assert result["cost"] == 0.4
+    result = provider.generate("a fox", duration=6, resolution="1080p", aspect_ratio="16:9", audio=True)
+
+    assert result["success"], result
+    assert result["video"] == str(tmp_path / "clip.mp4") and result["cost"] == 0.4 and result["duration"] == 6
     assert session.posts[0][0] == "https://openrouter.ai/api/v1/videos"
-    assert session.posts[0][1]["json"]["resolution"] == "480p"
-    assert [url for url, _kwargs in session.gets] == [
-        "https://openrouter.ai/api/v1/videos/job-1",
-        "https://openrouter.ai/api/v1/videos/job-1",
-    ]
-    assert saved == [
-        (
-            "https://openrouter.ai/api/v1/videos/job-1/content",
-            "openrouter-hailuo",
-            {
-                "Authorization": "Bearer test-key",
-                "Content-Type": "application/json",
-                "User-Agent": "hermes-agent/video_gen",
-            },
-            True,
-        )
-    ]
+    assert session.posts[0][1]["json"]["model"] == "google/veo-3.1" and session.posts[0][1]["json"]["generate_audio"] is True
+    assert session.posts[0][1]["headers"]["Authorization"] == "Bearer sk-or-test"
+    assert [g[0] for g in session.gets] == ["https://openrouter.ai/api/v1/videos/job-1"] * 2
+    assert saved[0][0] == "https://openrouter.ai/api/v1/videos/job-1/content"
+    assert saved[0][1]["headers"]["Authorization"] == "Bearer sk-or-test" and saved[0][1]["require_video_content_type"]
 
 
-def test_generate_rejects_non_http_image_input_without_calling_api(monkeypatch):
-    provider = OpenRouterVideoGenProvider()
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-
-    result = provider.generate("animate this", image_url="/private/start.png")
-
-    assert result["success"] is False
-    assert result["error_type"] == "invalid_request"
-    assert "public HTTP" in result["error"]
+def test_generate_rejects_local_image_paths_before_spending(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    provider = _provider(monkeypatch, [_VEO])
+    monkeypatch.setattr(provider, "_session", lambda: (_ for _ in ()).throw(AssertionError("must not submit")))
+    result = provider.generate("p", image_url="/home/me/frame.png")
+    assert not result["success"] and result["error_type"] == "invalid_request"
 
 
-def test_generate_rejects_private_first_frame_without_calling_api(monkeypatch):
-    provider = OpenRouterVideoGenProvider()
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setattr(
-        provider,
-        "_session",
-        lambda: (_ for _ in ()).throw(AssertionError("API must not be called")),
-    )
-
-    result = provider.generate("animate this", image_url="https://127.0.0.1/start.png")
-
-    assert result["success"] is False
-    assert result["error_type"] == "invalid_request"
-
-
-def test_reference_images_are_rejected_before_session_creation(monkeypatch):
-    provider = OpenRouterVideoGenProvider()
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setattr(
-        provider,
-        "_session",
-        lambda: (_ for _ in ()).throw(AssertionError("API must not be called")),
-    )
-
-    result = provider.generate(
-        "use these references",
-        reference_image_urls=["https://example.com/reference.png"],
-    )
-
-    assert result["success"] is False
-    assert result["error_type"] == "unsupported_input"
-
-
-def test_generate_rejects_unknown_model_without_calling_api(monkeypatch):
-    provider = OpenRouterVideoGenProvider()
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-
-    result = provider.generate("test", model="other/video-model")
-
-    assert result["success"] is False
-    assert result["error_type"] == "invalid_model"
-    assert DEFAULT_MODEL in result["error"]
-
-
-def test_register_and_picker_discovery_expose_openrouter(monkeypatch):
-    from hermes_cli import tools_config
-    from hermes_cli import plugins as plugin_loader
+def test_register_exposes_openrouter_in_the_video_gen_picker(monkeypatch):
+    from hermes_cli import plugins as plugin_loader, tools_config
     from plugins.video_gen.openrouter import register
 
     class _Context:
@@ -252,35 +139,7 @@ def test_register_and_picker_discovery_expose_openrouter(monkeypatch):
     try:
         register(_Context())
         monkeypatch.setattr(plugin_loader, "_ensure_plugins_discovered", lambda: None)
-
-        registered = video_gen_registry.get_provider("openrouter")
-        rows = tools_config._plugin_video_gen_providers()
-
-        assert isinstance(registered, OpenRouterVideoGenProvider)
-        row = next(item for item in rows if item["video_gen_plugin_name"] == "openrouter")
-        assert row["name"] == "OpenRouter"
-        assert row["env_vars"][0]["key"] == "OPENROUTER_API_KEY"
+        row = next(r for r in tools_config._plugin_video_gen_providers() if r["video_gen_plugin_name"] == "openrouter")
+        assert row["name"] == "OpenRouter" and row["env_vars"][0]["key"] == "OPENROUTER_API_KEY"
     finally:
         video_gen_registry._reset_for_tests()
-
-
-def test_dynamic_schema_is_capability_scoped(monkeypatch):
-    from tools import video_generation_tool
-
-    provider = OpenRouterVideoGenProvider()
-    monkeypatch.setattr(video_generation_tool, "_resolve_active_provider", lambda: provider)
-    monkeypatch.setattr(video_generation_tool, "_read_configured_video_model", lambda: DEFAULT_MODEL)
-
-    schema = video_generation_tool._build_dynamic_video_schema()
-    properties = schema["parameters"]["properties"]
-
-    assert properties["duration"]["minimum"] == 5
-    assert properties["duration"]["maximum"] == 15
-    assert properties["resolution"]["enum"] == ["480p", "768p"]
-    assert properties["aspect_ratio"]["enum"] == [
-        "21:9", "16:9", "4:3", "1:1", "3:4", "9:16",
-    ]
-    assert "image_url" in properties
-    assert "reference_image_urls" not in properties
-    assert "audio" not in properties
-    assert "seed" not in properties

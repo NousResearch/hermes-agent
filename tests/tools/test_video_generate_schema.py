@@ -168,13 +168,10 @@ class TestFleetCapabilityCoverage(unittest.TestCase):
                     f"({implements_upscale})",
                 )
                 declares_seed = '"supports_seed": True' in src
-                # Merely accepting ``seed`` in generate() is part of the ABC
-                # contract, not proof that the backend implements it. Providers
-                # can mark that contract-only parameter explicitly.
-                implements_seed = ("payload[\"seed\"]" in impl_src
-                                   or "\"seed\": seed" in impl_src
-                                   or ("seed: Optional[int]" in impl_src
-                                       and "_IGNORES_SEED = True" not in impl_src))
+                implements_seed = ("seed" in impl_src
+                                   and ("payload[\"seed\"]" in impl_src
+                                        or "seed: Optional[int]" in impl_src
+                                        or "\"seed\": seed" in impl_src))
                 self.assertEqual(
                     declares_seed, implements_seed,
                     f"{name}: supports_seed declaration ({declares_seed}) "

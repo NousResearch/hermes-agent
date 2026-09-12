@@ -839,6 +839,46 @@ describe('overlayLiveLanes', () => {
     expect(groups.some(g => g.label === 'main' || g.id.endsWith('::branch::main'))).toBe(false)
   })
 
+  it('joins a fresh empty-git_branch session into the live master home lane', () => {
+    // session.create can INSERT cwd without git columns. liveLaneForRepo then
+    // used DEFAULT_BRANCH_LABEL ("main") and forked a second trunk next to
+    // ::branch::master. Empty git_branch must join the existing isMain lane
+    // on the same path.
+    const root = '/www/app'
+    const existing = makeCwdSession(root, { id: 'old', git_branch: 'master' })
+    const fresh = makeCwdSession(root, { id: 'fresh' })
+
+    const project = projectNode({
+      id: root,
+      repos: [
+        {
+          id: root,
+          label: 'app',
+          path: root,
+          sessionCount: 1,
+          groups: [
+            lane({
+              id: `${root}::branch::master`,
+              label: 'master',
+              isMain: true,
+              path: root,
+              sessions: [existing]
+            })
+          ]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [existing, fresh])
+    const groups = overlaid.repos[0].groups
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].label).toBe('master')
+    expect(groups[0].id).toBe(`${root}::branch::master`)
+    expect(groups[0].sessions.map(s => s.id).sort()).toEqual(['fresh', 'old'])
+    expect(groups.some(g => g.label === 'main' || g.id.endsWith('::branch::main'))).toBe(false)
+  })
+
   it('joins a fresh live session into an existing non-git workspace lane (no branch id)', () => {
     const root = '/work/notes'
     const existing = makeCwdSession(root, { id: 'old' })

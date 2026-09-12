@@ -156,6 +156,39 @@ class TestRequestToolApproval:
         res = request_tool_approval("terminal", "any", rule_key="my-rule")
         assert res["pattern_key"] == "plugin_rule:my-rule"
 
+    def test_display_target_defaults_to_synthetic_label(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: False)
+
+        def _prompt(command, *a, **k):
+            seen["command"] = command
+            return "deny"
+
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", _prompt)
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", _prompt)
+        request_tool_approval("terminal", "any", rule_key="my-rule")
+        assert seen["command"] == "<terminal> (plugin approval rule)"
+
+    def test_display_target_is_shown_as_command_but_not_keyed(self, monkeypatch):
+        """A plugin that knows the real command can show it; the allowlist grain stays rule_key."""
+        seen = {}
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: False)
+
+        def _prompt(command, *a, **k):
+            seen["command"] = command
+            return "deny"
+
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", _prompt)
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", _prompt)
+        res = request_tool_approval("terminal", "mutates prod", rule_key="kubectl-prod",
+                                    display_target="kubectl --context prod delete pod x")
+        assert seen["command"] == "kubectl --context prod delete pod x"
+        assert res["pattern_key"] == "plugin_rule:kubectl-prod"
+
     def test_no_human_non_cron_fails_closed(self, monkeypatch):
         """Non-interactive, non-gateway, NON-cron context blocks (fail-closed)
         — a plugin-flagged action never runs ungated without a human."""

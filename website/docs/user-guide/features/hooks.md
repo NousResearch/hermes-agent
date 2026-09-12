@@ -550,10 +550,11 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 ```python
 return {"action": "block", "message": "Reason the tool call was blocked"}
 # or
-return {"action": "approve", "message": "Why approval is required", "rule_key": "optional:scope"}
+return {"action": "approve", "message": "Why approval is required", "rule_key": "optional:scope",
+        "display_target": "optional: what the approval UI shows as the command"}
 ```
 
-The first valid directive wins (Python plugins registered first, then shell hooks). `block` requires a non-empty `message` and short-circuits the tool with that text as the error returned to the model. `approve` escalates the call to the existing human-approval gate; `message` and `rule_key` are optional, and denial, timeout, or gate error fails closed. Other return values are ignored, so existing observer-only callbacks keep working unchanged.
+The first valid directive wins (Python plugins registered first, then shell hooks). `block` requires a non-empty `message` and short-circuits the tool with that text as the error returned to the model. `approve` escalates the call to the existing human-approval gate; `message`, `rule_key` and `display_target` are optional, and denial, timeout, or gate error fails closed. Without `display_target` the approval UI shows a synthetic `<tool> (plugin approval rule)` label in place of the command, so a plugin that knows the exact command (or file path) should pass it — display only, it never affects the allowlist key. Other return values are ignored, so existing observer-only callbacks keep working unchanged.
 
 **Return value — rewrite the tool's arguments:**
 

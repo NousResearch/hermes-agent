@@ -1764,6 +1764,7 @@ class _PreToolCallDirective:
     action: Optional[str] = None
     message: Optional[str] = None
     rule_key: Optional[str] = None
+    display_target: Optional[str] = None
     modified_args: Optional[Dict[str, Any]] = None
 
 
@@ -1785,8 +1786,9 @@ def _get_pre_tool_call_directive_details(
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
-    the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
-    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). First valid directive
+    the tool result) or ``{"action": "approve", "message", "rule_key"?, "display_target"?}``
+    (escalate ANY tool to the human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist
+    grain, ``display_target`` is what the approval UI shows as the command). First valid directive
     wins; irrelevant returns are ignored."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
@@ -1821,7 +1823,10 @@ def _get_pre_tool_call_directive_details(
             continue
         rule_key = result.get("rule_key") if action == "approve" else None
         rule_key = (rule_key.strip() or None) if isinstance(rule_key, str) else None
-        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key, modified_args=modified_args)
+        display_target = result.get("display_target") if action == "approve" else None
+        display_target = (display_target.strip() or None) if isinstance(display_target, str) else None
+        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key,
+                                     display_target=display_target, modified_args=modified_args)
     return _PreToolCallDirective(modified_args=modified_args)
 
 
@@ -1868,7 +1873,8 @@ def _resolve_block_from_details(
             approval_tokens = set_current_observability_context(
                 turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id)
         try:
-            result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name)
+            result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name,
+                                           display_target=details.display_target or "")
         finally:
             if approval_tokens is not None:
                 with suppress(Exception):

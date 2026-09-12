@@ -52,6 +52,28 @@ class TestParentValidation:
         assert "parent" not in items[0]
 
 
+class TestRestoreSanitize:
+    def test_restore_drops_dangling_parent(self):
+        store = TodoStore()
+        items = store.restore([_item("a", parent="ghost")])
+        assert "parent" not in items[0]
+        # ... and the item stays visible to post-compression injection
+        assert store.format_for_injection() is not None
+        assert "task a" in store.format_for_injection()
+
+    def test_restore_breaks_cycle(self):
+        store = TodoStore()
+        items = store.restore([_item("a", parent="b"), _item("b", parent="a")])
+        by_id = {i["id"]: i for i in items}
+        for item in items:
+            seen = set()
+            node = item
+            while node.get("parent"):
+                assert node["parent"] not in seen
+                seen.add(node["id"])
+                node = by_id[node["parent"]]
+
+
 class TestMergeParent:
     def test_merge_sets_parent(self):
         store = TodoStore()

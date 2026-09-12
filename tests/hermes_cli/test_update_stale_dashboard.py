@@ -563,6 +563,63 @@ class TestManualBackendRespawn:
         assert spawned[0] == ["hermes", "dashboard", "--port", "8300", "--no-open"]
         assert spawned[1] == ["hermes", "serve", "--host", "0.0.0.0"]
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    @pytest.mark.parametrize(
+        ("executable", "cwd_result", "expected_cwd"),
+        [
+            ("./bin/hermes", "/srv/hermes-agent", "/srv/hermes-agent"),
+            ("/opt/hermes/bin/hermes", AssertionError("cwd lookup must not run"), None),
+            ("./bin/hermes", OSError("cwd unavailable"), None),
+        ],
+    )
+    def test_respawn_preserves_cwd_only_for_relative_executable(
+        self, tmp_path, monkeypatch, executable, cwd_result, expected_cwd
+    ):
+        """Relative launchers need their original cwd; absolute launchers and lookup failures do not."""
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        argv = [executable, "dashboard", "--port", "8300"]
+        popen_kwargs: list[dict] = []
+
+        class _FakeProcess:
+            cwd_calls = 0
+
+            def cwd(self):
+                self.cwd_calls += 1
+                if isinstance(cwd_result, BaseException):
+                    raise cwd_result
+                return cwd_result
+
+        process = _FakeProcess()
+
+        def fake_kill(_pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        def fake_popen(_cmd, **kwargs):
+            popen_kwargs.append(kwargs)
+            return MagicMock()
+
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[6001]), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
+             patch("psutil.Process", return_value=process), \
+             patch.object(live.subprocess, "Popen", side_effect=fake_popen), \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert result["unrecovered"] == []
+        assert len(popen_kwargs) == 1
+        assert popen_kwargs[0].get("cwd") == expected_cwd
+        if executable.startswith("/"):
+            assert process.cwd_calls == 0
+        else:
+            assert process.cwd_calls == 1
+
     def test_respawn_failure_returned(self, tmp_path, monkeypatch, capsys):
         live = self._live()
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

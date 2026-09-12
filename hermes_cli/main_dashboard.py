@@ -237,10 +237,13 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
         return None
 
 
-def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
+def _respawn_dashboard_processes(
+    commands: list[list[str]], *, cwd_by_argv: dict[tuple[str, ...], str] | None = None
+) -> list[list[str]]:
     """Respawn manually-started dashboards after ``hermes update``, detached, logging to
     ``logs/dashboard-restart.log``; returns the argvs that failed to spawn. Callers pre-filter via
     ``_filter_dashboard_respawn_candidates`` (no Desktop ``--port 0`` backends, capped per profile).
+    A captured cwd is applied only when replaying a relative executable.
 
     See #78821.
     """
@@ -253,14 +256,19 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
 
     for command in commands:
         try:
+            original_argv = tuple(command)
             # Keep restarted dashboards headless; reopening a browser after a
             # background update is noisy and fails in SSH/headless sessions.
             if "dashboard" in command and "--no-open" not in command:
                 command = [*command, "--no-open"]
+            popen_kwargs = {}
+            if command and not os.path.isabs(command[0]):
+                if cwd := (cwd_by_argv or {}).get(original_argv):
+                    popen_kwargs["cwd"] = cwd
             with open(log_path, "ab") as log_f:
                 subprocess.Popen(
                     command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
-                    start_new_session=True, close_fds=True)
+                    start_new_session=True, close_fds=True, **popen_kwargs)
             respawned.append(command)
         except (OSError, ValueError) as exc:
             failed.append((command, str(exc)))

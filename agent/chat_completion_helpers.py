@@ -1941,9 +1941,16 @@ _SUMMARY_FOREIGN_MESSAGE_KEYS = ("reasoning", "finish_reason", "tool_name", "cod
 _EMPTY_SUMMARY_RESPONSE = "I reached the iteration limit and couldn't generate a summary."
 
 
-def _iteration_summary_api_messages(agent, messages: list) -> list:
+def _iteration_summary_api_messages(agent, messages: list, *, system_nudge: Optional[str] = None) -> list:
     """Wire-ready messages for the summary call, mirroring the main loop's api_messages build
-    (sidecar substitution, tool-call repair, thinking-only drop, underscore-key sweep)."""
+    (sidecar substitution, tool-call repair, thinking-only drop, underscore-key sweep).
+
+    ``system_nudge``: optional iteration-limit stop text appended to the cached system
+    prompt for the wire payload only. NOT appended to ``messages`` (the persistent
+    history), so the synthetic instruction never reaches the next turn's
+    ``messages`` list as a fake user row (#36246). Stable content matches
+    ``agent.context_compressor.MAX_ITERATIONS_SUMMARY_REQUEST`` so the compaction
+    recognizer still keys off it for any pre-patch persisted rows."""
     needs_sanitize = agent._should_sanitize_tool_calls()
     sanitize_model = agent.model
     if needs_sanitize and agent.provider == "moa":
@@ -1978,6 +1985,11 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     effective_system = agent._cached_system_prompt or ""
     if agent.ephemeral_system_prompt:
         effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+    if system_nudge:
+        # Combine into a single role=system message; some chat templates
+        # (Anthropic) require system at index 0, others tolerate a leading
+        # system block, so one message is the safest shape (#36246).
+        effective_system = (effective_system + "\n\n" + system_nudge).strip() if effective_system else system_nudge
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
     for idx, pfm in enumerate(agent.prefill_messages or ()):
@@ -2071,34 +2083,64 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
     return (agent._get_transport().normalize_response(response, **normalize_kwargs).content or "").strip()
 
 
+def _summary_text_with_scrub(agent, response, label: str, **normalize_kwargs) -> tuple[str, bool]:
+    """Normalize a summary response and scrub tool-call leakage (#36246 / #36239).
+
+    Returns ``(text, is_fallback)``:
+      * ``is_fallback=True``  → the model returned a ``tool_calls`` payload despite
+        the wire-level ``tool_choice="none"`` and the system-role stop. The caller
+        MUST NOT retry (same model state guarantees another tool_calls) and the
+        user gets a fixed fallback string instead of mid-thought prose.
+      * ``is_fallback=False`` → either a real summary or empty.
+
+    Anthropic's wire schema doesn't accept ``tool_choice="none"``; this helper is
+    the response-side safety net for every api_mode.
+    """
+    normalized = agent._get_transport().normalize_response(response, **normalize_kwargs)
+    if getattr(normalized, "tool_calls", None):
+        logger.warning(
+            "%s: model returned tool_calls despite summary stop; using fallback "
+            "(no retry — same model state would repeat)", label,
+        )
+        return _EMPTY_SUMMARY_RESPONSE, True
+    content = getattr(normalized, "content", "") or ""
+    return (content.strip() if isinstance(content, str) else ""), False
+
+
 def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
-    def _attempt(retry_count: int) -> str:
+    def _attempt(retry_count: int) -> tuple[str, bool]:
         codex_kwargs = agent._build_api_kwargs(api_messages)
         codex_kwargs.pop("tools", None)
-        return _summary_text(agent, agent._run_codex_stream(codex_kwargs))
+        # Wire-level hard stop: Responses API honors tool_choice="none" (#36246).
+        codex_kwargs["tool_choice"] = "none"
+        return _summary_text_with_scrub(agent, agent._run_codex_stream(codex_kwargs), f"codex-summary-r{retry_count}")
     return _attempt
 
 
 def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
-    def _attempt(retry_count: int) -> str:
+    def _attempt(retry_count: int) -> tuple[str, bool]:
         ant_kw = agent._get_transport().build_kwargs(
             model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
         response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
-        return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
+        # Anthropic's tool_choice enum (auto/any/tool) doesn't accept "none"; the
+        # tools=None strip + the response-side scrub are the two defenses.
+        return _summary_text_with_scrub(agent, response, f"anthropic-summary-r{retry_count}", strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
 
 
 def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     summary_kwargs = _iteration_summary_chat_kwargs(agent, api_messages)
+    # Wire-level hard stop (#36246): Chat Completions honors tool_choice="none".
+    summary_kwargs["tool_choice"] = "none"
 
-    def _attempt(retry_count: int) -> str:
+    def _attempt(retry_count: int) -> tuple[str, bool]:
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
         response = _managed_summary_call(
             agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
-        return _summary_text(agent, response)
+        return _summary_text_with_scrub(agent, response, f"chat-summary-r{retry_count}")
     return _attempt
 
 
@@ -2106,7 +2148,22 @@ _SUMMARY_ATTEMPT_BUILDERS = {"codex_responses": _codex_summary_attempt, "anthrop
 
 
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
-    """Request a summary when max iterations are reached. Returns the final response text."""
+    """Request a summary when max iterations are reached. Returns the final response text.
+
+    Hard-stop design (#36246): the iteration-limit instruction is delivered as a
+    *system-role* message on the wire payload only, never as a ``role:"user`` row
+    appended to ``messages``. Appending a user row used to (a) cause the model to
+    paraphrase the budget cut-off as user speech ("the user stopped me mid-task")
+    on the summary turn and (b) pollute the persistent history with a synthetic
+    user turn that survived into later turns and confused compaction.
+
+    Belt-and-suspenders wire constraints:
+      * Chat Completions + Codex Responses: ``tool_choice="none"`` (providers honor).
+      * Anthropic Messages: no "none" enum value; relies on ``tools=None`` strip
+        plus the response-side scrub helper.
+      * All paths: ``_summary_text_with_scrub`` rejects a response carrying
+        ``tool_calls`` and returns a fixed fallback string instead of mid-thought prose.
+    """
     warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
     if getattr(agent, "suppress_status_output", False):
         # Strict machine-readable mode (-Q, oneshot): keep diagnostics off stdout. quiet_mode is
@@ -2120,20 +2177,28 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     summary_api_request_id = f"iteration-summary:{uuid.uuid4()}"
     summary_call_outcome = "failed"
 
-    # Shared constant so compaction recognizers can identify this runtime nudge by its stable
-    # content after SessionDB projection strips metadata flags.
+    # Stable content string is the authoritative marker: SessionDB drops ``_``-metadata.
+    # Re-used as the system-nudge text so compaction recognizers can still match it
+    # against any pre-patch persisted rows (#78580 fix, preserved).
     from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
-    append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
     try:
-        api_messages = _iteration_summary_api_messages(agent, messages)
+        api_messages = _iteration_summary_api_messages(
+            agent, messages, system_nudge=MAX_ITERATIONS_SUMMARY_REQUEST,
+        )
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
         attempt = build_attempt(agent, api_messages, summary_api_request_id)
 
         # One retry on an empty summary; a summary empty once its <think> block is stripped is NOT retried.
+        # If the first call returned the fallback (model emitted tool_calls despite tool_choice="none"
+        # + the system stop), do NOT retry — same model state guarantees another tool_calls payload.
         final_response = _EMPTY_SUMMARY_RESPONSE
         for retry_count in (0, 1):
-            text = attempt(retry_count)
+            text, is_fallback = attempt(retry_count)
+            if is_fallback:
+                summary_call_outcome = "fallback"
+                final_response = text
+                break
             if not text:
                 continue
             if "<think>" in text:

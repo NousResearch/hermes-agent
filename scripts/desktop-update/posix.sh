@@ -341,48 +341,9 @@ linux_gate() {
   GATE=manual GATE_MSG="Update complete, but the rebuilt app can't relaunch itself (its sandbox helper needs root ownership). Reopen Hermes to finish."
 }
 
-mac_swap() {
-  local rebuilt="" c
-  for c in "$INSTALL_ROOT/apps/desktop/release/mac-arm64/Hermes.app" \
-           "$INSTALL_ROOT/apps/desktop/release/mac/Hermes.app"; do
-    [ -d "$c" ] && { rebuilt="$c"; break; }
-  done
-
-  # Transactional swap: stage a full copy, move the old bundle aside, move
-  # the copy in. Every step checked; a failed final move ROLLS BACK so the
-  # user always has a launchable app, and the result file tells the truth.
-  if [ "$FINAL_CODE" -eq 0 ] && [ -n "$rebuilt" ] && [ -d "$RELAUNCH_TARGET" ] && [ "$rebuilt" != "$RELAUNCH_TARGET" ]; then
-    publish_stage "Installing the new app"
-    rm -rf "$RELAUNCH_TARGET.new" "$RELAUNCH_TARGET.old" 2>/dev/null || true
-    if ! /usr/bin/ditto "$rebuilt" "$RELAUNCH_TARGET.new"; then
-      rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
-      DONE_NOTE="Update complete, but the new app could not be staged; the previous version was kept. Run the update again."
-      log "WARNING: bundle copy failed; keeping existing app"
-    elif ! mv "$RELAUNCH_TARGET" "$RELAUNCH_TARGET.old"; then
-      rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
-      DONE_NOTE="Update complete, but the new app could not replace the old one; the previous version was kept. Run the update again."
-      log "WARNING: could not move old bundle aside; keeping existing app"
-    elif ! mv "$RELAUNCH_TARGET.new" "$RELAUNCH_TARGET"; then
-      if mv "$RELAUNCH_TARGET.old" "$RELAUNCH_TARGET"; then
-        rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
-        DONE_NOTE="Update complete, but the new app could not be installed; the previous version was restored. Run the update again."
-        log "WARNING: bundle install failed; rolled back to the previous app"
-      else
-        FINAL_CODE=7 FINAL_MSG="The update finished but installing the new app failed and the previous app could not be restored. Reinstall Hermes (the rebuilt app is at $rebuilt)."
-        log "ERROR: bundle install failed AND rollback failed"
-      fi
-    else
-      rm -rf "$RELAUNCH_TARGET.old" 2>/dev/null || true
-      log "swapped app bundle"
-    fi
-  fi
-}
-
 deliver_outcome() { # the truth-determining half: swap bundles / gate the relaunch
   [ -n "$RELAUNCH_TARGET" ] || return 0
-  if [ "$(uname)" = "Darwin" ]; then
-    mac_swap
-  else
+  if [ "$(uname)" != "Darwin" ]; then
     linux_gate
     if [ "$GATE" != "relaunch" ] && [ "$FINAL_CODE" -eq 0 ]; then
       DONE_NOTE="$GATE_MSG"
@@ -430,6 +391,26 @@ write_result() {
 }
 
 finish() {
+  if [ "$(uname)" = "Darwin" ] && [ -n "$RELAUNCH_TARGET" ]; then
+    # The helper owns publication, launch, recovery and the existing result file.
+    # Never fall through to the legacy launch-acceptance exit handler.
+    trap - EXIT
+    local py="$INSTALL_ROOT/venv/bin/python3" outcome
+    tcc_probe_python "$py" || py="$(command -v python3)"
+    outcome="$("$py" "$SCRIPT_DIR/../../hermes_cli/desktop_macos_update.py" complete \
+      "$INSTALL_ROOT" "$RELAUNCH_TARGET" --owner "$$" --branch "$BRANCH" \
+      --update-code "$FINAL_CODE" --message "$FINAL_MSG" 2>>"$LOG")"
+    FINAL_CODE=$?
+    FINAL_MSG="${outcome:-macOS publication helper failed; shell state unverified. Manual recovery required.}"
+    log "$FINAL_MSG"
+    if [ "$FINAL_CODE" -eq 0 ]; then
+      publish "done" "$FINAL_MSG"; stop_ui
+    else
+      publish "error" "$FINAL_MSG"; stop_ui leave-window
+    fi
+    rm -f "$STATUS" "$STATUS.tmp" "$LOG_DIR/desktop-update-ui-port" 2>/dev/null || true
+    exit "$FINAL_CODE"
+  fi
   # Ordering (gille's reviews, both rounds):
   #   1. deliver the outcome (swap/gate) so the truth exists;
   #   2. durable result + marker removal (the relaunched app consumes the
@@ -722,6 +703,18 @@ start_ui
 
 HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
 [ -x "$HERMES_BIN" ] || { FINAL_CODE=3 FINAL_MSG="Update aborted: $HERMES_BIN is missing. The install needs repair (run the Hermes installer or hermes doctor)."; log "$FINAL_MSG"; exit 3; }
+
+# Reject publication into/over the producer tree before the underlying update
+# can rebuild or remove it. This runs even if no candidate has been built yet.
+if [ "$(uname)" = "Darwin" ] && [ -n "$RELAUNCH_TARGET" ]; then
+  MACOS_PY="$INSTALL_ROOT/venv/bin/python3"
+  tcc_probe_python "$MACOS_PY" || MACOS_PY="$(command -v python3)"
+  MACOS_PREFLIGHT="$("$MACOS_PY" "$SCRIPT_DIR/../../hermes_cli/desktop_macos_update.py" preflight \
+    "$INSTALL_ROOT" "$RELAUNCH_TARGET" 2>>"$LOG")" || {
+    FINAL_CODE=5 FINAL_MSG="$MACOS_PREFLIGHT Source/backend update was not run."
+    log "$FINAL_MSG"; exit "$FINAL_CODE"
+  }
+fi
 
 # Heal a venv the reverted TCC anchor left bricked BEFORE invoking the CLI:
 # venv/bin/hermes execs venv/bin/python3, so a dead alias kills every attempt

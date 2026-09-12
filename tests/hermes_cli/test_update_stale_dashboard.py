@@ -21,6 +21,7 @@ import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
+import psutil
 
 from hermes_cli.main_dashboard import _find_stale_dashboard_pids
 from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
@@ -792,7 +793,7 @@ class TestFilterDashboardRespawnCandidates:
 
 
 class TestCmdlineCapture:
-    """_dashboard_cmdline_for_pid reads /proc on Linux, ps on macOS."""
+    """_dashboard_cmdline_for_pid reads exact, structured process argv."""
 
     def _live(self):
         return main_dashboard
@@ -823,19 +824,37 @@ class TestCmdlineCapture:
 
         assert argv == ["/usr/bin/python3", "-m", "hermes_cli.main", "serve"]
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX ps cmdline fallback")
-    def test_falls_back_to_ps_without_proc(self, monkeypatch):
+    @pytest.mark.macos_only
+    def test_preserves_arguments_and_executable_with_spaces(self, tmp_path):
+        install_dir = tmp_path / "Python Runtime"
+        install_dir.mkdir()
+        executable = install_dir / "python with spaces"
+        executable.symlink_to(sys.executable)
+        expected = [
+            str(executable),
+            "-c",
+            "import time; time.sleep(30)",
+            "argument with spaces",
+            "quote'\" and \\ slash",
+            "--looks-like-option=value with spaces",
+        ]
+        process = subprocess.Popen(expected)
+        try:
+            assert self._live()._dashboard_cmdline_for_pid(process.pid) == expected
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX structured cmdline capture")
+    def test_does_not_reconstruct_argv_from_ps_output(self):
         live = self._live()
-
-        def fake_run(args, *a, **kw):
-            assert args == ["ps", "-p", "888", "-o", "command="]
-            return MagicMock(returncode=0, stdout="hermes serve --port 8300\n", stderr="")
-
         with patch.object(live.os.path, "exists", return_value=False), \
-             patch("subprocess.run", side_effect=fake_run):
+             patch.object(psutil, "Process", side_effect=psutil.AccessDenied(888)), \
+             patch.object(live, "_run_probe") as probe:
             argv = main_dashboard._dashboard_cmdline_for_pid(888)
 
-        assert argv == ["hermes", "serve", "--port", "8300"]
+        assert argv is None
+        probe.assert_not_called()
 
     @pytest.mark.windows_only
     def test_returns_none_on_windows(self):

@@ -39,9 +39,15 @@ def retire_terminal_receipts(conn, session_ids):
                          (identity_key(row['principal_id'], sid, row['request_id']), json.dumps(row['admission_id'])))
         for raw in workers:
             row = dict(raw)
-            row['receipts'] = [dict(r) for r in conn.execute(
+            receipts = [dict(r) for r in conn.execute(
                 'SELECT sequence,payload_digest,result_json FROM worker_receipts WHERE execution_id=? ORDER BY sequence',
                 (row['execution_id'],))]
+            # A terminal worker can only replay its closing receipt. Earlier results
+            # (history/context reads) are user data that must not outlive the delete;
+            # their digests stay so a late duplicate is still recognised as a conflict.
+            for receipt in receipts[:-1]:
+                receipt['result_json'] = None
+            row['receipts'] = receipts
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                          (WORKER_PREFIX + row['execution_id'], _json(row)))
             conn.execute('DELETE FROM worker_receipts WHERE execution_id=?', (row['execution_id'],))

@@ -153,8 +153,8 @@ export async function setMainModelAssignment(
   const { connection, generation } = beginCronModelImpactAssignment()
   const profile = profileIdentity()
 
-  // Only pass the extra arg when a scope override exists, so unscoped callers
-  // keep the exact legacy call shape.
+  // Preserve the legacy one-argument shape only when no concrete target was
+  // supplied; Settings supplies its active profile explicitly.
   const assign = (body: Omit<ModelAssignmentRequest, 'scope'>) =>
     scopeProfile == null
       ? setModelAssignment({ ...body, scope: 'main' })

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { getHermesConfigRecord, type ProfileScope, profileScopeKey } from '@/hermes'
+import { getApiRequestProfile, getHermesConfigRecord, type ProfileScope, profileScopeKey } from '@/hermes'
 import { queryClient, writeCache } from '@/lib/query-client'
 import type { HermesConfigRecord } from '@/types/hermes'
 
@@ -13,20 +13,25 @@ import type { HermesConfigRecord } from '@/types/hermes'
 // it pushes personality/cwd/voice/… into the session stores for live chat.
 export const HERMES_CONFIG_KEY = ['hermes-config-record'] as const
 
-// Per-scope cache key. The base key (no suffix) is the app-wide active
-// profile, unchanged for every caller that passes nothing. An explicit scope —
+// Per-scope cache key. An omitted scope resolves to the app-wide active
+// profile so ambient consumers share the same row as Settings. An explicit scope —
 // the Capabilities scope selector configuring ANOTHER profile, possibly on
 // another registered gateway — gets its own suffixed key so switching the
 // selector refetches and never paints stale cross-profile config (the
 // AGENTS.md scope-in-key rule). profileScopeKey folds a remote pin's
 // connection id into the suffix, so two gateways' same-named profiles never
 // share a cache row.
-export const hermesConfigKey = (profile?: ProfileScope) =>
-  profile == null ? HERMES_CONFIG_KEY : ([...HERMES_CONFIG_KEY, profileScopeKey(profile)] as const)
+export const hermesConfigKey = (profile?: ProfileScope) => {
+  const resolvedProfile = profile ?? getApiRequestProfile() ?? undefined
+
+  return resolvedProfile == null
+    ? HERMES_CONFIG_KEY
+    : ([...HERMES_CONFIG_KEY, profileScopeKey(resolvedProfile)] as const)
+}
 
 // staleTime 0 → serve cache instantly, background-revalidate on every mount.
-// `profile` scopes both the query key and the fetch; omitting it preserves the
-// exact app-wide behavior (base key, `profileScoped(undefined)` fallback).
+// `profile` scopes both the query key and the fetch; omitting it preserves
+// ambient request routing while keying the response by its concrete profile.
 export const useHermesConfigRecord = (profile?: ProfileScope) =>
   useQuery({
     queryKey: hermesConfigKey(profile),
@@ -37,10 +42,11 @@ export const useHermesConfigRecord = (profile?: ProfileScope) =>
     staleTime: 0
   })
 
-// setHermesConfigCache writes the app-wide (base-key) record. Pass a profile to
-// write the suffixed per-profile cache instead — keeps the selector's optimistic
-// write-through landing on the same key its query reads.
-export const setHermesConfigCache = writeCache<HermesConfigRecord>(HERMES_CONFIG_KEY)
+// Ambient writes resolve their concrete profile at call time, matching
+// useHermesConfigRecord() even after an app-wide profile switch.
+export const setHermesConfigCache = (
+  next: HermesConfigRecord | undefined | ((prev: HermesConfigRecord | undefined) => HermesConfigRecord | undefined)
+): void => writeCache<HermesConfigRecord>(hermesConfigKey())(next)
 export const hermesConfigCacheWriter = (profile?: ProfileScope) =>
   writeCache<HermesConfigRecord>(hermesConfigKey(profile))
 

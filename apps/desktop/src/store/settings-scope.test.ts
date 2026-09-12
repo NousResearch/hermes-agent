@@ -46,8 +46,8 @@ describe('settings scope store', () => {
     setSettingsScope('research')
     setSettingsScope('default')
 
-    // No override → requests keep their unscoped shape and the scope keeps
-    // following the app on future profile switches.
+    // No override keeps the selector following future app-wide profile
+    // switches; requests still resolve to the concrete active profile.
     expect($settingsScopeOverride.get()).toBeNull()
     expect($settingsScopeProfile.get()).toBe('default')
   })

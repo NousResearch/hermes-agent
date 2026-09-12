@@ -218,7 +218,7 @@ function ConfigSettingsInner({
           if (saveVersionRef.current === v) {
             // The repo-discovery scan reads the ACTIVE profile's workspace
             // policy; skip it when this page is editing another profile.
-            if (scopeProfile == null) {
+            if (!scopeOverridden) {
               const discoverySignature = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(snapshot))
 
               if (savedDiscoverySignatureRef.current !== discoverySignature) {

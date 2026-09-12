@@ -553,6 +553,20 @@ class AIAgent(
         reasoning_floor = get_reasoning_stale_timeout_floor(self.model)
         if reasoning_floor is not None:
             return reasoning_floor, False
+        # Delegated children sit behind Cloudflare-fronted aggregators whose Proxy Read
+        # Timeout (120s) exceeds the implicit 90s default: the local watchdog would kill
+        # the doomed call before the gateway's own 524 arrives, so retries re-enter the
+        # same window with 120s+ backoff (~12min to a guaranteed death). Floor the
+        # implicit timeout at 150s for children so a genuinely hung origin surfaces as
+        # the provider's 524 (actionable, retry_after-honored) instead of our 90s kill.
+        # (#60203 follow-up; see kanban t_5806fd2b RCA §4.2.)
+        try:
+            from agent.delegation_context import is_delegated_child_context
+
+            if is_delegated_child_context() or getattr(self, "platform", None) == "subagent":
+                return 150.0, True
+        except Exception:
+            pass
         return 90.0, True
 
     def _compute_non_stream_stale_timeout(self, api_payload: Any) -> float:

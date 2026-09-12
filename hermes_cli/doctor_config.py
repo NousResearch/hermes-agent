@@ -55,6 +55,34 @@ def collect_deprecated_env_vars(env_map: dict | None) -> list[tuple[str, str]]:
             if env_map.get(name) is not None and str(env_map[name]).strip() != ""]
 
 
+def collect_unknown_config_keys(raw_config: dict | None) -> list[str]:
+    """Return dotted paths for user-config keys not present in DEFAULT_CONFIG.
+
+    Walks the raw (on-disk) config tree and checks each key against
+    DEFAULT_CONFIG.  Only truly unknown keys are reported — keys that
+    exist in the defaults are valid even if the user's file doesn't set
+    them.  Internal keys (starting with ``_``) are skipped.
+    """
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    unknown: list[str] = []
+    if not isinstance(raw_config, dict):
+        return unknown
+
+    def _walk(user: dict, defaults: dict, prefix: str = ""):
+        for key in user:
+            if key.startswith("_"):
+                continue
+            full = key if not prefix else f"{prefix}.{key}"
+            if key not in defaults:
+                unknown.append(full)
+            elif isinstance(user[key], dict) and isinstance(defaults.get(key), dict):
+                _walk(user[key], defaults[key], full)
+
+    _walk(raw_config, DEFAULT_CONFIG)
+    return unknown
+
+
 def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict | None) -> list[tuple[str, str]]:
     """Return actionable findings for the removed Hermes Relay plugin."""
     from hermes_cli.relay_plugin_cutover import (LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV,
@@ -79,19 +107,32 @@ def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict
 
 def report_deprecated_config_and_env(raw_config: dict | None = None, env_map: dict | None = None) -> list[tuple[str, str]]:
     """Emit non-failing doctor warnings for deprecated config keys and env vars; returns the findings reported.
-    Does not mutate config/env and does not append to the blocking ``issues`` list."""
+    Does not mutate config/env and does not append to the blocking ``issues`` list.
+    Also warns on unknown config.yaml keys (possible typos or obsolete keys, #91876)."""
     deprecated = collect_deprecated_config_keys(raw_config) + collect_deprecated_env_vars(env_map)
     relay_cutover = collect_relay_plugin_cutover_findings(raw_config, env_map)
     findings = deprecated + relay_cutover
     if not findings:
         check_ok("No deprecated config keys or env vars")
-        return findings
     for legacy, replacement in deprecated:
         check_warn(f"Deprecated: {legacy}", f"(use {replacement} instead)")
         check_info(f"Replace {legacy} → {replacement} (warn-only; not auto-migrated here)")
     for legacy, replacement in relay_cutover:
         check_warn(f"Breaking Relay migration: {legacy}", f"({replacement})")
         check_info(f"Migrate {legacy}: {replacement}")
+    unknown_keys = collect_unknown_config_keys(raw_config)
+    if unknown_keys:
+        for key in unknown_keys[:15]:
+            check_warn(
+                f"Unknown config key '{key}'",
+                "not in DEFAULT_CONFIG — possible typo or obsolete key",
+            )
+        if len(unknown_keys) > 15:
+            check_info(
+                f"  ... and {len(unknown_keys) - 15} more unknown keys"
+            )
+    elif not findings:
+        check_ok("No unknown config keys")
     return findings
 
 

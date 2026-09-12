@@ -189,7 +189,7 @@ class CompressionFacadeMixin:
     def _compress_context(
         self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default",
         focus_topic: str = None, force: bool = False, bypass_cooldown: bool = False,
-        defer_context_engine_notification: bool = False, commit_fence=None,
+        defer_context_engine_notification: bool = False, commit_fence=None, partial_head: bool = False,
     ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
         ``force=True`` (manual /compress) bypasses the summary-failure cooldown; ``bypass_cooldown=True``
@@ -198,6 +198,10 @@ class CompressionFacadeMixin:
         ``force=True`` is passed by the manual ``/compress`` slash command so users can bypass the
         summary-failure cooldown after an auto-compress abort. Auto-compress callers use the default
         ``force=False``. See #100661.
+
+        ``partial_head=True`` marks ``messages`` as deliberately only the pre-boundary head of the transcript
+        (boundary-aware ``/compress here N``), so the rotation path does not adopt the longer durable parent
+        and summarize the tail the caller keeps verbatim. See #71991.
         """
         # Per-attempt timeout signal for turn-start preflight and in-loop consumers: a stalled
         # compression must not be mistaken for a structural no-op. Thread-local + per-agent lock.
@@ -248,6 +252,7 @@ class CompressionFacadeMixin:
                     approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
                     bypass_cooldown=bypass_cooldown,
                     defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
+                    partial_head=partial_head,
                 )
 
             # Callers that already own a progress-aware wait (gateway session

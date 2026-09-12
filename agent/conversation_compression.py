@@ -2559,11 +2559,22 @@ def _adopt_if_parent_rotated(
     return messages, _existing_sp
 
 
-def _adopt_grown_durable_parent(agent: Any, lease: _CompressionLease, messages: list) -> Optional[list]:
+def _adopt_grown_durable_parent(
+    agent: Any, lease: _CompressionLease, messages: list, *, partial_head: bool = False
+) -> Optional[list]:
     """Return the durable parent transcript when it outgrew the in-memory snapshot.
     Rotation only (in-place never loses rows). The snapshot predates the lease: if durable grew, a writer
     committed a turn — ADOPT it (aborting wedged busy sessions forever). Length check only: in-memory edits of
-    past turns are legal."""
+    past turns are legal.
+
+    ``partial_head``: the caller deliberately handed over only the pre-boundary HEAD of the transcript
+    (boundary-aware ``/compress here N``) and keeps the recent exchanges verbatim, re-appending them after
+    compression. The durable parent is longer BY CONSTRUCTION — it still contains that tail — so a longer
+    snapshot is not evidence of a concurrent write: stand down and summarize the head exactly as given.
+    Adopting instead summarizes the tail the caller is preserving and duplicates it at the rejoin seam
+    (#71991). Length alone cannot separate the two cases, so the caller has to declare the intent."""
+    if partial_head:
+        return None
     if lease.db is None or not lease.sid:
         return None
     durable_loader = getattr(type(lease.db), "get_messages_as_conversation", None)
@@ -3390,7 +3401,7 @@ def _run_summary_phase(
     agent: Any, messages: list, *, lease: _CompressionLease, in_place: bool, checkpoint_required: bool,
     approx_tokens: Optional[int], focus_topic: Optional[str], force: bool, bypass_cooldown: bool,
     commit_fence: Optional[CompressionCommitFence], hard_cancel_event: Any, system_message: str,
-    attempt: _Attempt,
+    attempt: _Attempt, partial_head: bool = False,
 ) -> _SummaryPhase:
     """Adopt a grown durable parent, gather memory context and run the summarizer.
     A hard cancel restores the compressor snapshot + live list, records a stall backoff while the lease is
@@ -3408,7 +3419,9 @@ def _run_summary_phase(
     try:
         lease.start_refresher()
         if not in_place:
-            _adopted_parent = _adopt_grown_durable_parent(agent, lease, messages)
+            _adopted_parent = _adopt_grown_durable_parent(
+                agent, lease, messages, partial_head=partial_head
+            )
             if _adopted_parent is not None:
                 messages = _adopted_parent
                 pre_msg_count = len(messages)
@@ -3559,7 +3572,7 @@ def compress_context(
     agent: Any, messages: list, system_message: str, *, approx_tokens: Optional[int] = None,
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
-    commit_fence: Optional[CompressionCommitFence] = None,
+    commit_fence: Optional[CompressionCommitFence] = None, partial_head: bool = False,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
     ``force`` (manual /compress) clears the summary-failure cooldown; ``bypass_cooldown`` (provider-proven
@@ -3580,7 +3593,10 @@ def compress_context(
     failed attempt records its cooldown normally. defer_context_engine_notification: Delay the existing
     context-engine hook until a manual host commits its outer history transaction. commit_fence: Optional
     cooperative fence for executor callers that may time out. It prevents a late worker from mutating
-    session state after its caller has moved on.
+    session state after its caller has moved on. partial_head: True when ``messages`` is deliberately only
+    the pre-boundary head of the transcript (boundary-aware ``/compress here N``) rather than the whole
+    conversation, so the durable-parent adoption guard does not treat the still-present tail as a
+    concurrent write (#71991).
     """
     attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
 
@@ -3659,6 +3675,7 @@ def compress_context(
         agent, messages, lease=lease, in_place=in_place, checkpoint_required=checkpoint_required,
         approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, bypass_cooldown=bypass_cooldown,
         commit_fence=commit_fence, hard_cancel_event=_hard_cancel_event, system_message=system_message, attempt=attempt,
+        partial_head=partial_head,
     )
     if phase.abort_prompt is not None:
         return phase.messages, phase.abort_prompt

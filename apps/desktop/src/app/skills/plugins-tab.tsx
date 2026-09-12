@@ -15,7 +15,6 @@ import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
-import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -117,7 +116,7 @@ async function revealPluginsDir() {
  *  rescan the root — a concurrent scan would read the pre-copy state. */
 async function rescanAll(requestGateway: GatewayRequest, scope: null | string) {
   await window.hermesDesktop?.reconcileDesktopPlugins?.().catch(() => undefined)
-  await discoverRuntimePlugins()
+  await import('@/contrib/runtime-loader').then(m => m.discoverRuntimePlugins())
   await loadAgentPlugins(requestGateway, scope)
 }
 

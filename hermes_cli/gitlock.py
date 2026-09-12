@@ -144,7 +144,12 @@ def _git_stdout_lines(repo_root: Path, args: List[str]) -> List[str]:
 
 
 def _batch_missing_parents(repo_root: Path, candidates: List[str]) -> set[str]:
-    """Return local commit objects whose parent objects are missing."""
+    """Return local commit objects whose parent objects are missing.
+
+    Parents are read from the commit *header* only (lines before the first blank
+    line) — a ``parent <sha>`` line inside a commit message body is prose, not
+    an edge.
+    """
     if not candidates:
         return set()
     try:
@@ -175,13 +180,13 @@ def _batch_missing_parents(repo_root: Path, candidates: List[str]) -> set[str]:
                 if data[cursor:cursor + 1] != b"\n":
                     return set()
                 cursor += 1
-                decoded = body.decode(errors="replace")
-                commit_parents = {
-                    fields[1]
-                    for line in decoded.splitlines()
-                    for fields in [line.split()]
-                    if len(fields) >= 2 and fields[0] == "parent"
-                }
+                commit_parents = set()
+                for line in body.split(b"\n"):
+                    if not line:  # blank line ends the commit header block
+                        break
+                    fields = line.split()
+                    if len(fields) >= 2 and fields[0] == b"parent":
+                        commit_parents.add(fields[1].decode())
                 parents_by_commit[candidate] = commit_parents
                 parents.update(commit_parents)
             elif len(header) < 2 or header[1] != b"missing":
@@ -195,6 +200,8 @@ def _batch_missing_parents(repo_root: Path, candidates: List[str]) -> set[str]:
             capture_output=True,
             timeout=10,
         )
+        if check.returncode != 0:
+            return set()
         missing = {
             line.split()[0]
             for line in check.stdout.decode(errors="replace").splitlines()
@@ -206,39 +213,99 @@ def _batch_missing_parents(repo_root: Path, candidates: List[str]) -> set[str]:
         return set()
 
 
-def repair_broken_shallow_boundaries(repo_root: Path) -> int:
-    """Repair reflog-only shallow boundaries dropped by #108286's prune bug.
+def _shallow_file_path(repo_root: Path) -> Optional[Path]:
+    """Resolve ``.git/shallow`` via git, or None when the repo has none."""
+    shallow_rel = _git_stdout_lines(repo_root, ["rev-parse", "--git-path", "shallow"])
+    if not shallow_rel:
+        return None
+    shallow_path = Path(shallow_rel[0])
+    if not shallow_path.is_absolute():
+        shallow_path = Path(repo_root) / shallow_rel[0]
+    return shallow_path if shallow_path.is_file() else None
 
-    This complements the prevention fix in PR #108290: existing corrupted installs need
-    boundaries reconstructed because their broken history prevents the reflogs from expiring.
+
+class _ShallowLock:
+    """Git's own ``shallow.lock`` protocol, so a concurrent ``git fetch`` that
+    writes ``.git/shallow`` between our read and our write is never clobbered:
+    the fetch fails fast on the lock and we re-read before writing."""
+
+    def __init__(self, shallow_path: Path):
+        self._path = shallow_path
+        self._lock_path = shallow_path.with_name(shallow_path.name + ".lock")
+
+    def __enter__(self) -> "_ShallowLock":
+        try:
+            fd = os.open(self._lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            raise RuntimeError(f"shallow lock held: {self._lock_path}")
+        except OSError as exc:
+            raise RuntimeError(f"cannot create shallow lock: {exc}") from exc
+        try:
+            os.write(fd, b"hermes shallow maintenance\n")
+        finally:
+            os.close(fd)
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        try:
+            self._lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def repair_broken_shallow_boundaries(repo_root: Path) -> int:
+    """Re-append shallow boundaries for reflog-reachable commits whose parents
+    were never fetched (#108286).
+
+    A reflog-only commit whose graft was pruned leaves the repo unwalkable
+    (``gc``/``fsck``/``fetch`` fail) and unable to self-heal: reflog expiry
+    happens during ``git gc``, which is exactly what the corruption breaks.
+    Only reflog-reachable commits are considered, so unrelated object loss is
+    never re-labelled as shallow history. Returns the number of boundaries
+    appended; never raises.
     """
     try:
-        shallow_rel = _git_stdout_lines(repo_root, ["rev-parse", "--git-path", "shallow"])
-        if not shallow_rel:
+        shallow_path = _shallow_file_path(repo_root)
+        if shallow_path is None:
             return 0
-        shallow_path = Path(shallow_rel[0])
-        if not shallow_path.is_absolute():
-            shallow_path = Path(repo_root) / shallow_path
-        if not shallow_path.is_file():
+        # Cheap gate: repair only when the walk the corruption breaks already fails.
+        probe = subprocess.run(
+            ["git", "rev-list", "--count", "--all", "--reflog"],
+            cwd=str(repo_root), capture_output=True, timeout=10,
+        )
+        if probe.returncode == 0:
             return 0
-        original = shallow_path.read_text(encoding="utf-8")
-        existing = {line for line in original.splitlines() if line}
-        if not existing:
-            return 0
-        candidates = _git_stdout_lines(repo_root, ["cat-file", "--batch-all-objects", "--batch-check"])
-        candidates = sorted({line.split()[0] for line in candidates
-                             if len(line.split()) >= 2 and line.split()[1] == "commit"})
-        candidates = sorted(set(candidates + _git_stdout_lines(
-            repo_root, ["reflog", "show", "--all", "--format=%H"])))
-        broken = _batch_missing_parents(repo_root, candidates)
-        repaired = broken - existing
-        if not repaired:
-            return 0
-        tmp_path = shallow_path.with_name(shallow_path.name + ".hermes-repair")
-        tmp_path.write_text("\n".join(sorted(existing | repaired)) + "\n", encoding="utf-8")
-        os.replace(tmp_path, shallow_path)
+        with _ShallowLock(shallow_path):
+            original = shallow_path.read_text(encoding="utf-8")
+            existing = {line for line in original.splitlines() if line}
+            if not existing:
+                return 0
+            # Boundary candidates: commits recorded as *fetch tips* in remote-tracking
+            # refs' reflogs (NOT --batch-all-objects, and not HEAD's reflog): the bug
+            # class is fetched tips whose graft the prune dropped, and restricting to
+            # fetch-recorded tips is what keeps unrelated object loss (a deleted parent
+            # of a locally-created commit) from being re-labelled as shallow history.
+            # On an already-corrupted repo a rev-list --reflog walk is exactly what
+            # fails, so read the reflog hash list directly.
+            reflog = _git_stdout_lines(
+                repo_root, ["reflog", "show", "--all", "--format=%H%x00%gD"])
+            candidates = sorted({
+                sha
+                for entry in reflog
+                for sha, selector in [entry.split("\x00", 1)]
+                if selector.startswith("refs/remotes/")
+            })
+            broken = _batch_missing_parents(repo_root, candidates)
+            repaired = broken - existing
+            if not repaired:
+                return 0
+            tmp_path = shallow_path.with_name(shallow_path.name + ".hermes-repair")
+            tmp_path.write_text("\n".join(sorted(existing | repaired)) + "\n", encoding="utf-8")
+            os.replace(tmp_path, shallow_path)
         if not _git_stdout_lines(repo_root, ["rev-list", "--count", "--all", "--reflog"]):
-            shallow_path.write_text(original, encoding="utf-8")
+            with _ShallowLock(shallow_path):
+                shallow_path.write_text(original, encoding="utf-8")
+            logger.debug("shallow boundary repair self-check failed; file restored")
             return 0
         logger.info("Restored %d broken shallow boundary(ies) in %s", len(repaired), repo_root)
         return len(repaired)
@@ -248,7 +315,7 @@ def repair_broken_shallow_boundaries(repo_root: Path) -> int:
 
 
 def prune_stale_shallow_grafts(repo_root: Path) -> int:
-    """Drop ``.git/shallow`` graft lines no live ref still points at (#105951).
+    """Drop ``.git/shallow`` graft lines no live ref or reflog still points at (#105951).
 
     Every ``git fetch --depth 1`` appends the fetched tip to ``.git/shallow`` as a new
     graft and never removes the previous one, so a long-lived shallow installer checkout
@@ -257,37 +324,37 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
     on every run. Keep only the boundaries that still protect referenced tips (HEAD,
     FETCH_HEAD, and every ref tip): the dropped commits are already unreachable and their
     objects are left for ``git gc``. Returns the number of graft lines removed; never
-    raises, and restores the original file if the trimmed set breaks history walking.
+    raises, and restores the original file if the trimmed set breaks history walking
+    (including the ``--reflog`` walk, so a graft a reflog-only commit still needs is
+    never dropped, #108286).
     """
     try:
-        shallow_rel = _git_stdout_lines(repo_root, ["rev-parse", "--git-path", "shallow"])
-        if not shallow_rel:
+        shallow_path = _shallow_file_path(repo_root)
+        if shallow_path is None:
             return 0
-        shallow_path = Path(shallow_rel[0])
-        if not shallow_path.is_absolute():
-            shallow_path = Path(repo_root) / shallow_path
-        if not shallow_path.is_file():
-            return 0
-        lines = [line for line in shallow_path.read_text(encoding="utf-8").splitlines() if line]
-        if not lines:
-            return 0
-        keep = set(lines) & {
-            *(_git_stdout_lines(repo_root, ["rev-parse", "HEAD"]) or []),
-            *(_git_stdout_lines(repo_root, ["rev-parse", "--verify", "--quiet", "FETCH_HEAD"]) or []),
-            *_git_stdout_lines(repo_root, ["for-each-ref", "--format=%(objectname)"]),
-        }
-        if len(keep) == len(lines):
-            return 0
-        original = shallow_path.read_text(encoding="utf-8")
-        tmp_path = shallow_path.with_name(shallow_path.name + ".hermes-prune")
-        tmp_path.write_text("\n".join(sorted(keep)) + "\n", encoding="utf-8")
-        os.replace(tmp_path, shallow_path)
+        with _ShallowLock(shallow_path):
+            lines = [line for line in shallow_path.read_text(encoding="utf-8").splitlines() if line]
+            if not lines:
+                return 0
+            keep = set(lines) & {
+                *(_git_stdout_lines(repo_root, ["rev-parse", "HEAD"]) or []),
+                *(_git_stdout_lines(repo_root, ["rev-parse", "--verify", "--quiet", "FETCH_HEAD"]) or []),
+                *_git_stdout_lines(repo_root, ["for-each-ref", "--format=%(objectname)"]),
+            }
+            if len(keep) == len(lines):
+                return 0
+            original = shallow_path.read_text(encoding="utf-8")
+            tmp_path = shallow_path.with_name(shallow_path.name + ".hermes-prune")
+            tmp_path.write_text("\n".join(sorted(keep)) + "\n", encoding="utf-8")
+            os.replace(tmp_path, shallow_path)
         # Fail-safe: if any reachable walk now crosses a boundary we wrongly removed,
         # put the grafts back — a growing file beats a broken repo.
         still_walks = _git_stdout_lines(repo_root, ["rev-list", "--count", "HEAD"]) and \
-            _git_stdout_lines(repo_root, ["rev-list", "--count", "--all"])
+            _git_stdout_lines(repo_root, ["rev-list", "--count", "--all"]) and \
+            _git_stdout_lines(repo_root, ["rev-list", "--count", "--all", "--reflog"])
         if not still_walks:
-            shallow_path.write_text(original, encoding="utf-8")
+            with _ShallowLock(shallow_path):
+                shallow_path.write_text(original, encoding="utf-8")
             logger.debug("shallow prune self-check failed; grafts restored")
             return 0
         logger.info("Pruned %d stale shallow graft(s) in %s", len(lines) - len(keep), repo_root)

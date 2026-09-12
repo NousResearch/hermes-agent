@@ -3,6 +3,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -425,6 +426,40 @@ def _check_required_packages(should_fix: bool, f: Finding) -> None:
                 check_warn(name, "(optional, not installed)")
             else:
                 _fail_and_issue(name, "(missing)", f"Install {name}: {_python_install_cmd()} {module}", f.issues)
+
+
+def _mcp_sdk_available() -> bool:
+    """find_spec, not import: a cached ImportError in this process must not mask a fresh install."""
+    return importlib.util.find_spec("mcp") is not None
+
+
+@doctor_check()
+def _check_mcp_sdk(should_fix: bool, f: Finding) -> None:
+    """Fail (don't just warn) when the optional ``mcp`` SDK is missing — the stdio/http connect
+    error's recovery text (`tools/mcp_tool_transport.py`) sends users to ``doctor --fix``, which
+    must actually install the extra (#109026); base PyPI/pipx installs ship without it."""
+    if _mcp_sdk_available():
+        return check_ok("MCP Python SDK", "(optional, installed)")
+    check_fail("MCP Python SDK", "(optional, not installed)")
+    pip_cmd = f"{sys.executable} -m pip install 'hermes-agent[mcp]'"
+    if not should_fix:
+        f.issues.append(f"Install the MCP SDK: run `hermes doctor --fix`, or `{pip_cmd}`")
+        return
+    print("    → Installing: hermes-agent[mcp]…")
+    try:
+        result = subprocess.run([sys.executable, "-m", "pip", "install", "hermes-agent[mcp]"],
+                                capture_output=True, text=True, timeout=600)
+        failure = ("MCP SDK install failed", (result.stderr or result.stdout or "")[-500:]) if result.returncode != 0 else None
+    except Exception as exc:
+        failure = ("MCP SDK install could not run pip", str(exc))
+    if failure:
+        return _fail_and_issue(*failure, f"Install the MCP SDK manually: {pip_cmd}", f.manual_issues)
+    importlib.invalidate_caches()
+    if _mcp_sdk_available():
+        check_ok("MCP Python SDK installed", "(restart the CLI if sessions already tried to connect)")
+    else:
+        _fail_and_issue("MCP Python SDK still missing after install", "(install may need a fresh interpreter)",
+                        f"Install the MCP SDK manually: {pip_cmd}", f.manual_issues)
 
 
 @doctor_check()

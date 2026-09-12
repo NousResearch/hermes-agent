@@ -416,7 +416,11 @@ class EventBridge:
             last_seen = self._last_poll_timestamps.get(session_key, 0.0)
             try:
                 messages = db.get_messages(session_id)
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "EventBridge: get_messages failed for session %s: %s",
+                    session_key, e,
+                )
                 continue
             if not messages:
                 continue

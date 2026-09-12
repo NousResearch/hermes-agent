@@ -160,6 +160,78 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         pass
 
 
+def _load_output_schema(path: Optional[str]) -> tuple[dict | None, str | None]:
+    """Read, parse, and meta-validate a one-shot output schema before agent startup."""
+    if not path:
+        return None, None
+    schema_path = Path(path).expanduser()
+    try:
+        raw = schema_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, f"cannot read --output-schema {schema_path}: {exc.strerror or exc}"
+    try:
+        candidate = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        return None, f"--output-schema is not valid JSON: {exc}"
+
+    try:
+        import jsonschema  # noqa: F401
+    except ImportError:
+        return None, "cannot validate --output-schema: jsonschema is unavailable"
+
+    from tools.delegation_output_schema import coerce_output_schema
+
+    schema, error = coerce_output_schema(candidate)
+    return schema, error
+
+
+def _write_output_last_message(path: str, payload: str) -> str | None:
+    """Write a validated payload, returning a concise error instead of raising."""
+    try:
+        out = Path(path).expanduser()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(payload + ("" if payload.endswith("\n") else "\n"), encoding="utf-8")
+    except OSError as exc:
+        return f"cannot write --output-last-message {path}: {exc.strerror or exc}"
+    return None
+
+
+def _run_conversation_with_output_schema(
+    agent,
+    prompt: str,
+    *,
+    conversation_history: list | None,
+    output_schema: dict | None,
+) -> dict:
+    """Run the initial turn and at most one schema-correction turn on the same agent."""
+    result = agent.run_conversation(prompt, conversation_history=conversation_history)
+    if output_schema is None:
+        return result
+
+    from tools.delegation_output_schema import build_retry_message, validate_output
+
+    valid, errors = validate_output(result.get("final_response") or "", output_schema)
+    if valid:
+        return result
+
+    retry_result = agent.run_conversation(
+        build_retry_message(errors),
+        conversation_history=result.get("messages") or None,
+    )
+    # Preserve the corrective turn's outcome while keeping --usage-file honest about both turns.
+    for key in (
+        "estimated_cost_usd", "input_tokens", "output_tokens", "cache_read_tokens",
+        "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
+    ):
+        first = result.get(key)
+        second = retry_result.get(key)
+        if isinstance(first, (int, float)) or isinstance(second, (int, float)):
+            retry_result[key] = (first if isinstance(first, (int, float)) else 0) + (
+                second if isinstance(second, (int, float)) else 0
+            )
+    return retry_result
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
@@ -167,16 +239,28 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    output_schema: Optional[str] = None,
+    output_last_message: Optional[str] = None,
     resume: Optional[str] = None,
     reasoning: object = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
     Model/provider fall back to ``HERMES_INFERENCE_MODEL`` and config.yaml. ``usage_file`` gets a
-    JSON usage report even when the run fails. ``resume`` is a session id (already normalized by
-    the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
-    by this turn. Returns the exit code; the caller owns process termination.
+    JSON usage report even when the run fails. When ``output_schema`` is set, the final payload is
+    validated and receives exactly one corrective retry. ``resume`` is a session id (already
+    normalized by the CLI layer: latest/title/--continue resolution) whose transcript is loaded
+    and continued by this turn. Returns the exit code; the caller owns process termination.
     """
+    if output_last_message and not output_schema:
+        sys.stderr.write("hermes -z: --output-last-message requires --output-schema.\n")
+        return 2
+
+    schema, schema_error = _load_output_schema(output_schema)
+    if schema_error:
+        sys.stderr.write(f"hermes -z: {schema_error}\n")
+        return 2
+
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
     logging.disable(logging.CRITICAL)
@@ -214,18 +298,31 @@ def run_oneshot(
     response: Optional[str] = None
     result: dict = {}
     failure: BaseException | None = None
+    validation_errors: list[str] = []
     with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
         try:
-            response, result = _run_agent(
-                prompt,
-                model=model,
-                provider=provider,
-                toolsets=explicit_toolsets,
-                use_config_toolsets=use_config_toolsets,
-                skills=skills,
-                resume=resume,
-                reasoning=reasoning,
+            from tools.delegation_output_schema import (
+                append_output_contract,
+                validate_output,
             )
+
+            def invoke_agent(agent_prompt: str) -> tuple[str, dict]:
+                return _run_agent(
+                    agent_prompt,
+                    model=model,
+                    provider=provider,
+                    toolsets=explicit_toolsets,
+                    use_config_toolsets=use_config_toolsets,
+                    skills=skills,
+                    resume=resume,
+                    reasoning=reasoning,
+                    output_schema=schema,
+                )
+
+            contracted_prompt = append_output_contract(prompt, schema) if schema is not None else prompt
+            response, result = invoke_agent(contracted_prompt)
+            if schema is not None:
+                _valid, validation_errors = validate_output(response, schema)
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
             # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
@@ -242,6 +339,14 @@ def run_oneshot(
         real_stderr.flush()
         return 1
 
+    if schema is not None and validation_errors:
+        _write_usage_file(usage_file, result, failure="output schema validation failed")
+        real_stderr.write(
+            "hermes -z: final response did not satisfy --output-schema after one retry.\n"
+        )
+        real_stderr.flush()
+        return 1
+
     _write_usage_file(usage_file, result)
 
     if response:
@@ -251,6 +356,16 @@ def run_oneshot(
         from agent.message_sanitization import _sanitize_surrogates
 
         response = _sanitize_surrogates(response)
+        if schema is not None:
+            from tools.delegation_output_schema import extract_json_candidate
+
+            response = extract_json_candidate(response)
+            if output_last_message:
+                output_error = _write_output_last_message(output_last_message, response)
+                if output_error:
+                    real_stderr.write(f"hermes -z: {output_error}\n")
+                    real_stderr.flush()
+                    return 1
         real_stdout.write(response)
         if not response.endswith("\n"):
             real_stdout.write("\n")
@@ -416,6 +531,7 @@ def _run_agent(
     skills: object = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    output_schema: dict | None = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
@@ -498,7 +614,12 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
-        result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
+        result = _run_conversation_with_output_schema(
+            agent,
+            prompt,
+            conversation_history=conversation_history or None,
+            output_schema=output_schema,
+        )
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)

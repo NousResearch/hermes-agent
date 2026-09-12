@@ -19,7 +19,8 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-
 # snapshot lacks AND derivation regresses.
 _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
     "-z", "--oneshot", "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
-    "-r", "--resume", "-s", "--skills", "--usage-file", "--in",
+    "-r", "--resume", "-s", "--skills", "--usage-file", "--output-schema",
+    "--output-last-message", "--in",
 })
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 
@@ -121,6 +122,12 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "(estimated cost, token counts, model, api_calls) to PATH. "
         "The report is written even when the run fails, so pipelines "
         "can always account for spend. No effect outside -z/--oneshot."))
+    add("--output-schema", metavar="PATH", default=None, help=(
+        "One-shot mode only: require the final response to validate against "
+        "the JSON Schema in PATH. Invalid responses receive one corrective retry."))
+    add("--output-last-message", metavar="PATH", default=None, help=(
+        "One-shot mode only: write the validated final JSON payload to PATH. "
+        "Requires --output-schema."))
     # --model / --provider are accepted at the top level so they can pair with -z without the
     # `chat` subcommand; if neither -z nor a subcommand consumes them, they fall through as None.
     inherited(parser, "-m", "--model", default=None, help=(

@@ -140,6 +140,8 @@ def _run_and_exit_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: object = None,
+    output_schema: object = None,
+    output_last_message: object = None,
     resume: object = None,
     reasoning: object = None,
 ) -> None:
@@ -153,6 +155,8 @@ def _run_and_exit_oneshot(
             toolsets=toolsets,
             skills=skills,
             usage_file=usage_file,
+            output_schema=output_schema,
+            output_last_message=output_last_message,
             resume=resume,
             reasoning=reasoning,
         )
@@ -2928,6 +2932,8 @@ def _run_oneshot_from_args(args) -> None:
         toolsets=getattr(args, "toolsets", None),
         skills=getattr(args, "skills", None),
         usage_file=getattr(args, "usage_file", None),
+        output_schema=getattr(args, "output_schema", None),
+        output_last_message=getattr(args, "output_last_message", None),
         resume=getattr(args, "resume", None),
         reasoning=getattr(args, "reasoning", None),
     )

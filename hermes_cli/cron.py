@@ -550,6 +550,7 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("repeat", "repeat"), ("script", "script"), ("workdir", "workdir"),
                    ("model", "model"), ("provider", "model_provider"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
+                   ("allow_messaging", "allow_messaging"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"))
 
 

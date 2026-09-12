@@ -574,6 +574,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             no_agent=_no_agent, attach_to_session=a["attach_to_session"],
             monitor_script=_normalize_optional_job_value(a["monitor_script"]),
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
+            allow_messaging=a["allow_messaging"] if a["allow_messaging"] is not None else False,
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"],
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
@@ -773,6 +774,8 @@ def _update_context_from(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[s
 
 def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str, Any]) -> Optional[str]:
     """enabled_toolsets / attach_to_session / workdir / no_agent / repeat / schedule."""
+    if a["allow_messaging"] is not None:
+        updates["allow_messaging"] = a["allow_messaging"]
     if a["enabled_toolsets"] is not None:
         updates["enabled_toolsets"] = a["enabled_toolsets"] or None
     if a["attach_to_session"] is not None:
@@ -877,6 +880,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    allow_messaging: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
     task_id: str = None,
@@ -996,6 +1000,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "items": {"type": "string"},
                 "description": "Optional toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\"]) — cuts token overhead. Infer from the prompt. Omit for all default tools. On update, [] clears."
             },
+            "allow_messaging": {
+                "type": "boolean",
+                "description": "When true, this cron job may send multiple native messages through send_message to its bound origin only. Default false. After those sends, return [SILENT] so the scheduler does not add a duplicate summary."
+            },
             "workdir": {
                 "type": "string",
                 "description": "Optional absolute existing path to run the job from: injects that directory's AGENTS.md/context files and anchors terminal/file tools there. On update, '' clears."
@@ -1028,7 +1036,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason")
+    "paused_reason", "allow_messaging")
 
 
 def _cronjob_handler(args, **kw):

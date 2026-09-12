@@ -1707,6 +1707,7 @@ def create_job(
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
+    allow_messaging: bool = False,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1716,6 +1717,8 @@ def create_job(
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    if not isinstance(allow_messaging, bool):
+        raise ValueError("allow_messaging must be a boolean.")
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1796,6 +1799,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": f["enabled_toolsets"],
         "workdir": f["workdir"],
+        "allow_messaging": allow_messaging,
     }
     # Optional keys are persisted only when explicitly set: an absent key falls back to global
     # config (attach/reasoning) or to ``deliver`` (failure_deliver), byte-identical to pre-feature
@@ -1964,6 +1968,8 @@ def _fill_missing_next_run(updated: Dict[str, Any]) -> None:
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
     # ``id`` is a path component under OUTPUT_DIR — changing it would leak path-escape values.
+    if "allow_messaging" in updates and not isinstance(updates["allow_messaging"], bool):
+        raise ValueError("allow_messaging must be a boolean.")
     bad_fields = _IMMUTABLE_JOB_FIELDS.intersection(updates or {})
     if bad_fields:
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")

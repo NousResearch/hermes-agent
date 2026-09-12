@@ -188,10 +188,12 @@ def test_cli_and_cron_share_plugin_target_normalization(plugin_platform, monkeyp
     }
 
 
-def test_send_message_remains_host_only(plugin_platform):
+def test_send_message_remains_denied_without_cron_scope(plugin_platform):
     from tools.registry import registry
 
-    assert registry.get_entry("send_message") is None
+    assert registry.get_entry("send_message") is not None
+    denied = json.loads(registry.dispatch("send_message", {"target": "origin", "message": "hello", "message_key": "key"}))
+    assert "not opted in" in denied["error"]
 
 
 def test_force_reload_unregisters_profile_owned_platform(plugin_platform, monkeypatch):
@@ -250,7 +252,8 @@ with patch("gateway.config.load_gateway_config", return_value=config), \
 from cron.scheduler_delivery import _resolve_single_delivery_target
 cron = _resolve_single_delivery_target({}, "fmsg:@Alice@Example.COM")
 print(json.dumps({"host_send": host_send, "cron": cron,
-                  "model_registered": registry.get_entry("send_message") is not None}))
+                  "model_denied": "error" in json.loads(registry.dispatch("send_message",
+                      {"target": "origin", "message": "hello", "message_key": "key"}))}))
 '''
     env = dict(os.environ)
     env.update({
@@ -269,4 +272,4 @@ print(json.dumps({"host_send": host_send, "cron": cron,
     payload = json.loads(completed.stdout.strip().splitlines()[-1])
     assert payload["host_send"]["chat_id"] == "@alice@example.com"
     assert payload["cron"]["chat_id"] == "@alice@example.com"
-    assert payload["model_registered"] is False
+    assert payload["model_denied"] is True

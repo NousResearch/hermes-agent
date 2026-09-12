@@ -371,19 +371,23 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
-def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
-    """Toolsets a cron-spawned agent must never receive: ``messaging``/``clarify`` always
-    (interactive); ``cronjob`` by default (loop prevention, not a security boundary —
+def _resolve_cron_disabled_toolsets(cfg: dict, job: Optional[dict] = None) -> list[str]:
+    """Toolsets a cron-spawned agent must never receive: ``clarify`` always,
+    ``messaging`` unless the individual job opts in; ``cronjob`` by default (loop prevention, not a security boundary —
     ``cron.allow_agent_scheduling: true`` lifts only that); ``agent.disabled_toolsets`` layered on
     top so per-job ``enabled_toolsets`` cannot widen past config.yaml's denylist.
 
     See #25752.
     """
+    job = job or {}
     cron_cfg = (cfg or {}).get("cron") or {}
     if cron_cfg.get("allow_agent_scheduling"):
         disabled = ["messaging", "clarify"]
     else:
         disabled = ["cronjob", "messaging", "clarify"]
+    from cron.outbound import job_allows_messaging
+    if job_allows_messaging(job):
+        disabled.remove("messaging")
     agent_cfg = (cfg or {}).get("agent") or {}
     from agent.skill_utils import parse_config_string_list
 
@@ -425,17 +429,19 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     globally without recreating every job. 3. ``None`` on any lookup failure — AIAgent loads the full
     default set (legacy behavior before this change, preserved as the safety net).
     """
+    from cron.outbound import job_allows_messaging
+    extra = ["messaging"] if job_allows_messaging(job) else []
     per_job = job.get("enabled_toolsets")
     if per_job:
-        return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
+        return list(dict.fromkeys(_merge_mcp_into_per_job_toolsets(list(per_job), cfg or {}) + extra))
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
-        return sorted(_get_platform_tools(cfg or {}, "cron"))
+        return sorted(set(_get_platform_tools(cfg or {}, "cron")) | set(extra))
     except Exception as exc:
         logger.warning(
             "Cron toolset resolution failed, falling back to full default toolset: %s",
             exc)
-        return None
+        return ["hermes-cron", *extra] if extra else None
 
 
 def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:
@@ -2028,6 +2034,13 @@ class _CronRunScope:
         from gateway.session_context import set_session_vars, _VAR_MAP
         from tools.terminal_tool import record_session_cwd
 
+        from cron import outbound
+        self.messaging_run = outbound.CronMessagingRun(
+            str(job_id), str(execution_id or job.get("execution_id") or uuid.uuid4()),
+            None, outbound.job_allows_messaging(job),
+            _get_hermes_home() / "cron" / "outbound.db",
+        )
+        self._messaging_token = None
         self._var_map = _VAR_MAP
         # Resolve workdir BEFORE set_session_vars so it owns the _SESSION_CWD set/clear.
         self.workdir = _resolve_job_workdir(job, job_id)
@@ -2063,6 +2076,8 @@ class _CronRunScope:
     def enter(self) -> None:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
         # os.environ fallback used by standalone entrypoints/tests).
+        from cron import outbound
+        self._messaging_token = outbound._current_run.set(self.messaging_run)
         self._cron_session_token = self._cron_session_var.set("1")
         # Mark NOT the kanban worker: a worker's cronjob(action="run") lands here with
         # HERMES_KANBAN_TASK in env, and an unrelated job could close the worker's task. Must be a
@@ -2074,6 +2089,11 @@ class _CronRunScope:
         from gateway.session_context import clear_session_vars
         from tools.terminal_tool import clear_session_cwd
 
+        from cron import outbound
+        # Revoke even contexts copied into watchdog/delegation workers.
+        self.messaging_run.active = False
+        if self._messaging_token is not None:
+            outbound._current_run.reset(self._messaging_token)
         clear_session_cwd(self.task_id)
         clear_session_vars(self._ctx_tokens)  # also clears _SESSION_CWD
         if self._cron_session_token is not None:
@@ -2095,6 +2115,10 @@ def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
     load_hermes_dotenv(hermes_home=_get_hermes_home())
 
     delivery_target = _resolve_delivery_target(job)
+    from cron.outbound import current_run
+    run = current_run()
+    if run is not None:
+        run.origin = dict(delivery_target) if delivery_target else None
     if delivery_target:
         _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
         _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
@@ -2173,7 +2197,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         provider_sort=pr.get("sort"),
         openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
         enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-        disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
+        disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg, job),
         quiet_mode=True,
         # Project context files only with a configured workdir; SOUL.md always.
         skip_context_files=not bool(workdir),
@@ -2277,6 +2301,10 @@ def run_job(
         output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
         logger.info("Job '%s' completed successfully", job_name)
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
+        from cron import outbound
+        if scope.messaging_run.allowed and outbound.count_successful(
+                scope.messaging_run.job_id, scope.messaging_run.run_id):
+            final_response = SILENT_MARKER
         return True, output, final_response, None
 
     except Exception as e:

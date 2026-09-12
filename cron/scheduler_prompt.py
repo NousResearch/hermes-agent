@@ -244,7 +244,19 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    from cron.outbound import job_allows_messaging
+    hint = _CRON_HINT
+    if job_allows_messaging(job):
+        hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            "DELIVERY: You may send multiple native messages with send_message, "
+            "each with a unique message_key and target='origin'. Only this Hermes "
+            "profile's adapter identity and the scheduler-bound destination are allowed. "
+            "Do not use a shell, provider CLI, or another account to deliver. "
+            "After native sends, return exactly [SILENT] to avoid a duplicate summary. "
+            "If there is nothing to send, return exactly [SILENT].]\n\n"
+        )
+    prompt = hint + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

@@ -137,6 +137,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "medium, high, xhigh, max, or ultra. Pass empty string to clear "
             "the pin and follow config resolution.")
 
+    _flag(cron_create, "--allow-messaging", default=False,
+        help="Allow native keyed messages to this job's bound origin. Default off.")
+    messaging = cron_edit.add_mutually_exclusive_group()
+    messaging.add_argument("--allow-messaging", action="store_true", default=None,
+        help="Enable native origin-only messages.")
+    messaging.add_argument("--no-allow-messaging", dest="allow_messaging", action="store_false",
+        help="Disable native origin-only messages.")
+
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
     cron_pause.add_argument("job_id", help="Job ID to pause")

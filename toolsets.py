@@ -141,6 +141,7 @@ TOOLSETS = {
          "annotate_preview", "read_window_below", "focus_pane", "react_to_message",
          "setup_mcp", "gui_tour", "show_tip"],
     ),
+    "messaging": _ts("Job-scoped native cron messages (default off)", ["send_message"]),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
     "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),

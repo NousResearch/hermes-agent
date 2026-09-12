@@ -1,5 +1,8 @@
-"""Send Message Tool -- cross-channel messaging via platform APIs (send, list targets,
-react); works in both CLI and gateway contexts."""
+"""Shared cross-channel transport for CLI/gateway and origin-bound cron sends.
+
+The model entry point is default-off and requires a trusted opted-in cron scope;
+ordinary agents use native comms tools, not these host-level helpers.
+"""
 
 import asyncio
 import json
@@ -17,11 +20,10 @@ from tools.send_message_senders import (
     _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
     _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text, _send_bluebubbles,
     _send_matrix_via_adapter, _send_qqbot, _send_signal, _send_telegram, _send_weixin, _send_yuanbao)
-from tools.registry import tool_error
+from tools.registry import registry, tool_error
 
-# NOTE: ``send_message`` is intentionally NOT registered as an agent-callable model tool
-# (the agent must not fire cross-platform messages on its own); cron delivery, the
-# ``hermes send`` CLI, the kanban notifier and the opt-in MCP server import the helpers.
+# The model entry point is cron-only. CLI, delivery and notifier callers keep
+# using the shared transport helpers without acquiring model send authority.
 
 
 def prepare_send_message_platforms() -> None:
@@ -32,6 +34,11 @@ def prepare_send_message_platforms() -> None:
 
 def send_message_tool(args, **kw):
     """Handle cross-channel send_message tool calls."""
+    from cron.outbound import current_run
+    from gateway.session_context import get_session_env
+    if current_run() is not None or get_session_env("HERMES_CRON_SESSION") == "1":
+        from tools.send_message_cron import send_cron_message
+        return send_cron_message(args, **kw)
     action = args.get("action", "send")
     if action == "list":
         return _handle_list()
@@ -368,6 +375,9 @@ def _describe_media_for_mirror(media_files):
 
 def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id: str | None):
     """Skip redundant cron send_message calls when the scheduler will auto-deliver there."""
+    from cron.outbound import is_cron_messaging_session
+    if is_cron_messaging_session():
+        return None
     from gateway.session_context import get_session_env
     auto_platform = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip().lower()
     auto_chat_id = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
@@ -678,6 +688,10 @@ SEND_MESSAGE_SCHEMA = {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
             },
+            "message_key": {
+                "type": "string",
+                "description": "Required for opted-in cron jobs. Stable per-run key used to send multiple distinct messages without duplicates on retry. Example: automatic-action:reply-sharon."
+            },
             "emoji": {
                 "type": "string",
                 "description": "For action='react': the emoji to react with (e.g. '❤️'). On iMessage, ❤️👍👎😂‼️❓ render as native tapbacks; other emoji use custom-emoji reactions."
@@ -706,3 +720,29 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+
+
+def _send_cron_message_handler(args, **kw):
+    from tools.send_message_cron import send_cron_message
+    return send_cron_message(args, **kw)
+
+
+registry.register(
+    name="send_message", toolset="messaging",
+    schema={
+        "name": "send_message",
+        "description": "Send a native message to this opted-in cron job's bound origin only. "
+                       "Use a stable message_key per distinct message; retries reuse the receipt. "
+                       "MEDIA:<local_path> in message sends an attachment. Return [SILENT] afterward.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "enum": ["origin"]},
+                "message": SEND_MESSAGE_SCHEMA["parameters"]["properties"]["message"],
+                "message_key": SEND_MESSAGE_SCHEMA["parameters"]["properties"]["message_key"],
+            },
+            "required": ["target", "message", "message_key"],
+        },
+    },
+    handler=_send_cron_message_handler, emoji="📨",
+)

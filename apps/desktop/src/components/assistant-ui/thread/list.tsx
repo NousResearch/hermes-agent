@@ -688,7 +688,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const el = scrollRef.current
     const content = contentRef.current
 
-    if (!el || !content) {
+    if (!el || !content || !paneVisible) {
       return
     }
 
@@ -704,7 +704,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       el.removeEventListener('scroll', update)
       observer.disconnect()
     }
-  }, [contentRef, scrollRef])
+  }, [contentRef, paneVisible, scrollRef])
 
   // Persist the live position on app close, so a reading position survives a
   // quit without a session switch (the switch cleanup below only runs on
@@ -752,6 +752,17 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const el = scrollRef.current
 
     if (!el) {
+      return
+    }
+
+    // A kept-alive Bot pane can shrink its render budget or refresh messages
+    // while hidden. Preserve its last visible position, not that background
+    // layout, and re-arm the normal restore loop when the pane is revealed.
+    // The outgoing visible effect's cleanup has already saved its position.
+    if (!paneVisible) {
+      loadSettledRef.current = false
+      restoredContentKeyRef.current = null
+      restoreFromBottomRef.current = null
       return
     }
 
@@ -926,7 +937,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       cancelAnimationFrame(rafId)
       record()
     }
-  }, [contentRef, hasGroups, scrollRef, scrollToBottom, sessionId, sessionKey, stopScroll])
+  }, [contentRef, hasGroups, paneVisible, scrollRef, scrollToBottom, sessionId, sessionKey, stopScroll])
 
   // A thread can mount with a run already active, without a runStart event.
   useEffect(() => {

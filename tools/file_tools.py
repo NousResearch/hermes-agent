@@ -922,6 +922,71 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         return tool_error(str(e))
 
 
+# Hint shown when a glob-style pattern is used in content (regex) mode.
+# `*` at the start of a regex is "nothing to repeat" -> rg parse error, which
+# counts as a tool failure and can trip the repeated-failure guardrail. Point
+# the agent at target='files' (glob) instead, in the message itself.
+def _content_regex_example(pattern: str) -> str:
+    """A conservative content-regex example derived from a glob.
+
+    Strips wrapping ``*`` so ``*config*`` -> ``config``. If that leaves an
+    extension (``*.py`` -> ``.py``) or nothing useful, fall back to ``foo``
+    rather than inventing ``.py.*``.
+    """
+    s = (pattern or "").strip()
+    while s.startswith("*"):
+        s = s[1:]
+    while s.endswith("*"):
+        s = s[:-1]
+    if not s or s.startswith("."):
+        return "foo"
+    return s
+
+
+def _glob_as_regex_error(pattern: str, target: str, path: str = ".") -> str:
+    """Build the didactic error string for a glob pattern used in content mode.
+
+    Returned as a JSON ``{"error": ...}`` via :func:`tool_error` by the caller.
+    The files-mode example keeps the original glob (``*.py`` stays ``*.py``).
+    The content example is a regex, not a stripped glob.
+    """
+    regex_ex = _content_regex_example(pattern)
+    hint = (
+        "To find files/folders BY NAME use target='files' (glob): "
+        f"search_files(pattern={pattern!r}, target='files', path={path!r}). "
+        f"To search file CONTENTS use a regex (not a glob), e.g. {regex_ex!r}."
+    )
+    return (
+        f"pattern {pattern!r} looks like a glob, but target={target!r} uses "
+        f"REGEX (a leading '*' is invalid: \"nothing to repeat\"). {hint}"
+    )
+
+
+def _looks_like_glob_pattern(pattern: str) -> bool:
+    """Heuristic: does ``pattern`` look like a glob that would break regex mode?
+
+    Conservative on purpose — never flags *valid* regex. Only flags patterns
+    where a ``*`` quantifier has "nothing to repeat", i.e. rg/grep will emit a
+    regex parse error (which counts as a tool failure and is the common entry
+    point into the repeated-failure guardrail):
+
+    - a leading ``*`` (e.g. ``*.py``, ``*config*``);
+    - a ``*`` immediately after ``(`` or ``|`` (e.g. ``(*x``, ``a|*b``).
+
+    A trailing/mid ``*`` after a char or class (``config*``, ``[a-z]*``,
+    ``foo.*``) is *valid* regex and is left alone — if it still finds nothing,
+    the regex-parse-error path enriches the message instead.
+    """
+    if not pattern or "*" not in pattern:
+        return False
+    if pattern.startswith("*"):
+        return True
+    for i, ch in enumerate(pattern):
+        if ch == "*" and i > 0 and pattern[i - 1] in "(|":
+            return True
+    return False
+
+
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
@@ -930,6 +995,15 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
+
+        # Pre-validate glob-style patterns in content (regex) mode BEFORE
+        # calling rg/grep. A leading '*' is invalid regex ("nothing to repeat")
+        # and produces a parse error that counts as a tool failure — a common
+        # way agents loop into the repeated-failure guardrail. Return a
+        # didactic error naming the corrected call instead of running a search
+        # that is guaranteed to fail. target='files' (glob) is unaffected.
+        if target != "files" and _looks_like_glob_pattern(pattern):
+            return tool_error(_glob_as_regex_error(pattern, target, path))
 
         # Pagination args (and order) are part of the key so paging through truncated
         # results doesn't trip the repeated-search guard.
@@ -1152,11 +1226,11 @@ def _is_openai_family_main() -> bool:
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. On macOS, broad searches above the user home automatically skip TCC-protected folders (Desktop, Documents, Downloads, Library, Movies, Music, Pictures); target one directly when access is intentional.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls. Discovery order is the fast bounded default; exact global newest-first order is an explicit opt-in and may scan the full tree.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. On macOS, broad searches above the user home automatically skip TCC-protected folders (Desktop, Documents, Downloads, Library, Movies, Music, Pictures); target one directly when access is intentional.\n\nIMPORTANT — target decides the pattern syntax: target='content' (the DEFAULT) searches inside file CONTENTS using REGEX; target='files' searches for files/folders BY NAME using GLOB (e.g., '*.py', '*config*'). A leading '*' is INVALID in content/regex mode ('nothing to repeat') — to find a file by name, use target='files'.\n\nContent search output modes: full matches with line numbers, file paths only, or match counts. File search: discovery order is the fast bounded default; exact global newest-first order is an explicit opt-in and may scan the full tree. Also use target='files' instead of ls.",
     "parameters": {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Regex pattern for content search, or glob pattern (e.g., '*.py') for file search"},
+            "pattern": {"type": "string", "description": "Regex pattern (when target='content', the default) or glob pattern (when target='files', e.g. '*.py', '*config*'). A leading '*' is INVALID regex — to find files by name use target='files'."},
             "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside file contents, 'files' searches for files by name", "default": "content"},
             "path": {"type": "string", "description": "Directory or file to search in (default: current working directory)", "default": "."},
             "file_glob": {"type": "string", "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)"},

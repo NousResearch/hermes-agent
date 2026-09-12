@@ -8,6 +8,7 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
@@ -109,7 +110,7 @@ class GatewayNotificationsMixin:
             return
         config = getattr(self, "config", None)
         chat_id = getattr(source, "chat_id", None)
-        if config and getattr(source, "platform", None) == Platform.SLACK and _is_slack_ignored_channel(config, chat_id):
+        if config and getattr(source, "platform", None) == Platform.SLACK and _is_slack_ignored_channel(config, chat_id, adapter):
             logger.info("Skipping Slack platform notice for configured ignored channel %s", chat_id)
             return
         notice_delivery = (
@@ -885,8 +886,6 @@ class GatewayNotificationsMixin:
         from gateway.run import _parse_session_key
         session_key = str(evt.get("session_key") or "").strip()
         derived = {}
-        parts = session_key.split(":")
-        profile = parts[1] if len(parts) >= 5 and parts[0] == "agent" and parts[1] != "main" else None
         if session_key:
             try:
                 self.session_store._ensure_loaded()
@@ -898,8 +897,8 @@ class GatewayNotificationsMixin:
             cached_source = self._get_cached_session_source(session_key)
             if cached_source is not None:
                 return cached_source
-            parse_key = ":".join(["agent", "main", *parts[2:]]) if profile else session_key
-            derived = _parse_session_key(parse_key) or {}
+            derived = _parse_session_key(session_key) or {}
+        profile = derived.get("profile")
         platform_name = str(evt.get("platform") or derived.get("platform") or "").strip().lower()
         chat_type = str(evt.get("chat_type") or derived.get("chat_type") or "").strip().lower()
         chat_id = str(evt.get("chat_id") or derived.get("chat_id") or "").strip()
@@ -1011,10 +1010,9 @@ class GatewayNotificationsMixin:
                 return owner[0]
             if getattr(source, "delivered_via_upstream_relay", False) is True:
                 return self.adapters.get(Platform.RELAY)
-        profile = getattr(source, "profile", None)
-        adapters = self.adapters
-        if profile and profile not in ("default", getattr(self, "_primary_profile_name", None)):
-            adapters = (getattr(self, "_profile_adapters", None) or {}).get(profile, {})
+        # One resolver with authz/kanban/cron: a secondary's own map, or the primary's for a
+        # shared-bot satellite; a disconnected secondary fails closed to ``{}``.
+        adapters = self._adapters_for_profile(getattr(source, "profile", None))
         try:
             _transport = resolve_delivery_transport(Platform(platform_name), self.config, adapters)
         except Exception:
@@ -1280,6 +1278,25 @@ class GatewayNotificationsMixin:
             claim.proceed, claim.early_result = False, False
         return claim
 
+    def _completion_event_scope(self, evt: dict):
+        """Profile runtime scope of the session a completion event targets (a no-op context when the
+        event is the default profile's or the scope is already installed).
+
+        The pre-flight (``_classify_completion_target`` → ``_session_db``) and every durable-ledger op
+        (``tools.async_delegation`` → ``get_hermes_home()/state.db``) resolve from the ambient scope.
+        The supervised ``_async_delegation_watcher`` and startup-recovered process watchers run under
+        the ROOT scope, so a secondary profile's completion was looked up in the DEFAULT profile's
+        state.db — classified ``terminal`` and dropped, its ledger row stranded ``pending`` forever."""
+        from gateway.run import _async_profile_runtime_scope
+        from hermes_constants import get_hermes_home_override
+        source = self._build_process_event_source(evt)
+        if source is None or not getattr(source, "profile", None):
+            return contextlib.nullcontext()
+        profile_home = self._resolve_profile_home_for_source(source)
+        if get_hermes_home_override() == str(profile_home):
+            return contextlib.nullcontext()
+        return _async_profile_runtime_scope(profile_home)
+
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict, *, sibling_claims=(),
     ) -> Optional[bool]:
@@ -1288,6 +1305,13 @@ class GatewayNotificationsMixin:
         True means adapter admission, not model execution; None means deduplicated or
         terminal. False remains retryable. Claims are settled together for every sibling.
         """
+        async with self._completion_event_scope(evt):
+            return await self._deliver_completion_notification_scoped(
+                synth_text, evt, sibling_claims=sibling_claims)
+
+    async def _deliver_completion_notification_scoped(
+        self, synth_text: str, evt: dict, *, sibling_claims=(),
+    ) -> Optional[bool]:
         from gateway.wake import WakeNotAccepted
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
@@ -1477,6 +1501,11 @@ class GatewayNotificationsMixin:
         consolidated text of every sibling THIS runner claimed (siblings owned elsewhere are excluded;
         their claims are acked only after adapter acceptance). True after acceptance, False to requeue
         the group, None when nothing is deliverable here (retry siblings requeued)."""
+        # The group shares one session_key, hence one profile: scope the pre-checks and sibling claims too.
+        async with self._completion_event_scope(group[0]):
+            return await self._deliver_async_delegation_group_scoped(group)
+
+    async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
         from gateway.run import _format_gateway_process_notification
         from tools.process_registry import process_registry as _pr
         # API delivery does not start a model turn, so there is nothing to coalesce.
@@ -1535,6 +1564,26 @@ class GatewayNotificationsMixin:
             for evt, _claim_id in siblings:
                 _pr.completion_queue.put(evt)
         return delivered
+
+    def _restore_secondary_completion_ledgers(self, profile_homes) -> None:
+        """Re-queue undelivered async completions from every SECONDARY profile's ledger. The process
+        registry restores only the launch profile's ``state.db`` at import; a secondary's rows would
+        otherwise never be replayed after a restart."""
+        from gateway.run import _profile_runtime_scope
+        from tools.async_delegation import restore_undelivered_completions
+        from tools.process_registry import process_registry as _pr
+        primary = getattr(self, "_primary_profile_name", None)
+        for profile_name, profile_home in profile_homes:
+            if profile_name == primary:
+                continue
+            try:
+                with _profile_runtime_scope(Path(profile_home), {}):
+                    restored = restore_undelivered_completions(_pr.completion_queue)
+            except Exception:
+                logger.warning("Could not restore async completions for profile %r", profile_name, exc_info=True)
+                continue
+            if restored:
+                logger.info("Restored %d undelivered async completion(s) for profile %r", restored, profile_name)
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async completions and pattern notifications even while sessions are idle.

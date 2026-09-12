@@ -15,6 +15,8 @@ import asyncio
 import threading
 from unittest.mock import patch
 
+import pytest
+
 
 
 def test_standalone_fallback_pool_keeps_profile_scope(tmp_path, monkeypatch):
@@ -105,17 +107,20 @@ def test_multiplex_ticker_profile_gate_skips_rejected_profile(tmp_path):
     assert (orphan / "cron" / "ticker_last_success").exists()
 
 
-def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch):
-    """The desktop ticker wires the gate to ``_check_gateway_running``."""
+@pytest.mark.parametrize("profile_count", [1, 2])
+def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, profile_count):
+    """Desktop yields to each live gateway, including a single-profile install."""
     from hermes_cli import web_server
 
-    homes = [("default", tmp_path / "default"), ("ops", tmp_path / "ops")]
+    homes = [("default", tmp_path / "default"), ("ops", tmp_path / "ops")][:profile_count]
+    running = {homes[-1][1]}
     monkeypatch.setattr(
-        "hermes_cli.profiles.profiles_to_serve", lambda multiplex=False: list(homes)
+        "hermes_cli.profiles.profiles_to_serve", lambda multiplex=False, profile_allowlist=None: list(homes)
     )
     monkeypatch.setattr(
-        "hermes_cli.profiles._check_gateway_running", lambda home: home.name == "ops"
+        "hermes_cli.profiles._check_gateway_running", lambda home: home in running
     )
+    monkeypatch.setattr("hermes_cli.profiles._served_by_running_multiplexer", lambda name: False)
     captured = {}
 
     class _Provider:
@@ -133,7 +138,15 @@ def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch):
 
     web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
 
+    assert captured.get("profile_homes") == homes
     gate = captured.get("profile_gate")
     assert gate is not None, "desktop ticker did not install a profile gate"
-    assert gate("default", tmp_path / "default") is True
-    assert gate("ops", tmp_path / "ops") is False
+    for name, home in homes:
+        assert gate(name, home) is (home not in running)
+
+    # Re-evaluate on each tick: Desktop resumes fallback after gateway exit
+    # and stands down again if a gateway starts later.
+    running.clear()
+    assert all(gate(name, home) for name, home in homes)
+    running.update(home for _, home in homes)
+    assert not any(gate(name, home) for name, home in homes)

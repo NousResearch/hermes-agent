@@ -1721,6 +1721,9 @@ export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left'
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
 export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+/** A sibling WebSocket beside the route's `/api/ws` (voice PCM, Bot Screen RFB):
+ *  same origin, same auth resolution as chat. */
+export { resolveSiblingWsUrl, type SiblingWsRoute } from '@/lib/sibling-ws-url'
 /** Canonical time formatting — every surface pulls from here so timestamps read
  *  the same app-wide. For a row's AGE, bucket with `coarseElapsed` and render
  *  the compact suffixes (`t.sidebar.row.ageMin` → "52m"), which is what the

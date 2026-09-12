@@ -1197,6 +1197,8 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
 
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
@@ -1269,7 +1271,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return str(extra.get(key) or _get_scoped_secret(env, "")).strip()
 
         def _extra_or_env(key: str, env: str, default: str) -> str:
-            return str(extra.get(key) or os.getenv(env, default)).strip()
+            return str(extra.get(key) or _get_scoped_secret(env, default)).strip()
 
         raw_group_rules = extra.get("group_rules", {})
         group_rules: Dict[str, FeishuGroupRule] = {}
@@ -1318,7 +1320,7 @@ class FeishuAdapter(BasePlatformAdapter):
             text_batch_max_chars=max(1, env_int("HERMES_FEISHU_TEXT_BATCH_MAX_CHARS", _DEFAULT_TEXT_BATCH_MAX_CHARS)),
             media_batch_delay_seconds=env_float("HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS", _DEFAULT_MEDIA_BATCH_DELAY_SECONDS),
             webhook_host=_extra_or_env("webhook_host", "FEISHU_WEBHOOK_HOST", _DEFAULT_WEBHOOK_HOST),
-            webhook_port=int(extra.get("webhook_port") or os.getenv("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))),
+            webhook_port=int(extra.get("webhook_port") or _get_scoped_secret("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))),
             webhook_path=_extra_or_env("webhook_path", "FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH) or _DEFAULT_WEBHOOK_PATH,
             ws_reconnect_nonce=_coerce_required_int(extra.get("ws_reconnect_nonce"), default=30, min_value=0),
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
@@ -2400,7 +2402,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     # --- Processing status reactions ---
     def _reactions_enabled(self) -> bool:
-        return os.getenv("FEISHU_REACTIONS", "true").strip().lower() not in {"false", "0", "no"}
+        return str(_get_scoped_secret("FEISHU_REACTIONS", "true")).strip().lower() not in {"false", "0", "no"}
 
     async def _reaction_call(self, verb: str, message_id: str, ident: str, build_request: Any, api: Any) -> Any:
         """Shared add/remove reaction wrapper: returns the response data on success, else None (logged)."""
@@ -3739,10 +3741,9 @@ class FeishuAdapter(BasePlatformAdapter):
         # See #58536, #58902, #59180.
         app = web.Application(client_max_size=_FEISHU_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post(self._webhook_path, self._handle_webhook_request)
-        self._webhook_runner = web.AppRunner(app)
-        await self._webhook_runner.setup()
-        self._webhook_site = web.TCPSite(self._webhook_runner, self._webhook_host, self._webhook_port)
-        await self._webhook_site.start()
+        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
+        from gateway.platforms.shared_ingress import bind_listener
+        self._webhook_runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, self._webhook_path)
 
     def _prepare_client(self) -> Any:
         """Build the lark client + event dispatcher for this adapter's domain; returns the SDK domain."""

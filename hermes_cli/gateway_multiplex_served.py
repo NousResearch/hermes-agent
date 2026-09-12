@@ -41,3 +41,34 @@ def recorded_served_profiles(default_root: Optional[Path] = None) -> Optional[li
 def multiplexer_served_secondaries() -> list[str]:
     """Named profiles the live default multiplexer serves (excludes ``default``); empty when none."""
     return [p for p in (recorded_served_profiles() or []) if p and p != "default"]
+
+
+def served_profile_ingress_urls(profile: Optional[str] = None) -> dict[str, dict[str, str]]:
+    """``{profile: {platform: url}}`` for every secondary inbound-port platform the live multiplexer
+    serves on its shared listener (``<profile>:<platform>`` entries carrying ``ingress_url``). This is
+    what the user pastes into the vendor console (Twilio, LINE, Teams, ...). ``profile`` narrows the map."""
+    from hermes_constants import get_default_hermes_root
+    from gateway.status import read_runtime_status
+    if live_default_gateway_pid() is None:
+        return {}
+    runtime = read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}
+    platforms = runtime.get("platforms")
+    if not isinstance(platforms, dict):
+        return {}
+    urls: dict[str, dict[str, str]] = {}
+    for key, entry in platforms.items():
+        if not (isinstance(key, str) and ":" in key and isinstance(entry, dict)):
+            continue
+        url = entry.get("ingress_url")
+        if not url or entry.get("state") in ("fatal", "disconnected", "stopped"):
+            continue
+        name, platform = key.split(":", 1)
+        if profile and name != profile:
+            continue
+        urls.setdefault(name, {})[platform] = str(url)
+    return urls
+
+
+def format_ingress_url_lines(urls: dict[str, str], indent: str = "  ") -> list[str]:
+    """One ``<indent><platform>: <url>`` line per platform, sorted."""
+    return [f"{indent}{platform}: {url}" for platform, url in sorted(urls.items())]

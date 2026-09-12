@@ -321,16 +321,16 @@ class TestLoadGatewayConfig:
 
         assert config.multiplex_profiles is True
 
-    def test_multiplex_allowlist_from_nested_gateway_section(self, tmp_path, monkeypatch):
+    def test_stale_multiplex_allowlist_key_is_ignored(self, tmp_path, monkeypatch):
+        # The removed ``multiplex_profile_allowlist`` key may linger in an un-migrated
+        # config.yaml; it must not break loading or the multiplex flag.
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text(
             "gateway:\n"
             "  multiplex_profiles: true\n"
             "  multiplex_profile_allowlist:\n"
-            "    - Worker\n"
-            "    - worker\n"
-            "    - guest\n",
+            "    - worker\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -338,7 +338,7 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.multiplex_profiles is True
-        assert config.multiplex_profile_allowlist == ["worker", "guest"]
+        assert not hasattr(config, "multiplex_profile_allowlist")
 
     def test_discord_websocket_health_settings_seed_platform_extra(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

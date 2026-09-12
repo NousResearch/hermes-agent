@@ -334,8 +334,16 @@ def resolve_proxy_url(
     target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None) -> str | None:
     """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then HTTPS_PROXY /
     HTTP_PROXY / ALL_PROXY (any case), then the macOS system proxy — the latter two only when
-    ``gateway.trust_env`` is true. None when nothing is found or NO_PROXY matches a target."""
-    value = (os.environ.get(platform_env_var) or "").strip() if platform_env_var else ""
+    ``gateway.trust_env`` is true. None when nothing is found or NO_PROXY matches a target.
+
+    *platform_env_var* is a per-adapter, per-profile-configurable setting (each proxy URL can
+    embed credentials, e.g. ``http://user:pass@host``) so it is read scope-aware: under a
+    secondary multiplex profile it comes from that profile's own ``.env``, not the shared
+    process env another profile's ``TELEGRAM_PROXY``/``DISCORD_PROXY``/etc. may hold. The
+    generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw process-env read —
+    those are OS/system-level network settings, not a per-profile Hermes concept."""
+    from gateway.platforms._shared import get_scoped_secret as _get_scoped_proxy_var
+    value = (_get_scoped_proxy_var(platform_env_var, "") or "").strip() if platform_env_var else ""
     if not value:
         if not gateway_trust_env():  # only the explicit per-platform var is honored
             return None
@@ -1826,6 +1834,11 @@ class BasePlatformAdapter(ABC):
     # answer, and an acknowledgement would silently abandon the task (#57056). Read generically via
     # ``getattr(adapter, "interactive_resume", True)`` — no per-platform branching at the call site.
     interactive_resume: bool = True
+    # Port-binding adapter that answers ``/p/<profile>/...`` for every served profile on the default
+    # listener under ``gateway.multiplex_profiles``. Declared per adapter (not in a central list) so
+    # ``hermes gateway migrate`` can tell "URL changes" from "this profile would be skipped" as new
+    # HTTP-inbound adapters gain the prefix.
+    serves_profile_prefix: bool = False
     # Back-reference to the running ``GatewayRunner`` (set by gateway/run.py); ``build_source``
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]
@@ -1871,6 +1884,9 @@ class BasePlatformAdapter(ABC):
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Owning multiplex profile (None on primary); see _session_key_profile.
         self._owner_profile: Optional[str] = None
+        # Set by the runner on a secondary's port-binding adapter: serve via the default profile's
+        # shared listener (/p/<profile>/...) instead of binding a port (gateway/platforms/shared_ingress.py).
+        self._shared_listener_profile: Optional[str] = None
         # Registered by GatewayRunner (see set_authorization_check).
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``voice.auto_tts`` default plus per-chat /voice on|tts / off.

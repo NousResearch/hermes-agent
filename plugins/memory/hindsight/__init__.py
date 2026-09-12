@@ -85,9 +85,11 @@ def _maybe_upgrade_client() -> None:
         logger.warning("Auto-upgrade unavailable: %s. Run: hermes pm install", exc)
 
 
-# update_mode='append' capability (Hindsight >= 0.5.0), cached per API URL per
-# process so every provider on the same API shares one /version round trip.
-_append_capability_cache: Dict[str, bool] = {}
+# update_mode='append' capability (Hindsight >= 0.5.0), cached per (API URL, key fingerprint)
+# per process so every provider on the same API+key shares one /version round trip. A failed probe
+# caches False, so the key must include the credential or one profile's 401 would silently downgrade
+# a sibling profile that shares the URL with a valid key.
+_append_capability_cache: Dict[tuple[str, str | None], bool] = {}
 _append_capability_lock = threading.Lock()
 
 
@@ -117,9 +119,12 @@ def _check_api_supports_update_mode_append(api_url: str, api_key: str | None = N
     """
     if not api_url:
         return False
+    from agent.credential_persistence import fingerprint_secret_value
+
+    cache_key = (api_url, fingerprint_secret_value(api_key))
     with _append_capability_lock:
-        if api_url in _append_capability_cache:
-            return _append_capability_cache[api_url]
+        if cache_key in _append_capability_cache:
+            return _append_capability_cache[cache_key]
     version = _fetch_hindsight_api_version(api_url, api_key)
     try:  # missing/invalid version -> unsupported
         from packaging.version import Version
@@ -128,7 +133,7 @@ def _check_api_supports_update_mode_append(api_url: str, api_key: str | None = N
         supported = False
     with _append_capability_lock:
         # A concurrent probe may have filled the cache meanwhile; its answer wins.
-        supported = _append_capability_cache.setdefault(api_url, supported)
+        supported = _append_capability_cache.setdefault(cache_key, supported)
     if supported:
         logger.debug("Hindsight API %s version %s supports update_mode='append'", api_url, version)
     else:

@@ -840,7 +840,7 @@ def write_runtime_status(
     active_agents: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
-    clear_profile_platforms: bool = False,
+    ingress_url: Any = _UNSET, clear_profile_platforms: bool = False,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
@@ -878,6 +878,8 @@ def write_runtime_status(
             ("needs_attention", needs_attention, bool),
             # ISO start of the current retry episode; None clears it.
             ("retrying_since", retrying_since, None),
+            # Shared-listener secondaries: the /p/<profile>/ callback URL the vendor console must target.
+            ("ingress_url", ingress_url, None),
         ))
         # Per-entry writer provenance: top-level pid/start_time only identify the most recent
         # writer; /api/status tells "live" from "preserved" by exact (pid, start_time) equality.
@@ -948,6 +950,42 @@ class GatewayLiveness:
     source: str
     health_body: Optional[dict[str, Any]] = None
     probe_error: bool = False
+    # The multiplexer's own ``gateway_state.json`` when the ``multiplexer`` rung answered: a served
+    # profile writes no runtime record of its own, so its platform states live there under
+    # ``<profile>:<platform>`` keys.
+    runtime: Optional[dict[str, Any]] = None
+
+
+def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, dict[str, Any]]]:
+    """``(pid, default gateway_state.json)`` when the live default multiplexer serves the named profile at
+    ``profile_dir``; None for the default home itself, an unserved profile, or no live multiplexer.
+
+    A served profile owns no ``gateway.pid``/``gateway_state.json`` (#97120), so every PID-file rung of the
+    dashboard ladder reports it stopped while ``hermes -p X status`` says running — the two must agree.
+    """
+    name = _profile_name_for_home(Path(profile_dir))
+    if not name:
+        return None
+    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
+    from hermes_constants import get_default_hermes_root
+    if not named_profile_served_by_running_multiplexer(name):
+        return None
+    pid = live_default_gateway_pid()
+    if pid is None:
+        return None
+    return pid, read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}
+
+
+def profile_platforms_from_multiplexer(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
+    """The ``<profile>:<platform>`` entries of a multiplexer record, re-keyed to bare platform names — the
+    same shape a standalone gateway for ``profile`` writes into its own ``gateway_state.json``."""
+    plats = (runtime or {}).get("platforms")
+    if not isinstance(plats, dict):
+        return {}
+    prefix = f"{profile}:"
+    return {key[len(prefix):]: value for key, value in plats.items()
+            if isinstance(key, str) and key.startswith(prefix) and isinstance(value, dict)}
 
 
 def resolve_gateway_liveness(
@@ -962,7 +1000,9 @@ def resolve_gateway_liveness(
     so polling does not re-flock ``gateway.lock``); (2) caller-supplied HTTP health probe (gateway
     in another container); (3) LOCAL runtime status PID validated against the live process table
     with ``expected_home`` (a recycled PID of another profile never counts; pass ``runtime`` if
-    already read). ``*_probe``/``runtime_reader`` are the dashboard's injection/test seam. A rung
+    already read); (4) for a named ``profile_dir`` only, the live default multiplexer that records the
+    profile in ``served_profiles`` (a served profile writes no identity files of its own). ``*_probe``/
+    ``runtime_reader`` are the dashboard's injection/test seam. A rung
     that raises degrades to the next (never 500 a status endpoint) and sets ``probe_error``.
 
     Before this existed, ``/api/status`` and ``/api/messaging/platforms`` each open-coded their own ladder
@@ -1008,6 +1048,18 @@ def resolve_gateway_liveness(
     if runtime_pid is not None:
         return GatewayLiveness(
             running=True, pid=runtime_pid, source="runtime_status", health_body=health_body
+        )
+    # (4) A named profile served by the live default multiplexer: no identity files of its own, but
+    # the multiplexer IS its gateway (mirrors `hermes -p X status` / `gateway list`). Unscoped, the
+    # question is about the process's OWN home — which is a named profile inside a pooled
+    # `hermes --profile X serve` (the Desktop's per-profile backend answers its REST without
+    # `?profile=`), so it takes the same rung instead of reporting the served profile stopped.
+    own_home = profile_dir if scoped else _get_process_hermes_home()
+    served = guarded(multiplexer_liveness_for_profile, own_home)
+    if served is not None:
+        mux_pid, mux_runtime = served
+        return GatewayLiveness(
+            running=True, pid=mux_pid, source="multiplexer", health_body=health_body, runtime=mux_runtime
         )
     return GatewayLiveness(
         running=False, pid=None, source="none", health_body=health_body, probe_error=probe_error

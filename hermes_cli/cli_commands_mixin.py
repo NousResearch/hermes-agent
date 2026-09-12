@@ -1173,8 +1173,8 @@ class CLICommandsMixin:
             return _cp("  Agent is busy. Wait for the current turn to finish, then retry /handoff.")
         if not self._session_db:
             with suppress(Exception):
-                from hermes_state import SessionDB
-                self._session_db = SessionDB()
+                from hermes_state_registry import acquire
+                self._session_db = acquire()
         if not self._session_db:
             return _cp(_db_unavailable_line())
         # Ensure the session row exists (an empty session has flushed nothing yet): the gateway

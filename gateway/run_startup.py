@@ -16,6 +16,7 @@ import signal
 import time
 from contextlib import suppress
 from datetime import datetime
+from pathlib import Path
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
@@ -910,15 +911,37 @@ class GatewayStartupMixin:
         except Exception:
             logger.log(level, fail_fmt, *fail_args, exc_info=True)
 
+    def _recover_secondary_process_checkpoints(self, process_registry) -> int:
+        """Replay every SERVED secondary profile's ``processes.json`` under its own scope.
+        The launch profile's file was already read by ``recover_from_checkpoint`` above."""
+        if not getattr(self.config, "multiplex_profiles", False):
+            return 0
+        from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+        from hermes_constants import get_hermes_home
+        launch_home = get_hermes_home().resolve()
+        recovered = 0
+        for profile_name, profile_home in _multiplex_profile_homes(self.config):
+            if Path(profile_home).resolve() == launch_home:
+                continue
+            try:
+                with _profile_runtime_scope(Path(profile_home), {}):
+                    recovered += process_registry.recover_from_checkpoint()
+            except Exception:
+                logger.warning("Process checkpoint recovery for profile %r failed", profile_name, exc_info=True)
+        return recovered
+
     async def _start_recover_previous_run(self) -> None:
         """Plugins, relay, hooks, then crash/clean-exit recovery of processes and sessions."""
         from gateway.run import _hermes_home
         self._start_register_plugins_relay_hooks()
         self.hooks.discover_and_load()
-        # Recover background processes from checkpoint (crash recovery)
+        # Recover background processes from checkpoint (crash recovery). ``_checkpoint_path`` is
+        # scope-relative, so a served secondary's turn wrote ITS home's processes.json; recover each
+        # served profile's file under its scope or those processes are never re-adopted.
         with _log_suppressed(logging.WARNING, "Process checkpoint recovery: %s"):
             from tools.process_registry import process_registry
             recovered = process_registry.recover_from_checkpoint()
+            recovered += self._recover_secondary_process_checkpoints(process_registry)
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)
         # Recover sessions active at last exit (exact turn markers + 120s recency fallback for

@@ -2607,14 +2607,31 @@ class YuanbaoAdapter(BasePlatformAdapter):
     MEDIA_MAX_SIZE_MB: int = 50
     DM_MAX_CHARS = 10000
     _active_instance: ClassVar[Optional["YuanbaoAdapter"]] = None
+    # Per Hermes home: a multiplexed gateway runs one Yuanbao adapter per profile, and the tools /
+    # send_message read "the" adapter from inside a profile-scoped turn, so last-wins would route
+    # profile B's sends through profile A's bot. Registration and lookup both key on the ambient
+    # override (connect/reconnect tasks inherit the profile's Context); the slot above serves the
+    # unscoped path.
+    _active_instances: ClassVar[Dict[str, "YuanbaoAdapter"]] = {}
 
     @classmethod
     def get_active(cls) -> Optional["YuanbaoAdapter"]:
-        return cls._active_instance
+        from hermes_constants import get_hermes_home_override, hermes_home_key
+
+        if get_hermes_home_override() is None:
+            return cls._active_instance
+        return cls._active_instances.get(hermes_home_key())
 
     @classmethod
     def set_active(cls, adapter: Optional["YuanbaoAdapter"]) -> None:
-        cls._active_instance = adapter
+        from hermes_constants import get_hermes_home_override, hermes_home_key
+
+        if get_hermes_home_override() is None:
+            cls._active_instance = adapter
+        elif adapter is None:
+            cls._active_instances.pop(hermes_home_key(), None)
+        else:
+            cls._active_instances[hermes_home_key()] = adapter
 
     def __init__(self, config: PlatformConfig, **kwargs: Any) -> None:
         super().__init__(config, Platform.YUANBAO)
@@ -2697,7 +2714,10 @@ class YuanbaoAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Cancel background tasks and close the WebSocket connection."""
         if YuanbaoAdapter._active_instance is self:
-            YuanbaoAdapter.set_active(None)
+            YuanbaoAdapter._active_instance = None
+        for home_key, active in list(YuanbaoAdapter._active_instances.items()):
+            if active is self:
+                del YuanbaoAdapter._active_instances[home_key]
         self._running = False
         self._mark_disconnected()
         self._release_platform_lock()

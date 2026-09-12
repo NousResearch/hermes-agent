@@ -116,9 +116,12 @@ def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkey
     runner._profile_adapters["yuki"] = {Platform.TELEGRAM: RecordingAdapter()}
     assert not collect(runner)
     runner._profile_adapters["yuki"] = {}
-    runner.config.multiplex_profile_allowlist = ["other"]
+    # A tombstoned (deleted) owner profile is no longer served by the multiplexer.
+    from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted
+    yuki_home = tmp_path / ".hermes" / "profiles" / "yuki"
+    mark_named_profile_deleted(yuki_home)
     assert not collect(runner)
-    runner.config.multiplex_profile_allowlist = ["yuki"]
+    clear_named_profile_deleted(yuki_home)
     rows = collect(runner)
     assert [row["task"].id for row in rows] == [good]
     # Reassignment after the claim must rewind, never send using stale authority.

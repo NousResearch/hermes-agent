@@ -1,8 +1,9 @@
-"""Session-owned connector UI RPCs; authorization is not consent to read app data.
+"""Connector list and connect RPCs for one session.
 
-Both calls run on the RPC pool. WS upgrade authentication (including legacy
-local/SSH tokens) and live transport membership are the authority, not a
-renderer-supplied profile or identity. No agent build, browser, or wait loop.
+Both calls run on the RPC pool. Authorization comes from the WebSocket upgrade
+authentication (including legacy local and SSH tokens) and from live transport
+membership; a profile or identity sent by the renderer does not grant it.
+Neither call builds an agent, opens a browser, or waits in a loop.
 """
 
 import contextvars
@@ -43,7 +44,8 @@ def _connector_rpc(rid, params, action):
     if _session_uses_compute_host(owner):
         return _connector_rpc_error(rid, 5033, "UNSUPPORTED_RUNTIME", "Connectors must be managed on the session's compute host.")
     allowed = {"session_id"} if action == "status" else {"session_id", "connectors", "reconnect"}
-    # Shared-primary routing adds this metadata; the live transport above owns authorization.
+    # Shared-primary routing adds a profile parameter. Authorization comes from the live transport checked
+    # above, so this parameter is accepted and unused.
     allowed.add("profile")
     if set(params) - allowed:
         return _connector_rpc_error(rid, 4000, "INVALID_PARAMS", "unsupported connector parameters")
@@ -117,7 +119,7 @@ def _dispatch_connector_rpc(rid, sid, owner, profile_home, args):
 
 @method("connectors.list")
 def _(rid, params):
-    """{session_id} -> {available, connectors}; raw metadata additions survive."""
+    """{session_id} -> {available, connectors}; unknown fields in the connector metadata are passed through."""
     return _connector_rpc(rid, params, "status")
 
 

@@ -126,11 +126,17 @@ profile 'coder'. ...
 
 The refusal happens in the CLI before any service manager is touched, so a served
 profile never ends up with a permanently failed systemd unit or a launchd respawn
-loop. The Desktop app's per-profile "Start gateway" action is refused the same way.
+loop. `hermes -p coder gateway stop` refuses the same way (exit 78) when coder has no
+gateway of its own — there is nothing to stop but the multiplexer, which
+`hermes gateway stop` on the default profile takes down for every served profile.
+The dashboard and Desktop app follow the CLI: for a served profile the "Start" and
+"Stop" gateway actions answer `409` with the same explanation, and "Restart"
+restarts the multiplexer (the process that actually serves the profile) instead of
+spawning a `-p coder gateway restart` that could only fail.
 "Served" is read from the running gateway's own record (`served_profiles` in the
 default home's `gateway_state.json`), so it stays correct when the multiplexer was
 enabled only through `GATEWAY_MULTIPLEX_PROFILES` in the default profile's
-environment, or when the allowlist was edited after the gateway started.
+environment, or when profiles were added after the gateway started.
 
 The multiplexer is the single inbound process; a second profile gateway would
 double-bind that profile's platforms. Pass `--force` (accepted by `run`, `start`,
@@ -141,8 +147,8 @@ multiplex mode — you only manage the default gateway.
 
 #### 2. HTTP-inbound platforms are reached via a `/p/<profile>/` URL prefix
 
-Webhook (and other HTTP-inbound) traffic for a secondary profile arrives on the
-default listener under a profile prefix, **not** a second port:
+HTTP-inbound traffic for a secondary profile arrives on the default profile's
+**one** listener under a profile prefix, **not** a second port:
 
 ```
 # default profile
@@ -151,24 +157,22 @@ POST http://host:8644/webhooks/<route>
 POST http://host:8644/p/coder/webhooks/<route>
 ```
 
-An unknown or unconfigured profile in the prefix returns `404`. Because the one
-shared listener already serves every profile this way, a **secondary profile
-must not enable a port-binding platform itself** — doing so is a config error
-that skips the entire secondary profile while the default and other healthy
-profiles continue. The warning names the skipped profile and every conflicting
-platform:
+An unknown or unconfigured profile in the prefix returns `404`. The shared
+listener is the default profile's `api_server` port (or its `webhook` port when
+no API server is enabled); it serves three kinds of profile-prefixed paths:
 
-```
-Skipping secondary profile 'coder' due to port-binding config error: Profile
-'coder' enables port-binding platform(s) webhook, but gateway.multiplex_profiles
-is on. ... Remove these platform entries from profile 'coder's config.yaml or
-configure them only on the default profile.
-```
-
-Port-binding platforms covered by this rule: `webhook`, `api_server`,
-`msgraph_webhook`, `feishu`, `wecom_callback`, `bluebubbles`, `sms`,
-`whatsapp_cloud`, `line`, `teams`. Configure any of these **only on the default profile**;
-every profile is reachable through its `/p/<profile>/` prefix.
+- **`api_server` and `webhook` are mirrored**, never duplicated. `/p/coder/v1/...`
+  and `/p/coder/webhooks/<route>` are answered by the default profile's own
+  adapter under coder's scope. A secondary must therefore **not** enable
+  `api_server` or `webhook` itself (the dashboard refuses with `409`; an
+  `API_SERVER_KEY` or `WEBHOOK_ENABLED` in the secondary's `.env` wires the
+  credential without starting a listener).
+- **Every other inbound-port platform runs in shared-listener mode.** A
+  secondary that configures Twilio SMS, LINE, Teams, BlueBubbles, Microsoft
+  Graph, WhatsApp Cloud, WeCom callback or Feishu webhook mode gets its **own**
+  adapter instance built without a port; the default listener forwards
+  `/p/<profile>/<the adapter's usual path>` to it. See
+  [Inbound-port platforms under the multiplexer](#inbound-port-platforms-under-the-multiplexer).
 
 Authentication follows the profile named in the URL. Unprefixed endpoints keep
 using the default listener's existing credentials.
@@ -176,9 +180,8 @@ using the default listener's existing credentials.
 - `/p/coder/...` API-server requests must use `API_SERVER_KEY` from
   `~/.hermes/profiles/coder/.env`; the default listener key is rejected. Under
   the multiplexer that key only authenticates the prefix — it does not turn on a
-  second `api_server` listener in the secondary profile (which would otherwise be
-  the port-binding conflict described below), so you do not need to pin
-  `platforms.api_server.enabled: false` in the secondary's `config.yaml`.
+  second `api_server` listener in the secondary profile, so you do not need to
+  pin `platforms.api_server.enabled: false` in the secondary's `config.yaml`.
 - A webhook route that targets `coder` must declare `profile: coder` beside
   its existing route-specific `secret` in the default profile's
   `config.yaml`. That secret is then accepted only at
@@ -196,16 +199,65 @@ using the default listener's existing credentials.
 - `/p/coder/api/platforms/<platform>/events` callbacks are verified and
   dispatched by coder's adapter; when coder has none the callback is a 503.
 
-Keep port-binding platforms disabled in secondary profile configs. The shared
-listener and its route definitions stay on the default profile; profile
-binding controls which profile each authenticated webhook route may execute.
 Named API requests fail closed when the target profile has no
-`API_SERVER_KEY`.
+`API_SERVER_KEY`. Security configuration errors remain fatal: for example, an
+`open` own-policy platform without `GATEWAY_ALLOW_ALL_USERS` or its
+platform-specific allow-all opt-in still aborts gateway startup rather than
+silently dropping the unsafe profile.
 
-Only this shared-listener conflict degrades to a skipped profile. Security
-configuration errors remain fatal: for example, an `open` own-policy platform
-without `GATEWAY_ALLOW_ALL_USERS` or its platform-specific allow-all opt-in
-still aborts gateway startup rather than silently dropping the unsafe profile.
+#### Inbound-port platforms under the multiplexer
+
+A standalone `hermes -p coder gateway run` binds coder's Twilio, LINE, Teams,
+… webhook servers on their own ports. Under the multiplexer those adapters are
+still coder's — same credentials from `profiles/coder/.env`, same
+`config.yaml`, replies sent through coder's channel — but they bind **no port**.
+The default profile's shared listener forwards `/p/coder/<path>` to them, where
+`<path>` is exactly the path the adapter would serve standalone. The request is
+verified by **coder's** adapter with **coder's** secret (Twilio auth token, LINE
+channel secret, Teams app credentials, BlueBubbles password, …) and runs under
+coder's runtime scope; the default profile's own `/path` is untouched, and a
+profile that has no adapter for a path gets `404`, never another profile's bot.
+
+| Platform | Secondary profile's callback URL on the shared listener | Verified with the named profile's |
+|---|---|---|
+| Twilio SMS (`sms`) | `https://<host>/p/<profile>/webhooks/twilio` | `TWILIO_AUTH_TOKEN` signature (`SMS_WEBHOOK_URL` must be this URL) |
+| LINE (`line`) | `https://<host>/p/<profile>/line/webhook` (media: `/p/<profile>/line/media/...`) | `LINE_CHANNEL_SECRET` |
+| Microsoft Teams (`teams`) | `https://<host>/p/<profile>/api/messages` | Bot Framework token for `TEAMS_CLIENT_ID` |
+| BlueBubbles (`bluebubbles`) | `http://<host>/p/<profile>/bluebubbles-webhook` (registered with the server automatically) | `BLUEBUBBLES_PASSWORD` |
+| Microsoft Graph (`msgraph_webhook`) | `https://<host>/p/<profile>/msgraph/webhook` | `extra.client_state` |
+| WhatsApp Cloud (`whatsapp_cloud`) | `https://<host>/p/<profile>/whatsapp/webhook` | `WHATSAPP_CLOUD_APP_SECRET` / verify token |
+| WeCom callback (`wecom_callback`) | `https://<host>/p/<profile>/wecom/callback` | the app's callback token / AES key |
+| Feishu webhook mode (`feishu`) | `https://<host>/p/<profile>/feishu/webhook` | `FEISHU_VERIFICATION_TOKEN` / `FEISHU_ENCRYPT_KEY` |
+
+`<host>` is the public hostname (tunnel, reverse proxy) in front of the default
+profile's listener; a custom `webhook_path` in the profile's config moves the
+path after `/p/<profile>` accordingly. The gateway logs the exact URL at
+startup:
+
+```
+[sms] profile 'coder' is served on the default profile's shared listener:
+http://127.0.0.1:8642/p/coder/webhooks/twilio (point the vendor's callback URL at this path ...)
+```
+
+and every status surface repeats it, so you know what to paste into the vendor
+console:
+
+```
+$ hermes -p coder gateway status
+✓ Gateway is running via the default-profile multiplexer
+  Manage it from the default profile: hermes gateway status
+
+Inbound callback URLs on the shared listener:
+  line: http://127.0.0.1:8642/p/coder/line/webhook
+  sms: http://127.0.0.1:8642/p/coder/webhooks/twilio
+```
+
+`hermes gateway status` and `hermes status` on the default profile list the same
+URLs per served profile, and the dashboard's Channels page shows them as each
+platform's `ingress_url` when viewing that profile. A per-profile
+`SMS_WEBHOOK_PORT`, `LINE_PORT`, `TEAMS_PORT`, … in a secondary's `.env` is
+ignored under the multiplexer (nothing binds); it applies again the moment that
+profile runs its own standalone gateway.
 
 #### 3. Per-credential platforms still need their own token per profile
 
@@ -246,7 +298,9 @@ There is a single process-level PID and lock (the multiplexer, under the default
 home). `hermes status` on the default profile reports the multiplexer and lists
 the profiles it serves (`Serves: coder, research`); `hermes -p coder status`,
 `hermes -p coder gateway status` and `hermes -p coder cron status` all report
-"running via the default-profile multiplexer" instead of "stopped". The single
+"running via the default-profile multiplexer" instead of "stopped", and the
+dashboard's `/api/status?profile=coder` / Channels page report the multiplexer as
+coder's running gateway (with coder's own adapters as its platforms). The single
 `gateway_state.json` lives under the default home: secondary adapters appear
 there as `<profile>:<platform>` entries beside `served_profiles`; nothing is
 written under a secondary profile's home.
@@ -334,49 +388,51 @@ profile and never shares with the default or any sibling:
 | Provider keys, bot tokens, `${VAR}` refs in `config.yaml` | The profile's own `.env` (its secret scope) | Unresolved / no adapter — never the default profile's value |
 | Authorization (`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS`, per-platform allowlists and allow-all opt-ins) | The owning profile's `.env` and `config.yaml` | Closed — a default-profile opt-in never opens a secondary's bot |
 | HTTP endpoints (`/p/<profile>/api/...`, `/p/<profile>/webhooks/...`, platform event callbacks) | The named profile's `API_SERVER_KEY`, `profile:`-bound webhook routes, and its own adapter | `401`/`404`; delivery without an adapter is `502`/`503`, never another profile's bot |
+| Inbound-port platforms (`/p/<profile>/webhooks/twilio`, `/p/<profile>/line/webhook`, `/p/<profile>/api/messages`, …) | The named profile's own adapter and its secret (Twilio auth token, LINE channel secret, Teams app, BlueBubbles password, …); replies leave through that adapter | `401`/`403` on a wrong secret, `404` when the profile has no such adapter — never the default profile's adapter |
+| Adapter settings (`*_REQUIRE_MENTION`, `*_REACTIONS`, `*_PROXY`, webhook host/port/URL, Matrix thread/session/E2EE policy, Discord backfill/attachment caps, Buzz reply mode, A2A agent card) | The owning profile's `.env` and `config.yaml` | The adapter's documented default — never the default profile's setting |
 | `MEDIA:` attachment denylist | Every home under `profiles/` plus the default home, enumerated at check time | A turn can never attach another profile's `.env`, `auth.json`, `state.db`, sessions or token stores |
 | stdio MCP child environment | Safe baseline + the profile's scoped values for secret-source names + the server's own `env:` | A name the profile lacks is absent from the child — no default-profile fallthrough |
 | Outbound egress (`send_message`, shutdown/restart/`/update` notices, `/loop` wakeups, `profile:`-bound webhook delivery, `github_comment` tokens) | The profile's own connected adapter and `.env` | Clear failure; never posts through the default profile's bot |
 | Session namespace | `agent:<profile>:…` (default keeps `agent:main:…`) | Two profiles on the same chat never share history |
 | Logs | `agent.log` / `errors.log` / `gateway.log` under the profile's own home | — |
 | Terminal sandbox settings (`terminal.*`, SSH targets) | The profile's `config.yaml` | Documented default; unparsable config → execution refused |
+| Working directory of a turn (unset `terminal.cwd`) | Same rule as a standalone gateway: `$HOME` for the local backend, sandbox default otherwise | Never the directory the multiplexer process was launched from |
+| Command approvals (`command_allowlist`, "always" choices) | The profile's own `config.yaml` | A default-profile "always" never pre-approves a secondary's command; a secondary's choice is saved to its own config |
+| Sandbox credential-file mounts (`terminal.credential_files`), `security.redact_secrets`, `browser.*` engine/headed flags, `lsp.*`, auxiliary-provider health marks, `logs/mcp-stderr.log` | The profile's own `config.yaml` / `.env` | Documented default — never the launch profile's cached value |
+| Cloud-SDK credential clients (Bedrock boto3 clients + model discovery, Azure Entra credential), credential-fetched catalogs (DeepInfra, Copilot context limits, Nous reasoning caps, Ramp Router efforts, xAI / OpenRouter image models, custom-endpoint `/models`), Camofox VNC address, computer-use aux-vision routing, skill-sync push, remote-backend probe text, learned image token costs, `display.skin`, guest-mint back-off, banner skills, Yuanbao "active" adapter, Langfuse client | The profile's own `.env` / `config.yaml` / `<home>/cache` | Documented default — never the launch profile's cached value or its credentials |
+| Session-search knobs (`sessions.cjk_fts`, `sessions.search_slow_ms`) | The profile's `config.yaml` | Documented default — never the default profile's bridged value |
+| Platform proxies (`TELEGRAM_PROXY`, `DISCORD_PROXY`, `HTTPS_PROXY`, …) | The profile's own `.env` | Direct connection — never the default profile's proxy |
+| MCP discovery in the Desktop/dashboard backend | Once per served profile home | A profile selected after another has already built an agent still discovers its own `mcp_servers` |
+| Dashboard actions (`hermes -p <name> …` spawned by the Desktop/dashboard) | A scrubbed child env pinned to that profile's `HERMES_HOME` | The child loads its own `.env`; the dashboard profile's tokens and ports are not inherited |
+| Cron `.env` tuning (`HERMES_CRON_TIMEOUT`, `HERMES_MODEL` fallback, `HERMES_CRON_MAX_PARALLEL`, prefill file), worker / Bot Chat child env | The profile's own `.env`; children never inherit the default profile's `.env` settings or bridged `TERMINAL_*` policy | Cron defaults / model refusal, exactly as a standalone `hermes -p <name> gateway run` |
+| Kanban workers and notifications for a profile's tasks | The assignee's `.env` + `config.yaml` (toolset pin, terminal backend, media policy, display language) | — |
+| `/loop` ticks, `background_process_notifications` gate, `notice_delivery`, background-process checkpoint recovery | The owning profile's `state.db` / `config.yaml` / `processes.json` | — |
 
 What is **shared** by design: the process, its PID/lock and `gateway_state.json`
 (default home), the one HTTP listener, and the `profile_routes` table (declared
 on the default profile).
 
-### Serving selected profiles
+### Which profiles are served
 
-By default, `gateway.multiplex_profiles: true` serves every valid named profile
-on the host. To keep unrelated profiles installed without starting their
-adapters or cron jobs, set `gateway.multiplex_profile_allowlist`:
+`gateway.multiplex_profiles: true` serves the default profile plus **every**
+live named profile under `profiles/` — there is no per-profile opt-out list.
+(The former `gateway.multiplex_profile_allowlist` key is retired; a config
+migration removes it from `config.yaml`, and a profile you do not want served is
+archived or deleted instead — `hermes profile delete <name>`, or move the
+directory out of `profiles/`.) Deleted profiles leave a tombstone and are never
+enumerated; a profile whose directory is gone is never recreated by a served
+turn, the cron ticker or log routing.
 
-```yaml
-gateway:
-  multiplex_profiles: true
-  multiplex_profile_allowlist:
-    - worker
-    - guest
-```
+The served set controls `/p/<profile>/` API and webhook prefixes, runtime
+status, profile-route eligibility, and which profiles the in-process cron
+scheduler ticks (the Desktop backend's ticker enumerates the same set and stands
+down for any profile a running multiplexer or its own gateway already serves). A
+multiplexer started as `hermes -p <name> gateway run` always ticks its own
+profile's cron store as well.
 
-The default profile is always served and does not need to be listed. An unset
-allowlist preserves the historical serve-all behavior; an empty list serves
-only the default profile. Names are normalized and deduplicated. Invalid list
-entries or names that are not installed are skipped with a warning. A malformed
-non-list value fails safely to default-only.
-
-The resulting served set also controls `/p/<profile>/` API and webhook prefixes,
-runtime status, profile-route eligibility, and which profiles the in-process
-cron scheduler ticks (the Desktop backend's ticker follows the same allowlist and
-stands down for any profile a running multiplexer already serves). A multiplexer
-started as `hermes -p <name> gateway run` always ticks its own profile's cron store
-as well. A named profile outside the allowlist may still run its own standalone
-gateway.
-
-One caveat: the served set is a **start-time snapshot**. A profile created or
-added to the allowlist while the multiplexer is running is not picked up until
-`hermes gateway restart` (profiles deleted at runtime are dropped from cron
-ticking automatically).
+One caveat: the served set is a **start-time snapshot**. A profile created while
+the multiplexer is running is not picked up until `hermes gateway restart`
+(profiles deleted at runtime are dropped from cron ticking automatically).
 
 ### Routing shared-bot chats to profiles (`profile_routes`)
 
@@ -460,8 +516,7 @@ ids are unchanged.
 
 `profile_routes` requires `gateway.multiplex_profiles: true`; with
 multiplexing off the routes are ignored. If an explicit route matches but its
-target profile is not installed or is outside `multiplex_profile_allowlist`,
-the gateway rejects that ingress and logs the route and target. It does not run
+target profile is not installed (or was deleted), the gateway rejects that ingress and logs the route and target. It does not run
 the default profile. Traffic that matches no route keeps the historical
 default-profile behavior.
 
@@ -700,6 +755,102 @@ grep -H 'TELEGRAM_BOT_TOKEN\|DISCORD_BOT_TOKEN' \
      ~/.hermes/.env ~/.hermes/profiles/*/.env
 ```
 
+## Migrating from per-profile gateways
+
+If your profiles each run their own gateway today (one systemd unit or launchd
+agent per profile), you can fold them into a single multiplexed default gateway
+with one command — and roll back with another. Standalone per-profile gateways
+remain fully supported; this is an optional migration, not a removal.
+
+```bash
+hermes gateway migrate --multiplex --dry-run   # print the plan and any blockers; changes nothing
+hermes gateway migrate --multiplex             # apply (asks for confirmation on a TTY; -y skips)
+hermes gateway migrate --standalone            # roll back to per-profile gateways
+```
+
+### What `hermes update` does
+
+After a successful update, when the install has two or more profiles, at least
+one secondary profile runs its own gateway (a live process or an installed
+service) and `gateway.multiplex_profiles` is off, `hermes update` runs the same
+preflight:
+
+- **Nothing blocks it** → the migration runs automatically (the same code path
+  as `hermes gateway migrate --multiplex --yes`) and prints what it did. This
+  is deterministic and never prompts, so it also runs on headless/cron updates.
+- **Something blocks it** → a warning block lists each blocker with its exact
+  fix and the one-liner to run later. Nothing is changed.
+
+Single-profile installs are never migrated (there is nothing to gain), and an
+install that is already multiplexing is left alone.
+
+### What the migration does
+
+1. Stops each secondary profile's standalone gateway and uninstalls its
+   service (systemd user/system unit or launchd agent). What was removed is
+   recorded in `~/.hermes/gateway_migration.json` for rollback.
+2. Sets `gateway.multiplex_profiles: true` in the **default** profile's
+   `config.yaml`.
+3. Restarts the default gateway — or installs and starts it on the same service
+   manager the secondaries were using, so a systemd-managed fleet stays
+   systemd-managed.
+4. Waits for the default gateway to record `served_profiles` covering every
+   profile, then prints a summary.
+
+### Blockers and fixes
+
+| Blocker | Why | Fix |
+|---|---|---|
+| Two profiles configure the same platform credential (e.g. the same `TELEGRAM_BOT_TOKEN`) | Under one process a bot token can only be polled once; the multiplexer would park the duplicate and that profile's bot would go silent | Remove the token from the second profile, or keep it in `default` and route that profile's chats with [`profile_routes`](#routing-shared-bot-chats-to-profiles-profile_routes) |
+| A secondary profile enables a port-binding platform that has **no** `/p/<profile>/` ingress on the default listener | The multiplexer skips that whole profile (see [rule 2](#2-http-inbound-platforms-are-reached-via-a-pprofile-url-prefix)) | Disable the platform in that profile (`platforms.<name>.enabled: false`), or keep the profile on a standalone gateway with `hermes -p <name> gateway start --force` |
+
+The credential check reuses the gateway's own conflict detection, so its verdict
+matches what the multiplexer does at startup. Which port-binding platforms have
+a `/p/<profile>/` ingress is read from the adapters themselves (each declares
+`serves_profile_prefix`), so the preflight stays correct as new HTTP-inbound
+adapters gain the prefix.
+
+### What changes for inbound-port profiles
+
+A secondary profile that used `api_server` or `webhook` on its own port is
+**not** blocked — but its URL changes. The preflight prints the exact new URL,
+for example:
+
+```
+Profile 'coder': api_server moves onto the default listener at
+http://127.0.0.1:8642/p/coder/v1/... (its key/secret is unchanged; update
+clients that call the old per-profile port).
+```
+
+The profile's own `API_SERVER_KEY` / webhook secret keeps authenticating the
+prefixed URL; nothing else about the key changes.
+
+### Profiles created after the migration
+
+The multiplexer snapshots the profile set at startup. `hermes profile create`
+prints the reminder when a live multiplexer is detected: run
+`hermes gateway restart` (from the default profile) and the new profile is
+served.
+
+### Rollback
+
+```bash
+hermes gateway migrate --standalone
+```
+
+reads `gateway_migration.json`, sets `gateway.multiplex_profiles` back to its
+previous value, restarts the default gateway, and reinstalls/starts every
+recorded per-profile service. The manifest is removed once everything is back.
+If no manifest exists (you enabled multiplexing by hand), leave multiplex mode
+with `hermes config set gateway.multiplex_profiles false && hermes gateway restart`
+and reinstall the per-profile services you want.
+
+Not covered automatically: s6-supervised containers (set the flag on the
+default profile and restart the container) and Windows Scheduled Tasks (set the
+flag, stop the per-profile tasks, `hermes gateway restart`). The dashboard's
+System page offers the same migration as a button when the preflight finds an
+eligible install.
+
 ## Updating the code
 
 `hermes update` pulls the latest code once and syncs new bundled skills into
@@ -709,6 +860,11 @@ every profile:
 hermes update
 hermes-gateways restart
 ```
+
+Running gateways are restarted by the update itself; on an install that still
+runs one gateway per profile, the update then offers the
+[migration to a single multiplexed gateway](#migrating-from-per-profile-gateways)
+— automatically when nothing blocks it, otherwise as a warning with the fixes.
 
 User-modified skills are never overwritten.
 

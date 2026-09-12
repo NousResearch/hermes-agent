@@ -248,7 +248,7 @@ You can have **both** the Baileys (`whatsapp`) and Cloud (`whatsapp_cloud`) adap
 - **Voice notes** — auto-downloaded as `.ogg`, transcribed via your configured STT provider (local faster-whisper, OpenAI/Nous, Groq, etc.), then handed to the agent as text.
 - **Documents** — auto-downloaded. Small text-readable files (`.txt`, `.md`, `.json`, `.py`, `.csv`, etc.) up to 100KB get inlined into the agent's input so it can read them without a tool call. Larger files are cached locally for the agent's other tools to access.
 - **Button taps** — when the user taps a button the bot sent earlier (clarify choice, command approval, slash-command confirm), the tap is routed directly to the right handler. Stale taps fall back to being treated as regular text input.
-- **Reply context** — when the user replies to a previous bot message, the agent sees the original message as context.
+- **Reply context** — when the user replies to a previous message, the agent sees the original text as context. Quoting an image, voice note, video or document (yours or one the bot sent, e.g. a cron-delivered chart) also attaches that file to the turn, so "what is this?" under a quoted image works. Meta's webhook carries only the quoted message id, so this resolves from a local index of recent sends/receives (last 1000 messages per gateway); older quotes arrive without the attachment.
 
 ### Outbound
 

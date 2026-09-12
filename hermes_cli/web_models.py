@@ -217,6 +217,12 @@ class DebugShareRequest(BaseModel):
 class TTSSpeakRequest(BaseModel):
     text: str
 
+class VoiceLiveSessionRequest(BaseModel):
+    """POST /api/audio/voice-live/session: the renderer's WebRTC SDP offer plus optional prior
+    text turns (``{"type":"message","role":..,"content":[..]}``) to seed the live voice model."""
+    sdp: str
+    history: Optional[List[Dict[str, Any]]] = None
+
 class TTSLeaseRequest(BaseModel):
     """POST /api/audio/tts-lease: ``lease`` names the toggle/surface holding the lease
     (``desktop:read-aloud``, ``desktop:conversation``); ``active`` True acquires + warms, False releases."""

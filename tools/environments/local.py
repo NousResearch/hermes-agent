@@ -368,6 +368,30 @@ def build_subprocess_env(
     return delegated_child_subprocess_env(env)
 
 
+def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None) -> dict:
+    """Drop the LAUNCH profile's residue from a child env built for another served profile.
+    ``os.environ`` holds the default profile's ``.env`` and its bridged ``TERMINAL_*`` settings;
+    the secret scrub removes credentials but not settings (``HERMES_MODEL``, ``TERMINAL_ENV``,
+    ``HERMES_LANGUAGE``...), so a standalone ``hermes -p X`` worker and a served one saw different
+    envs. The child re-loads X's own ``.env`` and bridges X's config itself. ``target_home``
+    defaults to the active home override; no-op outside multiplex or when the target IS the
+    launch profile."""
+    from agent.secret_scope import _is_global_env, is_multiplex_active, load_env_file
+    from hermes_constants import get_hermes_home_override, get_process_hermes_home
+    target = target_home or get_hermes_home_override()
+    if not is_multiplex_active() or not target:
+        return env
+    launch_home = get_process_hermes_home()
+    if Path(target).resolve() == launch_home.resolve():
+        return env
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    for key in set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values()):
+        if not _is_global_env(key) or key.startswith("TERMINAL_"):
+            env.pop(key, None)
+    return env
+
+
+# --- Shell discovery ---
 def _find_bash() -> str:
     """Resolve the shell Hermes runs commands with. Owned by pm (the store
     is the authority on bundled bash); this is a thin wrapper over

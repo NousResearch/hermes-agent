@@ -113,10 +113,18 @@ class GatewayNotificationsMixin:
         if config and getattr(source, "platform", None) == Platform.SLACK and _is_slack_ignored_channel(config, chat_id, adapter):
             logger.info("Skipping Slack platform notice for configured ignored channel %s", chat_id)
             return
-        notice_delivery = (
-            config.get_notice_delivery(source.platform) if config and hasattr(config, "get_notice_delivery")
-            else "public"
-        )
+        # The routed adapter carries ITS profile's ``platforms.<p>`` block; ``self.config`` is the
+        # launch profile's, so a served secondary's ``notice_delivery: private`` would be ignored.
+        adapter_config = getattr(adapter, "config", None)
+        adapter_extra = getattr(adapter_config, "extra", None)
+        if isinstance(adapter_extra, dict) and "notice_delivery" in adapter_extra:
+            from gateway.config import _normalize_choice
+            notice_delivery = _normalize_choice(adapter_extra.get("notice_delivery"), {"public", "private"}, "public")
+        else:
+            notice_delivery = (
+                config.get_notice_delivery(source.platform) if config and hasattr(config, "get_notice_delivery")
+                else "public"
+            )
         metadata = self._thread_metadata_for_source(source)
         if notice_delivery == "private" and getattr(source, "user_id", None):
             with _log_suppressed(
@@ -948,23 +956,26 @@ class GatewayNotificationsMixin:
         """Consume queued watch events and inject them when notifications are enabled.
 
         The queue is ALWAYS drained (so watch events don't rot or requeue-spin) but injection is
-        skipped entirely when ``display.background_process_notifications`` is ``off``.
+        skipped when the OWNING profile's ``display.background_process_notifications`` is ``off``
+        — one shared queue carries every served profile's events, so the gate is evaluated per
+        event inside its profile scope, never once for the ambient (launch) profile.
 
         See #9290.
         """
         from gateway.run import _drain_gateway_watch_events, _format_gateway_process_notification
         watch_events = _drain_gateway_watch_events(completion_queue)
-        if self._load_background_notifications_mode() == "off":
-            return
         for evt in watch_events:
-            synth_text = _format_gateway_process_notification(evt)
-            if not synth_text:
-                continue
-            try:
-                delivered = await self._inject_watch_notification(synth_text, evt)
-            except Exception:
-                logger.exception("Watch notification injection error")
-                delivered = False
+            async with self._completion_event_scope(evt):
+                if self._load_background_notifications_mode() == "off":
+                    continue
+                synth_text = _format_gateway_process_notification(evt)
+                if not synth_text:
+                    continue
+                try:
+                    delivered = await self._inject_watch_notification(synth_text, evt)
+                except Exception:
+                    logger.exception("Watch notification injection error")
+                    delivered = False
             if delivered is False:
                 completion_queue.put(evt)
 
@@ -1719,7 +1730,10 @@ class GatewayNotificationsMixin:
         chat_id = watcher.get("chat_id", "")
         thread_id = watcher.get("thread_id", "")
         agent_notify = watcher.get("notify_on_complete", False)
-        notify_mode = self._load_background_notifications_mode()
+        # The mode belongs to the profile that started the process; recovered watchers run in the
+        # root context, so resolve it under the owning profile's scope (no-op for the default).
+        async with self._completion_event_scope(watcher):
+            notify_mode = self._load_background_notifications_mode()
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
         silent = notify_mode == "off" and not agent_notify

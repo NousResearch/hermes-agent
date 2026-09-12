@@ -166,8 +166,8 @@ def check_signal_requirements() -> bool:
 def validate_signal_config(config: PlatformConfig) -> bool:
     """Check if Signal has enough config to connect."""
     extra = getattr(config, "extra", {}) or {}
-    http_url = (extra.get("http_url", "") or os.getenv("SIGNAL_HTTP_URL", "")).strip()
-    account = (extra.get("account", "") or os.getenv("SIGNAL_ACCOUNT", "")).strip()
+    http_url = (extra.get("http_url", "") or _sig_secret("SIGNAL_HTTP_URL", "")).strip()
+    account = (extra.get("account", "") or _sig_secret("SIGNAL_ACCOUNT", "")).strip()
     return bool(http_url and account)
 
 
@@ -957,7 +957,7 @@ class SignalAdapter(BasePlatformAdapter):
     def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
         """SIGNAL_REACTIONS env gate, then the DM allowlist: reactions fire before run.py's auth gate,
         so an unauthorized contact's 👀 would otherwise reveal a listening bot."""
-        if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
+        if str(_sig_secret("SIGNAL_REACTIONS", "true")).lower() in {"false", "0", "no"}:
             return False
         sender = getattr(getattr(event, "source", None), "user_id", None) if event is not None else None
         return not (sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from)

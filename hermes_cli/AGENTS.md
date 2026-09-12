@@ -129,7 +129,19 @@ matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87
 `_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module import, so
 every `get_hermes_home()` scopes to the active profile (rules in root). Profiles are independent
 islands by design — no live config inheritance; `--clone` copies at creation. Multiplex
-(`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`.
+(`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`. The served set is
+`profiles.py::profiles_to_serve(multiplex=True)` = default + every live (non-tombstoned) dir under
+`profiles/` — there is no allowlist (`gateway.multiplex_profile_allowlist` was retired in config v43).
+Enumeration is a pure read: never `mkdir` a profile home from a served path (`SessionDB`, logging,
+cron all go through `mkdir_under_hermes_home` / `_ensure_cron_dir`, which refuse a deleted or
+missing named profile, #94590). Process-global per-profile slots (MCP discovery in `mcp_startup.py`,
+tool registry overlays) key on `hermes_constants.hermes_home_key()`, never a single flag.
+Migration from per-profile gateways: `hermes_cli/gateway_migrate.py` (`hermes gateway migrate
+--multiplex|--standalone`, table-driven `_PREFLIGHT_CHECKS`, manifest `<default>/gateway_migration.json`);
+`update_cmd_fleet._verify_fleet_after_update` calls `maybe_auto_migrate_after_update` on the success
+path only. Blockers reuse `GatewayRunner._adapter_credential_fingerprint` and `platform_binds_port`;
+"has a `/p/<profile>/` ingress" is the adapter class attribute `serves_profile_prefix` — set it on a
+new HTTP-inbound adapter when it answers the prefix, never extend a list here.
 
 ## Nous free tier (`hermes_cli/anon_auth.py`)
 

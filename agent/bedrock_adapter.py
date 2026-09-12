@@ -37,6 +37,29 @@ except Exception:
 
 _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache: Dict[str, Any] = {}
+# Routed multiplex profiles: one client per (profile home, region). boto3 freezes the credential
+# chain into the client at construction, so a region-only slot would sign profile B's calls with A's keys.
+_bedrock_clients_by_home: Dict[Tuple[str, str, str], Any] = {}
+
+# botocore session kwarg <- profile .env variable (the explicit sources of the default chain).
+_AWS_SCOPED_CREDENTIAL_VARS: Tuple[Tuple[str, str], ...] = (
+    ("aws_access_key_id", "AWS_ACCESS_KEY_ID"), ("aws_secret_access_key", "AWS_SECRET_ACCESS_KEY"),
+    ("aws_session_token", "AWS_SESSION_TOKEN"), ("profile_name", "AWS_PROFILE"),
+)
+
+
+def scoped_aws_session_kwargs() -> Dict[str, str]:
+    """``boto3.session.Session`` kwargs from the routed profile's secret scope, ``{}`` when unscoped.
+
+    Under a HERMES_HOME override the process env holds the LAUNCH profile's ``AWS_*`` (or nothing), so
+    every Bedrock client for a served profile must be built from that profile's own ``.env`` values.
+    """
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override() is None:
+        return {}
+    from agent.secret_scope import current_secret_scope
+    scope = current_secret_scope() or {}
+    return {kw: scope[var].strip() for kw, var in _AWS_SCOPED_CREDENTIAL_VARS if (scope.get(var) or "").strip()}
 
 # Bedrock-hosted GPT-5.x models are served from the Bedrock Mantle OpenAI-compatible endpoint, not
 # Converse. Narrow allowlist so GPT-OSS models stay on the native path.
@@ -69,10 +92,21 @@ def _require_boto3():
 
 
 def _cached_client(cache: Dict[str, Any], service: str, region: str):
-    """Get or create a per-region boto3 client using the default credential chain."""
-    if region not in cache:
-        cache[region] = _require_boto3().client(service, region_name=region)
-    return cache[region]
+    """Get or create a per-region boto3 client. Unscoped: the default credential chain, one client per
+    region. Routed profile: one client per (home, service, region), built from that profile's scoped
+    ``AWS_*`` (falling back to the default chain only for what the profile does not set)."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None:
+        if region not in cache:
+            cache[region] = _require_boto3().client(service, region_name=region)
+        return cache[region]
+    key = (hermes_home_key(), service, region)
+    client = _bedrock_clients_by_home.get(key)
+    if client is None:
+        boto3 = _require_boto3()
+        client = boto3.Session(**scoped_aws_session_kwargs()).client(service, region_name=region)
+        _bedrock_clients_by_home[key] = client
+    return client
 
 
 def _get_bedrock_runtime_client(region: str):
@@ -87,11 +121,16 @@ def reset_client_cache():
     """Clear cached boto3 clients. Used in tests and profile switches."""
     _bedrock_runtime_client_cache.clear()
     _bedrock_control_client_cache.clear()
+    _bedrock_clients_by_home.clear()
 
 
 def invalidate_runtime_client(region: str) -> bool:
     """Evict one region's cached ``bedrock-runtime`` client (stale HTTP pool); True if evicted."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is not None:
+        return _bedrock_clients_by_home.pop((hermes_home_key(), "bedrock-runtime", region), None) is not None
     return _bedrock_runtime_client_cache.pop(region, None) is not None
+
 
 
 # --- Bedrock Mantle / OpenAI Responses support ---
@@ -148,10 +187,9 @@ class BedrockOpenAISigV4Auth(httpx.Auth):
         self.service = service
 
     def auth_flow(self, request):  # pragma: no cover - exercised by live call
-        import botocore.session
         from botocore.auth import SigV4Auth
         from botocore.awsrequest import AWSRequest
-        credentials = botocore.session.get_session().get_credentials()
+        credentials = _require_boto3().Session(**scoped_aws_session_kwargs()).get_credentials()
         if credentials is None:
             raise RuntimeError(
                 "No AWS credentials available for Bedrock OpenAI Responses. "
@@ -966,7 +1004,12 @@ def _list_inference_profiles(client, filter_set: set, models: List[Dict[str, Any
 def discover_bedrock_models(region: str, provider_filter: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Foundation models + inference profiles (cached 1h per region/filter), ``global.`` profiles first then
     by name; [] when the client cannot be built."""
+    # The list is account-scoped (whichever credentials the control client signs with), so a routed
+    # profile gets its own entry; unscoped keeps the region:filter key byte-for-byte.
+    from hermes_constants import get_hermes_home_override, hermes_home_key
     cache_key = f"{region}:{','.join(sorted(provider_filter or []))}"
+    if get_hermes_home_override() is not None:
+        cache_key = f"{hermes_home_key()}|{cache_key}"
     cached = _discovery_cache.get(cache_key)
     if cached and (time.time() - cached["timestamp"]) < _DISCOVERY_CACHE_TTL_SECONDS:
         return cached["models"]

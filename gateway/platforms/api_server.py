@@ -1113,6 +1113,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # Stateless request/response (``send()`` is a stub): async-delivery tools must not promise
     # delivery here, and a resumed turn completes the work rather than asking.
     supports_async_delivery: bool = False
+    # ``/p/<profile>/v1/...`` on the shared listener (``_make_profile_prefix_middleware``).
+    serves_profile_prefix: bool = True
     # Same statelessness applies to the startup auto-resume prompt: no client is waiting to answer "session
     # restored — what next?", so a resumed turn should complete the interrupted work rather than acknowledge
     # (#57056).
@@ -1134,7 +1136,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")))
         self._model_name: str = self._resolve_model_name(
-            extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")))
+            extra.get("model_name", _get_scoped_secret("API_SERVER_MODEL_NAME", "")))
         # alias (client "model") -> {model, provider?, api_key? (UPSTREAM, never logged), base_url?}
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(extra.get("model_routes"))
         # Opt-in bare ``model`` passthrough on OpenAI-compatible surfaces (generic clients
@@ -1459,9 +1461,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None if _prefix_names_served_profile(profile) else _PROFILE_REJECTED
         try:
             from hermes_cli.profiles import profiles_to_serve
-            served = {
-                name for name, _ in profiles_to_serve(
-                    multiplex=True, profile_allowlist=getattr(cfg, "multiplex_profile_allowlist", None))}
+            served = {name for name, _ in profiles_to_serve(multiplex=True)}
         except Exception:
             return _PROFILE_REJECTED
         return profile if profile in served else _PROFILE_REJECTED
@@ -1486,6 +1486,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from gateway.run import _profile_runtime_scope
         from hermes_cli.profiles import get_profile_dir
         return _profile_runtime_scope(get_profile_dir(profile))
+
+    async def _handle_profile_ingress(self, request: "web.Request") -> "web.StreamResponse":
+        """``/p/<profile>/<tail>`` → the served profile's shared-listener adapter (already scoped by the
+        prefix middleware); a profile with no adapter for the path is a 404, never the default's."""
+        from gateway.platforms.shared_ingress import dispatch_profile_ingress
+        return await dispatch_profile_ingress(
+            self.gateway_runner, _api_request_profile.get(), request.match_info.get("tail", ""), request,
+            scoped=True)
 
     def _make_profile_prefix_middleware(self):
         """Reject unknown /p/<profile>/ prefixes and scope the request home."""
@@ -3896,6 +3904,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             for method, path, handler in self._http_route_table():
                 self._app.router.add_route(method, path, handler)
                 self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
+            # Registered LAST so every native mirror above wins: anything else under /p/<profile>/ is a
+            # secondary profile's inbound-port platform (Twilio, LINE, Teams, ...) served on this listener.
+            self._app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
             # After native routes: Relay bootstrap shims feature-detect on this key and must
             # no-op rather than shadow the native session-control handlers.
             self._app["api_server_adapter"] = self

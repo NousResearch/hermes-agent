@@ -5861,8 +5861,10 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
 # During provider incidents each call also retries / fans out across the fallback chain, multiplying request
 # volume on already-degraded endpoints. A per-task semaphore caps in-flight calls so retry amplification
 # stays bounded. See #23324.
-_aux_sync_semaphores: Dict[str, Tuple[int, threading.BoundedSemaphore]] = {}
-_aux_async_semaphores: Dict[Tuple[str, int], Tuple[int, Any]] = {}
+# Keyed by profile home as well: the limit is the profile's ``auxiliary.<task>.max_concurrency``, and two
+# multiplexed profiles with different limits would otherwise rebuild (and reset) one shared semaphore.
+_aux_sync_semaphores: Dict[Tuple[str, str], Tuple[int, threading.BoundedSemaphore]] = {}
+_aux_async_semaphores: Dict[Tuple[str, str, int], Tuple[int, Any]] = {}
 _aux_sem_lock = threading.Lock()
 
 
@@ -5890,7 +5892,10 @@ def _cached_semaphore(store: dict, key: Any, limit: int, factory: Callable[[int]
 def _acquire_sync_aux_semaphore(task: Optional[str]) -> Optional[threading.BoundedSemaphore]:
     """Get a per-task sync semaphore, rebuilding it after a config change."""
     limit = _get_task_max_concurrency(task)
-    return None if limit is None else _cached_semaphore(_aux_sync_semaphores, task, limit, threading.BoundedSemaphore)
+    if limit is None:
+        return None
+    from hermes_constants import hermes_home_key
+    return _cached_semaphore(_aux_sync_semaphores, (hermes_home_key(), task), limit, threading.BoundedSemaphore)
 
 
 def _acquire_async_aux_semaphore(task: Optional[str]):
@@ -5903,7 +5908,8 @@ def _acquire_async_aux_semaphore(task: Optional[str]):
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return None
-    return _cached_semaphore(_aux_async_semaphores, (task, id(loop)), limit, asyncio.Semaphore)
+    from hermes_constants import hermes_home_key
+    return _cached_semaphore(_aux_async_semaphores, (hermes_home_key(), task, id(loop)), limit, asyncio.Semaphore)
 
 
 def _reset_aux_semaphores() -> None:

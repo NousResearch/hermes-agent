@@ -1,7 +1,6 @@
 /**
- * What every in-chat onboarding card is made of: the frame it sits in, the
- * props it receives, and the one thing it does when the user is finished —
- * report the pick so the model moves on.
+ * The parts every in-chat onboarding card shares: the frame it renders in, the props it receives, and the commit
+ * helper that submits the pick as a hidden [setup] message so the model moves on.
  */
 
 import { useStore } from '@nanostores/react'
@@ -13,9 +12,9 @@ import { cn } from '@/lib/utils'
 import { $onboardingAnswers, markStepCommitted } from '@/store/onboarding-answers'
 
 export interface CardProps {
-  /** The directive's raw attrs — the model-written payload. */
+  /** The directive's raw attrs, written by the model. */
   attrs: Record<string, string>
-  /** True while the surrounding turn is still streaming — same card, no clicks. */
+  /** True while the surrounding turn is still streaming; the card renders but does not accept clicks. */
   locked: boolean
 }
 
@@ -41,9 +40,8 @@ export function useCardCommit(step: string) {
   return { commit, done }
 }
 
-/** No chrome — the picker sits directly in the transcript like any other
- *  message content. The interaction IS the affordance; a border would make it
- *  read as a form. */
+/** The frame draws no border or background, so the picker reads as message content in the transcript rather than as
+ *  a form. */
 export function CardFrame({
   children,
   continueLabel = 'Continue',
@@ -53,7 +51,7 @@ export function CardFrame({
   onContinue
 }: {
   children: React.ReactNode
-  /** The action, named for what it does when the default reads as a shrug —
+  /** The action, named for what it does when the default label says nothing specific.
    *  "Continue with 2" tells them the picks registered. */
   continueLabel?: string
   disabled?: boolean

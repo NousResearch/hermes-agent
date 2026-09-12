@@ -23,7 +23,6 @@ from hermes_constants import clear_named_profile_deleted, mark_named_profile_del
 logger = logging.getLogger(__name__)
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-_WARNED_MISSING_ALLOWLIST_ENTRIES: set[tuple[str, ...]] = set()
 
 # Directories bootstrapped inside every new profile. ``home`` is the back-compat/Docker
 # HOME for tool subprocesses (host subprocesses keep the real HOME so CLI credentials
@@ -750,38 +749,19 @@ def list_profiles() -> List[ProfileInfo]:
     return profiles
 
 
-def profiles_to_serve(multiplex: bool, profile_allowlist: Optional[List[str]] = None) -> List[Tuple[str, Path]]:
+def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
     """``(profile_name, hermes_home)`` pairs a gateway should serve — the single chokepoint
     for "which profiles does the inbound gateway handle".
 
     ``multiplex=False``: exactly one entry for the *active* profile (byte-for-byte the
     historical single-profile behavior; name is ``"default"`` or the named profile's id).
-    ``multiplex=True``: default plus every live named profile, optionally filtered by
-    *profile_allowlist* (invalid entries skipped, missing ones warned once)."""
+    ``multiplex=True``: default plus every live named profile under ``profiles/`` (tombstoned
+    profiles skipped). Pure directory read: never creates a profile dir (#94590)."""
     active = get_active_profile_name() or "default"
     if not multiplex:
         return [(active, get_profile_dir(active))]
     serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
-    allowed: Optional[set[str]] = None
-    if profile_allowlist is not None:
-        allowed = set()
-        for entry in profile_allowlist:
-            if not isinstance(entry, str):
-                continue
-            try:
-                name = _canon_valid(entry)
-            except ValueError:
-                continue
-            if name != "default":
-                allowed.add(name)
-    for entry in _iter_named_profile_dirs():
-        if allowed is None or entry.name in allowed:
-            serve.append((entry.name, entry))
-    if allowed is not None:
-        missing = tuple(sorted(allowed - {name for name, _ in serve}))
-        if missing and missing not in _WARNED_MISSING_ALLOWLIST_ENTRIES:
-            _WARNED_MISSING_ALLOWLIST_ENTRIES.add(missing)
-            logger.warning("Skipping missing gateway.multiplex_profile_allowlist profile(s): %s", ", ".join(missing))
+    serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs())
     return serve
 
 

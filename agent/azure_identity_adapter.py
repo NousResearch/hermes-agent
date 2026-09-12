@@ -67,10 +67,11 @@ def _require_azure_identity():
 
 
 def reset_credential_cache() -> None:
-    """Clear the cached ``DefaultAzureCredential`` (tests, profile switches); tolerates a monkeypatched plain function."""
-    cache_clear = getattr(build_credential, "cache_clear", None)
+    """Clear the cached credentials (tests, profile switches); tolerates a monkeypatched plain function."""
+    cache_clear = getattr(_default_chain_credential, "cache_clear", None)
     if callable(cache_clear):
         cache_clear()
+    _credentials_by_home.clear()
 
 
 @dataclass(frozen=True)
@@ -98,13 +99,47 @@ class EntraIdentityConfig:
 
 
 @functools.lru_cache(maxsize=1)
-def build_credential(config: EntraIdentityConfig) -> Any:
-    """Cached ``DefaultAzureCredential``. ``maxsize=1`` is intentional: a process uses one ``model.entra.*``
-    block at a time. Only Hermes knobs are passed as kwargs; the rest comes from ``AZURE_*`` env vars."""
+def _default_chain_credential(config: EntraIdentityConfig) -> Any:
+    """Cached ``DefaultAzureCredential`` for the unscoped process. ``maxsize=1`` is intentional: a process uses
+    one ``model.entra.*`` block at a time. Only Hermes knobs are passed as kwargs; the rest comes from ``AZURE_*``
+    env vars."""
     ai = _require_azure_identity()
     # SDK default already excludes the browser; only pass the kwarg when opting in.
     kwargs = {} if config.exclude_interactive_browser else {"exclude_interactive_browser_credential": False}
     return ai.DefaultAzureCredential(**kwargs)
+
+
+# Routed multiplex profiles: (home key, config) -> credential. DefaultAzureCredential reads AZURE_* from the
+# process env, which under an override belongs to the LAUNCH profile, so a served profile's service principal
+# is built explicitly from its own secret scope (client secret first, then workload identity), falling back
+# to the default chain only when the profile sets no AZURE_* of its own.
+_credentials_by_home: Dict[tuple, Any] = {}
+
+
+def _scoped_credential(ai: Any, config: EntraIdentityConfig) -> Any:
+    from agent.secret_scope import current_secret_scope
+    scope = current_secret_scope() or {}
+    read = lambda name: (scope.get(name) or "").strip()  # noqa: E731
+    tenant, client = read("AZURE_TENANT_ID"), read("AZURE_CLIENT_ID")
+    if tenant and client and read("AZURE_CLIENT_SECRET"):
+        return ai.ClientSecretCredential(tenant, client, read("AZURE_CLIENT_SECRET"))
+    if tenant and client and read("AZURE_FEDERATED_TOKEN_FILE"):
+        return ai.WorkloadIdentityCredential(tenant_id=tenant, client_id=client, token_file_path=read("AZURE_FEDERATED_TOKEN_FILE"))
+    kwargs = {} if config.exclude_interactive_browser else {"exclude_interactive_browser_credential": False}
+    return ai.DefaultAzureCredential(**kwargs)
+
+
+def build_credential(config: EntraIdentityConfig) -> Any:
+    """Cached Entra credential: the process-wide default chain when unscoped, the routed profile's own
+    credential (built from its secret scope) under a HERMES_HOME override."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None:
+        return _default_chain_credential(config)
+    key = (hermes_home_key(), config)
+    credential = _credentials_by_home.get(key)
+    if credential is None:
+        credential = _credentials_by_home[key] = _scoped_credential(_require_azure_identity(), config)
+    return credential
 
 
 def _resolve_config(config: Optional[EntraIdentityConfig], scope: Optional[str], **overrides: Any) -> EntraIdentityConfig:

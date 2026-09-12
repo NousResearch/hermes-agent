@@ -576,8 +576,11 @@ def write_json(obj: dict) -> bool:
     (2) the context-bound transport (:func:`dispatch`); (3) module stdio (tests monkey-patch ``_real_stdout``).
     Every event frame gets a per-session monotonic ``seq`` + replay-ring entry so ``session.events.since`` can resume."""
     from tui_gateway.event_replay import _stamp_event
+    from tui_gateway.hosted_room_member_activity import project_room_member_activity
     _stamp_event(obj)
     if obj.get("method") == "event":
+        # A room member's hidden session has no transport: its frames would die at stdio below.
+        project_room_member_activity(obj, _sessions)
         params = obj.get("params")
         sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
         if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:

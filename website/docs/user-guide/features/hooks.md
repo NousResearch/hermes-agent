@@ -467,6 +467,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
 | `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
+| `on_room_member_activity` | Observer | While a hosted Group Chat member turn runs on the Bot Mode gateway, once per runtime event the member session emits (tool start/complete, approval request, message/reasoning deltas, errors); queued per consumer off the token path; return ignored. | `room_id`, `thread_id`, `member_id`, `turn_id`, `task_id`, `execution_generation`, `kind`, `seq`, `payload` | `payload` is the client-safe session event body: tool args and results, redacted approval commands, streamed member text. |
 | `kanban_task_claimed` | Observer | After claim commit, in dispatcher process before worker spawn; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee identifiers. |
 | `kanban_task_completed` | Observer | After completion and cleanup, usually in worker process; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary may contain project/user content. |
 | `kanban_task_blocked` | Observer | After a blocked transition; the dependency-wait path fires before its transaction exits. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `reason` | Reason may contain project/user content. |
@@ -1356,6 +1357,51 @@ def log_decision(command, choice, session_key, **kwargs):
 
 def register(ctx):
     ctx.register_hook("post_approval_response", log_decision)
+```
+
+---
+
+### `on_room_member_activity`
+
+Fires while a hosted [Group Chat](/user-guide/bot-mode#groups-and-group-chats) member turn runs. A member executes on a hidden `Group: <room>` session that no client is attached to, so between the room log's `turn.started` and `turn.settled` the turn is a black box. This hook projects the runtime events that session already produces — tool start/complete, approval requests, streamed text and reasoning, errors — stamped with the room coordinates, so a client (Hermes Crew, a dashboard, an audit log) can render tool cards, approval prompts and live member status without inferring anything from text. The Group Chat runtime keeps ownership of execution, scheduling and the durable log; plugins only observe.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    room_id: str,
+    thread_id: str,
+    member_id: str,
+    turn_id: str,
+    task_id: str,
+    execution_generation: int,
+    kind: str,
+    seq: int | None,
+    payload: dict,
+    **kwargs,
+):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `room_id`, `thread_id`, `turn_id`, `task_id` | `str` | The same coordinates the room log's `turn.*` and `message.member` events carry; join on them. |
+| `member_id` | `str` | The seated member (`members[].member_id` from `groups.state`). |
+| `execution_generation` | `int` | Increments on every retry of the same task; events from a superseded attempt carry the older value. |
+| `kind` | `str` | `tool.started`, `tool.completed`, `tool.output_risk`, `request.opened` (approval), `message.delta`, `message.interim`, `reasoning.delta`, `turn.error`. New kinds are additive. |
+| `seq` | `int \| None` | The member session's per-process event sequence (same numbering as `session.events.since`); monotonic within one gateway process, resets on restart. |
+| `payload` | `dict` | The client-safe body of the underlying session event (`tool_id`, `name`, `args`, `result`, `request_id`, `choices`, `text`, ...). Approval commands are already credential-redacted. |
+
+**Delivery:** each registered callback gets its own bounded queue and worker thread (the `on_stream_*` mechanism); a slow callback drops its oldest pending event and never delays the member's turn. Nothing is written to the room log — deltas are not durable and do not replay; clients that need durability persist what they receive. Local members only: a member seated from another machine runs on that machine's gateway, whose plugins see it.
+
+**Return value:** ignored.
+
+```python
+def on_member_activity(room_id, member_id, turn_id, kind, payload, **kwargs):
+    if kind == "request.opened":
+        notify(f"{member_id} in {room_id} needs approval: {payload['command']}")
+
+def register(ctx):
+    ctx.register_hook("on_room_member_activity", on_member_activity)
 ```
 
 ---

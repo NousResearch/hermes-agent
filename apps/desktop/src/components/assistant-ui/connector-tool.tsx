@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
+import { isFirstBuildSession } from '@/app/contrib/handoff-receipt'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
+import { FirstBuildConnectorOffer } from '@/components/assistant-ui/first-build-connectors'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
 import { ConnectorCard, type ConnectorCardCopy } from '@/components/ui/connector-card'
@@ -24,16 +26,17 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   const runtimeId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
   const messages = useStore(view.$messages)
+  const firstBuild = isFirstBuildSession(storedId)
 
   // One live card per offer. Every manage_connections call renders through
-  // here, but only ONE is the card the user acts on; the rest are settled
-  // tool rows. Which one: consecutive calls naming the same apps are one
-  // exchange — connect, the wait the agent parks in while the user signs in,
-  // the status it runs when the connection lands — and the FIRST of the last
-  // exchange is the card. The newest would demote the card mid-authorization
-  // into a row and mint a fresh one below it. A catalog listing (status with
-  // nothing named) after a targeted ask never starts an exchange: it is a
-  // read, not an offer.
+  // here, but only one of them is the card the user acts on; the rest render
+  // as settled tool rows. Consecutive calls naming the same apps are one
+  // exchange: connect, the wait the agent stays in while the user signs in,
+  // and the status it runs once the connection is active. The card is the
+  // first call of the last exchange. Using the newest call would turn the
+  // card into a row during authorization and create a new card below it. A
+  // catalog listing (status with nothing named) after a targeted ask never
+  // starts an exchange; it reads state and offers nothing.
   const offers = messages
     .flatMap(message => message.parts)
     .filter(
@@ -84,6 +87,19 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   }
 
   const historical = liveId !== props.toolCallId
+  // A status call with no target list describes the whole catalog. It answers
+  // the model's question, so it renders as a tool row; as cards it would put a
+  // Connect button on every app the gateway knows.
+  const input = recordOf(props.args)
+
+  const untargetedStatus =
+    props.toolName === 'manage_connections' &&
+    (input.action ?? 'status') === 'status' &&
+    !(Array.isArray(input.connectors) && input.connectors.length > 0)
+
+  // Neither kind of part is the live offer, so neither resolves a session
+  // owner nor polls the gateway.
+  const inert = historical || untargetedStatus
 
   const [owner, setOwner] = useState<{
     storedId: string
@@ -92,8 +108,10 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
     profile: string
   } | null>(null)
 
+  const [ownerFailure, setOwnerFailure] = useState<string | null>(null)
+
   useEffect(() => {
-    if (!storedId || !runtimeId || historical) {
+    if (!storedId || !runtimeId || inert) {
       return
     }
 
@@ -115,24 +133,25 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
       .catch(() => {
         if (!cancelled) {
           setOwner(null)
+          setOwnerFailure(`${storedId}:${runtimeId}`)
         }
       })
 
     return () => {
       cancelled = true
     }
-  }, [storedId, runtimeId, historical])
+  }, [storedId, runtimeId, inert])
   const rows = connectionRows(props.args, props.result)
   const signature = rows.map(row => row.connector).join('|')
   const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
 
-  // The TUI shape, stolen: the agent parks inside manage_connections
+  // The same shape as the TUI: the agent stays inside manage_connections
   // action="wait", which blocks the turn and polls the gateway, instead of
   // deciding what "not connected" means and building around the app. Each
   // card action sends one hidden line so the agent takes the right next call.
-  // Read through a ref so the flow (memoised on identity) always nudges the
-  // live composer target, never the one it was built with. Busy is the
-  // composer's problem: a hidden request mid-turn steers or queues there.
+  // Read through a ref so the flow, memoised on identity, always submits to
+  // the current composer target rather than the one it was built with. The
+  // composer handles busy: a hidden request mid-turn steers or queues there.
   const nudgeRef = useRef((_text: string) => {})
 
   nudgeRef.current = (text: string) => {
@@ -140,7 +159,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   }
 
   const flow = useMemo(() => {
-    if (historical || !runtimeId || !owner || owner.storedId !== storedId || owner.runtimeId !== runtimeId) {
+    if (firstBuild || inert || !runtimeId || !owner || owner.storedId !== storedId || owner.runtimeId !== runtimeId) {
       return null
     }
 
@@ -160,11 +179,10 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
           `The user clicked Connect for ${connectorTitle(slug)} and the sign-in is open in their browser. Call manage_connections action="wait" connectors=["${slug}"] now and hold there until it reports connected. Do NOT call connect again — a second link cancels the one they are signing in with. Say nothing until wait returns.`
         )
     })
-  }, [runtimeId, owner, storedId, signature, historical])
+  }, [runtimeId, owner, storedId, signature, inert, firstBuild])
 
   const { t } = useI18n()
-  // A result is a snapshot. Reopening a transcript only refreshes status; it
-  // cannot mint links, open tabs or restart an abandoned authorization.
+  // Ordinary sessions require a click to begin authorization.
   useEffect(() => {
     if (!flow) {
       return
@@ -178,12 +196,29 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
     }
   }, [flow, props.result])
 
-  if (historical) {
+  if (inert) {
     return <ToolFallback {...props} />
   }
 
+  if (firstBuild && storedId && owner?.storedId === storedId && owner.runtimeId === runtimeId) {
+    return (
+      <FirstBuildConnectorOffer
+        connectionId={owner.connectionId}
+        part={props}
+        profile={owner.profile}
+        runtimeId={owner.runtimeId}
+        storedId={storedId}
+        target={view.kind === 'tile' ? `tile:${storedId}` : 'main'}
+      />
+    )
+  }
+
   if (!flow) {
-    return <p className="text-xs text-muted-foreground">{t.connectors.ownerMissing}</p>
+    return (
+      <p className="text-xs text-muted-foreground">
+        {ownerFailure === `${storedId}:${runtimeId}` ? t.connectors.ownerMissing : t.connectors.checking}
+      </p>
+    )
   }
 
   return (
@@ -201,7 +236,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
 
 interface ConnectorOfferProps {
   flow: ReturnType<typeof createConnectorFlow>
-  /** The user waved the app off. */
+  /** Called when the user declines the app with Not now. */
   onSkipped: (slug: string) => void
 }
 
@@ -236,9 +271,9 @@ export function ConnectorOffer({ flow, onSkipped }: ConnectorOfferProps) {
 
   const rows = state.rows.filter(row => connectorTitle(row.connector).toLowerCase().includes(query.toLowerCase()))
   // A targeted ask ("connect Gmail") is one or two cards, each already a
-  // complete question. A heading, a disclaimer and a refresh control over
-  // them is a settings panel dropped into the chat. Only a real catalog — the
-  // model asked for status with nothing named — earns the chrome.
+  // complete question. A heading, a disclaimer and a refresh control over them
+  // read as a settings panel inside the chat. Only a catalog listing, which
+  // the model gets by asking for status with nothing named, shows that chrome.
   const catalog = state.rows.length > 4
 
   return (
@@ -262,7 +297,9 @@ export function ConnectorOffer({ flow, onSkipped }: ConnectorOfferProps) {
           </Button>
         </p>
       ) : null}
-      {!state.available && !state.error ? <p className="px-1 text-xs text-muted-foreground">{copy.unavailable}</p> : null}
+      {!state.available && !state.error ? (
+        <p className="px-1 text-xs text-muted-foreground">{copy.unavailable}</p>
+      ) : null}
       {catalog ? <SearchField onChange={setQuery} placeholder={copy.search} value={query} /> : null}
       <div className={cn('grid min-w-0', catalog && 'max-h-96 overflow-y-auto')}>
         {rows.map(row => (
@@ -287,8 +324,8 @@ export function ConnectorOffer({ flow, onSkipped }: ConnectorOfferProps) {
                 const wasPending = ['opening', 'waiting'].includes(row.phase)
                 flow.skip(row.connector)
 
-                // A cancel mid-authorization is not a skip: the agent may be
-                // parked in wait and will hear the timeout itself.
+                // A cancel mid-authorization is not a skip: the agent may
+                // still be in wait, which reports the timeout to it.
                 if (!wasPending) {
                   onSkipped(row.connector)
                 }

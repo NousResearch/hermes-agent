@@ -131,6 +131,8 @@ def _resolve_openrouter_runtime(
     use_config_base_url = bool(cfg_base_url.strip()) and not explicit_base_url and (
         (requested_norm == "auto" and cfg_provider in ("", "auto"))
         or (requested_norm == "custom" and rp._config_base_url_trustworthy_for_bare_custom(cfg_base_url, cfg_provider))
+        # provider: openrouter + base_url in config.yaml is a deliberate mirror/proxy (#10622).
+        or (requested_norm == "openrouter" and cfg_provider == "openrouter")
     )
     base_url = ((explicit_base_url or "").strip() or env_custom_base_url or (cfg_base_url.strip() if use_config_base_url else "")
                 or env_openrouter_base_url or OPENROUTER_BASE_URL).rstrip("/")
@@ -138,11 +140,16 @@ def _resolve_openrouter_runtime(
     # prefer OPENROUTER_API_KEY (issue #289). When hitting a custom endpoint (e.g. Z.ai, local LLM), prefer
     # OPENAI_API_KEY so the OpenRouter key doesn't leak to an unrelated provider (issues #420, #560).
     is_openrouter_url = base_url_host_matches(base_url, "openrouter.ai")
-    # Explicitly-configured OpenRouter mirrors (OPENROUTER_BASE_URL + provider=openrouter) still
-    # count as OpenRouter for key selection.
+    # Explicitly-configured OpenRouter mirrors (OPENROUTER_BASE_URL, or a config.yaml base_url under
+    # provider: openrouter) still count as OpenRouter for key selection — otherwise the mirror's host
+    # fails the openrouter.ai match and the generic custom-endpoint branch never selects
+    # OPENROUTER_API_KEY for it (#10622).
     is_openrouter_context = is_openrouter_url or (
-        requested_norm == "openrouter" and (env_openrouter_base_url or base_url == env_openrouter_base_url)
-        and base_url == (env_openrouter_base_url or "").rstrip("/")
+        requested_norm == "openrouter" and (
+            (use_config_base_url and cfg_provider == "openrouter" and base_url == cfg_base_url.strip().rstrip("/"))
+            or ((env_openrouter_base_url or base_url == env_openrouter_base_url)
+                and base_url == (env_openrouter_base_url or "").rstrip("/"))
+        )
     )
     if is_openrouter_context:
         candidates = [explicit_api_key, rp._getenv("OPENROUTER_API_KEY"), rp._getenv("OPENAI_API_KEY")]

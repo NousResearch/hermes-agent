@@ -21,7 +21,7 @@ import time
 import urllib.request
 from contextlib import suppress
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_hermes_home_override, hermes_home_key
 
 logger = logging.getLogger(__name__)
 _REPO = "sheeki03/tirith"
@@ -62,6 +62,9 @@ def _load_security_config() -> dict:
 _resolved_path: str | None | bool = None
 _INSTALL_FAILED = False
 _install_failure_reason: str = ""  # reason tag when _resolved_path is _INSTALL_FAILED
+# Routed profiles (multiplexed gateway) resolve their own binary: ``security.tirith_path`` and
+# ``<home>/bin/tirith`` are per profile, so the launch profile's slot above must not answer for them.
+_resolved_path_by_home: dict[str, str] = {}
 
 # Circuit breaker: after _CRASH_LIMIT consecutive spawn/execution failures tirith is disabled
 # for the rest of the process so a broken binary can't turn every tool call into a fail-open
@@ -108,12 +111,23 @@ def _warn_once(key: str, message: str, *args) -> None:
 
 def _cached_path() -> str | None:
     """The path resolved on a previous call, or None if unresolved (None) / failed (_INSTALL_FAILED)."""
+    if get_hermes_home_override() is not None:
+        return _resolved_path_by_home.get(hermes_home_key())
     return _resolved_path or None
 
 
+def _store_resolved(path: str) -> None:
+    global _resolved_path
+    if get_hermes_home_override() is not None:
+        _resolved_path_by_home[hermes_home_key()] = path
+    else:
+        _resolved_path = path
+
+
 def _set_resolved(path: str) -> None:
-    global _resolved_path, _install_failure_reason
-    _resolved_path, _install_failure_reason = path, ""
+    global _install_failure_reason
+    _store_resolved(path)
+    _install_failure_reason = ""
 
 
 def _set_failed(reason: str) -> None:
@@ -361,7 +375,7 @@ def _resolve_locally(configured_path: str, *, warn_missing: bool) -> tuple[str |
     # An explicit (non-"tirith") path is authoritative: never auto-download a replacement.
     if configured_path != "tirith":
         if found := (expanded if _is_executable(expanded) else shutil.which(expanded)):
-            _resolved_path = found
+            _store_resolved(found)
             return found, False
         if warn_missing:
             logger.warning("Configured tirith path %r not found; scanning disabled", configured_path)

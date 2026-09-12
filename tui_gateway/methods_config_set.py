@@ -168,7 +168,7 @@ def _set_fast(rid, params, key, value, session):
     else:
         current_tier = _load_service_tier()
     if raw == "status":
-        return _kv(rid, key, {"priority": "fast", None: "normal"}.get(current_tier, current_tier))
+        return _kv(rid, key, {"priority": "fast", None: "normal", "": "normal"}.get(current_tier, current_tier))
     nv = _FAST_WORDS.get(raw, ("normal" if current_tier == "priority" else "fast") if raw in {"", "toggle"} else None)
     if nv is None:
         return _err(rid, 4002, f"unknown fast mode: {value}")

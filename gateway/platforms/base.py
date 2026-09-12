@@ -1834,6 +1834,11 @@ class BasePlatformAdapter(ABC):
     # answer, and an acknowledgement would silently abandon the task (#57056). Read generically via
     # ``getattr(adapter, "interactive_resume", True)`` — no per-platform branching at the call site.
     interactive_resume: bool = True
+    # Port-binding adapter that answers ``/p/<profile>/...`` for every served profile on the default
+    # listener under ``gateway.multiplex_profiles``. Declared per adapter (not in a central list) so
+    # ``hermes gateway migrate`` can tell "URL changes" from "this profile would be skipped" as new
+    # HTTP-inbound adapters gain the prefix.
+    serves_profile_prefix: bool = False
     # Back-reference to the running ``GatewayRunner`` (set by gateway/run.py); ``build_source``
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]
@@ -1879,6 +1884,9 @@ class BasePlatformAdapter(ABC):
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Owning multiplex profile (None on primary); see _session_key_profile.
         self._owner_profile: Optional[str] = None
+        # Set by the runner on a secondary's port-binding adapter: serve via the default profile's
+        # shared listener (/p/<profile>/...) instead of binding a port (gateway/platforms/shared_ingress.py).
+        self._shared_listener_profile: Optional[str] = None
         # Registered by GatewayRunner (see set_authorization_check).
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``voice.auto_tts`` default plus per-chat /voice on|tts / off.

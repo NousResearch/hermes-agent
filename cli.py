@@ -2297,7 +2297,7 @@ def _build_compact_banner() -> str:
     dim_color = _color("banner_dim", "#B8860B")
 
     if (getattr(_skin, "name", "default") if _skin else "default") == "default":
-        tiny_line = "⚕ NOUS HERMES"
+        tiny_line = "☤ NOUS HERMES"
     else:
         tiny_line = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
     line1 = f"{tiny_line} - AI Agent Framework"
@@ -2835,8 +2835,12 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._session_db = None
         self._session_db_unavailable = False
         try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
+            # Registry handle, not a bare SessionDB(): goals/loops/heartbeat acquire the same
+            # path a moment later from the REPL thread, and a second writer repeats the full
+            # open (the /proc-wide deleted-WAL scan, ~4k readlinks) while the render thread
+            # holds the GIL — that repeat was the post-banner freeze before the first prompt.
+            from hermes_state_registry import acquire
+            self._session_db = acquire()
         except Exception as e:
             # Without a store the transcript is NOT persisted while the chat looks healthy,
             # so surface it prominently rather than only logging.

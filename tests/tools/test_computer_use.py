@@ -2671,3 +2671,75 @@ class TestBoundsScaleField:
         assert _bounds_scale(elems, 1455, 791) is None
         assert _bounds_scale([], 1455, 791) is None
         assert _bounds_scale(elems, 0, 0) is None
+
+
+class TestReleasedBackendRace:
+    """#108813: a backend selected before its call lock can outlive a concurrent
+    release_computer_use_session. Dispatching the detached backend reanimates the
+    stopped driver session, so the dispatcher must re-check backend identity under
+    the call lock and fail closed."""
+
+    def test_dispatch_after_release_fails_closed(self, monkeypatch):
+        import threading
+
+        from tools.computer_use import tool as cu_tool
+
+        dispatches: list = []
+        monkeypatch.setattr(
+            cu_tool, "_dispatch",
+            lambda backend, action, args: dispatches.append((action, args)) or "{}",
+        )
+        selected = threading.Event()
+        release_done = threading.Event()
+        real_get = cu_tool._get_backend
+
+        def staged_get(session_id=""):
+            backend = real_get(session_id=session_id)
+            selected.set()
+            assert release_done.wait(5), "release never ran during the window"
+            return backend
+
+        monkeypatch.setattr(cu_tool, "_get_backend", staged_get)
+
+        result: Dict[str, Any] = {}
+
+        def call():
+            result["r"] = cu_tool.handle_computer_use(
+                {"action": "list_apps"}, session_id="race-sid")
+
+        t = threading.Thread(target=call)
+        t.start()
+        assert selected.wait(5), "backend never selected"
+        assert cu_tool.release_computer_use_session("race-sid") is True
+        release_done.set()
+        t.join(5)
+        assert not t.is_alive(), "handler thread hung"
+        payload = json.loads(result["r"])
+        assert "error" in payload, payload
+        assert dispatches == [], "stale backend was dispatched after release returned"
+
+    def test_released_backend_folded_back_dispatches_again(self, monkeypatch):
+        # The empty-session fold contract: release detaches (and stops) the cached
+        # alias of the host-injected ``_backend``, but the next call folds that same
+        # object back into the cache — install revives membership, so it dispatches
+        # normally instead of being rejected as detached.
+        from tools.computer_use import tool as cu_tool
+
+        dispatches: list = []
+        monkeypatch.setattr(
+            cu_tool, "_dispatch",
+            lambda backend, action, args: dispatches.append(action) or "{}",
+        )
+        # Warm up: install("") also mirrors the backend onto the ``_backend`` hook.
+        cu_tool.handle_computer_use({"action": "list_apps"})
+        dispatches.clear()
+        assert cu_tool.release_computer_use_session("") is True
+        result = json.loads(cu_tool.handle_computer_use({"action": "list_apps"}))
+        assert "error" not in result, result
+        assert dispatches == ["list_apps"]
+
+    def test_normal_dispatch_unaffected_by_identity_check(self):
+        from tools.computer_use.tool import handle_computer_use
+        result = json.loads(handle_computer_use(
+            {"action": "list_apps"}, session_id="steady-sid"))
+        assert "error" not in result, result

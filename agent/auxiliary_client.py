@@ -6085,6 +6085,31 @@ def _project_provider_profile(
     return _ProfileProjection(body, reasoning_extra, top_level, handles_reasoning)
 
 
+def _resolve_aux_reasoning_config(
+    task: Optional[str], reasoning_config: Optional[dict], extra_body: Optional[dict],
+) -> Optional[dict]:
+    """Hand the task-level effort to provider profiles that translate reasoning.
+
+    ``auxiliary.<task>.reasoning_effort`` is folded into the generic OpenRouter-shaped
+    ``extra_body["reasoning"]`` (``_get_task_extra_body``), but a provider profile only ever sees the
+    ``reasoning_config`` argument — so wires that translate reasoning (DeepSeek ``thinking`` /
+    ``reasoning_effort``, zai, kimi) never received the task's effort, and a model matched by such a
+    profile defaulted from ``None`` to thinking *enabled*. The folded value is added, never removed:
+    the generic field stays for wires that consume it, so nothing else changes. A task whose own
+    ``extra_body`` block carries a provider-shaped ``reasoning`` payload is passed through verbatim.
+    """
+    if reasoning_config is not None or not isinstance(extra_body, dict):
+        return reasoning_config
+    folded = extra_body.get("reasoning")
+    if not isinstance(folded, dict):
+        return reasoning_config
+    task_config = _get_auxiliary_task_config(task) if task else {}
+    raw_extra_body = task_config.get("extra_body") if isinstance(task_config, dict) else None
+    if isinstance(raw_extra_body, dict) and "reasoning" in raw_extra_body:
+        return reasoning_config
+    return folded
+
+
 def _merge_aux_extra_body(
     extra_body: Optional[dict], projection: _ProfileProjection, reasoning_config: Optional[dict], provider_norm: str,
 ) -> Dict[str, Any]:
@@ -6748,7 +6773,7 @@ _PreparedAuxRequest = NamedTuple("_PreparedAuxRequest", [
     ("resolved_provider", str), ("request_provider", str), ("resolved_model", Optional[str]),
     ("resolved_base_url", Optional[str]), ("resolved_api_key", Optional[str]),
     ("resolved_api_mode", Optional[str]), ("effective_timeout", float),
-    ("effective_extra_body", Dict[str, Any]), ("base_info", str)])
+    ("effective_extra_body", Dict[str, Any]), ("base_info", str), ("reasoning_config", Optional[dict])])
 
 
 def _prepare_aux_request(
@@ -6796,6 +6821,8 @@ def _prepare_aux_request(
                          f" at {base_info}" if base_info and "openrouter" not in base_info else "")
     # Client's actual base_url so endpoint-specific temperature overrides work on
     # auto-detected routes (api.moonshot.ai vs api.kimi.com/coding).
+    # The task's folded reasoning must reach profiles that translate it (see the helper).
+    reasoning_config = _resolve_aux_reasoning_config(task, reasoning_config, effective_extra_body)
     kwargs = _build_call_kwargs(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
@@ -6809,7 +6836,7 @@ def _prepare_aux_request(
     return _PreparedAuxRequest(
         client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
-        effective_extra_body, base_info)
+        effective_extra_body, base_info, reasoning_config)
 
 
 class _LadderStep(NamedTuple):
@@ -7282,7 +7309,7 @@ def _plan_aux_call(
     candidate_kwargs = dict(
         task=task, messages=messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, effective_timeout=req.effective_timeout,
-        effective_extra_body=req.effective_extra_body, reasoning_config=reasoning_config,
+        effective_extra_body=req.effective_extra_body, reasoning_config=req.reasoning_config,
     )
     retry_kwargs = dict(
         candidate_kwargs, resolved_base_url=req.resolved_base_url,

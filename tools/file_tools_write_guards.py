@@ -107,7 +107,17 @@ def _resolved_or_raw(filepath: str, task_id: str) -> str:
 
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
-    """Return an error message if the path targets a sensitive system location."""
+    """Return an error message if the path targets a sensitive system location.
+
+    Authority profile integration (PR-equivalent):
+      - production (default): full hard-deny on ``config.yaml`` (current behavior)
+      - principal: principal profile allows ``edit_config_yaml``, so the
+        ``config.yaml`` hard-deny is converted to a soft ALLOW + audit log.
+      - Either profile: absolute denies (sensitive system paths, approval
+        globs, hermes-agent upstream, cross-repo .hermes.md, cookie/secret
+        files) are STILL hard-denied regardless of profile — see
+        ``hermes_cli.authority`` for the rule set.
+    """
     candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
     if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS for c in candidates):
         return (
@@ -115,8 +125,18 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Use the terminal tool with sudo if you need to modify system files.")
     # approvals.mode and other security settings live in config.yaml; a
     # prompt-injected agent could silently disable exec approval by editing it.
+    # Principal profile + Austin's explicit turn-authorization lifts this block;
+    # otherwise we hard-deny to keep the existing test contract.
     hermes_config = _get_hermes_config_resolved()
     if hermes_config and hermes_config in candidates:
+        try:
+            from hermes_cli.authority import allows, log_action
+            if allows("edit_config_yaml"):
+                log_action("edit_config_yaml", target=filepath)
+                return None  # principal path: allow with audit
+        except ImportError:
+            # Authority module unavailable — fall back to old hard-deny behavior.
+            pass
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "

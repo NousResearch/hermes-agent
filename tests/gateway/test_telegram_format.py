@@ -151,6 +151,48 @@ class TestFormatMessageBoldItalic:
         # Original ** should be gone
         assert "**" not in result
 
+    def test_bold_italic_combined(self, adapter):
+        """***bold italic*** resolves both delimiter families, not a corrupted literal."""
+        assert adapter.format_message("***bold italic***") == "_*bold italic*_"
+
+    def test_bold_with_inner_italic(self, adapter):
+        """Inner *italic* markers inside **bold** stay emphasis instead of being escaped."""
+        assert adapter.format_message("**bold *italic* text**") == "*bold _italic_ text*"
+
+    def test_bold_spans_single_newline(self, adapter):
+        """Bold may cross one newline within a paragraph."""
+        assert adapter.format_message("**bold\ntext**") == "*bold\ntext*"
+
+    def test_bold_does_not_span_paragraph(self, adapter):
+        """** across a blank line stays unmatched literal text."""
+        result = adapter.format_message("**para one\n\npara two**")
+        assert "bold" not in result.strip("*") and result.startswith("\\*")
+
+    def test_nested_double_emphasis(self, adapter):
+        """**outer *mid **deep** mid* outer** nests instead of swallowing inner markers."""
+        assert (
+            adapter.format_message("**outer *mid **deep** mid* outer**")
+            == "*outer _mid *deep* mid_ outer*"
+        )
+
+    def test_italic_wrapping_bold(self, adapter):
+        """*a **b** c* keeps the inner bold."""
+        assert adapter.format_message("*a **b** c*") == "_a *b* c_"
+
+    def test_quad_asterisk_bold(self, adapter):
+        """****bold**** collapses to a single valid bold (MarkdownV2 cannot nest bold in bold)."""
+        assert adapter.format_message("****bold****") == "*bold*"
+
+    def test_spaced_asterisks_stay_literal(self, adapter):
+        """Multiplication-style 'a * b * c' must not become fake italic."""
+        assert adapter.format_message("a * b * c") == "a \\* b \\* c"
+
+    def test_unmatched_markers_preserved_as_text(self, adapter):
+        """Lone asterisk runs survive as escaped literals, never stripped or balanced."""
+        assert adapter.format_message("****") == "\\*\\*\\*\\*"
+        assert adapter.format_message("a**b") == "a\\*\\*b"
+        assert adapter.format_message("unmatched * star") == "unmatched \\* star"
+
 
     def test_reload_mcp_summary_escapes_dynamic_server_names(self, adapter):
         content = (

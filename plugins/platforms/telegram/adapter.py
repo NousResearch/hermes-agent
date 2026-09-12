@@ -260,6 +260,100 @@ def check_telegram_requirements() -> bool:
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
 
 
+def _resolve_emphasis(text: str, stash, escape) -> str:
+    """Resolve **bold** and *italic* delimiter runs together so nested/combined emphasis keeps its
+    inner markers (***x*** → _*x*_, **a *i* b** → *a _i_ b*) instead of the bold pass swallowing
+    them. Bold may span a single newline within a paragraph; italic stays single-line; unmatched
+    markers survive as literal text."""
+
+    def _mark(kind: str) -> str:
+        return "*" if kind == "bold" else "_"
+
+    tokens = []  # ("t", s) literal | ["d", start, end, can_open, can_close, remaining, opens, closes]
+    pos = 0
+    for m in re.finditer(r"\*+", text):
+        if m.start() > pos:
+            tokens.append(("t", text[pos : m.start()]))
+        before = text[m.start() - 1] if m.start() > 0 else ""
+        after = text[m.end()] if m.end() < len(text) else ""
+        can_open = bool(after) and not after.isspace()
+        can_close = bool(before) and not before.isspace()
+        tokens.append([
+            "d",
+            m.start(),
+            m.end(),
+            can_open,
+            can_close,
+            m.end() - m.start(),
+            [],
+            [],
+        ])
+        pos = m.end()
+    if pos < len(text):
+        tokens.append(("t", text[pos:]))
+
+    stack = []  # indexes of delimiter tokens that may still close
+    for idx, tok in enumerate(tokens):
+        if tok[0] != "d":
+            continue
+        _, start, end, can_open, can_close, remaining, opens, closes = tok
+        if can_close:
+            while remaining > 0 and stack:
+                opener = tokens[stack[-1]]
+                o_end, o_remaining = opener[2], opener[5]
+                use = 2 if o_remaining >= 2 and remaining >= 2 else 1
+                span = text[o_end:start]
+                if use == 1 and "\n" in span:
+                    break  # italic must not cross a line
+                if use == 2 and "\n\n" in span:
+                    break  # bold stays within one paragraph
+                kind = "bold" if use == 2 else "italic"
+                opener[6].append((kind, idx))
+                closes.append((kind, stack[-1]))
+                opener[5] = o_remaining - use
+                remaining -= use
+                if opener[5] == 0:
+                    stack.pop()
+        tok[5] = remaining
+        if remaining > 0 and can_open:
+            stack.append(idx)
+
+    def render_range(lo: int, hi: int) -> str:
+        parts = []
+        i = lo
+        while i < hi:
+            tok = tokens[i]
+            if tok[0] == "t":
+                parts.append(tok[1])
+                i += 1
+                continue
+            remaining, opens = tok[5], tok[6]
+            if not opens:
+                parts.append("*" * remaining)
+                i += 1
+                continue
+            # MarkdownV2 cannot nest an entity inside itself: ****x**** pairs bold on bold,
+            # so collapse same-kind marks into one instead of emitting an empty entity.
+            open_kinds = []
+            for kind, _ in reversed(opens):
+                if kind not in open_kinds:
+                    open_kinds.append(kind)
+            open_marks = "".join(_mark(kind) for kind in open_kinds)
+            outer_close = max(partner for _, partner in opens)
+            close_kinds = []
+            for kind, _ in tokens[outer_close][7]:
+                if kind not in close_kinds:
+                    close_kinds.append(kind)
+            close_marks = "".join(_mark(kind) for kind in close_kinds)
+            inner = render_range(i + 1, outer_close)
+            parts.append("*" * remaining)
+            parts.append(stash(open_marks + escape(inner) + close_marks))
+            i = outer_close  # the closer may itself open a further span
+        return "".join(parts)
+
+    return render_range(0, len(tokens))
+
+
 def _escape_mdv2(text: str) -> str:
     """Escape Telegram MarkdownV2 special characters with a preceding backslash."""
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
@@ -4963,10 +5057,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return _ph(f'*{_escape_mdv2(inner)}*')
 
         text = re.sub(r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE)
-        # 5) Bold **text** → *text*; 6) Italic *text* → _text_ ([^*\n]+ keeps matches on one line, or *
-        # bullet lists corrupt); 7) Strikethrough ~~text~~ → ~text~; 8) Spoiler ||text|| kept as-is.
-        text = re.sub(r'\*\*(.+?)\*\*', _ph_wrap('*', '*'), text)
-        text = re.sub(r'\*([^*\n]+)\*', _ph_wrap('_', '_'), text)
+        # 5) Bold **text** and *italic* resolve together so nested emphasis survives; unmatched
+        # markers stay literal (bullet lists rely on that); 6) Strikethrough; 7) Spoiler kept as-is.
+        text = _resolve_emphasis(
+            text,
+            lambda payload: _ph(payload),
+            _escape_mdv2,
+        )
         text = re.sub(r'~~(.+?)~~', _ph_wrap('~', '~'), text)
         text = re.sub(r'\|\|(.+?)\|\|', _ph_wrap('||', '||'), text)
         # 9) Blockquotes: protect leading > from escaping; expandable quotes (**> starts, trailing || ends).

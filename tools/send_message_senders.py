@@ -272,6 +272,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     except Exception as _cap_err:
                         logger.warning("Telegram caption-fallback send failed for missing media: %s",
                                        _sanitize_error_text(_cap_err))
+                        warnings.append(_sanitize_error_text(_cap_err))
                 continue
             try:
                 last_msg = await _telegram_send_one_media(

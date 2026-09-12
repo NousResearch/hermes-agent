@@ -19,7 +19,7 @@ from typing import Any, Callable, Literal, get_args
 
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, compact_json, connect, fenced_update, identifier, table_columns, text,
-    transaction)
+    table_exists, transaction)
 
 Clock = Callable[[], float]
 TaskStatus = Literal["queued", "running", "settled", "failed", "cancelled", "indeterminate", "deferred", "stopping"]
@@ -355,6 +355,10 @@ def _load_active_room(conn: sqlite3.Connection, room_id: str) -> sqlite3.Row:
         raise
     if row is None or row["disbanded_at"] is not None:
         raise RoomUnavailableError("hosted room does not exist" if row is None else "hosted room is disbanded")
+    if table_exists(conn, "hosted_room_quarantine") and conn.execute(
+        "SELECT 1 FROM hosted_room_quarantine WHERE room_id=?", (room_id,)
+    ).fetchone() is not None:
+        raise RoomUnavailableError("hosted room authority is quarantined")
     return row
 
 
@@ -553,6 +557,13 @@ def renew_lease(db_path: DbPath, lease: DriverLease, *, ttl_seconds: Any, clock:
             (expires_at, now, lease.room_id, *_run_fence(lease), now),
             StaleLeaseError("driver lease changed during renewal"))
         return dataclasses.replace(lease, expires_at=expires_at, reclaimed=False)
+
+
+def require_active_lease(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> DriverLease:
+    """Revalidate one exact lease generation without extending its lifetime."""
+    with _transaction(db_path) as conn:
+        current = _require_active_lease(conn, lease, now=_timestamp(clock))
+        return _lease_from_row(current)
 
 
 def release_lease(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> dict[str, Any]:

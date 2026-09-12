@@ -17,8 +17,8 @@ method = _registry.method
 #: Wire order of ``groups.capabilities.methods``; every one runs on the RPC pool.
 _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
-    "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
-    "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
+    "groups.rename", "groups.log", "groups.disband", "groups.replica_state",
+    "groups.stop", "groups.retry", "groups.approve",
     "groups.peer.invite", "groups.peer.revoke", "groups.peer.register")
 LONG_HANDLERS = frozenset(_METHODS)
 
@@ -243,7 +243,7 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
         "features": [
             "authority_epoch", "coordinator_fencing", "room_identity", "monotonic_log",
             "idempotent_send", "replayable_disband", "typed_events", "actor_identity",
-            "log_replication", "authority_takeover"],
+            ],
         "methods": list(_methods), "max_log_limit": MAX_LOG_LIMIT})
 
 
@@ -471,7 +471,7 @@ def _passthrough(
     ``wrap``). ``params`` items are ``key`` (-> ``params.get(key)``) or ``(key, extractor)``."""
     @_room_method(
         name, code=code, room_code=room_code, replica_only=replica_only,
-        with_reason=not replica_only, db=True)
+        with_reason=True, db=True)
     def handler(rid, params_in: dict, db_path, _import=importlib.import_module) -> dict:
         kwargs = {
             (spec if isinstance(spec, str) else spec[0]):
@@ -493,35 +493,29 @@ _passthrough(
     params=(
         "room_id", ("since_seq", lambda p: p.get("since_seq", 0)),
         ("limit", lambda p: p.get("limit", 100)), ("include_disbanded", _include_disbanded)))
-_passthrough(
-    "groups.replicate", "gateway.hosted_room_replicas", "ingest_page",
-    """Persist one authority-stamped replay page (a verbatim ``groups.log`` result) into
-    the local replica store; idempotent, refuses sequence gaps and epoch regressions.""",
-    code=5116, room_code=4116, params=("room_id", "room_name", "members", "page"),
-    replica_only=True)
+@method("groups.replicate")
+def _(rid, params: dict) -> dict:
+    return _err(rid, 4116, "Group Chat replication requires a verified RoomLink grant.",
+                {"reason": "replica_provenance_required"})
+
+
 _passthrough(
     "groups.replica_state", "gateway.hosted_room_replicas", "replica_state",
-    """Report the local replica's coverage and authority lineage.""",
+    "Report the local replica's coverage and authority lineage.",
     code=5117, room_code=4117, params=("room_id",), replica_only=True)
 
 
-@_room_method("groups.promote", code=5118, room_code=4118, with_reason=False, db=True)
-def _(rid, params: dict, db_path) -> dict:
-    """Continue a replicated room on THIS gateway at ``epoch + 1``. Requires ``confirm:
-    true`` — the caller asserts the previous authority can no longer commit."""
-    from gateway.hosted_room_replicas import promote_replica
-    if params.get("confirm") is not True:
-        return _err(rid, 4118, "promotion requires confirm=true acknowledging the previous "
-                    "authority can no longer commit")
-    reason = params.get("reason", "authority-unreachable")
-    return _ok(rid, promote_replica(db_path, room_id=params.get("room_id"), reason=reason))
+@method("groups.promote")
+def _(rid, params: dict) -> dict:
+    return _err(rid, 4118, "Group Chat takeover is disabled until Hermes can select one globally exclusive authority.",
+                {"reason": "authority_takeover_disabled"})
 
 
-_passthrough(
-    "groups.demote", "gateway.hosted_room_replicas", "demote_room",
-    """Fence this gateway's stale room authority against a proven newer epoch.""",
-    code=5119, room_code=4119, params=("room_id", "observed_gateway_id", "observed_epoch"),
-    replica_only=True)
+@method("groups.demote")
+def _(rid, params: dict) -> dict:
+    return _err(rid, 4119, "Group Chat authority changes require a verified takeover decision.",
+                {"reason": "authority_takeover_disabled"})
+
 
 
 def register(server) -> None:

@@ -1299,7 +1299,13 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     # Restart a managed dashboard via systemd or stop stale manual ones (raw-killing
     # a systemd-owned PID reads as clean stop and leaves the Cloudflare origin dead).
     # Failed Node refresh leaves it untouched; already-restarted units aren't redone.
-    _finish_dashboard_update_cleanup(node_failures, already_restarted_units=set(restart.restarted_services))
+    _failed_serve_pids = set(
+        _finish_dashboard_update_cleanup(
+            node_failures, already_restarted_units=set(restart.restarted_services)
+        ) or []
+    )
+    if _failed_serve_pids:
+        restart.incomplete = True
 
     # Success-path twin of the abort-recovery probe: the restart phase only touches
     # units, so a unit-less `hermes serve` keeps stale sys.modules. Runs AFTER
@@ -1378,6 +1384,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                     if _stale_serve_rows is not None
                     else None
                 ),
+                failed_serve_pids=_failed_serve_pids,
             )
             if report_unaccounted_runtimes(_runtime_outcomes):
                 restart.incomplete = True

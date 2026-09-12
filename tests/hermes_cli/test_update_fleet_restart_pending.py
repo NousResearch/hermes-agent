@@ -477,6 +477,41 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     assert by_pid == {4444: "restarted", 5555: "unaccounted"}
 
 
+def test_failed_dashboard_respawn_is_recorded_and_escalated(monkeypatch, tmp_path):
+    """A missing old PID proves neither that its replacement spawned nor that update was complete."""
+    from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan, _restart_mechanism
+    import hermes_cli.update_inventory as ui
+
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
+    plan = UpdatePlan()
+    plan.runtimes = [
+        RuntimeRecord(
+            kind="dashboard", profile="default", pid=5555,
+            supervisor="manual-serve",
+            restart_via=_restart_mechanism("manual-serve", "default"),
+            detail={"create_time": 1000.0},
+        )
+    ]
+    monkeypatch.setattr(ui, "collect_runtime_inventory", lambda: plan)
+    monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: [5555])
+    monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda _plan: [])
+
+    with pytest.raises(SystemExit) as excinfo:
+        hermes_main.cmd_update(args)
+    assert excinfo.value.code == 1
+
+    latest = get_hermes_home() / "logs" / "update_receipts" / "latest.json"
+    receipt = json.loads(latest.read_text(encoding="utf-8"))
+    assert receipt["outcome"] == "partial"
+    assert receipt["runtime_outcomes"] == [
+        {
+            "kind": "dashboard", "profile": "default", "pid": 5555,
+            "mechanism": "respawn-argv", "outcome": "failed",
+        }
+    ]
+
+
 def test_interrupt_between_pull_and_restart_leaves_marker(
     monkeypatch, tmp_path
 ):

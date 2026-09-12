@@ -1015,6 +1015,44 @@ class TestCmdUpdateZipBranchRefusal:
         assert "Downloading latest version" not in out
 
 
+def test_zip_update_receipt_is_partial_when_dashboard_restore_fails(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import main as hm
+    from hermes_cli import update_cmd_zip
+    from hermes_cli import update_receipt
+
+    outcomes = []
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(hm, "_capture_active_tool_dependencies", lambda: {})
+    monkeypatch.setattr(hm, "_resolve_update_branch", lambda _args: "main")
+    monkeypatch.setattr(hm, "_abort_dependency_sync_if_self_locked", lambda: None)
+    monkeypatch.setattr(hm, "_build_web_ui", lambda _path: None)
+    monkeypatch.setattr(update_cmd_zip, "_abort_zip_update_if_dirty_tree", lambda: None)
+    monkeypatch.setattr(update_cmd_zip, "_download_and_swap_zip", lambda *_args: None)
+    monkeypatch.setattr(update_cmd_zip, "_reinstall_python_deps_after_zip", lambda _deps: None)
+    monkeypatch.setattr(update_cmd, "_read_project_version", lambda: "0.21.2")
+    monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update", lambda _branch: None)
+    monkeypatch.setattr(
+        update_cmd, "_validate_critical_modules_import", lambda _root: (True, None, None)
+    )
+    monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
+    monkeypatch.setattr(update_cmd, "_rebuild_desktop_after_update", lambda *_a, **_k: True)
+    monkeypatch.setattr(update_cmd, "_print_bundled_skills_sync_report", lambda: None)
+    monkeypatch.setattr(update_cmd, "_verify_and_restore_state_dbs_post_update", lambda: None)
+    monkeypatch.setattr(update_cmd, "_print_update_summary", lambda **_kwargs: True)
+    monkeypatch.setattr(update_cmd, "_print_curator_first_run_notice", lambda: None)
+    monkeypatch.setattr(update_cmd, "_print_curator_recent_run_notice", lambda: None)
+    monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda _failures: [12345])
+    monkeypatch.setattr(
+        "hermes_cli.model_catalog.seed_cache_from_checkout", lambda _root: False
+    )
+    monkeypatch.setattr(update_receipt, "finalize_update_receipt", outcomes.append)
+
+    assert update_cmd_zip._update_via_zip(SimpleNamespace(branch=None)) is True
+    assert outcomes == ["partial"]
+
+
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm
 

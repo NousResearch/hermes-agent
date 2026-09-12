@@ -183,7 +183,26 @@ def _is_retryable_error(exc: BaseException) -> bool:
 
 
 def check_google_chat_requirements() -> bool:
-    """Canonical "are the optional deps available" probe; triggers the lazy import."""
+    """PASSIVE deps probe; must never install. Registry ``check_fn`` uses this via ``_check_for_registry``."""
+    return _load_google_modules()
+
+
+def ensure_google_chat_deps() -> bool:
+    """ACTIVE installer (registry ``ensure_deps_fn``).
+
+    Routes through ``tools.lazy_deps`` so sealed hosted/Docker images write
+    ``HERMES_LAZY_INSTALL_TARGET`` instead of the read-only venv. Resets the
+    failed-import cache so ``create_adapter()`` can load modules after install.
+    """
+    global _google_modules_loaded, GOOGLE_CHAT_AVAILABLE
+    if GOOGLE_CHAT_AVAILABLE:
+        return True
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("platform.google_chat", prompt=False)
+    except Exception:
+        return False
+    _google_modules_loaded = False
     return _load_google_modules()
 
 
@@ -1711,6 +1730,7 @@ def register(ctx) -> None:
         label="Google Chat",
         adapter_factory=lambda cfg: GoogleChatAdapter(cfg),
         check_fn=_check_for_registry,
+        ensure_deps_fn=ensure_google_chat_deps,
         validate_config=_validate_config,
         is_connected=_is_connected,
         required_env=["GOOGLE_CHAT_SERVICE_ACCOUNT_JSON"],

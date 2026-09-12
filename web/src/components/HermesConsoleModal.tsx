@@ -13,6 +13,7 @@ import { useProfileScope } from "@/contexts/useProfileScope";
 import { api } from "@/lib/api";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 import { cn, themedBody } from "@/lib/utils";
+import { attachXtermTouchScroll } from "@/lib/xterm-touch-scroll";
 import { useTheme } from "@/themes";
 
 type ConsoleFrame =
@@ -368,6 +369,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
     term.unicode.activeVersion = "11";
     term.loadAddon(new WebLinksAddon());
     term.open(host);
+    const touchScrollDisposable = attachXtermTouchScroll(term, host);
     term.focus();
 
     const fitTerminal = () => {
@@ -449,6 +451,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
     return () => {
       cancelled = true;
       dataDisposable.dispose();
+      touchScrollDisposable.dispose();
       ro.disconnect();
       if (resizeFrame) cancelAnimationFrame(resizeFrame);
       wsRef.current?.close();

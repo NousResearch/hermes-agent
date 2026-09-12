@@ -187,7 +187,8 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message, current_entries=self._entries_for(target), usage=self._usage(target)))
 
-    def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> Dict[str, Any]:
+    def _mutate(self, target: str, mutate, *, skip_drift: bool = False,
+                dry_run: bool = False) -> Dict[str, Any]:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
         or an error dict, then persist and return the success response. The reload aborts
         on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
@@ -206,12 +207,14 @@ class MemoryStore:
             result = mutate(self._entries_for(target), self._char_limit(target))
             if isinstance(result, dict):
                 return result
+            if dry_run:
+                return {"success": True}
             self._set_entries(target, result[0])
             path.parent.mkdir(parents=True, exist_ok=True)
             self._write_file(path, result[0])
             return self._success_response(target, result[1])
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
+    def add(self, target: str, content: str, *, _dry_run: bool = False) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
         if not content:
@@ -231,9 +234,10 @@ class MemoryStore:
             return entries + [content], "Entry added."
         # Append-only: skip the drift guard (appending never clobbers foreign
         # content) but still refuse a failed read — add rewrites the WHOLE file.
-        return self._mutate(target, _add, skip_drift=True)
+        return self._mutate(target, _add, skip_drift=True, dry_run=_dry_run)
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
+    def replace(self, target: str, old_text: str, new_content: str, *,
+                _dry_run: bool = False) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
         new_content = new_content.strip()
         if not old_text.strip():
@@ -242,15 +246,16 @@ class MemoryStore:
             return _error("new_content cannot be empty. Use 'remove' to delete entries.")
         if scan_error := _scan_memory_content(new_content):
             return _error(scan_error)
-        return self._edit(target, old_text.strip(), new_content)
+        return self._edit(target, old_text.strip(), new_content, dry_run=_dry_run)
 
-    def remove(self, target: str, old_text: str) -> Dict[str, Any]:
+    def remove(self, target: str, old_text: str, *, _dry_run: bool = False) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
         if not old_text.strip():
             return _error("old_text cannot be empty.")
-        return self._edit(target, old_text.strip(), None)
+        return self._edit(target, old_text.strip(), None, dry_run=_dry_run)
 
-    def _edit(self, target: str, old_text: str, new_content: Optional[str]) -> Dict[str, Any]:
+    def _edit(self, target: str, old_text: str, new_content: Optional[str], *,
+              dry_run: bool = False) -> Dict[str, Any]:
         """Locked replace (``new_content`` set) or remove (None) of the entry matching *old_text*."""
         def _apply(entries, limit):
             idx, ambiguous = _find_unique_match(entries, old_text)
@@ -271,7 +276,7 @@ class MemoryStore:
                     f"or 'remove' other stale or less important entries to make room (see current_entries "
                     f"below), then retry — all in this turn."))
             return replaced, "Entry replaced."
-        return self._mutate(target, _apply)
+        return self._mutate(target, _apply, skip_drift=dry_run, dry_run=dry_run)
 
     @staticmethod
     def _apply_batch_op(working: List[str], act: str, content: str, old_text: str, pos: str) -> Optional[str]:
@@ -296,7 +301,8 @@ class MemoryStore:
         working[idx:idx + 1] = [content] if act == "replace" else []
         return None
 
-    def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def apply_batch(self, target: str, operations: List[Dict[str, Any]], *,
+                    _dry_run: bool = False) -> Dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or
         an over-limit result writes NOTHING and returns the first failure plus live state."""
@@ -335,7 +341,33 @@ class MemoryStore:
                     f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
                     f"entries in the same batch (see current_entries below), then retry."))
             return working, f"Applied {len(operations)} operation(s)."
-        return self._mutate(target, _apply)
+        return self._mutate(target, _apply, skip_drift=_dry_run, dry_run=_dry_run)
+
+    def preflight(self, target: str, *, action: Optional[str] = None,
+                  content: str = "", old_text: str = "",
+                  operations: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Validate against a fresh locked disk snapshot without writing the proposal.
+
+        Approval still replays the operation normally, so proposals that become stale
+        after this check are rejected then. Preflight does not consume the per-turn
+        failure budget or replace the caller's live entry view.
+        """
+        entries = list(self._entries_for(target))
+        failures = self._consolidation_failures
+        self._consolidation_failures = 0
+        try:
+            if operations is not None:
+                return self.apply_batch(target, operations, _dry_run=True)
+            if action == "add":
+                return self.add(target, content, _dry_run=True)
+            if action == "replace":
+                return self.replace(target, old_text, content, _dry_run=True)
+            if action == "remove":
+                return self.remove(target, old_text, _dry_run=True)
+            return _error(f"Unknown action '{action}'. Use add, replace, or remove")
+        finally:
+            self._set_entries(target, entries)
+            self._consolidation_failures = failures
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """Frozen load-time snapshot (NOT live state — mid-session writes don't touch

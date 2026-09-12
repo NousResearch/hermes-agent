@@ -5,11 +5,13 @@ import {
   getMcpCatalog,
   getSkillContent,
   getSkills,
+  getTerminalBackends,
   getToolsets,
   getUsageAnalytics,
   installSkillFromHub,
   profileScopeKey,
   saveMcpServers,
+  selectTerminalBackend,
   setApiRequestConnection,
   setApiRequestProfile,
   setSkillEnabled,
@@ -72,6 +74,29 @@ describe('capability helpers are connection-scoped', () => {
 
     expect(last().profile).toBe('coder')
     expect(last().connectionId).toBe('gw-tailscale')
+  })
+
+  it('routes terminal backend reads and writes through the rendered capability scope', () => {
+    // The terminal picker used to bypass capabilityScoped() and fall back to
+    // this stale ambient profile, silently writing another profile's config.
+    setApiRequestProfile('stale-sidebar-profile')
+    setApiRequestConnection('gw-tailscale')
+
+    void getTerminalBackends('research')
+    expect(last()).toMatchObject({
+      connectionId: 'gw-tailscale',
+      path: '/api/tools/terminal/backends',
+      profile: 'research'
+    })
+
+    void selectTerminalBackend('docker', { connectionId: 'homelab', profile: 'research' })
+    expect(last()).toMatchObject({
+      body: { backend: 'docker' },
+      connectionId: 'homelab',
+      method: 'PUT',
+      path: '/api/tools/terminal/backend',
+      profile: 'research'
+    })
   })
 
   it('object scopes pin every read and write to the named connection', () => {

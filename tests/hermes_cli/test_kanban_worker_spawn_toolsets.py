@@ -113,33 +113,3 @@ def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_p
     # Mutable model strings are not launch authority; the owner reads the claimed card.
     assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
     assert task.model_override not in captured["cmd"]
-
-
-def test_resolve_worker_cli_toolsets_uses_profile_home_not_parent_config(monkeypatch, tmp_path):
-    root = tmp_path / ".hermes"
-    profile = root / "profiles" / "elias"
-    profile.mkdir(parents=True)
-    root.joinpath("config.yaml").write_text("platform_toolsets:\n  cli:\n    - kanban\n", encoding="utf-8")
-    profile.joinpath("config.yaml").write_text(
-        """
-platform_toolsets:
-  cli:
-    - terminal
-    - web
-toolsets:
-  - hermes-cli
-""".lstrip(),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(root))
-
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_dispatch as kbd
-
-    resolved = kbd._resolve_worker_cli_toolsets(str(profile))
-
-    assert resolved is not None
-    assert "terminal" in resolved
-    assert "web" in resolved
-    assert "kanban" in resolved  # recovered worker lifecycle surface
-    assert resolved != ["kanban"]

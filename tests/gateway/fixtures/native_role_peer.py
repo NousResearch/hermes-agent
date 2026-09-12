@@ -87,7 +87,7 @@ async def probe(peer):
         runner.config.multiplex_profiles = True
         runner.config._runtime_profile_homes = [('default', state), ('transport', transport)]
         runner.config.profile_routes = [ProfileRoute(name='role-route', platform='discord',
-                                                    profile='default', chat_id='300')]
+                                                    profile='default', chat_id='300', bot_profile='transport')]
         set_multiplex_active(True)
         runner.adapters.clear()
         runner._profile_adapters = {'transport': {Platform.DISCORD: adapter}}

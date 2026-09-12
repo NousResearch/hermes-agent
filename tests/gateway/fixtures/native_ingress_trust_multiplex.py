@@ -30,7 +30,8 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
     (transport / 'config.yaml').write_text((state / 'config.yaml').read_text())
     runner.config.multiplex_profiles = True
     runner.config._runtime_profile_homes = [('default', state), ('transport', transport)]
-    route = ProfileRoute(name='to-runtime', platform='telegram', profile='default', chat_id='mux-chat')
+    route = ProfileRoute(name='to-runtime', platform='telegram', profile='default', chat_id='mux-chat',
+                         bot_profile='transport')
     runner.config.profile_routes = [route]
     set_multiplex_active(True)
     adapter = type(primary)()
@@ -111,7 +112,7 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
     if mode == 'multiplex':
         sessions_before = set(authority.sessions)
         runner.config.profile_routes.append(ProfileRoute(name='unowned-runtime', platform='telegram',
-                                                         profile='transport', chat_id='unowned-runtime'))
+                                                         profile='transport', chat_id='unowned-runtime', bot_profile='transport'))
         unowned = adapter.build_source(chat_id='unowned-runtime', chat_type='dm', user_id='fixture-user')
         await adapter.handle_message(MessageEvent(text='NO_SECONDARY_DB_OWNER', source=unowned, message_id='unowned'))
         async with asyncio.timeout(10):

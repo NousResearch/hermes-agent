@@ -64,6 +64,7 @@ def test_gateway_publishes_tool_arguments_and_result_for_live_viewers():
     runner = TurnRunner.__new__(TurnRunner)
     runner._ctx = Ctx()
     runner._approval_owner = (Authority(), 's', 3)
+    runner._publish_api_tool = lambda *a, **k: None  # API observer fan-out is exercised in tests/gateway
     runner.combined_tool_start_callback('call_1', 'read_file', ARGS)
     runner.combined_tool_complete_callback('call_1', 'read_file', ARGS, RESULT)
     start, complete = published

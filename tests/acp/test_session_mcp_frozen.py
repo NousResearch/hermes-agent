@@ -19,7 +19,7 @@ def test_editor_manifest_stays_frozen_across_live_refresh(server_spec, tmp_path)
     with policy_scope(p, authority=authority):
         names = [n for n in registry.get_all_tool_names() if n.startswith('mcp__')]
         schemas = {n: registry.get_schema(n) for n in names}
-        server = next(s for n, s in _servers.items() if n.startswith('editor_'))
+        server = next(s for key, s in _servers.items() if key[-1].startswith('editor_'))
         # The real refresh re-reads the stdio peer. A changed in-memory discovery
         # response is not allowed to republish schemas even when explicitly refreshed.
         server._tools[0].description = 'changed after first discovery'
@@ -53,4 +53,4 @@ def test_silent_editor_discovery_is_bounded_and_reaps_only_itself(server_spec, t
         assert len(names) == 1
         assert 'PRIVATE_A' in registry.dispatch(names[0], {})
     from tools.mcp_tool import _servers
-    assert not any(n.startswith('editor_') for n in _servers)
+    assert not any(key[-1].startswith('editor_') for key in _servers)

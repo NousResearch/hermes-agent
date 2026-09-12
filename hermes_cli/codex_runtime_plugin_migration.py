@@ -29,6 +29,7 @@ class MigrationReport:
     migrated_plugins: list[str] = field(default_factory=list)
     plugin_query_error: Optional[str] = None
     wrote_permissions_default: Optional[str] = None
+    preserved_permissions_default: Optional[str] = None
     errors: list[str] = field(default_factory=list)
     written: bool = False
     dry_run: bool = False
@@ -54,6 +55,10 @@ class MigrationReport:
             lines.append(f"Codex plugin discovery skipped: {self.plugin_query_error}")
         if self.wrote_permissions_default:
             lines.append(f"Wrote default_permissions = {self.wrote_permissions_default!r}")
+        if self.preserved_permissions_default:
+            lines.append(
+                f"Kept your root default_permissions = {self.preserved_permissions_default!r} "
+                "(managed default not written)")
         lines.extend(f"⚠ {err}" for err in self.errors)
         return "\n".join(lines)
 
@@ -274,6 +279,39 @@ def _strip_existing_managed_block(toml_text: str) -> str:
     return "".join(out)
 
 
+def _find_root_level_key(toml_text: str, key: str) -> Optional[str]:
+    """Return the value of a document-root ``key = ...`` assignment, or None when there is none.
+
+    Only lines above the first ``[table]`` header are at the document root — TOML has no way back
+    to the root after a header, so a ``default_permissions`` inside ``[permissions]`` is a
+    different key. A quoted ``#`` is part of the value, an unquoted one starts a comment, and
+    surrounding quotes are stripped so the result reads like the bare value it holds.
+    """
+    for line in toml_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if _looks_like_table_header(stripped):
+            return None
+        found, sep, value = stripped.partition("=")
+        if not sep or found.strip() != key:
+            continue
+        quote = ""
+        for idx, char in enumerate(value):
+            if quote:
+                quote = "" if char == quote else quote
+            elif char in "\"'":
+                quote = char
+            elif char == "#":
+                value = value[:idx]
+                break
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return value
+    return None
+
+
 def _query_codex_plugins(
     codex_home: Optional[Path] = None, timeout: float = 8.0) -> tuple[list[dict], Optional[str]]:
     """Spawn ``codex app-server`` briefly and return ``(installed plugins, error)`` from
@@ -400,7 +438,9 @@ def migrate(
     ``discover_plugins`` spawns the live codex CLI (set False in tests); discovery is best-effort
     and never blocks the migration. ``default_permission_profile`` (default ":workspace"; built-ins
     carry a leading ":", user profiles do not; None leaves codex's read-only default) avoids an
-    approval prompt on every write. ``expose_hermes_tools`` registers Hermes' own tool surface
+    approval prompt on every write; a root-level ``default_permissions`` the user owns outside the
+    managed block is kept instead and reported as ``preserved_permissions_default``.
+    ``expose_hermes_tools`` registers Hermes' own tool surface
     (agent/transports/hermes_tools_mcp_server.py, launched on demand by codex over stdio) as an MCP
     server so the codex subprocess can call back for tools it lacks.
     """
@@ -434,6 +474,24 @@ def migrate(
         # re-render and may strip pre-existing tables outside the managed block.
         plugin_query_succeeded = not plugin_err
         report.migrated_plugins += [f"{p['name']}@{p['marketplace']}" for p in plugins]
+    # Read the user's config BEFORE rendering: a root-level ``default_permissions`` they wrote
+    # outside the managed block is theirs. The docs promise that override survives re-migration,
+    # and emitting our default as well would put two root keys in the file — codex then refuses to
+    # load it ("Cannot overwrite a value") while this migration still reports success.
+    user_text: Optional[str] = None
+    if target.exists():
+        try:
+            existing = target.read_text(encoding="utf-8")
+        except Exception as exc:
+            report.errors.append(f"could not read {target}: {exc}")
+            return report
+        user_text = _strip_existing_managed_block(existing)
+        if plugin_query_succeeded:
+            user_text = _strip_unmanaged_plugin_tables(user_text)
+        user_owned_permissions = _find_root_level_key(user_text, "default_permissions")
+        if default_permission_profile and user_owned_permissions is not None:
+            report.preserved_permissions_default = user_owned_permissions
+            default_permission_profile = None
     if default_permission_profile:
         report.wrote_permissions_default = default_permission_profile
     if expose_hermes_tools:
@@ -442,17 +500,8 @@ def migrate(
             report.migrated.append("hermes-tools")
     managed_block = render_codex_toml_section(
         translated, plugins=plugins, default_permission_profile=default_permission_profile)
-    new_text = managed_block
-    if target.exists():
-        try:
-            existing = target.read_text(encoding="utf-8")
-        except Exception as exc:
-            report.errors.append(f"could not read {target}: {exc}")
-            return report
-        without_managed = _strip_existing_managed_block(existing)
-        if plugin_query_succeeded:
-            without_managed = _strip_unmanaged_plugin_tables(without_managed)
-        new_text = _insert_managed_block_at_top_level(without_managed, managed_block)
+    new_text = managed_block if user_text is None else _insert_managed_block_at_top_level(
+        user_text, managed_block)
     if dry_run:
         return report
     try:

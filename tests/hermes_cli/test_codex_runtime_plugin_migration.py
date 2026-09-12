@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tomllib
 
 import pytest
 
@@ -378,6 +379,94 @@ class TestStripUnmanagedPluginTables:
         # File parses cleanly as TOML (the original duplicate-key error is gone).
         import tomllib
         tomllib.loads(new_text)
+
+
+# ---- root-level default_permissions ownership ----
+#
+# The documented override path (website/docs/user-guide/features/codex-app-server-runtime.md) is a
+# root-level ``default_permissions`` OUTSIDE the managed block — "Hermes will preserve your
+# override on re-migration as long as it lives outside the `# managed by hermes-agent` markers."
+# The migration preserved the user's *line* but still emitted its own root key, so the file ended
+# up with two ``default_permissions`` keys at the document root: codex then refuses to load it
+# (``TOMLDecodeError: Cannot overwrite a value``) and the migration still reported success.
+
+
+class TestUserOwnedRootDefaultPermissions:
+    """A root key the user owns outside the managed block stays the only one after migration."""
+
+    @staticmethod
+    def _config_text(tmp_path) -> str:
+        return (tmp_path / "config.toml").read_text(encoding="utf-8")
+
+    def test_user_override_is_preserved_and_not_duplicated(self, tmp_path):
+        (tmp_path / "config.toml").write_text(
+            "# my codex config\n"
+            'default_permissions = ":read-only"\n'
+            "\n"
+            "[features]\n"
+            "some_feature = true\n",
+            encoding="utf-8",
+        )
+
+        report = migrate({}, codex_home=tmp_path, discover_plugins=False,
+                         expose_hermes_tools=False)
+
+        text = self._config_text(tmp_path)
+        assert text.count("default_permissions") == 1
+        # The generated file has to be loadable — this is what codex does on startup.
+        assert tomllib.loads(text)["default_permissions"] == ":read-only"
+        assert report.preserved_permissions_default == ":read-only"
+        assert report.wrote_permissions_default is None
+
+    def test_user_override_is_idempotent_across_re_migrations(self, tmp_path):
+        (tmp_path / "config.toml").write_text(
+            'default_permissions = "hermes-obsidian"\n', encoding="utf-8")
+
+        first = migrate({}, codex_home=tmp_path, discover_plugins=False,
+                        expose_hermes_tools=False)
+        after_first = self._config_text(tmp_path)
+        second = migrate({}, codex_home=tmp_path, discover_plugins=False,
+                         expose_hermes_tools=False)
+
+        assert self._config_text(tmp_path) == after_first
+        assert tomllib.loads(after_first)["default_permissions"] == "hermes-obsidian"
+        assert first.preserved_permissions_default == "hermes-obsidian"
+        assert second.preserved_permissions_default == "hermes-obsidian"
+
+    def test_without_user_override_the_managed_default_is_written(self, tmp_path):
+        report = migrate({}, codex_home=tmp_path, discover_plugins=False,
+                         expose_hermes_tools=False)
+
+        assert tomllib.loads(self._config_text(tmp_path))["default_permissions"] == ":workspace"
+        assert report.wrote_permissions_default == ":workspace"
+
+    def test_managed_key_is_rewritten_not_treated_as_a_user_override(self, tmp_path):
+        """The key inside the managed block is Hermes' own ("anything you add inside the managed
+        block gets clobbered"), so re-migration updates it instead of freezing the old value."""
+        migrate({}, codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False,
+                default_permission_profile=":read-only")
+        report = migrate({}, codex_home=tmp_path, discover_plugins=False,
+                         expose_hermes_tools=False,
+                         default_permission_profile=":workspace")
+
+        assert tomllib.loads(self._config_text(tmp_path))["default_permissions"] == ":workspace"
+        assert report.wrote_permissions_default == ":workspace"
+
+    def test_key_inside_a_table_is_not_a_root_override(self, tmp_path):
+        """``[permissions.<name>] default_permissions`` is a table key, not the document-root
+        setting, so it must not suppress the managed root key."""
+        (tmp_path / "config.toml").write_text(
+            "[permissions.hermes-obsidian]\n"
+            'default_permissions = ":read-only"\n',
+            encoding="utf-8",
+        )
+
+        report = migrate({}, codex_home=tmp_path, discover_plugins=False,
+                         expose_hermes_tools=False)
+
+        parsed = tomllib.loads(self._config_text(tmp_path))
+        assert parsed["default_permissions"] == ":workspace"
+        assert parsed["permissions"]["hermes-obsidian"]["default_permissions"] == ":read-only"
 
 
 # ---- Bug C: HERMES_HOME tempdir leak into ~/.codex/config.toml ----

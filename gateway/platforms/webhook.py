@@ -550,7 +550,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     return web.json_response({"status": "ignored", "reason": "script", "route": route_name})
                 payload = transformed_payload or payload
             prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
-            if skills := route_config.get("skills", []):
+            if not route_config.get("deliver_only") and (skills := route_config.get("skills", [])):
                 prompt = self._apply_skills(prompt, skills)
         delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
             "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))

@@ -3,6 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $notifications, clearNotifications } from '@/store/notifications'
+
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
 // them to let the dropdown open in tests.
@@ -78,6 +80,7 @@ beforeEach(() => {
   setEnvVar.mockResolvedValue({ ok: true })
   getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'normal' } })
   saveHermesConfig.mockResolvedValue({ ok: true })
+  clearNotifications()
 })
 
 afterEach(() => {
@@ -340,6 +343,44 @@ describe('ModelSettings', () => {
         scope: 'auxiliary',
         task: 'vision'
       })
+    )
+  })
+
+  it('surfaces the guard confirm instead of silently dropping a guarded aux pick', async () => {
+    // #102729: a guarded aux pick answers confirm_required and writes NOTHING.
+    // Ignoring that dropped the selection and the next refresh repainted the old
+    // model — the silent revert. It must become a VISIBLE confirm instead.
+    setModelAssignment.mockResolvedValueOnce({
+      ok: false,
+      scope: 'auxiliary',
+      provider: 'nous',
+      model: 'hermes-4',
+      confirm_required: true,
+      confirm_message: 'Confirm this expensive model.'
+    })
+
+    await renderModelSettings()
+
+    const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
+    fireEvent.click(setToMainButtons[0])
+
+    const confirm = await waitFor(() => {
+      const toast = $notifications.get().find(item => item.id.startsWith('model-warning-confirm-'))
+
+      expect(toast).toBeDefined()
+
+      return toast!
+    })
+
+    expect(confirm.kind).toBe('warning')
+    expect(confirm.message).toBe('Confirm this expensive model.')
+
+    act(() => confirm.action?.onClick())
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenLastCalledWith(
+        expect.objectContaining({ confirm_expensive_model: true, scope: 'auxiliary', task: 'vision' })
+      )
     )
   })
 

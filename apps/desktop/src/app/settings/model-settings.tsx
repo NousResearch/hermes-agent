@@ -13,8 +13,7 @@ import {
   getRecommendedDefaultModel,
   saveHermesConfig,
   saveMoaModels,
-  setEnvVar,
-  setModelAssignment
+  setEnvVar
 } from '@/hermes'
 import type {
   AuxiliaryModelsResponse,
@@ -29,7 +28,7 @@ import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
-import { setMainModelAssignment } from '@/store/cron-model-impact'
+import { applyModelAssignment, setMainModelAssignment } from '@/store/cron-model-impact'
 import { notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 
@@ -723,7 +722,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       setError('')
 
       try {
-        await setModelAssignment(
+        await applyModelAssignment(
           {
             model: mainModel.model,
             provider: mainModel.provider,
@@ -753,7 +752,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       setError('')
 
       try {
-        await setModelAssignment(
+        await applyModelAssignment(
           {
             model: auxDraft.model,
             provider: auxDraft.provider,
@@ -797,7 +796,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     setError('')
 
     try {
-      await setModelAssignment(
+      await applyModelAssignment(
         {
           model: mainModel.model,
           provider: mainModel.provider,

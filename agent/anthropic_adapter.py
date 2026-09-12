@@ -20,8 +20,8 @@ from agent.anthropic_credentials import _is_oauth_token, anthropic_route_is_oaut
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
-    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
-    _requires_bearer_auth,
+    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _model_name_is_qwen3_8_family,
+    _normalize_base_url_text, _requires_bearer_auth,
 )
 from agent.anthropic_message_convert import (
     convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name,
@@ -189,8 +189,14 @@ def _accepts_thinking_disable(model: str) -> bool:
     """True when ``model`` accepts an explicit ``thinking: {"type": "disabled"}``. Adaptive Claude
     thinks by default, so "off" only works if the disable is sent; mandatory-thinking families
     400 on it and keep the omit behavior. Legacy manual-thinking models are opt-in via
-    budget_tokens, so omission is already off. Scoped to Claude: Kimi's documented disable is
-    omission, and sending it a new parameter on the strength of Claude's contract is a guess."""
+    budget_tokens, so omission is already off. Scoped to Claude plus the probed Qwen3.8 family:
+    Kimi's documented disable is omission, and sending it a new parameter on the strength of
+    Claude's contract is a guess."""
+    if _model_name_is_qwen3_8_family(model):
+        # Qwen3.8 behind Anthropic-compatible endpoints (DashScope token-plan and mirrors) thinks
+        # server-side by default and accepts the explicit disable cleanly (probed live on
+        # qwen3.8-flash / qwen3.8-max, tool_use unaffected): omission is not "off" there.
+        return True
     return (
         _is_claude_model(model)
         and _supports_adaptive_thinking(model)

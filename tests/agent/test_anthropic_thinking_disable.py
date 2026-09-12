@@ -59,6 +59,19 @@ class TestThinkingOffIsSentExplicitly:
         assert kwargs["thinking"] == {"type": "disabled"}
         assert "output_config" not in kwargs
 
+    @pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max", "alibaba/qwen3.8-max", "qwen-3.8-max"])
+    def test_qwen38_family_on_anthropic_compatible_endpoints_accepts_disable(self, model: str) -> None:
+        """Qwen3.8 behind Anthropic-compatible endpoints (DashScope token-plan and mirrors) thinks
+        server-side when the parameter is omitted and accepts an explicit disable (probed live on
+        qwen3.8-flash / qwen3.8-max, tool_use unaffected) — the same bill-the-user trap as
+        adaptive Claude."""
+        assert _kwargs(model, {"enabled": False})["thinking"] == {"type": "disabled"}
+
+    @pytest.mark.parametrize("model", ["qwen3-max", "qwen3.85-max", "qwen2.5-max", "qwq-32b"])
+    def test_other_qwen_generations_keep_the_omission(self, model: str) -> None:
+        """Only the probed Qwen3.8 family gets the disable; older generations and lookalikes don't."""
+        assert "thinking" not in _kwargs(model, {"enabled": False})
+
     @pytest.mark.parametrize("model", ["anthropic/claude-fable-5", "claude-opus-5-5", "anthropic/claude-opus-5.5",
                                        "claude-mythos-5-1", "anthropic/claude-mythos-5.1",
                                        "claude-fable-5-2"])

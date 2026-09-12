@@ -3126,10 +3126,14 @@ def _transient_retry_count() -> int:
         return _DEFAULT_TRANSIENT_RETRIES
 
 
-def _is_auth_error(exc: Exception) -> bool:
-    """Auth failures that should trigger provider-specific refresh."""
+def _is_auth_error(exc: Exception, provider: Optional[str] = None) -> bool:
+    """Auth failures that should trigger provider-specific refresh.
+
+    Copilot Enterprise reports an expired exchanged token as a generic 403,
+    while the public Copilot endpoint reports the same condition as 401.
+    """
     status = getattr(exc, "status_code", None)
-    if status == 401:
+    if status == 401 or (status == 403 and _normalize_aux_provider(provider) == "copilot"):
         return True
     err_lower = str(exc).lower()
     if "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower():
@@ -3308,7 +3312,7 @@ _POOL_PROVIDER_BY_HOST = (
     ("githubcopilot.com", "copilot"), ("api.kimi.com", "kimi-coding"), ("api.x.ai", "xai-oauth"),
 )
 _AUTH_REFRESH_PROVIDER_BY_HOST = (
-    ("api.githubcopilot.com", "copilot"), ("chatgpt.com", "openai-codex"),
+    ("githubcopilot.com", "copilot"), ("chatgpt.com", "openai-codex"),
     ("api.anthropic.com", "anthropic"), ("inference-api.nousresearch.com", "nous"),
 )
 
@@ -3477,11 +3481,15 @@ def _creds_have_api_key(creds: Dict[str, Any]) -> bool:
 
 
 def _refresh_copilot_credentials() -> bool:
-    from hermes_cli.copilot_auth import _jwt_cache, _token_fingerprint, exchange_copilot_token, resolve_copilot_token
+    from hermes_cli.copilot_auth import (
+        evict_cached_exchanged_token,
+        exchange_copilot_token,
+        resolve_copilot_token,
+    )
     raw_token, _source = resolve_copilot_token()
     if not str(raw_token or "").strip():
         return False
-    _jwt_cache.pop(_token_fingerprint(raw_token), None)
+    evict_cached_exchanged_token(raw_token)
     exchange_copilot_token(raw_token)
     return True
 
@@ -6969,7 +6977,7 @@ def _ladder_credential_rungs(
     Returns ``(response, None)`` or ``(None, first_err)`` to fall through."""
     client, task, tag, resolved_provider = route.client, route.task, route.tag, route.resolved_provider
     auth_refresh_provider = _auth_refresh_provider_for_route(resolved_provider, route.base_info)
-    if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None}
+    if (_is_auth_error(first_err, auth_refresh_provider) and auth_refresh_provider not in {"auto", "", None}
             and not client_is_nous):
         refresh_kwargs = ({"failed_api_key": getattr(client, "api_key", "")}
                           if auth_refresh_provider == "anthropic" else {})

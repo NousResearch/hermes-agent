@@ -312,12 +312,15 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
 def _refresh_credentials_after_401(
     agent: Any, api_error: Exception, _retry: TurnRetryState, status_code: Optional[int]
 ) -> bool:
-    """Per-provider one-shot credential refresh on 401 (codex/xai, vertex, nous, copilot,
-    anthropic), printing user-facing diagnostics when the nous/anthropic refresh fails.
-    Returns True when a refresh succeeded and the call should be retried."""
+    """Per-provider one-shot credential refresh on 401, plus Copilot Enterprise's 403.
+
+    Prints user-facing diagnostics when the Nous/Anthropic refresh fails and returns
+    True when a refresh succeeded and the call should be retried.
+    """
     from agent.conversation_loop import _is_copilot_provider
 
-    if status_code != 401:
+    copilot_auth_failure = status_code == 403 and _is_copilot_provider(agent)
+    if status_code != 401 and not copilot_auth_failure:
         return False
     if (
         agent.api_mode == "codex_responses"
@@ -347,7 +350,7 @@ def _refresh_credentials_after_401(
     if _is_copilot_provider(agent) and not _retry.copilot_auth_retry_attempted:
         _retry.copilot_auth_retry_attempted = True
         if agent._try_refresh_copilot_client_credentials():
-            agent._buffer_vprint("🔐 Copilot credentials refreshed after 401. Retrying request...")
+            agent._buffer_vprint("🔐 Copilot credentials refreshed after auth failure. Retrying request...")
             return True
     if (
         agent.api_mode == "anthropic_messages"

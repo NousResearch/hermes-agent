@@ -22,7 +22,7 @@ declare global {
       // profile's backend from the pool.
       getConnection: (
         profile?: string | null,
-        opts?: { priority?: 'foreground' | 'background' }
+        opts?: { priority?: 'foreground' | 'background'; speculative?: boolean }
       ) => Promise<HermesConnection>
       // Registry-scoped backend resolution: dial (connectionId, profile). An
       // empty/local connectionId delegates to the legacy getConnection path.
@@ -30,6 +30,7 @@ declare global {
         connectionId?: null | string
         profile?: null | string
         priority?: 'foreground' | 'background'
+        speculative?: boolean
       }) => Promise<HermesConnection>
       // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
       getGatewayWsUrlFor?: (payload: {

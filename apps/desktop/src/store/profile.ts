@@ -503,7 +503,7 @@ export function prewarmProfileBackend(name: string): void {
     return
   }
 
-  prewarmTarget(`profile:${profile}`, () => openGatewayForProfile(profile), true)
+  prewarmTarget(`profile:${profile}`, () => openGatewayForProfile(profile, { speculative: true }), true)
 }
 
 /**
@@ -519,7 +519,11 @@ export function prewarmGatewayAgent(connectionId: null | string | undefined, pro
   const target = normalizeProfileKey(profile)
   const isLocal = connectionId == null || source === 'local'
 
-  prewarmTarget(`agent:${source}:${target}`, () => openGatewayForAgent(connectionId ?? null, target), isLocal)
+  prewarmTarget(
+    `agent:${source}:${target}`,
+    () => openGatewayForAgent(connectionId ?? null, target, { speculative: true }),
+    isLocal
+  )
 }
 
 let gatewaySwitch: Promise<void> | null = null

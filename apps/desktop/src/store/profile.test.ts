@@ -163,7 +163,7 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
   it('opens the gateway (spawn + connect, no activation) for a non-active profile', () => {
     prewarmProfileBackend('warm-basic')
 
-    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-basic')
+    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-basic', { speculative: true })
     // Pre-warm must never activate — that's the click's job.
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
   })
@@ -208,7 +208,7 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
 
     prewarmProfileBackend('warm-slot-free')
 
-    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-slot-free')
+    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-slot-free', { speculative: true })
   })
 
   it('reserves background capacity during a rapid hover sweep', async () => {
@@ -252,8 +252,8 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
     prewarmGatewayAgent('local', 'warm-shared-agent')
     prewarmGatewayAgent('local', 'warm-shared-overflow')
 
-    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-shared-profile')
-    expect(openGatewayForAgent).toHaveBeenCalledWith('local', 'warm-shared-agent')
+    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-shared-profile', { speculative: true })
+    expect(openGatewayForAgent).toHaveBeenCalledWith('local', 'warm-shared-agent', { speculative: true })
     expect(openGatewayForAgent).not.toHaveBeenCalledWith('local', 'warm-shared-overflow')
   })
 
@@ -264,7 +264,7 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
 
     prewarmGatewayAgent('remote-hostinger', 'warm-remote-agent')
 
-    expect(openGatewayForAgent).toHaveBeenCalledWith('remote-hostinger', 'warm-remote-agent')
+    expect(openGatewayForAgent).toHaveBeenCalledWith('remote-hostinger', 'warm-remote-agent', { speculative: true })
   })
 
   it('follows the live pool-limit atom, not a hard-coded cap', () => {
@@ -275,7 +275,7 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
 
     prewarmProfileBackend('warm-raised-cap')
 
-    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-raised-cap')
+    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-raised-cap', { speculative: true })
 
     // And lowering the cap re-engages the guard at the new boundary.
     $poolLimits.set({ idleMs: 600_000, maxBackends: 2 })

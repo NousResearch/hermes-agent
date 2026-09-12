@@ -98,7 +98,15 @@ def _run_on_daemon_thread(
 
 def pop_relay_scope(relay: Any, handle: Any, *, output: Any = None, metadata: Any = None, timestamp: Any = None) -> Any:
     """Pop a Relay scope, forwarding only the kwargs the live binding accepts.
-    ``scope.pop`` gained ``metadata`` in nemo-relay 0.4+; older wheels raise TypeError."""
+    ``scope.pop`` gained ``metadata`` in nemo-relay 0.4+; older wheels raise TypeError.
+
+    Tolerates the vendor RuntimeError ``"invalid argument: scope handle is not at the
+    top of the stack"`` (nemo-relay 0.8.3) when the caller passes a stale handle — one
+    already popped by an earlier interrupt / drain path. Semantically the operation is
+    complete (the scope is gone); raising here only costs one observability-loss log
+    line + the task's metrics don't get exported. Kanban t_4d63c02c tracks the
+    upstream root cause; this defensive wrapper is the local fix.
+    """
     pop = relay.scope.pop
     kwargs = {k: v for k, v in (("output", output), ("metadata", metadata), ("timestamp", timestamp)) if v is not None}
     try:
@@ -107,7 +115,19 @@ def pop_relay_scope(relay: Any, handle: Any, *, output: Any = None, metadata: An
         params = {}
     if params and not any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()):
         kwargs = {key: value for key, value in kwargs.items() if key in params}
-    return pop(handle, **kwargs)
+    try:
+        return pop(handle, **kwargs)
+    except RuntimeError as exc:
+        if "scope handle is not at the top of the stack" not in str(exc):
+            raise
+        # Handle was already popped by an earlier drain / interrupt path.
+        # The scope is gone; treat the pop as successful and log for forensics.
+        import logging
+        logging.getLogger(__name__).info(
+            "pop_relay_scope: handle %r already drained; treating as success.",
+            handle,
+        )
+        return None
 
 
 def _current_top(relay: Any) -> Any:

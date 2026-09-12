@@ -20,6 +20,9 @@ from tools.mcp_oauth import (
     _make_callback_handler,
     _make_redirect_handler,
     _paste_callback_reader,
+    _cached_redirect,
+    _configure_callback_port,
+    _resolve_redirect_uri,
 )
 
 
@@ -209,6 +212,51 @@ class TestHermesTokenStorage:
             assert asyncio.run(storage.get_tokens()) is None
         assert any("Corrupt" in r.message for r in caplog.records)
         assert secret not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Cached redirect registration
+# ---------------------------------------------------------------------------
+
+class TestCachedRedirect:
+    def test_preserves_dashboard_callback_path_when_restoring_loopback_registration(
+        self, tmp_path, monkeypatch
+    ):
+        """A cached DCR registration owns the complete redirect URI, not only its port.
+
+        Notion registers Hermes' dashboard callback path; reducing it to the
+        generic ``/callback`` path makes every reauthorization mismatch.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("notion")
+        storage._client_info_path().parent.mkdir(parents=True, exist_ok=True)
+        storage._client_info_path().write_text(json.dumps({
+            "client_id": "cached-client",
+            "redirect_uris": [
+                "http://127.0.0.1:54997/api/mcp/oauth/callback/notion"
+            ],
+        }))
+
+        assert _cached_redirect(storage) == (
+            "http://127.0.0.1:54997/api/mcp/oauth/callback/notion", 54997
+        )
+
+    def test_restored_loopback_registration_is_used_verbatim(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("notion")
+        storage._client_info_path().parent.mkdir(parents=True, exist_ok=True)
+        registered = "http://127.0.0.1:54997/api/mcp/oauth/callback/notion"
+        storage._client_info_path().write_text(json.dumps({
+            "client_id": "cached-client",
+            "redirect_uris": [registered],
+        }))
+
+        cfg = {}
+        assert _configure_callback_port(cfg, storage) == 54997
+        assert cfg["redirect_uri"] == registered
+        assert _resolve_redirect_uri(cfg, 54997) == registered
 
 
 # ---------------------------------------------------------------------------

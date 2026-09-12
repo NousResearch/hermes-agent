@@ -5339,9 +5339,34 @@ def _current_event_loop() -> Any:
         return None
 
 
-def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
+def _is_probe_stub_client(client: Any, *, _depth: int = 0) -> bool:
+    """True when *client* is (or wraps) an availability-probe stub.
+
+    Probe stubs must never be cached or served: a later hit would hand a
+    non-functional client to a runtime caller (see #87654). Adapter wrappers
+    such as ``CodexAuxiliaryClient`` / ``AnthropicAuxiliaryClient`` keep the
+    leaf client in ``_real_client``, so unwrap a couple of levels. A stub
+    refuses attribute introspection with ``RuntimeError`` (not
+    ``AttributeError``), so an introspection refusal also means stub-backed.
+    """
+    if client is None:
+        return False
     if isinstance(client, _AuxProbeClientStub):
-        return  # probe stubs must never be cached — the next hit would get a dud client
+        return True
+    if _depth >= 2:
+        return False
+    try:
+        inner = getattr(client, "_real_client", None)
+    except RuntimeError:
+        return True
+    except Exception:
+        return False
+    return _is_probe_stub_client(inner, _depth=_depth + 1) if inner is not None else False
+
+
+def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
+    if _is_probe_stub_client(client):
+        return  # probe stubs (direct or adapter-wrapped) must never be cached
     with _client_cache_lock:
         old_entry = _client_cache.get(cache_key)
         if old_entry is not None and old_entry[0] is not client:
@@ -5538,15 +5563,21 @@ def _get_cached_client(
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
-            loop_ok = not async_mode or (
-                cached_loop is not None and cached_loop is current_loop and not cached_loop.is_closed()
-            )
-            if loop_ok:
-                return cached_client, _compat_model(cached_client, model, cached_default)
-            # Stale async entry — evict. Only a closed owner loop may be awaited here; a live
-            # foreign loop stays force-neutered.
-            _close_cached_client(cached_client, close_async=cached_loop is not None and cached_loop.is_closed())
-            del _client_cache[cache_key]
+            if _is_probe_stub_client(cached_client):
+                # Self-repair for keys poisoned before the store guard existed:
+                # drop the dud without closing (stubs hold no resources, and
+                # closing one raises) and fall through to rebuild below.
+                del _client_cache[cache_key]
+            else:
+                loop_ok = not async_mode or (
+                    cached_loop is not None and cached_loop is current_loop and not cached_loop.is_closed()
+                )
+                if loop_ok:
+                    return cached_client, _compat_model(cached_client, model, cached_default)
+                # Stale async entry — evict. Only a closed owner loop may be awaited here; a live
+                # foreign loop stays force-neutered.
+                _close_cached_client(cached_client, close_async=cached_loop is not None and cached_loop.is_closed())
+                del _client_cache[cache_key]
     # Build outside the lock. For pool-backed providers derive the key from the pool entry:
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
     # and retry an exhausted key.
@@ -5560,6 +5591,11 @@ def _get_cached_client(
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
     )
     if client is not None:
+        if _is_probe_stub_client(client):
+            # Probe answer only: never cache stubs (direct or adapter-wrapped) —
+            # the next hit would serve a dud client (see #87654). The tail below
+            # is a pure return, so nothing else is skipped.
+            return client, model or default_model
         with _client_cache_lock:
             if cache_key not in _client_cache:
                 # FIFO safety-belt eviction. Do NOT close evicted clients: another caller may be

@@ -261,6 +261,32 @@ to fully quit the browser — it won't loop or kill again on its own.
 
 [Camofox](https://github.com/jo-inc/camofox-browser) is a self-hosted Node.js server wrapping Camoufox (a Firefox fork with C++ fingerprint spoofing). It provides local anti-detection browsing without cloud dependencies.
 
+Camofox's own quick start is native Node — no Docker. That path works on Windows:
+
+```bash
+git clone https://github.com/jo-inc/camofox-browser
+cd camofox-browser
+npm install && npm start
+# -> http://localhost:9377
+```
+
+First run downloads Camoufox (hundreds of MB). `GET http://localhost:9377/health` should report `ok: true`. Shorthand: `npx @askjo/camofox-browser`.
+
+To use Hermes-managed Node instead of a system install, put `~/.hermes/node` on `PATH` (Windows default profile: `%LOCALAPPDATA%\hermes\node`).
+
+**Headed vs headless (native installs).** Docker's headed path is VNC (`ENABLE_VNC=1`). On a native install the lever is `interactive.mode` in `camofox.config.json` (or the `CAMOFOX_INTERACTIVE` env var): `off` (default, headless), `desktop` (visible Camoufox window for manual logins), `novnc`, or `auto`. Restart the Camofox server after changing it.
+
+Point Hermes at the server and pick the backend:
+
+```bash
+# ~/.hermes/.env
+CAMOFOX_URL=http://localhost:9377
+```
+
+Pick **Camofox** in `hermes tools` → Browser Automation, which writes `browser.cloud_provider: camofox` to `config.yaml`. `CAMOFOX_URL` is only the server address — setting it no longer selects the backend by itself once a browser selection exists (never-configured setups still autodetect it).
+
+#### Docker
+
 ```bash
 # Clone the Camofox browser server first
 git clone https://github.com/jo-inc/camofox-browser
@@ -316,12 +342,6 @@ make down
 # then run the custom docker run command above
 ```
 
-Then set in `~/.hermes/.env`:
-
-```bash
-CAMOFOX_URL=http://localhost:9377
-```
-
 If Camofox is running in Docker and you want it to open web apps served from the host machine, enable loopback rewriting. `CAMOFOX_URL` should still point at the host-published control API, but page URLs such as `http://127.0.0.1:3000` must be opened from inside the container as `http://host.docker.internal:3000`:
 
 ```yaml
@@ -340,10 +360,6 @@ CAMOFOX_LOOPBACK_HOST_ALIAS=host.docker.internal
 ```
 
 The rewrite only applies to page navigation URLs with loopback hosts (`localhost`, `127.0.0.1`, `::1`). It does not change `CAMOFOX_URL`. Leave it disabled for non-Docker Camofox installs, where the browser already runs on the host and loopback URLs are correct.
-
-Or configure via `hermes tools` → Browser Automation → Camofox.
-
-Camofox is selected like any other browser backend: pick **Camofox** in `hermes tools` → Browser Automation, which writes `browser.cloud_provider: camofox` to `config.yaml`. `CAMOFOX_URL` is only the server address — setting it no longer selects the backend by itself once a browser selection exists (never-configured setups still autodetect it).
 
 #### Persistent browser sessions
 
@@ -379,10 +395,20 @@ If the flag is placed at the wrong path, Hermes silently falls back to a random 
 
 ##### Verify it's working
 
-1. Start Hermes and your Camofox server.
-2. Open Google (or any login site) in a browser task and sign in manually.
-3. End the browser task normally.
-4. Start a new browser task.
+Ending a Hermes browser task does **not** close the Camofox session. With `managed_persistence: true`, Hermes only drops its local tracking entry and leaves the Camofox/Playwright context running. Live cookies stay in that still-open context; they are not written to disk yet.
+
+Disk persist needs a Camofox checkpoint: `POST /stop` (requires `CAMOFOX_ADMIN_KEY` sent as `x-admin-key`) or a graceful Node shutdown (`SIGINT` / `SIGTERM`). Killing Node (`taskkill /F`, Task Manager) skips the shutdown hook and drops uncheckpointed logins.
+
+Headed login → headless reuse:
+
+1. Start Camofox with `interactive.mode` (or `CAMOFOX_INTERACTIVE`) set to `desktop`.
+2. Start Hermes, open a login site in a browser task, and sign in in the visible window.
+3. Checkpoint without killing Node:
+   ```bash
+   curl -X POST http://localhost:9377/stop -H "x-admin-key: $CAMOFOX_ADMIN_KEY"
+   ```
+   State lands under `~/.camofox/profiles/<sha256(userId)>/`. `POST /stop` returns 403 if `CAMOFOX_ADMIN_KEY` is unset — use a graceful Node shutdown instead, then start Camofox again before the next step.
+4. Set `interactive.mode` to `off`, restart Camofox, and start a new Hermes browser task.
 5. Open the same site again — you should still be signed in.
 
 If step 5 logs you out, the Camofox server isn't honoring the stable `userId`. Double-check your config path, confirm you fully restarted Hermes after editing `config.yaml`, and verify your Camofox server version supports persistent per-user profiles.

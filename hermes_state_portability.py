@@ -236,48 +236,12 @@ class SessionPortabilityMixin:
             "AND id >= ? AND id < ? AND substr(id, ? + 1) GLOB ? " + keep_clause
         )
 
-        # Avoid acquiring SQLite's global WAL write lock on the common path
-        # where the job is still within its retention window. The write
-        # transaction repeats this query because another process may prune or
-        # append runs between this advisory read and BEGIN IMMEDIATE.
-        with self._lock:
-            has_victim = self._conn.execute(
-                f"{select_query} LIMIT 1", params
-            ).fetchone()
-        if has_victim is None:
+        victim_ids = [row[0] for row in self._read_rows(select_query, params)]
+        if not victim_ids:
             return 0
-
-        def _do(conn):
-            # Local import: this mixin must not import hermes_state at module
-            # level (cycle); delete_session resolves the same helper lazily.
-            from hermes_state import _delete_delegate_children
-
-            victim_ids = [
-                row[0] for row in conn.execute(select_query, params).fetchall()
-            ]
-            if not victim_ids:
-                # A concurrent pruner may have removed the advisory read's
-                # victims before this transaction acquired the write lock.
-                return 0
-            for victim_id in victim_ids:
-                # Same cascade shape as delete_session: delegate children die
-                # with the parent, branches are orphaned, messages removed,
-                # then the row itself.
-                _delete_delegate_children(conn, [victim_id])
-                conn.execute(
-                    "UPDATE sessions SET parent_session_id = NULL "
-                    "WHERE parent_session_id = ?",
-                    (victim_id,),
-                )
-                conn.execute(
-                    "DELETE FROM messages WHERE session_id = ?", (victim_id,)
-                )
-                conn.execute("DELETE FROM sessions WHERE id = ?", (victim_id,))
-            if victim_ids:
-                self._delete_unreferenced_system_prompts(conn)
-            return len(victim_ids)
-
-        return self._execute_write(_do)
+        # Reuse the canonical bulk-delete path for delegate cascades, branch
+        # orphaning, message cleanup, prompt GC, and concurrent-delete races.
+        return self.delete_sessions(victim_ids)
 
     def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """One session with the ``list_sessions_rich`` enriched columns, or None.

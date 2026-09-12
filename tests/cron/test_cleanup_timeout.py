@@ -9,9 +9,14 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import Future
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
-from cron.scheduler import _teardown_cron_agent, run_job
+from cron.scheduler import (
+    _cron_run_history_retention,
+    _finalize_cron_session,
+    _teardown_cron_agent,
+    run_job,
+)
 from cron.scheduler_detached_worker import defer_teardown_to_running_worker
 
 
@@ -48,6 +53,36 @@ class HangingAgent:
     def close(self):
         self.entered.set()
         self.release.wait()
+
+
+def test_finalize_prunes_run_history_before_releasing_session_db():
+    session_db = MagicMock()
+    session_db.get_compression_tip.return_value = None
+    session_db.session_lifecycle_statuses.return_value = {"cron_job_20260912_120000": "complete"}
+    session_db.prune_cron_job_runs.return_value = 2
+    agent = MagicMock()
+
+    with patch("cron.scheduler._BoundedCronSessionDB", side_effect=lambda db, _job: db), \
+         patch("cron.scheduler._cron_run_history_retention", return_value=17), \
+         patch("hermes_state_registry.release_or_close") as release:
+        _finalize_cron_session(
+            session_db, agent, "job", "Nightly check", "cron_job_20260912_120000"
+        )
+
+    session_db.prune_cron_job_runs.assert_called_once_with("job", keep=17)
+    assert session_db.method_calls.index(
+        call.end_session("cron_job_20260912_120000", "cron_complete")
+    ) < session_db.method_calls.index(call.prune_cron_job_runs("job", keep=17))
+    release.assert_called_once_with(session_db)
+
+
+def test_run_history_retention_env_overrides_config(monkeypatch):
+    monkeypatch.setenv("HERMES_CRON_RUN_HISTORY_RETENTION", "12")
+    monkeypatch.setattr(
+        "cron.scheduler.load_config", lambda: {"cron": {"run_history_retention": 99}}
+    )
+
+    assert _cron_run_history_retention() == 12
 
 
 def test_run_job_bounds_sessiondb_finalization(tmp_path):

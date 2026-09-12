@@ -113,6 +113,11 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   below. Single-project users stay on the `default` board and never see the
   word "board" outside this docs section.
 - **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | review | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
+  Cards created by an agent during a Hermes conversation also retain a privacy-bounded
+  `origin` record: profile and session, the triggering user-message ID, available
+  platform route coordinates, a redacted 240-character prompt excerpt, and a link back
+  to that session. `kanban_show`, worker context, and the dashboard task drawer expose
+  it. CLI/dashboard-created and legacy cards leave `origin` absent.
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
 - **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
 - **Workspace** — the directory a worker operates in. Three kinds:

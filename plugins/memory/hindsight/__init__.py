@@ -286,11 +286,21 @@ _METADATA_ATTRS = (
 )
 _SYSTEM_PROMPT_TAILS = {
     "context": "Relevant memories are automatically injected into context.",
-    "tools": ("Use hindsight_recall to search, hindsight_reflect for synthesis, "
-              "hindsight_retain to store facts."),
+    "tools": ("For cross-session facts, user preferences, and past decisions, "
+              "prefer hindsight_recall over session_search — it returns "
+              "deduplicated, high-density observations across sessions. "
+              "Use hindsight_reflect for cross-session pattern synthesis. "
+              "Use session_search only when you need verbatim transcripts or "
+              "exact wording from a specific conversation.\n"
+              "Use hindsight_retain to store facts."),
     "hybrid": ("Relevant memories are automatically injected into context. "
-               "Use hindsight_recall to search, hindsight_reflect for synthesis, "
-               "hindsight_retain to store facts."),
+               "For cross-session facts, user preferences, and past decisions, "
+               "prefer hindsight_recall over session_search — it returns "
+               "deduplicated, high-density observations across sessions. "
+               "Use hindsight_reflect for cross-session pattern synthesis. "
+               "Use session_search only when you need verbatim transcripts or "
+               "exact wording from a specific conversation. "
+               "Use hindsight_retain to store facts."),
 }
 
 

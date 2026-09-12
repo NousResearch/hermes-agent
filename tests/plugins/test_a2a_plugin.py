@@ -580,7 +580,7 @@ class TestReplyCapture:
                 "⏩ Steered into current run (iteration 1/200).",
                 metadata={"expect_edits": True},
             )
-            assert interim.success is True
+            assert interim.success is False
             assert fut.done() is False
 
             final = await adapter.send(
@@ -595,6 +595,49 @@ class TestReplyCapture:
             asyncio.run(run())
         finally:
             adapter._pop_pending("task-final")
+
+    def test_gateway_stream_consumer_delivers_complete_accumulated_reply(self):
+        """Dropped previews must not make the terminal A2A reply suffix-only."""
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+        adapter = _bare_adapter()
+        fut = adapter._add_pending("task-stream", "ctx-stream")
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "ctx-stream",
+            StreamConsumerConfig(edit_interval=0.0, buffer_threshold=1),
+        )
+
+        async def run():
+            runner = asyncio.create_task(consumer.run())
+            consumer.on_delta("event_id: evt_178645280")
+            await asyncio.sleep(0.01)
+
+            # A2A deliberately reports the invisible preview as an
+            # unsuccessful delivery. GatewayStreamConsumer must treat
+            # that as an internal streaming downgrade, not as a terminal
+            # A2A error: the request/reply waiter stays pending and later
+            # deltas continue accumulating for the notify-marked final.
+            assert consumer._edit_supported is False
+            assert consumer.already_sent is False
+            assert consumer.final_response_sent is False
+            assert fut.done() is False
+
+            consumer.on_delta("9212_97bccc7032364276")
+            await asyncio.sleep(0.01)
+            assert fut.done() is False
+
+            consumer.finish()
+            await runner
+
+        try:
+            asyncio.run(run())
+            assert fut.result(timeout=0) == (
+                protocol.STATE_COMPLETED,
+                "event_id: evt_1786452809212_97bccc7032364276",
+            )
+        finally:
+            adapter._pop_pending("task-stream")
 
     def test_concurrent_same_context_tasks_resolve_fifo(self):
         """Two in-flight tasks sharing a context must not cross-talk: replies

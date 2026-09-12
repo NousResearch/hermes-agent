@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 COPILOT_OAUTH_CLIENT_ID = "Iv1.b507a08c87ecfe98"
 _CLASSIC_PAT_PREFIX = "ghp_"  # rejected by the Copilot API (gho_ / github_pat_ / ghu_ work)
 COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+_UNSUPPORTED_TOKEN_WARNED: set[tuple[str, str]] = set()
 _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
 _DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
 
@@ -60,7 +61,12 @@ def resolve_copilot_token() -> tuple[str, str]:
         valid, msg = validate_copilot_token(val)
         if valid:
             return val, env_var
-        logger.warning("Token from %s is not supported: %s", env_var, msg)
+        warning_key = (env_var, val)
+        if warning_key not in _UNSUPPORTED_TOKEN_WARNED:
+            _UNSUPPORTED_TOKEN_WARNED.add(warning_key)
+            logger.warning("Token from %s is not supported: %s", env_var, msg)
+        else:
+            logger.debug("Token from %s is still unsupported (warned once)", env_var)
     # `gh auth token` fallback ONLY when no Copilot env var was set: an exported GITHUB_TOKEN
     # (even a classic PAT) means the user intends *that* token; skipping also avoids a slow
     # subprocess (up to 5s on Windows) on every cold start.

@@ -74,6 +74,13 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
     global _mcp_discovery_started, _mcp_discovery_thread
 
     with _mcp_discovery_lock:
+        # No configured server means there is no discovery lifecycle to retry.
+        # Check before the retry bookkeeping so repeated turns do not treat the
+        # intentional threadless state as a failed discovery.
+        if not _has_configured_mcp_servers():
+            _mcp_discovery_started = True
+            return
+
         if _mcp_discovery_started:
             thread = _mcp_discovery_thread
             if thread is not None and thread.is_alive():
@@ -91,8 +98,6 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
             _mcp_discovery_thread = None
 
         _mcp_discovery_started = True
-        if not _has_configured_mcp_servers():
-            return
 
         # Bare threads start from an empty context: run discovery under a copy of the caller's, so
         # the context-local HERMES_HOME override (multi-profile dashboard/desktop backends, #67605)

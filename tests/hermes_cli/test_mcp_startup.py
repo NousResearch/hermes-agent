@@ -306,6 +306,29 @@ def _retry_logger():
     )
 
 
+def test_no_configured_servers_do_not_enter_retry_path(monkeypatch):
+    warnings = []
+    logger = types.SimpleNamespace(
+        debug=lambda *_a, **_k: None,
+        warning=lambda *args, **_kwargs: warnings.append(args),
+    )
+    monkeypatch.setattr(mcp_startup, "_has_configured_mcp_servers", lambda: False)
+    monkeypatch.setattr(
+        mcp_startup,
+        "_any_mcp_connected",
+        lambda: pytest.fail("no-server path must not inspect MCP runtime state"),
+    )
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", False)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="test-mcp")
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="test-mcp")
+
+    assert warnings == []
+    assert mcp_startup._mcp_discovery_started is True
+    assert mcp_startup._mcp_discovery_thread is None
+
+
 def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
     monkeypatch.setitem(
         sys.modules,

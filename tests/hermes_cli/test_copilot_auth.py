@@ -71,6 +71,25 @@ class TestResolveToken:
         assert source == ""
         mock_cli.assert_not_called()
 
+    def test_unsupported_token_warns_once_per_process(self, monkeypatch, caplog):
+        from hermes_cli import copilot_auth
+
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_repeated_classic_pat")
+        copilot_auth._UNSUPPORTED_TOKEN_WARNED.clear()
+
+        try:
+            for _ in range(3):
+                assert copilot_auth.resolve_copilot_token() == ("", "")
+            warnings = [
+                record for record in caplog.records
+                if record.levelname == "WARNING" and "GITHUB_TOKEN" in record.message
+            ]
+            assert len(warnings) == 1
+        finally:
+            copilot_auth._UNSUPPORTED_TOKEN_WARNED.clear()
+
 
 class TestGhCliTokenCache:
     """The gh-CLI probe result is cached — a miss must not re-spawn gh.

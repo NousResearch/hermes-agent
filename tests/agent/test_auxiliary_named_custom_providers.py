@@ -806,6 +806,115 @@ class TestCustomProviderAliasCollision:
         assert "foreign.example.test" in str(client.base_url)
         assert "foreign.example.test" in str(vision_client.base_url)
 
+    def test_display_alias_foreign_base_override_does_not_borrow_saved_key(self, tmp_path):
+        """A display alias carries the same explicit custom identity as ``custom:<name>``.
+
+        ``private-relay`` exists ONLY as the custom entry's display name (the
+        durable key is ``openrouter``), so the foreign-origin guard must treat
+        both spellings identically — aux and runtime alike.
+        """
+        _write_config(tmp_path, {
+            "providers": {
+                "openrouter": {
+                    "name": "Private Relay",
+                    "base_url": "https://relay.example.test/v1",
+                    "api_key": "saved-private-key",
+                    "default_model": "relay-model",
+                },
+            },
+        })
+        from agent.auxiliary_client import resolve_provider_client
+
+        client, _ = resolve_provider_client(
+            "private-relay", model="relay-model", raw_codex=True,
+            explicit_base_url="https://foreign.example.test/v1",
+        )
+        assert client is not None and client.api_key == "no-key-required"
+        assert "foreign.example.test" in str(client.base_url)
+
+        from hermes_cli import runtime_provider as rp
+        resolved = rp.resolve_runtime_provider(
+            requested="private-relay",
+            explicit_base_url="https://foreign.example.test/v1",
+        )
+        assert resolved["base_url"] == "https://foreign.example.test/v1"
+        assert resolved["api_key"] == "no-key-required"
+
+    def test_bare_durable_key_foreign_override_composes_entry_key_but_not_pool(self, tmp_path, monkeypatch):
+        """Bare-spelling composition covers the entry's own credential ONLY.
+
+        Pool candidates match name-first without origin affinity, so once the
+        URL-only override leaves the configured origin the pool must stay
+        fail-closed even for the bare durable spelling — a live pool key must
+        never travel to a foreign origin (round-2 review blocker).
+        """
+        _write_config(tmp_path, {
+            "providers": {
+                "relay": {
+                    "base_url": "https://relay.example.test/v1",
+                    "default_model": "relay-model",
+                },
+            },
+        })
+        from unittest.mock import MagicMock
+        from agent import auxiliary_client
+        from agent.auxiliary_client import resolve_provider_client
+
+        pool = MagicMock()
+        pool.has_credentials.return_value = True
+        pool.select.return_value = MagicMock(
+            runtime_api_key="durable-pool-key", access_token="durable-pool-key",
+        )
+        monkeypatch.setattr(auxiliary_client, "load_pool", lambda key: pool)
+
+        client, _ = resolve_provider_client(
+            "relay", model="relay-model", raw_codex=True,
+            explicit_base_url="https://foreign.example.test/v1",
+        )
+        assert client is not None
+        assert client.api_key == "no-key-required"
+        pool.select.assert_not_called()
+
+        from hermes_cli import runtime_provider as rp
+        rt_pool = MagicMock()
+        rt_pool.has_credentials.return_value = True
+        rt_pool.select.return_value = MagicMock(
+            runtime_api_key="durable-pool-key", access_token="durable-pool-key",
+        )
+        monkeypatch.setattr(rp, "load_pool", lambda key: rt_pool)
+        resolved = rp.resolve_runtime_provider(
+            requested="relay",
+            explicit_base_url="https://foreign.example.test/v1",
+        )
+        assert resolved["base_url"] == "https://foreign.example.test/v1"
+        assert resolved["api_key"] != "durable-pool-key"
+        rt_pool.select.assert_not_called()
+
+    def test_bare_durable_key_composes_key_under_url_only_override(self, tmp_path, monkeypatch):
+        """The bare ``providers.<key>`` spelling keeps field-by-field composition.
+
+        Aux path is pinned by test_named_provider_defaults_compose_under_task_overrides;
+        this pins the RUNTIME path to the same contract so the two resolvers
+        cannot diverge on the same config again.
+        """
+        monkeypatch.setenv("NAMED_KEY", "named-key")
+        _write_config(tmp_path, {
+            "providers": {
+                "openai": {
+                    "base_url": "https://named.example/v1",
+                    "key_env": "NAMED_KEY",
+                    "default_model": "gpt-5.4",
+                },
+            },
+        })
+        from hermes_cli import runtime_provider as rp
+        resolved = rp.resolve_runtime_provider(
+            requested="openai",
+            explicit_base_url="https://aux-explicit.example/v1",
+        )
+        assert resolved["base_url"] == "https://aux-explicit.example/v1"
+        assert resolved["api_key"] == "named-key"
+
     def test_named_custom_recovery_rejects_foreign_endpoint_override(self, tmp_path):
         """A 401 from a foreign override cannot rotate or expose the configured custom pool."""
         _write_config(tmp_path, {

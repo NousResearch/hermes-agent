@@ -850,6 +850,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
+        if (p.kind === 'model-switch-warning') {
+          sys(`warning: ${p.text}`)
+
+          return
+        }
+
         if (p.kind === 'goal') {
           sys(p.text)
 

@@ -242,7 +242,10 @@ def _apply_model_switch(
     if persist_global:
         _persist_model_switch(result)
     return {
-        "value": result.new_model, "warning": result.warning_message or "",
+        "value": result.new_model,
+        "warning": "\n\n".join(w for w in (
+            getattr(result, "provider_switch_warning", ""), result.warning_message
+        ) if w),
         "confirm_required": False,
         "scope": "once" if one_turn else ("global" if persist_global else "session")}
 

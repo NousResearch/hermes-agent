@@ -306,6 +306,8 @@ class GatewayModelCommandsMixin:
             t("gateway.model.switched", model=format_model_for_display(result.new_model)),
             t("gateway.model.provider_label", provider=result.provider_label or result.target_provider),
         ]
+        if result.provider_switch_warning:
+            lines.insert(0, f"🚨 **{result.provider_switch_warning}**\n")
         # Provider-aware chain: Codex OAuth, Copilot and Nous caps win over the raw models.dev entry.
         mi = result.model_info
         model_cfg: dict = {}

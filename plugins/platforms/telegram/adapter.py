@@ -2591,8 +2591,8 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug("[%s] gateway_platform_event dispatch error", self.name, exc_info=True)
 
     def _source_for_platform_event_auth(self, update):
-        """Route a supported update to its event-specific auth-source extractor (reactor / editor);
-        raises ``ValueError`` for updates without one so the boundary fails closed."""
+        """Route a supported update to its event-specific auth-source extractor (reactor / editor /
+        inbound sender); raises ``ValueError`` for updates without one so the boundary fails closed."""
         if getattr(update, "message_reaction", None) is not None:
             return self._source_from_reaction_for_auth(update)
         edited = getattr(update, "edited_message", None)
@@ -2602,15 +2602,23 @@ class TelegramAdapter(BasePlatformAdapter):
             if not source.user_id or not source.chat_id:
                 raise ValueError("gateway_platform_event message_edited requires editor and chat identities")
             return source
+        message = getattr(update, "message", None)
+        if message is not None:
+            source = self._source_from_message_for_auth(message)
+            if not source.user_id or not source.chat_id:
+                raise ValueError("gateway_platform_event message requires sender and chat identities")
+            return source
         raise ValueError("gateway_platform_event source extraction has no extractor for this update type")
 
     def _normalize_platform_event(self, update) -> Optional[Dict[str, Any]]:
         """Map a PTB update to a ``{platform, event_type, payload}`` envelope (hooks.md contracts), or
-        ``None`` for types without one."""
+        ``None`` for types without one. Precedence: reaction, then edited_message, then message."""
         if getattr(update, "message_reaction", None) is not None:
             return self._normalize_reaction_event(update)
         if getattr(update, "edited_message", None) is not None:
             return self._normalize_message_edited_event(update)
+        if getattr(update, "message", None) is not None:
+            return self._normalize_message_event(update)
         return None
 
     @staticmethod
@@ -2679,6 +2687,48 @@ class TelegramAdapter(BasePlatformAdapter):
             "payload": {
                 "chat_id": str(chat_id)[:128], "message_id": str(message_id)[:128], "thread_id": thread_id,
                 "text": text[:8192] if text is not None else None, "edited_at": edited_at},
+        }
+
+    def _normalize_message_event(self, update) -> Optional[Dict[str, Any]]:
+        """``message`` → ``message`` event (v1, additive): chat_id, message_id, thread_id
+        (forum topic), text (body or caption, bounded), sender_id, reply_to_message_id."""
+        message = getattr(update, "message", None)
+        if message is None:
+            return None
+        chat = getattr(message, "chat", None)
+        chat_id = getattr(chat, "id", None) if chat is not None else None
+        message_id = getattr(message, "message_id", None)
+        if not self._is_id_like(chat_id) or not self._is_id_like(message_id):
+            return None
+        text = getattr(message, "text", None) or getattr(message, "caption", None)
+        if not isinstance(text, str):
+            text = None
+        thread_id = None
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        if self._is_id_like(thread_id_raw) and bool(getattr(message, "is_topic_message", False)):
+            thread_id = str(thread_id_raw)[:128]
+        sender_id = None
+        from_user = getattr(message, "from_user", None)
+        from_user_id = getattr(from_user, "id", None) if from_user is not None else None
+        if self._is_id_like(from_user_id):
+            sender_id = str(from_user_id)[:128]
+        reply_to_message_id = None
+        reply_to = getattr(message, "reply_to_message", None)
+        if reply_to is not None:
+            reply_id = getattr(reply_to, "message_id", None)
+            if self._is_id_like(reply_id):
+                reply_to_message_id = str(reply_id)[:128]
+        if reply_to_message_id is None:
+            fallback_reply_id = getattr(message, "reply_to_message_id", None)
+            if self._is_id_like(fallback_reply_id):
+                reply_to_message_id = str(fallback_reply_id)[:128]
+        return {
+            "platform": "telegram",
+            "event_type": "message",
+            "payload": {
+                "chat_id": str(chat_id)[:128], "message_id": str(message_id)[:128], "thread_id": thread_id,
+                "text": text[:8192] if text is not None else None, "sender_id": sender_id,
+                "reply_to_message_id": reply_to_message_id},
         }
 
     def _register_handlers(self, app) -> None:

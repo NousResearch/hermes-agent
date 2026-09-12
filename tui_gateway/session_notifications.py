@@ -138,11 +138,11 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
+def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> bool:
     """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
     try:
         _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, text, **kwargs)
+        return _run_prompt_submit(rid, sid, session, text, **kwargs) is not False
     except Exception as exc:
         _notif_log_failure(what, exc)
         _notif_release_turn(session)
@@ -450,6 +450,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
 
 def _notif_dispatch_completions(sid, session, notifications, registry, deferred):
     from tools.process_registry_notifications import ProcessNotificationBatch
+    from tools.process_registry_lifecycle import acknowledge_notifications
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
 
     if not notifications:
@@ -465,14 +466,19 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
     text = ProcessNotificationBatch(tuple((event, text) for event, text, _claim in claimed)).render(registry)
     if text is None:
         _notif_release_turn(session)
+    started = False
     try:
         if text is not None:
-            _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
-                          "completion batch dispatch failed")
+            started = _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
+                                    "completion batch dispatch failed")
     except Exception:
         for event, _text, claim in claimed:
             release_event_delivery(event, claim)
+    if text is not None and not started:
+        for event, _text, _claim in claimed:
+            (deferred.append if deferred is not None else registry.completion_queue.put)(event)
         return
+    acknowledge_notifications(registry, (event for event, _text, _claim in claimed))
     for event, _text, claim in claimed:
         complete_event_delivery(event, claim)
 
@@ -560,6 +566,11 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
         sid, session, events, emitted, process_registry, format_process_notification, deferred)
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
+        try:
+            from tools.process_registry_lifecycle import refresh_owned_work
+            refresh_owned_work(process_registry, getattr(session.get("agent"), "_process_owner_task_ids", ()))
+        except Exception:
+            logger.debug("Owned process refresh failed for UI session %s", sid, exc_info=True)
         now = time.monotonic()
         try:
             _poll_bot_live_delivery_once(sid, session)

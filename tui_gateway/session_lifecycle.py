@@ -421,6 +421,22 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
     return use_compute_host
 
 
+def _session_has_background_work(sid: str, session: dict) -> bool:
+    if _session_has_active_delegations(sid, session):
+        return True
+    try:
+        from tools.process_registry import process_registry
+        from tools.process_registry_lifecycle import has_owned_work
+        if has_owned_work(process_registry, getattr(session.get("agent"), "_process_owner_task_ids", ())):
+            return True
+        if session.get("_compute_host_active"):
+            return _compute_host_has_background_work(sid, session)
+        return False
+    except Exception:
+        logger.debug("Failed to query owned background work for UI session %s", sid, exc_info=True)
+        return True  # Unknown ownership must not authorize destructive cleanup.
+
+
 def _session_has_active_delegations(sid: str, session: dict | None = None) -> bool:
     """True when UI session ``sid`` still owns live background work — by live UI sid AND, when the TUI owns the durable
     lifecycle (never for gateway-viewer tabs), by session_key so a delegation from an earlier tab keeps it alive.
@@ -549,7 +565,7 @@ def _schedule_ws_orphan_reap(
                 current.pop("_client_gone_interrupt_polls", None)
                 _pending_ws_reaps.pop(sid, None)
                 return
-            if _session_has_active_delegations(sid, current):
+            if _session_has_background_work(sid, current):
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif not current.get("running"):
                 session = _pop_session_by_id(sid)

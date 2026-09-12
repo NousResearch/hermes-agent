@@ -419,6 +419,7 @@ class ProcessSession:
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
+    notification_delivered: bool = False        # Owning UI admitted the completion turn (not a poll/read)
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
     _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit

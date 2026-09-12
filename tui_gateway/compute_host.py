@@ -63,6 +63,7 @@ class ComputeHost:
         heartbeat_secs: int | float | None = None) -> None:
         self._stdout = stdout or sys.stdout
         self._write_lock = threading.Lock()
+        self._background_state_lock = threading.Lock()
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers or _default_workers(), thread_name_prefix="compute-host-turn")
         self._closed = threading.Event()
@@ -91,7 +92,14 @@ class ComputeHost:
 
     def _reply(self, kind: str, sid: str, request_id: Any, **extra: Any) -> None:
         """Emit a per-session frame keyed by the request it answers."""
-        self.emit({"type": kind, "sid": sid, "request_id": request_id, **extra})
+        frame = {"type": kind, "sid": sid, "request_id": request_id, **extra}
+        if kind in {"turn.end", "turn.error"}:
+            # Publish ownership before the serving process makes the turn idle.
+            with self._background_state_lock:
+                frame["background_work"] = self._background_work_snapshot()
+                self.emit(frame)
+        else:
+            self.emit(frame)
 
     def close(self) -> None:
         self._closed.set()
@@ -289,6 +297,8 @@ class ComputeHost:
                     session[key] = str(frame[key])
         else:
             session = self._build_server_session(server, frame, sid)
+        if frame.get("session_token"):
+            session["_compute_host_session_token"] = frame["session_token"]
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])
         return session
@@ -439,14 +449,37 @@ class ComputeHost:
         with self._turn_futures_lock:
             return [f for f in self._turn_futures if not f.done()]
 
+    def _background_work_snapshot(self) -> dict:
+        from tui_gateway import server
+        from tools.process_registry import process_registry
+        from tools.process_registry_lifecycle import refresh_owned_work
+
+        with server._sessions_lock:
+            sessions = list(server._sessions.items())
+        work = {}
+        for sid, session in sessions:
+            token = session.get("_compute_host_session_token")
+            if not token or session.get("_finalized"):
+                continue
+            pending = True
+            try:
+                refresh_owned_work(process_registry, getattr(session.get("agent"), "_process_owner_task_ids", ()))
+                pending = server._session_has_background_work(sid, session)
+            except Exception:
+                logging.getLogger(__name__).debug("compute host background work unavailable sid=%s", sid, exc_info=True)
+            work[sid] = {"session_token": token, "pending": pending, "running": bool(session.get("running"))}
+        return work
+
     def _heartbeat_loop(self) -> None:
         while not self._closed.wait(self._heartbeat_secs):
             active_turns = len(self._live_turns())
             with self._progress_lock:
                 counter = self._progress_counter
-            self.emit({
-                "type": "hb", "active_turns": active_turns, "progress_counter": counter,
-                "rss_mb": _rss_mb(os.getpid())})
+            # A heartbeat sampled before turn.end must not overwrite newer work.
+            with self._background_state_lock:
+                self.emit({
+                    "type": "hb", "active_turns": active_turns, "progress_counter": counter,
+                    "rss_mb": _rss_mb(os.getpid()), "background_work": self._background_work_snapshot()})
 
     def _parent_guard_loop(self) -> None:
         while not self._closed.wait(1.0):

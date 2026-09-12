@@ -14,7 +14,7 @@ import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.skill_commands import extract_user_instruction_from_skill_message
@@ -30,6 +30,36 @@ _LEGACY_PRE_COMPRESS_API_VERSION = 1
 # blocks interpreter exit.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
+
+
+def resolve_external_prefetch_timeout(
+    mem_config: Optional[Mapping[str, Any]] = None,
+) -> float:
+    """Return the external-provider prefetch timeout from memory config.
+
+    Reads ``memory.external_prefetch_timeout``. Invalid, missing, or
+    non-positive values fall back to ``_EXTERNAL_PREFETCH_TIMEOUT_S`` so a
+    bad config.yaml cannot break agent startup.
+    """
+    if not isinstance(mem_config, Mapping):
+        return _EXTERNAL_PREFETCH_TIMEOUT_S
+    raw = mem_config.get("external_prefetch_timeout", _EXTERNAL_PREFETCH_TIMEOUT_S)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _EXTERNAL_PREFETCH_TIMEOUT_S
+    if value <= 0:
+        return _EXTERNAL_PREFETCH_TIMEOUT_S
+    return value
+
+
+def memory_manager_from_config(
+    mem_config: Optional[Mapping[str, Any]] = None,
+) -> "MemoryManager":
+    """Build a ``MemoryManager`` with the configured prefetch timeout."""
+    return MemoryManager(
+        external_prefetch_timeout=resolve_external_prefetch_timeout(mem_config),
+    )
 
 
 # -- Signature introspection (providers are duck-typed; call shapes vary) -----
@@ -304,6 +334,7 @@ class MemoryManager:
             raise ValueError("external_prefetch_timeout must be positive")
         self._external_prefetch_timeout = timeout
         self._external_prefetch_threads: Dict[str, threading.Thread] = {}
+        self._late_prefetch: Dict[str, Tuple[str, str]] = {}
         self._external_prefetch_lock = threading.Lock()
         # Single-worker background executor for end-of-turn sync/prefetch, created lazily so
         # the builtin-only path spawns no threads; one worker serializes a provider's writes.
@@ -413,32 +444,61 @@ class MemoryManager:
         if provider.name == "builtin":
             return provider.prefetch(query, session_id=session_id)
 
-        result_box: Dict[str, Any] = {}
+        result_box: Dict[str, str] = {}
+        error_box: Dict[str, Exception] = {}
+        consumed = {"yes": False}
 
         def _run() -> None:
             try:
                 result_box["value"] = provider.prefetch(query, session_id=session_id) or ""
             except Exception as exc:  # pragma: no cover - re-raised by caller
-                result_box["error"] = exc
+                error_box["value"] = exc
+            finally:
+                with self._external_prefetch_lock:
+                    if not consumed["yes"] and "value" in result_box:
+                        # Waiter already moved on. Keep the provider eligible
+                        # and stash the late result for the same query.
+                        self._late_prefetch[provider.name] = (
+                            query,
+                            result_box["value"],
+                        )
+                    if self._external_prefetch_threads.get(provider.name) is thread:
+                        self._external_prefetch_threads.pop(provider.name, None)
 
         thread = threading.Thread(target=_ctx_bound(_run), daemon=True, name=f"memory-prefetch-{provider.name}")
         with self._external_prefetch_lock:
             existing = self._external_prefetch_threads.get(provider.name)
-            if existing is not None and existing.is_alive():
-                logger.debug("Memory provider '%s' prefetch is still running; skipping this turn", provider.name)
-                return ""
+            if existing is not None:
+                if existing.is_alive():
+                    logger.debug(
+                        "Memory provider '%s' prefetch is still running; skipping this turn",
+                        provider.name,
+                    )
+                    return ""
+                self._external_prefetch_threads.pop(provider.name, None)
+            late = self._late_prefetch.pop(provider.name, None)
+            if late is not None:
+                late_query, late_value = late
+                if late_query == query and late_value:
+                    return late_value
             self._external_prefetch_threads[provider.name] = thread
             thread.start()
 
         thread.join(self._external_prefetch_timeout)
-        if thread.is_alive():
-            logger.warning(
-                "Memory provider '%s' prefetch timed out after %.1fs; skipping it until "
-                "the stuck call returns", provider.name, self._external_prefetch_timeout,
-            )
-            return ""
-
         with self._external_prefetch_lock:
+            if thread.is_alive():
+                logger.warning(
+                    "Memory provider '%s' prefetch timed out after %.1fs; "
+                    "skipping this turn only (provider stays active). "
+                    "Set memory.external_prefetch_timeout in config.yaml "
+                    "if the backend is routinely slower than %.1fs.",
+                    provider.name,
+                    self._external_prefetch_timeout,
+                    self._external_prefetch_timeout,
+                )
+                return ""
+            consumed["yes"] = True
+            self._late_prefetch.pop(provider.name, None)
             if self._external_prefetch_threads.get(provider.name) is thread:
                 self._external_prefetch_threads.pop(provider.name, None)
         if "error" in result_box:

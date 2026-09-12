@@ -133,6 +133,13 @@ class GatewayProfileReconcileMixin:
                     logger.info("[MULTIPLEX] Re-scanned profile '%s' after config/.env change (%s adapter(s) connected)", name, connected)
                     result["rescanned"].append(name)
             self._served_profile_signatures = sigs
+            # A profile deleted while an adapter above was still connecting must not be recorded back
+            # (the deleter's signal timed out against this lock and rmtree already ran).
+            live_now = {str(name) for name, _home in _multiplex_profile_homes(self.config)}
+            for name in [n for n in current if n not in live_now and n != active]:
+                await self._unserve_profile(name, current.pop(name))
+                result["removed"].append(name)
+                added = [n for n in added if n != name]
             self._record_served_profiles(active, list(current.items()))
             if added:
                 await self._after_profiles_added([(n, current[n]) for n in added])
@@ -180,7 +187,8 @@ class GatewayProfileReconcileMixin:
         adapters = (getattr(self, "_profile_adapters", None) or {}).pop(name, None) or {}
         for platform, adapter in list(adapters.items()):
             await self._bounded_adapter_teardown(adapter, platform, profile=name)
-            _write_runtime_status_quiet(platform=f"{name}:{platform.value}", platform_state="stopped")
+        # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
+        _write_runtime_status_quiet(drop_profile_platforms=name)
         for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile"):
             store = getattr(self, attr, None)
             if isinstance(store, dict):

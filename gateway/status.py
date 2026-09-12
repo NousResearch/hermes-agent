@@ -805,19 +805,23 @@ def write_runtime_status(
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
     ingress_url: Any = _UNSET, clear_profile_platforms: bool = False,
+    drop_profile_platforms: Optional[str] = None,
 ) -> None:
-    """Persist gateway runtime health information for diagnostics/status."""
+    """Persist gateway runtime health information for diagnostics/status. ``drop_profile_platforms``
+    removes one deleted profile's ``<profile>:<platform>`` entries (hot unroute)."""
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     previous_payload = copy.deepcopy(payload)
     current_record = _build_pid_record()
     payload.setdefault("platforms", {})
-    if clear_profile_platforms:
+    if clear_profile_platforms or drop_profile_platforms:
         # Secondary-profile entries are keyed ``<profile>:<platform>``. A fresh process must not
         # inherit them or /api/status stays degraded until every old adapter re-emits.
         platforms = payload["platforms"] if isinstance(payload["platforms"], dict) else {}
+        drop_prefix = f"{drop_profile_platforms}:" if drop_profile_platforms else None
         payload["platforms"] = {
-            k: v for k, v in platforms.items() if not isinstance(k, str) or ":" not in k
+            k: v for k, v in platforms.items()
+            if not isinstance(k, str) or ":" not in k or (drop_prefix is not None and not k.startswith(drop_prefix))
         }
     # Re-stamp identity + code fields on every write: the file can outlive its creator and the
     # top-level record must describe the CURRENT writer.

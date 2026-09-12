@@ -2493,6 +2493,31 @@ class TestTitleUniqueness:
         assert db.get_session("s1")["title"] is None
         assert db.get_session("s2")["title"] is None
 
+    def test_empty_ghost_session_does_not_block_title(self, db):
+        """Empty sessions (0 messages) should not block title reuse (#81888).
+        
+        Regression test: ghost sessions created by interrupted flows (e.g., desktop
+        session creation that never sent a message) would block rename attempts even
+        though they were invisible in the UI.
+        """
+        # Create a ghost session (0 messages) with a title
+        ghost_id = db.create_session("ghost", "desktop")
+        db.set_session_title(ghost_id, "Canada")
+        assert db.get_session(ghost_id)["message_count"] == 0
+        
+        # Create a real session with messages
+        real_id = db.create_session("real", "desktop")
+        db.append_message(real_id, "user", "Hello")
+        db.append_message(real_id, "assistant", "Hi there")
+        assert db.get_session(real_id)["message_count"] == 2
+        
+        # Should be able to rename the real session to "Canada" — ghost doesn't block
+        db.set_session_title(real_id, "Canada")
+        assert db.get_session(real_id)["title"] == "Canada"
+        
+        # Ghost session should still exist but be effectively invisible
+        assert db.get_session(ghost_id) is not None
+
 
 
 

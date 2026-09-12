@@ -138,10 +138,11 @@ def _write_config(cfg: dict, path: Path | None = None) -> None:
     """Persist ``cfg`` under the token refresh's cross-process lock. The object _read_config() returned
     has only its edits applied onto a fresh read of disk; a plain dict is written whole. A read that
     resolved to a seed file (~/.honcho or a profile) is written whole only while ``path`` does not exist."""
-    from plugins.memory.honcho.oauth import _config_refresh_lock, _read_config_strict
+    from plugins.memory.honcho.oauth import _config_refresh_lock, _read_config_strict, _refresh_lock
     from utils import atomic_json_write
     path = path or _local_config_path()
-    with _config_refresh_lock(path):
+    # The file lock is best-effort; _refresh_lock is what keeps an in-process refresh thread out.
+    with _refresh_lock, _config_refresh_lock(path):
         _refuse_unparseable(path)
         out = cfg
         if getattr(cfg, "path", None) == path:

@@ -35,6 +35,7 @@ def _make_args(**kwargs):
         "deliver": "log",
         "deliver_chat_id": "",
         "secret": "",
+        "profile": None,
         "payload": "",
         "script": "",
     }
@@ -65,6 +66,37 @@ class TestSubscribe:
         webhook_command(_make_args(webhook_action="subscribe", name="s"))
         secret = _load_subscriptions()["s"]["secret"]
         assert len(secret) > 20
+
+    def test_profile_binding_and_secret_survive_update(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.profiles.Path.home", lambda: tmp_path)
+        profile_dir = tmp_path / ".hermes" / "profiles" / "compta"
+        profile_dir.mkdir(parents=True)
+
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="notifier", profile="compta"
+        ))
+        created = _load_subscriptions()["notifier"]
+        first_secret = created["secret"]
+        assert created["profile"] == "compta"
+        assert "/p/compta/webhooks/notifier" in capsys.readouterr().out
+
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="notifier", description="updated"
+        ))
+        updated = _load_subscriptions()["notifier"]
+        assert updated["profile"] == "compta"
+        assert updated["secret"] == first_secret
+
+    def test_rejects_unknown_profile_without_replacing_subscription(self, capsys):
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="notifier", secret="original"
+        ))
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="notifier", profile="missing"
+        ))
+
+        assert "does not exist" in capsys.readouterr().out
+        assert _load_subscriptions()["notifier"]["secret"] == "original"
 
 
 class TestList:

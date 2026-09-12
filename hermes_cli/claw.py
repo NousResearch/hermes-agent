@@ -130,7 +130,10 @@ def _detect_openclaw_processes() -> list[str]:
     # ~/.openclaw/config.json, ``tail -f openclaw.log``) and aborted cleanup on idle hosts (#12648).
     # Mirror the Windows branch: exact binary names, plus node processes whose script mentions it.
     pids: list[str] = []
-    for probe in (["pgrep", "-x", "openclaw"], ["pgrep", "-x", "clawd"], ["pgrep", "-f", _OPENCLAW_NODE_CMDLINE_RE]):
+    # ``-x`` matches the 15-char comm: the gateway sets process.title="openclaw-gateway", which
+    # the kernel truncates to "openclaw-gatewa".
+    for probe in (["pgrep", "-x", "openclaw"], ["pgrep", "-x", "openclaw-gatewa"], ["pgrep", "-x", "clawd"],
+                  ["pgrep", "-f", _OPENCLAW_NODE_CMDLINE_RE]):
         result = _posix_probe(probe, 3)
         if result is not None and result.returncode == 0:
             pids.extend(result.stdout.split())

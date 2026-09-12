@@ -355,6 +355,7 @@ class TestDetectOpenclawProcesses:
             mock_subprocess.run.side_effect = [
                 MagicMock(returncode=1, stdout=""),  # systemctl
                 MagicMock(returncode=0, stdout="1234\n"),  # pgrep -x openclaw
+                MagicMock(returncode=1, stdout=""),  # pgrep -x openclaw-gatewa
                 MagicMock(returncode=1, stdout=""),  # pgrep -x clawd
                 MagicMock(returncode=0, stdout="1234\n5678\n"),  # node cmdline probe
             ]
@@ -374,6 +375,12 @@ class TestDetectOpenclawProcesses:
         bystander = subprocess.Popen(["bash", "-c", f"exec {idle} {tmp_path}/openclaw-notes.txt"])
         # argv[0] renamed to ``node`` running an openclaw script: the real launch shape.
         node_like = subprocess.Popen(["bash", "-c", f"exec -a node {idle} {tmp_path}/openclaw/entry.js"])
+        # The gateway sets process.title="openclaw-gateway" (comm truncates to 15 chars); a
+        # copied interpreter with that file name yields the same comm.
+        import shutil
+        titled_bin = tmp_path / "openclaw-gateway"
+        shutil.copy2(sys.executable, titled_bin)
+        titled = subprocess.Popen([str(titled_bin), "-c", "import time; time.sleep(30)"])
         try:
             time.sleep(0.3)
             with patch.object(claw_mod, "_posix_probe", wraps=claw_mod._posix_probe) as probe:
@@ -382,9 +389,10 @@ class TestDetectOpenclawProcesses:
             assert len(result) == 1
             pids = result[0].split("PIDs: ")[1].rstrip(")").split(", ")
             assert str(node_like.pid) in pids
+            assert str(titled.pid) in pids
             assert str(bystander.pid) not in pids
         finally:
-            for proc in (bystander, node_like):
+            for proc in (bystander, node_like, titled):
                 proc.kill()
                 proc.wait()
 

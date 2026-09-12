@@ -1,11 +1,13 @@
-import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import { AssistantRuntimeProvider, MessagePrimitive, type ThreadMessage, ThreadPrimitive, useExternalStoreRuntime } from '@assistant-ui/react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $reasoningCollapsedByDefault, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
+
+import { MESSAGE_PARTS_COMPONENTS } from './message-parts'
 
 import { Thread } from '.'
 
@@ -470,6 +472,30 @@ describe('assistant-ui streaming renderer', () => {
   beforeEach(() => {
     resizeObservers.clear()
     $reasoningCollapsedByDefault.set(false)
+    setShowReasoningFromConfig(undefined)
+  })
+
+  it.each([true, false])('honors reasoning visibility %j for grouped and standalone parts', async enabled => {
+    setShowReasoningFromConfig(enabled)
+
+    const UngroupedMessage = () => <MessagePrimitive.Root>
+      <MessagePrimitive.Parts components={{ Reasoning: MESSAGE_PARTS_COMPONENTS.Reasoning }} />
+    </MessagePrimitive.Root>
+
+    const { container } = render(<>
+      <RunningReasoningHarness />
+      <ThreadRuntime messages={[assistantReasoningMessage('standalone reasoning', true)]}>
+        <ThreadPrimitive.Root>
+          <ThreadPrimitive.Messages components={{ AssistantMessage: UngroupedMessage, UserMessage: () => null }} />
+        </ThreadPrimitive.Root>
+      </ThreadRuntime>
+    </>)
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-slot="aui_reasoning-text"]')).toHaveLength(enabled ? 2 : 0)
+    })
+    expect(within(container).queryByRole('button', { name: /thinking/i }) !== null).toBe(enabled)
+    expect(container.textContent?.includes('standalone reasoning')).toBe(enabled)
   })
 
   it('renders assistant text incrementally before completion', async () => {

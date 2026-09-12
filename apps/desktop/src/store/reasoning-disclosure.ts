@@ -12,3 +12,16 @@ $reasoningCollapsedByDefault.subscribe(value => persistBoolean(REASONING_COLLAPS
 export function setReasoningCollapsedByDefault(value: boolean) {
   $reasoningCollapsedByDefault.set(value)
 }
+
+// Mirrors backend display.show_reasoning; omission follows DEFAULT_CONFIG.
+export const $showReasoning = atom(true)
+
+export function setShowReasoningFromConfig(value: unknown): void {
+  const enabled = value === undefined
+    ? true
+    : typeof value === 'string'
+      ? ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
+      : Boolean(value)
+
+  $showReasoning.set(enabled)
+}

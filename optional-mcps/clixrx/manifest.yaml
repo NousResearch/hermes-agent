@@ -1,0 +1,42 @@
+manifest_version: 1
+
+name: clixrx
+description: Compare US prescription discount prices with a free reusable savings card.
+source: https://clixrx.com/connect
+
+# Vendor-hosted Streamable HTTP MCP; no local process or credentials required.
+transport:
+  type: http
+  url: https://mcp.clixrx.com/mcp
+
+auth:
+  type: none
+
+# The ordinary price-shopping workflow, including card recovery when needed.
+# Both tools can issue a reusable card and are declared non-read-only by the server.
+# Lower-level, legacy coupon, and diagnostic tools remain opt-in.
+tools:
+  default_enabled:
+    - find_prescription_discount_prices
+    - get_discount_card
+
+suggest:
+  keywords:
+    - clixrx
+  hosts:
+    - clixrx.com
+
+post_install: |
+  No account, API key, or OAuth login is required. Restart the session to use
+  the tools.
+
+  Use for an explicit request to compare prescription discount prices in the
+  United States. Ask for missing medication, strength, form, exact quantity,
+  and ZIP details; do not infer them from a profile or unrelated memory.
+
+  A price lookup returns participating-pharmacy estimates and a free reusable
+  savings card, issuing a card when needed. Respect host-required approvals.
+  It does not purchase medication, select a pharmacy, or send a message.
+
+  ClixRx is a prescription discount plan, not insurance, a pharmacy, or medical
+  advice. The pharmacy confirms the final price. Privacy: https://clixrx.com/privacy

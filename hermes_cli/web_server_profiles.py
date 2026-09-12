@@ -327,6 +327,35 @@ def _aux_usage_rows(db, cutoff: float) -> List[Dict[str, Any]]:
         return []
 
 
+def _aux_usage_daily(db, cutoff: float) -> List[Dict[str, Any]]:
+    """Auxiliary usage in the window, bucketed by the day the owning session started.
+
+    The same ``task != ''`` slice as :func:`_aux_usage_rows` — auxiliary calls never touch the
+    ``sessions`` summary row, so callers ADD these figures to a sessions-derived one and must
+    never count sessions from them. [] when the table predates the task column (older DB opened
+    read-only by newer code). See #23270.
+    """
+    try:
+        cur = db._conn.execute("""
+            SELECT date(s.started_at, 'unixepoch') as day,
+                   COALESCE(SUM(u.input_tokens), 0) as input_tokens,
+                   COALESCE(SUM(u.output_tokens), 0) as output_tokens,
+                   COALESCE(SUM(u.cache_read_tokens), 0) as cache_read_tokens,
+                   COALESCE(SUM(u.reasoning_tokens), 0) as reasoning_tokens,
+                   COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
+                   COALESCE(SUM(u.actual_cost_usd), 0) as actual_cost,
+                   SUM(COALESCE(u.api_call_count, 0)) as api_calls
+            FROM session_model_usage u
+            JOIN sessions s ON s.id = u.session_id
+            WHERE s.started_at > ? AND u.task != ''
+            GROUP BY day ORDER BY day
+        """, (cutoff,))
+        return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        _log.debug("auxiliary daily scan failed: %s", exc)
+        return []
+
+
 def _merge_aux_into_by_model(
     by_model: List[Dict[str, Any]], aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fold aux usage rows into the sessions-derived per-model list. Aux usage lives only in

@@ -292,3 +292,96 @@ class TestInsightsAuxTotals:
         models = {m["model"] for m in report["models"]}
         assert {"main-model", "glm-5"} <= models
 
+
+@pytest.fixture
+def home_db(_isolate_hermes_home):
+    """state.db at the isolated HERMES_HOME — the path the dashboard analytics routes open."""
+    from hermes_constants import get_hermes_home
+
+    db = SessionDB(get_hermes_home() / "state.db")
+    yield db
+    db.close()
+
+
+def _seed_main_and_aux(db):
+    """One session: 1 000/100 main-loop tokens plus a 300/30 ``vision`` aux call."""
+    db.create_session("s1", source="cli")
+    db.update_token_counts(
+        "s1", input_tokens=1000, output_tokens=100,
+        model="main-model", billing_provider="nous", api_call_count=1,
+    )
+    db.append_message("s1", role="user", content="hello")
+    db.record_auxiliary_usage(
+        "s1", "vision", model="vision-model", billing_provider="gemini",
+        input_tokens=300, output_tokens=30, estimated_cost_usd=0.03,
+    )
+
+
+class TestAuxUsageInTotals:
+    """Readers presenting a *total* must add the auxiliary rows: the ``sessions`` counters are the
+    main agent loop only, so each of these reported less than the sum of its own lines (#23270)."""
+
+    def test_usage_totals_adds_aux_tokens_and_estimate(self, home_db):
+        _seed_main_and_aux(home_db)
+
+        totals = home_db.usage_totals()
+
+        # 1 000 + 100 main loop, 300 + 30 vision
+        assert totals["tokens"] == 1430
+        assert totals["cost_usd"] == pytest.approx(0.03)
+
+    def test_usage_totals_keeps_the_sessions_filters(self, home_db):
+        """The aux part joins the same filtered sessions, so a session that does not qualify
+        (below min_message_count) contributes neither figure."""
+        _seed_main_and_aux(home_db)
+
+        assert home_db.usage_totals(min_message_count=2) == {"tokens": 0, "cost_usd": 0.0}
+
+    def test_session_auxiliary_tokens_counts_every_counter(self, home_db):
+        db = home_db
+        db.create_session("s1", source="cli")
+        db.record_auxiliary_usage(
+            "s1", "compression", model="m", input_tokens=10, output_tokens=1,
+            cache_read_tokens=100, cache_write_tokens=1000, reasoning_tokens=5,
+        )
+
+        assert db.get_session_auxiliary_tokens("s1") == 1116
+        assert db.get_session_auxiliary_tokens("other") == 0
+
+    def test_analytics_totals_match_their_own_by_model_lines(self, home_db):
+        from hermes_cli.web_routers.analytics import _get_usage_analytics
+
+        _seed_main_and_aux(home_db)
+
+        data = _get_usage_analytics(days=7)
+        by_model = {row["model"]: row for row in data["by_model"]}
+        # the aux-only vision model is its own line ...
+        assert by_model["vision-model"]["input_tokens"] == 300
+        assert by_model["main-model"]["input_tokens"] == 1000
+        # ... and the total is the sum of those lines, not the sessions-only figure
+        assert data["totals"]["total_input"] == sum(row["input_tokens"] for row in data["by_model"])
+        assert data["totals"]["total_output"] == sum(row["output_tokens"] for row in data["by_model"])
+        assert data["totals"]["total_api_calls"] == sum(row["api_calls"] for row in data["by_model"])
+        assert data["totals"]["total_estimated_cost"] == pytest.approx(
+            sum(row["estimated_cost"] for row in data["by_model"])
+        )
+        # daily carries the same aux tokens, once
+        assert sum(row["input_tokens"] for row in data["daily"]) == 1300
+        assert sum(row["output_tokens"] for row in data["daily"]) == 130
+        assert [row["task"] for row in data["by_task"]] == ["vision"]
+
+    def test_models_totals_match_their_own_cards(self, home_db):
+        from hermes_cli.web_routers.analytics import _get_models_analytics
+
+        _seed_main_and_aux(home_db)
+
+        data = _get_models_analytics(days=7)
+
+        assert {card["model"] for card in data["models"]} == {"main-model", "vision-model"}
+        assert data["totals"]["distinct_models"] == len(data["models"])
+        columns = {"total_input": "input_tokens", "total_output": "output_tokens",
+                   "total_cache_read": "cache_read_tokens", "total_reasoning": "reasoning_tokens",
+                   "total_estimated_cost": "estimated_cost", "total_actual_cost": "actual_cost",
+                   "total_api_calls": "api_calls"}
+        for total_key, card_key in columns.items():
+            assert data["totals"][total_key] == sum(card.get(card_key) or 0 for card in data["models"])

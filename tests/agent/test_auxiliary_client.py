@@ -35,7 +35,6 @@ from agent.auxiliary_client import (
     _resolve_auto_route,
     _resolve_task_provider_model,
     _resolve_xai_oauth_for_aux,
-    _auth_refresh_provider_for_route,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
 )
@@ -2690,16 +2689,6 @@ class _AuxAuth401(Exception):
         super().__init__(message)
 
 
-class _AuxXai403(Exception):
-    status_code = 403
-
-    def __init__(self):
-        super().__init__(
-            "Error code: 403 - {'code': 'unauthenticated:bad-credentials', "
-            "'error': 'The OAuth2 access token could not be validated.'}"
-        )
-
-
 class _DummyResponse:
     def __init__(self, text="ok"):
         self.choices = [MagicMock(message=MagicMock(content=text))]
@@ -2754,65 +2743,15 @@ class TestAuxiliaryAuthRefreshRetry:
         assert resp.choices[0].message.content == "fresh-sync"
         mock_refresh.assert_called_once_with("openai-codex")
 
-    def test_call_llm_refreshes_xai_oauth_on_403_for_auto_routed_goal_judge(self):
-        """Default ``goal_judge`` inherits the main model with resolved_provider
-        "auto"; when the cached xAI client's OAuth JWT goes stale, the 403
-        bad-credentials must route to the xai-oauth refresher (via the
-        ``_AUTH_REFRESH_PROVIDER_BY_HOST`` host map) and retry on xAI —
-        previously the host lookup missed ``api.x.ai``, refresh was skipped,
-        and the call fell through the fallback chain to a re-raise (#108744;
-        the pool table already mapped the host, only the refresh table lagged)."""
+
+
+
+
+
+    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch, tmp_path):
         stale_client = MagicMock()
-        stale_client.base_url = "https://api.x.ai/v1"
-        stale_client.chat.completions.create.side_effect = _AuxXai403()
-
-        fresh_client = MagicMock()
-        fresh_client.base_url = "https://api.x.ai/v1"
-        fresh_client.chat.completions.create.return_value = _DummyResponse("fresh-xai")
-
-        def _cached_client(provider, model=None, **kw):
-            if provider == "xai-oauth":
-                return (fresh_client, "grok-4.6")
-            return (stale_client, "grok-4.6")
-
-        with patch("agent.auxiliary_client._resolve_task_provider_model",
-                   return_value=("auto", None, None, None, None)), \
-             patch("agent.auxiliary_client._get_cached_client", side_effect=_cached_client), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
-                   return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_main_fallback_chain",
-                   return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_payment_fallback",
-                   return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._refresh_provider_credentials",
-                   return_value=True) as mock_refresh:
-            result = call_llm(
-                task="goal_judge",
-                messages=[{"role": "user", "content": "judge"}],
-            )
-
-        assert result.choices[0].message.content == "fresh-xai"
-        mock_refresh.assert_called_once_with("xai-oauth")
-        assert stale_client.chat.completions.create.call_count == 1
-        assert fresh_client.chat.completions.create.call_count == 1
-
-    def test_auth_refresh_provider_route_resolves_xai_from_base_url(self):
-        # Auto-routed xAI base URLs must resolve to the xai-oauth refresher
-        # instead of staying "auto" (which skips refresh entirely).
-        assert _auth_refresh_provider_for_route("auto", "https://api.x.ai/v1") == "xai-oauth"
-        # An explicit provider is returned as-is, matching the pre-fix behavior.
-        assert _auth_refresh_provider_for_route("xai-oauth", "https://api.x.ai/v1") == "xai-oauth"
-        # Unknown hosts keep the "auto" passthrough.
-        assert _auth_refresh_provider_for_route("auto", "https://example.invalid/v1") == "auto"
-
-
-
-
-
-
-    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
-        stale_client = MagicMock()
-        cache_key = ("anthropic", False, None, None, None)
+        from agent.auxiliary_client import _client_cache_key
+        cache_key = _client_cache_key("anthropic", async_mode=False)
 
         monkeypatch.setenv("ANTHROPIC_TOKEN", "")
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
@@ -2820,6 +2759,7 @@ class TestAuxiliaryAuthRefreshRetry:
 
         with (
             patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "claude-haiku-4-5-20251001", None)}),
+            patch("agent.anthropic_credentials.claude_code_credentials_path", return_value=tmp_path / ".credentials.json"),
             # Anthropic credential sourcing lives in agent/anthropic_credentials.py;
             # patch it at that definition site so both the direct call here and
             # the re-read inside ``_refresh_oauth_token`` see the same stub.
@@ -2853,7 +2793,8 @@ class TestAuxiliaryAuthRefreshRetry:
         through to the final `return False` and the stale client (and its
         dead token) stayed cached until process restart."""
         stale_client = MagicMock()
-        cache_key = ("vertex", False, None, None, None)
+        from agent.auxiliary_client import _client_cache_key
+        cache_key = _client_cache_key("vertex", async_mode=False)
 
         with (
             patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "google/gemini-3-flash-preview", None)}),

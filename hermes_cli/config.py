@@ -30,7 +30,7 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
-from utils import atomic_replace, atomic_yaml_write, fast_safe_load
+from utils import atomic_replace, atomic_roundtrip_yaml_save, atomic_yaml_write, fast_safe_load
 
 logger = logging.getLogger(__name__)
 
@@ -1957,8 +1957,26 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
 
 
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
-    """Fail-closed atomic write for ``config.yaml`` (``require_readable_config_before_write`` first)."""
+    """Fail-closed atomic write for ``config.yaml`` (``require_readable_config_before_write`` first).
+
+    Existing files go through ruamel round-trip mode so hand-written comments survive. Every writer
+    here re-serialises the WHOLE document, and the PyYAML dumper cannot represent comments, so a
+    single migration or gateway config write silently erases the user's rationale for non-default
+    settings (#92554). New files keep the PyYAML path so ``extra_content`` example blocks still
+    land on a fresh install.
+
+    ``hermes config set`` is deliberately NOT routed here -- #72581 fixes that path with a
+    narrower before/after diff apply.
+    """
     require_readable_config_before_write(config_path)
+    if isinstance(data, dict) and os.path.exists(config_path):
+        try:
+            atomic_roundtrip_yaml_save(config_path, data)
+            return
+        except ImportError:
+            # ruamel is declared in pyproject, but #29655 reports installs without it.
+            # Losing comments beats refusing to write the config at all.
+            logger.warning("ruamel.yaml unavailable; config comments will not be preserved")
     atomic_yaml_write(config_path, data, **kwargs)
 
 
@@ -2314,7 +2332,7 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
+        atomic_config_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)

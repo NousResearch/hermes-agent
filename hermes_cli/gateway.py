@@ -1097,11 +1097,8 @@ def _systemctl_show(properties: tuple[str, ...], *, system: bool) -> dict[str, s
     return _parse_kv_pairs(result.stdout.splitlines()) if result.returncode == 0 else {}
 
 
-def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
-    """``HERMES_HOME`` from the on-disk unit file — what refresh/compare already read, and reliable under ``sudo``."""
-    unit_path = get_systemd_unit_path(system=system)
-    if not unit_path.exists():
-        return None
+def _hermes_home_pinned_by_unit(unit_path: Path) -> str | None:
+    """``HERMES_HOME`` pinned by the unit file at *unit_path*, or None when absent/unreadable."""
     try:
         text = unit_path.read_text(encoding="utf-8")
     except OSError:
@@ -1113,6 +1110,11 @@ def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
             if body.startswith("HERMES_HOME="):
                 return body.split("=", 1)[1].strip().strip('"') or None
     return None
+
+
+def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
+    """``HERMES_HOME`` from the on-disk unit file - what refresh/compare already read, and reliable under ``sudo``."""
+    return _hermes_home_pinned_by_unit(get_systemd_unit_path(system=system))
 
 
 def _sync_hermes_home_from_systemd_unit(system: bool) -> None:
@@ -1937,6 +1939,8 @@ def _windows_gateway_breakaway_state() -> bool | None:
 _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
+_SYSTEM_UNIT_DIR = Path("/etc/systemd/system")
+
 
 def _profile_name_from_home(home: Path, default: Path) -> str | None:
     """Profile name when ``home`` is ``<default>/profiles/<name>`` with a service-safe name, else None."""
@@ -1971,20 +1975,41 @@ def _native_service_homes() -> set[Path]:
     return homes
 
 
-def _profile_suffix() -> str:
-    """Service-name suffix for HERMES_HOME: "" for a native default home (``~/.hermes``), the profile
-    name for ``<root>/profiles/<name>``, else a short hash of the path.
+def _bare_unit_pinned_home() -> Path | None:
+    """Resolved ``HERMES_HOME`` pinned by an installed ``hermes-gateway.service``, or None.
 
-    The bare name is reserved for the process user's native default and, under sudo, the invoking user's
-    native default. It deliberately does not use ``get_default_hermes_root()``: that helper treats any
-    HERMES_HOME outside ``~/.hermes`` (Docker ``/opt/data``, a temp dir) as "the root itself", which let a
-    temp-home harness resolve to the default profile's ``hermes-gateway`` unit and uninstall the
-    production gateway. Service names are host-wide identities; only real default homes own the bare
-    one."""
+    The installed unit is the authority on which home owns the BARE name: under ``sudo`` the naming
+    basis moves MID-COMMAND (sudo strips HERMES_HOME and sets HOME=/root, then
+    ``_sync_hermes_home_from_systemd_unit()`` adopts the unit's own HERMES_HOME into ``os.environ``),
+    so a basis derived from the process would name one unit before the adoption and another after it.
+    Reading it from the unit is stable for every elevated identity, including ``sudo -i`` and cron
+    where SUDO_USER is absent.
+    """
+    pinned = _hermes_home_pinned_by_unit(_SYSTEM_UNIT_DIR / f"{_SERVICE_BASE}.service")
+    if not pinned:
+        return None
+    try:
+        return Path(pinned).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _profile_suffix() -> str:
+    """Service-name suffix for HERMES_HOME: "" for a home that owns the bare name, the profile name for
+    ``<root>/profiles/<name>``, else a short hash of the path.
+
+    Bare-name owners: this process's platform-native default (``~/.hermes``), under sudo the invoking
+    user's native default, and the home pinned by an installed ``hermes-gateway.service``. The bare name
+    is deliberately NOT tied to ``get_default_hermes_root()``: that helper treats any HERMES_HOME outside
+    ``~/.hermes`` (Docker ``/opt/data``, a temp dir) as "the root itself", which let a temp-home harness
+    resolve to the default profile's ``hermes-gateway`` unit and uninstall the production gateway. Service
+    names are host-wide identities; a home with no installed bare unit and no native default keeps its
+    own suffix.
+    """
     import hashlib
     from hermes_constants import get_default_hermes_root
     home = get_hermes_home().resolve()
-    if home in _native_service_homes():
+    if home in _native_service_homes() or home == _bare_unit_pinned_home():
         return ""
     name = _profile_name_from_home(home, get_default_hermes_root().resolve())
     return name or hashlib.sha256(str(home).encode()).hexdigest()[:8]
@@ -2020,7 +2045,7 @@ def get_service_name() -> str:
 def get_systemd_unit_path(system: bool = False) -> Path:
     name = get_service_name()
     if system:
-        return Path("/etc/systemd/system") / f"{name}.service"
+        return _SYSTEM_UNIT_DIR / f"{name}.service"
     return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"
 
 

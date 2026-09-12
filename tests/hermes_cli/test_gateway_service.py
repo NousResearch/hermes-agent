@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import hermes_constants
 
 pwd = pytest.importorskip("pwd")
 grp = pytest.importorskip("grp")
@@ -2770,3 +2771,72 @@ class TestTimeoutStopSecCoversCronFloor:
             env={"HERMES_CRON_DRAIN_TIMEOUT": "200"},
         )
         assert "TimeoutStopSec=240" in unit
+
+
+class TestUnitAnchoredServiceIdentity:
+    """The installed ``hermes-gateway.service`` owns the bare name: under ``sudo`` the naming basis moves
+    mid-command when ``_sync_hermes_home_from_systemd_unit()`` adopts the unit's HERMES_HOME (#108674)."""
+
+    def test_service_name_survives_hermes_home_adoption_from_unit(self, tmp_path, monkeypatch):
+        alice_home = tmp_path / "alice" / ".hermes"
+        alice_home.mkdir(parents=True)
+        root_home = tmp_path / "root" / ".hermes"
+        root_home.mkdir(parents=True)
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+        unit_path = unit_dir / f"{gateway_cli._SERVICE_BASE}.service"
+        unit_path.write_text(f'[Service]\nEnvironment="HERMES_HOME={alice_home}"\n', encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        pre_name = gateway_cli.get_service_name()
+        monkeypatch.setenv("HERMES_HOME", str(alice_home))
+        assert gateway_cli.get_service_name() == pre_name
+
+    def test_unit_pinned_home_owns_the_bare_name(self, tmp_path, monkeypatch):
+        alice_home = tmp_path / "alice" / ".hermes"
+        alice_home.mkdir(parents=True)
+        root_home = tmp_path / "root" / ".hermes"
+        root_home.mkdir(parents=True)
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+        unit_path = unit_dir / f"{gateway_cli._SERVICE_BASE}.service"
+        unit_path.write_text(f'[Service]\nEnvironment="HERMES_HOME={alice_home}"\n', encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
+        monkeypatch.setenv("HERMES_HOME", str(alice_home))
+        assert gateway_cli.get_service_name() == gateway_cli._SERVICE_BASE
+        assert gateway_cli.get_systemd_unit_path(system=True) == unit_path
+
+    def test_foreign_home_without_installed_unit_keeps_its_suffix(self, tmp_path, monkeypatch):
+        unit_dir = tmp_path / "empty"
+        unit_dir.mkdir()
+        foreign = tmp_path / "elsewhere"
+        foreign.mkdir()
+        root_home = tmp_path / "root" / ".hermes"
+        root_home.mkdir(parents=True)
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
+        monkeypatch.setenv("HERMES_HOME", str(foreign))
+        name = gateway_cli.get_service_name()
+        assert name != gateway_cli._SERVICE_BASE
+        assert name.startswith(gateway_cli._SERVICE_BASE + "-")
+
+    def test_home_not_pinned_by_unit_keeps_its_suffix(self, tmp_path, monkeypatch):
+        alice_home = tmp_path / "alice" / ".hermes"
+        alice_home.mkdir(parents=True)
+        bob_home = tmp_path / "bob" / ".hermes"
+        bob_home.mkdir(parents=True)
+        root_home = tmp_path / "root" / ".hermes"
+        root_home.mkdir(parents=True)
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+        (unit_dir / f"{gateway_cli._SERVICE_BASE}.service").write_text(
+            f'[Service]\nEnvironment="HERMES_HOME={alice_home}"\n', encoding="utf-8"
+        )
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
+        monkeypatch.setenv("HERMES_HOME", str(bob_home))
+        name = gateway_cli.get_service_name()
+        assert name != gateway_cli._SERVICE_BASE
+        assert name.startswith(gateway_cli._SERVICE_BASE + "-")

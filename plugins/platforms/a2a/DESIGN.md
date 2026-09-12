@@ -62,12 +62,16 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
 - **input-required:** the platform hint tells the agent to start a reply with
   `[INPUT_REQUIRED]` when it needs clarification; the adapter maps that to
   `TASK_STATE_INPUT_REQUIRED` with the question in `status.message`.
-- **Push notifications:** config accepted inline in `message/send`
-  (`configuration.taskPushNotificationConfig`) or via the create method
-  (returns `configId` + `createdAt`). On terminal transition the callback
-  receives a v1.0 `StreamResponse` (`statusUpdate`) payload, HMAC-SHA256
-  signed (`X-A2A-Signature`, secret `A2A_PUSH_SECRET` falling back to the
-  bearer token), with SSRF-guarded callback URLs.
+- **Push notifications:** config accepted inline in `message/send` per
+  A2A Protocol 1.0 §3.2.2 `SendMessageConfiguration.taskPushNotificationConfig`
+  (JSON-RPC alias `configuration.pushNotificationConfig` also accepted) or
+  via §3.1.7 `tasks/pushNotificationConfig/create` (returns `configId` +
+  `createdAt`). On terminal transition the callback receives a v1.0
+  `StreamResponse` (`statusUpdate`) payload, HMAC-SHA256 signed
+  (`X-A2A-Signature`, secret `A2A_PUSH_SECRET` falling back to the bearer
+  token). Callback URLs are SSRF-guarded; loopback targets are allowed
+  only when this server is loopback-bound (same-host doors such as
+  `127.0.0.1:3979/push/…`).
 
 ## v1.0 wire format notes
 - Task states / roles are SCREAMING_SNAKE_CASE (TASK_STATE_*, ROLE_*).

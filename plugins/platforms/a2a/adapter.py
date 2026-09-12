@@ -718,8 +718,14 @@ class A2AAdapter(BasePlatformAdapter):
         return _ok(req_id, protocol.TaskStore.to_task(rec))
 
     def _register_inline_push(self, task_id: str, params: dict, agent: Optional[dict] = None) -> None:
-        """v1.0: message/send can carry configuration.taskPushNotificationConfig."""
-        cfg = (params.get("configuration") or {}).get("taskPushNotificationConfig") or {}
+        """A2A 1.0 §3.2.2: message/send carries configuration.taskPushNotificationConfig.
+
+        JSON-RPC peers also send the v0.3 name ``configuration.pushNotificationConfig``.
+        """
+        conf = params.get("configuration") or {}
+        if not isinstance(conf, dict):
+            return
+        cfg = conf.get("taskPushNotificationConfig") or conf.get("pushNotificationConfig") or {}
         url = (cfg.get("url") or (cfg.get("pushNotificationConfig") or {}).get("url") or "") if isinstance(cfg, dict) else ""
         if url:
             self.tasks.set_push_config(task_id, str(url), *self._scope_for_agent(agent))
@@ -760,7 +766,8 @@ class A2AAdapter(BasePlatformAdapter):
         callback_url = self.tasks.pop_push_url(task_id)
         if not callback_url:
             return
-        if not security.is_safe_callback_url(callback_url, localhost_mode=self._security_context.localhost_only()):
+        if not security.is_safe_callback_url(
+                callback_url, localhost_mode=self._security_context.allow_loopback_callbacks()):
             return fail("blocked — unsafe callback URL: %s", callback_url)
         payload = protocol.status_update(task_id, context_id, state, (reply or "")[:2000])
         headers = {"Content-Type": "application/json"}

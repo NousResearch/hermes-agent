@@ -73,6 +73,16 @@ class A2ASecurityContext:
     def localhost_only(self) -> bool:
         return not (self.bearer_token or self.peer_tokens)
 
+    def allow_loopback_callbacks(self) -> bool:
+        """Loopback push URLs are safe only when this server cannot be reached remotely.
+
+        Peer tokens on a 127.0.0.1 bind (same-host loopback door) are same-host.
+        A tokened 0.0.0.0 bind must still refuse 127.0.0.1 callbacks (SSRF).
+        """
+        if self.localhost_only():
+            return True
+        return self.resolve_bind_host() in {"127.0.0.1", "localhost", "::1"}
+
     def resolve_bind_host(self) -> str:
         """Localhost unless a token is configured AND a wider host was asked for."""
         if self.requested_host in {"127.0.0.1", "localhost", "::1"}:

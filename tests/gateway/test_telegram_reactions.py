@@ -53,6 +53,75 @@ def test_reactions_enabled_when_set_true(monkeypatch):
     assert adapter._reactions_enabled() is True
 
 
+def test_explicit_env_wins_over_materialized_yaml_default(monkeypatch):
+    """TELEGRAM_REACTIONS=true must beat the stock ``reactions: false`` in config.yaml (#109032).
+
+    Fresh installs materialize the whole default config tree, so ``_apply_yaml_config`` seeds
+    ``extra["reactions"] = False`` even when the user never chose a value; the reader must still
+    honour the explicitly set env var, like ``yaml_env_setter`` documents for the bridge.
+    """
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    adapter.config.extra["reactions"] = False
+    assert adapter._reactions_enabled() is True
+
+
+def test_bridged_yaml_false_without_explicit_env_still_disables(monkeypatch):
+    """With no explicit env the YAML→env bridge writes 'false'; reactions stay off."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    adapter = _make_adapter()
+    adapter.config.extra["reactions"] = False
+    assert adapter._reactions_enabled() is False
+
+
+def test_yaml_true_enables_when_env_unset(monkeypatch):
+    """An explicit ``reactions: true`` in config.yaml enables reactions without any env var."""
+    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    adapter = _make_adapter()
+    adapter.config.extra["reactions"] = True
+    assert adapter._reactions_enabled() is True
+
+
+def test_explicit_env_false_wins_over_yaml_true(monkeypatch):
+    """An explicit TELEGRAM_REACTIONS=false also wins over a YAML ``reactions: true``."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    adapter = _make_adapter()
+    adapter.config.extra["reactions"] = True
+    assert adapter._reactions_enabled() is False
+
+
+def test_scoped_miss_does_not_leak_default_profile_env(monkeypatch):
+    """Under multiplex a scoped miss must not read another profile's process-env value (#72348)."""
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")  # default profile's bridged value
+    adapter = _make_adapter()
+    adapter.config.extra["reactions"] = False  # this profile's own YAML
+    set_multiplex_active(True)
+    token = set_secret_scope({"TELEGRAM_BOT_TOKEN": "222:b2"})
+    try:
+        assert adapter._reactions_enabled() is False
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(False)
+
+
+def test_scoped_env_hit_wins_over_own_yaml(monkeypatch):
+    """A secondary profile's own scoped TELEGRAM_REACTIONS=true beats its YAML ``reactions: false``."""
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")  # default profile's value
+    adapter = _make_adapter()
+    adapter.config.extra["reactions"] = False
+    set_multiplex_active(True)
+    token = set_secret_scope({"TELEGRAM_BOT_TOKEN": "222:b2", "TELEGRAM_REACTIONS": "true"})
+    try:
+        assert adapter._reactions_enabled() is True
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(False)
+
+
 # ── _set_reaction ────────────────────────────────────────────────────
 
 

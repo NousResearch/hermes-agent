@@ -466,11 +466,14 @@ def image_generate_tool(
         upscaled_count = sum(1 for img in formatted_images if img.get("upscaled"))
         logger.info("Generated %s image(s) in %.1fs (%s upscaled) via %s [%s]",
                     len(formatted_images), generation_time, upscaled_count, endpoint, modality)
+
+        from agent.image_gen_provider import _maybe_rewrite_image_url
+
         debug_call_data["success"] = True
         debug_call_data["images_generated"] = len(formatted_images)
         return finish(generation_time, {
             "success": True,
-            "image": formatted_images[0]["url"],
+            "image": _maybe_rewrite_image_url(formatted_images[0]["url"]),
             "modality": modality,
             "upscaled": bool(formatted_images[0].get("upscaled"))})
     except Exception as e:

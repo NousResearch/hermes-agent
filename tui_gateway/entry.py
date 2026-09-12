@@ -237,6 +237,30 @@ def _write_or_exit(payload: dict, reason: str) -> None:
 
 
 def main():
+    # The TUI gateway is a long-lived headless process (no CLI main() ran),
+    # so without this its log records never reach agent.log/gui.log. "gui"
+    # mode adds the gui.log handler used by dashboard/TUI components.
+    try:
+        from hermes_logging import setup_logging
+
+        setup_logging(mode="gui")
+    except Exception:
+        pass
+
+    # Register declarative shell hooks from cli-config.yaml — parity with
+    # the classic gateway, which does the same at startup. The TUI gateway
+    # has no TTY consent prompt of its own; register_from_config resolves
+    # the effective accept value from HERMES_ACCEPT_HOOKS / the
+    # hooks_auto_accept config key itself.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        _hooks_cfg = load_config()
+        register_from_config(_hooks_cfg, accept_hooks=False)
+    except Exception:
+        logger.debug("shell-hook registration failed in TUI gateway", exc_info=True)
+
     _install_sidecar_publisher()
 
     # The heartbeat row lets the orphan sweep tell "live but idle" from "truly orphaned",

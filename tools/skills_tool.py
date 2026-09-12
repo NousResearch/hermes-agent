@@ -371,7 +371,9 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
     for sub, globs, recursive, files_only in _LINKED_FILE_SPECS if skill_dir else ():
         base = skill_dir / sub
         found = [
-            str(f.relative_to(skill_dir)) for g in globs if base.exists()
+            # Forward slashes even on Windows: these paths cross into tool
+            # results and model-visible text where backslashes break matching.
+            str(f.relative_to(skill_dir)).replace("\\", "/") for g in globs if base.exists()
             for f in (base.rglob(g) if recursive else base.glob(g))
             if not files_only or f.is_file()]
         if found:
@@ -506,6 +508,10 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
     """Warn (never block) when loaded from outside the trusted dirs (project + local + external)
     and/or when common prompt-injection patterns appear."""
     trusted_dirs = [active_skills_dir.resolve()]
+    with suppress(Exception):
+        env_home = os.environ.get("HERMES_HOME")
+        if env_home:
+            trusted_dirs.append(Path(env_home).resolve() / "skills")
     with suppress(Exception):
         trusted_dirs.extend(d.resolve() for d in all_dirs)
     warnings = []

@@ -121,8 +121,9 @@ from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.base import (
-    MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, is_network_accessible, validate_media_delivery_path)
-from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+    MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, is_network_accessible, validate_media_delivery_path,
+    IMAGE_CACHE_DIR,
+)
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
@@ -3675,6 +3676,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
         def _run():
             from gateway.session_context import clear_session_vars
+            from agent.image_gen_provider import (
+                reset_image_serve_base_url,
+                set_image_serve_base_url,
+            )
+
             with self._profile_scope(request_profile):
                 tokens = self._bind_api_server_session(
                     chat_id=session_id or "", session_key=gateway_session_key or session_id or "",
@@ -3682,6 +3688,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     browser_control_principal=request_browser_control_principal,
                     browser_control_transport_family=request_browser_control_transport_family,
                     session_history_delivery=session_history_delivery)
+                img_token = set_image_serve_base_url(
+                    getattr(self, "image_serve_base_url", None)
+                )
                 agent = None
                 try:
                     agent = self._create_agent(
@@ -3751,7 +3760,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         if bind_declared_conversation:
                             self._bind_declared_conversation(
                                 getattr(agent, "session_id", None) or session_id, gateway_session_key)
-                    clear_session_vars(tokens)
+                    try:
+                        reset_image_serve_base_url(img_token)
+                    finally:
+                        clear_session_vars(tokens)
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
         try:
@@ -3894,8 +3906,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             for method, path, handler in self._http_route_table():
                 self._app.router.add_route(method, path, handler)
                 self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
-            # After native routes: Relay bootstrap shims feature-detect on this key and must
-            # no-op rather than shadow the native session-control handlers.
+
+            # Serve cached generated images over HTTP so API clients can fetch
+            # them by URL instead of a server-local filesystem path.
+            # aiohttp >=3.9 raises ValueError from add_static() when the
+            # directory is missing, so create it first — a fresh install (or
+            # a fresh HERMES_HOME) has never generated an image.
+            if IMAGE_CACHE_DIR:
+                IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                self._app.router.add_static("/images/", str(IMAGE_CACHE_DIR), show_index=False)
+            # Store the adapter after native routes are registered. Local Hermes-Relay
+            # bootstrap shims use this key as a feature-detection hook; registering
+            # native routes first lets those shims no-op instead of shadowing the
+            # upstream session-control handlers.
             self._app["api_server_adapter"] = self
             if self.gateway_runner is not None:
                 self._app["gateway_runner"] = self.gateway_runner
@@ -3958,6 +3981,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "config.yaml: platforms.api_server.port",
                     self.name, self._host, self._port, exc)
                 return False
+
+            # Remember the serving URL so image-generation responses can
+            # rewrite absolute local cache paths into /images/ URLs the API
+            # client can actually fetch. A wildcard bind serves from loopback.
+            serving_host = "127.0.0.1" if self._host in ("", "0.0.0.0", "::") else self._host
+            self.image_serve_base_url = f"http://{serving_host}:{self._port}"
+
             self._mark_connected()
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",

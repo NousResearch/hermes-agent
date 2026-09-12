@@ -78,7 +78,7 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        await gateway.request<{ status?: string }>('sudo.respond', {
+        await gateway.request<{ status?: string }>(request.respondMethod ?? 'sudo.respond', {
           password: value,
           request_id: request.requestId
         })
@@ -126,7 +126,7 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       <DialogContent showCloseButton={false}>
         <DialogHeader>
           <DialogTitle icon={Lock}>{copy.sudoTitle}</DialogTitle>
-          <DialogDescription>{copy.sudoDesc}</DialogDescription>
+          <DialogDescription>{request.description ?? copy.sudoDesc}</DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-3" onSubmit={onSubmit}>

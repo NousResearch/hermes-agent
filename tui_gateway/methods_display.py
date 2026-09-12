@@ -3,7 +3,10 @@
 ``display.status`` reports runtime + lease; ``display.start`` / ``display.stop`` manage the Xvnc/Xfce
 process; ``display.observe`` mints a single-use ticket the renderer redeems on ``/api/display/ws``
 (``hermes_cli.web_routers.display``) to stream raw RFB; ``display.lease.acquire`` / ``release`` are
-Take over / Hand back. Every handler is profile-scoped so a multiplexed gateway answers for the bot
+Take over / Hand back. ``display.install`` runs the distro package install on the gateway host: sudo
+privilege is asked for through the masked ``display.install.sudo.request`` card (same ``_block`` bridge as
+the terminal tool's sudo prompt), stdout streams as ``display.install.log`` and the run ends with
+``display.install.done`` carrying a fresh status snapshot. Every handler is profile-scoped so a multiplexed gateway answers for the bot
 the pane is looking at. Lease transitions fan out as the global ``display.lease`` event so every
 connected client repaints (badge on the bot row, red border on the viewer, agent handoff prompt).
 
@@ -95,6 +98,49 @@ def _(rid, params: dict) -> dict:
                          **_display_snapshot()})
     except Exception as e:
         return _err(rid, _DISPLAY_ERR, str(e))
+
+
+@method("display.install")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Start the package install in the background; the renderer follows ``display.install.log`` /
+    ``display.install.done``. Refused while one is already running for this profile."""
+    from hermes_constants import hermes_home_key
+    from tools.bot_desktop import install as _bd_install, runtime as _bd_runtime
+    if not _bd_runtime.is_supported_host():
+        return _err(rid, _DISPLAY_ERR, "Bot Desktop runs on Linux gateway hosts only")
+    if _bd_runtime.install_command() is None:
+        return _err(rid, _DISPLAY_ERR, "no supported package manager (apt-get, dnf, pacman) on this host")
+    profile_key = hermes_home_key()
+    sid = str(params.get("session_id") or "")
+
+    def _ask_password() -> str:
+        return _block("display.install.sudo.request", sid, {"profile_key": profile_key}, timeout=300)
+
+    def _line(text: str) -> None:
+        _broadcast_global_event("display.install.log", {"profile_key": profile_key, "line": text})
+
+    # The worker thread has no context-bound transport; the sudo card must reach the CLIENT that
+    # clicked Install, so the caller's transport is carried across.
+    from .transport import bind_transport, current_transport
+    caller_transport = current_transport()
+
+    def _run() -> None:
+        bind_transport(caller_transport)
+        try:
+            code = _bd_install.install_packages(ask_password=_ask_password, on_line=_line)
+        except Exception as e:
+            _line(f"install failed: {e}")
+            code = 1
+        _broadcast_global_event("display.install.done", {"profile_key": profile_key, "code": code,
+                                                         "status": _bd_runtime.status().as_dict()})
+
+    try:
+        _bd_install.assert_not_running()
+    except _bd_install.InstallBusy as e:
+        return _err(rid, _DISPLAY_ERR, str(e))
+    threading.Thread(target=_run, name=f"bot-desktop-install:{profile_key}", daemon=True).start()
+    return _ok(rid, {"started": True, "command": _bd_runtime.install_command(), "profile_key": profile_key})
 
 
 @method("display.lease.acquire")

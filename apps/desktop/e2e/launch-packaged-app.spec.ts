@@ -1,4 +1,4 @@
-import { expect, test } from './test'
+import { allowErrorBanners, expect, test } from './test'
 
 import {
   PACKAGED_BINARY_PATH,
@@ -136,6 +136,11 @@ test('HUD composer remains fully inside the transparent window', async () => {
 })
 
 test('boot progress overlay fades out or shows error state', async () => {
+  // This fixture intentionally has no real backend. Its accepted terminal
+  // state includes the connection-error banner asserted below, so the shared
+  // unexpected-error guard must not reject that deliberate branch.
+  allowErrorBanners()
+
   const page = fixture!.page
   await page.waitForFunction(
     () => {
@@ -166,6 +171,10 @@ test('boot progress overlay fades out or shows error state', async () => {
 })
 
 test('can capture a screenshot for the CI artifact', async () => {
+  // The preceding terminal-state test may leave its accepted boot-error
+  // overlay visible; this artifact intentionally captures either outcome.
+  allowErrorBanners()
+
   if (!fixture) {
     test.skip(true, 'Previous test failed — no app running')
 

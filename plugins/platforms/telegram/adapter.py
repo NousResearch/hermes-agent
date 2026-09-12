@@ -4963,20 +4963,26 @@ class TelegramAdapter(BasePlatformAdapter):
             return _ph(f'*{_escape_mdv2(inner)}*')
 
         text = re.sub(r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE)
-        # 5) Bold **text** → *text*; 6) Italic *text* → _text_ ([^*\n]+ keeps matches on one line, or *
-        # bullet lists corrupt); 7) Strikethrough ~~text~~ → ~text~; 8) Spoiler ||text|| kept as-is.
+        # 5) Blockquotes: stash the leading >/**>/etc marker (and a trailing || closer on
+        # expandable quotes) BEFORE bold conversion below — otherwise "**> **Heading** ..."
+        # has its "**>" consumed by the bold regex, which pairs it with the next "**" and
+        # destroys the quote. Quoted content itself is left untouched so bold/italic/etc.
+        # still convert markdown nested inside the quote, and plain characters are escaped
+        # by the general MarkdownV2 escape pass below like any other unstashed text.
+        def _protect_blockquote(m):
+            prefix, content = m.group(1), m.group(2)  # prefix: >, >>, >>>, **>, **>> …
+            closer = ''
+            if prefix.startswith('**') and content.endswith('||'):
+                content, closer = content[:-2], _ph('||')
+            return f'{_ph(prefix)} {content}{closer}'
+
+        text = re.sub(r'^((?:\*\*)?>{1,3}) (.+)$', _protect_blockquote, text, flags=re.MULTILINE)
+        # 6) Bold **text** → *text*; 7) Italic *text* → _text_ ([^*\n]+ keeps matches on one line, or *
+        # bullet lists corrupt); 8) Strikethrough ~~text~~ → ~text~; 9) Spoiler ||text|| kept as-is.
         text = re.sub(r'\*\*(.+?)\*\*', _ph_wrap('*', '*'), text)
         text = re.sub(r'\*([^*\n]+)\*', _ph_wrap('_', '_'), text)
         text = re.sub(r'~~(.+?)~~', _ph_wrap('~', '~'), text)
         text = re.sub(r'\|\|(.+?)\|\|', _ph_wrap('||', '||'), text)
-        # 9) Blockquotes: protect leading > from escaping; expandable quotes (**> starts, trailing || ends).
-        def _convert_blockquote(m):
-            prefix, content = m.group(1), m.group(2)  # prefix: >, >>, >>>, **>, **>> …
-            if prefix.startswith('**') and content.endswith('||'):
-                return _ph(f'{prefix} {_escape_mdv2(content[:-2])}||')
-            return _ph(f'{prefix} {_escape_mdv2(content)}')
-
-        text = re.sub(r'^((?:\*\*)?>{1,3}) (.+)$', _convert_blockquote, text, flags=re.MULTILINE)
         # 10) Escape remaining special characters in plain text
         text = _escape_mdv2(text)
         # 11) Restore placeholders in reverse insertion order so nested placeholders resolve.

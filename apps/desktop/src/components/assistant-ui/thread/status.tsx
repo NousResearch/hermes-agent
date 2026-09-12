@@ -267,6 +267,37 @@ export const ResponseLoadingIndicator: FC = () => {
   )
 }
 
+/** Manual compression runs outside a model turn, so assistant-ui does not
+ * create the running assistant placeholder that normally owns this status.
+ * Keep the same in-thread treatment without making the idle session look like
+ * a model response is streaming. */
+export const ManualCompactionIndicator: FC = () => {
+  const { busy, compacting } = useThreadSessionStatus()
+
+  const assistantRunning = useAuiState(
+    s => s.thread.isRunning || s.thread.messages.some(message => message.status?.type === 'running')
+  )
+
+  const active = compacting && !busy && !assistantRunning
+  const elapsed = useElapsedSeconds(active)
+
+  if (!active) {
+    return null
+  }
+
+  return (
+    <StatusRow data-slot="aui_manual-compaction" label={COMPACTION_LABEL}>
+      <StatusPulse
+        aria-hidden="true"
+        className="dither inline-block size-3 rounded-[2px] text-midground/80"
+        kind="opacity"
+      />
+      <WaitHint hint={COMPACTION_LABEL} />
+      <ActivityTimerText seconds={elapsed} />
+    </StatusRow>
+  )
+}
+
 // Parked-background affordance: a top-level delegate_task runs in the
 // background, so the parent turn ends and the app goes idle while the subagent
 // keeps working and its result re-enters as a fresh turn later. Instead of a

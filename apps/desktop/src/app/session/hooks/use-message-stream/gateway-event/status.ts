@@ -33,7 +33,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'status.update') {
-    if (sessionId && payload?.kind === 'compacting') {
+    if (sessionId && (payload?.kind === 'compacting' || payload?.kind === 'compressing')) {
       setSessionCompacting(sessionId, true)
       compactedTurnRef.current.add(sessionId)
     } else if (sessionId && payload?.kind === 'compacted') {
@@ -50,6 +50,12 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       if (isActiveEvent && state && !state.busy && !state.awaitingResponse && !state.streamId) {
         void hydrateFromStoredSession(3, state.storedSessionId, sessionId)
       }
+    } else if (sessionId && payload?.kind === 'status' && coerceGatewayText(payload?.text).trim() === 'ready') {
+      // Manual session.compress bookends its dedicated `compressing` status
+      // with the legacy generic status text `ready`, including no-op and
+      // failure exits.
+      reconcileSessionCompacting(sessionId, 'terminal')
+      compactedTurnRef.current.delete(sessionId)
     } else if (sessionId && payload?.kind === 'process') {
       // The gateway's notification poller announces background process
       // completions / watch matches here — re-sync the status stack.

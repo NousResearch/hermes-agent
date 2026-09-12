@@ -212,4 +212,16 @@ describe('TurnActivityIndicator tail gating (#68634)', () => {
     expect(document.querySelectorAll('[data-slot="aui_response-loading"]').length).toBe(1)
     expect(document.querySelectorAll('[data-slot="aui_turn-activity"]').length).toBe(0)
   })
+
+  it('shows compaction status in an idle thread during manual compression', () => {
+    const settled = {
+      ...runningAssistantMessage('assistant-1', 'Saved'),
+      status: { type: 'complete', reason: 'stop' }
+    } as ThreadMessage
+
+    const { container } = render(<Harness messages={[userMessage('user-1', 'Keep this context'), settled]} />)
+
+    expect(screen.getByRole('status', { name: 'Summarizing thread' })).toBeTruthy()
+    expect(container.querySelector('[data-slot="aui_manual-compaction"]')).not.toBeNull()
+  })
 })

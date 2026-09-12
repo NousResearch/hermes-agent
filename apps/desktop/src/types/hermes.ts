@@ -280,6 +280,9 @@ export interface MessagingPlatformInfo {
   gateway_running: boolean
   home_channel?: MessagingHomeChannel | null
   id: string
+  /** Served secondary under a multiplexed gateway: the /p/<profile>/ URL on the shared listener
+   *  the client (or vendor console) must call. Null for standalone and default-profile platforms. */
+  ingress_url?: null | string
   name: string
   state?: null | string
   updated_at?: null | string
@@ -1332,6 +1335,9 @@ export interface StatusResponse {
   gateway_pid: number | null
   gateway_platforms: Record<string, PlatformStatus>
   gateway_running: boolean
+  /** Every profile the gateway process serves when the polled profile is carried by the shared
+   *  multiplexer (e.g. ['default', 'alpha', 'beta']); null/absent for a standalone gateway. */
+  gateway_shared_with?: string[] | null
   gateway_state: string | null
   gateway_updated_at: string | null
   hermes_home: string

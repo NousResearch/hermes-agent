@@ -6,6 +6,7 @@ import { openSession } from '@/app/open-session'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
+import { requestGatewayConnect } from '@/store/gateway-connect-request'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
 import {
@@ -295,6 +296,17 @@ export function useDesktopIntegrations({
       }
 
       const action = resolveDeepLinkAction(payload)
+
+      if (action.type === 'gateway-connect') {
+        requestGatewayConnect(action.request)
+        navigate('/settings?tab=gateway')
+
+        return
+      }
+
+      if (payload.kind === 'gateway') {
+        return
+      }
 
       if (action.type === 'composer-blueprint') {
         const slots = Object.entries(action.params || {})

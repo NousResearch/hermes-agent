@@ -1,5 +1,7 @@
 import type { PluginInstallLegacyHint } from '@/store/plugin-install-request'
 
+import { type GatewayConnectRequest, parseGatewayConnectRequest } from './gateway-connect-link'
+
 export interface DeepLinkPayload {
   kind: string
   name: string
@@ -7,6 +9,7 @@ export interface DeepLinkPayload {
 }
 
 export type DeepLinkAction =
+  | { type: 'gateway-connect'; request: GatewayConnectRequest }
   | { type: 'plugin-install'; repo: string; enable: boolean; force: boolean; legacyHint: PluginInstallLegacyHint }
   | { type: 'composer-blueprint'; name: string; params: Record<string, string> }
   | { type: 'ignore' }
@@ -24,6 +27,12 @@ function truthyParam(value: string | undefined, defaultValue = false): boolean {
 export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefined): DeepLinkAction {
   if (!payload?.kind) {
     return { type: 'ignore' }
+  }
+
+  if (payload.kind === 'gateway' && payload.name === 'connect') {
+    const request = parseGatewayConnectRequest(payload.params || {})
+
+    return request ? { type: 'gateway-connect', request } : { type: 'ignore' }
   }
 
   if (payload.kind === 'blueprint' && payload.name) {

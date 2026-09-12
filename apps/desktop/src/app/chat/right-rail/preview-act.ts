@@ -20,6 +20,13 @@
  * Panes with no input channel — a remote HTML preview — fall back to the
  * engine's synthetic events, which is worse but still works.
  *
+ * Guest scripts MUST return a JSON string synchronously. Electron's
+ * `<webview>.executeJavaScript` structured-clones the completion value; a
+ * Promise is not cloneable and comes back as `undefined`, which `runJson`
+ * reports as "The page did not answer the action." Tour, annotate, and
+ * read_preview already return strings and keep working on the same page.
+ * Timing (settle after a click) lives in this module, not in the guest.
+ *
  * A mutating action settles briefly and returns a fresh inventory, so the
  * click → re-read → click loop costs one round trip instead of two.
  *
@@ -106,31 +113,6 @@ const preamble = () => `  var w = window;
   var act = function (a) { return w.__hermesAct(document, holder, a); };
   var watch = function (stage, label) {
     try { w.__hermesWatch_fn(document, holder, stage, label); } catch (err) {}
-  };
-  var wait = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
-  // Sit out a smooth scroll so the pointer is aimed at a target that has stopped
-  // moving. A scroll that never started fires no scrollend, so only wait on one
-  // we can actually see happening; capture catches nested scrollers, whose
-  // scrollend does not bubble.
-  var restAfterScroll = function () {
-    return new Promise(function (resolve) {
-      var sc = document.scrollingElement || document.documentElement;
-      var x0 = sc ? sc.scrollLeft : 0;
-      var y0 = sc ? sc.scrollTop : 0;
-      requestAnimationFrame(function () {
-        if (!sc || (sc.scrollLeft === x0 && sc.scrollTop === y0)) { return resolve(); }
-        var done = false;
-        var finish = function () {
-          if (done) { return; }
-          done = true;
-          document.removeEventListener('scrollend', finish, true);
-          clearTimeout(timer);
-          resolve();
-        };
-        var timer = setTimeout(finish, 350);
-        document.addEventListener('scrollend', finish, true);
-      });
-    });
   };`
 
 /** Bring the target on screen, mark it, and report where it came to rest. */
@@ -141,7 +123,7 @@ function buildLocateScript(action: PreviewActAction, focus: boolean): string {
 ${preamble()}
   var locate = ${JSON.stringify(locate)};
   var found = act(locate);
-  if (!found.success) { return Promise.resolve(JSON.stringify(found)); }
+  if (!found.success) { return JSON.stringify(found); }
   watch('aim');
   // Arm a witness for the real input that is about to arrive. Without it a
   // click that never reached the page is indistinguishable from one the page
@@ -150,24 +132,22 @@ ${preamble()}
   document.addEventListener('pointerdown', function (e) {
     w.__hermesHit = { tag: e.target ? e.target.tagName : '?', trusted: e.isTrusted === true };
   }, { capture: true, once: true });
-  // Measure again once the scroll has stopped: real input is aimed at a fixed
-  // viewport coordinate, so it has to be where the target ENDS UP.
-  return restAfterScroll().then(function () {
-    var settled = act(locate);
-    var best = settled.success ? settled : found;
-    var at = best.point;
-    // Last line of defence before the pointer is sent somewhere real. An element
-    // that is still outside the viewport after we scrolled to it is hidden, not
-    // placed, and aiming at it would drive the cursor off into a corner and
-    // click whatever happens to be under that coordinate.
-    if (at && (at.x < 0 || at.y < 0 || at.x > window.innerWidth || at.y > window.innerHeight)) {
-      return JSON.stringify({
-        error: 'That element is still off-screen after scrolling to it, so it is hidden rather than clickable. Call elements again for what is really on the page.',
-        success: false
-      });
-    }
-    return JSON.stringify(best);
-  });
+  // Locate already scrolled the target into view with behavior:'instant', so
+  // the point we just measured is where it sits now — not where a smooth
+  // scroll would have left it a beat later. Re-reading behind a Promise is
+  // how this tool used to go silent: the webview cannot clone a thenable.
+  var at = found.point;
+  // Last line of defence before the pointer is sent somewhere real. An element
+  // that is still outside the viewport after we scrolled to it is hidden, not
+  // placed, and aiming at it would drive the cursor off into a corner and
+  // click whatever happens to be under that coordinate.
+  if (at && (at.x < 0 || at.y < 0 || at.x > window.innerWidth || at.y > window.innerHeight)) {
+    return JSON.stringify({
+      error: 'That element is still off-screen after scrolling to it, so it is hidden rather than clickable. Call elements again for what is really on the page.',
+      success: false
+    });
+  }
+  return JSON.stringify(found);
 })()`
 }
 
@@ -232,57 +212,55 @@ ${
 })()`
 }
 
-/** Mark the hit, let the page react, and hand back a fresh inventory. */
-function buildFinishScript(settleMs: number): string {
+/** Mark the hit and hand back a fresh inventory. The caller waits out the
+ *  settle before injecting this, so the guest never has to return a Promise. */
+function buildFinishScript(): string {
   return `(function () {
 ${preamble()}
   watch('strike');
-  return wait(${settleMs}).then(function () {
-    // A rescan that throws must still answer — an unresolved promise here costs
-    // the whole bridge deadline.
-    try {
-      var out = act({ kind: 'elements' });
-      watch('sweep');
-      out.hit = w.__hermesHit || null;
-      return JSON.stringify(out);
-    } catch (err) {
-      return JSON.stringify({ note: 'The page changed before it could be re-read: ' + err, success: true });
-    }
-  });
+  // A rescan that throws must still answer — an unresolved promise here used
+  // to eat the whole bridge deadline, and a thrown script still would.
+  try {
+    var out = act({ kind: 'elements' });
+    watch('sweep');
+    out.hit = w.__hermesHit || null;
+    return JSON.stringify(out);
+  } catch (err) {
+    return JSON.stringify({ note: 'The page changed before it could be re-read: ' + err, success: true });
+  }
 })()`
 }
 
-/** The no-real-input fallback: the engine both acts and reads, in one trip.
- *  Both reads mark the field — the explicit `elements` call and the re-read
- *  every other verb does on its way out — so the page is marked after every
- *  single action rather than only when the agent asks for an inventory outright.
- *  They mark it differently, though, and the difference is what each one MEANS:
- *  an outright `elements` is the agent reading the whole page, which is the
- *  moment worth showing, so it strobes. The re-read after a click is
- *  housekeeping, and strobing there would put five seconds of noise between
- *  every step of a task, so it sweeps. The two never collide: an `elements` call
- *  settles in 0ms and returns before the re-read. */
-function buildScriptedScript(action: PreviewActAction, settleMs: number): string {
+/** The no-real-input fallback: the engine acts in one sync trip, then this
+ *  module waits and re-reads. Both reads mark the field — the explicit
+ *  `elements` call and the re-read every other verb does on its way out — so
+ *  the page is marked after every action rather than only when the agent asks
+ *  for an inventory outright. They mark it differently, though, and the
+ *  difference is what each one MEANS: an outright `elements` is the agent
+ *  reading the whole page, which is the moment worth showing, so it strobes.
+ *  The re-read after a click is housekeeping, and strobing there would put
+ *  five seconds of noise between every step of a task, so it sweeps. */
+function buildScriptedScript(action: PreviewActAction): string {
   return `(function () {
 ${preamble()}
   var result = act(${JSON.stringify(action)});
   ${action.kind === 'elements' ? "if (result.success) { watch('strobe'); }" : ''}
-  if (!result.success || ${settleMs} <= 0) { return Promise.resolve(JSON.stringify(result)); }
-  return wait(${settleMs}).then(function () {
-    try {
-      var after = act({ kind: 'elements' });
-      watch('sweep');
-      // One or the other, never both: a re-read answers with the whole
-      // inventory only when it is the first look at this page.
-      result.elements = after.elements;
-      result.delta = after.delta;
-      result.url = after.url;
-      result.title = after.title;
-    } catch (err) {
-      result.note = 'The page changed before it could be re-read: ' + err;
-    }
-    return JSON.stringify(result);
-  });
+  return JSON.stringify(result);
+})()`
+}
+
+/** Re-read after a scripted mutation. Separate from the act trip so the guest
+ *  can answer both with a string rather than a thenable. */
+function buildRescanScript(): string {
+  return `(function () {
+${preamble()}
+  try {
+    var after = act({ kind: 'elements' });
+    watch('sweep');
+    return JSON.stringify(after);
+  } catch (err) {
+    return JSON.stringify({ note: 'The page changed before it could be re-read: ' + err, success: true });
+  }
 })()`
 }
 
@@ -291,6 +269,14 @@ ${preamble()}
  *  that answers with nothing is broken, and the agent needs to hear the
  *  difference. */
 type Trip = { error: string; kind: 'failed' } | { kind: 'answered'; result: PreviewActResult } | { kind: 'silent' }
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function actSettleMs(): number {
+  return import.meta.env.MODE === 'test' ? 0 : SETTLE_MS
+}
 
 async function runJson(run: PreviewScriptRunner, code: string): Promise<Trip> {
   const raw = await Promise.race([
@@ -306,6 +292,9 @@ async function runJson(run: PreviewScriptRunner, code: string): Promise<Trip> {
     return { error: 'The page rejected the action: ' + raw.message, kind: 'failed' }
   }
 
+  // A Promise completion value is not structured-cloneable, so Electron's
+  // webview yields `undefined` here — that is this error. Guest scripts must
+  // return a JSON string (tour/annotate already do).
   if (typeof raw !== 'string' || !raw) {
     return { error: 'The page did not answer the action.', kind: 'failed' }
   }
@@ -390,7 +379,8 @@ async function driveAction(
   // target, which is the whole request.
 
   const target = String(found.acted || '').replace(/^looking at /, '')
-  const after = await runJson(run, buildFinishScript(SETTLE_MS))
+  await delay(actSettleMs())
+  const after = await runJson(run, buildFinishScript())
   const acted = describeDone(action, target)
 
   // The action itself already happened as real input, so a page that will not
@@ -428,12 +418,12 @@ function buildScrollAnchorScript(): string {
 ${preamble()}
   var sc = document.scrollingElement || document.documentElement;
   var track = sc.clientHeight || window.innerHeight;
-  return Promise.resolve(JSON.stringify({
+  return JSON.stringify({
     page: Math.round(window.innerHeight * 0.9),
     point: { x: Math.round(window.innerWidth / 2), y: Math.round(track / 2) },
     span: sc.scrollHeight - track,
     success: true
-  }));
+  });
 })()`
 }
 
@@ -472,7 +462,8 @@ async function driveScroll(
 
   await wheelBy(input, action.amount ?? anchor.page ?? 600)
 
-  const after = await runJson(run, buildFinishScript(SETTLE_MS))
+  await delay(actSettleMs())
+  const after = await runJson(run, buildFinishScript())
 
   if (after.kind !== 'answered') {
     return { acted: 'scrolled the page', note: NAVIGATED, success: true }
@@ -546,8 +537,7 @@ export async function actOnActivePreview(
     return driveScroll(run, input, typed)
   }
 
-  const settle = typed.kind === 'elements' ? 0 : SETTLE_MS
-  const scripted = await runJson(run, buildScriptedScript(typed, settle))
+  const scripted = await runJson(run, buildScriptedScript(typed))
 
   if (scripted.kind === 'failed') {
     return { error: scripted.error, success: false }
@@ -555,7 +545,31 @@ export async function actOnActivePreview(
 
   // The action almost certainly landed — a page that stops answering right
   // after a click is one that navigated. Say so instead of failing it.
-  return scripted.kind === 'silent' ? { acted: typed.kind, note: NAVIGATED, success: true } : scripted.result
+  if (scripted.kind === 'silent') {
+    return { acted: typed.kind, note: NAVIGATED, success: true }
+  }
+
+  const result = scripted.result
+
+  if (!result.success || typed.kind === 'elements' || actSettleMs() <= 0) {
+    return result
+  }
+
+  await delay(actSettleMs())
+  const after = await runJson(run, buildRescanScript())
+
+  if (after.kind !== 'answered') {
+    return { ...result, note: NAVIGATED }
+  }
+
+  return {
+    ...result,
+    delta: after.result.delta,
+    elements: after.result.elements,
+    note: after.result.note || result.note,
+    title: after.result.title,
+    url: after.result.url
+  }
 }
 
 // Self-accept so an edit here, or to the in-page sources this module

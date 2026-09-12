@@ -88,16 +88,39 @@ describe('actOnActivePreview (drive_preview tool)', () => {
   })
 
   it('does not pay the settle delay for a plain inventory', async () => {
-    let injected = ''
+    const injected: string[] = []
+
     withRunner(async code => {
-      injected = code
+      injected.push(code)
 
       return JSON.stringify({ elements: [], success: true })
     })
 
     await actOnActivePreview({ kind: 'elements' })
 
-    expect(injected).toContain('0 <= 0')
+    // Inventory is one sync trip. A Promise completion value is how this used
+    // to go silent inside Electron's webview (undefined after structured clone).
+    expect(injected).toHaveLength(1)
+    expect(injected[0]).not.toMatch(/Promise\.resolve|\.then\s*\(/)
+    expect(injected[0]).toContain('return JSON.stringify(result)')
+  })
+
+  it('guest scripts for click/type answer with a JSON string, never a Promise', async () => {
+    const injected: string[] = []
+
+    withRunner(async code => {
+      injected.push(code)
+
+      return JSON.stringify({ acted: 'clicked', point: { x: 1, y: 1 }, success: true })
+    })
+
+    await actOnActivePreview({ kind: 'click', ref: '@e1' })
+
+    expect(injected.length).toBeGreaterThan(0)
+
+    for (const code of injected) {
+      expect(code).not.toMatch(/Promise\.resolve|\.then\s*\(/)
+    }
   })
 
   it('reports a page that answers with nothing', async () => {
@@ -279,19 +302,21 @@ describe('actOnActivePreview (drive_preview tool)', () => {
   })
 
   it('falls back to scripted events when the pane exposes no input channel', async () => {
-    let injected = ''
+    const injected: string[] = []
 
     withRunner(async code => {
-      injected = code
+      injected.push(code)
 
       return JSON.stringify({ acted: 'clicked', success: true })
     })
 
     await actOnActivePreview({ kind: 'click', ref: '@e1' })
 
-    // The one-trip shape: the engine both acts and re-reads, no locate handshake.
-    expect(injected).toContain('"kind":"click"')
-    expect(injected).not.toContain('"kind":"locate"')
+    // The engine acts in the guest; there is no locate handshake because there
+    // is no real pointer to walk. Re-read, if any, is a second sync trip.
+    expect(injected[0]).toContain('"kind":"click"')
+    expect(injected[0]).not.toContain('"kind":"locate"')
+    expect(injected[0]).not.toMatch(/Promise\.resolve|\.then\s*\(/)
   })
 
   it('routes history verbs to the pane instead of the guest page', async () => {

@@ -359,6 +359,16 @@ class GatewayAgentCacheMixin:
             store = getattr(self, attr, None)
             if isinstance(store, dict):
                 store.pop(session_key, None)
+        # The per-session cwd record lives module-level in tools.terminal_tool
+        # (not a runner attribute), so the getattr loop above can't reach it.
+        # Drop it here so /new and every other boundary clear the chat's cwd
+        # record too — otherwise a stale record outlives the conversation and a
+        # fresh session inherits it (#107156).
+        try:
+            from tools.terminal_tool import clear_session_cwd
+            clear_session_cwd(session_key)
+        except Exception:
+            logger.debug("Failed to clear session cwd at conversation boundary", exc_info=True)
         self._clear_session_boundary_security_state(session_key)
         logger.debug("Cleared conversation scope for %s (%s)", session_key, reason)
 

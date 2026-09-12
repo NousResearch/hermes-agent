@@ -794,6 +794,25 @@ def _resolve_command_cwd(
             recorded, env_type, default_cwd,
         )
         return default_cwd
+    # Local backend: a recorded cwd can point at a directory that has since been
+    # deleted or become unenterable (e.g. a tool removed its own workdir). Left
+    # verbatim it bakes a leading ``cd <dead> || exit 126`` into every command,
+    # so the command never runs and the record can never self-heal — a bare call
+    # dies before it can re-record — bricking the chat until the gateway
+    # restarts (#107156). Validate it with the same enterable-dir check the env
+    # recovery uses (``isdir`` alone passes ``/root`` for a non-root user) and,
+    # on failure, fall back to ``default_cwd`` so the next successful command
+    # re-records a real directory. Scoped to ``local``: a local stat proves
+    # nothing about an ssh/container path, so those keep their own guards.
+    if recorded and env_type == "local":
+        from tools.environments.local import _cwd_usable
+        if not _cwd_usable(recorded):
+            logger.info(
+                "Recorded session cwd %r is missing/unenterable on the local "
+                "backend; using %r so terminal commands keep working (#107156).",
+                recorded, default_cwd,
+            )
+            return default_cwd
     return recorded or default_cwd
 
 

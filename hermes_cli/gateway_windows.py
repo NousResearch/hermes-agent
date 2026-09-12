@@ -1035,6 +1035,17 @@ def is_task_registered() -> bool:
     return code == 0
 
 
+def _run_scheduled_task_once() -> tuple[int, str, str]:
+    """One-shot ``schtasks /Run`` for post-update Job Object recovery only.
+
+    The Scheduled Task is login persistence; ordinary ``start()`` / ``restart()``
+    stay on ``_spawn_detached``. Only the updater's post-relaunch / cold-start
+    recovery may use this to start the gateway outside the parent Job Object
+    (#107002 / #48820).
+    """
+    return _exec_schtasks(["/Run", "/TN", get_task_name()])
+
+
 def is_startup_entry_installed() -> bool:
     return get_startup_entry_path().exists() or _legacy_startup_entry_path().exists()
 
@@ -1245,7 +1256,9 @@ def start() -> None:
             return
 
     # Manual starts use the same console-less direct spawn as restart() and install --start-now;
-    # Scheduled Task / Startup entries are only login persistence.
+    # Scheduled Task / Startup entries are only login persistence. The sole
+    # ``schtasks /Run`` path is post-update Job Object recovery in
+    # ``update_cmd_windows`` (#107002); do not change ordinary start() to /Run.
     pid = _spawn_detached()
     _report_gateway_start(f"direct spawn (PID {pid})")
 

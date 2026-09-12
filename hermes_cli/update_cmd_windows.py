@@ -914,7 +914,9 @@ def _cold_start_windows_gateway_after_update() -> bool:
     object denying breakaway kills it before it logs anything — #84185). So the success line is gated on the
     same post-spawn liveness poll every other ``_spawn_detached`` caller uses
     (``gateway_windows._report_gateway_start``), instead of being printed unconditionally from the returned
-    PID.
+    PID. An empty first poll plus a registered Scheduled Task tries ``schtasks /Run``
+    once so Task Scheduler can start the gateway outside the updater Job Object
+    (#107002); fail-open otherwise.
     """
     from hermes_cli.update_cmd import _desktop_owns_gateway_lifecycle, _m
     if not _m()._is_windows():
@@ -934,6 +936,8 @@ def _cold_start_windows_gateway_after_update() -> bool:
     if not pid:
         raise RuntimeError("Windows gateway cold-start did not return a process ID")
     ready_pids = gateway_windows._wait_for_gateway_ready()
+    if not ready_pids:
+        ready_pids = _recover_windows_gateway_via_schtasks(gateway_windows)
     if not ready_pids:
         raise RuntimeError(f"Windows gateway cold-start PID {pid} did not become ready")
     print(f"\n✓ Gateway started via cold-start after update (PID: {', '.join(map(str, ready_pids))})")
@@ -1078,15 +1082,58 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
     return relaunched, unmapped_relaunched
 
 
+def _recover_windows_gateway_via_schtasks(
+    gateway_windows,
+    *,
+    timeout_s: float = 6.0,
+    all_profiles: bool = False,
+) -> list[int]:
+    """If a Hermes Scheduled Task is registered, ``schtasks /Run`` once and re-poll.
+
+    Job Object teardown (#48820 / #107002) can kill a respawned gateway that
+    stayed inside the updater's job. Task Scheduler starts it outside any
+    parent Job Object. Fail-open: missing/unqueryable task, non-zero ``/Run``,
+    or a still-empty second poll all return ``[]`` so the caller keeps the
+    original failure path. Ordinary ``hermes gateway start()`` is unchanged.
+    """
+    try:
+        registered = gateway_windows.is_task_registered()
+    except Exception:
+        return []
+    if not registered:
+        return []
+    try:
+        code, _out, _err = gateway_windows._run_scheduled_task_once()
+    except Exception:
+        return []
+    if code != 0:
+        return []
+    return list(
+        gateway_windows._wait_for_gateway_ready(
+            timeout_s=timeout_s, all_profiles=all_profiles
+        )
+        or []
+    )
+
+
 def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: list) -> None:
     """Gate success on the shared liveness poll: a truthy launch only proves the watcher was created.
 
     A parent Job Object denying CREATE_BREAKAWAY_FROM_JOB can kill the gateway on updater teardown;
     ``all_profiles=True`` covers the fleet. Vouched PIDs are persisted so a death AFTER updater exit
-    is reported by the next CLI invocation (best-effort)."""
+    is reported by the next CLI invocation (best-effort).
+
+    When the first poll is empty and a Hermes Scheduled Task is registered,
+    try ``schtasks /Run`` once so Task Scheduler starts the gateway outside
+    the updater Job Object (#107002), then poll again. Fail-open otherwise.
+    """
     with _abort_on_error("Could not load Windows gateway liveness helpers"):
         from hermes_cli import gateway_windows
     ready_pids = gateway_windows._wait_for_gateway_ready(timeout_s=30.0, all_profiles=True)
+    if not ready_pids:
+        ready_pids = _recover_windows_gateway_via_schtasks(
+            gateway_windows, timeout_s=30.0, all_profiles=True
+        )
     if not ready_pids:
         token["profiles"] = dict(profiles)
         token["unmapped"] = list(unmapped)

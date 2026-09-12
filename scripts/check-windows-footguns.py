@@ -320,6 +320,40 @@ FOOTGUNS: list[Footgun] = [
         ),
     ),
     Footgun(
+        name="PowerShell shell-out without -NoProfile",
+        # An internal step must never load the user's $PROFILE: a profile that
+        # blocks on input, or is merely slow (the common "Windows PowerShell 5.1
+        # hands off to an interactive pwsh 7" snippet does both), wedges the child
+        # before our command ever runs. With capture_output=True the caller reads
+        # that as a silent stall rather than an error, so it retries instead of
+        # failing (#108735: hermes update looped on the uv install for hours).
+        #
+        # Matches the host name — quoted literal, or the ps_bin/ps_exe/... variable
+        # an argv is usually built around — on a line that also carries a PowerShell
+        # switch but never -NoProfile. Bare probes (shutil.which("powershell")) are
+        # skipped by GUARD_HINTS and by the switch requirement.
+        pattern=re.compile(
+            r"""['"](?:powershell|pwsh)(?:\.exe)?['"]|\bps(?:_bin|_exe|_host|_path)\b"""
+        ),
+        message=(
+            "Shelling out to PowerShell without -NoProfile runs the user's "
+            "$PROFILE first. A profile that blocks on stdin or is slow (e.g. "
+            "handing off to an interactive pwsh 7) hangs the child forever, and "
+            "with capture_output=True the caller sees a silent stall, not an error."
+        ),
+        fix=(
+            "subprocess.run(['powershell', '-NoProfile', '-NonInteractive',\n"
+            "                '-ExecutionPolicy', 'Bypass', '-Command', cmd], ...)"
+        ),
+        post_filter=lambda m, line: (
+            "-NoProfile" not in line
+            and any(
+                switch in line
+                for switch in ("-ExecutionPolicy", "-EncodedCommand", "-Command", "-File", "-c ")
+            )
+        ),
+    ),
+    Footgun(
         name="hardcoded ~/Desktop (OneDrive trap)",
         pattern=re.compile(
             r"""['"](?:~|~/|[A-Z]:[/\\]Users[/\\][^/\\'"]+[/\\])Desktop\b"""

@@ -202,7 +202,7 @@ def setup_logging(
             continue
         _add_rotating_handler(
             log_dir / filename, level=lvl, max_bytes=size, backup_count=count,
-            formatter=RedactingFormatter(_LOG_FORMAT),
+            formatter=RedactingFormatter(_LOG_FORMAT, defaults={"session_tag": ""}),
             log_filter=_ComponentFilter(COMPONENT_PREFIXES[component]) if component else None,
         )
 
@@ -227,7 +227,11 @@ def setup_verbose_logging() -> None:
         return
     handler = logging.StreamHandler(_safe_stderr())
     handler.setLevel(logging.DEBUG)
-    handler.setFormatter(RedactingFormatter(_LOG_FORMAT_VERBOSE, datefmt="%H:%M:%S"))
+    handler.setFormatter(
+        RedactingFormatter(
+            _LOG_FORMAT_VERBOSE, datefmt="%H:%M:%S", defaults={"session_tag": ""}
+        )
+    )
     handler._hermes_verbose = True  # type: ignore[attr-defined]
     root.addHandler(handler)
 

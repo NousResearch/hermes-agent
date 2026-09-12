@@ -691,8 +691,11 @@ class GatewayNotificationsMixin:
             data = json.loads(notify_path.read_text(encoding="utf-8"))
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
+            chat_type = data.get("chat_type")
             thread_id = data.get("thread_id")
-            if not platform_str or not chat_id:
+            user_id = data.get("user_id")
+            if not platform_str or not chat_id or not chat_type:
+                logger.debug("Restart notification skipped: stale marker missing routing identity")
                 return None
             platform = Platform(platform_str)
             # Relay-aware transport over the REQUESTER'S profile adapter map; ``self.adapters`` is the
@@ -706,6 +709,29 @@ class GatewayNotificationsMixin:
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Restart notification suppressed: %s has gateway_restart_notification=false", platform_str
+                )
+                return None
+            # Re-check authorization in the fresh gateway process before sending
+            # the completion ping. Best-effort: a stale, hand-written, or leftover
+            # marker must not be delivered to an arbitrary target.
+            try:
+                source = SessionSource(
+                    platform=platform,
+                    chat_id=str(chat_id),
+                    chat_type=str(chat_type),
+                    user_id=str(user_id) if user_id else None,
+                    thread_id=str(thread_id) if thread_id else None,
+                    profile=self._marker_profile(data),
+                )
+                if not self._is_user_authorized(source):
+                    logger.info(
+                        "Restart notification skipped: %s:%s is not authorized", platform_str, chat_id,
+                    )
+                    return None
+            except Exception as e:
+                logger.debug(
+                    "Restart notification authorization check failed for %s:%s: %s",
+                    platform_str, chat_id, e,
                 )
                 return None
             metadata = self._pending_marker_metadata(platform, chat_id, data, transport.adapter)

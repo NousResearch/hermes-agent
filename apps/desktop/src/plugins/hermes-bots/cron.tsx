@@ -45,6 +45,7 @@ import { labeled } from './dialog-parts'
 import { botsText, useBots } from './i18n'
 import { displayName } from './labels'
 import { botConnectionRoute, botRosterMeta, requestForBot } from './routing'
+import { ScreenPortal } from './screen-portal'
 import { ID } from './shared'
 import type { BotMeta, RosterRow, RoutineJob } from './types'
 
@@ -1265,6 +1266,9 @@ export function RoutinesPane() {
         </Tip>
       </div>
       <div className="mx-3 border-t border-(--ui-stroke-secondary)" />
+      <div className="px-3 pt-2">
+        <ScreenPortal bot={owner} meta={meta} />
+      </div>
       {staleNotice ? (
         <div className="mx-3 mt-2 rounded-md bg-(--chrome-action-hover) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)">
           {staleNotice}

@@ -313,13 +313,19 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (event.type === 'sudo.request') {
-    // Sudo password capture (tools/terminal_tool.py). Blocked on
-    // sudo.respond {request_id, password}.
+  if (event.type === 'sudo.request' || event.type === 'display.install.sudo.request') {
+    // Sudo password capture (tools/terminal_tool.py), or the Bot Screen package install
+    // (tui_gateway/methods_display.py) reusing the same masked card. Blocked on
+    // <method>.respond {request_id, password}.
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    const install = event.type === 'display.install.sudo.request'
 
     if (requestId) {
-      setSudoRequest({ requestId, sessionId: sessionId ?? null })
+      setSudoRequest({
+        requestId,
+        sessionId: sessionId ?? null,
+        ...(install ? { respondMethod: 'display.install.sudo.respond', description: translateNow('prompts.sudoInstallDesc') } : {})
+      })
 
       if (sessionId) {
         updateSessionState(sessionId, state => ({ ...state, needsInput: true }))

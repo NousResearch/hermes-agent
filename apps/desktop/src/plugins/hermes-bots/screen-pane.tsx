@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
 import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, resolveScreenWsUrl, VIEWER_ID } from './screen-connection'
+import { ScreenInstallCard } from './screen-install'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus } from './screen-state'
 import type { RosterRow } from './types'
 
@@ -224,21 +225,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   }
 
   if (status && !status.installed) {
-    return (
-      <div className="grid min-h-48 place-items-center p-6 text-center">
-        <div className="flex max-w-md flex-col gap-2">
-          <div className="text-sm font-medium">{t.screen.notInstalledTitle}</div>
-          <div className="text-xs text-muted-foreground">{t.screen.notInstalledBody}</div>
-          {status.install_command ? (
-            <code className="select-text break-all rounded bg-muted px-2 py-1 text-left text-xs">{status.install_command}</code>
-          ) : null}
-          <div className="text-xs text-muted-foreground">{t.screen.installHint}</div>
-          <Button disabled={busy} onClick={() => void refresh()} size="sm" variant="secondary">
-            <Codicon name="refresh" /> {t.screen.recheck}
-          </Button>
-        </div>
-      </div>
-    )
+    return <ScreenInstallCard bot={bot} onInstalled={next => setScreenStatus(bot, next)} status={status} />
   }
 
   if (status && !status.running) {

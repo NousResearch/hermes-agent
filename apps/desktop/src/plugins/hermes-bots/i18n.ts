@@ -232,6 +232,19 @@ type BotsMessages = {
     notInstalledTitle: string
     notInstalledBody: string
     installHint: string
+    install: string
+    installing: string
+    installCancelled: string
+    installFailed: string
+    noPackageManager: string
+    portalTitle: string
+    portalOpen: string
+    portalWatching: string
+    portalYouControl: string
+    portalOtherControls: string
+    portalStopped: string
+    portalNotInstalled: string
+    portalUnsupported: string
     recheck: string
     stoppedTitle: string
     stoppedBody: string
@@ -478,7 +491,20 @@ const en: BotsMessages = {
     unsupportedBody: 'Bot screens run on Linux gateway hosts. This bot uses the host\u2019s own display.',
     notInstalledTitle: 'Screen packages missing',
     notInstalledBody: 'The gateway host needs TigerVNC and the Xfce core to give this bot a screen. Run on the host:',
-    installHint: 'or: hermes computer-use screen install',
+    installHint: 'Runs on the gateway host as the user Hermes runs as; sudo is asked for once, through Hermes.',
+    install: 'Install on host',
+    installing: 'Installing…',
+    installCancelled: 'Install cancelled: no sudo password was provided.',
+    installFailed: 'Install failed. Read the log above, or run the command on the host yourself.',
+    noPackageManager: 'No supported package manager (apt, dnf, pacman) was found on the gateway host.',
+    portalTitle: 'Screen',
+    portalOpen: 'Open',
+    portalWatching: 'Live · bot in control',
+    portalYouControl: 'Live · you are in control',
+    portalOtherControls: 'Live · another viewer in control',
+    portalStopped: 'Stopped',
+    portalNotInstalled: 'Not installed on host',
+    portalUnsupported: 'Not available on this host',
     recheck: 'Check again',
     stoppedTitle: 'Screen is off',
     stoppedBody: 'Start this bot\u2019s desktop to watch what it does and take over when it needs you.',
@@ -720,7 +746,20 @@ const ja: BotsMessages = {
     unsupportedBody: 'ボット画面は Linux のゲートウェイホストで動作します。このボットはホスト自身のディスプレイを使います。',
     notInstalledTitle: '画面パッケージが不足しています',
     notInstalledBody: 'このボットに画面を与えるには、ゲートウェイホストに TigerVNC と Xfce コアが必要です。ホストで実行:',
-    installHint: 'または: hermes computer-use screen install',
+    installHint: 'Hermes を実行しているユーザーとしてゲートウェイホスト上で実行されます。sudo は Hermes 経由で一度だけ求められます。',
+    install: 'ホストにインストール',
+    installing: 'インストール中…',
+    installCancelled: 'インストールを中止しました: sudo パスワードが入力されませんでした。',
+    installFailed: 'インストールに失敗しました。上のログを確認するか、ホストでコマンドを直接実行してください。',
+    noPackageManager: 'ゲートウェイホストに対応するパッケージマネージャー (apt, dnf, pacman) が見つかりません。',
+    portalTitle: 'スクリーン',
+    portalOpen: '開く',
+    portalWatching: 'ライブ · ボットが操作中',
+    portalYouControl: 'ライブ · あなたが操作中',
+    portalOtherControls: 'ライブ · 別のビューアーが操作中',
+    portalStopped: '停止中',
+    portalNotInstalled: 'ホストに未インストール',
+    portalUnsupported: 'このホストでは利用できません',
     recheck: '再確認',
     stoppedTitle: '画面はオフです',
     stoppedBody: 'このボットのデスクトップを起動すると、動作を見守り、必要なときに操作を引き継げます。',
@@ -957,7 +996,20 @@ const zh: BotsMessages = {
     unsupportedBody: '机器人屏幕在 Linux 网关主机上运行。此机器人使用主机自身的显示器。',
     notInstalledTitle: '缺少屏幕软件包',
     notInstalledBody: '网关主机需要 TigerVNC 和 Xfce 核心组件才能为此机器人提供屏幕。在主机上运行:',
-    installHint: '或: hermes computer-use screen install',
+    installHint: '在网关主机上以运行 Hermes 的用户身份执行；sudo 只会通过 Hermes 询问一次。',
+    install: '安装到主机',
+    installing: '正在安装…',
+    installCancelled: '安装已取消：未提供 sudo 密码。',
+    installFailed: '安装失败。请查看上方日志，或在主机上手动运行该命令。',
+    noPackageManager: '网关主机上未找到受支持的包管理器（apt、dnf、pacman）。',
+    portalTitle: '屏幕',
+    portalOpen: '打开',
+    portalWatching: '直播 · 机器人控制中',
+    portalYouControl: '直播 · 你在控制',
+    portalOtherControls: '直播 · 其他查看者控制中',
+    portalStopped: '已停止',
+    portalNotInstalled: '主机未安装',
+    portalUnsupported: '此主机不可用',
     recheck: '重新检查',
     stoppedTitle: '屏幕已关闭',
     stoppedBody: '启动此机器人的桌面，观看它的操作，并在需要时接管。',
@@ -1194,7 +1246,20 @@ const zhHant: BotsMessages = {
     unsupportedBody: '機器人螢幕在 Linux 閘道主機上執行。此機器人使用主機自身的顯示器。',
     notInstalledTitle: '缺少螢幕套件',
     notInstalledBody: '閘道主機需要 TigerVNC 與 Xfce 核心元件才能為此機器人提供螢幕。在主機上執行:',
-    installHint: '或: hermes computer-use screen install',
+    installHint: '在閘道主機上以執行 Hermes 的使用者身分執行；sudo 只會透過 Hermes 詢問一次。',
+    install: '安裝到主機',
+    installing: '安裝中…',
+    installCancelled: '安裝已取消：未提供 sudo 密碼。',
+    installFailed: '安裝失敗。請查看上方日誌，或在主機上手動執行該指令。',
+    noPackageManager: '閘道主機上找不到受支援的套件管理器（apt、dnf、pacman）。',
+    portalTitle: '螢幕',
+    portalOpen: '開啟',
+    portalWatching: '直播 · 機器人控制中',
+    portalYouControl: '直播 · 您在控制',
+    portalOtherControls: '直播 · 其他檢視者控制中',
+    portalStopped: '已停止',
+    portalNotInstalled: '主機未安裝',
+    portalUnsupported: '此主機不可用',
     recheck: '重新檢查',
     stoppedTitle: '螢幕已關閉',
     stoppedBody: '啟動此機器人的桌面，觀看它的操作，並在需要時接手。',

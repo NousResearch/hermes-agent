@@ -123,6 +123,26 @@ class ApiErrorSummaryMixin:
         return str(value)
 
     @staticmethod
+    def _error_code_suffix(body: dict) -> str:
+        """``[code 1305] `` prefix from a structured provider error body, else ``''``.
+
+        z.ai/Z.AI-style providers put a machine-readable numeric code (e.g. 1302 rate
+        limit, 1305 overloaded, 1316 5h usage window) next to ``error.message``. Without
+        it, every 429 renders identically and operators can't tell a concurrency cap
+        from a quota window with a ``next_flush_time``. Only surface short scalar codes
+        — never dicts/lists (Anthropic nests ``type`` objects there).
+        """
+        for source in (body.get("error") if isinstance(body.get("error"), dict) else None, body):
+            if not isinstance(source, dict):
+                continue
+            code = source.get("code")
+            if isinstance(code, (str, int)) and str(code).strip():
+                text = str(code).strip()
+                if len(text) <= 24 and not text.startswith("<"):
+                    return f"[code {text}] "
+        return ""
+
+    @staticmethod
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
 
@@ -164,10 +184,12 @@ class ApiErrorSummaryMixin:
         # JSON body errors from OpenAI/Anthropic SDKs
         body = getattr(error, "body", None)
         if isinstance(body, dict):
-            msg = body.get("error", {}).get("message") if isinstance(body.get("error"), dict) else body.get("message")
+            error_obj = body.get("error") if isinstance(body.get("error"), dict) else {}
+            msg = error_obj.get("message") if error_obj else body.get("message")
             if msg:
                 msg = ApiErrorSummaryMixin._coerce_api_error_detail(msg)
-                return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
+                code = ApiErrorSummaryMixin._error_code_suffix(error_obj or body)
+                return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{code}{msg[:300]}")
 
         # SDK may leave body empty while httpx has the payload. Redact: the body is attacker-influenced
         # and may echo Authorization / x-api-key / request JSON.
@@ -188,9 +210,11 @@ class ApiErrorSummaryMixin:
                 if isinstance(payload, dict):
                     err = payload.get("error")
                     if isinstance(err, dict) and err.get("message"):
-                        return redact_sensitive_text(f"{prefix}{str(err['message'])[:300]}")
+                        code = ApiErrorSummaryMixin._error_code_suffix(payload)
+                        return redact_sensitive_text(f"{prefix}{code}{str(err['message'])[:300]}")
                     if payload.get("message"):
-                        return redact_sensitive_text(f"{prefix}{str(payload['message'])[:300]}")
+                        code = ApiErrorSummaryMixin._error_code_suffix(payload)
+                        return redact_sensitive_text(f"{prefix}{code}{str(payload['message'])[:300]}")
                 return redact_sensitive_text(f"{prefix}{snippet[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars

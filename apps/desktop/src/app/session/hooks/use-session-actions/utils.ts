@@ -1189,11 +1189,153 @@ export interface BranchMessage {
   source: ChatMessage
 }
 
+export type BranchMode = 'full' | 'spine'
+
+export function resolveBranchMode(value: unknown): BranchMode {
+  return String(value ?? '').trim().toLowerCase() === 'full' ? 'full' : 'spine'
+}
+
+function hasToolBinding(message: ChatMessage): boolean {
+  if (message.role === 'tool') {
+    return true
+  }
+
+  return message.role === 'assistant' && message.parts.some(part => part.type === 'tool-call')
+}
+
+/**
+ * Prefix up to `endInclusive` that does not sever a tool_call/result pair.
+ * Following tool-role rows that complete the clicked assistant turn are included;
+ * a click on a later user/text turn already contains preceding tool rows.
+ */
+function sliceForBranch(messages: ChatMessage[], endInclusive: number, mode: BranchMode): ChatMessage[] {
+  if (endInclusive < 0 || messages.length === 0) {
+    return []
+  }
+
+  let end = Math.min(endInclusive, messages.length - 1)
+  const endMessage = messages[end]
+  const extendTools =
+    mode === 'full' &&
+    (endMessage.role === 'tool' || (endMessage.role === 'assistant' && hasToolBinding(endMessage)))
+
+  if (extendTools) {
+    while (end + 1 < messages.length && messages[end + 1].role === 'tool') {
+      end += 1
+    }
+  }
+
+  return messages.slice(0, end + 1)
+}
+
 // The copyable spine of a branch: user/assistant turns that carry text.
-export const toBranchMessages = (messages: ChatMessage[]): BranchMessage[] =>
+// `full` also keeps tool results and empty assistant tool-call turns so a
+// session.create seed can preserve prompt-cache pairing.
+export const toBranchMessages = (messages: ChatMessage[], mode: BranchMode = 'spine'): BranchMessage[] =>
   messages
     .map(message => ({ content: chatMessageText(message), role: message.role, source: message }))
-    .filter(({ content, role }) => content.trim() && (role === 'assistant' || role === 'user'))
+    .filter(({ content, role, source }) => {
+      if (role === 'user' || role === 'assistant') {
+        return Boolean(content.trim()) || (mode === 'full' && hasToolBinding(source))
+      }
+
+      return mode === 'full' && role === 'tool'
+    })
+
+function serializeFullBranchSeed(
+  source: ChatMessage,
+  content: string,
+  role: ChatMessage['role']
+): Array<Record<string, unknown>> {
+  if (role === 'tool') {
+    const toolPart = source.parts.find(part => part.type === 'tool-call')
+    const result = toolPart && 'result' in toolPart ? toolPart.result : content
+
+    return [
+      {
+        role: 'tool',
+        content: typeof result === 'string' ? result : result == null ? content : JSON.stringify(result),
+        ...(toolPart?.toolCallId ? { tool_call_id: toolPart.toolCallId } : {}),
+        ...(toolPart?.toolName ? { tool_name: toolPart.toolName } : {})
+      }
+    ]
+  }
+
+  if (role === 'assistant') {
+    const toolCalls = source.parts.filter(part => part.type === 'tool-call')
+    const payload: Record<string, unknown> = { role: 'assistant', content }
+
+    if (toolCalls.length) {
+      payload.tool_calls = toolCalls.map(part => ({
+        id: part.toolCallId,
+        type: 'function',
+        function: {
+          name: part.toolName,
+          arguments: part.argsText || JSON.stringify(part.args ?? {})
+        }
+      }))
+    }
+
+    const rows: Array<Record<string, unknown>> = [payload]
+
+    for (const part of toolCalls) {
+      if (!('result' in part) || part.result === undefined) {
+        continue
+      }
+
+      rows.push({
+        role: 'tool',
+        content: typeof part.result === 'string' ? part.result : JSON.stringify(part.result),
+        tool_call_id: part.toolCallId,
+        tool_name: part.toolName
+      })
+    }
+
+    return rows
+  }
+
+  return [{ role, content }]
+}
+
+export function toBranchSeedPayloads(
+  branchMessages: BranchMessage[],
+  mode: BranchMode = 'spine'
+): Array<Record<string, unknown>> {
+  if (mode !== 'full') {
+    return branchMessages.map(({ content, role }) => ({ content, role }))
+  }
+
+  let rows = branchMessages.flatMap(({ content, role, source }) => serializeFullBranchSeed(source, content, role))
+
+  while (rows.length && seedPrefixDangling(rows)) {
+    rows = rows.slice(0, -1)
+  }
+
+  return rows
+}
+
+function seedPrefixDangling(rows: Array<Record<string, unknown>>): boolean {
+  const pending: string[] = []
+
+  for (const row of rows) {
+    if (row.role === 'assistant' && Array.isArray(row.tool_calls)) {
+      for (const call of row.tool_calls) {
+        if (call && typeof call === 'object' && 'id' in call && typeof call.id === 'string' && call.id) {
+          pending.push(call.id)
+        }
+      }
+    } else if (row.role === 'tool') {
+      const toolCallId = row.tool_call_id
+      const index = typeof toolCallId === 'string' ? pending.indexOf(toolCallId) : -1
+
+      if (index >= 0) {
+        pending.splice(index, 1)
+      }
+    }
+  }
+
+  return pending.length > 0
+}
 
 /**
  * Choose the transcript used to seed an open-chat branch.
@@ -1208,20 +1350,24 @@ export const toBranchMessages = (messages: ChatMessage[]): BranchMessage[] =>
 export function selectBranchMessages(
   localMessages: ChatMessage[],
   authoritativeMessages: ChatMessage[] | null,
-  messageId?: string
+  messageId?: string,
+  mode: BranchMode = 'spine'
 ): BranchMessage[] {
   const localIndex = messageId ? localMessages.findIndex(message => message.id === messageId) : -1
 
   if (!authoritativeMessages?.length) {
-    return toBranchMessages(localMessages.slice(0, localIndex >= 0 ? localIndex + 1 : localMessages.length))
+    return toBranchMessages(
+      localIndex >= 0 ? sliceForBranch(localMessages, localIndex, mode) : localMessages,
+      mode
+    )
   }
 
   if (!messageId) {
-    return toBranchMessages(authoritativeMessages)
+    return toBranchMessages(authoritativeMessages, mode)
   }
 
   if (localIndex < 0) {
-    return toBranchMessages(localMessages)
+    return toBranchMessages(localMessages, mode)
   }
 
   const target = localMessages[localIndex]
@@ -1260,10 +1406,10 @@ export function selectBranchMessages(
   }
 
   if (authoritativeIndex < 0) {
-    return toBranchMessages(localMessages.slice(0, localIndex + 1))
+    return toBranchMessages(sliceForBranch(localMessages, localIndex, mode), mode)
   }
 
-  return toBranchMessages(authoritativeMessages.slice(0, authoritativeIndex + 1))
+  return toBranchMessages(sliceForBranch(authoritativeMessages, authoritativeIndex, mode), mode)
 }
 
 export function upsertOptimisticSession(

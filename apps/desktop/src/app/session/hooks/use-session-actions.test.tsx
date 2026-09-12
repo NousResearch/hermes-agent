@@ -12,6 +12,7 @@ import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tre
 import {
   deleteSession,
   getAllSessionMessages,
+  getHermesConfig,
   getLatestSessionMessages,
   getSession,
   type ProfileScope,
@@ -81,6 +82,7 @@ import { useSessionStateCache } from './use-session-state-cache'
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   deleteSession: vi.fn(),
+  getHermesConfig: vi.fn(async () => ({})),
   getSession: vi.fn(),
   getAllSessionMessages: vi.fn(),
   getLatestSessionMessages: vi.fn(),
@@ -2188,6 +2190,58 @@ describe('branchStoredSession desktop source tagging', () => {
       count: 2
     })
     expect(branchParams).toEqual({ session_id: 'live-parent', count: 2 })
+  })
+
+  it('full-mode mid-thread branch seeds a pair-safe prefix instead of copying the whole parent', async () => {
+    vi.mocked(getHermesConfig).mockResolvedValue({ session: { branch_mode: 'full' } } as never)
+
+    let createParams: Record<string, unknown> | undefined
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          session_id: 'branch-runtime',
+          stored_session_id: 'branch-stored',
+          title: 'Branch',
+          message_count: 2,
+          messages: [],
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    setMessages([
+      { id: 'q1', role: 'user', parts: [{ type: 'text', text: 'question one' }] },
+      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'answer one' }] },
+      { id: 'q2', role: 'user', parts: [{ type: 'text', text: 'question two' }] },
+      { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'answer two' }] }
+    ])
+
+    let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="live-parent"
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    await expect(branchCurrentSession!('a1')).resolves.toBe(true)
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.branch', expect.anything())
+    expect(createParams).toMatchObject({
+      source: 'desktop',
+      messages: [
+        { role: 'user', content: 'question one' },
+        { role: 'assistant', content: 'answer one' }
+      ]
+    })
+    expect(createParams?.messages).toHaveLength(2)
   })
 
   it('hydrates the complete persisted display transcript before branching a compacted live chat', async () => {

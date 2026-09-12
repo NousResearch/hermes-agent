@@ -268,7 +268,8 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
                 return
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
-                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(), compensate=True)
+                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
+                            copy_fields=_seed_branch_copy_fields(history), compensate=True)
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
@@ -1898,11 +1899,123 @@ def _(rid, params: dict) -> dict:
 
 
 # ── session.branch ───────────────────────────────────────────────────
+_BRANCH_MODE_FULL = "full"
+_BRANCH_MODE_SPINE = "spine"
+_FULL_BRANCH_ROLES = frozenset({"user", "assistant", "tool"})
+_BRANCH_COPY_FIELDS = (
+    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items",
+    # Timeline markers ride as role=user; untagged they become bare user turns after a restart, corrupting
+    # the truncate ordinal address space.
+    "display_kind", "display_metadata",
+    # Branch copies are history, not new activity: keep the parent's timestamps.
+    "timestamp")
+_BRANCH_TOOL_COPY_FIELDS = ("tool_calls", "tool_call_id", "tool_name")
+
+
+def _branch_persist_copy_fields(mode: str) -> tuple:
+    """Tool bindings are full-mode only; spine must match legacy unpaired-free copies."""
+    return (*_BRANCH_COPY_FIELDS, *_BRANCH_TOOL_COPY_FIELDS) if mode == _BRANCH_MODE_FULL else _BRANCH_COPY_FIELDS
+
+
+def _history_has_tool_bindings(history) -> bool:
+    for message in history or []:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "tool" or message.get("tool_calls") or message.get("tool_call_id"):
+            return True
+    return False
+
+
+def _seed_branch_copy_fields(history) -> tuple:
+    """session.create seed persist: copy tool bindings whenever the seed carries them."""
+    return _BRANCH_TOOL_COPY_FIELDS if _history_has_tool_bindings(history) else ()
+
+
 def _visible_branch_history(messages) -> list:
-    """user/assistant rows with visible text, as FULL copies (reasoning + timeline-marker tags survive)."""
-    return [dict(message) for message in messages or []
-            if isinstance(message, dict) and message.get("role") in {"user", "assistant"}
-            and _coerce_message_text(message.get("content")).strip()]
+    """user/assistant rows with visible text, as FULL copies (reasoning + timeline-marker tags survive).
+
+    Tool bindings are stripped so spine matches legacy: an assistant that also carried tool_calls
+    must not land unpaired in the child (the matching tool rows are filtered out).
+    """
+    copied = []
+    for message in messages or []:
+        if not (isinstance(message, dict) and message.get("role") in {"user", "assistant"}
+                and _coerce_message_text(message.get("content")).strip()):
+            continue
+        row = dict(message)
+        for field in _BRANCH_TOOL_COPY_FIELDS:
+            row.pop(field, None)
+        copied.append(row)
+    return copied
+
+
+def _full_branch_history(messages) -> list:
+    """Cache-preserving copy: user/assistant/tool with tool_call_id pairing, including empty tool-call turns."""
+    copied = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in _FULL_BRANCH_ROLES:
+            continue
+        has_text = bool(_coerce_message_text(message.get("content")).strip())
+        if role == "assistant":
+            if not has_text and not message.get("tool_calls"):
+                continue
+        elif role == "user":
+            if not has_text and not message.get("display_kind"):
+                continue
+        copied.append(dict(message))
+    return copied
+
+
+def _assistant_tool_call_ids(message) -> list:
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return []
+    calls = message.get("tool_calls") or []
+    if not isinstance(calls, list):
+        return []
+    return [call.get("id") for call in calls if isinstance(call, dict) and call.get("id")]
+
+
+def _full_branch_prefix_dangling(history) -> bool:
+    """True when a prefix ends with assistant tool_calls that lack following tool results."""
+    pending: list = []
+    for message in history or []:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "assistant":
+            pending.extend(_assistant_tool_call_ids(message))
+        elif role == "tool":
+            tool_call_id = message.get("tool_call_id")
+            if tool_call_id in pending:
+                pending.remove(tool_call_id)
+    return bool(pending)
+
+
+def _truncate_full_branch_history(history, count: int) -> list:
+    """Largest prefix ``<= count`` that does not sever a tool_call/result pair."""
+    prefix = list(history[:count])
+    while prefix and _full_branch_prefix_dangling(prefix):
+        prefix.pop()
+    return prefix
+
+
+def _resolve_branch_mode(params=None) -> str:
+    """``session.branch_mode`` from params then config; unknown/missing/error → spine (fail-open)."""
+    requested = None
+    if isinstance(params, dict) and params.get("branch_mode") is not None:
+        requested = params.get("branch_mode")
+    else:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            session_cfg = cfg.get("session") if isinstance(cfg, dict) and isinstance(cfg.get("session"), dict) else {}
+            requested = session_cfg.get("branch_mode")
+        except Exception:
+            return _BRANCH_MODE_SPINE
+    return _BRANCH_MODE_FULL if str(requested or "").strip().lower() == _BRANCH_MODE_FULL else _BRANCH_MODE_SPINE
 
 
 def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list, source: str):
@@ -1921,24 +2034,17 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
             branch_owns_db = False
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = None  # claimed lazily on the first turn
+            _sessions[new_sid]["_branch_seed_persisted"] = True  # `_persist_branch` already wrote the transcript
         return agent
     finally:
         if branch_owns_db and branch_db is not None:
             _release_db(branch_db)
 
 
-_BRANCH_COPY_FIELDS = (
-    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items",
-    # Timeline markers ride as role=user; untagged they become bare user turns after a restart, corrupting
-    # the truncate ordinal address space.
-    "display_kind", "display_metadata",
-    # Branch copies are history, not new activity: keep the parent's timestamps.
-    "timestamp")
-
-
-def _branch_source_history(db, session: dict, old_key: str) -> list:
+def _branch_source_history(db, session: dict, old_key: str, *, mode: str = _BRANCH_MODE_SPINE) -> list:
     """Rows a branch copies: the persisted DISPLAY projection reconciled with live memory (live history is
     the MODEL projection — post-compaction summary + tail — the child would lose every archived turn)."""
+    projector = _full_branch_history if mode == _BRANCH_MODE_FULL else _visible_branch_history
     with session["history_lock"]:
         in_memory_history = [
             dict(msg) for msg in list(session.get("display_history_prefix") or []) + list(session.get("history", []))
@@ -1947,10 +2053,10 @@ def _branch_source_history(db, session: dict, old_key: str) -> list:
     if callable(get_resume_conversations := getattr(db, "get_resume_conversations", None)):
         try:
             _, display_history = get_resume_conversations(old_key)
-            history = _visible_branch_history(_reconcile_display_with_live(display_history, in_memory_history))
+            history = projector(_reconcile_display_with_live(display_history, in_memory_history))
         except Exception:
             logger.debug("branch display projection read failed", exc_info=True)
-    return history or _visible_branch_history(in_memory_history)
+    return history or projector(in_memory_history)
 
 
 @_session_method("session.branch", live=True)
@@ -1960,18 +2066,22 @@ def _(rid, params: dict, session: dict) -> dict:
         if db is None:
             return _db_unavailable_error(rid, code=5008)
         old_key = session["session_key"]
-        history = _branch_source_history(db, session, old_key)
+        mode = _resolve_branch_mode(params)
+        history = _branch_source_history(db, session, old_key, mode=mode)
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
         if isinstance(count := params.get("count"), int) and count > 0:
-            history = history[:count]
+            history = (_truncate_full_branch_history(history, count) if mode == _BRANCH_MODE_FULL
+                       else history[:count])
+            if not history:
+                return _err(rid, 4008, "nothing to branch — send a message first")
         new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
         try:
             title = params.get("name", "") or _branch_title(db, old_key)
             home = session.get("profile_home")
             _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
-                            copy_fields=_BRANCH_COPY_FIELDS)
+                            copy_fields=_branch_persist_copy_fields(mode))
         except Exception as e:
             return _err(rid, 5008, f"branch failed: {e}")
     try:

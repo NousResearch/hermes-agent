@@ -10,6 +10,7 @@ import {
   deleteSession,
   fetchStoredTranscriptAcrossBackends,
   getAllSessionMessages,
+  getHermesConfig,
   getLatestSessionMessages,
   setSessionArchived
 } from '@/hermes'
@@ -151,6 +152,7 @@ import {
   applyRuntimeInfo,
   applyStoredSessionPreviewRuntimeInfo,
   type BranchMessage,
+  type BranchMode,
   cachedSessionRow,
   chatMessageArraysEquivalent,
   dedupeInflightUserAgainstTranscript,
@@ -164,6 +166,7 @@ import {
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
+  resolveBranchMode,
   resolveResumedBusy,
   resolveSessionProfile,
   resolveStoredSession,
@@ -172,6 +175,7 @@ import {
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages,
+  toBranchSeedPayloads,
   upsertOptimisticSession
 } from './utils'
 
@@ -243,6 +247,15 @@ function branchCreateKey({
     profile: profile?.trim() || null,
     sourceSessionId
   })
+}
+
+async function loadBranchMode(profile?: null | string): Promise<BranchMode> {
+  try {
+    const config = await getHermesConfig(profile ?? undefined)
+    return resolveBranchMode(config.session?.branch_mode)
+  } catch {
+    return 'spine'
+  }
 }
 
 // Reflect a stored row's persisted token counts into the live usage atom
@@ -2112,20 +2125,28 @@ export function useSessionActions({
 
         let createFlight = branchCreateFlightsRef.current.get(createKey)
 
+        const branchMode = await loadBranchMode(profile)
+        // Full-mode ChatMessage counts are not the server's tool-row coordinates, so a
+        // mid-thread prefix is seeded client-side (already pair-safe) instead of
+        // session.branch without count (which would copy the entire parent).
+        const seedMidThreadFull = branchMode === 'full' && branchCount !== undefined
+        const useBranchRpc = Boolean(sourceSessionId) && !seedMidThreadFull
+
         // No title: the backend auto-names the branch from its parent's lineage.
         if (!createFlight) {
           createFlight = (
-            sourceSessionId
+            useBranchRpc
               ? requestBranchGateway<SessionCreateResponse>('session.branch', {
                   session_id: sourceSessionId,
-                  ...(branchCount !== undefined ? { count: branchCount } : {})
+                  ...(branchCount !== undefined ? { count: branchCount } : {}),
+                  ...(branchMode === 'full' ? { branch_mode: 'full' } : {})
                 })
               : requestBranchGateway<SessionCreateResponse>('session.create', {
                   cols: 96,
                   source: 'desktop',
                   ...(cwd && { cwd }),
                   ...(profile ? { profile } : {}),
-                  messages: branchMessages.map(({ content, role }) => ({ content, role })),
+                  messages: toBranchSeedPayloads(branchMessages, branchMode),
                   ...(parentStoredId && { parent_session_id: parentStoredId })
                 })
           ).catch(err => {
@@ -2139,8 +2160,16 @@ export function useSessionActions({
 
         const branched = await createFlight
 
+        const wireMessages = branched.messages ?? []
+        const keepFull =
+          branchMode === 'full' ||
+          wireMessages.some(
+            message => message.role === 'tool' || (Array.isArray(message.tool_calls) && message.tool_calls.length)
+          )
         const responseBranchMessages =
-          sourceSessionId && branched.messages?.length ? toBranchMessages(toChatMessages(branched.messages)) : []
+          useBranchRpc && wireMessages.length
+            ? toBranchMessages(toChatMessages(wireMessages), keepFull ? 'full' : 'spine')
+            : []
 
         const effectiveBranchMessages = responseBranchMessages.length ? responseBranchMessages : branchMessages
         const routedSessionId = branched.stored_session_id ?? branched.session_id
@@ -2322,7 +2351,8 @@ export function useSessionActions({
         return false
       }
 
-      const branchMessages = selectBranchMessages(messages, authoritativeMessages, messageId)
+      const branchMode = await loadBranchMode(profile)
+      const branchMessages = selectBranchMessages(messages, authoritativeMessages, messageId, branchMode)
 
       if (!branchMessages.length) {
         notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
@@ -2382,7 +2412,8 @@ export function useSessionActions({
         // foreign-owned parent holds no such session: the read comes back empty
         // and the branch aborts as "nothing to branch" before any create.
         const { messages } = await getAllSessionMessages(storedSessionId, ownerRoute ?? profile)
-        const branchMessages = toBranchMessages(toChatMessages(messages))
+        const branchMode = await loadBranchMode(profile)
+        const branchMessages = toBranchMessages(toChatMessages(messages), branchMode)
 
         if (!branchMessages.length) {
           notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })

@@ -306,6 +306,7 @@ import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
 import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
+import { applyPreviewShortcut, previewShortcutAction } from './preview-shortcut'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
@@ -7147,16 +7148,18 @@ function installDevToolsShortcut(window) {
 
 function installPreviewShortcut(window) {
   window.webContents.on('before-input-event', (event, input) => {
-    const key = String(input.key || '').toLowerCase()
-    const accel = (IS_MAC ? input.meta : input.control) && !input.alt
-    const isCloseTabShortcut = key === 'w' && accel && !input.shift
+    const action = previewShortcutAction(input, { isMac: IS_MAC })
+
+    if (!action) {
+      return
+    }
+
+    event.preventDefault()
 
     // Always claim ⌘W here (the File>Close item deliberately has no
     // accelerator, so nothing else does). The renderer decides tab-vs-window
     // — no `previewShortcutActive` gate, so it works for every closeable tab.
-    if (isCloseTabShortcut) {
-      event.preventDefault()
-
+    if (action === 'close-preview-tab') {
       // ⌘W in the HUD is "leave HUD mode", not "close a tab in the app
       // window". Routing it to the main renderer closed the app's tab out
       // from under the user while the HUD stayed put; routing it through the
@@ -7175,11 +7178,18 @@ function installPreviewShortcut(window) {
     // ⌘R rides here rather than on the View menu item for the same reason:
     // the application menu only exists on macOS (it is set to null elsewhere,
     // see #77845), so a menu accelerator would leave Windows and Linux with no
-    // way to reload a page at all. ⇧⌘R is left alone — that is `forceReload`,
-    // the unconditional whole-window escape hatch.
-    if (key === 'r' && accel && !input.shift) {
-      event.preventDefault()
+    // way to reload a page at all. Non-shift stays preview-aware.
+    if (action === 'reload-preview-or-window') {
       sendPreviewNavCommand('reload')
+
+      return
+    }
+
+    // Ctrl/Cmd+Shift+R: main-process force-reload escape hatch. On macOS the
+    // View menu `forceReload` role still exists; claiming the chord here also
+    // covers Windows/Linux where Menu.setApplicationMenu(null) (#77845).
+    if (action === 'force-reload-window') {
+      applyPreviewShortcut(action, window)
     }
   })
 }

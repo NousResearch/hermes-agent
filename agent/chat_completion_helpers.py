@@ -35,6 +35,7 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 # boxes. Non-Ollama remotes (sglang, vLLM, OpenAI-compat) expose Ollama-compat endpoints that can
 # misidentify and, without an api_key, return 401 on every leg (issue #89863).
 from agent.model_metadata import is_local_endpoint
+from agent.tool_surface_overflow import apply_deferred_tool_surface
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import (_sanitize_surrogates, _repair_tool_call_arguments)
@@ -1384,6 +1385,9 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     reasoning_config = _reasoning_config_for_wire(agent)
     if tools_for_api is None:
         tools_for_api = agent.tools
+    # Overflow recovery may have re-rendered the surface deferred for this turn
+    # (agent/tool_surface_overflow.py).
+    tools_for_api = apply_deferred_tool_surface(agent, tools_for_api)
     # The one place request_overrides are consumed: static /fast values are already pinned
     # in agent.request_overrides; auto/cold windows layer the fast override per request.
     request_overrides = effective_request_overrides(agent)

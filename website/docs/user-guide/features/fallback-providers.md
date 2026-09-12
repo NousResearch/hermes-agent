@@ -127,6 +127,10 @@ When triggered, Hermes:
 
 The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.
 
+:::info Fallback models with small context windows
+A fallback model can have a far smaller context window than your primary (a local 32K model, a free-tier endpoint). Tool definitions are the part of a request that compaction cannot shrink, and with 50+ MCP tools the schemas alone can exceed such a window — every request is then rejected no matter how much history is compacted away. Hermes handles that case by dropping the MCP tool definitions for the affected turn (built-in tools — terminal, files, search, delegation — always stay) and retrying, instead of failing the turn. If this fires repeatedly, choose a fallback with a larger window or trim MCP servers with `hermes tools`.
+:::
+
 :::warning Fallback resets the prompt cache
 Prompt caches are keyed to the model (and on most providers, the account) serving the request. When fallback fires, the new provider:model has no cached prefix for your conversation, so the next request re-reads the entire history at full input-token price instead of the ~75–90% discounted cached rate. The same applies when the turn ends and the primary is restored — that first request back on the primary is a full re-read too (unless the primary's cache TTL hasn't expired). This is unavoidable — it's the cost of staying alive through an outage — but it's why a long session that bounces between providers can cost noticeably more than one that stays put.
 :::

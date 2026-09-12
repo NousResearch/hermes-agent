@@ -30,6 +30,49 @@ from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
 
+_GITHUB_PR_FEEDBACK_IDEMPOTENCY_PREFIX = "github-pr-feedback:"
+_EXACT_HEAD_PR_MARKERS = ("expected_head_sha", "pr_number", "repository")
+_PR_WRITE_ACTION_RE = re.compile(
+    r"\b(?:repair|fix|push|reply|respond|base[-_ ]?refresh|"
+    r"refresh(?:ing)?\s+(?:the\s+)?base|resolve(?:d|s|ing)?\s+(?:a\s+)?merge\s+conflict)\b",
+    re.IGNORECASE,
+)
+
+
+def is_atomic_pr_automation_task(*, body: Optional[str], idempotency_key: Optional[str]) -> bool:
+    key = (idempotency_key or "").strip().casefold()
+    if key.startswith(_GITHUB_PR_FEEDBACK_IDEMPOTENCY_PREFIX):
+        return True
+    evidence = (body or "").casefold()
+    return all(marker in evidence for marker in _EXACT_HEAD_PR_MARKERS)
+
+
+def _task_requires_pr_write_authority(*, title: str, body: Optional[str], idempotency_key: Optional[str]) -> bool:
+    return is_atomic_pr_automation_task(body=body, idempotency_key=idempotency_key) and (
+        _PR_WRITE_ACTION_RE.search(f"{title}\n{body or ''}") is not None
+    )
+
+
+def _profile_is_explicitly_read_only(profile: Optional[str]) -> bool:
+    if not profile:
+        return False
+    try:
+        import yaml
+        profile_path = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "profiles" / profile / "profile.yaml"
+        data = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return False
+    authority = str(data.get("execution_authority") or data.get("authority") or "").strip().casefold()
+    if authority in {"read-only", "read_only", "readonly", "review-only"}:
+        return True
+    description = str(data.get("description") or "").casefold()
+    return "read-only" in description or "read only" in description
+
+
+def _validate_pr_task_assignee_authority(*, title: str, body: Optional[str], idempotency_key: Optional[str], assignee: Optional[str]) -> None:
+    if _task_requires_pr_write_authority(title=title, body=body, idempotency_key=idempotency_key) and _profile_is_explicitly_read_only(assignee):
+        raise ValueError("read-only profile cannot own PR write automation task")
+
 
 # --- Shared micro-helpers (row access, JSON, env, git) ---
 
@@ -1257,6 +1300,9 @@ def create_task(
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    _validate_pr_task_assignee_authority(
+        title=title, body=body, idempotency_key=idempotency_key, assignee=assignee,
+    )
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
     # A project-scoped board anchors every new task to its project's repo
@@ -1502,10 +1548,15 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
+            "SELECT status, claim_lock, assignee, title, body, idempotency_key "
+            "FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
         if not row:
             return False
+        _validate_pr_task_assignee_authority(
+            title=row["title"], body=row["body"],
+            idempotency_key=row["idempotency_key"], assignee=profile,
+        )
         if row["claim_lock"] is not None and row["status"] == "running":
             raise RuntimeError(
                 f"cannot reassign {task_id}: currently running (claimed). "
@@ -4088,6 +4139,9 @@ _PLUGIN_COMPAT_LAZY = {
     'KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS': ('hermes_cli.kanban_db_dispatch', 'KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS'),
     'KanbanDbCorruptError': ('hermes_cli.kanban_db_connect', 'KanbanDbCorruptError'),
     'MEMORY_GUARD_MB_PER_WORKER': ('hermes_cli.kanban_db_dispatch', 'MEMORY_GUARD_MB_PER_WORKER'),
+    'ProcessScan': ('hermes_cli.kanban_db_dispatch', 'ProcessScan'),
+    'ProcessSnapshot': ('hermes_cli.kanban_db_dispatch', 'ProcessSnapshot'),
+    '_process_name_can_hide_python_runtime': ('hermes_cli.kanban_db_dispatch', '_process_name_can_hide_python_runtime'),
     'RepairResult': ('hermes_cli.kanban_db_connect', 'RepairResult'),
     'add_notify_sub': ('hermes_cli.kanban_db_notify', 'add_notify_sub'),
     'advance_notify_cursor': ('hermes_cli.kanban_db_notify', 'advance_notify_cursor'),
@@ -4109,11 +4163,14 @@ _PLUGIN_COMPAT_LAZY = {
     'heartbeat_worker': ('hermes_cli.kanban_db_dispatch', 'heartbeat_worker'),
     'list_notify_subs': ('hermes_cli.kanban_db_notify', 'list_notify_subs'),
     'purge_stale_done_notify_subs': ('hermes_cli.kanban_db_notify', 'purge_stale_done_notify_subs'),
+    'priority_runtime_state': ('hermes_cli.kanban_db_dispatch', 'priority_runtime_state'),
     'reap_worker_zombies': ('hermes_cli.kanban_db_dispatch', 'reap_worker_zombies'),
     'reconcile_orphaned_running': ('hermes_cli.kanban_db_dispatch', 'reconcile_orphaned_running'),
     'remove_notify_sub': ('hermes_cli.kanban_db_notify', 'remove_notify_sub'),
     'repair_db': ('hermes_cli.kanban_db_connect', 'repair_db'),
+    'resolve_dispatch_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'resolve_dispatch_max_in_progress'),
     'resolve_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'resolve_max_in_progress'),
+    '_ensure_git_worktree': ('hermes_cli.kanban_db_workspace', '_ensure_git_worktree'),
     'resolve_workspace': ('hermes_cli.kanban_db_workspace', 'resolve_workspace'),
     'review_dispatch_enabled': ('hermes_cli.kanban_db_dispatch', 'review_dispatch_enabled'),
     'rewind_notify_cursor': ('hermes_cli.kanban_db_notify', 'rewind_notify_cursor'),

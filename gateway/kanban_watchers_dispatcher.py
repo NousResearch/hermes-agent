@@ -23,8 +23,10 @@ def _kbc():
 
 
 def _kbd():
-    from hermes_cli import kanban_db_dispatch
-    return kanban_db_dispatch
+    # Keep the facade as the lookup surface so external plugins and tests that
+    # patch hermes_cli.kanban_db continue to affect the embedded dispatcher.
+    from hermes_cli import kanban_db
+    return kanban_db
 
 _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malformed")
 
@@ -61,7 +63,7 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
     # out. Explicit config wins; otherwise a memory-derived default (unbounded
     # fan-out swap-thrashes small hosts), or None where total memory can't be read.
     max_in_progress = _positive_int_setting(kanban_cfg, "max_in_progress")
-    effective_max_in_progress = _kbd().resolve_max_in_progress(max_in_progress)
+    effective_max_in_progress = _kbd().resolve_dispatch_max_in_progress(kanban_cfg)
     if max_in_progress is None and effective_max_in_progress is not None:
         logger.info(
             "kanban dispatcher: kanban.max_in_progress unset; using "

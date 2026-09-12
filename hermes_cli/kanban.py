@@ -96,41 +96,37 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     return branch
 
 
-def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool, str]:
-    """``(running, message)`` for the "will anything dispatch this?" warning: True when a gateway is
-    alive for this HERMES_HOME with ``kanban.dispatch_in_gateway`` on, else False + human guidance.
-    Fails OPEN (probe/config errors -> ``(True, "")``) — a missed warning beats crying wolf.
-    ``hermes_home`` scopes the probe to a profile dir (dashboard backend); CLI callers pass None.
-
-    The dashboard plugin API passes it because the dashboard backend process can be running under a
-    different HERMES_HOME than the profile the request targets, which otherwise produced a "no gateway is
-    running" warning against a perfectly healthy profile gateway (#71211). CLI callers leave it ``None`` and
-    keep the existing process-level behavior.
-    """
+def _dispatcher_readiness(hermes_home: Optional[Path] = None) -> dict[str, Any]:
     try:
-        from gateway.status import resolve_gateway_liveness  # type: ignore
-
-        # Same ladder as the dashboard status endpoints so PID-file-less / cross-container gateways
-        # aren't misreported; use_cache=False because this one-shot probe must see the state now.
+        from gateway.status import resolve_gateway_liveness
         liveness = resolve_gateway_liveness(profile_dir=hermes_home, use_cache=False)
-    except Exception:
-        return (True, "")  # can't probe — silent
-    if liveness.probe_error:  # resolver swallows per-rung failures; "can't tell" != "no gateway"
+    except Exception as exc:
+        return {"status": "unknown", "ready": False, "gateway_pid": None,
+                "message": f"Gateway dispatcher readiness probe failed: {exc}"}
+    if liveness.probe_error:
+        return {"status": "unknown", "ready": False, "gateway_pid": liveness.pid,
+                "message": "Gateway dispatcher readiness probe returned an unreadable state"}
+    try:
+        from hermes_cli.config import load_config_readonly
+        dispatch_on = bool((load_config_readonly() or {}).get("kanban", {}).get("dispatch_in_gateway", True))
+    except Exception as exc:
+        return {"status": "unknown", "ready": False, "gateway_pid": liveness.pid,
+                "message": f"Kanban dispatcher configuration could not be read: {exc}"}
+    if liveness.pid and dispatch_on:
+        return {"status": "ready", "ready": True, "gateway_pid": liveness.pid,
+                "message": f"gateway pid={liveness.pid}, dispatch enabled"}
+    if liveness.pid:
+        return {"status": "disabled", "ready": False, "gateway_pid": liveness.pid,
+                "message": "Gateway is running but kanban.dispatch_in_gateway=false in config.yaml"}
+    return {"status": "offline", "ready": False, "gateway_pid": None,
+            "message": "No gateway is running — the task will sit in 'ready' until you start it."}
+
+
+def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool, str]:
+    readiness = _dispatcher_readiness(hermes_home=hermes_home)
+    if readiness["status"] == "unknown":
         return (True, "")
-    pid = liveness.pid
-    # Even if the gateway is up, dispatch_in_gateway may be off (can't tell -> assume default).
-    if pid and bool(_kanban_config().get("dispatch_in_gateway", True)):
-        return (True, f"gateway pid={pid}, dispatch enabled")
-    if pid:
-        return (False, "Gateway is running but kanban.dispatch_in_gateway=false in "
-                "config.yaml — the task will sit in 'ready' until you flip it "
-                "back on and restart the gateway, OR run the legacy "
-                "standalone daemon (`hermes kanban daemon --force`).")
-    return (False, "No gateway is running — the task will sit in 'ready' until you "
-            "start it. Run:\n    hermes gateway start\n"
-            "The gateway hosts an embedded dispatcher (tick interval 60s by "
-            "default); your task will be picked up on the next tick after "
-            "the gateway comes up.")
+    return (bool(readiness["ready"]), str(readiness["message"]))
 
 
 # --- Command dispatch ---

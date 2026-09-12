@@ -72,6 +72,75 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 )
 
 
+@dataclass(frozen=True)
+class ProcessSnapshot:
+    pid: int
+    argv: tuple[str, ...]
+    cwd: str
+
+
+@dataclass(frozen=True)
+class ProcessScan:
+    snapshots: tuple[ProcessSnapshot, ...]
+    complete: bool
+
+
+def priority_runtime_state(
+    guard: Optional[Mapping[str, Any]], *, process_scan: Optional[ProcessScan] = None,
+) -> str:
+    if not isinstance(guard, Mapping) or not guard.get("enabled"):
+        return "inactive"
+    if process_scan is None or not process_scan.complete:
+        return "unknown"
+    roots = [Path(str(p)).expanduser().resolve() for p in guard.get("project_roots", []) if str(p).strip()]
+    entries = {str(e).strip() for e in guard.get("entrypoints", []) if str(e).strip()}
+    linked: set[Path] = set()
+    if guard.get("include_linked_worktrees"):
+        for root in roots:
+            try:
+                out = subprocess.check_output(["git", "-C", str(root), "worktree", "list", "--porcelain"], text=True)
+                for line in out.splitlines():
+                    if line.startswith("worktree "):
+                        linked.add(Path(line[9:].strip()).resolve())
+            except Exception:
+                continue
+    allowed = roots + list(linked)
+    for snap in process_scan.snapshots:
+        for root in allowed:
+            for entry in entries:
+                if _snapshot_matches_entrypoint(snap, root, entry):
+                    return "active"
+    return "inactive"
+
+
+def _process_name_can_hide_python_runtime(name: str) -> bool:
+    return Path(str(name)).name.casefold().startswith(("python", "pypy"))
+
+
+def _snapshot_matches_entrypoint(
+    snapshot: ProcessSnapshot, root: Path, entrypoint: str,
+) -> bool:
+    """Match a Python script invocation, not arbitrary command arguments."""
+    if not snapshot.argv or not _process_name_can_hide_python_runtime(snapshot.argv[0]):
+        return False
+    args = snapshot.argv[1:]
+    # ``-c`` and ``-m`` execute code/modules; a matching string in either must
+    # not be mistaken for the configured script entrypoint.
+    if "-c" in args or "-m" in args:
+        return False
+    expected = (root / entrypoint).resolve()
+    process_cwd = Path(snapshot.cwd).expanduser().resolve()
+    for arg in args:
+        if arg.startswith("-"):
+            continue
+        candidate = Path(arg).expanduser()
+        if not candidate.is_absolute():
+            candidate = process_cwd / candidate
+        if candidate.resolve() == expected:
+            return True
+    return False
+
+
 @dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass.
@@ -1312,14 +1381,33 @@ def derive_default_max_in_progress(sample: Optional[Mapping[str, Any]] = None) -
     return max(DERIVED_MAX_IN_PROGRESS_FLOOR, min(workers, DERIVED_MAX_IN_PROGRESS_CEILING))
 
 
-def resolve_max_in_progress(configured: Optional[int]) -> Optional[int]:
+def resolve_max_in_progress(
+    configured: Optional[int], *, priority_runtime_guard: Optional[Mapping[str, Any]] = None,
+    process_scan: Optional[ProcessScan] = None,
+) -> Optional[int]:
     """Effective global concurrency cap: explicit config wins, else the
     memory-derived default. All config-parsing callers route through this so
     both paths agree.
     """
-    if configured is not None:
-        return configured
-    return derive_default_max_in_progress()
+    normal = configured
+    if normal is None and isinstance(priority_runtime_guard, Mapping):
+        try:
+            normal = int(priority_runtime_guard.get("normal_max_in_progress"))
+        except (TypeError, ValueError):
+            normal = None
+    if normal is None:
+        normal = derive_default_max_in_progress()
+    guard = priority_runtime_guard
+    if isinstance(guard, Mapping) and guard.get("enabled") and guard.get("project_roots"):
+        state = priority_runtime_state(guard, process_scan=process_scan)
+        if state in {"active", "unknown"}:
+            try:
+                protected = int(guard.get("max_in_progress"))
+            except (TypeError, ValueError):
+                protected = 0
+            if protected > 0:
+                return min(normal, protected) if normal is not None else protected
+    return normal
 
 
 def configured_max_in_progress() -> Optional[int]:
@@ -1340,6 +1428,46 @@ def configured_max_in_progress() -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return ival if ival >= 1 else None
+
+
+_UNSET = object()
+
+
+def resolve_dispatch_max_in_progress(
+    kanban_cfg: Optional[Mapping[str, Any]] = None, *, process_scan: Optional[ProcessScan] = None,
+    configured: Any = _UNSET,
+) -> Optional[int]:
+    """Resolve the effective cap shared by every dispatch entry point."""
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly() or {}
+            kanban_cfg = config.get("kanban", {}) if isinstance(config, Mapping) else {}
+        except Exception:
+            kanban_cfg = {}
+    if not isinstance(kanban_cfg, Mapping):
+        kanban_cfg = {}
+    if configured is _UNSET:
+        raw_configured = kanban_cfg.get("max_in_progress")
+        if raw_configured is None:
+            parsed_configured = 0
+        else:
+            try:
+                parsed_configured = int(raw_configured)
+            except (TypeError, ValueError):
+                parsed_configured = 0
+        configured = parsed_configured if parsed_configured >= 1 else None
+    elif configured is not None:
+        try:
+            configured = int(configured)
+        except (TypeError, ValueError):
+            configured = None
+    guard = kanban_cfg.get("priority_runtime_guard")
+    return resolve_max_in_progress(
+        configured,
+        priority_runtime_guard=guard if isinstance(guard, Mapping) else None,
+        process_scan=process_scan,
+    )
 
 
 def count_running_tasks(conn: sqlite3.Connection) -> int:
@@ -1428,6 +1556,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_by_profile: Optional[Mapping[str, int]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
@@ -1451,6 +1580,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_by_profile=max_in_progress_by_profile,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -1499,7 +1629,7 @@ def _dispatch_lane_task(
     board: Optional[str],
     failure_limit: int,
     spawn_fn,
-    per_profile_cap: Optional[int],
+    per_profile_caps: Mapping[str, int],
     per_profile_running: dict[str, int],
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
@@ -1517,9 +1647,10 @@ def _dispatch_lane_task(
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
-    if per_profile_cap is not None:
+    profile_cap = per_profile_caps.get(assignee, per_profile_caps.get("*"))
+    if profile_cap is not None:
         current = per_profile_running.get(assignee, 0)
-        if current >= per_profile_cap:
+        if current >= profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
@@ -1540,7 +1671,7 @@ def _dispatch_lane_task(
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.
-        if per_profile_cap is not None and name:
+        if name and per_profile_caps.get(name, per_profile_caps.get("*")) is not None:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
     if dry_run:
@@ -1760,6 +1891,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_by_profile: Optional[Mapping[str, int]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -1791,16 +1923,19 @@ def _dispatch_once_locked(
         ready_budget = max(spawn_budget - 1, 0)
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
-    per_profile_cap = max_in_progress_per_profile if (
-        # Per-profile concurrency cap (#21582): when set, track how many workers each assignee already has
-        # in flight, and refuse to spawn when this would push that assignee past the cap. Prevents fan-out
-        # workloads from melting a single profile's local model / API quota / browser pool while leaving
-        # other profiles idle.
-        isinstance(max_in_progress_per_profile, int)
-        and max_in_progress_per_profile > 0
-    ) else None
+    profile_caps: dict[str, int] = {}
+    if isinstance(max_in_progress_by_profile, Mapping):
+        for name, raw_cap in max_in_progress_by_profile.items():
+            try:
+                cap = int(raw_cap)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(name, str) and name and cap > 0:
+                profile_caps[name] = cap
+    if not profile_caps and isinstance(max_in_progress_per_profile, int) and max_in_progress_per_profile > 0:
+        profile_caps["*"] = max_in_progress_per_profile
     per_profile_running: dict[str, int] = {}
-    if per_profile_cap is not None:
+    if profile_caps:
         for prow in conn.execute(
             "SELECT assignee, COUNT(*) AS n FROM tasks "
             "WHERE status = 'running' AND assignee IS NOT NULL "
@@ -1810,7 +1945,7 @@ def _dispatch_once_locked(
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
-        per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        per_profile_caps=profile_caps, per_profile_running=per_profile_running,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
@@ -2336,7 +2471,9 @@ def run_daemon(
         try:
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
-            max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            max_in_progress = resolve_dispatch_max_in_progress(
+                configured=configured_max_in_progress(),
+            )
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,

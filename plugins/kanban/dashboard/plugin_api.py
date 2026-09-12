@@ -44,6 +44,15 @@ router = APIRouter()
 _BOARD_Q = Query(None, description="Kanban board slug (omit for current)")
 
 
+@router.get("/dispatcher-readiness")
+def get_dispatcher_readiness():
+    """Strict readiness for the gateway-owned Kanban dispatcher."""
+    from hermes_cli.kanban import _dispatcher_readiness
+    from hermes_constants import get_hermes_home
+
+    return _dispatcher_readiness(hermes_home=get_hermes_home())
+
+
 # --- Connection / board helpers ---------------------------------------------
 
 def _ws_upgrade_authorized(ws: "WebSocket") -> bool:
@@ -1209,7 +1218,13 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
 def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), board: Optional[str] = Query(None)):
     """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick."""
     with _board_conn(board) as (board, conn):
-        result = kbd.dispatch_once(conn, dry_run=dry_run, max_spawn=max_n, board=board)
+        result = kbd.dispatch_once(
+            conn,
+            dry_run=dry_run,
+            max_spawn=max_n,
+            max_in_progress=kbd.resolve_dispatch_max_in_progress(),
+            board=board,
+        )
         try:
             return asdict(result)  # DispatchResult is a dataclass
         except TypeError:

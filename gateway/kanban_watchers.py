@@ -274,13 +274,15 @@ class GatewayKanbanWatchersMixin:
                 if not _kanban_dispatch_allowed():
                     bad_ticks = 0
                 else:
+                    # Claim ready work before awaiting auxiliary-model decomposition;
+                    # a slow decomposer must not hold the dispatch lane hostage.
+                    results = await _to_thread_process_service(dispatcher.tick_once)
                     # Re-read the auto-decompose toggle live so disabling it
                     # takes effect on the next tick, not on restart.
                     _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
                     # See #49638.
                     if _ad_enabled:
                         await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
-                    results = await _to_thread_process_service(dispatcher.tick_once)
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
                     bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0

@@ -804,7 +804,8 @@ class GatewayTurnMixin:
         every attempt for thinking summary models. Without the fence a late commit could clobber
         newer turns, so cancel."""
         from gateway.run import (
-            _HYGIENE_TURNHOLD_RETRY_SECONDS, _record_hygiene_cooldown, _reset_hygiene_failure_streak
+            _HYGIENE_TURNHOLD_RETRY_SECONDS, _record_hygiene_cooldown, _reset_hygiene_failure_streak,
+            _cooldown_is_active,
         )
         fence = attempt.commit_fence
         _hyg_keep_admission = bool(getattr(fence, "commit_watermark_fenced", False)) and not fence.is_cancelled
@@ -869,9 +870,10 @@ class GatewayTurnMixin:
             "proceeding without compression this turn%s",
             session_entry.session_id, time.monotonic() - attempt.wait_started, _log_suffix,
         )
-        await self._hmwa_hygiene_notify(
-            source, attempt.meta, t("gateway.compress.turnhold_deferred"), "compression-turnhold notice",
-        )
+        if _cooldown_is_active(self, session_entry.session_id) is not True:
+            await self._hmwa_hygiene_notify(
+                source, attempt.meta, t("gateway.compress.turnhold_deferred"), "compression-turnhold notice",
+            )
         raise
 
     async def _hmwa_hygiene_on_timeout(self, attempt, hs, session_entry, session_key, source):

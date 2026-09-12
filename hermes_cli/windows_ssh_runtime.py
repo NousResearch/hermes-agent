@@ -127,12 +127,33 @@ def _verify_security(handle) -> None:
             raise OSError("Windows SSH runtime object has a permissive DACL")
 
 
+def _resolved_parent(win32file, win32con, parent: Path) -> str:
+    """Canonical path of parent via the same GetFinalPathNameByHandle mechanism used on
+    the target handle in _open below, so an ancestor junction (e.g. a relocated
+    %LOCALAPPDATA%\\hermes, see _preserve_hermes_home_path) resolves on both sides of the
+    comparison instead of only on the actual-handle side."""
+    handle = win32file.CreateFile(
+        str(parent), win32con.GENERIC_READ, win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+        None, win32con.OPEN_EXISTING, win32con.FILE_FLAG_BACKUP_SEMANTICS, None)
+    try:
+        return win32file.GetFinalPathNameByHandle(handle, 0).removeprefix("\\\\?\\")
+    finally:
+        win32file.CloseHandle(handle)
+
+
 def _open(path: Path, access: int, creation: int, flags: int, share: int = 0):
-    win32file = _win32().win32file
+    w = _win32()
+    win32file = w.win32file
     handle = win32file.CreateFile(str(path), access, share, _security_attributes(), creation, flags, None)
     try:
         actual = win32file.GetFinalPathNameByHandle(handle, 0).removeprefix("\\\\?\\")
-        if os.path.normcase(actual) != os.path.normcase(os.path.abspath(str(path))):
+        # Resolve the expected side through the identical GetFinalPathNameByHandle mechanism
+        # rather than os.path.abspath: abspath does not follow reparse points, so a legitimate
+        # ancestor junction (parent directory relocated, leaf itself untouched) previously made
+        # this raise a false "escaped its expected path" even though the leaf-reparse-point
+        # check below already independently guards against a swapped-out leaf.
+        expected = os.path.join(_resolved_parent(win32file, w.win32con, path.parent), path.name)
+        if os.path.normcase(actual) != os.path.normcase(expected):
             raise OSError("Windows SSH runtime handle escaped its expected path")
         if win32file.GetFileInformationByHandle(handle)[0] & 0x400:  # FILE_ATTRIBUTE_REPARSE_POINT
             raise OSError("Windows SSH runtime path contains a reparse point")

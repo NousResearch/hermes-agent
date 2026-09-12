@@ -2246,8 +2246,10 @@ DEFAULT_CONFIG = {
     # Desktop where a human can watch, take over (logins, 2FA, CAPTCHAs) and hand back. `hermes desktop`.
     "bot_desktop": {
         "geometry": "1440x900",
-        # Start the screen automatically the first time computer_use or a headed browser needs a display.
-        "auto_start": True,
+        # Opt-in: start the screen automatically the first time computer_use needs a display on a headless
+        # host. Off by default so installing TigerVNC for other reasons never yields a screen nobody asked
+        # for; Hermes Desktop's Screen pane offers Start and this toggle.
+        "auto_start": False,
     },
     "computer_use": {
         # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets

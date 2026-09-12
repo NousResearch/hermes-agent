@@ -14,7 +14,7 @@ LAUNCHER = Path(__file__).resolve().parents[2] / "tools" / "bot_desktop" / "laun
 pytestmark = pytest.mark.linux_only
 
 
-def _seed(tmp_path: Path, fake_bins: list[str]) -> Path:
+def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "") -> Path:
     bindir = tmp_path / "bin"
     bindir.mkdir()
     for name in fake_bins:
@@ -35,13 +35,15 @@ def _seed(tmp_path: Path, fake_bins: list[str]) -> Path:
         "HERMES_BD_SOCKET": str(tmp_path / "rfb.sock"), "HERMES_BD_XAUTH": str(tmp_path / "Xauthority"),
         "HERMES_BD_ENV_FILE": str(tmp_path / "env"), "HERMES_BD_CONFIG_HOME": str(cfg),
         "HERMES_BD_SEED_ONLY": "1",
+        **({"HERMES_BD_BROWSER_EXEC": browser_exec} if browser_exec else {}),
     }
     subprocess.run(["bash", str(LAUNCHER)], env=env, check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
     return cfg
 
 
 def test_dock_lists_only_programs_present_on_path(tmp_path):
-    cfg = _seed(tmp_path, ["xfce4-terminal", "firefox"])  # no thunar, no mousepad, no chrome
+    chrome = tmp_path / "bin" / "chrome"  # the browser is the one runtime.py resolved, never a PATH scan
+    cfg = _seed(tmp_path, ["xfce4-terminal", "chrome", "firefox"], browser_exec=f"{chrome} --user-data-dir={tmp_path}/bp")
     panel = ET.parse(cfg / "xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml")  # well-formed or this raises
     launcher_ids = [str(p.get("name")) for p in panel.iter("property") if p.get("value") == "launcher"]
     execs = sorted(
@@ -50,7 +52,7 @@ def test_dock_lists_only_programs_present_on_path(tmp_path):
         for line in (cfg / "xfce4/panel" / pid.replace("plugin-", "launcher-") / "hermes.desktop").read_text(encoding="utf-8").splitlines()
         if line.startswith("Exec=")
     )
-    assert execs == ["firefox", "xfce4-terminal"]
+    assert execs == [f"{chrome} --user-data-dir={tmp_path}/bp", "xfce4-terminal"]
 
 
 def test_look_is_seeded_with_wallpaper_and_theme(tmp_path):

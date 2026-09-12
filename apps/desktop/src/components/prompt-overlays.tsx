@@ -19,7 +19,7 @@ import { useI18n } from '@/i18n'
 import { isMissingPendingPromptRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Loader2, Lock, ShieldLock } from '@/lib/icons'
-import { $gateway } from '@/store/gateway'
+import { $gateway, requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import {
   clearSecretRequest,
@@ -78,10 +78,14 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        await gateway.request<{ status?: string }>(request.respondMethod ?? 'sudo.respond', {
-          password: value,
-          request_id: request.requestId
-        })
+        const method = request.respondMethod ?? 'sudo.respond'
+        const reply = { password: value, request_id: request.requestId }
+        // Pinned to the socket the request came from: the foreground gateway may be another host.
+        if (request.origin) {
+          await requestGatewayForAgent<{ status?: string }>(request.origin.connectionId, request.origin.profile, method, reply)
+        } else {
+          await gateway.request<{ status?: string }>(method, reply)
+        }
         triggerHaptic('submit')
         clearSudoRequest(request.sessionId, request.requestId)
       } catch (error) {

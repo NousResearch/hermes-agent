@@ -131,26 +131,26 @@ def _(rid, params: dict) -> dict:
     def _line(text: str) -> None:
         _broadcast_global_event("display.install.log", {"profile_key": profile_key, "line": text})
 
-    # The worker thread has no context-bound transport; the sudo card must reach the CLIENT that
-    # clicked Install, so the caller's transport is carried across.
-    from .transport import bind_transport, current_transport
-    caller_transport = current_transport()
+    # The worker thread inherits NO context: the caller's transport (so the sudo card reaches the
+    # CLIENT that clicked Install) and the profile scope `_profile_scoped` installed (so status, lock
+    # and events all speak for the requested profile) are carried across with copy_context().
+    import contextvars
+    ctx = contextvars.copy_context()
 
     def _run() -> None:
-        bind_transport(caller_transport)
         try:
             code = _bd_install.install_packages(ask_password=_ask_password, on_line=_line)
         except Exception as e:
             _line(f"install failed: {e}")
             code = 1
         _broadcast_global_event("display.install.done", {"profile_key": profile_key, "code": code,
-                                                         "status": _bd_runtime.status().as_dict()})
+                                                         "status": _display_snapshot()})
 
     try:
         _bd_install.assert_not_running()
     except _bd_install.InstallBusy as e:
         return _err(rid, _DISPLAY_ERR, str(e))
-    threading.Thread(target=_run, name=f"bot-desktop-install:{profile_key}", daemon=True).start()
+    threading.Thread(target=ctx.run, args=(_run,), name=f"bot-desktop-install:{profile_key}", daemon=True).start()
     return _ok(rid, {"started": True, "command": _bd_runtime.install_command(), "profile_key": profile_key})
 
 

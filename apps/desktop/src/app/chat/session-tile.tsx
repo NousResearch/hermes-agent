@@ -19,6 +19,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { atom, computed } from 'nanostores'
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 
+import { requestComposerInsert } from '@/app/chat/composer/focus'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import { blobToDataUrl } from '@/app/session/hooks/use-prompt-actions/utils'
@@ -38,6 +39,7 @@ import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
+import { notify } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { sessionAwaitingInput } from '@/store/prompts'
@@ -61,6 +63,7 @@ import {
   type SessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
+import { $sideChatOrigins } from '@/store/side-chat'
 import type { SessionInfo } from '@/types/hermes'
 
 import type { SessionDragPayload } from './composer/inline-refs'
@@ -73,6 +76,7 @@ import { SessionStatusDot } from './session-status-dot'
 import { useSessionTileActions } from './session-tile-actions'
 import { tileOwnerRoute } from './session-tile-owner'
 import { type SessionView, SessionViewProvider } from './session-view'
+import { SideChatOriginStrip } from './side-chat-origin-strip'
 import { SessionContextMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser } from './thread-loading'
 
@@ -183,6 +187,11 @@ function TileChat({
 }) {
   const { gateway, requestGateway } = useGatewayRequest()
   const queryClient = useQueryClient()
+  const { t } = useI18n()
+
+  // Set only for a chat opened from a selection in another conversation — the
+  // strip and the stage-in-main verb are the two things it turns on.
+  const sideChatOrigin = useStore($sideChatOrigins)[storedSessionId]
 
   // Owner ladder, same as useSessionTileActions (session-tile-actions.ts:99-103).
   // Recomputed when the tile store or any owner-bearing session list changes,
@@ -272,6 +281,28 @@ function TileChat({
   const onRemoveAttachment = useCallback((id: string) => void removeAttachment(id), [removeAttachment])
   const onRetryResume = useCallback(() => patchSessionTile(storedSessionId, { error: undefined }), [storedSessionId])
 
+  // Carry a side chat's reply back to the main chat. Staging — never sending —
+  // is the point: main must not receive a turn the user did not write, and its
+  // prompt cache must not be invalidated by one. `requestComposerInsert` appends
+  // to the target composer's draft, so an unsent prompt already in main survives.
+  const stageInMain = useCallback(
+    (text: string) => {
+      requestComposerInsert(text, { mode: 'block', target: 'main' })
+      notify({ kind: 'success', message: t.desktop.sideChat.stagedInMain, title: t.desktop.sideChat.stageInMain })
+    },
+    [t]
+  )
+
+  // Memoized: ChatView is memo()d, so a fresh node every render would defeat it
+  // for the whole chat shell (the tile re-renders per streamed token).
+  const selectionContext = useMemo(
+    () =>
+      sideChatOrigin && !sideChatOrigin.bannerDismissed ? (
+        <SideChatOriginStrip origin={sideChatOrigin} storedSessionId={storedSessionId} />
+      ) : undefined,
+    [sideChatOrigin, storedSessionId]
+  )
+
   // Per-tile model menu — rendered under this tile's SessionView so the pill
   // + switch target THIS runtime, not the primary (which may be mid-turn).
   const modelMenuContent = useMemo(
@@ -321,6 +352,7 @@ function TileChat({
           onRemoveAttachment={onRemoveAttachment}
           onRestoreToMessage={actions.restoreToMessage}
           onRetryResume={onRetryResume}
+          onStageInMain={sideChatOrigin ? stageInMain : undefined}
           onSteer={actions.steerPrompt}
           onSteerHidden={actions.injectHiddenPrompt}
           onSubmit={actions.submitText}
@@ -328,6 +360,7 @@ function TileChat({
           onToggleSelectedPin={noop}
           onTranscribeAudio={tileTranscribeAudio}
           requestModelOptionsForOwner={requestTileGateway}
+          selectionContext={selectionContext}
         />
       </ComposerScopeProvider>
     </SessionViewProvider>

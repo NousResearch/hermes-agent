@@ -3759,6 +3759,16 @@ export const ru = defineLocale({
     secretPlaceholder: 'значение секрета'
   },
   desktop: {
+    sideChat: {
+      chatAboutSelection: 'Обсудить выделенное',
+      dismiss: 'Скрыть',
+      referencingFrom: title => `Ссылка на выделенное из «${title}»`,
+      stageInMain: 'Добавить в поле основного чата',
+      stagedInMain: 'Добавлено в поле основного чата — проверьте и отправьте',
+      titlePrefix: 'О:',
+      togglePanel: 'Показать или скрыть боковую панель чата',
+      truncated: 'Выделенное сокращено'
+    },
     audioReadFailed: 'Не удалось прочитать записанное аудио',
     sessionUnavailable: 'Сеанс недоступен',
     createSessionFailed: 'Не удалось создать новый сеанс',

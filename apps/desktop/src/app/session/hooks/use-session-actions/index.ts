@@ -22,11 +22,13 @@ import {
   stripPendingClarifyProjectionForCache,
   toChatMessages
 } from '@/lib/chat-messages'
+import { sessionTitle } from '@/lib/chat-runtime'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
+import { buildSelectionQuote, deriveSideChatTitle } from '@/lib/selection-quote'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests } from '@/store/clarify'
-import { migrateSessionDraft } from '@/store/composer'
+import { migrateSessionDraft, stashSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import {
   openGatewayForAgent,
@@ -122,6 +124,8 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
+import type { SideChatRequest } from '@/store/side-chat'
+import { markSideChatOrigin } from '@/store/side-chat'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import {
@@ -754,6 +758,12 @@ export function useSessionActions({
         listed?: boolean
         profile?: string
         route?: AgentProfileRoute | null
+        /** Session title for the new row (`session.create` takes one). */
+        title?: string
+        /** Runs once the tile exists, with its stored session id — the seam a
+         *  caller uses to seed the composer draft it was created for (a
+         *  "chat about this selection" side chat) without racing the create. */
+        seedDraft?: (storedSessionId: string) => void
         workspaceScope?: SessionTileWorkspaceScope
       }
     ) => {
@@ -775,6 +785,7 @@ export function useSessionActions({
 
         const params = {
           ...(await desktopSessionCreateParams(cwd, capturedRoute)),
+          ...(options?.title ? { title: options.title } : {}),
           ...(workspaceScope.workspaceMode === 'bots' ? { hidden: true } : {})
         }
 
@@ -846,6 +857,10 @@ export function useSessionActions({
         openSessionTile(stored, dir, options?.anchor, options?.before, workspaceScope)
         patchSessionTile(stored, { runtimeId: created.session_id })
 
+        // After the tile is registered, so a seeded draft is never written for a
+        // create that failed — and never races the composer reading it.
+        options?.seedDraft?.(stored)
+
         if (dir === 'center' && runtimeInfo?.cwd) {
           setCurrentCwdTransient(runtimeInfo.cwd)
           setWorkspaceCwdOwner(stored)
@@ -856,11 +871,70 @@ export function useSessionActions({
         if (listed) {
           broadcastSessionsChanged()
         }
+
+        // The created stored id, so a caller that seeded this session (a side
+        // chat) can keep addressing it without re-resolving the freshest row.
+        return stored
       } catch (error) {
         notifyError(error, copy.createSessionFailed)
       }
     },
     [copy, requestGateway, updateSessionState]
+  )
+
+  /** Open a SIDE CHAT beside the main one, carrying a transcript selection in as
+   *  its opening context.
+   *
+   *  Two things have to ride along with the selection. The MAIN chat's owner —
+   *  a selection taken from a conversation running on another connection or
+   *  profile has to be discussed against that same backend, or the side chat
+   *  answers from an environment that never saw the code. And the quote itself,
+   *  seeded into the new tile's COMPOSER DRAFT rather than sent as a turn: the
+   *  draft keeps the quote and the user's question inside one user turn (strict
+   *  role alternation forbids a synthetic user turn followed by a real one), and
+   *  draft text survives a restart where an attachment-only carry would not. */
+  const sideChatCopy = copy.sideChat
+
+  const chatAboutSelection = useCallback(
+    async (payload: SideChatRequest): Promise<string | undefined> => {
+      const quote = buildSelectionQuote(payload.text)
+
+      if (!quote.text) {
+        return undefined
+      }
+
+      if (quote.truncated) {
+        notify({ kind: 'info', message: sideChatCopy.truncated, title: sideChatCopy.chatAboutSelection })
+      }
+
+      // The conversation the selection came from: the one named by the surface it
+      // was taken in, else the primary chat. A quote from a second pane must be
+      // attributed — and routed — to ITS backend, not the primary's.
+      const fromStoredSessionId = payload.fromStoredSessionId ?? selectedStoredSessionIdRef.current
+      const fromRow = fromStoredSessionId ? cachedSessionRow(fromStoredSessionId) : undefined
+      // Exact connection+profile when the main row carries one; otherwise that
+      // profile on whichever connection serves it. Passing the resolved owner is
+      // what keeps a remote-owned conversation's side chat off the local default.
+      const ownerRoute = fromRow ? sessionOwnerRouteFromRow(fromRow) : undefined
+      const ownerOptions = ownerRoute ? { route: ownerRoute } : fromRow?.profile ? { profile: fromRow.profile } : {}
+      const cwd = $currentCwd.get().trim()
+
+      return await openNewSessionTile('right', {
+        anchor: 'workspace',
+        ...ownerOptions,
+        ...(cwd ? { cwd } : {}),
+        title: deriveSideChatTitle(payload.text, sideChatCopy.titlePrefix),
+        seedDraft: storedSessionId => {
+          markSideChatOrigin(storedSessionId, {
+            fromMessageId: payload.messageId,
+            fromStoredSessionId: fromStoredSessionId ?? '',
+            fromTitle: fromRow ? sessionTitle(fromRow) : ''
+          })
+          stashSessionDraft(storedSessionId, `${quote.text}\n\n`, [])
+        }
+      })
+    },
+    [openNewSessionTile, selectedStoredSessionIdRef, sideChatCopy]
   )
 
   const openSettings = useCallback(() => {
@@ -2638,6 +2712,7 @@ export function useSessionActions({
     archiveSession,
     branchCurrentSession,
     branchStoredSession,
+    chatAboutSelection,
     closeSettings,
     createBackendSessionForSend,
     openNewSessionTile,

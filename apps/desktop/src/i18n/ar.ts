@@ -3078,6 +3078,16 @@ export const ar = defineLocale({
     vaultCodeConfirm: 'إدخال الرمز'
   },
   desktop: {
+    sideChat: {
+      chatAboutSelection: 'الدردشة حول التحديد',
+      dismiss: 'تجاهل',
+      referencingFrom: title => `مقتبس من «${title}»`,
+      stageInMain: 'أضف إلى حقل المحادثة الرئيسية',
+      stagedInMain: 'أُضيف إلى حقل المحادثة الرئيسية — راجعه ثم أرسله',
+      titlePrefix: 'حول:',
+      togglePanel: 'إظهار/إخفاء لوحة الدردشة الجانبية',
+      truncated: 'تم اختصار التحديد لطوله'
+    },
     audioReadFailed: 'فشلت قراءة الصوت',
     sessionUnavailable: 'الجلسة غير متاحة',
     createSessionFailed: 'فشل إنشاء الجلسة',

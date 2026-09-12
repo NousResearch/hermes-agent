@@ -21,6 +21,16 @@ export interface ContextMenuDomTarget {
   onImage: boolean
   /** The live selection's text at the moment of the click. */
   selectionText: string
+  /** The transcript row the click landed in, from its `data-message-id`. Empty
+   *  outside the transcript — user and assistant rows both carry the attribute
+   *  (see assistant-message.tsx), so a selection can name the message it came
+   *  from instead of arriving as anonymous text. */
+  messageId: string
+  /** The conversation the click landed in, from the transcript's
+   *  `data-stored-session-id`. Empty outside a transcript. Without it a
+   *  selection made in a second pane would be attributed to whichever chat is
+   *  primary, and discussed against that chat's backend. */
+  storedSessionId: string
 }
 
 /** Form fields and `contenteditable` hosts. Mirrors the keybind helper, but
@@ -43,6 +53,8 @@ export function resolveDomTarget(element: Element | null): ContextMenuDomTarget 
   const anchor = element?.closest('a[href]')
   const dialogContent = element?.closest('[data-slot="dialog-content"]')
   const image = element?.closest('img')
+  const message = element?.closest('[data-message-id]')
+  const transcript = element?.closest('[data-stored-session-id]')
   const linkUrl = anchor?.getAttribute('href')?.trim() ?? ''
 
   return {
@@ -52,7 +64,9 @@ export function resolveDomTarget(element: Element | null): ContextMenuDomTarget 
     linkUrl: linkUrl === '#' ? '' : linkUrl,
     imageUrl: image instanceof HTMLImageElement ? image.currentSrc || image.src : '',
     onImage: Boolean(image),
-    selectionText: window.getSelection()?.toString().trim() ?? ''
+    selectionText: window.getSelection()?.toString().trim() ?? '',
+    messageId: message?.getAttribute('data-message-id') ?? '',
+    storedSessionId: transcript?.getAttribute('data-stored-session-id') ?? ''
   }
 }
 

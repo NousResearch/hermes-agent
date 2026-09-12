@@ -3343,6 +3343,16 @@ export const zhHant = defineLocale({
   },
 
   desktop: {
+    sideChat: {
+      chatAboutSelection: '討論選取內容',
+      dismiss: '忽略',
+      referencingFrom: title => `引用自「${title}」的選取內容`,
+      stageInMain: '加入主對話輸入框',
+      stagedInMain: '已加入主對話輸入框 — 確認後傳送',
+      titlePrefix: '關於：',
+      togglePanel: '切換側邊對話面板',
+      truncated: '選取內容過長，已截斷'
+    },
     audioReadFailed: '無法讀取錄製的音訊',
     sessionUnavailable: '工作階段不可用',
     createSessionFailed: '無法建立新工作階段',

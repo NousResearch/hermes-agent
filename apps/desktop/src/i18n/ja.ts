@@ -3489,6 +3489,16 @@ export const ja = defineLocale({
   },
 
   desktop: {
+    sideChat: {
+      chatAboutSelection: '選択範囲について質問',
+      dismiss: '閉じる',
+      referencingFrom: title => `「${title}」の選択範囲を参照`,
+      stageInMain: 'メインの入力欄に追加',
+      stagedInMain: 'メインの入力欄に追加しました — 確認して送信してください',
+      titlePrefix: 'について：',
+      togglePanel: 'サイドチャットパネルを切り替え',
+      truncated: '選択範囲が長いため切り詰めました'
+    },
     audioReadFailed: '録音した音声を読み取れませんでした',
     sessionUnavailable: 'セッションが利用できません',
     createSessionFailed: '新しいセッションを作成できませんでした',

@@ -86,6 +86,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { $sideChatRequest } from '@/store/side-chat'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
@@ -538,6 +539,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     archiveSession,
     branchCurrentSession,
     branchStoredSession,
+    chatAboutSelection,
     createBackendSessionForSend,
     openNewSessionTile,
     removeSession,
@@ -702,6 +704,21 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       listed: placement.dir === 'center' ? false : undefined
     })
   }, [newProjectSessionRequest, openNewSessionTile])
+
+  // "Chat about selection": the transcript context menu and the selection
+  // toolbar are chrome with no session hooks, so they post a request and the
+  // create path lives here with the other session actions — one implementation,
+  // both entrances.
+  const sideChatRequest = useStore($sideChatRequest)
+
+  useEffect(() => {
+    if (!sideChatRequest) {
+      return
+    }
+
+    $sideChatRequest.set(null)
+    void chatAboutSelection(sideChatRequest)
+  }, [chatAboutSelection, sideChatRequest])
 
   const composer = useComposerActions({ activeSessionId, currentCwd, requestGateway })
 

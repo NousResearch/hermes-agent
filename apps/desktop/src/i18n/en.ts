@@ -4044,6 +4044,16 @@ export const en: Translations = {
   },
 
   desktop: {
+    sideChat: {
+      chatAboutSelection: 'Chat about selection',
+      dismiss: 'Dismiss',
+      referencingFrom: title => `Referencing selection from “${title}”`,
+      stageInMain: 'Stage in main composer',
+      stagedInMain: 'Added to the main composer — review and send',
+      titlePrefix: 'About:',
+      togglePanel: 'Toggle side chat panel',
+      truncated: 'Selection truncated to fit'
+    },
     audioReadFailed: 'Could not read recorded audio',
     sessionUnavailable: 'Session unavailable',
     createSessionFailed: 'Could not create a new session',

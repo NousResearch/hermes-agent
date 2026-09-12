@@ -393,6 +393,18 @@ describe('resolveComposerSessionKey', () => {
   it('falls back to the live id when the tip row is not loaded yet', () => {
     expect(resolveComposerSessionKey('tip-new', [])).toBe('tip-new')
   })
+
+  it('resolves a brand-new parentless session to its own id, never to nothing', () => {
+    // A side chat seeds its composer draft under the stored session id it was
+    // just created with; the composer then reads that draft through this
+    // resolver. Both must name the same key for a session with no lineage and no
+    // loaded row yet — a null here would re-key the draft onto the runtime id
+    // and the seeded quote would be silently dropped.
+    const freshId = '20260911_230000_side01'
+
+    expect(resolveComposerSessionKey(freshId, [])).toBe(freshId)
+    expect(resolveComposerSessionKey(freshId, [session({ id: freshId })])).toBe(freshId)
+  })
 })
 
 describe('shouldMigrateComposerScope', () => {

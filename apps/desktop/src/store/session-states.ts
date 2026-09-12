@@ -791,6 +791,22 @@ export interface SessionTileWorkspaceScope {
 const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
 const LEGACY_TILES_KEY = 'hermes.desktop.sessionTiles.v1'
 const TILE_PANE_PREFIX = 'session-tile:'
+
+/** The layout-tree pane id a session tile lives in. Pane ids are how the tree
+ *  stores are addressed (visibility toggles included) — build them here rather
+ *  than concatenating the prefix at each call site. */
+export function sessionTilePaneId(storedSessionId: string): string {
+  return `${TILE_PANE_PREFIX}${storedSessionId}`
+}
+
+/** The stored ids of the session tiles that are open right now, in tile order.
+ *  A caller deciding which tile to act on needs the OPEN set: the tile store is
+ *  authoritative for it, and anything derived from persisted records instead
+ *  would happily target a pane the user already closed. */
+export function openSessionTileIds(): string[] {
+  return $sessionTiles.get().map(tile => tile.storedSessionId)
+}
+
 const BOTS_TILE_BUCKET = '__bots_workspace__'
 
 /** Persisted placement — `dir` + strip slot (`before`) + dock `anchor` so a

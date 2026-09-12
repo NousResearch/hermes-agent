@@ -3610,6 +3610,17 @@ export interface Translations {
       failed: (error: string) => string
       timedOut: string
     }
+
+    sideChat: {
+      chatAboutSelection: string
+      dismiss: string
+      referencingFrom: (title: string) => string
+      stageInMain: string
+      stagedInMain: string
+      titlePrefix: string
+      togglePanel: string
+      truncated: string
+    }
   }
 
   tips: {

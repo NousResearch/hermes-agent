@@ -23,6 +23,7 @@ import { isRemoteGateway } from '@/lib/media'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openCommandPalette } from '@/store/command-palette'
 import { openPreview } from '@/store/preview'
+import { requestSideChat } from '@/store/side-chat'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
@@ -361,6 +362,19 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
     ])
   } else if (target.selectionText) {
     sections.push([
+      <Item
+        icon="comment-discussion"
+        key="selection-chat-about"
+        label={t.desktop.sideChat.chatAboutSelection}
+        onSelect={() => {
+          closeContextMenu()
+          requestSideChat({
+            fromStoredSessionId: target.storedSessionId || undefined,
+            messageId: target.messageId || undefined,
+            text: target.selectionText
+          })
+        }}
+      />,
       <Item
         icon="copy"
         key="selection-copy"

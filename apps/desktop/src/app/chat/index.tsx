@@ -6,6 +6,7 @@ import type * as React from 'react'
 import { memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
+import { SelectionToolbar } from '@/app/chat/selection-toolbar'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
@@ -92,6 +93,11 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onAddContextRef: (refText: string, label?: string, detail?: string) => void
   onAddUrl: (url: string) => void
   onBranchInNewChat?: (messageId: string) => void
+  /** Chrome the caller owns, rendered above the transcript where the primary
+   *  chat's header sits — the side chat's provenance strip. The chat surface
+   *  stays ignorant of what a side chat is. */
+  onStageInMain?: (text: string) => void
+  selectionContext?: React.ReactNode
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
@@ -392,6 +398,8 @@ const ChatViewContent = memo(function ChatViewContent({
   onAttachPrCommentUrl,
   onAttachPastedText,
   onBranchInNewChat,
+  onStageInMain,
+  selectionContext,
   maxVoiceRecordingSeconds,
   onPasteClipboardImage,
   onPickFiles,
@@ -417,6 +425,10 @@ const ChatViewContent = memo(function ChatViewContent({
   const composerScope = useComposerScope()
   const composerSurfaceId = useComposerSurfaceId()
   const isPrimary = view.kind === 'primary'
+
+  // The transcript's own bounds: the selection pill accepts a selection only
+  // from inside it, so tiles and chrome keep their own gestures.
+  const transcriptBoundsRef = useRef<HTMLDivElement | null>(null)
   const activeSessionId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
   // Multi-pane dimming: only the focused surface paints at full strength, so
@@ -675,6 +687,7 @@ const ChatViewContent = memo(function ChatViewContent({
           so a tiled/background session's blocking prompt surfaces instead of
           stalling to timeout. */}
       <PromptOverlays sessionId={activeSessionId} />
+      {selectionContext}
 
       <ChatRuntimeBoundary
         busy={busy}
@@ -687,8 +700,13 @@ const ChatViewContent = memo(function ChatViewContent({
         <div
           className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
           data-slot="composer-bounds"
+          data-stored-session-id={selectedSessionId ?? ''}
+          ref={transcriptBoundsRef}
           {...dropHandlers}
         >
+          {/* The primary chat owns the selection pill: a tile is a side surface
+              with its own verbs, and two pills over one window is one too many. */}
+          {isPrimary ? <SelectionToolbar container={transcriptBoundsRef} /> : null}
           <Thread
             clampToComposer={showChatBar}
             cwd={currentCwd}
@@ -699,6 +717,7 @@ const ChatViewContent = memo(function ChatViewContent({
             onCancel={haltRun}
             onDismissError={onDismissError}
             onRestoreToMessage={onRestoreToMessage}
+            onStageInMain={onStageInMain}
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />

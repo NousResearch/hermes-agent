@@ -4156,6 +4156,16 @@ export const zh = defineLocale({
   },
 
   desktop: {
+    sideChat: {
+      chatAboutSelection: '讨论所选内容',
+      dismiss: '忽略',
+      referencingFrom: title => `引用自「${title}」的所选内容`,
+      stageInMain: '加入主对话输入框',
+      stagedInMain: '已加入主对话输入框 — 确认后发送',
+      titlePrefix: '关于：',
+      togglePanel: '切换侧边对话面板',
+      truncated: '所选内容过长，已截断'
+    },
     audioReadFailed: '无法读取录制的音频',
     sessionUnavailable: '会话不可用',
     createSessionFailed: '无法创建新会话',

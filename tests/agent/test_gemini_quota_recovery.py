@@ -191,7 +191,9 @@ def test_body_retry_floor_reaches_backoff_reset_and_fallback(monkeypatch, retry_
     )
     # Falling back after retries must not convert a provider delay into level-3 / 480s cooldown.
     cooldown = _arm_rate_limit_cooldown(agent, classified.reason)
-    assert cooldown is not None and 0 < cooldown <= expected
+    assert cooldown is not None and cooldown > 0
+    # Absolute monotonic deadline arithmetic can overshoot the source delay by a few ULPs.
+    assert cooldown <= expected + 1e-6
     # The recorded deadline belongs to the failed model, not another same-provider fallback.
     agent.model = "gemini-test-flash"
     agent._rate_limit_backoff_count = 0

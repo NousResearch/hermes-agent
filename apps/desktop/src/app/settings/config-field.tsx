@@ -49,7 +49,13 @@ export function ConfigField({
     fieldCopyForSchemaKey(FIELD_LABELS, schemaKey) ??
     prettyName(schemaKey.split('.').pop() ?? schemaKey)
 
-  const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
+  // Collapse to letters+digits for the dedup check below. Must keep Unicode
+  // letters (\p{L}) — CJK locales otherwise normalize both label and
+  // description to "" and every description silently vanishes. NFKC first so
+  // full-width vs half-width variants (common in CJK text: full-width digits
+  // and letters) fold to the same normalized string instead of producing
+  // distinct keys.
+  const normalize = (v: string) => v.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
 
   const rawDescription = (
     fieldCopyForSchemaKey(t.settings.fieldDescriptions, schemaKey) ??

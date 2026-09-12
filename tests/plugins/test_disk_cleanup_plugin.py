@@ -115,6 +115,18 @@ class TestGuessCategory:
         # Even though it matches test_* pattern, logs/ is excluded.
         assert dg.guess_category(p) is None
 
+    def test_skips_user_scripts_tree(self, _isolate_env):
+        """$HERMES_HOME/scripts is user-authored; test_* files there are not disposable (#107343)."""
+        dg = _load_lib()
+        scripts_dir = _isolate_env / "scripts"
+        scripts_dir.mkdir()
+        p = scripts_dir / "test_granola_parser.py"
+        p.write_text("x")
+        assert dg.guess_category(p) is None
+        tmp = scripts_dir / "tmp_scratch.py"
+        tmp.write_text("x")
+        assert dg.guess_category(tmp) is None
+
     def test_cron_subtree_categorised(self, _isolate_env):
         dg = _load_lib()
         # Only files under ``cron/output/`` are disposable run artifacts.

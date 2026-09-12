@@ -61,9 +61,47 @@ def _load_web_config() -> dict:
         return {}
 
 
+def _raw_backend_name(cfg: dict, key: str = "backend") -> str:
+    """Return the raw stored name for a web backend config key.
+
+    Lowercased + stripped; empty string when unset/blank. Callers that treat
+    the literal value ``auto`` as "pick for me" should route through
+    :func:`_configured_backend_name`, which additionally normalizes it away —
+    keeping that rule in one place so future read sites cannot forget it.
+    """
+    return str(cfg.get(key) or "").strip().lower()
+
+
+def _is_auto_sentinel(raw_name: str) -> bool:
+    """True when a raw stored backend name is exactly the hand-edit ``auto``.
+
+    ``"auto"`` is never written by ``hermes tools``, but it is a common hand
+    edit meaning "pick for me" (other Hermes sections use it as their default
+    sentinel). Centralized here so every read site agrees on what counts.
+    """
+    return raw_name == "auto"
+
+
+def _configured_backend_name(cfg: dict, key: str = "backend") -> str:
+    """Normalized stored backend name with ``"auto"`` treated as unset.
+
+    The single normalization point for backend-name reads: every site that
+    decides routing from a stored name must use this so hand-edited ``auto``
+    values behave exactly like an empty key everywhere.
+    """
+    raw = _raw_backend_name(cfg, key)
+    if _is_auto_sentinel(raw):
+        return ""
+    return raw
+
+
 def _configured_backend(key: str = "backend") -> str:
-    """Lower-cased, stripped ``web.<key>`` value ("" when unset/null)."""
-    return (_load_web_config().get(key) or "").lower().strip()
+    """Lower-cased, stripped ``web.<key>`` value (``""`` when unset/null).
+
+    ``auto`` is normalized to ``""`` so it behaves as "pick for me"
+    everywhere a stored name is read.
+    """
+    return _configured_backend_name(_load_web_config(), key)
 
 
 def _registry_call(func_name: str, default, *args):
@@ -105,9 +143,19 @@ def _get_backend() -> str:
     if configured:
         # "nous" (managed subscription) is serviced by firecrawl, routed through the managed Tool Gateway.
         return "firecrawl" if configured == NOUS_MANAGED_PROVIDER else configured
-    if selection_exists("web"):
+    # Import through the module attribute so tests can patch
+    # tools.tool_backend_helpers.selection_exists (a top-level import-time
+    # binding is not patchable from outside the module).
+    from tools import tool_backend_helpers as _backend_helpers
+    if _backend_helpers.selection_exists("web"):
         # Selection exists (use_gateway / per-capability keys) but no shared name: firecrawl, no ladder.
-        return "firecrawl"
+        # Exception: the shared name on disk is exactly "auto" (a hand-edited
+        # "pick for me", never written by the picker). read_selection() sees it
+        # and reports a selection, but the user asked for autodetection — run
+        # the full ladder instead of pinning firecrawl. Per-capability-only
+        # selections keep the firecrawl sentinel.
+        if not _is_auto_sentinel(_raw_backend_name(_load_web_config())):
+            return "firecrawl"
 
     # Never-configured install. Explicit user credentials beat the managed-gateway probe (a Nous OAuth
     # token's tier may not grant web access; the gateway then fails at runtime with no fallback).
@@ -145,14 +193,22 @@ def _get_backend() -> str:
     return "firecrawl"  # default (backward compat)
 
 
+def _get_capability_backend(capability: str) -> str:
+    """Per-capability backend: ``web.<cap>_backend`` (``auto``="pick for me") > shared ``_get_backend()``."""
+    specific = _configured_backend(f"{capability}_backend")
+    if specific:
+        return specific
+    return _get_backend()
+
+
 def _get_search_backend() -> str:
     """Backend for web_search: ``web.search_backend`` (strict, no probe) > ``web.backend`` > autodetect."""
-    return _configured_backend("search_backend") or _get_backend()
+    return _get_capability_backend("search")
 
 
 def _get_extract_backend() -> str:
     """Backend for web_extract: ``web.extract_backend`` (strict, no probe) > ``web.backend`` > autodetect."""
-    return _configured_backend("extract_backend") or _get_backend()
+    return _get_capability_backend("extract")
 
 
 def _ddgs_package_importable() -> bool:

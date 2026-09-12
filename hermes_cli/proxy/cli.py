@@ -30,7 +30,7 @@ def cmd_proxy_start(args: Any) -> int:
     except ValueError as exc:
         _err(f"Error: {exc}")
         return 2
-    if not adapter.is_authenticated():
+    if not adapter.is_configured():
         auth_hint = getattr(adapter, "auth_hint", f"hermes auth add {adapter.name}")
         _err(f"Not logged into {adapter.display_name}. Run `{auth_hint}` first.")
         return 2
@@ -59,7 +59,7 @@ def cmd_proxy_status(args: Any) -> int:
     print("Hermes proxy upstream adapters\n")
     for name in sorted(ADAPTERS):
         adapter = get_adapter(name)
-        if not adapter.is_authenticated():
+        if not adapter.is_configured():
             print(f"  [{name:8s}] {adapter.display_name} — not logged in")
             continue
         try:

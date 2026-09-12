@@ -256,14 +256,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     return null
   }
 
-  const titlebarSlots = (
-    <>
-      <Slot area="titleBar.left" />
-      <Slot area="titleBar.center" />
-      <Slot area="titleBar.right" />
-    </>
-  )
-
   const leftClusterClass = cn(
     titlebarToolClusterClass,
     'left-(--titlebar-controls-left) top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
@@ -278,13 +270,30 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   if (hidesFixedTitlebarClusters(view) && pageOwnsTitlebar) {
     const pageTools = [...leftTools, ...tools].filter(tool => !tool.hidden)
 
+    // Both fixed clusters must carry the data-titlebar-cluster markers here
+    // too. usePanelTitlebar measures the band through those markers and
+    // RETAINS its last reservation when either is missing, so unmarked
+    // clusters left the sidebar tab strip with the previous page's stale
+    // geometry — under/over the page chrome (kanban's board switcher). The
+    // right cluster is empty until a page contributes titleBar.right, so it
+    // reserves nothing extra.
     return (
-      <div className={leftClusterClass}>
-        {pageTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-        ))}
-        {titlebarSlots}
-      </div>
+      <>
+        <div className={leftClusterClass} data-titlebar-cluster="left">
+          {pageTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          ))}
+          <Slot area="titleBar.left" />
+          <Slot area="titleBar.center" />
+        </div>
+
+        <div
+          className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
+          data-titlebar-cluster="right"
+        >
+          <Slot area="titleBar.right" />
+        </div>
+      </>
     )
   }
 

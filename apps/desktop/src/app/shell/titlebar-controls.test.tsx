@@ -126,6 +126,18 @@ describe('TitlebarControls fixed clusters', () => {
       expect(pluginTool()).not.toBeNull()
     })
 
+    it('marks the page-owns-titlebar clusters so panel titlebars measure real chrome', () => {
+      const { container } = renderControls('/kanban', { leftTools: [PLUGIN_TOOL] })
+
+      const left = container.querySelector('[data-titlebar-cluster="left"]')
+      const right = container.querySelector('[data-titlebar-cluster="right"]')
+
+      expect(left).not.toBeNull()
+      expect(right).not.toBeNull()
+      expect(within(left as HTMLElement).getByLabelText('plugin tool')).toBeTruthy()
+      expect(within(left as HTMLElement).getByText('plugin-chrome')).toBeTruthy()
+    })
+
     it('hides plugin titlebar contributions on an overlay', () => {
       renderControls('/settings')
 

@@ -64,6 +64,12 @@ def _get_webhook_base_url() -> str:
     return f"http://{display_host}:{wh.get('port', 8644)}"
 
 
+def _route_url(name: str, route: dict) -> str:
+    profile = route.get("profile", "default")
+    prefix = f"/p/{profile}" if profile != "default" else ""
+    return f"{_get_webhook_base_url()}{prefix}/webhooks/{name}"
+
+
 def _setup_hint() -> str:
     _dhh = display_hermes_home()
     return f"""
@@ -112,7 +118,22 @@ def _cmd_subscribe(args):
 
     subs = _load_subscriptions()
     is_update = name in subs
-    secret = args.secret or secrets.token_urlsafe(32)
+    existing = subs.get(name, {})
+    profile_arg = getattr(args, "profile", None)
+    if profile_arg is None:
+        profile = existing.get("profile", "default")
+    else:
+        from hermes_cli.profiles import normalize_profile_name, profile_exists, validate_profile_name
+        try:
+            profile = normalize_profile_name(profile_arg)
+            validate_profile_name(profile)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return
+        if not profile_exists(profile):
+            print(f"Error: Profile '{profile}' does not exist.")
+            return
+    secret = args.secret or existing.get("secret") or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
@@ -121,6 +142,7 @@ def _cmd_subscribe(args):
         "prompt": args.prompt or "",
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
         "deliver": args.deliver or "log",
+        "profile": profile,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     if getattr(args, "deliver_only", False):
@@ -139,7 +161,8 @@ def _cmd_subscribe(args):
     _save_subscriptions(subs)
 
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
-    print(f"  URL:    {_get_webhook_base_url()}/webhooks/{name}")
+    print(f"  URL:    {_route_url(name, route)}")
+    print(f"  Profile: {profile}")
     print(f"  Secret: {secret}")
     print(f"  Events: {', '.join(events) or '(all)'}")
     print(f"  Deliver: {route['deliver']}")
@@ -162,7 +185,6 @@ def _cmd_list(args):
         print("  Create one with: hermes webhook subscribe <name>")
         return
 
-    base_url = _get_webhook_base_url()
     print(f"\n  {len(subs)} webhook subscription(s):\n")
     for name, route in subs.items():
         events = ", ".join(route.get("events", [])) or "(all)"
@@ -173,7 +195,9 @@ def _cmd_list(args):
         print(f"  ◆ {name}")
         if desc:
             print(f"    {desc}")
-        print(f"    URL:     {base_url}/webhooks/{name}")
+        profile = route.get("profile", "default")
+        print(f"    URL:     {_route_url(name, route)}")
+        print(f"    Profile: {profile}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
         if route.get("script"):
@@ -201,7 +225,7 @@ def _cmd_test(args):
         print(f"  No subscription named '{name}'.")
         return
     secret = subs[name].get("secret", "")
-    url = f"{_get_webhook_base_url()}/webhooks/{name}"
+    url = _route_url(name, subs[name])
     payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
     sig = "sha256=" + hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
     print(f"  Sending test POST to {url}")

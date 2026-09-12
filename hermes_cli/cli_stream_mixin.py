@@ -58,13 +58,22 @@ class CLIStreamMixin:
 
         Notices fire mid-turn (cold-start seed, per-turn _capture_credits); printing immediately
         races the stream and buries the line behind the prompt. Flushed by _flush_credit_notices()
-        after run_conversation returns. Fail-soft.
+        after run_conversation returns. TTL notices (adaptive-reasoning escalation) fire at turn
+        start — a clean print boundary — and render immediately instead. Fail-soft.
         """
         try:
             text = getattr(notice, "text", "") or ""
             if not text:
                 return
             level = getattr(notice, "level", "info") or "info"
+            if (getattr(notice, "kind", "sticky") or "sticky") == "ttl":
+                # Timely per-turn notices (e.g. the adaptive-reasoning escalation line) render
+                # immediately — queueing would delay them until after the response. Sticky notices
+                # (credits) keep the end-of-turn flush below.
+                from cli import _DIM, _RST, _cprint
+                colors = {"error": "\033[31m", "warn": "\033[33m", "success": "\033[32m", "info": _DIM}
+                _cprint(f"  {colors.get(level, _DIM)}{text}{_RST}")
+                return
             if not hasattr(self, "_pending_credit_notices"):
                 self._pending_credit_notices = []
             self._pending_credit_notices.append((level, text))

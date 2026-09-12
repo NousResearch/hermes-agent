@@ -52,3 +52,20 @@ export function resolveReasoningEffort(effort: string, fallback: string = DEFAUL
 
   return isReasoningEffort(value) ? value : DEFAULT_REASONING_EFFORT
 }
+
+/** True when the composer's effort selection just mirrors the profile default
+ *  (or is empty) — i.e. the user never picked a distinct level for this chat.
+ *  useHermesConfig seeds the composer atom from `agent.reasoning_effort`, so
+ *  the seeded value must ride `session.create` as inherited state, not as an
+ *  explicit per-session override: a recorded override marks a deliberate user
+ *  pick and disables adaptive reasoning escalation on the backend. An empty
+ *  profile default means the backend's own fallback (medium). */
+export function isInheritedEffortSelection(effort: string, profileDefault: string): boolean {
+  const selected = normalize(effort)
+
+  if (!selected) {
+    return true
+  }
+
+  return selected === (normalize(profileDefault) || DEFAULT_REASONING_EFFORT)
+}

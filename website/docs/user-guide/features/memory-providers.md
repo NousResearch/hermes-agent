@@ -38,6 +38,8 @@ When a memory provider is active, Hermes automatically:
 
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
+MCP memory servers are a separate, tools-only surface — see [Choosing between an MCP server and a memory provider](/developer-guide/memory-provider-plugin#choosing-between-an-mcp-server-and-a-memory-provider).
+
 ## Available Providers
 
 ### Honcho

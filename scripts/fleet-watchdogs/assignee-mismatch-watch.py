@@ -128,6 +128,14 @@ LEGIT_OWNER_TITLE = [
     (re.compile(r"re-?scope\b", re.I), "jobsy"),
     (re.compile(r"wire\s+brain", re.I), "jobsy"),
     (re.compile(r"pre-review-gate configuration|gate-?config adjudicat|commission search", re.I), "verify"),  # steve-o owns gate config
+    # Decision/approval/sign-off gates — the auto-decomposer parks decision-shaped
+    # children (approve the design/plan, decide, ratify, sign-off, approval gate)
+    # on jobsy (triage) so a ghost PM-run cannot self-complete an unsigned call.
+    # These carry no "jobsy" title marker yet are legitimately jobsy's; without
+    # this a recovered auto-decomposer effective-assignee of jobsy would false-
+    # flag them against a design/build lane. Mirrors kanban_decompose's
+    # _DECISION_TITLE_RE routing.
+    (re.compile(r"approval gate|sign-?off|decision gate|approve (?:the|a|an) (?:design|plan|approach|spec|decision|model|schema|architecture|strategy|source)\b", re.I), "pm"),
 ]
 
 # Embedded profile name inside a 'Wire proof: <profile> turn' / liveness card.
@@ -161,6 +169,30 @@ def mint_assignee(con, task_id, payload):
         if isinstance(pl.get("by"), str) and pl["by"] == "auto-decomposer":
             return None, "gap"
     return None, "none"
+
+
+def effective_assignee(con, task_id):
+    """Recover who an auto-decomposer child was actually routed to.
+
+    Auto-decomposer children carry NO mint assignee in their `created` event
+    (recording gap, fix-C2), so the daily scan cannot read it the way it reads a
+    payload-minted card. The decomposer still routed each child to a real profile
+    before dispatch, and that profile is durably recorded as the FIRST dispatched
+    run's profile (lowest ``task_runs.id``) — mint-stable and immune to the review
+    reassignment that corrupts ``tasks.assignee`` (which flips to the reviewer on
+    ``request_review``). Returns the profile, or None when the card was never
+    dispatched (no run: genuinely undetermined, never flagged).
+
+    Only real runs count (a ``scheduled``/``released`` placeholder is not a
+    dispatch). The first dispatched run is the implementer the decomposer chose.
+    """
+    row = _row(
+        con,
+        "SELECT profile FROM task_runs WHERE task_id=? AND profile IS NOT NULL "
+        "AND status NOT IN ('released','scheduled') ORDER BY id LIMIT 1",
+        (task_id,),
+    )
+    return (row.get("profile") if row else None)
 
 
 def embedded_owner(title):
@@ -274,7 +306,28 @@ def scan(con, days):
         c = classify(con, r["id"], r["title"], r["body"], r["payload"],
                      r["status"], r["created_at"])
         if c["mint_src"] == "gap":
-            gaps.append(c)
+            # fix-C2 auto-decomposer gap: the created payload records no mint
+            # assignee, but the decomposer still routed the child to a profile.
+            # Recover the EFFECTIVE assignee (first dispatched run) and evaluate
+            # it against the implied owner, so a misrouted auto-decomposer child
+            # (build-lane child that actually dispatched to rodge/steve-o/axel)
+            # is detected instead of being blind-parked as a gap. A never-dispatched
+            # card stays an undetermined gap (no evidence of a misroute).
+            eff = effective_assignee(con, c["id"])
+            if eff is None:
+                gaps.append(c)
+                continue
+            c["mint"] = eff
+            c["mint_src"] = "auto-effective"
+            # The joby-style PM gate / operator-profile cards the decomposer
+            # legitimately parks on jobsy/karl/switch are covered by the same
+            # legit-lane exclusions in is_flag() — no new false-positive class.
+            if is_flag(c):
+                c["reason"] = (
+                    f"auto-decomposer child effective assignee={eff} "
+                    f"({c['mint_src']}) on {c['lane']}-lane card; expected {c['expected']}"
+                )
+                flags.append(c)
             continue
         if is_flag(c):
             # reconstruct expected-vs-actual reason
@@ -465,7 +518,7 @@ def run_selftest():
         CREATE TABLE task_events(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
             run_id INTEGER, kind TEXT, payload TEXT, created_at INTEGER);
         CREATE TABLE task_runs(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
-            profile TEXT, outcome TEXT, summary TEXT);
+            profile TEXT, outcome TEXT, summary TEXT, status TEXT);
         CREATE TABLE task_comments(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
             body TEXT, created_at INTEGER);
     """)

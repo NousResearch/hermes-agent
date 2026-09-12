@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Regression tests for the assignee-mismatch auditor watchdog (fix-C2, t_9efe82a4).
 
+Covers the mint-time payload mismatch detection (AC1), zero false positives on
+legit lanes (AC2), and the fix-C2 auto-decomposer GAP RESOLUTION: recovered
+effective-assignee (first dispatched run) flags a misrouted auto-decomposer child
+without flagging correctly-routed ones or PM decision gates.
+
 Run:  scripts/run_tests.sh scripts/fleet-watchdogs/test_assignee_mismatch_watch.py
 or:   python3 -m pytest scripts/fleet-watchdogs/test_assignee_mismatch_watch.py -q
 """
@@ -33,7 +38,7 @@ def db(tmp_path):
         CREATE TABLE task_events(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
             run_id INTEGER, kind TEXT, payload TEXT, created_at INTEGER);
         CREATE TABLE task_runs(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
-            profile TEXT, outcome TEXT, summary TEXT);
+            profile TEXT, outcome TEXT, summary TEXT, status TEXT);
         CREATE TABLE task_comments(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
             author TEXT, body TEXT, created_at INTEGER);
     """)
@@ -47,6 +52,13 @@ def mint(db, tid, title, payload, status="todo", minted_at=None):
                (tid, title, "", json.loads(payload).get("assignee"), status, now))
     db.execute("INSERT INTO task_events(task_id,kind,payload,created_at) VALUES(?,?,?,?)",
                (tid, "created", payload, now))
+    db.commit()
+
+
+def run(db, tid, profile, status="done"):
+    """Record a dispatched run (used by fix-C2 effective-assignee recovery)."""
+    db.execute("INSERT INTO task_runs(task_id,profile,status) VALUES(?,?,?)",
+               (tid, profile, status))
     db.commit()
 
 
@@ -81,13 +93,37 @@ def test_ac2_zero_false_positive_on_legit_lanes(db):
     assert flagged_ids(db) == set()
 
 
-def test_ac3_auto_decomposer_gap_never_flagged(db):
-    """Auto-decomposer children carry no mint assignee (recording gap) - never a flag."""
+def test_ac3_auto_decomposer_effective_assignee_flags_misroute(db):
+    """fix-C2 gap resolution: an auto-decomposer child routed to a real-but-wrong
+    profile (build-lane child actually dispatched to rodge) IS detected."""
     mint(db, "t_g", "Implement Gmail draft launcher",
          '{"by": "auto-decomposer", "from_decompose_of": "x"}')
+    run(db, "t_g", "rodge")          # build-lane child dispatched to rodge = misroute
+    assert "t_g" in flagged_ids(db)
+
+
+def test_ac3_auto_decomposer_effective_assignee_correct_not_flagged(db):
+    """fix-C2 gap resolution: an auto-decomposer child routed correctly (build->bob)
+    is NOT flagged, and a never-dispatched child stays an undetermined gap."""
+    mint(db, "t_ok", "Implement Gmail draft launcher",
+         '{"by": "auto-decomposer", "from_decompose_of": "x"}')
+    run(db, "t_ok", "bob")
+    assert "t_ok" not in flagged_ids(db)
+
+    mint(db, "t_never", "Implement Slack draft launcher",
+         '{"by": "auto-decomposer", "from_decompose_of": "x"}')
     _, gaps = aw.scan(db, 30)
-    assert flagged_ids(db) == set()
-    assert any(g["id"] == "t_g" and g["mint_src"] == "gap" for g in gaps)
+    assert "t_never" not in flagged_ids(db)
+    assert any(g["id"] == "t_never" and g["mint_src"] == "gap" for g in gaps)
+
+
+def test_ac3_auto_decomposer_pm_decision_gate_not_flagged(db):
+    """fix-C2 gap resolution: a PM decision/approval gate the auto-decomposer parked
+    on jobsy (no jobsy title marker) must NOT false-flag against a design lane."""
+    mint(db, "t_gate", "Design approval gate: Richie sign-off on AI Search UX v2",
+         '{"by": "auto-decomposer", "from_decompose_of": "x"}')
+    run(db, "t_gate", "jobsy")
+    assert "t_gate" not in flagged_ids(db)
 
 
 def test_selftest_passes():

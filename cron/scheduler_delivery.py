@@ -164,8 +164,19 @@ def _inchannel_seed_allowed(*, is_dm: bool, user_id: Optional[str]) -> bool:
     return bool(is_dm or user_id)
 
 
+def _cron_job_model_label(job: dict) -> str:
+    """Pinned-model attribution for delivery/mirror provenance ('' when unpinned)."""
+    if not isinstance(job, dict):
+        return ""
+    return str(job.get("model") or "").strip()
+
+
 def _cron_mirror_message(job: dict, text: str) -> str:
-    return f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}"
+    label = f"{job.get('name') or job.get('id', 'cron')}"
+    model = _cron_job_model_label(job)
+    if model:
+        label += f" (model: {model})"
+    return f"[Cron delivery: {label}]\n{text}"
 
 
 def _maybe_mirror_cron_delivery(
@@ -1722,9 +1733,16 @@ def _deliver_result(
     unverified_targets: list = []
     if wrap_response:
         task_name = job.get("name", job["id"])
+        task_model = _cron_job_model_label(job)
+        origin_line = f"(job_id: {job.get('id', '')}"
+        if task_model:
+            # Pinned-model attribution (#105244): a job running on a model other
+            # than the profile default must not read as the agent's own voice.
+            origin_line += f", model: {task_model}"
+        origin_line += ")"
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job.get('id', '')})\n"
+            f"{origin_line}\n"
             f"-------------\n\n"
             f"{content}\n\n"
             "To stop or manage this job, send me a new message "

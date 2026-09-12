@@ -22,7 +22,7 @@ import textwrap
 from collections import deque
 from dataclasses import dataclass
 from urllib.parse import unquote, urlparse
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Mapping
@@ -50,7 +50,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.pet import render as pet_render
 
 from prompt_toolkit.patch_stdout import patch_stdout
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, get_app_session
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
@@ -3822,104 +3822,110 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         if not self._claim_active_session("cli"):
             return
 
-        self._tui_print_startup()
-        self._tui_init_run_state()
-        kb = self._tui_build_key_bindings()
-        layout, style = self._tui_build_layout(kb)
+        # Preserve Enter/CR across startup; only blocking setup dialogs borrow
+        # cooked mode. The Application reuses this same input and raw-mode owner.
+        with ExitStack() as input_mode:
+            input_mode.enter_context(get_app_session().input.raw_mode())
+            self._tui_print_startup()
+            self._tui_init_run_state()
+            kb = self._tui_build_key_bindings()
+            layout, style = self._tui_build_layout(kb)
 
-        app = self._tui_build_application(layout, kb, style)
-        _disable_prompt_toolkit_cpr_warning(app)
-        app.after_render += self._pet_flush_kitty_frame
-        self._app = app
+            app = self._tui_build_application(layout, kb, style)
+            _disable_prompt_toolkit_cpr_warning(app)
+            app.after_render += self._pet_flush_kitty_frame
+            self._app = app
 
-        # Ghost status-bar lines on resize: pt's renderer scrolls the terminal after each
-        # paint, pushing chrome into scrollback where a column-shrink reflows it into
-        # duplicates. Wrapping _output_screen_diff keeps its reserve-space branch from firing.
-        try:
-            # Background: prompt_toolkit's renderer (renderer.py L232-242) explicitly moves the cursor to
-            # the bottom of the canvas after painting "to make sure the terminal scrolls up, even when the
-            # lower lines of the canvas just contain whitespace". In non-fullscreen mode this scrolls chrome
-            # content (status bar, input rules) into terminal scrollback on every render. When the terminal
-            # column-shrinks, the emulator reflows the previously rendered full-width rows into multiple
-            # narrower rows that get pushed up — leaving ghost duplicates AND polluting scrollback. Same
-            # issue as pt #29 (open since 2014), #1675, #1933. Surgical fix: wrap _output_screen_diff so
-            # that when its internal `if current_height > previous_screen.height` branch fires (the one that
-            # does the bottom-cursor-move), we make it fall through by inflating previous_screen.height
-            # first.
-            import prompt_toolkit.renderer as _pt_renderer
-            from prompt_toolkit.renderer import _output_screen_diff as _orig_osd
+            # Ghost status-bar lines on resize: pt's renderer scrolls the terminal after each
+            # paint, pushing chrome into scrollback where a column-shrink reflows it into
+            # duplicates. Wrapping _output_screen_diff keeps its reserve-space branch from firing.
+            try:
+                # Background: prompt_toolkit's renderer (renderer.py L232-242) explicitly moves the cursor to
+                # the bottom of the canvas after painting "to make sure the terminal scrolls up, even when the
+                # lower lines of the canvas just contain whitespace". In non-fullscreen mode this scrolls chrome
+                # content (status bar, input rules) into terminal scrollback on every render. When the terminal
+                # column-shrinks, the emulator reflows the previously rendered full-width rows into multiple
+                # narrower rows that get pushed up — leaving ghost duplicates AND polluting scrollback. Same
+                # issue as pt #29 (open since 2014), #1675, #1933. Surgical fix: wrap _output_screen_diff so
+                # that when its internal `if current_height > previous_screen.height` branch fires (the one that
+                # does the bottom-cursor-move), we make it fall through by inflating previous_screen.height
+                # first.
+                import prompt_toolkit.renderer as _pt_renderer
+                from prompt_toolkit.renderer import _output_screen_diff as _orig_osd
 
-            if not getattr(_pt_renderer, "_hermes_osd_patched", False):
-                _pt_renderer._output_screen_diff = functools.partial(
-                    _hermes_call_output_screen_diff, _orig_osd
-                )
-                _pt_renderer._hermes_osd_patched = True
-        except Exception:
-            pass
-
-        _apply_bracketed_paste_timeout_patch()
-
-        self._install_resize_recovery(app)
-
-        threading.Thread(target=self._tui_spinner_loop, daemon=True).start()
-        threading.Thread(target=self._tui_process_loop, daemon=True).start()
-        # Wake word listener off-thread so a first-run engine install never blocks the prompt.
-        threading.Thread(target=self._tui_wake_startup, daemon=True, name="wake-startup").start()
-
-        atexit.register(_run_cleanup)
-        self._tui_install_signal_handlers()
-
-        if not self._tui_stdin_usable():
-            _run_cleanup()
-            self._print_exit_summary()
-            return
-
-        try:
-            with patch_stdout():
-                try:
-                    # run_in_terminal() may return either: • a coroutine / Future (prompt_toolkit ≥ 3.0) —
-                    # must be scheduled via ensure_future so the coroutine is actually awaited; calling it
-                    # bare would leave it unawaited and silently drop the output (fixes #23185 Bug A). •
-                    # None (some mocks / older PT builds) — just call the inner function directly since PT
-                    # already executed it synchronously. Do NOT fall back to a bare _pt_print when
-                    # ensure_future raises, because run_in_terminal already invoked the lambda in that case
-                    # (the mock path), which would double-print the line.
-                    import asyncio as _aio
-                    _aio.get_running_loop().set_exception_handler(self._tui_suppress_closed_loop_errors)
-                except Exception:
-                    pass  # no running loop -- nothing to patch
-                # Record that the app enables focus reporting + mouse tracking so _run_cleanup
-                # resets them; extended key modes are popped by the same reset.
-                # When multiline shortcuts are on, also ask supported terminals (e.g. iTerm2) to report
-                # modified keys distinctly (kitty protocol + modifyOtherKeys); the cleanup reset pops both
-                # modes. See #36823.
-                _mark_tui_input_modes_active()
-                if self._tui_multiline_shortcuts:
-                    _enable_extended_enter_keys(app.output)
-                self._pet_start_anim()
-                app.run()
-        except (EOFError, KeyboardInterrupt, BrokenPipeError):
-            pass
-        except (KeyError, OSError) as _stdin_err:
-            # Selector registration failures from broken stdin and I/O errors from a
-            # broken stdout during interrupt (EIO is suppressed).
-            _errno = getattr(_stdin_err, "errno", None) if isinstance(_stdin_err, OSError) else None
-            _msg = str(_stdin_err)
-            if _errno == errno.EIO:
+                if not getattr(_pt_renderer, "_hermes_osd_patched", False):
+                    _pt_renderer._output_screen_diff = functools.partial(
+                        _hermes_call_output_screen_diff, _orig_osd
+                    )
+                    _pt_renderer._hermes_osd_patched = True
+            except Exception:
                 pass
-            elif _errno in {errno.EINVAL, errno.EBADF} or any(
-                s in _msg for s in ("is not registered", "Bad file descriptor", "Invalid argument")
-            ):
-                print(
-                    f"\nError: stdin is not usable ({_stdin_err}).\n"
-                    "This can happen with certain Python installations (e.g. uv-managed cPython on macOS)\n"
-                    "where kqueue cannot register fd 0.\n"
-                    "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
-                )
-            else:
-                raise
-        finally:
-            self._tui_shutdown()
+
+            _apply_bracketed_paste_timeout_patch()
+
+            self._install_resize_recovery(app)
+
+            threading.Thread(target=self._tui_spinner_loop, daemon=True).start()
+            threading.Thread(target=self._tui_process_loop, daemon=True).start()
+            # Wake word listener off-thread so a first-run engine install never blocks the prompt.
+            threading.Thread(target=self._tui_wake_startup, daemon=True, name="wake-startup").start()
+
+            atexit.register(_run_cleanup)
+            self._tui_install_signal_handlers()
+
+            if not self._tui_stdin_usable():
+                input_mode.close()
+                _run_cleanup()
+                self._print_exit_summary()
+                return
+
+            try:
+                with patch_stdout():
+                    try:
+                        # run_in_terminal() may return either: • a coroutine / Future (prompt_toolkit ≥ 3.0) —
+                        # must be scheduled via ensure_future so the coroutine is actually awaited; calling it
+                        # bare would leave it unawaited and silently drop the output (fixes #23185 Bug A). •
+                        # None (some mocks / older PT builds) — just call the inner function directly since PT
+                        # already executed it synchronously. Do NOT fall back to a bare _pt_print when
+                        # ensure_future raises, because run_in_terminal already invoked the lambda in that case
+                        # (the mock path), which would double-print the line.
+                        import asyncio as _aio
+                        _aio.get_running_loop().set_exception_handler(self._tui_suppress_closed_loop_errors)
+                    except Exception:
+                        pass  # no running loop -- nothing to patch
+                    # Record that the app enables focus reporting + mouse tracking so _run_cleanup
+                    # resets them; extended key modes are popped by the same reset.
+                    # When multiline shortcuts are on, also ask supported terminals (e.g. iTerm2) to report
+                    # modified keys distinctly (kitty protocol + modifyOtherKeys); the cleanup reset pops both
+                    # modes. See #36823.
+                    _mark_tui_input_modes_active()
+                    if self._tui_multiline_shortcuts:
+                        _enable_extended_enter_keys(app.output)
+                    self._pet_start_anim()
+                    app.run()
+            except (EOFError, KeyboardInterrupt, BrokenPipeError):
+                pass
+            except (KeyError, OSError) as _stdin_err:
+                # Selector registration failures from broken stdin and I/O errors from a
+                # broken stdout during interrupt (EIO is suppressed).
+                _errno = getattr(_stdin_err, "errno", None) if isinstance(_stdin_err, OSError) else None
+                _msg = str(_stdin_err)
+                if _errno == errno.EIO:
+                    pass
+                elif _errno in {errno.EINVAL, errno.EBADF} or any(
+                    s in _msg for s in ("is not registered", "Bad file descriptor", "Invalid argument")
+                ):
+                    print(
+                        f"\nError: stdin is not usable ({_stdin_err}).\n"
+                        "This can happen with certain Python installations (e.g. uv-managed cPython on macOS)\n"
+                        "where kqueue cannot register fd 0.\n"
+                        "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
+                    )
+                else:
+                    raise
+            finally:
+                input_mode.close()
+                self._tui_shutdown()
 
         # /update relaunch happens here, after prompt_toolkit restored terminal modes, on the
         # main thread (the process_loop thread would skip cleanup / only exit itself on Windows).

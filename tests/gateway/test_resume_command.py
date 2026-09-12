@@ -326,11 +326,52 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_admin_all_resolves_cross_platform_sessions_listing_number(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/sessions all")
+        lane_key = _session_key_for_event(event)
+        db.create_session(
+            "tg_named", "telegram", session_key=lane_key,
+            user_id="12345", chat_id="67890",
+        )
+        db.set_session_title("tg_named", "Telegram Work")
+        db.create_session(
+            "discord_named", "discord", session_key="agent:main:discord:dm:other",
+            user_id="other-user", chat_id="other",
+        )
+        db.set_session_title("discord_named", "Discord Work")
+        for i in range(10):
+            db.create_session(
+                f"newer_unnamed_{i}", "telegram",
+                session_key=f"agent:main:telegram:dm:newer-{i}",
+                user_id=f"newer-user-{i}", chat_id=f"newer-{i}",
+            )
+        db.create_session(
+            "newer_tool", "tool", session_key="agent:main:tool:job:newer",
+        )
+
+        runner = _make_runner(session_db=db, event=event)
+        runner._resume_caller_is_admin = lambda _source: True
+        listing = await runner._handle_sessions_command(event)
+        discord_line = next(line for line in listing.splitlines() if "`discord_named`" in line)
+        discord_index = int(discord_line.split(".", 1)[0])
+
+        result = await runner._handle_resume_command(
+            _make_event(text=f"/resume --all {discord_index}")
+        )
+
+        assert "Resumed" in result
+        assert runner.session_store.switch_session.call_args.args[1] == "discord_named"
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_numeric_resume_fallback_uses_exact_lane_candidates(self, tmp_path):
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "state.db")
-        event = _make_event(text="/resume 2")
+        event = _make_event(text="/sessions")
         lane_key = _session_key_for_event(event)
         db.create_session(
             "lane_older", "telegram", session_key=lane_key,
@@ -358,11 +399,34 @@ class TestHandleResumeCommand:
         runner = _make_runner(
             session_db=db, current_session_id="current_session_001", event=event
         )
-        result = await runner._handle_resume_command(event)
+        sessions_listing = await runner._handle_sessions_command(event)
+        resume_listing = await runner._handle_resume_command(_make_event(text="/resume"))
+        older_line = next(
+            line for line in sessions_listing.splitlines() if "`lane_older`" in line
+        )
+        current_line = next(
+            line for line in sessions_listing.splitlines() if "`current_session_001`" in line
+        )
+        older_index = int(older_line.split(".", 1)[0])
+        current_index = int(current_line.split(".", 1)[0])
+
+        assert f"{current_index}. **— (current)**" in resume_listing
+        assert f"{older_index}. **Lane Older**" in resume_listing
+        assert "None" not in resume_listing
+
+        result = await runner._handle_resume_command(
+            _make_event(text=f"/resume {older_index}")
+        )
 
         assert "Resumed" in result
         runner.session_store.switch_session.assert_called_once()
         assert runner.session_store.switch_session.call_args[0][1] == "lane_older"
+
+        already_current = await runner._handle_resume_command(
+            _make_event(text=f"/resume {current_index}")
+        )
+        assert "Already on session **— (current)**" in already_current
+        assert f"session **{current_index}**" not in already_current
         db.close()
 
     @pytest.mark.asyncio
@@ -655,6 +719,30 @@ class TestHandleSessionsCommand:
 
         assert "Telegram Work" in result
         assert "Discord Work" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("dash", ["—", "–"])
+    async def test_unicode_dash_all_widens_resume_and_sessions(self, tmp_path, dash):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "discord_named", "discord", session_key="agent:main:discord:dm:other",
+            user_id="other-user", chat_id="other",
+        )
+        db.set_session_title("discord_named", "Discord Work")
+        event = _make_event(text=f"/sessions {dash}all")
+        runner = _make_runner(session_db=db, event=event)
+        runner._resume_caller_is_admin = lambda _source: True
+
+        sessions_result = await runner._handle_sessions_command(event)
+        resume_result = await runner._handle_resume_command(
+            _make_event(text=f"/resume {dash}all")
+        )
+
+        assert "Discord Work" in sessions_result
+        assert "Discord Work" in resume_result
         db.close()
 
     @pytest.mark.asyncio

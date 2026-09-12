@@ -9,6 +9,13 @@ _LIST_WORDS = {"list", "ls", "browse"}
 _SEARCH_WORDS = {"search", "find"}
 
 
+def session_listing_display_parts(row: dict[str, Any]) -> tuple[str, str]:
+    """Return the display name and current-session suffix shared by listing consumers."""
+    name = str(row.get("title") or "—")
+    current_part = " (current)" if row.get("is_current_session") else ""
+    return name, current_part
+
+
 def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | None]:
     """Parse `/sessions`-style args into ``(include_all_sources, include_unnamed, target, search_query)``.
 
@@ -22,6 +29,9 @@ def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | No
     target_parts: list[str] = []
     for i, part in enumerate(parts):
         lower = part.strip().lower()
+        # Gateway MessageEvent maps an en dash to a single ASCII hyphen first.
+        if lower in {"—all", "–all", "-all"}:
+            lower = "--all"
         if not target_parts:
             if lower in _LIST_WORDS:
                 continue
@@ -98,13 +108,13 @@ def format_gateway_session_listing(
         ])
     lines = [f"📋 **{title}**", ""]
     for idx, row in enumerate(rows, start=1):
-        current_part = " (current)" if row.get("is_current_session") else ""
+        display_name, current_part = session_listing_display_parts(row)
         preview = str(row.get("preview") or "")[:40]
         source = str(row.get("source") or "")
         source_part = f" `{source}`" if include_source and source else ""
         preview_part = f" — _{preview}_" if preview else ""
         lines.append(
-            f"{idx}. **{row.get('title') or '—'}**{current_part}{source_part}"
+            f"{idx}. **{display_name}**{current_part}{source_part}"
             f" — `{row.get('id') or ''}`{preview_part}"
         )
     return "\n".join([

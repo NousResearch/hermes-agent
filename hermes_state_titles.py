@@ -154,6 +154,21 @@ class SessionTitlesMixin:
             "WHERE s.title = ?", (title,))
         return self._session_row_dict(row) if row else None
 
+    def list_session_title_candidates(self, title: str) -> list[Dict[str, Any]]:
+        """Return all exact/numbered matches for authorization-aware callers.
+
+        Numbered variants come first, newest-first, followed by every exact match.
+        Historical duplicate titles must not hide an authorized row behind a
+        foreign result. Preserve full provenance for the caller's ownership check.
+        """
+        rows = self._read_all(
+            "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
+            "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
+            "WHERE s.title = ? OR s.title LIKE ? ESCAPE '\\' "
+            "ORDER BY CASE WHEN s.title = ? THEN 1 ELSE 0 END, s.started_at DESC, s.id DESC",
+            (title, f"{_escape_like(title)} #%", title))
+        return [self._session_row_dict(row) for row in rows]
+
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest "title #N" continuation."""
         exact = self.get_session_by_title(title)

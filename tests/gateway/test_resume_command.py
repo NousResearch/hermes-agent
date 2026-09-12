@@ -4,12 +4,13 @@ Tests the _handle_resume_command handler (switch to a previously-named session)
 across gateway messenger platforms.
 """
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, build_session_key
 
@@ -26,21 +27,93 @@ def _make_event(text="/resume", platform=Platform.TELEGRAM,
     return MessageEvent(text=text, source=source)
 
 
+def _make_matrix_event(
+    text="/resume",
+    *,
+    user_id="@alice:example.org",
+    chat_id="!room-a:example.org",
+    thread_id=None,
+):
+    event = _make_event(
+        text=text,
+        platform=Platform.MATRIX,
+        user_id=user_id,
+        chat_id=chat_id,
+    )
+    event.source.chat_type = "group"
+    event.source.chat_name = "Current Matrix Room"
+    event.source.thread_id = thread_id
+    return event
+
+
+def _record_gateway_origin(
+    db,
+    session_id,
+    source,
+    *,
+    group_sessions_per_user=True,
+    thread_sessions_per_user=False,
+):
+    """Persist the trusted full gateway provenance written by SessionStore."""
+    db.record_gateway_session_peer(
+        session_id,
+        source=source.platform.value,
+        user_id=source.user_id,
+        session_key=build_session_key(
+            source,
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
+            profile=source.profile,
+        ),
+        chat_id=source.chat_id,
+        chat_type=source.chat_type,
+        thread_id=source.thread_id,
+        display_name=source.chat_name,
+        origin_json=json.dumps(source.to_dict()),
+    )
+
+
 def _session_key_for_event(event):
     """Get the session key that build_session_key produces for an event."""
     return build_session_key(event.source)
 
 
-def _make_runner(session_db=None, current_session_id="current_session_001",
-                 event=None):
-    """Create a bare GatewayRunner with a mock session_store and optional session_db."""
+def _make_runner(
+    session_db=None,
+    current_session_id="current_session_001",
+    event=None,
+    *,
+    persist_event_origin=True,
+):
+    """Create a bare GatewayRunner with a mock session store and optional DB."""
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner.config = SimpleNamespace(platforms={})
     runner._voice_mode = {}
-    # Gateway holds the async facade; the slash handlers await it.
+    # Gateway holds the async facade; the slash handlers await it. Tests may
+    # explicitly mirror SessionStore persistence for completely blank legacy
+    # fixture rows, but never overwrite existing or malformed provenance.
     if session_db is not None:
+        if event is not None and persist_event_origin:
+            rows = session_db._conn.execute(
+                "SELECT id, source, user_id, chat_id, chat_type, thread_id, "
+                "session_key, origin_json FROM sessions"
+            ).fetchall()
+            for row in rows:
+                if row["origin_json"] is not None:
+                    continue
+                if (
+                    str(row["source"] or "") == event.source.platform.value
+                    and str(row["user_id"] or "") == str(event.source.user_id or "")
+                    and str(row["chat_id"] or "") == str(event.source.chat_id or "")
+                ):
+                    persisted_source = SessionSource.from_dict(event.source.to_dict())
+                    if row["chat_type"]:
+                        persisted_source.chat_type = row["chat_type"]
+                    if row["thread_id"]:
+                        persisted_source.thread_id = row["thread_id"]
+                    _record_gateway_origin(session_db, row["id"], persisted_source)
         from hermes_state import AsyncSessionDB
         session_db = AsyncSessionDB(session_db)
     runner._session_db = session_db
@@ -809,7 +882,7 @@ class TestHandleSessionsCommand:
                           chat_id="signal-group", chat_type="group")
         db.create_session("victim_alt_dm", "signal", user_id="+15550001111")  # no chat_id
         runner = _make_runner(session_db=db)
-        runner._gateway_session_origin_for_id = lambda sid: None  # persisted-only
+        runner._gateway_session_origin_for_id = lambda session_id: None  # persisted-only
 
         # Per-user group: attacker shares user_id but has a different user_id_alt
         # → different session key → must fail closed (was: allowed via user_id).
@@ -830,15 +903,28 @@ class TestHandleSessionsCommand:
         tg_db = SessionDB(db_path=tmp_path / "state_tg.db")
         tg_db.create_session("own_group", "telegram", user_id="12345",
                              chat_id="chat-a", chat_type="group")
-        tg_runner = _make_runner(session_db=tg_db)
-        tg_runner._gateway_session_origin_for_id = lambda sid: None
         tg_caller = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-a",
                                   chat_type="group", user_id="12345")
+        _record_gateway_origin(tg_db, "own_group", tg_caller)
+        tg_runner = _make_runner(session_db=tg_db)
+        tg_runner._gateway_session_origin_for_id = lambda session_id: None
         assert await tg_runner._resume_target_allowed(tg_caller, "own_group",
                                                       allow_override=False) is True
 
         # Regression: an EXPLICITLY-shared group is unaffected — participant
         # scoping doesn't apply, so an alt-keyed co-member still resumes.
+        signal_owner = SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="signal-group",
+            chat_type="group",
+            user_id="+155****1111",
+        )
+        _record_gateway_origin(
+            db,
+            "victim_alt_group",
+            signal_owner,
+            group_sessions_per_user=False,
+        )
         runner.config.group_sessions_per_user = False
         assert await runner._resume_target_allowed(attacker, "victim_alt_group",
                                                    allow_override=False) is True
@@ -956,8 +1042,15 @@ class TestSameMatrixRoomThreadScoping:
         return SessionSource(platform=Platform.MATRIX, chat_id=chat_id,
                              chat_type="group", user_id=user_id, thread_id=thread_id)
 
-    def test_same_room_no_thread_still_shared(self):
+    def test_same_room_no_thread_is_user_scoped_by_default(self):
         runner = _make_runner()
+        a = self._msrc(user_id="@alice:hs")
+        b = self._msrc(user_id="@bob:hs")
+        assert runner._same_matrix_room(a, b) is False
+
+    def test_same_room_no_thread_can_be_explicitly_shared(self):
+        runner = _make_runner()
+        runner.config.group_sessions_per_user = False
         a = self._msrc(user_id="@alice:hs")
         b = self._msrc(user_id="@bob:hs")
         assert runner._same_matrix_room(a, b) is True
@@ -970,3 +1063,455 @@ class TestSameMatrixRoomThreadScoping:
         caller = self._msrc(thread_id="thread-a")
         victim_origin = self._msrc(thread_id="thread-b")
         assert runner._same_matrix_room(caller, victim_origin) is False
+
+class TestCanonicalResumeAuthorization:
+    """Canonical proof is shared by direct IDs, titles, listings and continuations."""
+
+    @staticmethod
+    def _create(db, sid, source, title=None, parent=None, **policy):
+        db.create_session(
+            sid, source.platform.value, user_id=source.user_id,
+            chat_id=source.chat_id, chat_type=source.chat_type,
+            thread_id=source.thread_id, parent_session_id=parent,
+        )
+        _record_gateway_origin(db, sid, source, **policy)
+        if title:
+            db.set_session_title(sid, title)
+
+    @staticmethod
+    def _guard_side_effects(runner):
+        runner._clear_conversation_scope = MagicMock()
+        runner._evict_cached_agent = MagicMock()
+        runner._release_running_agent_state = MagicMock()
+
+    @staticmethod
+    def _assert_denied(runner, result):
+        assert "No session found" in result
+        runner.session_store.switch_session.assert_not_called()
+        runner.session_store.get_or_create_session.assert_not_called()
+        runner.session_store.load_transcript.assert_not_called()
+        runner._clear_conversation_scope.assert_not_called()
+        runner._evict_cached_agent.assert_not_called()
+        runner._release_running_agent_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("foreign_root", [True, False])
+    @pytest.mark.parametrize("live", [True, False])
+    @pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.MATRIX])
+    async def test_compression_requires_authorized_root_and_tip(
+        self, tmp_path, foreign_root, live, platform
+    ):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "chain.db")
+        event = _make_event("/resume chain_root", platform=platform)
+        foreign = _make_event(platform=platform, chat_id="foreign-room", user_id="victim").source
+        sources = {
+            "chain_root": foreign if foreign_root else event.source,
+            "chain_tip": event.source if foreign_root else foreign,
+        }
+        self._create(db, "chain_root", sources["chain_root"], "Chain Work")
+        db.end_session("chain_root", "compression")
+        self._create(db, "chain_tip", sources["chain_tip"], parent="chain_root")
+        db.append_message("chain_tip", "user", "PRIVATE_TIP_PREVIEW")
+        runner = _make_runner(session_db=db, event=event, persist_event_origin=False)
+        runner._gateway_session_origin_for_id = lambda sid: sources.get(sid) if live else None
+        self._guard_side_effects(runner)
+
+        for target in ["chain_root", "Chain Work"]:
+            result = await runner._handle_resume_command(
+                MessageEvent(text=f"/resume {target}", source=event.source)
+            )
+            self._assert_denied(runner, result)
+            assert "PRIVATE_TIP_PREVIEW" not in result
+
+        # Native display rows combine root provenance with tip display fields.
+        projected = next(row for row in db.list_sessions_rich() if row["id"] == "chain_tip")
+        assert projected["_lineage_root_id"] == "chain_root"
+        assert projected["chat_id"] == sources["chain_root"].chat_id
+        assert await runner._resume_row_visible(event.source, projected, False) is False
+        numbered = await runner._handle_resume_command(MessageEvent(text="/resume 1", source=event.source))
+        assert "Resumed" not in numbered
+        runner.session_store.switch_session.assert_not_called()
+        db.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("admin_override", [False, True])
+    async def test_title_resolution_skips_newer_foreign_numbered_variant(self, tmp_path, admin_override):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "titles.db")
+        event = _make_event("/resume " + ("--all " if admin_override else "") + "Shared Title")
+        self._create(db, "owned_exact", event.source, "Shared Title")
+        foreign = _make_event(chat_id="foreign", user_id="victim").source
+        self._create(db, "foreign_numbered", foreign, "Shared Title #2")
+        runner = _make_runner(session_db=db, event=event, persist_event_origin=False)
+        if admin_override:
+            runner.config.platforms[Platform.TELEGRAM] = PlatformConfig(extra={"allow_admin_from": [event.source.user_id]})
+        result = await runner._handle_resume_command(event)
+        assert "Resumed" in result
+        assert runner.session_store.switch_session.call_args.args[1] == "owned_exact"
+        db.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.MATRIX])
+    @pytest.mark.parametrize("bad_field,bad_value", [
+        ("origin_json", None), ("origin_json", "{malformed SECRET_ORIGIN"),
+        ("origin_json", "{}"), ("session_key", "wrong-key"),
+        ("source", "discord"), ("user_id", "contradictory-user"),
+        ("chat_id", "contradictory-chat"), ("chat_type", "channel"),
+        ("thread_id", "contradictory-thread"),
+    ])
+    async def test_persisted_origin_contradictions_fail_closed(self, tmp_path, platform, bad_field, bad_value):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "origin.db")
+        event = _make_event("/resume target", platform=platform)
+        self._create(db, "target", event.source, "PRIVATE_TITLE")
+        db._conn.execute(f"UPDATE sessions SET {bad_field} = ? WHERE id = ?", (bad_value, "target"))
+        db._conn.commit()
+        runner = _make_runner(session_db=db, event=event, persist_event_origin=False)
+        self._guard_side_effects(runner)
+        result = await runner._handle_resume_command(event)
+        self._assert_denied(runner, result)
+        assert "PRIVATE_TITLE" not in result
+        assert "SECRET_ORIGIN" not in result
+        assert await runner._resume_row_visible(event.source, db.get_session("target"), False) is False
+        db.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("different_chat", [False, True])
+    async def test_same_dm_identity_namespace_transition_requires_canonical_chat(self, tmp_path, different_chat):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "feishu.db")
+        stored = SessionSource(platform=Platform.FEISHU, chat_id="oc_dm", chat_type="dm", user_id="legacy-user")
+        self._create(db, "target", stored)
+        caller = SessionSource(platform=Platform.FEISHU, chat_id="other-dm" if different_chat else "oc_dm",
+                               chat_type="dm", user_id="new-user", user_id_alt="open-id")
+        runner = _make_runner(session_db=db)
+        result = await runner._handle_resume_command(MessageEvent(text="/resume target", source=caller))
+        if different_chat:
+            assert "No session found" in result
+            runner.session_store.switch_session.assert_not_called()
+        else:
+            assert "Resumed" in result
+            runner.session_store.switch_session.assert_called_once()
+        db.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("compressed", [False, True])
+    async def test_historical_matrix_complete_origin_survives_restart(self, tmp_path, compressed):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "matrix.db")
+        event = _make_matrix_event("/resume Historical Matrix Work", thread_id="$thread")
+        self._create(db, "root", event.source, "Historical Matrix Work")
+        tip = "root"
+        if compressed:
+            db.end_session("root", "compression")
+            tip = "tip"
+            self._create(db, tip, event.source, parent="root")
+        db.append_message(tip, "user", "Historical preview")
+        runner = _make_runner(session_db=db, event=event, persist_event_origin=False)
+        runner._gateway_session_origin_for_id = lambda sid: None
+        result = await runner._handle_resume_command(event)
+        assert "Resumed" in result
+        assert runner.session_store.switch_session.call_args.args[1] == tip
+        listing = await runner._handle_sessions_command(MessageEvent(text="/sessions --full", source=event.source))
+        assert "Historical Matrix Work" in listing
+        assert "Historical preview" in listing
+        db.close()
+
+    @pytest.mark.parametrize("field,value", [
+        ("chat_type", "group"), ("profile", "other-profile"), ("scope_id", "other-workspace"),
+    ])
+    def test_live_origin_requires_exact_canonical_key(self, field, value):
+        caller = SessionSource(platform=Platform.SLACK, chat_id="dm-chat", chat_type="dm", user_id="alice")
+        origin = SessionSource.from_dict(caller.to_dict())
+        setattr(origin, field, value)
+        runner = _make_runner()
+        runner.config.multiplex_profiles = True
+        assert runner._session_key_for_source(caller) != runner._session_key_for_source(origin)
+        assert runner._same_origin_chat(caller, origin) is False
+
+    @pytest.mark.parametrize("field,value", [
+        ("platform", "unknown-platform"), ("user_id_alt", 123),
+        ("profile", []), ("scope_id", {}), ("prospective_thread_id", False),
+    ])
+    def test_persisted_origin_decoder_rejects_malformed_identity_fields(self, field, value):
+        payload = _make_event().source.to_dict()
+        payload[field] = value
+        assert _make_runner()._decode_persisted_session_source(payload) is None
+
+    def test_live_origins_without_identity_fail_closed(self):
+        runner = _make_runner()
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id=None, user_id=None, chat_type="dm")
+        assert runner._same_origin_chat(source, source) is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("live", [False, True])
+    @pytest.mark.parametrize("chat_type,chat_id,user_id", [
+        ("dm", None, None), ("group", "room", None), ("group", None, "alice"),
+    ])
+    async def test_anonymous_origin_cannot_prove_ownership(self, tmp_path, live, chat_type, chat_id, user_id):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "anonymous.db")
+        source = SessionSource(platform=Platform.TELEGRAM, chat_type=chat_type, chat_id=chat_id, user_id=user_id)
+        self._create(db, "target", source)
+        runner = _make_runner(session_db=db)
+        runner._gateway_session_origin_for_id = lambda sid: source if live else None
+        self._guard_side_effects(runner)
+        result = await runner._handle_resume_command(MessageEvent(text="/resume target", source=source))
+        self._assert_denied(runner, result)
+        db.close()
+
+    def test_title_candidates_preserve_ranking_escape_and_full_provenance(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "candidate.db")
+        source = _make_event().source
+        for sid, title in [("exact", "A_%"), ("numbered", "A_% #2"), ("decoy", "ABC #2")]:
+            self._create(db, sid, source, title)
+        rows = db.list_session_title_candidates("A_%")
+        assert [row["id"] for row in rows] == ["numbered", "exact"]
+        for row in rows:
+            assert row["origin_json"] == json.dumps(source.to_dict())
+            assert row["session_key"] == build_session_key(source)
+        db.close()
+
+
+    @pytest.mark.asyncio
+    async def test_exact_title_skips_foreign_duplicate_before_authorized_candidate(
+        self, tmp_path
+    ):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        title = "Shared Historical Title"
+        db.create_session(
+            "foreign_exact",
+            "telegram",
+            user_id="foreign-user",
+            chat_id="foreign-chat",
+        )
+        db.set_session_title("foreign_exact", title)
+        db.create_session(
+            "owned_exact",
+            "telegram",
+            user_id="12345",
+            chat_id="67890",
+        )
+        # Historical databases can contain duplicate exact titles even though
+        # the current setter rejects creating them. Reproduce that legacy row
+        # shape directly so authorization must inspect every exact candidate.
+        assert db._conn is not None
+        db._conn.execute("DROP INDEX idx_sessions_title_unique")
+        db._conn.execute(
+            "UPDATE sessions SET title = ?, started_at = ? WHERE id = ?",
+            (title, 200, "owned_exact"),
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (100, "foreign_exact"),
+        )
+        db._conn.commit()
+        db.create_session(
+            "current_session_001",
+            "telegram",
+            user_id="12345",
+            chat_id="67890",
+        )
+
+        event = _make_event(text=f"/resume {title}")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        switch_call = getattr(runner.session_store.switch_session, "call_args")
+        assert switch_call is not None
+        assert switch_call[0][1] == "owned_exact"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_persisted_alt_identity_allows_exact_canonical_owner(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "signal-alt.db")
+        owner = SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="signal-group",
+            chat_type="group",
+            user_id="+155****1111",
+            user_id_alt="owner-uuid",
+        )
+        db.create_session(
+            "signal_owner",
+            Platform.SIGNAL.value,
+            user_id=owner.user_id,
+            chat_id=owner.chat_id,
+            chat_type=owner.chat_type,
+        )
+        _record_gateway_origin(db, "signal_owner", owner)
+        runner = _make_runner(session_db=db)
+        runner._gateway_session_origin_for_id = lambda session_id: None
+
+        assert await runner._resume_target_allowed(
+            owner, "signal_owner", allow_override=False
+        ) is True
+        attacker = SessionSource.from_dict(owner.to_dict())
+        attacker.user_id_alt = "attacker-uuid"
+        assert await runner._resume_target_allowed(
+            attacker, "signal_owner", allow_override=False
+        ) is False
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_persisted_whatsapp_alias_flip_uses_canonical_key(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_state import SessionDB
+
+        mapping_dir = tmp_path / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        db = SessionDB(db_path=tmp_path / "whatsapp-alias.db")
+        stored = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="999999999999999@lid",
+            chat_type="dm",
+            user_id="999999999999999@lid",
+        )
+        db.create_session(
+            "whatsapp_alias",
+            Platform.WHATSAPP.value,
+            user_id=stored.user_id,
+            chat_id=stored.chat_id,
+            chat_type=stored.chat_type,
+        )
+        _record_gateway_origin(db, "whatsapp_alias", stored)
+        caller = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            user_id="15551234567@s.whatsapp.net",
+        )
+        runner = _make_runner(session_db=db)
+        runner._gateway_session_origin_for_id = lambda session_id: None
+
+        assert build_session_key(stored) == build_session_key(caller)
+        assert await runner._resume_target_allowed(
+            caller, "whatsapp_alias", allow_override=False
+        ) is True
+        db.close()
+
+    @pytest.mark.parametrize(
+        "missing_key", ["platform", "user_id", "chat_id", "chat_type", "thread_id"]
+    )
+    def test_persisted_origin_decoder_requires_complete_non_matrix_payload(
+        self, missing_key
+    ):
+        payload = {
+            "platform": "telegram",
+            "user_id": "12345",
+            "chat_id": "67890",
+            "chat_type": "group",
+            "thread_id": None,
+        }
+        payload.pop(missing_key)
+        runner = _make_runner()
+        assert runner._decode_persisted_session_source(payload) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("target", "set_title"),
+        [
+            ("foreign_session_id", False),
+            ("Guessed Foreign Title", True),
+        ],
+    )
+    async def test_nonmatrix_foreign_and_nonexistent_are_indistinguishable(
+        self, tmp_path, target, set_title
+    ):
+        """A guessed foreign title/id gets exactly the nonexistent response."""
+        from hermes_state import SessionDB
+
+        foreign_db = SessionDB(db_path=tmp_path / "foreign.db")
+        foreign_db.create_session(
+            "foreign_session_id",
+            "telegram",
+            user_id="victim",
+            chat_id="victim-chat",
+        )
+        if set_title:
+            foreign_db.set_session_title("foreign_session_id", target)
+        foreign_event = _make_event(text=f"/resume {target}")
+        foreign_runner = _make_runner(session_db=foreign_db, event=foreign_event)
+        foreign_result = await foreign_runner._handle_resume_command(foreign_event)
+
+        empty_db = SessionDB(db_path=tmp_path / "empty.db")
+        missing_event = _make_event(text=f"/resume {target}")
+        missing_runner = _make_runner(session_db=empty_db, event=missing_event)
+        missing_result = await missing_runner._handle_resume_command(missing_event)
+
+        assert foreign_result == missing_result
+        assert "No session found" in foreign_result
+        foreign_runner.session_store.switch_session.assert_not_called()
+        foreign_runner.session_store.load_transcript.assert_not_called()
+        empty_db.close()
+        foreign_db.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("target", "resolve_title"),
+        [
+            ("matrix_foreign_id", False),
+            ("Guessed Matrix Title", True),
+        ],
+    )
+    async def test_matrix_foreign_and_nonexistent_are_indistinguishable_without_room_metadata(
+        self, target, resolve_title
+    ):
+        """Neither live Matrix room names nor ids are rendered before auth."""
+        caller = _make_matrix_event(text=f"/resume {target}")
+        runner = _make_runner(event=caller)
+        runner._session_db = AsyncMock()
+        foreign_origin = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="!classified:example.org",
+            chat_name="Classified Foreign Room",
+            chat_type="group",
+            user_id="@victim:example.org",
+        )
+        runner._gateway_session_origin_for_id = lambda sid: foreign_origin
+        if resolve_title:
+            runner._session_db.get_session.return_value = None
+            runner._session_db.list_session_title_candidates.return_value = [{"id": "matrix_foreign_id"}]
+        else:
+            runner._session_db.get_session.return_value = {"id": "matrix_foreign_id"}
+        runner._session_db.resolve_resume_session_id.return_value = "matrix_foreign_id"
+
+        foreign_result = await runner._handle_resume_command(caller)
+
+        runner._gateway_session_origin_for_id = lambda session_id: None
+        runner._session_db.get_session.return_value = None
+        runner._session_db.list_session_title_candidates.return_value = []
+        nonexistent_result = await runner._handle_resume_command(caller)
+
+        assert foreign_result == nonexistent_result
+        assert "No session found" in foreign_result
+        assert "Classified Foreign Room" not in foreign_result
+        assert "!classified:example.org" not in foreign_result
+        runner.session_store.switch_session.assert_not_called()
+        runner.session_store.load_transcript.assert_not_called()

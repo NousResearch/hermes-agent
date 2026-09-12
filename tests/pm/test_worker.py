@@ -69,7 +69,7 @@ def test_refused_or_already_paused_install_does_not_acquire_runtime(client, monk
     import threading
     from pm.downloader import DownloadPaused
 
-    monkeypatch.setattr(client, "runtime_command", lambda path: pytest.fail("refusal acquired PM runtime"))
+    monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: pytest.fail("refusal acquired PM runtime"))
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
     with pytest.raises(InstallError, match="lazy installs are disabled"):
         client.ensure("node")
@@ -125,7 +125,7 @@ def test_currency_probe_preserves_union_and_candidate_inputs(client, tmp_path, m
     root_args = {"project_root": repo} if route != "worker" else {}
     acquisitions = []
 
-    def ready_runtime(*, bootstrap):
+    def ready_runtime(*, bootstrap, cache):
         assert bootstrap is False, "currency probe attempted to bootstrap PM"
         acquisitions.append(bootstrap)
         return isolated_python
@@ -461,7 +461,7 @@ def _patch_worker_apply(client, monkeypatch, isolated_python, body):
         "Venv.apply = apply\n"
         f"runpy.run_path({str(worker)!r}, run_name='__main__')\n"
     )
-    monkeypatch.setattr(client, "runtime_command", lambda path: [str(isolated_python), "-I", "-B", "-c", script])
+    monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: [str(isolated_python), "-I", "-B", "-c", script])
 
 
 def test_resolution_conflict_survives_worker_and_receipt(client, tmp_path, monkeypatch, isolated_python, capfd):
@@ -523,7 +523,7 @@ def test_invalid_arguments_keep_the_engine_exception_type(client):
 
 
 def test_worker_death_reports_transport_failure(client, monkeypatch, isolated_python):
-    monkeypatch.setattr(client, "runtime_command", lambda path: [str(isolated_python), "-I", "-c", "import os; os._exit(7)"])
+    monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: [str(isolated_python), "-I", "-c", "import os; os._exit(7)"])
     with pytest.raises(InstallError, match="worker.*result"):
         client.ensure("node", explicit=True)
 

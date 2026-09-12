@@ -18,12 +18,12 @@ def _members(value):
     return [Path(path) for path in value["paths"]]
 
 
-def _read_controls(messages, pause):
+def _read_controls(messages, pause, fd):
     # Raw reads avoid a daemon thread holding sys.stdin's buffered lock at exit.
     pending = b""
     request_id = None
     try:
-        while block := os.read(0, 65536):
+        while block := os.read(fd, 65536):
             pending += block
             while b"\n" in pending:
                 line, pending = pending.split(b"\n", 1)
@@ -39,6 +39,7 @@ def _read_controls(messages, pause):
     except (OSError, ValueError, KeyError) as exc:
         messages.put(exc)
     finally:
+        os.close(fd)
         pause.set()
         messages.put(None)
 
@@ -51,9 +52,15 @@ def main():
     wire = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8", buffering=1)
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    # A pending read on inherited control stdin can block child Python startup
+    # on Windows. Keep the protocol private and give every ordinary child EOF.
+    controls = os.dup(0)
+    os.set_inheritable(controls, False)
+    with open(os.devnull, "rb") as null:
+        os.dup2(null.fileno(), 0)
     messages = queue.Queue()
     pause = threading.Event()
-    threading.Thread(target=_read_controls, args=(messages, pause), daemon=True).start()
+    threading.Thread(target=_read_controls, args=(messages, pause, controls), daemon=True).start()
 
     def receive():
         message = messages.get()

@@ -40,7 +40,7 @@ def worker_python(tmp_path_factory):
 def test_registered_package_installs_archive_in_real_worker(tmp_path, monkeypatch, worker_python, dl_server, operation):
     from pm import paths
 
-    monkeypatch.setattr("pm.runtime.runtime_python", lambda: worker_python)
+    monkeypatch.setattr("pm.runtime.runtime_python", lambda **kwargs: worker_python)
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
     monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "lock.json")
     source = tmp_path / "package.py"

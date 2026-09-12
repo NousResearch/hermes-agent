@@ -53,6 +53,53 @@ print(json.dumps({{"prefix": sys.prefix, "yaml": importlib.util.find_spec("ruame
     assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
+def test_cold_worker_bootstrap_reuses_the_requests_cache(tmp_path, monkeypatch):
+    import pm
+    from hermes_constants import get_default_hermes_root
+    from pm import client, runtime
+    from pm.runtime_stage import stage_runtime
+
+    uv = shutil.which("uv")
+    assert uv, "the bootstrap cache contract requires real uv"
+    tools = Path(uv), Path(sys.executable)
+    cache = tmp_path / "shared-cache"
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home/.hermes"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.setattr("pm.paths.repo_root", lambda: tmp_path / "project")
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: tools)
+    monkeypatch.setattr(client, "is_runtime", lambda: False)
+    stage_runtime(*tools, tmp_path / "warmup", cache=cache)
+    shutil.rmtree(tmp_path / "warmup")
+
+    def offline_stage(*args, **kwargs):
+        # A fresh manager must use the populated explicit cache, not download
+        # its dependencies again under the bundle's isolated HOME.
+        kwargs["offline"] = True
+        return stage_runtime(*args, **kwargs)
+
+    monkeypatch.setattr("pm.runtime_stage.stage_runtime", offline_stage)
+    worker = Path(client.__file__).with_name("worker.py")
+    script = (
+        "import runpy, sys; from pathlib import Path; "
+        f"sys.path.insert(0, {str(worker.parent.parent)!r}); import pm._uv; "
+        f"pm._uv._toolchain = lambda **kwargs: (Path({uv!r}), Path({sys.executable!r})); "
+        f"runpy.run_path({str(worker)!r}, run_name='__main__')"
+    )
+
+    def command(*args, **kwargs):
+        prepared = runtime.runtime_command(*args, **kwargs)
+        return [*prepared[:3], "-c", script]
+
+    monkeypatch.setattr(client, "runtime_command", command)
+    before = dict(os.environ)
+    pm.prune_cache(cache)
+    assert cache.is_dir()
+    assert not (get_default_hermes_root() / "cache/uv").exists(), "bootstrap created an unshared private cache"
+    assert dict(os.environ) == before
+
+
 def test_sealed_worker_command_uses_only_its_recorded_site(tmp_path, monkeypatch):
     from pm import paths
     from pm.runtime import runtime_command

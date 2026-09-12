@@ -57,6 +57,8 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
                     "lockfile": str(paths.lockfile_path())},
     }
     worker = Path(__file__).with_name("worker.py").resolve()
+    # Bootstrap precedes dispatch and must share the operation's selected cache.
+    cache = Path(arguments["cache"]) if arguments.get("cache") is not None else None
     environment = runtime_environment()
     state_sync = operation in ("sync_venv", "build_environment", "lock_project",
                                "ensure_environment", "ensure_python_tool", "check_project_lock",
@@ -67,7 +69,7 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
         # A ready PM still decides no-op/refusal under its install lock. A cold
         # PM is itself a missing prerequisite, not permission to bootstrap tools.
         try:
-            command = runtime_command(worker, bootstrap=False)
+            command = runtime_command(worker, bootstrap=False, cache=cache)
         except InstallError as exc:
             token = receipt.begin("sync")
             try:
@@ -78,9 +80,9 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
             raise
         environment["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
     elif operation == "venv_is_current":
-        command = runtime_command(worker, bootstrap=False)
+        command = runtime_command(worker, bootstrap=False, cache=cache)
     else:
-        command = runtime_command(worker)
+        command = runtime_command(worker, cache=cache)
     callback_error = None
     stopped = threading.Event()
     write_lock = threading.Lock()

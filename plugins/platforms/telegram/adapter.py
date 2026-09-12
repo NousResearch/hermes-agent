@@ -4003,23 +4003,6 @@ class TelegramAdapter(BasePlatformAdapter):
 
     _MODEL_PAGE_SIZE = 8
 
-    def _build_vendor_keyboard(self, models: list) -> Any:
-        """Build the vendor drill-down keyboard for a Bedrock model list."""
-        buttons: list = []
-        for group in group_bedrock_models_by_vendor(models):
-            buttons.append(
-                InlineKeyboardButton(
-                    f"{group['label']} ({len(group['indices'])})",
-                    callback_data=f"mvd:{group['vendor']}",
-                )
-            )
-        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-        rows.append([
-            InlineKeyboardButton("◀ Back", callback_data="mb"),
-            InlineKeyboardButton("✗ Cancel", callback_data="mx"),
-        ])
-        return InlineKeyboardMarkup(rows)
-
     @staticmethod
     def _provider_button(p: dict) -> "InlineKeyboardButton":
         count = p.get("total_models", len(p.get("models", [])))
@@ -4092,6 +4075,29 @@ class TelegramAdapter(BasePlatformAdapter):
                 InlineKeyboardButton(short, callback_data=f"mm:{abs_idx}")
             )
         return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
+
+    @staticmethod
+    def _is_bedrock_provider(provider_slug: str) -> bool:
+        """True when *provider_slug* is AWS Bedrock (under any of its aliases).
+
+        The vendor drill-down answers a Bedrock-specific shape — one model
+        advertised under several routing namespaces — so it is gated on the
+        provider rather than on the IDs alone. ``openai-codex`` also ships
+        ``openai.``-prefixed IDs and must keep the original flat flow.
+        """
+        try:
+            from hermes_cli.models import normalize_provider
+            return normalize_provider(provider_slug) == "bedrock"
+        except Exception:
+            return str(provider_slug or "").lower() == "bedrock"
+
+    def _build_vendor_keyboard(self, models: list) -> "InlineKeyboardMarkup":
+        """Vendor drill-down keyboard for a Bedrock-shaped model list."""
+        buttons = [InlineKeyboardButton(f"{g['label']} ({len(g['indices'])})", callback_data=f"mvd:{g['vendor']}")
+                   for g in group_bedrock_models_by_vendor(models)]
+        rows = self._rows_of_two(buttons)
+        rows.append(self._picker_back_cancel_row())
+        return InlineKeyboardMarkup(rows)
 
     async def _picker_edit(self, query, text_md: str, keyboard) -> None:
         """Re-render the picker message in place (MarkdownV2) and ack the tap."""
@@ -4219,7 +4225,11 @@ class TelegramAdapter(BasePlatformAdapter):
             state["full_model_list"] = models
             state["selected_vendor"] = ""
             state["model_list"] = models
-            if len(group_bedrock_models_by_vendor(models)) > 1:
+            # Bedrock advertises dozens of ``<geo>.<vendor>.<model>`` profiles at once;
+            # a vendor step keeps a flat page of near-identical buttons scannable.
+            # Gated on the provider so no other provider's flow changes, and on a
+            # real choice of vendors so a single-vendor list keeps the two-step flow.
+            if self._is_bedrock_provider(provider_slug) and len(group_bedrock_models_by_vendor(models)) > 1:
                 await self._picker_show_vendors(query, state)
                 return
             await self._picker_show_models(query, state, 0)

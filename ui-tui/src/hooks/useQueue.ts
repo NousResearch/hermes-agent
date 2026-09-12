@@ -205,15 +205,21 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
     [queueRef, serverRowAt]
   )
 
+  // Resolves once the authority has retired the row; the rejection carries the
+  // store's refusal (stale_generation, …) so callers decide what the edited
+  // or deleted text becomes.
   const cancelServerRow = useCallback(
     (row: { admission_id: string; status?: string; execution_generation?: number | null }) => {
       const session_id = getUiState().sid
       const unknown = row.status === 'unknown'
-      void gw?.request(unknown ? 'prompt.resolve_unknown' : 'prompt.cancel', {
+
+      return (gw?.request(unknown ? 'prompt.resolve_unknown' : 'prompt.cancel', {
         session_id, admission_id: row.admission_id,
         ...(unknown ? { execution_generation: row.execution_generation } : {})
-      }).catch((error: Error) => {
+      }) ?? Promise.resolve()).catch((error: Error) => {
         if (getUiState().sid === session_id) { patchUiState({ status: `discard failed: ${error.message}` }) }
+
+        throw error
       })
     },
     [gw]
@@ -366,8 +372,10 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
       const queue = getQueue()
       const server = serverRowAt(i)
 
-      // Editing a durable row re-admits the edited text as a new input; the
-      // authority retires the original.
+      // Editing a durable row re-admits the edited text as a new input once
+      // the authority has retired the original. Until then the edit is a
+      // durable local row; a refused retirement leaves it as an unconfirmed
+      // draft (Alt+K) instead of admitting a second copy behind the original.
       if (server) {
         if (server.status === 'unknown') {
           patchUiState({ status: 'unknown execution — Ctrl+X to discard before retrying' })
@@ -375,11 +383,21 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
           return undefined
         }
 
-        cancelServerRow(server)
-        const item = queueItem(editedDisplay ?? server.user)
-        queue.items.push(item)
+        const text = editedDisplay ?? server.user
+        const item = enqueue(text, text, queue.destination)
+        item.inFlight = true
+        savePendingInput(item)
 
-        return claim(queue, item)
+        return cancelServerRow(server).then(
+          () => claim(queue, item),
+          () => {
+            item.inFlight = false
+            item.failed = true
+            savePendingInput(item)
+            syncQueue()
+
+            return undefined
+          })
       }
 
       if (queue.items[i]?.inFlight) {
@@ -401,7 +419,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
 
       return claim(queue, item)
     },
-    [getQueue, claim, cancelServerRow, serverRowAt]
+    [getQueue, claim, cancelServerRow, enqueue, serverRowAt, syncQueue]
   )
 
   const removeQ = useCallback(
@@ -409,7 +427,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
       const server = serverRowAt(i)
 
       if (server) {
-        return cancelServerRow(server)
+        return void cancelServerRow(server).catch(() => undefined)
       }
 
       if (queueRef.current[i]?.inFlight) {

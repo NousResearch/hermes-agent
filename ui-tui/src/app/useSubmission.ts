@@ -11,7 +11,7 @@ import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
-import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
+import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
@@ -333,7 +333,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
           if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
           sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
         } else {
-          slashRef.current(slash.command)
+          // Image tokens are labels in the command; the descriptors and their
+          // expander ride along so a skill/alias send still carries the image.
+          slashRef.current(slash.command, { attachments: submission.attachments, expand: expandTokens(submissionTokens) })
         }
 
         return
@@ -349,51 +351,78 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       if (!live.sid) { return sys('session not ready — draft kept; reconnect or choose a session') }
 
+      // The composer is the only copy of a draft until the pending-input
+      // journal holds it, so it is cleared after that first durable write and
+      // kept — text and image tokens — when the write fails.
+      const journaled = <T,>(write: () => T): { value: T } | undefined => {
+        try {
+          const value = write()
+          composerActions.clearIn()
+
+          return { value }
+        } catch (error) {
+          sys(`input not saved: ${(error as Error).message} — draft kept`)
+          patchUiState({ status: 'input not saved' })
+
+          return undefined
+        }
+      }
+
       if (live.gatewayConnected === false) {
         composerActions.pushHistory(toHistory)
-        const retained = composerActions.enqueue(submission.text, submission.display, destination)
+        journaled(() => {
+          const retained = composerActions.enqueue(submission.text, submission.display, destination)
 
-        if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
-        composerActions.clearIn()
+          if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
+        })
 
         return
       }
 
       const editIdx = composerRefs.queueEditRef.current
-      composerActions.clearIn()
 
       if (editIdx !== null) {
-        const picked = composerActions.takeQueue(editIdx, full)
+        const picked = journaled(() => composerActions.takeQueue(editIdx, full))?.value
         composerActions.setQueueEdit(null)
 
         if (!picked || !live.sid) {
           return
         }
 
-        if (getUiState().busy) {
-          // 'interrupt' / 'steer' should reach the live turn instead of
-          // silently going back to the queue.  handleBusyInput resolves
-          // mode-specific behavior (interrupt-and-send, steer, or queue).
-          if (getUiState().busyInputMode === 'queue' && !gw.isCanonical) {
-            return composerActions.prependQueue(picked)
+        // An edited authority row is admitted only after its original retires.
+        return void Promise.resolve(picked).then(item => {
+          if (!item) {
+            return
           }
 
-          return handleBusyInput(picked, { fallbackToFront: true })
-        }
+          if (getUiState().busy) {
+            // 'interrupt' / 'steer' should reach the live turn instead of
+            // silently going back to the queue.  handleBusyInput resolves
+            // mode-specific behavior (interrupt-and-send, steer, or queue).
+            if (getUiState().busyInputMode === 'queue' && !gw.isCanonical) {
+              return composerActions.prependQueue(item)
+            }
 
-        return sendQueued(picked)
+            return handleBusyInput(item, { fallbackToFront: true })
+          }
+
+          return sendQueued(item)
+        })
       }
 
       composerActions.pushHistory(toHistory)
 
       if (getUiState().busy) {
-        return handleBusyInput({ ...queueItem(submission.text, submission.display), attachments: submission.attachments })
+        return void journaled(() =>
+          handleBusyInput({ ...queueItem(submission.text, submission.display), attachments: submission.attachments }))
       }
 
       if (shouldInterpolateSubmission(full)) {
-        patchUiState({ busy: true })
+        const staged = journaled(() => composerActions.stage?.(submission.text, submission.display, destination))
 
-        const item = composerActions.stage?.(submission.text, submission.display, destination)
+        if (!staged) { return }
+        patchUiState({ busy: true })
+        const item = staged.value
 
         return interpolate(
           full,
@@ -406,7 +435,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         )
       }
 
-      send(submission.text, true, submission.display, value => value, { attachments: submission.attachments })
+      journaled(() => send(submission.text, true, submission.display, value => value, { attachments: submission.attachments }))
     },
     [
       appendMessage,
@@ -499,7 +528,7 @@ export interface UseSubmissionOptions {
   composerState: ComposerState
   gw: GatewayClient
   setLastUserMsg: (value: string) => void
-  slashRef: MutableRefObject<(cmd: string) => boolean>
+  slashRef: MutableRefObject<SlashHandler>
   submitRef: MutableRefObject<(value: string) => void>
   sys: (text: string) => void
 }

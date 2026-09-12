@@ -1753,12 +1753,22 @@ class TurnRunner:
         agent = ctx.agent_holder[0]
         has_comp = bool(agent) and hasattr(agent, "context_compressor")
         comp = agent.context_compressor if has_comp else None
+        # Serving-credential identity for the runtime footer, captured from the live agent
+        # BEFORE it is released (the footer renders after the turn, when the agent may be gone).
+        footer_runtime_fields: dict = {}
+        if agent is not None:
+            try:
+                from gateway.runtime_footer import resolve_agent_runtime_fields
+                footer_runtime_fields = resolve_agent_runtime_fields(agent)
+            except Exception:
+                footer_runtime_fields = {}
         usage = {
             "last_prompt_tokens": getattr(comp, "last_prompt_tokens", 0) if has_comp else 0,
             "input_tokens": getattr(agent, "session_prompt_tokens", 0) if has_comp else 0,
             "output_tokens": getattr(agent, "session_completion_tokens", 0) if has_comp else 0,
             "model": getattr(agent, "model", None) if agent else None,
             "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
+            "footer_runtime_fields": footer_runtime_fields,
         }
         compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(agent_history)
         # failure_reason must survive the empty-response path too (TUI billing, transient-failure

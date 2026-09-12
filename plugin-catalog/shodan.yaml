@@ -1,0 +1,27 @@
+name: shodan
+repo: https://github.com/Adolanium/hermes-plugin-shodan
+sha: c7d56211420438bd300c3526b7536f55aafb0fce
+description: Shodan tools with complete capability declarations.
+maintainer: Adolanium
+tier: community
+docs_url: https://github.com/Adolanium/hermes-plugin-shodan#readme
+capabilities:
+  provides_tools:
+  - shodan_host
+  - shodan_search
+  - shodan_count
+  - shodan_dns
+  - shodan_cve
+  - shodan_account
+  - shodan_meta
+  - shodan_scan
+  - shodan_alert
+  - shodan_exploits
+  - shodan_query
+  - shodan_trends
+  provides_hooks:
+  - on_session_start
+  - on_session_reset
+  provides_middleware: []
+  requires_env:
+  - SHODAN_API_KEY

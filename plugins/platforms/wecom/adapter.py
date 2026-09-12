@@ -36,6 +36,8 @@ from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
 from plugins.platforms.wecom.streaming import (
+    GROUP_FINAL_ACK_STRICT_DEFAULT,
+    GROUP_FINAL_ONLY_DEFAULT,
     WeComStreamMixin, ReplyQueue, StreamTurn, APP_CMD_RESPONSE,
     STREAM_NOT_SUBSCRIBED_ERRCODE, MAX_STREAM_CONTENT_LENGTH,
     STREAM_SAFE_DURATION_SECONDS, STREAM_KEEPALIVE_INTERVAL_SECONDS, STREAM_KEEPALIVE_ENABLED_DEFAULT,
@@ -155,6 +157,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
         self._stream_safe_duration_seconds = _extra_float("stream_safe_duration_seconds", STREAM_SAFE_DURATION_SECONDS)
         self._stream_keepalive_enabled = bool(extra.get("stream_keepalive_enabled", STREAM_KEEPALIVE_ENABLED_DEFAULT))
         self._stream_keepalive_interval_seconds = _extra_float("stream_keepalive_interval_seconds", STREAM_KEEPALIVE_INTERVAL_SECONDS)
+        # Group-chat policy (2026-09-12): a group sees only the finished answer, and its finalize
+        # must be positively acked — see the policy note in streaming.py.
+        self._group_final_only = bool(extra.get("group_final_only", GROUP_FINAL_ONLY_DEFAULT))
+        self._group_final_ack_strict = bool(extra.get("group_final_ack_strict", GROUP_FINAL_ACK_STRICT_DEFAULT))
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
         # Turns keyed f"{chat_id}:{req_id|turn_id}"; expired chats clear on the next inbound req_id.

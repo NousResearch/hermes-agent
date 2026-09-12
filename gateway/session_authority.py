@@ -78,10 +78,18 @@ class SessionAuthority:
         if self.runner._draining:
             raise RuntimeStoreError('runtime_draining')
 
+    def logical_owner(self, session_id):
+        """The FIFO/admission identity of a route: the root of its compression lineage.
+        Compression advances the physical transcript, never the admission identity."""
+        return self.db.get_compression_lineage(session_id)[0] if session_id else session_id
+
+    def physical_target(self, ref):
+        return self.db.get_compression_tip(ref.session_id) or ref.session_id
+
     def register(self, source):
         self._require_admission_open()
         entry = self.runner.session_store.get_or_create_session(source)
-        sid = entry.session_id
+        sid = self.logical_owner(entry.session_id)
         self.sessions.setdefault(sid, LiveSession(source, entry.session_key))
         # SessionStore reserves routing metadata before the first AIAgent exists.
         if self.db.get_session(sid) is None:
@@ -210,13 +218,14 @@ class SessionAuthority:
                 native = [row for row in rows if 'native_text_v1' in row['payload']]
                 if not native:
                     raise RuntimeStoreError('not_found')
-                source, route = await check_native_route(self.runner, native[-1]['payload'], sid,
+                target = self.physical_target(SessionRef(self.profile_id, sid))
+                source, route = await check_native_route(self.runner, native[-1]['payload'], target,
                                                     available_source, adapter)
                 for row in rows:
                     if row['status'] == 'queued':
                         if 'native_text_v1' not in row['payload']:
                             raise RuntimeStoreError('invalid_params')
-                        await check_native_route(self.runner, row['payload'], sid, available_source, adapter)
+                        await check_native_route(self.runner, row['payload'], target, available_source, adapter)
                 self._require_admission_open()
                 self.sessions.setdefault(sid, LiveSession(source, route))
                 if any(row['status'] == 'unknown' for row in rows):
@@ -363,7 +372,7 @@ class SessionAuthority:
                         check_local_input(self, ref, first)
                 if first is not None and 'native_text_v1' in first['payload']:
                     from gateway.session_envelope import check_native_route
-                    await check_native_route(self.runner, first['payload'], ref.session_id, live.source,
+                    await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,
                                        self.runner._adapter_for_source(live.source))
                     # Cancellation may advance FIFO while the connector is awaited.
                     # Never let the successor inherit this row's fresh verdict.

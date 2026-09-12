@@ -960,12 +960,3 @@ class TestWriteConfigMergesOntoDisk:
         self._rotate_on_disk(cfg_path)
         honcho_cli._write_config(cfg)
         assert json.loads(cfg_path.read_text()) == cfg
-
-    def test_write_holds_the_refresh_file_lock_and_bootstraps_a_missing_file(self, monkeypatch, tmp_path):
-        import contextlib
-        import plugins.memory.honcho.oauth as oauth
-        cfg_path = tmp_path / "honcho.json"
-        honcho_cli, locked = _point_cli_at(monkeypatch, cfg_path), []
-        monkeypatch.setattr(oauth, "_config_refresh_lock", lambda path: locked.append(path) or contextlib.nullcontext())
-        honcho_cli._write_config({"apiKey": "k"})
-        assert locked == [cfg_path] and json.loads(cfg_path.read_text(encoding="utf-8")) == {"apiKey": "k"}

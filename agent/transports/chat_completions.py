@@ -100,7 +100,7 @@ def _add_prompt_cache_key(
         for c in containers:
             _bound_prompt_cache_key_field(c)
         return
-    if not supports_prompt_cache_key:
+    if not supports_prompt_cache_key or cache_scope_id == "":
         return
     cache_key = _content_cache_key(
         _static_prompt_instructions(messages), tools, _cache_scope_from_session_id(cache_scope_id or session_id),

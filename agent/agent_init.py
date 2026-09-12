@@ -2222,6 +2222,20 @@ def init_agent(
         load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless.
     """
     _install_safe_stdio()
+    # Prompt-cache scopes must distinguish identical session ids in different profile stores.
+    agent._profile_scoped = True
+    explicit_profile = getattr(agent, "_profile_name", None) or getattr(agent, "profile_name", None)
+    if explicit_profile:
+        agent._profile_name = str(explicit_profile).strip()
+        agent._profile_unresolved = False
+    else:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            agent._profile_name = get_active_profile_name()
+            agent._profile_unresolved = False
+        except Exception:
+            agent._profile_name = None
+            agent._profile_unresolved = True
 
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:

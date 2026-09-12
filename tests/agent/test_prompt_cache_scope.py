@@ -28,8 +28,10 @@ def db(tmp_path):
         session_db.close()
 
 
-def _agent(session_id, session_db=None):
-    return SimpleNamespace(session_id=session_id, _session_db=session_db)
+def _agent(session_id, session_db=None, profile_name=None):
+    return SimpleNamespace(
+        session_id=session_id, _session_db=session_db, profile_name=profile_name
+    )
 
 
 def _rotate(db, parent_id: str, child_id: str) -> None:
@@ -45,6 +47,12 @@ class TestResolvePromptCacheScope:
 
     def test_no_db_falls_back_to_physical_id(self):
         assert resolve_prompt_cache_scope(_agent("root-sess")) == "root-sess"
+
+    def test_same_session_id_isolated_between_profiles(self):
+        first = resolve_prompt_cache_scope(_agent("shared-session", profile_name="alpha"))
+        second = resolve_prompt_cache_scope(_agent("shared-session", profile_name="beta"))
+
+        assert first != second
 
     def test_unrotated_session_is_its_own_scope(self, db):
         db.create_session("root-sess", source="webui")
@@ -567,5 +575,132 @@ class TestPerResponseRunNonceIsolation:
                 )
             finally:
                 reset_conversation_context(token)
+
+        assert keys[0] != keys[1]
+
+
+class TestProfileIsolationFailClosed:
+    """Regressions for issue #108494 / PR #108501: profile lookup failures must fail closed."""
+
+    def test_agent_init_profile_lookup_failure_fails_closed(self, monkeypatch):
+        """When get_active_profile_name fails during AIAgent construction, the agent
+        enters an unresolved cache-ineligible state: no unqualified cache scope or key
+        can be emitted, and the public request path takes the documented fail-closed outcome."""
+        import unittest.mock as mock
+        import hermes_cli.profiles
+        from run_agent import AIAgent
+
+        monkeypatch.setattr(
+            hermes_cli.profiles,
+            "get_active_profile_name",
+            mock.Mock(side_effect=OSError("profile disk lookup failed")),
+        )
+
+        # 1. Chat completions mode
+        agent_chat = AIAgent(
+            api_key="test",
+            base_url="https://api.openai.com/v1",
+            model="gpt-5.5",
+            session_id="same-session",
+            api_mode="chat_completions",
+            skip_context_files=True,
+            skip_memory=True,
+            quiet_mode=True,
+        )
+
+        assert agent_chat._profile_name is None
+        assert getattr(agent_chat, "_profile_unresolved", False) is True
+
+        # Assert no unqualified cache scope is emitted
+        scope_chat = resolve_prompt_cache_scope(agent_chat)
+        assert scope_chat == ""
+        assert scope_chat != "same-session"
+
+        # Assert public request path fails closed: no prompt_cache_key emitted
+        kwargs_chat = agent_chat._build_api_kwargs([{"role": "user", "content": "hello"}])
+        assert "prompt_cache_key" not in kwargs_chat
+        assert "prompt_cache_key" not in kwargs_chat.get("extra_body", {})
+
+        # 2. Codex responses mode
+        agent_codex = AIAgent(
+            api_key="test",
+            base_url="https://api.openai.com/v1",
+            model="gpt-5.5",
+            session_id="same-session",
+            api_mode="codex_responses",
+            skip_context_files=True,
+            skip_memory=True,
+            quiet_mode=True,
+        )
+
+        assert agent_codex._profile_name is None
+        assert getattr(agent_codex, "_profile_unresolved", False) is True
+
+        scope_codex = resolve_prompt_cache_scope(agent_codex)
+        assert scope_codex == ""
+        assert scope_codex != "same-session"
+
+        kwargs_codex = agent_codex._build_api_kwargs([{"role": "user", "content": "hello"}])
+        assert "prompt_cache_key" not in kwargs_codex
+        assert "prompt_cache_key" not in kwargs_codex.get("extra_body", {})
+        assert "x-client-request-id" not in kwargs_codex.get("extra_headers", {})
+
+    def test_agent_init_profile_lookup_success_qualifies_scope_and_key(self, monkeypatch):
+        """When profile resolution succeeds, AIAgent emits profile-qualified scopes and keys."""
+        import unittest.mock as mock
+        import hermes_cli.profiles
+        from run_agent import AIAgent
+
+        monkeypatch.setattr(
+            hermes_cli.profiles,
+            "get_active_profile_name",
+            mock.Mock(return_value="research"),
+        )
+
+        agent = AIAgent(
+            api_key="test",
+            base_url="https://api.openai.com/v1",
+            model="gpt-5.5",
+            session_id="same-session",
+            api_mode="codex_responses",
+            skip_context_files=True,
+            skip_memory=True,
+            quiet_mode=True,
+        )
+
+        assert agent._profile_name == "research"
+        assert getattr(agent, "_profile_unresolved", False) is False
+
+        scope = resolve_prompt_cache_scope(agent)
+        assert scope == "research|same-session"
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hello"}])
+        assert kwargs.get("prompt_cache_key") is not None
+
+    def test_cross_profile_prompt_cache_keys_are_isolated(self, monkeypatch):
+        """Two profiles using the same session_id and instructions produce distinct cache keys."""
+        import unittest.mock as mock
+        import hermes_cli.profiles
+        from run_agent import AIAgent
+
+        keys = []
+        for profile in ("alpha", "beta"):
+            monkeypatch.setattr(
+                hermes_cli.profiles,
+                "get_active_profile_name",
+                mock.Mock(return_value=profile),
+            )
+            agent = AIAgent(
+                api_key="test",
+                base_url="https://api.openai.com/v1",
+                model="gpt-5.5",
+                session_id="shared-session-id",
+                api_mode="codex_responses",
+                skip_context_files=True,
+                skip_memory=True,
+                quiet_mode=True,
+            )
+            kwargs = agent._build_api_kwargs([{"role": "user", "content": "hello"}])
+            keys.append(kwargs["prompt_cache_key"])
 
         assert keys[0] != keys[1]

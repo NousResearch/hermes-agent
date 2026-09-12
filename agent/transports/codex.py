@@ -600,10 +600,15 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["context_management"] = context_management
 
         session_id = params.get("session_id")
+        cache_scope_id = params.get("cache_scope_id")
         # Content-addressed (instructions + tools) within a logical scope that survives
         # compression rotation; session_id itself stays untouched for transcript isolation.
-        _cache_scope = _cache_scope_from_session_id(params.get("cache_scope_id") or session_id)
-        cache_key = _content_cache_key(instructions, response_tools, _cache_scope) or _cache_scope
+        if cache_scope_id == "":
+            _cache_scope = ""
+            cache_key = None
+        else:
+            _cache_scope = _cache_scope_from_session_id(cache_scope_id or session_id)
+            cache_key = _content_cache_key(instructions, response_tools, _cache_scope) or _cache_scope
         # xAI takes prompt_cache_key in extra_body (below); GitHub Models opts out entirely.
         if not is_github_responses and not is_xai_responses and cache_key:
             kwargs["prompt_cache_key"] = cache_key

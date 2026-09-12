@@ -432,13 +432,17 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
 
 def _prompt_cache_scope_for_agent(agent) -> "str | None":
     """Rotation-stable logical cache scope for *agent*, or None (transports then
-    fall back to the physical session_id, so a failure never blocks the build)."""
+    fall back to the physical session_id, so a failure never blocks the build).
+    When the agent is explicitly cache-ineligible (profile resolution failed),
+    returns ``""`` so transports fail closed rather than falling back."""
     try:
-        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+        from agent.prompt_cache_scope import is_prompt_cache_ineligible, resolve_prompt_cache_scope_safe
+        if is_prompt_cache_ineligible(agent):
+            return ""
         return resolve_prompt_cache_scope_safe(agent)
     except Exception:
         logger.debug("prompt-cache scope resolution failed", exc_info=True)
-        return None
+        return "" if getattr(agent, "_profile_unresolved", False) or getattr(agent, "_profile_scoped", False) else None
 
 
 def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dict:
@@ -1370,12 +1374,21 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     from agent.opencode_affinity import merge_opencode_session_headers
 
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
-    return merge_opencode_session_headers(
+    res = merge_opencode_session_headers(
         kwargs,
         getattr(agent, "provider", None),
         getattr(agent, "base_url", None),
         getattr(agent, "session_id", None),
     )
+    if getattr(agent, "_profile_unresolved", False):
+        res.pop("prompt_cache_key", None)
+        if isinstance(res.get("extra_body"), dict):
+            res["extra_body"].pop("prompt_cache_key", None)
+            res["extra_body"].pop("x-grok-conv-id", None)
+        if isinstance(res.get("extra_headers"), dict):
+            res["extra_headers"].pop("x-grok-conv-id", None)
+            res["extra_headers"].pop("x-client-request-id", None)
+    return res
 
 
 def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | None = None) -> dict:

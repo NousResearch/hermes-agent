@@ -19,6 +19,32 @@ _MEMO_ATTR = "_prompt_cache_scope_memo"
 _DECLARED_SCOPE_PREFIX = "gwk_"
 
 
+def _profile_identity(agent: Any) -> str:
+    """Return the active profile identity carried by the agent, if any.
+
+    The physical session id is only unique inside a profile's state database.  Include the
+    profile at the cache boundary so two profile stores cannot share a provider cache bucket.
+    Keep the empty value legacy-compatible for lightweight/background agents.
+    """
+    explicit = getattr(agent, "_profile_name", None) or getattr(agent, "profile_name", None)
+    if explicit:
+        return str(explicit).strip()
+    return ""
+
+
+def is_prompt_cache_ineligible(agent: Any) -> bool:
+    """True when an agent cannot safely emit a profile-isolated prompt cache key.
+
+    A real profile-scoped agent whose profile identity failed to resolve must fail closed
+    to prevent cross-profile cache-bucket collision.
+    """
+    if getattr(agent, "_profile_unresolved", False):
+        return True
+    if getattr(agent, "_profile_scoped", False) and not _profile_identity(agent):
+        return True
+    return False
+
+
 def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
     """Compression-lineage root of *session_id*, or None (tolerates test-double results)."""
     if session_db is None:
@@ -91,6 +117,8 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
     explicit fork child, and on any DB error (fail closed rather than merge a fork onto its
     parent's key).
     """
+    if is_prompt_cache_ineligible(agent):
+        return None
     key = str(getattr(agent, "_gateway_session_key", "") or "").strip()
     if not key or getattr(agent, "_persist_disabled", False):
         return None
@@ -132,17 +160,23 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
 def resolve_prompt_cache_scope(agent: Any) -> str:
     """Rotation-stable cache-scope id: declared scope, else the compression-lineage root of
     ``agent.session_id`` (the physical id without ancestry/DB). Memoized on the agent."""
+    if is_prompt_cache_ineligible(agent):
+        return ""
     sid = str(getattr(agent, "session_id", None) or "")
     if not sid:
         return ""
     db = getattr(agent, "_session_db", None)
     # DB presence is part of the key: an agent that gains a DB handle later must re-resolve.
-    key = (sid, db is not None)
+    profile = _profile_identity(agent)
+    key = (sid, db is not None, profile)
     memo = getattr(agent, _MEMO_ATTR, None)
     if isinstance(memo, tuple) and len(memo) == 2 and memo[0] == key:
         return memo[1]
     root = declared_conversation_scope(agent) or _lineage_root(sid, db)
+    profile = _profile_identity(agent)
     scope = root or sid
+    if profile:
+        scope = f"{profile}|{scope}"
     # Memoize on success, with no DB, or when the agent never persists a row. A failed/empty
     # walk on a persisting agent is NOT memoized: the physical id is right for now (row not
     # yet persisted) but would stay wrong for the whole segment once it lands.
@@ -167,14 +201,14 @@ def resolve_prompt_cache_scope_safe(agent: Any) -> Optional[str]:
     """Never-raising variant of :func:`resolve_prompt_cache_scope` (None = use the physical id).
     At turn_context an exception inside ``set_runtime_main(...)`` would skip the whole binding.
 
-    Returns None on any failure (or when there is no scope). Consumers treat None/empty as "fall back to the
-    physical session_id", so a resolution failure degrades to pre-#79017 behavior instead of blocking the
-    caller — important at turn_context's call site, where an exception raised inside the
-    ``set_runtime_main(...)`` argument list would otherwise skip the whole runtime binding, not just the
-    cache scope.
+    Returns None on any failure (or when there is no scope). When the agent is explicitly
+    cache-ineligible (e.g. profile resolution failure on a profile-scoped agent), returns
+    ``""`` so transports fail closed rather than falling back to the physical session_id.
     """
     try:
+        if is_prompt_cache_ineligible(agent):
+            return ""
         return resolve_prompt_cache_scope(agent) or None
     except Exception:
         logger.debug("prompt-cache scope resolution failed", exc_info=True)
-        return None
+        return "" if is_prompt_cache_ineligible(agent) else None

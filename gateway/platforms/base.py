@@ -3717,13 +3717,14 @@ class BasePlatformAdapter(ABC):
     async def _finalize_delivery_obligation(
         self, obligation_id: str, result: Any, event: MessageEvent,
         delivery_adapter: "BasePlatformAdapter") -> None:
-        """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
-        replacement adapter live, trigger another redelivery sweep (the watcher's may have run
-        before this failure landed; atomic claiming keeps it idempotent). On a flood-control refusal
+        """Mark the ledger row delivered/failed (best-effort). A reconnect or in-place recovery
+        sweep may finish before this failure lands; compensate once the adapter can send again.
+        Atomic claiming keeps concurrent sweeps idempotent. On a flood-control refusal
         arm the runner's timed redelivery, so the reply goes out once the penalty has passed instead
         of waiting for the next restart."""
         try:
             from gateway.delivery_ledger import is_flood_error, mark_delivered, mark_failed
+            from gateway.delivery_recovery import can_redeliver
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
@@ -3733,7 +3734,7 @@ class BasePlatformAdapter(ABC):
                 redeliver = getattr(
                     self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
                 live = self._final_delivery_adapter(event.source)
-                if live is not delivery_adapter and callable(redeliver):
+                if callable(redeliver) and (live is not delivery_adapter or can_redeliver(live)):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
             elif is_flood_error(error):

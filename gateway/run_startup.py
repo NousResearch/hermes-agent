@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
+from gateway.delivery_recovery import RuntimeDeliverySettlement
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
@@ -366,7 +367,9 @@ class GatewayStartupMixin:
         for row in await asyncio.to_thread(pending_flood_retries):
             self._schedule_flood_redelivery(row["platform"], profile=row["profile"])
 
-    async def _redeliver_claimed_obligations(self, claimed: list) -> int:
+    async def _redeliver_claimed_obligations(
+        self, claimed: list, *, runtime_settlement: Optional[RuntimeDeliverySettlement] = None,
+    ) -> int:
         """Redeliver final responses for claimed rows (network half of the split): runs inside the
         bounded boot-send task, so a flood-limited send can be abandoned by the restore gate without
         reopening the turn-replay window. Returns the redelivered count."""
@@ -383,8 +386,11 @@ class GatewayStartupMixin:
                 # Adopted at boot inside its flood wait: its resume flag is cleared with the others, and
                 # the timer armed below sends it once the platform's deadline has passed.
                 continue
-            adapter = await self._obligation_adapter(row)
+            adapter = await self._obligation_adapter(row, runtime_settlement=runtime_settlement)
             if adapter is None:
+                continue
+            if row.get("runtime_recovery") and runtime_settlement and runtime_settlement.cancelled:
+                await self._refund_cancelled_runtime_claim(row, runtime_settlement)
                 continue
             content = row["content"]
             if row.get("needs_marker"):
@@ -404,16 +410,23 @@ class GatewayStartupMixin:
                         row["platform"], row["chat_id"], row["obligation_id"], row["attempts"],
                     )
                 else:
+                    error = str(getattr(result, "error", "") or "send failed")
                     await asyncio.to_thread(
-                        mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed")
+                        mark_failed, row["obligation_id"], error
                     )
+                    if error == "send_path_degraded":
+                        from gateway.delivery_recovery import schedule_redelivery
+                        # Recovery may have swept this row while its failure write was pending.
+                        # Resolve again: the transport can also have been replaced during the await.
+                        schedule_redelivery(getattr(self, "_authorization_adapter")(
+                            Platform(row["platform"]), row.get("profile")), settlement=runtime_settlement)
         # Whatever is still waiting on a flood penalty (adopted at boot, skipped as not yet due, refused
         # again just now) gets a timer, so no flood-refused reply waits for the next restart.
         with _log_suppressed(logging.DEBUG, "arming flood redelivery timers failed", exc_info=True):
             await self._arm_flood_timers_for_waiting_rows()
         return redelivered
 
-    async def _obligation_adapter(self, row: dict):
+    async def _obligation_adapter(self, row: dict, *, runtime_settlement: Optional[RuntimeDeliverySettlement] = None):
         """Resolve the adapter for a claimed ledger row, or None when it cannot be delivered now."""
         try:
             platform = Platform(row["platform"])
@@ -425,14 +438,32 @@ class GatewayStartupMixin:
         else:
             # Startup rows preserve the historical default-adapter route.
             adapter = self.adapters.get(platform)
-        # A runtime claim whose reconnect vanished before dispatch is released without spending an
-        # attempt; startup claims keep their state (attempts cap + stale cutoff bound retries).
-        if adapter is None and row.get("runtime_recovery"):
+        # Health can change while resume flags are cleared after claiming. An unsent runtime claim
+        # must retain its retry budget; startup claims keep their existing recovery semantics.
+        from gateway.delivery_recovery import can_redeliver, schedule_redelivery
+        if row.get("runtime_recovery") and not can_redeliver(adapter):
             await self._release_runtime_claim_quiet(
                 row["obligation_id"], "failed to release undispatched runtime obligation %s",
                 error=row.get("last_error") or "send_path_degraded",
             )
+            if (row.get("last_error") or "send_path_degraded") == "send_path_degraded":
+                # Recovery may also precede this refund's DB write. Only transport unavailability
+                # gets this wakeup; a resume-store failure must not loop on free retry claims.
+                schedule_redelivery(getattr(self, "_authorization_adapter")(
+                    platform, row.get("profile")), settlement=runtime_settlement)
+            return None
         return adapter
+
+    async def _refund_cancelled_runtime_claim(self, row: dict, settlement: RuntimeDeliverySettlement) -> None:
+        error = row.get("last_error") or "send_path_degraded"
+        await self._release_runtime_claim_quiet(
+            row["obligation_id"], "failed to release cancelled runtime obligation %s", error=error,
+        )
+        if error == "send_path_degraded":
+            from gateway.delivery_recovery import schedule_redelivery
+            # A replacement may have recovered and swept before this refund committed.
+            replacement = getattr(self, "_authorization_adapter")(Platform(row["platform"]), row.get("profile"))
+            schedule_redelivery(replacement, settlement=settlement)
 
     async def _redeliver_pending_obligations(self) -> int:
         """Claim + redeliver in one call. Stable shape for tests/external callers; the startup path
@@ -445,28 +476,45 @@ class GatewayStartupMixin:
         """Replay one adapter identity's transient failures after reconnect: the startup sweep cannot
         claim live-owner rows, so ``send_path_degraded`` responses would otherwise stay failed until
         the next restart. Best-effort; reuses the startup redelivery contract."""
+        settlement = RuntimeDeliverySettlement(getattr(self, "_authorization_adapter")(platform, profile))
         try:
-            from gateway.delivery_ledger import ledger_enabled, sweep_failed_for_runtime
-            if not await asyncio.to_thread(ledger_enabled):
-                return 0
-            claimed = await asyncio.to_thread(sweep_failed_for_runtime, platform.value, profile=profile)
-        except Exception:
-            logger.debug(
-                "runtime delivery ledger sweep failed after %s reconnect", platform.value, exc_info=True,
-            )
-            return 0
-        if not claimed:
-            return 0
-        # Clear before any send so the reconnect path cannot both redeliver AND resume the same turn.
-        sendable = await self._clear_resume_pending_for_claimed_obligations(claimed, require_success=True)
-        sendable_ids = {row["obligation_id"] for row in sendable}
-        for row in claimed:
-            if row["obligation_id"] not in sendable_ids:
-                await self._release_runtime_claim_quiet(
-                    row["obligation_id"], "failed to release runtime delivery claim %s",
-                    error=row.get("last_error") or "send_path_degraded",
+            try:
+                from gateway.delivery_ledger import ledger_enabled, sweep_failed_for_runtime
+                if not await settlement.wait(asyncio.to_thread(ledger_enabled)) or settlement.cancelled:
+                    return 0
+                claimed = await settlement.wait(asyncio.to_thread(
+                    sweep_failed_for_runtime, platform.value, profile=profile,
+                ))
+            except Exception:
+                logger.debug(
+                    "runtime delivery ledger sweep failed after %s reconnect", platform.value, exc_info=True,
                 )
-        return await self._redeliver_claimed_obligations(sendable)
+                return 0
+            if not claimed:
+                return 0
+            # Clear every resume flag before sending; cancellation still owns the claim result
+            # and refunds all undispatched rows instead of abandoning a live-owner attempting row.
+            sendable = [] if settlement.cancelled else await settlement.wait(
+                self._clear_resume_pending_for_claimed_obligations(claimed, require_success=True)
+            )
+            sendable_ids = {row["obligation_id"] for row in sendable}
+            for row in claimed:
+                if row["obligation_id"] not in sendable_ids:
+                    if settlement.cancelled:
+                        await settlement.wait(self._refund_cancelled_runtime_claim(row, settlement))
+                    else:
+                        await settlement.wait(self._release_runtime_claim_quiet(
+                            row["obligation_id"], "failed to release runtime delivery claim %s",
+                            error=row.get("last_error") or "send_path_degraded",
+                        ))
+            # Once send() starts, retain its result and ledger write. Cancellation only refunds
+            # the remaining rows; treating an in-flight send as unsent could duplicate delivery.
+            return await settlement.wait(self._redeliver_claimed_obligations(
+                sendable, runtime_settlement=settlement,
+            ))
+        finally:
+            if settlement.cancelled:
+                raise asyncio.CancelledError
 
     def _resume_pending_candidates(self, platform=None) -> Optional[list]:
         """Snapshot resume-pending entries (optionally scoped to ``platform``); None when

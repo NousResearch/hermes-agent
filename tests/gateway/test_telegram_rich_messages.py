@@ -476,18 +476,21 @@ async def test_dm_table_stream_persists_through_send_rich_message():
         ),
     )
 
+    # The full benign line must be available before the ephemeral draft check.
+    content = RICH_CONTENT + "!"
     task = asyncio.create_task(consumer.run())
-    consumer.on_delta(RICH_CONTENT)
+    consumer.on_delta(content)
     await asyncio.sleep(0.05)
     consumer.finish()
     await task
 
     adapter._bot.send_message_draft.assert_awaited()
     draft_kwargs = adapter._bot.send_message_draft.call_args.kwargs
-    assert draft_kwargs["text"] == RICH_CONTENT
+    assert draft_kwargs["text"] == content
     assert "parse_mode" not in draft_kwargs
     rich_endpoints = [call.args[0] for call in adapter._bot.do_api_request.await_args_list]
     assert rich_endpoints == ["sendRichMessage"]
+    assert _rich_api_kwargs(adapter)["rich_message"]["markdown"] == content
     adapter._bot.edit_message_text.assert_not_called()
     adapter._bot.send_message.assert_not_called()
 

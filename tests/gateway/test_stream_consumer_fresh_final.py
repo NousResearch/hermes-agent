@@ -284,7 +284,7 @@ class TestFinalCleanupEditFloodControl:
             ),
         )
 
-        final_text = "The complete answer is already visible before cleanup."
+        final_text = "The complete answer is already visible before cleanup!"
         consumer.on_delta(final_text)
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.05)  # streaming preview lands with cursor

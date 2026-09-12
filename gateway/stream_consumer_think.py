@@ -33,7 +33,11 @@ class StreamThinkFilterMixin:
 
         Prose that merely *mentions* a tag must not trigger (mirrors cli.py).
         """
-        acc_boundary = not self._accumulated or self._accumulated.endswith("\n")
+        # Withheld secret candidates are still preceding logical text; an empty
+        # display buffer must not turn an inline mention into a think block.
+        raw_tail = self._raw_segment_last_char
+        acc_boundary = (raw_tail == "\n" if raw_tail is not None
+                        else not self._accumulated or self._accumulated.endswith("\n"))
         if idx == 0:
             return acc_boundary
         preceding = buf[:idx]

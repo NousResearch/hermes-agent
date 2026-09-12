@@ -343,3 +343,70 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        "💭 **Reasoning:**\n```\nsafe reasoning\n```\n\n{}",
+        "-# 💭 Reasoning\n-# safe reasoning\n\n{}",
+        "> 💭 **Reasoning:**\n> safe reasoning\n\n{}",
+        '✅ Background task complete\nPrompt: "check provider"\n\n{}',
+    ],
+)
+@pytest.mark.parametrize(
+    ("answer", "category"),
+    [
+        ("API call failed after 3 retries: HTTP 400: cybersecurity risk. request_id=req_synthetic", "provider rejected"),
+        ("HTTP 503 Service Unavailable request_id=req_synthetic", "provider failed"),
+        ("HTTP 502: upstream failed. request_id=req_synthetic", "provider failed"),
+        ("HTTP 404 means not found. Request ID: identifies the request in logs.", None),
+        ("HTTP 404 means not found.\n\nA request ID = trace-key helps support.", None),
+        ("The phrase 'background task failed' describes this test.", None),
+    ],
+)
+def test_provider_classification_survives_only_owned_wrappers(wrapper, answer, category):
+    """Presentation cannot hide an envelope or turn a short HTTP explanation into one."""
+    wrapped = wrapper.format(answer)
+    result = _sanitize_gateway_final_response(Platform.TELEGRAM, wrapped)
+    if category:
+        assert category in result.lower()
+        assert "req_synthetic" not in result
+    else:
+        assert result == wrapped
+
+    # Failure wrappers carry diagnostics, while ordinary introductory prose does not.
+    error = "API call failed: HTTP 401: invalid API key. request_id=req_synthetic"
+    for failed in (
+        f"Sorry, I encountered an error (RuntimeError).\n{error}\nTry again or use /reset.",
+        f"❌ Background task bg-123 failed: {error}",
+    ):
+        assert "authentication failed" in _sanitize_gateway_final_response(Platform.TELEGRAM, failed)
+    ordinary = f"Here is a quoted diagnostic for this test:\n\n{error}"
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, ordinary) == ordinary
+    near_heading = wrapper.splitlines()[0] + " describes a presentation example."
+    ordinary = f"{near_heading}\n\n{error}"
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, ordinary) == ordinary
+
+
+@pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.MATRIX, "plugin_chat", "api_server"])
+@pytest.mark.parametrize(
+    ("message", "private"),
+    [
+        ('Data: {"token": "opaqueTerminalCredential123', "opaqueTerminalCredential123"),
+        ('Data: {"api_key": "opaque\\u0054erminalCredential123', "opaque\\u0054erminalCredential123"),
+        ("OPENAI_API_KEY=opaqueTerminalCredential123", "opaqueTerminalCredential123"),
+        ("postgres://user:opaqueTerminalCredential123", "opaqueTerminalCredential123"),
+        ("Key:\n-----BEGIN PRIVATE KEY-----\nSYNTHETICINERTPRIVATEKEYBODY123", "SYNTHETICINERTPRIVATEKEYBODY123"),
+    ],
+)
+def test_terminal_secret_boundary_preserves_raw_surfaces(monkeypatch, platform, message, private):
+    """Chat final/status egress masks unfinished secrets even when optional redaction is off."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    final = _sanitize_gateway_final_response(platform, message)
+    status = _prepare_gateway_status_message(platform, "lifecycle", message)
+    if platform == "api_server":
+        assert final == status == message
+    else:
+        assert private not in final
+        assert status is not None and private not in status

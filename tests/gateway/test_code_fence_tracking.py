@@ -177,14 +177,15 @@ class TestFilterAndAccumulate:
 
     def test_plain_text_preserved(self):
         c = self._consumer()
-        c._filter_and_accumulate("Hello world")
-        assert c._accumulated == "Hello world"
+        # End the plain line so this tests filtering, not candidate holdback.
+        c._filter_and_accumulate("Hello world\n")
+        assert c._accumulated == "Hello world\n"
 
 
     def test_fence_inside_think_is_stripped(self):
         c = self._consumer()
         c._filter_and_accumulate(
-            "before\n<think>\n```python\nx = 1\n```\n</think>\nafter"
+            "before\n<think>\n```python\nx = 1\n```\n</think>\nafter\n"
         )
         assert "```" not in c._accumulated
         assert "before" in c._accumulated

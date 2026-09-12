@@ -369,10 +369,10 @@ class TestSegmentBreakOnToolBoundary:
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉")
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
 
-        consumer.on_delta("Hello")
+        consumer.on_delta("Hello!")
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.08)
-        consumer.on_delta(" world")
+        consumer.on_delta(" world!")
         await asyncio.sleep(0.08)
         consumer.on_delta(None)
         consumer.on_delta("Next segment")
@@ -381,8 +381,8 @@ class TestSegmentBreakOnToolBoundary:
 
         sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
         # The undelivered "world" tail must reach the user, and the next
-        # segment must not duplicate "Hello" that was already visible.
-        assert sent_texts == ["Hello ▉", "world", "Next segment"]
+        # segment must not duplicate "Hello!" that was already visible.
+        assert sent_texts == ["Hello! ▉", "world!", "Next segment"]
 
     @pytest.mark.asyncio
     async def test_segment_break_after_mid_stream_edit_failure_preserves_tail(self):
@@ -893,21 +893,21 @@ class TestFilterAndAccumulate:
     def test_plain_text_passes_through(self):
         c = _make_consumer()
         c._filter_and_accumulate("Hello world")
-        assert c._accumulated == "Hello world"
+        assert c._stream_ledger == "Hello world"
 
     def test_complete_think_block_stripped(self):
         c = _make_consumer()
         c._filter_and_accumulate("<think>internal reasoning</think>Answer here")
-        assert c._accumulated == "Answer here"
+        assert c._stream_ledger == "Answer here"
 
 
     def test_opening_tag_split_across_deltas(self):
         c = _make_consumer()
         c._filter_and_accumulate("<thi")
         # Partial tag held back
-        assert c._accumulated == ""
+        assert c._stream_ledger == ""
         c._filter_and_accumulate("nk>hidden</think>shown")
-        assert c._accumulated == "shown"
+        assert c._stream_ledger == "shown"
 
 
     def test_multiple_think_blocks_with_text_between(self):
@@ -917,8 +917,8 @@ class TestFilterAndAccumulate:
             "<think>block1</think>A<think>block2</think>B"
         )
         # Second <think> follows 'A' (not a block boundary) — treated as prose
-        assert "A" in c._accumulated
-        assert "B" in c._accumulated
+        assert "A" in c._stream_ledger
+        assert "B" in c._stream_ledger
 
 
     @pytest.mark.parametrize(
@@ -928,15 +928,15 @@ class TestFilterAndAccumulate:
     def test_reasoning_tags_are_case_insensitive(self, tag):
         c = _make_consumer()
         c._filter_and_accumulate(f"<{tag}>hidden reasoning</{tag}>Visible answer")
-        assert c._accumulated == "Visible answer"
-        assert "hidden reasoning" not in c._accumulated
+        assert c._stream_ledger == "Visible answer"
+        assert "hidden reasoning" not in c._stream_ledger
 
     def test_prose_mention_not_stripped(self):
         """<think> mentioned mid-line in prose should NOT trigger filtering."""
         c = _make_consumer()
         c._filter_and_accumulate("The <think> tag is used for reasoning")
-        assert "<think>" in c._accumulated
-        assert "used for reasoning" in c._accumulated
+        assert "<think>" in c._stream_ledger
+        assert "used for reasoning" in c._stream_ledger
 
 
     def test_think_with_only_whitespace_before(self):
@@ -944,16 +944,16 @@ class TestFilterAndAccumulate:
         c = _make_consumer()
         c._filter_and_accumulate("  <think>hidden</think>visible")
         # Leading whitespace before the tag is emitted, then block is stripped
-        assert c._accumulated == "  visible"
+        assert c._stream_ledger == "  visible"
 
     def test_flush_think_buffer_on_non_tag(self):
         """Partial tag that turns out not to be a tag is flushed."""
         c = _make_consumer()
         c._filter_and_accumulate("<thi")
-        assert c._accumulated == ""
+        assert c._stream_ledger == ""
         # Flush explicitly (simulates stream end)
         c._flush_think_buffer()
-        assert c._accumulated == "<thi"
+        assert c._stream_ledger == "<thi"
 
 
 class TestFilterAndAccumulateIntegration:
@@ -1024,7 +1024,7 @@ class TestBufferOnlyMode:
         cfg = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor="", buffer_only=True)
         consumer = GatewayStreamConsumer(adapter, "!room:server", config=cfg)
 
-        consumer.on_delta("Before tool call")
+        consumer.on_delta("Before tool call!")
         consumer.on_delta(None)
         consumer.on_delta("After tool call")
         consumer.finish()
@@ -1111,11 +1111,11 @@ class TestOnNewMessageCallback:
             on_new_message=lambda: events.append("reset"),
         )
 
-        consumer.on_delta("A")
+        consumer.on_delta("A!")
         consumer.on_delta(None)
-        consumer.on_delta("B")
+        consumer.on_delta("B!")
         consumer.on_delta(None)
-        consumer.on_delta("C")
+        consumer.on_delta("C!")
         consumer.finish()
         await consumer.run()
 
@@ -1304,7 +1304,7 @@ class TestRunStillCurrentGuard:
             run_still_current=is_current,
         )
 
-        consumer.on_delta("First segment")
+        consumer.on_delta("First segment!")
         consumer.on_delta(None)  # segment break → resets message_id
         consumer.on_delta("Second segment text that will be stale")
         # No finish() — staleness should prevent second segment from sending
@@ -1472,7 +1472,8 @@ class TestFlushPendingSync:
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
 
         # Commentary far larger than the platform limit → overflow split path.
-        big = "X" * 9000
+        # Complete benign prose, rather than a still-growing ENV identifier.
+        big = "X " * 4500
         consumer.on_commentary(big)
 
         task = asyncio.create_task(consumer.run())

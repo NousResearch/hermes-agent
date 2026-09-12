@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
+from agent.streaming_redact import StreamingSecretSanitizer, sanitize_terminal_secret_text
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -156,6 +157,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._in_think_block = False  # think-tag filter state (mirrors CLI _stream_delta)
         self._think_buffer = ""
         self._before_finalize_notified = False
+        self._secret_sanitizer = StreamingSecretSanitizer()
+        self._commentary_sanitizer = None
+        self._commentary_shadowed = False
+        self._commentary_shadow_prefix = ""
         self._reset_message_state()
 
         # Transports, resolved in run().  Draft: animated frames via adapter.send_draft;
@@ -189,6 +194,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # ``_stream_ledger`` mirrors ``_accumulated`` but is NOT truncated when
         # overflow splits seal head chunks (reconcilable turn-final payload).
         self._accumulated = self._stream_ledger = ""
+        self._raw_segment_last_char = None
+        self._stream_display_ledger_parts = []
         self._last_sent_text = ""    # skip redundant edits
         self._fallback_final_send = False
         self._fallback_prefix = ""
@@ -277,6 +284,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 if inspect.isawaitable(result):
                     await result
 
+    @property
+    def _stream_ledger(self) -> str:
+        return "".join(self._stream_ledger_parts)
+
+    @_stream_ledger.setter
+    def _stream_ledger(self, text: str) -> None:
+        self._stream_ledger_parts = [text] if text else []
+
     def _append_accumulated(self, text: str) -> None:
         """Append to the live buffer and the split-stable stream ledger."""
         if not text:
@@ -284,8 +299,16 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._tool_progress_lines:  # real text overwrites the overlay
             self._tool_progress_lines.clear()
             self._tool_progress_active = False
-        self._accumulated += text
-        self._stream_ledger += text
+        if (self._commentary_sanitizer is not None and not self._commentary_shadowed
+                and self._commentary_sanitizer.pending_length):
+            # A candidate begun by commentary may continue in the answer.
+            self._secret_sanitizer = self._commentary_sanitizer
+            self._commentary_sanitizer = None
+        self._raw_segment_last_char = text[-1]
+        visible = self._secret_sanitizer.feed(text)
+        self._accumulated += visible
+        self._stream_display_ledger_parts.append(visible)
+        self._stream_ledger_parts.append(text)
 
     def _mark_skip_redundant_finalize(self) -> None:
         """Mark the turn final as delivered by a prior mid-stream edit.  Records what was
@@ -311,14 +334,22 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _display_payload(self, text: str) -> str:
         """Normalize like ``_send_or_edit`` output: directive strip + fence close + strip."""
-        return ensure_closed_code_fences(self._clean_for_display(text or "")).strip()
+        return ensure_closed_code_fences(sanitize_terminal_secret_text(self._clean_for_display(text or ""))).strip()
+
+    def _raw_delivery_text(self, text: str) -> str:
+        # Raw bytes may begin after a held candidate from a previous channel or
+        # segment. Compare them to the matching display ledger, not a new parse
+        # that would forget the prefix and invite an unmasked fallback send.
+        if text and text == self._stream_ledger:
+            return "".join(self._stream_display_ledger_parts)
+        return text
 
     def _record_turn_final_payload(self, text: str) -> None:
         """Record what the user actually saw as this turn's final answer.  On a split ``text``
         is only the trailing chunk, so the un-truncated ``_stream_ledger`` is recorded — else
         the gateway sees a mismatch and re-sends an answer the user already received."""
         if self._turn_split_delivery and self._stream_ledger:
-            text = self._stream_ledger
+            text = "".join(self._stream_display_ledger_parts)
         self._delivered_final_text = self._display_payload(text)
 
     def delivered_final_matches(self, final_text: str) -> Optional[bool]:
@@ -327,7 +358,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         must not confirm delivery).  True: recorded payload (or an earlier segment /
         commentary) matches.  False: payload differs, or payload-less split.  None: nothing
         recorded on a legacy/ambiguous path (caller trusts flags)."""
-        target = self._display_payload(final_text)
+        target = self._display_payload(self._raw_delivery_text(final_text))
         if not target:
             return None
         if self._delivered_final_text is not None:
@@ -353,7 +384,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def has_delivered_text(self, text: str) -> bool:
         """Return True if *text* was already delivered as visible chat content."""
-        target = self._clean_for_display(text or "").strip()
+        target = sanitize_terminal_secret_text(self._clean_for_display(self._raw_delivery_text(text or ""))).strip()
         seen = (self._visible_prefix(), *self._delivered_commentary_texts,
                 *self._delivered_segment_texts)
         return bool(target) and any(sent.strip() == target for sent in seen)
@@ -440,6 +471,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             self._delivered_segment_texts.append(finalized)
         # Also clears the final flags: what we delivered was an interim preamble.  Safe:
         # got_done returns before any reset; run.py reads flags after the task exits.
+        # Raw secret state belongs to the turn, not this display segment.
         self._reset_message_state()
         # Telegram-shaped drafts: bump draft_id so the next segment animates as a fresh
         # preview below the tool-progress bubbles.  Stream-is-the-message adapters keep
@@ -547,6 +579,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
                 if tick.got_done:
                     self._flush_think_buffer()
+                    await self._send_commentary("", final=True)
+                    pending_tail = self._secret_sanitizer.flush()
+                    if pending_tail and not self._stream_ledger_parts:
+                        # A retained preamble suffix may resolve only at turn end.
+                        # No later segment streamed: it remains interim content.
+                        await self._send_commentary(pending_tail, final=True)
+                    else:
+                        self._accumulated += pending_tail
+                        self._stream_display_ledger_parts.append(pending_tail)
                     # A bare intentional-silence marker (NO_REPLY / [SILENT]): the
                     # gateway's whole-response filter runs too late for a streamed
                     # preview, so retract it here instead of finalizing.
@@ -654,7 +695,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 tick.commentary_text = item[1]
                 return tick
             elif kind is _FLUSH:
-                # Barrier: finalize like a tool boundary, signal at the end of the tick.
+                # Ordering barrier, not end-of-input: raw secret candidates remain
+                # with the sanitizer across this visible message boundary.
                 tick.got_flush = tick.got_segment_break = True
                 tick.flush_event = item[1]
                 return tick
@@ -667,18 +709,22 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         ownership).  Split delivery: wholesale adoption would repeat sealed heads, refusing
         makes the gateway resend the ENTIRE body — so append only the suffix when the final
         strictly prefix-extends the ledger."""
-        if not (self._accumulated or self._message_id or self._last_sent_text):
-            return
-        if not self._turn_split_delivery:
-            final_payload = self._clean_for_display(final_raw)
-            if final_payload and final_payload != self._clean_for_display(self._accumulated):
-                self._accumulated = final_raw
-                self._stream_ledger = final_raw
+        if not (self._stream_ledger or self._secret_sanitizer.pending_length or self._message_id or self._last_sent_text):
             return
         ledger = self._stream_ledger
-        if ledger and final_raw.startswith(ledger) and len(final_raw) > len(ledger):
-            self._accumulated += final_raw[len(ledger):]
-            self._stream_ledger = final_raw
+        if (ledger and final_raw.startswith(ledger)) or (not ledger and self._secret_sanitizer.pending_length):
+            # This is the same logical stream (possibly a current-segment suffix
+            # of a held candidate). Keep its raw context through final adoption.
+            self._append_accumulated(final_raw[len(ledger):])
+            return
+        if not self._turn_split_delivery:
+            final_payload = sanitize_terminal_secret_text(self._clean_for_display(final_raw))
+            if final_payload and final_payload != self._clean_for_display(self._accumulated):
+                self._accumulated = final_payload
+                self._stream_ledger = final_raw
+                self._stream_display_ledger_parts = [final_payload]
+                self._secret_sanitizer = StreamingSecretSanitizer()
+            return
 
     async def _eager_reopen_seed(self) -> None:
         """Eager re-seed after a clarify answer (gate re-checked: state may have advanced).
@@ -911,6 +957,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         search…", not the answer."""
         best_effort_ok = False
         if self._accumulated and self._message_id:
+            # The existing edit will be finalized, so resolve its retained raw
+            # tail first. Native abandonment below still seals only its frame.
+            tail = self._secret_sanitizer.flush()
+            self._accumulated += tail
+            self._stream_display_ledger_parts.append(tail)
             with contextlib.suppress(Exception):
                 best_effort_ok = bool(await self._send_or_edit(
                     self._accumulated, finalize=True, is_turn_final=False))

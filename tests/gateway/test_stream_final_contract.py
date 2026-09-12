@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.config import Platform
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
@@ -229,7 +230,7 @@ class TestQueuedLaneReconcile:
         runner = object.__new__(GatewayRunner)
         adapter = _make_draft_adapter()
         sc = SimpleNamespace(message_id="sealed_ts_9", _turn_split_delivery=False)
-        source = SimpleNamespace(chat_id="D1")
+        source = SimpleNamespace(chat_id="D1", platform=Platform.SLACK)
         await GatewayRunner._deliver_queued_first_response(
             runner,
             "the complete final with footer",
@@ -253,7 +254,7 @@ class TestQueuedLaneReconcile:
         runner = object.__new__(GatewayRunner)
         adapter = _make_draft_adapter()
         sc = SimpleNamespace(message_id=None, _turn_split_delivery=False)
-        source = SimpleNamespace(chat_id="D1")
+        source = SimpleNamespace(chat_id="D1", platform=Platform.SLACK)
         await GatewayRunner._deliver_queued_first_response(
             runner,
             "final text",

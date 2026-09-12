@@ -1233,6 +1233,11 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".apk", ".ipa",  # archives
     ".html", ".htm")  # web / rendered output
 
+# Shared with stored-history previews so inert text and native extraction use one grammar.
+LOCAL_FILE_PATH_RE = re.compile(
+    r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:' + '|'.join(e.lstrip('.') for e in MEDIA_DELIVERY_EXTS) + r')\b',
+    re.IGNORECASE)
+
 # Bare extensions (no dot) longest-first so a shorter ext never matches as a prefix of a longer one.
 _MEDIA_EXT_ALTERNATION = "|".join(sorted((e.lstrip(".") for e in MEDIA_DELIVERY_EXTS), key=len, reverse=True))
 
@@ -2913,17 +2918,9 @@ class BasePlatformAdapter(ABC):
         ``(expanded_paths, cleaned_text)``. Candidates must exist on disk (URLs / hallucinated paths
         ignored); paths inside fenced or inline code are skipped so code samples are never
         mutilated. Dispatch by type lives in ``gateway/run.py``."""
-        ext_part = '|'.join(e.lstrip('.') for e in MEDIA_DELIVERY_EXTS)
-        # Lookbehind rejects URL/relative matches (https://…/img.png, ./foo.png).
-        # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png) and relative paths (./foo.png)
-        # (?:~/|/)    anchors to absolute or home-relative Unix paths (?:[A-Za-z]:[/\\]) anchors to Windows
-        # drive-letter paths (#34632)
-        path_re = re.compile(
-            r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:' + ext_part + r')\b',
-            re.IGNORECASE)
         code_spans = _code_spans(content)
         unique: dict = {}  # expanded_path -> raw_match_text, deduped in discovery order
-        for match in path_re.finditer(content):
+        for match in LOCAL_FILE_PATH_RE.finditer(content):
             if any(s <= match.start() < e for s, e in code_spans):
                 continue
             raw = match.group(0)

@@ -334,9 +334,10 @@ class GatewayNotificationsMixin:
         send does, keyed on ``inbound_message_id`` (the raw inbound id, distinct from the
         ``event_message_id`` reply anchor); see ``_send_queued_final_text``. Without a key the send
         stays unledgered."""
-        from gateway.run import _strip_response_attachments_for_direct_send
+        from gateway.run import _sanitize_gateway_final_response, _strip_response_attachments_for_direct_send
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
+            text_content = _sanitize_gateway_final_response(source.platform, text_content)
             if text_content:
                 # Reconcile-by-edit first: a stream-sealed message already carries most of the answer;
                 # a plain send here would duplicate it.

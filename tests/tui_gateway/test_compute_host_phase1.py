@@ -118,12 +118,63 @@ def test_append_log_record_single_write_lines(tmp_path):
     assert all(line.endswith("x" * 2000) for line in lines)
 
 
+def test_supervisor_pid_probe_never_sends_signal_zero(monkeypatch):
+    from tui_gateway import host_supervisor
+
+    checked: list[int] = []
+    monkeypatch.setattr(
+        "gateway.status._pid_exists",
+        lambda pid: checked.append(int(pid)) or True,
+    )
+    monkeypatch.setattr(
+        host_supervisor.os,
+        "kill",
+        lambda *_args: pytest.fail("liveness probe sent a signal"),
+    )
+
+    assert host_supervisor._pid_alive(4242) is True
+    assert checked == [4242]
+
+
+def test_supervisor_pid_termination_uses_cross_platform_helper(tmp_path, monkeypatch):
+    from gateway import status as gateway_status
+    from tui_gateway import host_supervisor
+
+    calls: list[tuple[int, bool, object]] = []
+
+    def _terminate_pid(pid: int, *, force: bool = False, expected_start_time=None) -> None:
+        calls.append((pid, force, expected_start_time))
+
+    monkeypatch.setattr(gateway_status, "terminate_pid", _terminate_pid)
+    monkeypatch.setattr(gateway_status, "get_process_start_time", lambda _pid: 777)
+    monkeypatch.setattr(host_supervisor, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        host_supervisor.os,
+        "kill",
+        lambda *_args: pytest.fail("supervisor bypassed cross-platform termination"),
+    )
+    supervisor = HostSupervisor(
+        registry_path=tmp_path / "dashboard-compute-host.json",
+        argv=[sys.executable, "-c", ""],
+        autostart=False,
+    )
+
+    supervisor._terminate_pid(4242, timeout=0)
+
+    # Forced kill carries the pre-captured start-time fingerprint (Windows requires it;
+    # a recycled PID is refused everywhere).
+    assert calls == [(4242, False, None), (4242, True, 777)]
+
+
 def test_supervisor_startup_reconcile_pid_reuse_guard(tmp_path, monkeypatch):
+    from tui_gateway import host_supervisor
+
     registry = tmp_path / "dashboard-compute-host.json"
     registry.write_text(json.dumps({"host_pid": os.getpid(), "boot_id": "stale"}), encoding="utf-8")
 
     killed: list[int] = []
     supervisor = HostSupervisor(registry_path=registry, argv=[sys.executable, "-c", ""], autostart=False)
+    monkeypatch.setattr(host_supervisor, "_pid_alive", lambda _pid: True)
     monkeypatch.setattr(supervisor, "_pid_matches_compute_host", lambda _pid: False)
     monkeypatch.setattr(supervisor, "_terminate_pid", lambda pid, **_kw: killed.append(pid))
 

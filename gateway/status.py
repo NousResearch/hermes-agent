@@ -586,6 +586,7 @@ def _pid_exists(pid: int) -> bool:
             # status (partial/stub psutil, access denied, transient race) falls through to the authoritative
             # ``pid_exists()`` below rather than raising.
             if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+                _reap_own_zombie(pid)
                 return False
         except getattr(psutil, "NoSuchProcess", ()):
             return False
@@ -597,6 +598,7 @@ def _pid_exists(pid: int) -> bool:
     if _IS_WINDOWS:
         return _pid_exists_win32_ctypes(pid)
     if _posix_is_zombie(pid):  # a zombie still answers os.kill(pid, 0)
+        _reap_own_zombie(pid)
         return False
     try:
         os.kill(pid, 0)  # windows-footgun: ok — POSIX-only branch (the whole point of _pid_exists)
@@ -605,6 +607,17 @@ def _pid_exists(pid: int) -> bool:
     except OSError:  # ProcessLookupError included
         return False
     return True
+
+
+def _reap_own_zombie(pid: int) -> None:
+    """Nonblocking ``waitpid`` so a zombie that is OUR child leaves the process table
+    (re-exec / a lost ``Popen`` handle can orphan the child bookkeeping without changing
+    parenthood — the kernel keeps the entry until the parent waits). Foreign children raise
+    ``ChildProcessError``; best-effort either way. Ported from openai/codex#43504."""
+    if _IS_WINDOWS:
+        return
+    with contextlib.suppress(ChildProcessError, OSError):
+        os.waitpid(pid, os.WNOHANG)
 
 
 def _posix_is_zombie(pid: int) -> bool:

@@ -7,6 +7,7 @@ config.yaml.
 """
 
 import tools.terminal_tool as terminal_tool
+import tools.terminal_tool_backends as terminal_tool_backends
 from tools.environments import docker as docker_env
 
 
@@ -16,6 +17,64 @@ def test_terminal_env_config_reads_docker_network_toggle(monkeypatch):
     config = terminal_tool._get_env_config()
 
     assert config["docker_network"] is False
+
+
+class TestParsedContainerConfig:
+    """Exercise parsing and factory dispatch up to the external constructor."""
+
+    def test_parsed_container_config_reaches_docker_constructor(self, monkeypatch):
+        """Docker creation must preserve parsed security and lifecycle settings."""
+        env_values = {
+            "TERMINAL_ENV": "docker",
+            "TERMINAL_CWD": "/root",
+            "TERMINAL_DOCKER_FORWARD_ENV": '["EXAMPLE_FORWARD"]',
+            "TERMINAL_DOCKER_ENV": '{"EXAMPLE_STATIC": "enabled"}',
+            "TERMINAL_DOCKER_EXTRA_ARGS": '["--label", "example=true"]',
+            "TERMINAL_DOCKER_SHM_SIZE": "2g",
+            "TERMINAL_DOCKER_NETWORK": "false",
+            "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES": "false",
+            "TERMINAL_DOCKER_ORPHAN_REAPER": "false",
+        }
+        for name, value in env_values.items():
+            monkeypatch.setenv(name, value)
+
+        # Keep the parser real; bypass only the config.yaml-to-env bridge so
+        # the isolated values above remain the source of this test's settings.
+        monkeypatch.setattr(terminal_tool, "_ensure_terminal_env_bridged", lambda: None)
+        constructor_args = {}
+        reaper_configs = []
+
+        def fake_docker_environment(**kwargs):
+            """Capture constructor arguments without starting Docker."""
+            constructor_args.update(kwargs)
+            return object()
+
+        # Patch only external creation and cleanup; the factory and projection
+        # now live in terminal_tool_backends and must execute for real.
+        monkeypatch.setattr(terminal_tool_backends, "_DockerEnvironment", fake_docker_environment)
+        monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", reaper_configs.append)
+        monkeypatch.setattr(terminal_tool, "_docker_session_isolation_enabled", lambda: False)
+        config = terminal_tool._get_env_config()
+        container_config = terminal_tool_backends._container_config_from_config(config)
+        terminal_tool_backends._create_environment(
+            env_type="docker",
+            image=config["docker_image"],
+            cwd=config["cwd"],
+            timeout=config["timeout"],
+            container_config=container_config,
+            task_id="default",
+        )
+
+        # Independent expected values catch losses within the parser or factory,
+        # which caller-to-projection equality alone cannot detect.
+        assert constructor_args["forward_env"] == ["EXAMPLE_FORWARD"]
+        assert constructor_args["env"] == {"EXAMPLE_STATIC": "enabled"}
+        assert constructor_args["extra_args"] == ["--label", "example=true"]
+        assert constructor_args["shm_size"] == "2g"
+        assert constructor_args["network"] is False
+        assert constructor_args["persist_across_processes"] is False
+        assert reaper_configs == [container_config]
+        assert reaper_configs[0]["docker_orphan_reaper"] is False
 
 
 def test_every_sandbox_creator_passes_the_full_container_config(monkeypatch):

@@ -64,7 +64,7 @@ def issue_defs():
 
 class TestStemming:
     def test_tokenize_stems_index_and_query_identically(self):
-        from tools.tool_search import _tokenize
+        from tools.tool_search_catalog import _tokenize
         # Same stem on both sides is the whole contract.
         assert _tokenize("issues") == _tokenize("issue")
         assert _tokenize("creating messages") == _tokenize("create message")
@@ -78,16 +78,27 @@ class TestStemming:
         assert "mq_linear_create_issue" in names
         assert "mq_linear_list_issues" in names
 
-    def test_substring_fallback_still_uses_raw_name(self, issue_defs):
-        """Fallback matches the unstemmed tool name, unchanged by stemming."""
+    def test_rarest_query_token_gates_admission(self, issue_defs):
+        """A document that lacks the query's rarest token is not a result, however many
+        common tokens it shares. In this catalog 'issue' and 'linear' are each in two tools
+        and 'slack' in one, so 'slack' gates: the two linear tools share two of the three
+        query tokens and still do not come back."""
         from tools.tool_search import build_catalog, search_catalog
 
         catalog = build_catalog(issue_defs)
-        names = [h.name for h in search_catalog(catalog, "post_mess", limit=5)]
+        names = [h.name for h in search_catalog(catalog, "linear issue slack", limit=5)]
         assert names == ["mq_slack_post_message"]
 
+    def test_token_no_document_carries_admits_nothing(self, issue_defs):
+        """'send gmail email' against a catalog with no gmail tool returns nothing rather
+        than five tools that merely share 'message' or 'email'."""
+        from tools.tool_search import build_catalog, search_catalog
+
+        catalog = build_catalog(issue_defs)
+        assert search_catalog(catalog, "post gmail message", limit=5) == []
+
     def test_single_token_stems_are_cached(self):
-        from tools.tool_search import _stem, _tokenize
+        from tools.tool_search_catalog import _stem, _tokenize
 
         _stem.cache_clear()
         corpus = "issues creating issues creating"
@@ -102,12 +113,11 @@ class TestStemming:
     def test_parallel_tokenize_search_and_dispatch_are_deterministic(self, issue_defs):
         from tools.tool_search import (
             ToolSearchConfig,
-            _stem,
-            _tokenize,
             build_catalog,
             dispatch_tool_search,
             search_catalog,
         )
+        from tools.tool_search_catalog import _stem, _tokenize
 
         corpus = (
             "issues",
@@ -174,7 +184,7 @@ class TestStemming:
         concurrently on the underlying per-thread instances. A shared
         stemmer's mutable parse state produces wrong stems or raises here.
         """
-        from tools.tool_search import _stem
+        from tools.tool_search_catalog import _stem
 
         words = ["issues", "creating", "meetings", "categories", "searching"]
 
@@ -231,7 +241,8 @@ class TestCatalogRanking:
         assert search_catalog(catalog, "list", limit=1) == [catalog[0]]
 
     def test_precomputed_corpus_stats_preserve_results(self, issue_defs):
-        from tools.tool_search import _corpus_stats, build_catalog, search_catalog
+        from tools.tool_search import build_catalog, search_catalog
+        from tools.tool_search_catalog import _corpus_stats
 
         catalog = build_catalog(issue_defs)
         expected = search_catalog(catalog, "create issues", limit=3)

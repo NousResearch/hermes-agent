@@ -2,6 +2,7 @@ import { Box, NoSelect, ScrollBox, type ScrollBoxHandle, Text, useInput, useStdo
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useAgentRoster } from '../app/agentRoster.js'
 import {
   $delegationState,
   $overlaySectionsOpen,
@@ -10,10 +11,11 @@ import {
 } from '../app/delegationStore.js'
 import { patchOverlayState } from '../app/overlayStore.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
-import { useTurnSelector } from '../app/turnStore.js'
+import { $uiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { statusGlyph as agentStatusGlyph } from '../lib/subagentGlyph.js'
 import {
   buildSubagentTree,
   descendantIds,
@@ -32,6 +34,7 @@ import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { SubagentNode, SubagentProgress } from '../types.js'
 
+import { AgentLiveTail, AgentSteerForm, rosterViewport } from './agentControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
 import { OverlayScrollbar } from './overlayScrollbar.js'
 
@@ -88,16 +91,6 @@ const FILTER_PREDICATES: Record<FilterMode, (n: SubagentNode) => boolean> = {
     n.item.status === 'timeout'
 }
 
-const STATUS_GLYPH: Record<Status, { color: (t: Theme) => string; glyph: string }> = {
-  running: { color: t => t.color.accent, glyph: '●' },
-  queued: { color: t => t.color.muted, glyph: '○' },
-  completed: { color: t => t.color.statusGood, glyph: '✓' },
-  interrupted: { color: t => t.color.warn, glyph: '■' },
-  failed: { color: t => t.color.error, glyph: '✗' },
-  timeout: { color: t => t.color.warn, glyph: '⌛' },
-  error: { color: t => t.color.error, glyph: '⚠' }
-}
-
 // Heatmap palette — cold → hot, resolved against the active theme.
 const heatPalette = (t: Theme) => [t.color.border, t.color.accent, t.color.primary, t.color.warn, t.color.error]
 
@@ -122,12 +115,7 @@ const indentFor = (depth: number): string => '  '.repeat(Math.max(0, depth))
 const formatRowId = (n: number): string => String(n + 1).padStart(2, ' ')
 const cycle = <T,>(order: readonly T[], current: T): T => order[(order.indexOf(current) + 1) % order.length]!
 
-const statusGlyph = (item: SubagentProgress, t: Theme) => {
-  // Defensive fallback for cross-version snapshots with unknown statuses.
-  const g = STATUS_GLYPH[item.status] ?? STATUS_GLYPH.error
-
-  return { color: g.color(t), glyph: g.glyph }
-}
+const statusGlyph = (item: SubagentProgress, t: Theme) => agentStatusGlyph(item.status, t)
 
 const prepareRows = (tree: SubagentNode[], sort: SortMode, filter: FilterMode): SubagentNode[] =>
   tree.length === 0 ? [] : flattenTree([...tree].sort(SORT_COMPARATORS[sort])).filter(FILTER_PREDICATES[filter])
@@ -595,7 +583,7 @@ function DiffView({
 // ── Main overlay ─────────────────────────────────────────────────────
 
 export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: AgentsOverlayProps) {
-  const liveSubagents = useTurnSelector(state => state.subagents)
+  const liveSubagents = useAgentRoster()
   const delegation = useStore($delegationState)
   const history = useStore($spawnHistory)
   const diffPair = useStore($spawnDiff)
@@ -614,7 +602,8 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const [now, setNow] = useState(() => Date.now())
   // cc-style view switching: list = full-width row picker, detail = full-width
   // scrollable pane.  Two panes side-by-side in Ink fought Yoga flex.
-  const [mode, setMode] = useState<'detail' | 'list'>('list')
+  const [mode, setMode] = useState<'detail' | 'list' | 'steer' | 'tail'>('list')
+  const { sid } = useStore($uiState)
 
   const detailScrollRef = useRef<null | ScrollBoxHandle>(null)
   const prevLiveCountRef = useRef(liveSubagents.length)
@@ -639,8 +628,12 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const selected = rows[cursor] ?? null
 
   const cols = stdout?.columns ?? 80
-  const rowsH = Math.max(8, (stdout?.rows ?? 24) - 10)
-  const listWindowStart = Math.max(0, cursor - Math.floor(rowsH / 2))
+
+  const {
+    rows: rowsH,
+    start: listWindowStart,
+    timelineRows
+  } = rosterViewport((stdout?.rows ?? 24) - (flash ? 1 : 0), rows.length, cursor)
 
   // ── Effects ────────────────────────────────────────────────────────
 
@@ -680,10 +673,20 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   }, [cursor, historyIndex, mode])
 
   useEffect(() => {
-    // Warm caps + paused flag on open.
+    // A control acknowledgement or newer hydration must win over this request.
+    const initial = $delegationState.get()
+    let active = true
     gw.request<DelegationStatusResponse>('delegation.status', {})
-      .then(r => applyDelegationStatus(asRpcResult<DelegationStatusResponse>(r)))
+      .then(r => {
+        if (active && $delegationState.get() === initial) {
+          applyDelegationStatus(asRpcResult<DelegationStatusResponse>(r))
+        }
+      })
       .catch(() => {})
+
+    return () => {
+      active = false
+    }
   }, [gw])
 
   useEffect(() => {
@@ -702,7 +705,8 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     }
   }
 
-  const interrupt = (id: string) => gw.request<SubagentInterruptResponse>('subagent.interrupt', { subagent_id: id })
+  const interrupt = (id: string) =>
+    gw.request<SubagentInterruptResponse>('subagent.interrupt', { session_id: sid, subagent_id: id })
 
   const killOne = (id: string) =>
     guardLive(() => {
@@ -756,12 +760,32 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const scrollDetail = (dy: number) => detailScrollRef.current?.scrollBy(dy)
 
   useInput((ch, key) => {
+    if (mode === 'steer') {
+      return
+    }
+
+    if (key.ctrl && ch === 't') {
+      return closeWithCleanup()
+    }
+
+    if (ch === 'e' && selected && sid && !replayMode) {
+      return setMode('steer')
+    }
+
+    if (ch === 't' && !key.ctrl && selected) {
+      return setMode('tail')
+    }
+
+    if (ch === 'd' && !key.ctrl && selected) {
+      return setMode('detail')
+    }
+
     if (ch === 'q') {
       return closeWithCleanup()
     }
 
     if (key.escape) {
-      return mode === 'detail' ? setMode('list') : closeWithCleanup()
+      return mode !== 'list' ? setMode('list') : closeWithCleanup()
     }
 
     // Shared actions (both modes).
@@ -785,7 +809,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       return killSubtree(selected)
     }
 
-    if (mode === 'detail') {
+    if (mode === 'detail' || mode === 'tail') {
       if (key.leftArrow || ch === 'h') {
         return setMode('list')
       }
@@ -827,7 +851,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
     // List mode.
     if ((key.return || key.rightArrow || ch === 'l') && selected) {
-      return setMode('detail')
+      return setMode(key.return && !replayMode ? 'tail' : 'detail')
     }
 
     if (key.upArrow || ch === 'k' || key.wheelUp) {
@@ -885,7 +909,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const controlsHint = replayMode
     ? ' · controls locked'
-    : ` · x kill · X subtree · p ${delegation.paused ? 'resume' : 'pause'}`
+    : ` · e steer · t tail · x stop · X subtree · p ${delegation.paused ? 'resume' : 'pause'}`
 
   // ── Rendering ──────────────────────────────────────────────────────
 
@@ -909,13 +933,17 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         </Text>
       </Box>
 
-      {rows.length === 0 ? (
+      {mode === 'steer' && selected && sid ? (
+        <AgentSteerForm cols={cols} gw={gw} id={selected.item.id} onClose={() => setMode('detail')} sid={sid} t={t} />
+      ) : rows.length === 0 ? (
         <Box flexDirection="column" flexGrow={1}>
           <Text color={t.color.muted}>No subagents this turn. Trigger delegate_task to populate the tree.</Text>
         </Box>
       ) : mode === 'list' ? (
         <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
-          <GanttStrip cols={cols} cursor={cursor} flatNodes={rows} maxRows={6} now={now} t={t} />
+          {timelineRows > 0 ? (
+            <GanttStrip cols={cols - 2} cursor={cursor} flatNodes={rows} maxRows={timelineRows} now={now} t={t} />
+          ) : null}
 
           <Box flexDirection="column" flexGrow={0} flexShrink={0} overflow="hidden">
             {rows.slice(listWindowStart, listWindowStart + rowsH).map((node, i) => (
@@ -933,9 +961,19 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         </Box>
       ) : (
         <Box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0}>
-          <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} ref={detailScrollRef}>
+          <ScrollBox
+            flexDirection="column"
+            flexGrow={1}
+            flexShrink={1}
+            ref={detailScrollRef}
+            stickyScroll={mode === 'tail'}
+          >
             <Box flexDirection="column" paddingBottom={4} paddingRight={1}>
-              {selected ? <Detail id={formatRowId(cursor).trim()} node={selected} t={t} /> : null}
+              {selected && mode === 'tail' && sid && !replayMode ? (
+                <AgentLiveTail gw={gw} id={selected.item.id} key={selected.item.id} sid={sid} t={t} />
+              ) : selected ? (
+                <Detail id={selected.item.id} node={selected} t={t} />
+              ) : null}
             </Box>
           </ScrollBox>
 
@@ -945,18 +983,26 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         </Box>
       )}
 
-      <Box flexDirection="column" marginTop={1}>
-        {flash ? <Text color={t.color.accent}>{flash}</Text> : null}
+      <Box flexDirection="column" flexShrink={0} marginTop={1}>
+        <Text color={t.color.accent} wrap="truncate-end">
+          {replayMode ? 'Enter/d detail' : 'Enter/t tail · d detail'} · e steer · x stop · Esc back
+        </Text>
+        {flash ? (
+          <Text color={t.color.accent} wrap="truncate-end">
+            {flash}
+          </Text>
+        ) : null}
 
         {mode === 'list' ? (
-          <Text color={t.color.muted}>
-            ↑↓/jk move · g/G top/bottom · Enter/→ open detail{controlsHint} · s sort:{SORT_LABEL[sort]} · f filter:
+          <Text color={t.color.muted} wrap="truncate-end">
+            ↑↓/jk move · g/G top/bottom · {replayMode ? 'Enter/→ detail' : 'Enter tail · d/→ detail'}
+            {controlsHint} · s sort:{SORT_LABEL[sort]} · f filter:
             {FILTER_LABEL[filter]}
             {history.length > 0 ? ` · [ / ] history ${historyIndex}/${history.length}` : ''}
             {' · q close'}
           </Text>
         ) : (
-          <Text color={t.color.muted}>
+          <Text color={t.color.muted} wrap="truncate-end">
             ↑↓/jk scroll · PgUp/PgDn page · g/G top/bottom · Esc/← back to list{controlsHint} · q close
           </Text>
         )}

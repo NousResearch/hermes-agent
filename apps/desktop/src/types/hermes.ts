@@ -29,6 +29,21 @@ export interface AudioSpeakResponse {
   provider?: string
 }
 
+/** `POST /api/audio/tts-lease` — TTS engine warm-up / release driven by speech toggles. */
+export interface AudioTtsLeaseResponse {
+  ok: boolean
+  lease: string
+  active: boolean
+  /** Live lease holders after this call (null when the backend call itself failed). */
+  leases: null | number
+  /** Warm-up outcome: `loaded` | `cached` | `installed` | `noop` | `error`. */
+  action?: string
+  provider?: string
+  /** Resident local models dropped (release path). */
+  released?: number
+  error?: string
+}
+
 export interface ElevenLabsVoice {
   label: string
   name: string
@@ -265,6 +280,35 @@ export interface MessagingPlatformTestResponse {
   state?: null | string
 }
 
+// -- Telegram QR onboarding ---------------------------------------------------
+// The Nous pairing service mints a bot on the user's behalf: the desktop shows
+// a QR/deep link, Telegram confirms, the backend receives the token and writes
+// it (plus the allowlist) into the target profile's .env, then restarts the
+// gateway best-effort.
+
+export interface TelegramOnboardingStartResponse {
+  deep_link: string
+  expires_at: string
+  pairing_id: string
+  qr_payload: string
+  suggested_username: string
+}
+
+export type TelegramOnboardingStatusResponse =
+  | { bot_username: null | string; expires_at: string; owner_user_id?: null | string; status: 'ready' }
+  | { expires_at: string; status: 'waiting' }
+
+export interface TelegramOnboardingApplyResponse {
+  bot_username?: null | string
+  needs_restart: boolean
+  ok: boolean
+  platform: 'telegram'
+  restart_action?: string
+  restart_error?: string
+  restart_pid?: null | number
+  restart_started?: boolean
+}
+
 // -- Webhooks (subscription CRUD) --------------------------------------------
 // Incoming HTTP event routes served by the webhook gateway platform. Backed by
 // the same JSON store the CLI/dashboard use; per-route HMAC secrets are
@@ -493,6 +537,10 @@ export interface SessionInfo {
    *  continuation tip. Stable across compressions — used as the durable id for
    *  pins so a pinned conversation survives auto-compression. */
   _lineage_root_id?: null | string
+  /** Every id on the compression chain (root, intermediates, tip) when this
+   *  entry is a projected continuation tip. Intermediates matter: a persisted
+   *  tile or route can hold a middle segment's id from when IT was the tip. */
+  _lineage_ids?: null | string[]
   input_tokens: number
   /** Spend for the session, straight off the `sessions` row. `actual` is set
    *  when the provider reported a price; `estimated` is our own pricing-table
@@ -572,6 +620,9 @@ export interface SessionMessage {
    */
   args?: unknown
   codex_reasoning_items?: unknown
+  /** Responses-API assistant message items; text parts here are the
+   *  user-visible reply when `content` persisted empty (#68321). */
+  codex_message_items?: unknown
   content: unknown
   /** Backend-projected user-visible content when a physical row also carries internal model scaffolding. */
   display_content?: unknown
@@ -581,7 +632,7 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   display_kind?:
-    'async_delegation_complete' | 'auto_continue' | 'hidden' | 'model_switch' | 'personality_switch' | string
+    'async_delegation_complete' | 'auto_continue' | 'hidden' | 'model_switch' | 'personality_switch' | 'steer' | string
   /**
    * A backend older than this app can still serve this as unparsed JSON text,
    * so readers must narrow before indexing into it.
@@ -683,6 +734,12 @@ export interface SessionResumeResponse {
   session_key?: string
   started_at?: number
   status?: string
+  /** Latest full task snapshot. Revisions let the renderer reject a response
+   * that raced with a newer live update. */
+  todo_state?: {
+    revision?: number
+    todos?: unknown
+  }
   /** Epoch seconds the current turn started, or null when idle. */
   turn_started_at?: number | null
 }
@@ -710,9 +767,15 @@ export interface SessionRuntimeInfo {
 }
 
 export interface UsageStats {
+  /** Rolling tokens-per-second over the last ~10 API calls (tui_gateway `_get_usage`). */
+  avg_tps?: number
+  /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
+  cache_hit_pct?: number
   calls: number
   context_max?: number
   context_percent?: number
+  context_estimated?: boolean
+  context_source?: string
   context_used?: number
   cost_usd?: number
   input: number
@@ -772,6 +835,8 @@ export interface ContextBreakdown {
   categories: ContextUsageCategory[]
   context_max: number
   context_percent: number
+  context_estimated?: boolean
+  context_source?: string
   context_used: number
   estimated_total: number
   model?: string
@@ -1020,6 +1085,17 @@ export interface SkillInfo {
   provenance?: 'agent' | 'bundled' | 'hub'
 }
 
+/** One entry of the built-in optional-skills catalog (optional-skills/ in the
+ *  repo) — official skills that ship with Hermes but install on demand. */
+export interface OfficialSkillInfo {
+  category: string
+  description: string
+  identifier: string
+  installed: boolean
+  name: string
+  tags: string[]
+}
+
 export interface ToolsetInfo {
   configured: boolean
   description: string
@@ -1220,6 +1296,97 @@ export interface StatusResponse {
   version: string
 }
 
+// ── Managed local runtime (llama.cpp) ──────────────────────────
+
+export interface LocalModelPlacement {
+  window?: number
+  window_label?: string
+  spilled?: boolean
+  granted_window?: number
+  granted_window_label?: string
+}
+
+export interface LocalModelLoadProgress {
+  stage: string
+  value: number
+  percent: number
+}
+
+export interface LocalModelsStatus {
+  enabled: boolean
+  tag: string
+  configured_tag: string
+  update_available: boolean
+  runtime_installed: boolean
+  runtime_backend: string | null
+  server_running: boolean
+  server_base_url: string | null
+  active_model_id: string | null
+  loaded_models: Record<string, string>
+  /** Models loading into memory right now: real per-tensor load percent. */
+  loading?: Record<string, LocalModelLoadProgress>
+  placement?: Record<string, LocalModelPlacement>
+  models: { id: string; size_bytes: number; size_label: string }[]
+  models_dir: string
+}
+
+export interface LocalHardware {
+  uma: boolean
+  vram_total_bytes: number
+  vram_usable_bytes: number
+  ram_total_bytes: number
+  ram_available_bytes: number
+  vram_label: string
+  gpu_name: string | null
+  gpu_util_percent: number | null
+  vram_used_bytes: number | null
+}
+
+export interface LocalCatalogModel {
+  id: string
+  display_name: string
+  description: string
+  size_bytes: number
+  size_label: string
+  native_context: number
+  native_context_label: string
+  recommended: boolean
+  /** Why the resolver picked this entry (recommended rows only):
+   *  best-quality-resident | speed-gated-quality | fastest-resident |
+   *  least-painful-spilled. Renders as the Recommended badge's tooltip. */
+  recommended_reason?: string | null
+  downloaded: boolean
+  downloaded_model_id?: string | null
+  downloaded_quant?: string | null
+  mtp: boolean
+  vision?: boolean
+  fits: boolean
+  fit_summary: string
+  fit_detail?: string
+  model_id?: string
+  quant?: string
+  quant_reason?: string
+  quant_validated?: boolean
+  variant_count?: number
+  start_window?: number
+  start_window_label?: string
+  spilled?: boolean
+}
+
+export interface LocalRuntimeJob {
+  job_id: string
+  kind: 'model-activate' | 'model-download' | 'quickstart' | 'runtime-install'
+  target: string
+  model_id: string | null
+  status: 'running' | 'done' | 'error'
+  phase: string
+  detail: string
+  total_bytes: number | null
+  done_bytes: number
+  percent?: number
+  error: string | null
+}
+
 export interface ActionResponse {
   name: string
   ok: boolean
@@ -1275,6 +1442,9 @@ export interface BackendUpdateCheckResponse {
 
 export interface AuxiliaryTaskAssignment {
   base_url: string
+  /** Backend verdict (`agent/model_metadata.py::is_local_endpoint`) that `base_url`
+   *  is a loopback/LAN/mDNS endpoint. Absent on older backends. */
+  local_endpoint?: boolean
   model: string
   provider: string
   task: string
@@ -1303,11 +1473,10 @@ export interface MoaConfigResponse {
       aggregator_temperature: number
       degraded_reference_policy: 'loud' | 'silent'
       enabled: boolean
-      max_tokens: number
+
       reference_models: MoaModelSlot[]
       reference_temperature: number
-      /** Optional advisor output cap — round-tripped, not edited here. */
-      reference_max_tokens?: number | null
+
       /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
       fanout?: string
       reference_timeout: number | null
@@ -1317,7 +1486,7 @@ export interface MoaConfigResponse {
   aggregator_temperature: number
   degraded_reference_policy: 'loud' | 'silent'
   enabled: boolean
-  max_tokens: number
+
   reference_models: MoaModelSlot[]
   reference_temperature: number
   reference_timeout: number | null
@@ -1331,6 +1500,8 @@ export interface ModelAssignmentRequest {
   /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
    *  on the main slot — wires a self-hosted endpoint into runtime resolution. */
   base_url?: string
+  /** Ack for selection-guard warnings (expensive / data-training tiers). */
+  confirm_expensive_model?: boolean
   model: string
   provider: string
   scope: 'main' | 'auxiliary'
@@ -1355,7 +1526,6 @@ export interface CronModelImpactJob {
 
 export interface CronModelImpact {
   available: boolean
-  guard_enabled: boolean
   affected_count: number
   truncated: boolean
   jobs: CronModelImpactJob[]

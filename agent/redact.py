@@ -813,6 +813,45 @@ def _command_words(segment: str) -> list[str]:
 _SEARCH_READ_COMMANDS = frozenset({"grep", "egrep", "fgrep", "rg"})
 _PROGRAM_READ_COMMANDS = frozenset({"awk", "sed"})
 
+_READER_VALUE_SHORT_FLAGS = {
+    "grep": frozenset("ABCDdm"),
+    "egrep": frozenset("ABCDdm"),
+    "fgrep": frozenset("ABCDdm"),
+    "rg": frozenset("ABCEMgjmMrTt"),
+    "awk": frozenset("FvW"),
+    "sed": frozenset("l"),
+}
+_READER_VALUE_LONG_FLAGS = {
+    "grep": frozenset({
+        "--after-context", "--before-context", "--binary-files", "--context",
+        "--devices", "--directories", "--exclude", "--exclude-dir",
+        "--exclude-from", "--group-separator", "--include", "--label",
+        "--max-count",
+    }),
+    "egrep": frozenset({
+        "--after-context", "--before-context", "--binary-files", "--context",
+        "--devices", "--directories", "--exclude", "--exclude-dir",
+        "--exclude-from", "--group-separator", "--include", "--label",
+        "--max-count",
+    }),
+    "fgrep": frozenset({
+        "--after-context", "--before-context", "--binary-files", "--context",
+        "--devices", "--directories", "--exclude", "--exclude-dir",
+        "--exclude-from", "--group-separator", "--include", "--label",
+        "--max-count",
+    }),
+    "rg": frozenset({
+        "--after-context", "--before-context", "--context", "--context-separator",
+        "--dfa-size-limit", "--encoding", "--engine", "--field-context-separator",
+        "--field-match-separator", "--glob", "--iglob", "--max-columns",
+        "--max-count", "--max-filesize", "--path-separator", "--pre",
+        "--pre-glob", "--regex-size-limit", "--replace", "--sort", "--sortr",
+        "--threads", "--type", "--type-add", "--type-clear", "--type-not",
+    }),
+    "awk": frozenset({"--assign", "--field-separator", "--include", "--load"}),
+    "sed": frozenset({"--line-length"}),
+}
+
 
 def _reader_file_operands(reader: str, args: list[str]) -> list[str]:
     """Return operands that a supported reader treats as input files."""
@@ -825,6 +864,8 @@ def _reader_file_operands(reader: str, args: list[str]) -> list[str]:
     elif reader == "awk":
         long_program_flags.add("--source")
     short_program_flags = "ef" if reader != "awk" else "f"
+    value_short_flags = _READER_VALUE_SHORT_FLAGS[reader]
+    value_long_flags = _READER_VALUE_LONG_FLAGS[reader]
 
     explicit_program = False
     positionals: list[str] = []
@@ -844,6 +885,13 @@ def _reader_file_operands(reader: str, args: list[str]) -> list[str]:
             index += 1
             continue
 
+        if arg in value_long_flags:
+            index += 2
+            continue
+        if any(arg.startswith(flag + "=") for flag in value_long_flags):
+            index += 1
+            continue
+
         if arg.startswith("-") and not arg.startswith("--"):
             marker = next(
                 (pos for pos, char in enumerate(arg[1:], start=1) if char in short_program_flags),
@@ -852,6 +900,13 @@ def _reader_file_operands(reader: str, args: list[str]) -> list[str]:
             if marker is not None:
                 explicit_program = True
                 index += 2 if marker == len(arg) - 1 else 1
+                continue
+            value_marker = next(
+                (pos for pos, char in enumerate(arg[1:], start=1) if char in value_short_flags),
+                None,
+            )
+            if value_marker is not None:
+                index += 2 if value_marker == len(arg) - 1 else 1
                 continue
             index += 1
             continue

@@ -939,6 +939,44 @@ class TestTerminalOutputRedaction:
         output = f"config.yaml example: FOO_TOKEN={secret}"
         assert secret in redact_terminal_output(output, "grep config.yaml README.md")
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -A 3 config.yaml README.md",
+            "grep -A3 config.yaml README.md",
+            "grep --after-context=3 config.yaml README.md",
+            "rg -g '*.py' config.yaml README.md",
+            "rg -g'*.py' config.yaml README.md",
+            "rg --glob='*.py' config.yaml README.md",
+            "awk -v x=1 'config.yaml' README.md",
+            "awk -vx=1 'config.yaml' README.md",
+            "awk --assign=x=1 'config.yaml' README.md",
+        ],
+    )
+    def test_reader_option_values_do_not_become_programs(self, command):
+        from agent.redact import _command_reads_secret_file, redact_terminal_output
+        secret = "F" * 40
+        output = f"config.yaml example: FOO_TOKEN={secret}"
+        assert not _command_reads_secret_file(command)
+        assert secret in redact_terminal_output(output, command)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep --after-context 3 TOKEN ~/.hermes/config.yaml",
+            "grep --after-context=3 TOKEN ~/.hermes/config.yaml",
+            "rg --glob '*.py' TOKEN ~/.hermes/config.yaml",
+            "rg --glob='*.py' TOKEN ~/.hermes/config.yaml",
+            "awk --assign x=1 '{print $0}' ~/.bashrc",
+            "awk --assign=x=1 '{print $0}' ~/.bashrc",
+            "sed --line-length 80 -n '1p' ~/.profile",
+            "sed --line-length=80 -n '1p' ~/.profile",
+        ],
+    )
+    def test_reader_option_values_preserve_secret_file_operands(self, command):
+        from agent.redact import _command_reads_secret_file
+        assert _command_reads_secret_file(command)
+
     def test_cat_env_file_masks_opaque_token(self):
         """cat .env → code_file=False → generic ENV pass redacts opaque keys."""
         from agent.redact import redact_terminal_output

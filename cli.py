@@ -2684,7 +2684,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # --api-key wins; otherwise a URL-bearing startup alias carries its own credential.
         # See #28660.
         self._explicit_api_key = api_key or _startup_api_key_override or None
-        self._explicit_base_url = base_url
+        self._explicit_base_url = base_url or _startup_base_url_override
 
         # Resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (

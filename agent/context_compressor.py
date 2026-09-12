@@ -2656,14 +2656,32 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return pruned
 
     @staticmethod
-    def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
-        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
+    def _truncate_tool_call_args_at(
+        result: List[Dict[str, Any]], idx: int, executed_call_ids: Optional[set[str]] = None,
+    ) -> bool:
+        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid).
+        Only tool calls that have already executed (have a corresponding tool response) are eligible for truncation;
+        pending / unexecuted tool calls are preserved to prevent corrupting live actions (#105574)."""
         msg = result[idx]
         if msg.get("role") != "assistant" or not msg.get("tool_calls"):
             return False
+        if executed_call_ids is None:
+            executed_call_ids = {
+                m.get("tool_call_id")
+                for m in result
+                if m.get("role") == "tool" and m.get("tool_call_id")
+            }
         new_tcs = []
         for tc in msg["tool_calls"]:
-            args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
+            if not isinstance(tc, dict):
+                new_tcs.append(tc)
+                continue
+            tc_id = tc.get("id")
+            # If the tool call has not yet executed, never truncate its arguments.
+            if not tc_id or tc_id not in executed_call_ids:
+                new_tcs.append(tc)
+                continue
+            args = tc.get("function", {}).get("arguments", "")
             new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
             new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
         modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
@@ -2713,6 +2731,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         demote_end = len(result) - min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
         start = max(0, prune_boundary)
 
+        executed_call_ids = {
+            m.get("tool_call_id")
+            for m in result
+            if m.get("role") == "tool" and m.get("tool_call_id")
+        }
+
         def _protected_region_tokens() -> int:
             return sum(_estimate_msg_budget_tokens(result[i]) for i in range(start, len(result)))
 
@@ -2724,8 +2748,18 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
                 demoted += 1
                 pressure_hits += 1
-            if self._truncate_tool_call_args_at(result, i):
+            if self._truncate_tool_call_args_at(result, i, executed_call_ids=executed_call_ids):
                 pressure_hits += 1
+                if not self.quiet_mode:
+                    tc_names = [
+                        tc.get("function", {}).get("name", "unknown")
+                        for tc in result[i].get("tool_calls", [])
+                        if isinstance(tc, dict)
+                    ]
+                    logger.warning(
+                        "Pre-compression pressure demotion: truncated tool_call arguments in protected tail at message index %d (%s)",
+                        i, ", ".join(tc_names) if tc_names else "unknown",
+                    )
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
             return 0

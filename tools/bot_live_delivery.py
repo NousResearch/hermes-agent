@@ -106,6 +106,35 @@ def _read(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _read_for_scan(path: Path) -> dict[str, Any] | None:
+    """Read one mailbox record while isolating damage to a corrupt receipt."""
+    try:
+        record = _read(path)
+        if not isinstance(record, dict):
+            return None
+        raw_delivery_id = record.get("delivery_id")
+        if not isinstance(raw_delivery_id, str):
+            return None
+        delivery_id = _delivery_id(raw_delivery_id)
+        owner = record.get("owner")
+        created_at = record.get("created_at")
+        sequence = record.get("sequence", created_at)
+        if (path.name != f"{delivery_id}.json"
+                or record.get("id") != delivery_id
+                or not isinstance(record.get("status"), str)
+                or record.get("status") not in ({"queued", "claimed"} | _TERMINAL)
+                or not isinstance(created_at, int) or isinstance(created_at, bool)
+                or not isinstance(sequence, int) or isinstance(sequence, bool)
+                or not isinstance(record.get("message"), str)
+                or not isinstance(owner, dict)
+                or any(not isinstance(owner.get(key), str) or not owner[key]
+                       or record.get(key) != owner[key] for key in _OWNER_KEYS)):
+            return None
+        return record
+    except (OSError, ValueError):
+        return None
+
+
 def _write(path: Path, record: dict[str, Any]) -> None:
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".delivery-")
     try:
@@ -143,7 +172,7 @@ def deliver_to_live_owner(
         # high-water mark, allocated while holding the cross-process lock.
         sequence = max((record.get("sequence", record["created_at"])
                         for candidate in root.glob("*.json")
-                        if (record := _read(candidate)) is not None), default=0) + 1
+                        if (record := _read_for_scan(candidate)) is not None), default=0) + 1
         record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
                       message=message, status="queued", created_at=time.time_ns(),
                       sequence=sequence, **({"author": dict(author)} if author else {}))
@@ -181,7 +210,7 @@ def claim_pending_delivery(
     with _locked(profile_home) as root:
         pending = []
         for path in root.glob("*.json"):
-            record = _read(path)
+            record = _read_for_scan(path)
             if record is not None and record["status"] == "queued" and _matches(profile_home, record, current):
                 pending.append(record)
         if not pending:

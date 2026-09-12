@@ -243,9 +243,9 @@ def _run_main_with_detector(monkeypatch, capsys, matches):
     """Run main() with the process detector patched to return *matches*."""
     for name, mod in _psutil_fake().items():
         monkeypatch.setitem(sys.modules, name, mod)
-    import hermes_cli.main as cli_main
+    import hermes_cli.update_cmd as update_cmd
 
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: matches)
+    monkeypatch.setattr(update_cmd, "_detect_venv_python_processes", lambda: matches)
     with pytest.raises(SystemExit) as excinfo:
         main()
     out = capsys.readouterr().out
@@ -325,8 +325,11 @@ def test_main_exempts_gateway_chain_but_keeps_other_holders(monkeypatch, capsys)
 
 
 def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
-    """The desktop's own `serve` backend has no downstream pause — it must
-    keep blocking exactly as before the exemption."""
+    """A `serve` backend with NO ledger identity must keep blocking —
+    the updater's stop/relaunch rungs only own ledger-verified backends."""
+    import hermes_cli.process_identity as pi
+
+    monkeypatch.setattr(pi, "ledger_entries", lambda **kw: [])
     serve = (
         78,
         "python.exe",
@@ -337,6 +340,125 @@ def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
     assert data["blocked"] is True
     assert [p["pid"] for p in data["processes"]] == [78]
     assert data["pausable_gateways"] == 0
+    assert data["deferred_backends"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _is_updater_owned_backend — the serve/dashboard deferral (#98336)
+# ---------------------------------------------------------------------------
+
+
+_SERVE_CMD = r"C:\x\venv\Scripts\python.exe -m hermes_cli.main serve --host 127.0.0.1"
+
+
+def _patch_ledger(monkeypatch, entries, dead):
+    import hermes_cli.process_identity as pi
+
+    monkeypatch.setattr(pi, "ledger_entries", lambda **kw: entries)
+    monkeypatch.setattr(pi, "spawner_is_dead", lambda entry: dead)
+
+
+def test_updater_owned_backend_dead_spawner_is_deferred(monkeypatch, capsys):
+    """A ledger-verified serve whose spawner is provably dead is exactly the
+    orphan `_ledger_reapable_backend_pids` reaps — the scan must defer it
+    instead of dead-ending the hand-off (#98336)."""
+    _patch_ledger(
+        monkeypatch,
+        [{"pid": 78, "purpose": "serve", "spawner_pid": 4242, "port": 9119}],
+        dead=True,
+    )
+    code, data = _run_main_with_detector(monkeypatch, capsys, [(78, "python.exe", _SERVE_CMD)])
+    assert code == 0
+    assert data["blocked"] is False
+    assert data["processes"] == []
+    assert data["deferred_backends"] == 1
+    # Sanitized decision evidence (#98350): structured ledger identity only —
+    # the deferral must explain itself without echoing the command line.
+    assert data["deferred_backend_evidence"] == [
+        {"pid": 78, "purpose": "serve", "port": 9119}
+    ]
+    assert "--host" not in json.dumps(data["deferred_backend_evidence"])
+
+
+def test_updater_owned_backend_unrecorded_spawner_is_deferred(monkeypatch, capsys):
+    """spawner unrecorded (None from spawner_is_dead) but ledger-registered:
+    the manual-serve rung stops and relaunches it — defer."""
+    _patch_ledger(monkeypatch, [{"pid": 78, "purpose": "serve"}], dead=None)
+    code, data = _run_main_with_detector(monkeypatch, capsys, [(78, "python.exe", _SERVE_CMD)])
+    assert data["blocked"] is False
+    assert data["deferred_backends"] == 1
+
+
+def test_updater_owned_backend_live_foreign_spawner_still_blocks(monkeypatch, capsys):
+    """A serve whose recorded spawner is ALIVE and not in this scan's
+    ancestry (another supervisor would respawn it) must keep blocking."""
+    from hermes_cli import _scan_venv_blockers as scan_mod
+
+    _patch_ledger(
+        monkeypatch, [{"pid": 78, "purpose": "serve", "spawner_pid": 4242}], dead=False
+    )
+    monkeypatch.setattr(scan_mod, "_spawner_is_this_handoff_desktop", lambda entry: False)
+    code, data = _run_main_with_detector(monkeypatch, capsys, [(78, "python.exe", _SERVE_CMD)])
+    assert data["blocked"] is True
+    assert [p["pid"] for p in data["processes"]] == [78]
+    assert data["deferred_backends"] == 0
+
+
+def test_updater_owned_backend_handoff_desktop_spawner_is_deferred(monkeypatch, capsys):
+    """A serve owned by THIS hand-off's Desktop (the scan's own ancestor) is
+    deferred: the Desktop exits before the updater runs, turning it into the
+    dead-spawner orphan the ledger rung reaps (#98336 field case)."""
+    from hermes_cli import _scan_venv_blockers as scan_mod
+
+    _patch_ledger(
+        monkeypatch, [{"pid": 78, "purpose": "serve", "spawner_pid": 4242}], dead=False
+    )
+    monkeypatch.setattr(scan_mod, "_spawner_is_this_handoff_desktop", lambda entry: True)
+    code, data = _run_main_with_detector(monkeypatch, capsys, [(78, "python.exe", _SERVE_CMD)])
+    assert data["blocked"] is False
+    assert data["deferred_backends"] == 1
+
+
+def test_updater_owned_backend_purpose_mismatch_blocks(monkeypatch, capsys):
+    """Argv says serve but the ledger entry says a different purpose — the
+    identity is inconsistent; fail closed and keep blocking."""
+    _patch_ledger(
+        monkeypatch, [{"pid": 78, "purpose": "mcp-helper", "spawner_pid": 4242}], dead=True
+    )
+    code, data = _run_main_with_detector(monkeypatch, capsys, [(78, "python.exe", _SERVE_CMD)])
+    assert data["blocked"] is True
+    assert data["deferred_backends"] == 0
+
+
+def test_updater_owned_backend_non_backend_argv_never_deferred(monkeypatch, capsys):
+    """A ledger entry cannot exempt a process whose argv is not a
+    serve/dashboard subcommand (#90778 token rules: `kanban --preserve-cache`
+    must not read as serve)."""
+    _patch_ledger(
+        monkeypatch, [{"pid": 78, "purpose": "serve", "spawner_pid": 4242}], dead=True
+    )
+    kanban = (
+        78,
+        "python.exe",
+        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main kanban --preserve-cache",
+    )
+    code, data = _run_main_with_detector(monkeypatch, capsys, [kanban])
+    assert data["blocked"] is True
+    assert data["deferred_backends"] == 0
+
+
+def test_updater_owned_backend_ledger_failure_blocks(monkeypatch, capsys):
+    """Ledger unreadable → unprovable → fail closed (pre-exemption behavior)."""
+    import hermes_cli.process_identity as pi
+
+    def _boom(**kw):
+        raise RuntimeError("ledger unavailable")
+
+    monkeypatch.setattr(pi, "ledger_entries", _boom)
+    code, data = _run_main_with_detector(monkeypatch, capsys, [(78, "python.exe", _SERVE_CMD)])
+    assert data["blocked"] is True
+    assert data["deferred_backends"] == 0
+
 
 def test_main_gateway_with_long_managed_runtime_path_is_exempt(monkeypatch, capsys):
     """Regression: the detector must hand the FULL cmdline to the exemption.

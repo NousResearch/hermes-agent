@@ -18,12 +18,28 @@ export function normalizeWhatsAppId(value) {
   return String(value).replace(':', '@');
 }
 
+function unwrapMessageEnvelopes(content) {
+  let cur = content;
+  // Envelopes nest (ephemeral wrapping viewOnce wrapping the payload); peel
+  // until an inner message is reached so nested quotes resolve too.
+  for (let i = 0; i < 8 && cur; i++) {
+    const next =
+      cur.ephemeralMessage?.message ??
+      cur.viewOnceMessage?.message ??
+      cur.viewOnceMessageV2?.message ??
+      cur.documentWithCaptionMessage?.message;
+    if (next === undefined) break;
+    cur = next;
+  }
+  return cur;
+}
+
 export function getMessageContent(msg) {
-  const content = msg?.message || {};
-  if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;
-  if (content.viewOnceMessage?.message) return content.viewOnceMessage.message;
-  if (content.viewOnceMessageV2?.message) return content.viewOnceMessageV2.message;
-  if (content.documentWithCaptionMessage?.message) return content.documentWithCaptionMessage.message;
+  const raw = msg?.message || {};
+  const content = unwrapMessageEnvelopes(raw);
+  // A peeled envelope returns its inner message immediately: the payload
+  // shape (template/buttons/list/etc.) applies to unenveloped messages.
+  if (content !== raw) return content;
   if (content.templateMessage?.hydratedTemplate) return content.templateMessage.hydratedTemplate;
   if (content.buttonsMessage) return content.buttonsMessage;
   if (content.listMessage) return content.listMessage;
@@ -190,16 +206,17 @@ export function buildLocationPayload({ latitude, longitude, name, address } = {}
 }
 
 function textFromQuotedMessage(quotedMessage) {
-  if (!quotedMessage) return '';
-  if (quotedMessage.conversation) return quotedMessage.conversation;
-  if (quotedMessage.extendedTextMessage?.text) return quotedMessage.extendedTextMessage.text;
-  if (quotedMessage.imageMessage?.caption) return quotedMessage.imageMessage.caption;
-  if (quotedMessage.videoMessage?.caption) return quotedMessage.videoMessage.caption;
-  if (quotedMessage.documentMessage?.caption) return quotedMessage.documentMessage.caption;
-  if (quotedMessage.documentMessage?.fileName) return `[Document: ${quotedMessage.documentMessage.fileName}]`;
-  if (quotedMessage.locationMessage) return formatLocationText(quotedMessage.locationMessage, false);
-  if (quotedMessage.contactMessage) return formatContactText(quotedMessage.contactMessage);
-  if (quotedMessage.pollCreationMessage) return formatPollText(quotedMessage.pollCreationMessage);
+  const content = unwrapMessageEnvelopes(quotedMessage);
+  if (!content) return '';
+  if (content.conversation) return content.conversation;
+  if (content.extendedTextMessage?.text) return content.extendedTextMessage.text;
+  if (content.imageMessage?.caption) return content.imageMessage.caption;
+  if (content.videoMessage?.caption) return content.videoMessage.caption;
+  if (content.documentMessage?.caption) return content.documentMessage.caption;
+  if (content.documentMessage?.fileName) return `[Document: ${content.documentMessage.fileName}]`;
+  if (content.locationMessage) return formatLocationText(content.locationMessage, false);
+  if (content.contactMessage) return formatContactText(content.contactMessage);
+  if (content.pollCreationMessage) return formatPollText(content.pollCreationMessage);
   return '';
 }
 

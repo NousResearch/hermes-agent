@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence
@@ -394,17 +395,32 @@ def _billing_hints(error_msg: str) -> Verdict:
     return {**_V_BILLING, "error_context": ctx}
 
 
-def _first_match(error_msg: str, rules: Sequence[tuple[Sequence[str], Any]]) -> Optional[Verdict]:
+def _pattern_matches(pattern: Any, error_msg: str) -> bool:
+    """Substring match for str patterns; regex search for compiled patterns."""
+    search = getattr(pattern, "search", None)
+    if callable(search):
+        return search(error_msg) is not None
+    return pattern in error_msg
+
+
+def _first_match(error_msg: str, rules: Sequence[tuple[Sequence[Any], Any]]) -> Optional[Verdict]:
     """Verdict of the first rule whose pattern list hits ``error_msg``."""
     for patterns, verdict in rules:
-        if any(p in error_msg for p in patterns):
+        if any(_pattern_matches(p, error_msg) for p in patterns):
             return verdict(error_msg) if callable(verdict) else verdict
     return None
 
 
+# CommandCode ``/provider/v1`` rejects list-type tool content with a bare
+# param pointer: {'message': 'Invalid input', 'param': 'messages.<N>.content'}.
+# No "tool message" wording appears in the text, so the param path itself is
+# the signature; matching only messages.*.content keeps unrelated 400/422s out.
+_MESSAGES_CONTENT_PARAM_RE = re.compile(r"""param['"]?\s*[:=]\s*['"]?messages\.\d+\.content""")
+
 # Image/tool-content 400s, ordered: multimodal recovery ≠ image shrink; corrupt
 # bytes need strip not shrink; image-shrink is cheaper than context compression.
 _IMAGE_TOOL_RULES = (
+    ((_MESSAGES_CONTENT_PARAM_RE,), _V_MULTIMODAL),
     (_MULTIMODAL_TOOL_CONTENT_PATTERNS, _V_MULTIMODAL), (_IMAGE_CORRUPT_PATTERNS, _V_IMAGE_CORRUPT),
     (_IMAGE_TOO_LARGE_PATTERNS, _V_IMAGE_TOO_LARGE),
 )

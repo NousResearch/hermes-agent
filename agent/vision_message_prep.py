@@ -27,6 +27,13 @@ _DATA_URL_SUFFIXES = {
     "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/jpeg": ".jpg", "image/jpg": ".jpg"
 }
 
+# Request-build relocation of tool-result images (providers that accept
+# user-message images but reject list-type tool content; see
+# ``ProviderProfile.relocate_tool_result_images``). Constant by design:
+# deterministic rebuilds keep prompt-cache prefixes byte-stable.
+_TOOL_IMAGE_RELOCATION_MARKER = "Attached media from tool result:"
+_TOOL_IMAGE_RELOCATION_PLACEHOLDER = "[image content relocated to the following user message]"
+
 
 def _is_image_part(part: Any) -> bool:
     return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
@@ -215,8 +222,13 @@ class VisionMessagePrepMixin:
 
         if self._model_supports_vision():
             # Vision on paper, but the provider rejects list-type tool content (or we already learned that
-            # in-session): short-circuit to a text summary.
-            if not self._provider_supports_vision_tool_messages():
+            # in-session): short-circuit to a text summary.  Exception: when the provider profile opts
+            # into relocation (or the session learned it), keep the image parts — the request-build
+            # projection moves them into a user message so the model keeps seeing pixels.
+            if (
+                not self._provider_supports_vision_tool_messages()
+                and not self._should_relocate_tool_result_images()
+            ):
                 logger.debug(
                     "Tool %s: provider %s does not accept list-type tool "
                     "content — sending text summary",
@@ -290,6 +302,300 @@ class VisionMessagePrepMixin:
             )
             changed = True
 
+        return changed
+
+    @staticmethod
+    def _split_tool_content_images(content: list) -> tuple:
+        """Split a tool-row content list into (image_parts, residual_content).
+
+        Image parts are preserved verbatim (no re-encode) so rebuilds stay
+        byte-stable. The residual keeps unknown part types as a list; when
+        only text survives it collapses to a joined string, and when nothing
+        survives to ``_TOOL_IMAGE_RELOCATION_PLACEHOLDER``. Callers treat an
+        empty image list as "unchanged".
+        """
+        images: List[Any] = []
+        texts: List[str] = []
+        rest: List[Any] = []
+        for part in content:
+            if isinstance(part, dict):
+                ptype = part.get("type")
+                if ptype in _IMAGE_PART_TYPES:
+                    images.append(part)
+                    continue
+                if ptype in _TEXT_PART_TYPES:
+                    text = str(part.get("text") or "").strip()
+                    if text:
+                        texts.append(text)
+                    continue
+                rest.append(part)
+                continue
+            if isinstance(part, str):
+                if part.strip():
+                    texts.append(part.strip())
+                continue
+            rest.append(part)
+        if not images:
+            return [], content
+        if rest:
+            residual: Any = (
+                ([{"type": "text", "text": "\n\n".join(texts)}] if texts else []) + rest
+            )
+        else:
+            residual = (
+                "\n\n".join(texts) if texts else _TOOL_IMAGE_RELOCATION_PLACEHOLDER
+            )
+        return images, residual
+
+    @staticmethod
+    def _merge_relocated_into_user(user_msg: dict, images: List[Any], marker: str) -> dict:
+        """Prepend marker + images to an existing user message (new dict, new
+        content list — the input message and its content list stay untouched)."""
+        base = user_msg.get("content")
+        if isinstance(base, str):
+            existing: List[Any] = [{"type": "text", "text": base}] if base else []
+        elif isinstance(base, list):
+            existing = list(base)
+        elif base is None:
+            existing = []
+        else:
+            existing = [{"type": "text", "text": str(base)}]
+        return {
+            **user_msg,
+            "content": [{"type": "text", "text": marker}, *images, *existing],
+        }
+
+    def _project_tool_images_for_build(self, api_messages: list) -> list:
+        """Deterministic request-build projection: move tool-row images into a
+        following user message.
+
+        Produces ``assistant(tool_calls) -> tool(text) -> user([marker,
+        images...])``; when a real user message already follows the tool run
+        the marker + images are merged into it so role alternation holds.
+        Only tool rows whose ``tool_call_id`` matches a preceding assistant
+        tool_call are candidates (orphan rows are left alone). Returns the
+        input list unchanged when nothing moved.
+        """
+        marker = _TOOL_IMAGE_RELOCATION_MARKER
+        out: List[Any] = []
+        known_ids: set = set()
+        changed = False
+        i = 0
+        n = len(api_messages)
+        while i < n:
+            msg = api_messages[i]
+            if not isinstance(msg, dict):
+                out.append(msg)
+                i += 1
+                continue
+            role = msg.get("role")
+            if role == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    if isinstance(tc, dict) and tc.get("id"):
+                        known_ids.add(tc["id"])
+                out.append(msg)
+                i += 1
+                continue
+            if role != "tool":
+                out.append(msg)
+                i += 1
+                continue
+
+            run_rows: List[Any] = []
+            run_images: List[Any] = []
+            j = i
+            while j < n:
+                row = api_messages[j]
+                if not isinstance(row, dict) or row.get("role") != "tool":
+                    break
+                content = row.get("content")
+                if isinstance(content, list) and row.get("tool_call_id") in known_ids:
+                    images, residual = self._split_tool_content_images(content)
+                    if images:
+                        run_images.extend(images)
+                        row = {**row, "content": residual}
+                run_rows.append(row)
+                j += 1
+
+            if run_images:
+                changed = True
+                next_msg = api_messages[j] if j < n else None
+                if isinstance(next_msg, dict) and next_msg.get("role") == "user":
+                    out.extend(run_rows)
+                    out.append(
+                        self._merge_relocated_into_user(next_msg, run_images, marker)
+                    )
+                    i = j + 1
+                    continue
+                out.extend(run_rows)
+                out.append(
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": marker}, *run_images],
+                    }
+                )
+                i = j
+                continue
+
+            out.extend(run_rows)
+            i = j
+        return out if changed else api_messages
+
+    def _provider_relocates_tool_images(self) -> bool:
+        """True when the active provider profile opts into relocation."""
+        try:
+            from providers import get_provider_profile
+            profile = get_provider_profile((getattr(self, "provider", "") or "").strip().lower())
+            return profile is not None and bool(
+                getattr(profile, "relocate_tool_result_images", False)
+            )
+        except Exception:
+            return False
+
+    def _should_relocate_tool_result_images(self) -> bool:
+        """Whether tool-result images must be relocated to a user message at
+        request-build time for the active provider.
+
+        True on chat_completions with a vision-capable model when the profile
+        opts into relocation (``relocate_tool_result_images``) or the session
+        learned the provider rejects tool media. The strip-learned
+        ``_no_list_tool_content_models`` memory always wins (convergence).
+        """
+        try:
+            if (getattr(self, "api_mode", "chat_completions") or "chat_completions") != "chat_completions":
+                return False
+            if not self._model_supports_vision():
+                return False
+            key = _provider_model_key(self)
+            if key in (getattr(self, "_no_list_tool_content_models", None) or ()):
+                return False
+            if self._provider_relocates_tool_images():
+                return True
+            relocate_set = getattr(self, "_relocate_tool_images_models", None)
+            return bool(relocate_set and key in relocate_set)
+        except Exception:
+            return False
+
+    def _relocate_tool_result_images_for_api(self, api_messages: list) -> list:
+        """Request-build projection entry point (see module constant docs).
+
+        Runs on the per-request ``api_messages`` copy only — persisted history
+        is never written. When the session already learned that every image
+        shape is rejected (``_no_list_tool_content_models``), historical tool
+        rows are stripped to text on the wire instead of relocated, matching
+        the insertion-time downgrade for new results.
+        """
+        if not isinstance(api_messages, list) or not api_messages:
+            return api_messages
+        try:
+            key = _provider_model_key(self)
+            if key in (getattr(self, "_no_list_tool_content_models", None) or ()):
+                self._try_strip_image_parts_from_tool_messages(api_messages, remember_model=False)
+                return api_messages
+            if not self._should_relocate_tool_result_images():
+                return api_messages
+            projected = self._project_tool_images_for_build(api_messages)
+            if projected is not api_messages:
+                logger.debug(
+                    "Relocated tool-result images into a user message for %s/%s "
+                    "(chat_completions projection)",
+                    key[0], key[1],
+                )
+            return projected
+        except Exception as exc:
+            logger.debug("tool-image relocation projection failed: %s", exc)
+            return api_messages
+
+    def _try_relocate_image_parts_to_user_message(
+        self, api_messages: list, *, remember_model: bool = True
+    ) -> bool:
+        """Reactive recovery: relocate tool-row images in-place and retry.
+
+        Used by the multimodal-tool-content 400 handler before the existing
+        strip fallback. The 400 itself is the evidence of rejection, so this
+        helper does not require the proactive predicate — only a
+        chat_completions vision model that is not known to accept tool media.
+        Records the active (provider, model) in
+        ``_relocate_tool_images_models`` so subsequent request builds relocate
+        preemptively. Returns True when at least one tool row was relocated.
+        """
+        if not isinstance(api_messages, list) or not api_messages:
+            return False
+        try:
+            if (getattr(self, "api_mode", "chat_completions") or "chat_completions") != "chat_completions":
+                return False
+            if not self._model_supports_vision():
+                return False
+            try:
+                from tools.vision_tools import _supports_media_in_tool_results
+                provider = (getattr(self, "provider", "") or "").strip()
+                model = (getattr(self, "model", "") or "").strip()
+                if (
+                    _supports_media_in_tool_results(provider, model)
+                    and self._provider_supports_vision_tool_messages()
+                ):
+                    return False
+            except Exception:
+                pass
+            projected = self._project_tool_images_for_build(api_messages)
+            if projected is api_messages:
+                return False
+            api_messages[:] = projected
+            if remember_model:
+                key = _provider_model_key(self)
+                if key[1]:
+                    if not hasattr(self, "_relocate_tool_images_models"):
+                        self._relocate_tool_images_models = set()
+                    self._relocate_tool_images_models.add(key)
+            return True
+        except Exception:
+            return False
+
+    def _try_strip_relocated_images_from_user_messages(
+        self, api_messages: list, *, remember_model: bool = True
+    ) -> bool:
+        """Last-resort recovery: remove relocated images from user messages.
+
+        Fires when a preemptively-relocated request still 400s — the gateway
+        rejects user-message images too. Only image parts directly following
+        the relocation marker text are removed (user-attached images later in
+        the same content list survive; marker-gated so unmarked content is
+        never touched). Records ``_no_list_tool_content_models`` so the
+        session converges to text-only tool data.
+        """
+        if not isinstance(api_messages, list):
+            return False
+        marker = _TOOL_IMAGE_RELOCATION_MARKER
+        changed = False
+        for msg in api_messages:
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            marker_pos = None
+            for pos, part in enumerate(content):
+                if (
+                    isinstance(part, dict)
+                    and part.get("type") in _TEXT_PART_TYPES
+                    and part.get("text") == marker
+                ):
+                    marker_pos = pos
+                    break
+            if marker_pos is None:
+                continue
+            k = marker_pos + 1
+            while k < len(content) and _is_image_part(content[k]):
+                k += 1
+            if k > marker_pos + 1:
+                msg["content"] = content[: marker_pos + 1] + content[k:]
+                changed = True
+        if changed and remember_model:
+            key = _provider_model_key(self)
+            if key[1]:
+                if not hasattr(self, "_no_list_tool_content_models"):
+                    self._no_list_tool_content_models = set()
+                self._no_list_tool_content_models.add(key)
         return changed
 
     def _anthropic_preserve_dots(self) -> bool:

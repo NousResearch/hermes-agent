@@ -72,6 +72,14 @@ class ProviderProfile:
     # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
     supports_vision_tool_messages: bool = True
 
+    # Opt-in: the provider's API accepts images in user messages but
+    # rejects list-type tool message content.  Instead of vetoing the
+    # native vision fast path (aux-LLM text fallback), tool-result image
+    # parts are relocated into a following user message at request-build
+    # time — the model still sees the pixels natively.  Requires a
+    # vision-capable model (models.dev or ``model.supports_vision``).
+    relocate_tool_result_images: bool = False
+
     # True only when this provider's Chat Completions endpoint explicitly
     # documents ``prompt_cache_key`` as an accepted request body field.  This
     # is deliberately opt-in: many OpenAI-compatible endpoints reject unknown

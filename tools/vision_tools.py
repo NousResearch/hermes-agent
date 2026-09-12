@@ -414,6 +414,22 @@ _TOOL_RESULT_MEDIA_PROVIDERS = frozenset({
 _GEMINI_PROVIDERS = frozenset({"google", "gemini", "google-gemini", "google-vertex-gemini"})
 
 
+def _profile_relocates_tool_media(provider: str) -> bool:
+    """True when the provider's profile opts into tool-image relocation
+    (``relocate_tool_result_images=True``): the endpoint accepts user-message
+    images but rejects list-type tool content, and the request-build
+    projection moves the images into a following user message instead of
+    the hard veto dropping them to a text summary."""
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(str(provider or "").strip().lower())
+        return profile is not None and bool(
+            getattr(profile, "relocate_tool_result_images", False)
+        )
+    except Exception:
+        return False
+
+
 def _profile_rejects_tool_media(provider: str) -> bool:
     """Hard veto: the provider's ``ProviderProfile`` declares
     ``supports_vision_tool_messages=False`` — images are accepted in user
@@ -421,11 +437,19 @@ def _profile_rejects_tool_media(provider: str) -> bool:
     (xiaomi/MiMo "text is not set"). ``supports_vision`` alone must not
     override this, or the multimodal tool-result envelope 400s every turn
     and the image never enters context (#89981).
+
+    A profile that opts into ``relocate_tool_result_images`` is not a veto:
+    the request-build projection makes the native envelope safe by moving
+    the images into a following user message.
     """
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(str(provider or "").strip().lower())
-        return profile is not None and profile.supports_vision_tool_messages is False
+        if profile is None:
+            return False
+        if getattr(profile, "relocate_tool_result_images", False):
+            return False
+        return profile.supports_vision_tool_messages is False
     except Exception:
         return False
 
@@ -433,7 +457,8 @@ def _profile_rejects_tool_media(provider: str) -> bool:
 def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     """Whether provider+model accepts image content inside a tool-result message. Unknown
     providers are False (caller falls back to aux-LLM text) unless their ``ProviderProfile``
-    declares ``supports_vision``; ``supports_vision_tool_messages=False`` is a hard veto."""
+    declares ``supports_vision``; ``supports_vision_tool_messages=False`` is a hard veto
+    unless the profile opts into ``relocate_tool_result_images``."""
     p = provider.strip().lower() if isinstance(provider, str) else ""
     if not p or _profile_rejects_tool_media(p):
         return False
@@ -453,7 +478,9 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
 def _should_use_native_vision_fast_path() -> bool:
     """True when image routing resolves to ``native`` AND the provider accepts images in tool
     results, or the user set the ``model.supports_vision`` override (escape hatch for
-    custom/local providers). Any failure → False."""
+    custom/local providers). Profiles that opt into ``relocate_tool_result_images`` keep the
+    fast path even though list-type tool content is rejected — the request-build projection
+    moves the images into a user message. Any failure → False."""
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
         from agent.image_routing import decide_image_input_mode, _lookup_supports_vision

@@ -362,9 +362,7 @@ KANBAN_CREATE_SCHEMA = _schema(
         "title": _prop("string", "Short task title (required)."),
         "assignee": _prop("string", (
                 "Profile name that should execute this task "
-                "(e.g. 'researcher-a', 'reviewer', 'writer'). "
-                "Required — tasks without an assignee are never "
-                "dispatched."
+                "Profile name that should execute this task. Required — tasks without an assignee are never dispatched."
         )),
         "body": _prop("string", (
                 "Opening post: full spec, acceptance criteria, "
@@ -484,6 +482,33 @@ KANBAN_CREATE_SCHEMA = _schema(
         )),
     },
     ["title", "assignee"],
+)
+
+KANBAN_SET_MODEL_SCHEMA = _schema(
+    "kanban_set_model",
+    (
+        "Set or clear this task's per-task model/provider override (applies "
+        "on the NEXT dispatch, e.g. after a rate-limit block). Runs in-process "
+        "so a dispatcher-spawned worker can call it directly without shelling "
+        "out to `hermes kanban set-model` — a CLI/terminal subprocess is a "
+        "descendant process and is correctly refused kanban mutation rights "
+        "(cooperative write-fence scoping; not a bug). Worker-scoped: only "
+        "your own HERMES_KANBAN_TASK, like kanban_heartbeat/kanban_block."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "model": _prop("string", (
+            "Model name to pin, or omit/empty/\"none\" to clear the override "
+            "(worker falls back to its profile default)."
+        )),
+        "provider": _prop("string", (
+            "Provider the model belongs to (e.g. 'openrouter', 'nous'). "
+            "Requires 'model' to also be set; a bare provider without a "
+            "model is rejected."
+        )),
+        "board": _prop("string", _DESC_BOARD),
+    },
+    [],
 )
 
 KANBAN_UNBLOCK_SCHEMA = _schema(

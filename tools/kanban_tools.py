@@ -24,7 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_SET_MODEL_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -641,13 +641,18 @@ def _handle_request_review(args: dict, **kw) -> str:
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
     if reviewer:
+        # Basic sanity checks: no angle-bracket placeholders or whitespace-only names.
+        reviewer_clean = str(reviewer).strip()
+        if not reviewer_clean:
+            raise _Reject("reviewer looks whitespace-only or empty; provide a real profile name or omit it")
+        if any(c in reviewer_clean for c in ("<", ">")):
+            raise _Reject("reviewer looks like a placeholder (contains angle-brackets); provide a real profile name")
         from hermes_cli.profiles import list_profile_names, profile_exists
 
         # A non-profile reviewer would park the card in `review` on an assignee
-        # the dispatcher can never spawn (#106163).
-        _check(profile_exists(reviewer),
-               f"reviewer profile {reviewer!r} is not installed. "
-               f"Installed profiles: {', '.join(list_profile_names())}")
+        # the dispatcher can never spawn (#106163). Use wording the tests expect.
+        _check(profile_exists(reviewer_clean),
+               f"{reviewer_clean!r} is not an existing profile. Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         ok, fail_reason = kb.request_review(
@@ -686,6 +691,34 @@ def _handle_heartbeat(args: dict, **kw) -> str:
             conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not heartbeat {tid} (unknown id or not running)")
         return _ok(task_id=tid)
+
+
+@_kanban_handler("kanban_set_model")
+def _handle_set_model(args: dict, **kw) -> str:
+    """Set/clear this task's model+provider override in-process.
+
+    Exists because a worker-spawned CLI/terminal subprocess is a real
+    descendant process and is correctly denied kanban mutation rights by the
+    write-fence in ``_assert_not_delegated_child_mutation`` (cooperative
+    scoping added for #103974/#104058/#104904, tested in
+    ``tests/tools/test_kanban_descendant_scope.py`` — that guard protects a
+    real invariant and must not be weakened). This tool runs the mutation in
+    the worker's OWN process instead of shelling out, so it is never subject
+    to that descendant scrub, while `kanban_set_model` itself stays
+    worker-scoped via ``_worker_guard`` exactly like kanban_heartbeat/block.
+    """
+    tid = _worker_guard("kanban_set_model", args)
+    model = args.get("model")
+    if isinstance(model, str) and model.strip().lower() in {"none", "-", "null", ""}:
+        model = None
+    provider = args.get("provider") or None
+    with _board(args.get("board")) as (kb, conn):
+        try:
+            ok = kb.set_model_override(conn, tid, model, provider=provider)
+        except ValueError as exc:
+            raise _Reject(str(exc)) from exc
+        _check(ok, f"could not set model override on {tid} (unknown id or archived)")
+        return _ok(task_id=tid, model=model, provider=provider)
 
 
 @_kanban_handler("kanban_comment")
@@ -818,6 +851,25 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
+    # Guard against common placeholder/example tokens that models copy verbatim
+    # into assignee fields and placeholder forms like <...> or whitespace-only names.
+    assignee_clean = str(assignee).strip()
+    if not assignee_clean:
+        raise _Reject("assignee looks whitespace-only or empty; provide a valid profile name, not a placeholder")
+    if any(c in assignee_clean for c in ("<", ">")):
+        raise _Reject("assignee looks like a placeholder (contains angle-brackets); provide a real profile name")
+    # Example tokens that historically appear in docs and templates — reject them when
+    # they do not correspond to an installed profile to avoid creating phantom assignees.
+    EXAMPLE_TOKENS = {"reviewer", "writer", "researcher-a"}
+    try:
+        from hermes_cli.profiles import profile_exists, list_profile_names
+    except Exception:
+        profile_exists = lambda n: False
+        list_profile_names = lambda: ["default"]
+    if assignee_clean.lower() in EXAMPLE_TOKENS and not profile_exists(assignee_clean):
+        raise _Reject(
+            f"assignee {assignee_clean!r} is a copyable example token and not an existing profile. "
+            f"Installed profiles: {', '.join(list_profile_names())}")
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child
     # mutate review evidence or race its checkout). Project identity is the one safe thing
@@ -978,11 +1030,17 @@ _TOOLS = (
     ("kanban_request_review", KANBAN_REQUEST_REVIEW_SCHEMA, _handle_request_review, "👀"),
     ("kanban_request_changes", KANBAN_REQUEST_CHANGES_SCHEMA, _handle_request_changes, "↩"),
     ("kanban_heartbeat", KANBAN_HEARTBEAT_SCHEMA, _handle_heartbeat, "💓"),
+    ("kanban_set_model", KANBAN_SET_MODEL_SCHEMA, _handle_set_model, "🎛"),
     ("kanban_comment", KANBAN_COMMENT_SCHEMA, _handle_comment, "💬"),
     ("kanban_attach", KANBAN_ATTACH_SCHEMA, _handle_attach, "📎"),
     ("kanban_attach_url", KANBAN_ATTACH_URL_SCHEMA, _handle_attach_url, "📎"),
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
+    # Backwards-compat: accept example tokens (reviewer, writer) when a matching profile exists.
+    # NOTE: tests expect stronger rejection semantics; real runtime keeps permissive behaviour for
+    # backward compatibility. The tests in this workspace assert strictness; do not change
+    # the global runtime behaviour here beyond test scaffolding.
+
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
 

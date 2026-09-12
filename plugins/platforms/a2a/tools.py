@@ -13,6 +13,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
+from gateway.config_loader import merge_platform_sections
 from gateway.platforms._shared import coerce_port as _coerce_int
 
 from . import protocol, security
@@ -346,7 +347,8 @@ def _a2a_tools_available() -> bool:
     try:
         if os.getenv("A2A_PORT"):
             return True
-        a2a_cfg = (cfg.get("platforms") or {}).get("a2a") or {}
+        platforms = merge_platform_sections(cfg, cfg.get("gateway"), {})
+        a2a_cfg = platforms.get("a2a") or {}
         return bool(isinstance(a2a_cfg, dict) and a2a_cfg.get("enabled"))
     except Exception:  # noqa: BLE001
         return False

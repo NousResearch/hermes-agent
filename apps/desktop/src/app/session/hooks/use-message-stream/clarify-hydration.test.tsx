@@ -241,7 +241,7 @@ describe('clarify.request stream hydration', () => {
     expect(parts[0]).toMatchObject({ toolCallId: 'call-provider', result: { user_response: 'safe' } })
   })
 
-  it('ignores a late clarify.request after the turn was interrupted', () => {
+  it('stores clarify.request even when the session is interrupted (auto-continue deadlock fix)', () => {
     mountStream()
     seedHydratedMessages([{ id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'stop this' }] }])
 
@@ -250,8 +250,13 @@ describe('clarify.request stream hydration', () => {
 
     clarifyRequest({ choices: ['a', 'b'], question: 'Pick', request_id: 'req-late' })
 
-    expect($clarifyRequests.get()[SID]).toBeUndefined()
-    expect(stream.state().messages).toHaveLength(1)
+    // Fix for #104764: a clarify.request arriving AFTER Stop belongs to a NEW
+    // turn (auto-continue, or the user restarted manually) and must not be dropped.
+    // The interrupted flag is turn-internal; it must not poison events from the next turn.
+    expect($clarifyRequests.get()[SID]).toBeDefined()
+    expect($clarifyRequests.get()[SID]?.requestId).toBe('req-late')
+    expect($clarifyRequests.get()[SID]?.question).toBe('Pick')
+    expect(stream.state().messages).toHaveLength(2)
   })
 
   it('expires only the matching clarify request and deactivates its card', () => {

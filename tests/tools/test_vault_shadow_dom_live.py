@@ -162,7 +162,8 @@ def test_shadow_probe_inspection_and_nonce_fill_share_scope(browser):
     assert json.loads(evaluate(sup, build_fill_js(fills, origin, 'light-test')))['filled'] == 1
 
 
-def test_vault_fill_finds_shadow_login_not_unrelated_first_tab(browser):
+@pytest.mark.parametrize('aliased_root', [False, True])
+def test_vault_fill_finds_shadow_login_not_unrelated_first_tab(browser, aliased_root):
     from agent.vault_store import get_vault_store
 
     sup, task, origin, new_page = browser
@@ -170,6 +171,15 @@ def test_vault_fill_finds_shadow_login_not_unrelated_first_tab(browser):
     login_origin = origin.replace('127.0.0.1', 'localhost')
     new_page(login_origin + '/page')
     shadow_form(sup)
+    if aliased_root:
+        # Synthetic-shadow adapters can expose the same root via multiple hosts.
+        # Repeated traversal must not overwrite a control's inspection stamp.
+        evaluate(sup, """(() => {
+          const alias = document.createElement('div');
+          const root = document.body.firstElementChild.shadowRoot;
+          Object.defineProperty(alias, 'shadowRoot', {get: () => root});
+          document.body.append(alias);
+        })()""")
     assert sup.focus_page(origin)['ok']
     item = get_vault_store().add_item('login', 'synthetic login',
                                     {'identifier': 'test', 'identifier_type': 'username',

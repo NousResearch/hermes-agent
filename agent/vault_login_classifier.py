@@ -244,15 +244,16 @@ def build_otp_fills(otp_controls: List[ClassifiedLoginControl], code: str) -> Li
 # Open shadow roots belong to the same document/origin. Never traverse frames:
 # their origin would need a separate binding check at the mutation boundary.
 _QUERY_ALL_JS = """const queryAll = (selector) => {
-    const roots = [document], matches = [];
-    for (let i = 0; i < roots.length; i++) {
-      const root = roots[i];
-      matches.push(...root.querySelectorAll(selector));
+    const roots = new Set([document]), matches = new Set();
+    // Synthetic shadow DOM can expose a root or control through multiple paths.
+    // Stamp each control once: duplicate indices would overwrite its nonce binding.
+    for (const root of roots) {
+      for (const element of root.querySelectorAll(selector)) matches.add(element);
       for (const element of root.querySelectorAll('*')) {
-        if (element.shadowRoot) roots.push(element.shadowRoot);
+        if (element.shadowRoot) roots.add(element.shadowRoot);
       }
     }
-    return matches;
+    return Array.from(matches);
   };"""
 
 

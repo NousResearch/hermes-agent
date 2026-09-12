@@ -147,8 +147,8 @@ multiplex mode — you only manage the default gateway.
 
 #### 2. HTTP-inbound platforms are reached via a `/p/<profile>/` URL prefix
 
-Webhook (and other HTTP-inbound) traffic for a secondary profile arrives on the
-default listener under a profile prefix, **not** a second port:
+HTTP-inbound traffic for a secondary profile arrives on the default profile's
+**one** listener under a profile prefix, **not** a second port:
 
 ```
 # default profile
@@ -157,24 +157,22 @@ POST http://host:8644/webhooks/<route>
 POST http://host:8644/p/coder/webhooks/<route>
 ```
 
-An unknown or unconfigured profile in the prefix returns `404`. Because the one
-shared listener already serves every profile this way, a **secondary profile
-must not enable a port-binding platform itself** — doing so is a config error
-that skips the entire secondary profile while the default and other healthy
-profiles continue. The warning names the skipped profile and every conflicting
-platform:
+An unknown or unconfigured profile in the prefix returns `404`. The shared
+listener is the default profile's `api_server` port (or its `webhook` port when
+no API server is enabled); it serves three kinds of profile-prefixed paths:
 
-```
-Skipping secondary profile 'coder' due to port-binding config error: Profile
-'coder' enables port-binding platform(s) webhook, but gateway.multiplex_profiles
-is on. ... Remove these platform entries from profile 'coder's config.yaml or
-configure them only on the default profile.
-```
-
-Port-binding platforms covered by this rule: `webhook`, `api_server`,
-`msgraph_webhook`, `feishu`, `wecom_callback`, `bluebubbles`, `sms`,
-`whatsapp_cloud`, `line`, `teams`. Configure any of these **only on the default profile**;
-every profile is reachable through its `/p/<profile>/` prefix.
+- **`api_server` and `webhook` are mirrored**, never duplicated. `/p/coder/v1/...`
+  and `/p/coder/webhooks/<route>` are answered by the default profile's own
+  adapter under coder's scope. A secondary must therefore **not** enable
+  `api_server` or `webhook` itself (the dashboard refuses with `409`; an
+  `API_SERVER_KEY` or `WEBHOOK_ENABLED` in the secondary's `.env` wires the
+  credential without starting a listener).
+- **Every other inbound-port platform runs in shared-listener mode.** A
+  secondary that configures Twilio SMS, LINE, Teams, BlueBubbles, Microsoft
+  Graph, WhatsApp Cloud, WeCom callback or Feishu webhook mode gets its **own**
+  adapter instance built without a port; the default listener forwards
+  `/p/<profile>/<the adapter's usual path>` to it. See
+  [Inbound-port platforms under the multiplexer](#inbound-port-platforms-under-the-multiplexer).
 
 Authentication follows the profile named in the URL. Unprefixed endpoints keep
 using the default listener's existing credentials.
@@ -182,9 +180,8 @@ using the default listener's existing credentials.
 - `/p/coder/...` API-server requests must use `API_SERVER_KEY` from
   `~/.hermes/profiles/coder/.env`; the default listener key is rejected. Under
   the multiplexer that key only authenticates the prefix — it does not turn on a
-  second `api_server` listener in the secondary profile (which would otherwise be
-  the port-binding conflict described below), so you do not need to pin
-  `platforms.api_server.enabled: false` in the secondary's `config.yaml`.
+  second `api_server` listener in the secondary profile, so you do not need to
+  pin `platforms.api_server.enabled: false` in the secondary's `config.yaml`.
 - A webhook route that targets `coder` must declare `profile: coder` beside
   its existing route-specific `secret` in the default profile's
   `config.yaml`. That secret is then accepted only at
@@ -202,16 +199,65 @@ using the default listener's existing credentials.
 - `/p/coder/api/platforms/<platform>/events` callbacks are verified and
   dispatched by coder's adapter; when coder has none the callback is a 503.
 
-Keep port-binding platforms disabled in secondary profile configs. The shared
-listener and its route definitions stay on the default profile; profile
-binding controls which profile each authenticated webhook route may execute.
 Named API requests fail closed when the target profile has no
-`API_SERVER_KEY`.
+`API_SERVER_KEY`. Security configuration errors remain fatal: for example, an
+`open` own-policy platform without `GATEWAY_ALLOW_ALL_USERS` or its
+platform-specific allow-all opt-in still aborts gateway startup rather than
+silently dropping the unsafe profile.
 
-Only this shared-listener conflict degrades to a skipped profile. Security
-configuration errors remain fatal: for example, an `open` own-policy platform
-without `GATEWAY_ALLOW_ALL_USERS` or its platform-specific allow-all opt-in
-still aborts gateway startup rather than silently dropping the unsafe profile.
+#### Inbound-port platforms under the multiplexer
+
+A standalone `hermes -p coder gateway run` binds coder's Twilio, LINE, Teams,
+… webhook servers on their own ports. Under the multiplexer those adapters are
+still coder's — same credentials from `profiles/coder/.env`, same
+`config.yaml`, replies sent through coder's channel — but they bind **no port**.
+The default profile's shared listener forwards `/p/coder/<path>` to them, where
+`<path>` is exactly the path the adapter would serve standalone. The request is
+verified by **coder's** adapter with **coder's** secret (Twilio auth token, LINE
+channel secret, Teams app credentials, BlueBubbles password, …) and runs under
+coder's runtime scope; the default profile's own `/path` is untouched, and a
+profile that has no adapter for a path gets `404`, never another profile's bot.
+
+| Platform | Secondary profile's callback URL on the shared listener | Verified with the named profile's |
+|---|---|---|
+| Twilio SMS (`sms`) | `https://<host>/p/<profile>/webhooks/twilio` | `TWILIO_AUTH_TOKEN` signature (`SMS_WEBHOOK_URL` must be this URL) |
+| LINE (`line`) | `https://<host>/p/<profile>/line/webhook` (media: `/p/<profile>/line/media/...`) | `LINE_CHANNEL_SECRET` |
+| Microsoft Teams (`teams`) | `https://<host>/p/<profile>/api/messages` | Bot Framework token for `TEAMS_CLIENT_ID` |
+| BlueBubbles (`bluebubbles`) | `http://<host>/p/<profile>/bluebubbles-webhook` (registered with the server automatically) | `BLUEBUBBLES_PASSWORD` |
+| Microsoft Graph (`msgraph_webhook`) | `https://<host>/p/<profile>/msgraph/webhook` | `extra.client_state` |
+| WhatsApp Cloud (`whatsapp_cloud`) | `https://<host>/p/<profile>/whatsapp/webhook` | `WHATSAPP_CLOUD_APP_SECRET` / verify token |
+| WeCom callback (`wecom_callback`) | `https://<host>/p/<profile>/wecom/callback` | the app's callback token / AES key |
+| Feishu webhook mode (`feishu`) | `https://<host>/p/<profile>/feishu/webhook` | `FEISHU_VERIFICATION_TOKEN` / `FEISHU_ENCRYPT_KEY` |
+
+`<host>` is the public hostname (tunnel, reverse proxy) in front of the default
+profile's listener; a custom `webhook_path` in the profile's config moves the
+path after `/p/<profile>` accordingly. The gateway logs the exact URL at
+startup:
+
+```
+[sms] profile 'coder' is served on the default profile's shared listener:
+http://127.0.0.1:8642/p/coder/webhooks/twilio (point the vendor's callback URL at this path ...)
+```
+
+and every status surface repeats it, so you know what to paste into the vendor
+console:
+
+```
+$ hermes -p coder gateway status
+✓ Gateway is running via the default-profile multiplexer
+  Manage it from the default profile: hermes gateway status
+
+Inbound callback URLs on the shared listener:
+  line: http://127.0.0.1:8642/p/coder/line/webhook
+  sms: http://127.0.0.1:8642/p/coder/webhooks/twilio
+```
+
+`hermes gateway status` and `hermes status` on the default profile list the same
+URLs per served profile, and the dashboard's Channels page shows them as each
+platform's `ingress_url` when viewing that profile. A per-profile
+`SMS_WEBHOOK_PORT`, `LINE_PORT`, `TEAMS_PORT`, … in a secondary's `.env` is
+ignored under the multiplexer (nothing binds); it applies again the moment that
+profile runs its own standalone gateway.
 
 #### 3. Per-credential platforms still need their own token per profile
 
@@ -342,6 +388,7 @@ profile and never shares with the default or any sibling:
 | Provider keys, bot tokens, `${VAR}` refs in `config.yaml` | The profile's own `.env` (its secret scope) | Unresolved / no adapter — never the default profile's value |
 | Authorization (`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS`, per-platform allowlists and allow-all opt-ins) | The owning profile's `.env` and `config.yaml` | Closed — a default-profile opt-in never opens a secondary's bot |
 | HTTP endpoints (`/p/<profile>/api/...`, `/p/<profile>/webhooks/...`, platform event callbacks) | The named profile's `API_SERVER_KEY`, `profile:`-bound webhook routes, and its own adapter | `401`/`404`; delivery without an adapter is `502`/`503`, never another profile's bot |
+| Inbound-port platforms (`/p/<profile>/webhooks/twilio`, `/p/<profile>/line/webhook`, `/p/<profile>/api/messages`, …) | The named profile's own adapter and its secret (Twilio auth token, LINE channel secret, Teams app, BlueBubbles password, …); replies leave through that adapter | `401`/`403` on a wrong secret, `404` when the profile has no such adapter — never the default profile's adapter |
 | Adapter settings (`*_REQUIRE_MENTION`, `*_REACTIONS`, `*_PROXY`, webhook host/port/URL, Matrix thread/session/E2EE policy, Discord backfill/attachment caps, Buzz reply mode, A2A agent card) | The owning profile's `.env` and `config.yaml` | The adapter's documented default — never the default profile's setting |
 | `MEDIA:` attachment denylist | Every home under `profiles/` plus the default home, enumerated at check time | A turn can never attach another profile's `.env`, `auth.json`, `state.db`, sessions or token stores |
 | stdio MCP child environment | Safe baseline + the profile's scoped values for secret-source names + the server's own `env:` | A name the profile lacks is absent from the child — no default-profile fallthrough |

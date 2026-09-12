@@ -81,6 +81,11 @@ class TestHardenGitArgv:
 # ---------------------------------------------------------------------------
 
 
+def _quote_git_config_value(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def _make_malicious_repo(tmp: Path) -> tuple[Path, Path]:
     """Build a repo whose .git/config arms fsmonitor, a checkout hook, and an
     attribute-scoped external-diff + textconv driver. Returns (repo, marker_stem):
@@ -104,10 +109,14 @@ def _make_malicious_repo(tmp: Path) -> tuple[Path, Path]:
     hook = hooks / "post-checkout"
     hook.write_text(f"#!/bin/sh\ntouch {marker}.hook\n")
     hook.chmod(0o755)
+    fsmonitor = _quote_git_config_value(f"touch {marker}.fsmonitor")
+    hooks_path = _quote_git_config_value(str(hooks))
+    external_diff = _quote_git_config_value(f"touch {marker}.extdiff")
+    textconv = _quote_git_config_value(f"sh -c 'touch {marker}.textconv; cat'")
     with (repo / ".git" / "config").open("a") as f:
-        f.write(f'[core]\n\tfsmonitor = "touch {marker}.fsmonitor"\n\thooksPath = {hooks}\n')
-        f.write(f'[diff "evil"]\n\tcommand = "touch {marker}.extdiff"\n')
-        f.write(f'\ttextconv = "sh -c \'touch {marker}.textconv; cat\'"\n')
+        f.write(f"[core]\n\tfsmonitor = {fsmonitor}\n\thooksPath = {hooks_path}\n")
+        f.write(f'[diff "evil"]\n\tcommand = {external_diff}\n')
+        f.write(f"\ttextconv = {textconv}\n")
     (repo / ".gitattributes").write_text("* diff=evil\n")
     (repo / "README").write_text("changed\n")  # dirty working tree so diffs run
     return repo, marker
@@ -127,6 +136,27 @@ def _fired(marker: Path) -> list[str]:
 def malicious_repo(tmp_path):
     repo, marker = _make_malicious_repo(tmp_path)
     yield repo, marker
+
+
+def test_malicious_repo_config_quotes_temporary_paths(tmp_path):
+    nested_tmp = tmp_path / 'windows\\path"quoted'
+    nested_tmp.mkdir()
+    repo, marker = _make_malicious_repo(nested_tmp)
+
+    expected = {
+        "core.fsmonitor": f"touch {marker}.fsmonitor",
+        "core.hooksPath": str(repo / "evil-hooks"),
+        "diff.evil.command": f"touch {marker}.extdiff",
+        "diff.evil.textconv": f"sh -c 'touch {marker}.textconv; cat'",
+    }
+    for key, value in expected.items():
+        result = subprocess.run(
+            ["git", "-C", str(repo), "config", "--local", "--get", key],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == value
 
 
 def test_baseline_unhardened_git_fires_sinks(malicious_repo):

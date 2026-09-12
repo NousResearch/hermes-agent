@@ -500,6 +500,51 @@ def test_dispatch_retries_aged_failure_breaker_once_per_cooldown(kanban_home, mo
         ).promoted == 0
 
 
+def test_failed_crash_probe_uses_dispatcher_failure_limit(kanban_home, monkeypatch):
+    """A failed cooldown probe re-trips even with a strict dispatcher limit."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 2_000_000
+    cooldown = 3600
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="strict transient", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1 WHERE id=?",
+            (tid,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'gave_up', ?, ?)",
+            (tid, '{"retry_status":"ready"}', now),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(kbd.time, "time", lambda: now + cooldown)
+        released = kbd.dispatch_once(
+            conn, max_spawn=0, failure_limit=1, failure_retry_seconds=cooldown,
+        )
+        assert released.promoted == 1
+        assert kb.get_task(conn, tid).consecutive_failures == 0
+
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host}:probe")
+        kbd._set_worker_pid(conn, tid, 98765)
+
+        failed = kbd.dispatch_once(
+            conn, max_spawn=0, failure_limit=1, failure_retry_seconds=cooldown,
+        )
+        task = kb.get_task(conn, tid)
+        assert failed.auto_blocked == [tid]
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+        assert kbd.dispatch_once(
+            conn, max_spawn=0, failure_limit=1, failure_retry_seconds=cooldown,
+        ).promoted == 0
+
+
 
 
 # ---------------------------------------------------------------------------

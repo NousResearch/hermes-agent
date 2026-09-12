@@ -82,7 +82,10 @@ def redact_registered_vault_values(text: str) -> str:
 _SENSITIVE_QUERY_PARAMS = frozenset({
     "access_token", "refresh_token", "id_token", "token", "api_key", "apikey",
     "client_secret", "password", "auth", "jwt", "session", "secret", "key",
-    "code", "signature", "x-amz-signature",
+    "code", "signature",
+    # Both spellings on purpose: _redact_query_string matches key.lower() (dashed),
+    # _redact_strict_url_credentials matches _canonical_url_param_name() which folds "-"->"_".
+    "x-amz-signature", "x_amz_signature",
 })
 
 # Snapshot at import time so runtime env mutations (e.g. an LLM-generated

@@ -17,7 +17,7 @@ import type {
   ProfileInfo,
   SkillInfo,
   ToolsetInfo,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import {
   buildCronJobPayload,
   cronJobHasExecutionContent,

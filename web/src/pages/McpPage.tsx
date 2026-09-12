@@ -6,14 +6,7 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
-import type {
-  McpCatalogDiagnostic,
-  McpCatalogEntry,
-  McpHttpAuth,
-  McpNetwork,
-  McpServer,
-  McpTestResult,
-} from "@/lib/api";
+import type { McpCatalogDiagnostic, McpCatalogEntry, McpHttpAuth, McpNetwork, McpServer, McpTestResult } from "@/lib/api-types";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";

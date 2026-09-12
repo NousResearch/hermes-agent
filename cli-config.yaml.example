@@ -93,95 +93,103 @@ model:
   # only.
   # streaming: true
 
-  # Advanced provider examples (Azure auth, token limits, custom headers,
-  # command-minted credentials and per-provider timeouts) are preserved in:
-  # website/docs/user-guide/configuring-models.md#advanced-provider-configuration-examples
+  # Azure Foundry keyless auth example:
+  # provider: "azure-foundry"
+  # base_url: "https://<resource>.openai.azure.com/openai/v1"
+  # auth_mode: "entra_id"      # DefaultAzureCredential: az login, managed identity, workload identity, etc.
+  # default: "gpt-4o"          # Deployment/model name
+  # entra:
+  #   scope: "https://ai.azure.com/.default"  # Optional; this is the default.
 
-# =============================================================================
-# Unified Timeouts (operation deadlines)
-# =============================================================================
-# One place to override Hermes's internal operation deadlines (seconds).
-# Keys are dotted paths resolved by agent/deadline.py:resolve_timeout().
-# Precedence: this section > legacy HERMES_* env var (back-compat) > built-in
-# default. 0 or a negative value disables the bound (unbounded); very large
-# values are clamped to a platform-safe maximum automatically.
+  # ── Token limits — two settings, easy to confuse ──────────────────────────
+  #
+  # context_length: TOTAL context window (input + output tokens combined).
+  #   Controls when Hermes compresses history and validates requests.
+  #   Leave unset — Hermes auto-detects the correct value from the provider.
+  #   Set manually only when auto-detection is wrong (e.g. a local server with
+  #   a custom num_ctx, or a proxy that doesn't expose /v1/models).
+  #
+  # context_length: 131072
+  #
+  # Output-token limits are provider-owned, not user configuration. Native
+  # protocols requiring a limit receive an internal value from Hermes.
+
+  # ── Custom request headers (optional) ─────────────────────────────────────
+  #
+  # default_headers: extra HTTP headers sent on every request to an
+  #   OpenAI-compatible endpoint. User values take precedence over the
+  #   provider/SDK defaults, so this is the supported way to override the
+  #   OpenAI Python SDK's identifying headers (User-Agent: OpenAI/Python ...,
+  #   X-Stainless-*) when a custom provider sits behind a gateway/WAF that
+  #   rejects them — e.g. an upstream that returns "502 Upstream access
+  #   forbidden" for the SDK default User-Agent but accepts a plain one.
+  #   Applies on the OpenAI wire only (not native Anthropic / Bedrock).
+  #
+  # default_headers:
+  #   User-Agent: "curl/8.7.1"
+  #
+  # extra_headers: accepted as an alias of default_headers (merged, with
+  #   extra_headers winning when both are set) — matches the per-provider
+  #   extra_headers key below.
+  #
+  # Per-provider variant: named providers / custom_providers entries accept an
+  # extra_headers dict scoped to that endpoint only — for reverse proxies,
+  # gateways, or custom auth (e.g. Cloudflare Access service tokens).
+  # Merged onto SDK/provider defaults with the entry's values winning.
+  # Header values are treated as secrets and are never logged.
+  #
+  # providers:
+  #   my-proxy:
+  #     base_url: "https://llm.internal.example.com/v1"
+  #     key_env: "MY_PROXY_API_KEY"
+  #     extra_headers:
+  #       CF-Access-Client-Id: "xxxx.access"
+  #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
+  #       X-Client-Name: "hermes-agent"
+# providers:
+#   meta:
+#     base_url: https://api.meta.ai/v1
+#     api_key: ${MODEL_API_KEY}
+#     # api_mode auto-detected as codex_responses for api.meta.ai; no need to set
+#     # (the bundled meta-ai provider covers this — a named custom provider is
+#     # only needed for a non-default Meta-compatible endpoint)
+# providers:
+#   router:
+#     base_url: https://api.router.com/v1
+#     api_key: ${RAMP_ROUTER_API_KEY}
+#     # api_mode auto-detected as codex_responses for api.router.com — the
+#     # Responses API is Router's native wire (chat/completions is only a
+#     # compatibility shim). The bundled router provider covers this; a named
+#     # custom provider is only needed for a non-default Router-compatible
+#     # endpoint.
+
+
+# Advanced provider, timeout, OpenRouter, and worktree settings
+# ------------------------------------------------------------------
+# Full contracts and examples, moved verbatim from this file:
+#   website/docs/reference/advanced-provider-configuration.md
 #
-# Currently resolved keys (more paths migrate here over time — see issue #85125):
+# providers:
+#   my-gateway:
+#     key_cmd: "my-auth-cli print-token --profile prod"
+#     request_timeout_seconds: 300
+#     stale_timeout_seconds: 900
+#     models:
+#       slow-reasoning-model:
+#         timeout_seconds: 600
+#         stale_timeout_seconds: 1800
 #
 # timeouts:
-#   tools:
-#     concurrent_batch: 420   # Deadline for a parallel tool-call batch
-#                             # (legacy env: HERMES_CONCURRENT_TOOL_TIMEOUT_S)
-#     sequential_call: 420    # Deadline for one sequentially-executed tool call.
-#                             # Defaults to concurrent_batch's value so the two
-#                             # executor paths stay in sync; human waits
-#                             # (approval prompts, clarify) never count against it.
-
-# =============================================================================
-# OpenRouter Provider Routing (only applies when using OpenRouter)
-# =============================================================================
-# Control how requests are routed across providers on OpenRouter.
-# See: https://openrouter.ai/docs/guides/routing/provider-selection
+#   tools: {concurrent_batch: 420, sequential_call: 420}
 #
 # provider_routing:
-#   # Sort strategy: "price" (default), "throughput", or "latency"
-#   # Append :nitro to model name for a shortcut to throughput sorting.
-#   sort: "throughput"
+#   sort: "throughput"                  # price | throughput | latency
+#   only: ["anthropic", "google"]
+#   data_collection: "deny"             # allow | deny
 #
-#   # Only allow these providers (provider slugs from OpenRouter)
-#   # only: ["anthropic", "google"]
-#
-#   # Skip these providers entirely
-#   # ignore: ["deepinfra", "fireworks"]
-#
-#   # Try providers in this order (overrides default load balancing)
-#   # order: ["anthropic", "google", "together"]
-#
-#   # Require providers to support all parameters in your request
-#   # require_parameters: true
-#
-#   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
-#   # data_collection: "deny"
-#
-#   # Per-model overrides: same keys, applied only when the agent is on that model
-#   # (spelling-tolerant match; unset keys fall through to the flat values above).
-#   # models:
-#   #   "openai/gpt-6-astra":
-#   #     only: ["openai"]
-#   #   "anthropic/claude-fable-5.1":
-#   #     only: ["anthropic"]
-
-# =============================================================================
-# OpenRouter Response Caching (only applies when using OpenRouter)
-# =============================================================================
-# Cache identical API responses at the OpenRouter edge for free instant replays.
-# When enabled, identical requests (same model, messages, parameters) return
-# cached responses with zero billing. Separate from Anthropic prompt caching.
-# See: https://openrouter.ai/docs/guides/features/response-caching
-#
-# openrouter:
-#   response_cache: true         # Enable response caching (default: true)
-#   response_cache_ttl: 300      # Cache TTL in seconds, 1-86400 (default: 300)
-
-# =============================================================================
-# Git Worktree Isolation
-# =============================================================================
-# When enabled, each CLI session creates an isolated git worktree so multiple
-# agents can work on the same repo concurrently without file collisions.
-# Equivalent to always passing --worktree / -w on the command line.
-#
-# worktree: true    # Always create a worktree when in a git repo
-# worktree: false   # Default — only create when -w flag is passed
-#
-# By default a new worktree branches from the freshly-fetched remote tip
-# (the current branch's upstream, else the remote's default branch) so it
-# starts current with the project instead of from the local clone's
-# (possibly stale) HEAD. Set worktree_sync: false to branch from local HEAD
-# instead — useful when offline or when you deliberately want the clone's
-# exact current state as the base.
-#
-# worktree_sync: true   # Default — branch from the fetched remote tip
-# worktree_sync: false  # Branch from local HEAD (offline / pinned base)
+# openrouter: {response_cache: true, response_cache_ttl: 300}
+# worktree: false                        # true = always isolate CLI sessions
+# worktree_sync: true                    # false = branch from local HEAD
 
 # =============================================================================
 # Kanban Review Dispatch

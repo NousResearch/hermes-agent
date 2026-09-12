@@ -14,7 +14,7 @@ import type {
   MemoryProviderSetupInfo,
   MemoryProviderSetupResult,
   PluginsHubResponse,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";

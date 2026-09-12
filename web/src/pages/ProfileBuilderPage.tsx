@@ -10,12 +10,7 @@ import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { api } from "@/lib/api";
-import type {
-  McpHttpAuth,
-  McpServerCreate,
-  SkillInfo,
-  SkillHubResult,
-} from "@/lib/api";
+import type { McpHttpAuth, McpServerCreate, SkillInfo, SkillHubResult } from "@/lib/api-types";
 import { McpNetworkFields } from "@/components/McpNetworkFields";
 import {
   buildMcpServerCreate,

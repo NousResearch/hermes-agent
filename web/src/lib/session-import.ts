@@ -1,4 +1,4 @@
-import type { SessionImportResponse } from "@/lib/api";
+import type { SessionImportResponse } from "@/lib/api-types";
 
 export type ImportableSession = Record<string, unknown>;
 

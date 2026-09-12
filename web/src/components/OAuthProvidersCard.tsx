@@ -6,7 +6,8 @@ import {
   RefreshCw,
   Terminal,
 } from "lucide-react";
-import { api, type OAuthProvider } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { OAuthProvider } from "@/lib/api-types";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";

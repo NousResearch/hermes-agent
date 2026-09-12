@@ -1,4 +1,4 @@
-import type { CronJob, CronJobMutation } from "./api";
+import type { CronJob, CronJobMutation } from "./api-types";
 
 export interface CronJobFormState {
   name: string;

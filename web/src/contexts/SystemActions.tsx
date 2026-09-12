@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { ActionStatusResponse } from "@/lib/api";
+import type { ActionStatusResponse } from "@/lib/api-types";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useI18n } from "@/i18n";
 import {

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Brain, Eye, Gauge, Lightbulb, Wrench } from "lucide-react";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { api } from "@/lib/api";
-import type { ModelInfoResponse } from "@/lib/api";
+import type { ModelInfoResponse } from "@/lib/api-types";
 import { formatTokenCount } from "@/lib/format";
 
 interface ModelInfoCardProps {

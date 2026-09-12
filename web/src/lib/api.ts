@@ -1,4 +1,24 @@
-import { createMcpApi, type McpServerCreate } from './api-mcp'
+import { buildHermesWebSocketUrl } from "@hermes/shared";
+
+// The dashboard can be served either at the root of its host (e.g.
+// https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
+// (e.g. https://mission-control.tilos.com/hermes/). The Python backend
+// injects ``window.__HERMES_BASE_PATH__`` into index.html based on the
+// incoming ``X-Forwarded-Prefix`` header so the SPA can address its own
+// ``/api/...`` and ``/dashboard-plugins/...`` URLs correctly without a
+// rebuild. Empty string means "served at root".
+function readBasePath(): string {
+  if (typeof window === "undefined") return "";
+  const raw = window.__HERMES_BASE_PATH__ ?? "";
+  if (!raw) return "";
+  // Normalise: ensure leading slash, strip trailing slash.
+  const withLead = raw.startsWith("/") ? raw : `/${raw}`;
+  return withLead.replace(/\/+$/, "");
+}
+
+export const HERMES_BASE_PATH = readBasePath();
+const BASE = HERMES_BASE_PATH;
+
 import type {
   AuthMeResponse,
   ActionResponse,
@@ -9,6 +29,13 @@ import type {
   SkillHubSourcesResponse,
   SkillHubPreview,
   SkillHubScan,
+  McpServer,
+  McpCatalogEntry,
+  McpCatalogDiagnostic,
+  McpNetwork,
+  McpServerCreate,
+  McpTestResult,
+  McpOAuthFlow,
   MessagingPlatformsResponse,
   MessagingPlatformUpdate,
   MessagingPlatformTestResult,
@@ -29,6 +56,7 @@ import type {
   CuratorStatus,
   PortalStatus,
   CheckpointsResponse,
+  FetchJSONOptions,
   ActionStatusResponse,
   StatusResponse,
   SessionInfo,
@@ -80,53 +108,31 @@ import type {
   AgentPluginInstallResponse,
   CatalogResponse,
   AgentPluginUpdateResponse,
-  PluginProvidersPutRequest
-} from './api-types'
-
-export type * from './api-types'
-export type * from './api-mcp'
-
-import { buildHermesWebSocketUrl } from '@hermes/shared'
-
-// The dashboard can be served either at the root of its host (e.g.
-// https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
-// (e.g. https://mission-control.tilos.com/hermes/). The Python backend
-// injects ``window.__HERMES_BASE_PATH__`` into index.html based on the
-// incoming ``X-Forwarded-Prefix`` header so the SPA can address its own
-// ``/api/...`` and ``/dashboard-plugins/...`` URLs correctly without a
-// rebuild. Empty string means "served at root".
-function readBasePath(): string {
-  if (typeof window === 'undefined') return ''
-  const raw = window.__HERMES_BASE_PATH__ ?? ''
-  if (!raw) return ''
-  // Normalise: ensure leading slash, strip trailing slash.
-  const withLead = raw.startsWith('/') ? raw : `/${raw}`
-  return withLead.replace(/\/+$/, '')
-}
-
-export const HERMES_BASE_PATH = readBasePath()
-const BASE = HERMES_BASE_PATH
-
-import { attemptDashboardTokenReloadOnce, clearDashboardTokenReloadAttempt } from '@/lib/dashboard-auth-reload'
+  PluginProvidersPutRequest,
+} from "./api-types";
+import {
+  attemptDashboardTokenReloadOnce,
+  clearDashboardTokenReloadAttempt,
+} from "@/lib/dashboard-auth-reload";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
 declare global {
   interface Window {
-    __HERMES_SESSION_TOKEN__?: string
-    __HERMES_BASE_PATH__?: string
+    __HERMES_SESSION_TOKEN__?: string;
+    __HERMES_BASE_PATH__?: string;
     /** Server-injected flag: ``true`` when the dashboard's OAuth gate is
      * engaged (public bind, no ``--insecure``). Toggles the SPA's
      * WS-upgrade path from legacy ``?token=`` to single-use ``?ticket=``
      * fetched via :func:`getWsTicket`. */
-    __HERMES_AUTH_REQUIRED__?: boolean
+    __HERMES_AUTH_REQUIRED__?: boolean;
   }
 }
-const SESSION_HEADER = 'X-Hermes-Session-Token'
+const SESSION_HEADER = "X-Hermes-Session-Token";
 
 function setSessionHeader(headers: Headers, token: string): void {
   if (!headers.has(SESSION_HEADER)) {
-    headers.set(SESSION_HEADER, token)
+    headers.set(SESSION_HEADER, token);
   }
 }
 
@@ -137,14 +143,14 @@ function setSessionHeader(headers: Headers, token: string): void {
 // profile-scoped endpoint families below. "" = the dashboard process's own
 // profile (legacy behavior). Calls that already carry an explicit profile
 // (e.g. ProfileBuilder writes) are left untouched — explicit beats global.
-let _managementProfile = ''
+let _managementProfile = "";
 
 export function setManagementProfile(name: string): void {
-  _managementProfile = (name || '').trim()
+  _managementProfile = (name || "").trim();
 }
 
 export function getManagementProfile(): string {
-  return _managementProfile
+  return _managementProfile;
 }
 
 // Endpoint families that honor ?profile= on the backend (web_server.py
@@ -152,48 +158,52 @@ export function getManagementProfile(): string {
 // cron (which has its own per-job profile params), profiles themselves — is
 // machine-global or self-scoped and must NOT be rewritten.
 const PROFILE_SCOPED_PREFIXES = [
-  '/api/status',
-  '/api/gateway',
-  '/api/analytics',
-  '/api/skills',
-  '/api/tools/toolsets',
-  '/api/config',
-  '/api/env',
-  '/api/mcp',
-  '/api/messaging/platforms',
-  '/api/messaging/telegram/onboarding',
-  '/api/messaging/whatsapp/onboarding',
+  "/api/status",
+  "/api/gateway",
+  "/api/analytics",
+  "/api/skills",
+  "/api/tools/toolsets",
+  "/api/config",
+  "/api/env",
+  "/api/mcp",
+  "/api/messaging/platforms",
+  "/api/messaging/telegram/onboarding",
+  "/api/messaging/whatsapp/onboarding",
   // OAuth/account state is profile-owned too: status, login sessions, polling,
   // cancellation, and disconnect must all follow the selected management
   // profile rather than silently targeting the dashboard process's profile.
-  '/api/providers/oauth',
-  '/api/model/info',
-  '/api/model/set',
-  '/api/model/auxiliary',
-  '/api/model/moa',
-  '/api/model/options',
+  "/api/providers/oauth",
+  "/api/model/info",
+  "/api/model/set",
+  "/api/model/auxiliary",
+  "/api/model/moa",
+  "/api/model/options",
   // A named profile keeps its own pairing whitelist, and its gateway only
   // consults that one — approving into the global store would grant access
   // the running gateway never sees.
-  '/api/pairing'
-]
+  "/api/pairing",
+];
 
 function withManagementProfile(url: string): string {
-  if (!_managementProfile) return url
-  if (url.includes('profile=')) return url // explicit param wins
-  const path = url.split('?')[0]
-  if (!PROFILE_SCOPED_PREFIXES.some(p => path.startsWith(p))) return url
-  const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`
+  if (!_managementProfile) return url;
+  if (url.includes("profile=")) return url; // explicit param wins
+  const path = url.split("?")[0];
+  if (!PROFILE_SCOPED_PREFIXES.some((p) => path.startsWith(p))) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
 }
 
-export async function fetchJSON<T>(url: string, init?: RequestInit, options?: FetchJSONOptions): Promise<T> {
-  url = withManagementProfile(url)
+export async function fetchJSON<T>(
+  url: string,
+  init?: RequestInit,
+  options?: FetchJSONOptions,
+): Promise<T> {
+  url = withManagementProfile(url);
   // Inject the session token into all /api/ requests.
-  const headers = new Headers(init?.headers)
-  const token = window.__HERMES_SESSION_TOKEN__
+  const headers = new Headers(init?.headers);
+  const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
-    setSessionHeader(headers, token)
+    setSessionHeader(headers, token);
   }
   const res = await fetch(`${BASE}${url}`, {
     ...init,
@@ -202,21 +212,24 @@ export async function fetchJSON<T>(url: string, init?: RequestInit, options?: Fe
     // for any fetch routed through here. Loopback mode is unaffected — the
     // server doesn't read cookies and the legacy session-token header is
     // already attached above.
-    credentials: init?.credentials ?? 'include'
-  })
+    credentials: init?.credentials ?? "include",
+  });
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
     // SPA can full-page-navigate to /login on session expiry. Parse it,
     // and only redirect on the known error codes — domain-level 401s
     // (e.g. "you don't have permission to read this monitor") bubble
     // up as regular errors so callers can handle them.
-    let body: { error?: string; login_url?: string } = {}
+    let body: { error?: string; login_url?: string } = {};
     try {
-      body = await res.clone().json()
+      body = await res.clone().json();
     } catch {
       /* non-JSON 401 — let it fall through */
     }
-    if ((body.error === 'unauthenticated' || body.error === 'session_expired') && body.login_url) {
+    if (
+      (body.error === "unauthenticated" || body.error === "session_expired") &&
+      body.login_url
+    ) {
       // Preserve where the user was so /auth/callback can land them back
       // after re-auth. The gate's login_url already carries a ``next=``
       // built from the request path, but the SPA may be deep inside a
@@ -224,13 +237,16 @@ export async function fetchJSON<T>(url: string, init?: RequestInit, options?: Fe
       // /sessions/<id> deep link. Save the current location as a
       // fallback the post-login handler can read.
       try {
-        sessionStorage.setItem('hermes.lastLocation', window.location.pathname + window.location.search)
+        sessionStorage.setItem(
+          "hermes.lastLocation",
+          window.location.pathname + window.location.search,
+        );
       } catch {
         /* SSR / privacy mode — ignore */
       }
-      window.location.assign(body.login_url)
+      window.location.assign(body.login_url);
       // Never resolve — the page is about to unload.
-      return new Promise<T>(() => {})
+      return new Promise<T>(() => {});
     }
     // Loopback mode: ``_SESSION_TOKEN`` rotates on every server restart
     // (``hermes update``, ``hermes gateway restart``, etc.). A tab kept
@@ -243,7 +259,7 @@ export async function fetchJSON<T>(url: string, init?: RequestInit, options?: Fe
     // middleware failure that should not reload-loop.
     if (!window.__HERMES_AUTH_REQUIRED__ && !options?.allowUnauthorized) {
       if (attemptDashboardTokenReloadOnce()) {
-        return new Promise<T>(() => {})
+        return new Promise<T>(() => {});
       }
     }
   }
@@ -251,18 +267,18 @@ export async function fetchJSON<T>(url: string, init?: RequestInit, options?: Fe
     // Clear the stale-token reload guard: a successful 2xx proves the
     // current ``window.__HERMES_SESSION_TOKEN__`` is valid, so the next
     // 401 — if any — should be allowed to trigger its own reload cycle.
-    clearDashboardTokenReloadAttempt()
+    clearDashboardTokenReloadAttempt();
   }
   if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText)
-    throw new Error(`${res.status}: ${text}`)
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`${res.status}: ${text}`);
   }
-  return res.json()
+  return res.json();
 }
 
 /** Encode a plugin registry key for URL paths (preserves `/` segment separators). */
 function pluginPath(name: string): string {
-  return name.split('/').map(encodeURIComponent).join('/')
+  return name.split("/").map(encodeURIComponent).join("/");
 }
 
 /**
@@ -279,13 +295,13 @@ function pluginPath(name: string): string {
  */
 export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: number }> {
   const res = await fetch(`${BASE}/api/auth/ws-ticket`, {
-    method: 'POST',
-    credentials: 'include'
-  })
+    method: "POST",
+    credentials: "include",
+  });
   if (!res.ok) {
-    throw new Error(`/api/auth/ws-ticket: HTTP ${res.status}`)
+    throw new Error(`/api/auth/ws-ticket: HTTP ${res.status}`);
   }
-  return res.json()
+  return res.json();
 }
 
 /**
@@ -295,11 +311,11 @@ export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: numb
  */
 export async function buildWsAuthParam(): Promise<[string, string]> {
   if (window.__HERMES_AUTH_REQUIRED__) {
-    const { ticket } = await getWsTicket()
-    return ['ticket', ticket]
+    const { ticket } = await getWsTicket();
+    return ["ticket", ticket];
   }
-  const token = window.__HERMES_SESSION_TOKEN__ ?? ''
-  return ['token', token]
+  const token = window.__HERMES_SESSION_TOKEN__ ?? "";
+  return ["token", token];
 }
 
 /**
@@ -319,17 +335,20 @@ export async function buildWsAuthParam(): Promise<[string, string]> {
  * navigation targets). Callers that want the redirect behaviour should use
  * ``fetchJSON``.
  */
-export async function authedFetch(url: string, init?: RequestInit): Promise<Response> {
-  const headers = new Headers(init?.headers)
-  const token = window.__HERMES_SESSION_TOKEN__
+export async function authedFetch(
+  url: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
-    setSessionHeader(headers, token)
+    setSessionHeader(headers, token);
   }
   return fetch(`${BASE}${url}`, {
     ...init,
     headers,
-    credentials: init?.credentials ?? 'include'
-  })
+    credentials: init?.credentials ?? "include",
+  });
 }
 
 /**
@@ -345,13 +364,16 @@ export async function authedFetch(url: string, init?: RequestInit): Promise<Resp
  * applied here. Extra query params can be supplied via ``params`` and are
  * merged before the auth param.
  */
-export async function buildWsUrl(path: string, params?: Record<string, string>): Promise<string> {
+export async function buildWsUrl(
+  path: string,
+  params?: Record<string, string>,
+): Promise<string> {
   return buildHermesWebSocketUrl({
     authParam: await buildWsAuthParam(),
     basePath: BASE,
     params,
-    path
-  })
+    path,
+  });
 }
 
 /** Build a ``?profile=<name>`` query suffix, or "" when unset.
@@ -359,56 +381,56 @@ export async function buildWsUrl(path: string, params?: Record<string, string>):
  * Used by the skills/toolsets endpoints so the dashboard can manage a
  * profile other than the one the server process runs under. */
 function profileQuery(profile?: string): string {
-  return profile ? `?profile=${encodeURIComponent(profile)}` : ''
+  return profile ? `?profile=${encodeURIComponent(profile)}` : "";
 }
 
 function appendProfileParam(url: string, profile?: string): string {
-  if (!profile || url.includes('profile=')) return url
-  return `${url}${url.includes('?') ? '&' : '?'}profile=${encodeURIComponent(profile)}`
+  if (!profile || url.includes("profile=")) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(profile)}`;
 }
 
 function appendQueryParam(url: string, key: string, value?: string): string {
-  if (!value) return url
-  return `${url}${url.includes('?') ? '&' : '?'}${key}=${encodeURIComponent(value)}`
+  if (!value) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(value)}`;
 }
 
 export interface SessionQueryOptions {
-  profile?: string
-  order?: 'created' | 'recent'
-  source?: string | null
-  sources?: string[]
-  excludeSources?: string[]
+  profile?: string;
+  order?: "created" | "recent";
+  source?: string | null;
+  sources?: string[];
+  excludeSources?: string[];
 }
 
 function normalizeSessionQueryOptions(
   profileOrOptions?: string | SessionQueryOptions,
-  order: 'created' | 'recent' = 'created'
+  order: "created" | "recent" = "created",
 ): SessionQueryOptions {
-  if (typeof profileOrOptions === 'string') {
-    return { profile: profileOrOptions, order }
+  if (typeof profileOrOptions === "string") {
+    return { profile: profileOrOptions, order };
   }
   return {
     profile: getManagementProfile(),
     order,
-    ...(profileOrOptions ?? {})
-  }
+    ...(profileOrOptions ?? {}),
+  };
 }
 
 function appendSessionFilters(url: string, options: SessionQueryOptions): string {
-  let next = url
-  next = appendQueryParam(next, 'source', options.source ?? undefined)
+  let next = url;
+  next = appendQueryParam(next, "source", options.source ?? undefined);
   if (options.sources && options.sources.length > 0) {
-    next = appendQueryParam(next, 'sources', options.sources.join(','))
+    next = appendQueryParam(next, "sources", options.sources.join(","));
   }
   if (options.excludeSources && options.excludeSources.length > 0) {
-    next = appendQueryParam(next, 'exclude_sources', options.excludeSources.join(','))
+    next = appendQueryParam(next, "exclude_sources", options.excludeSources.join(","));
   }
-  return appendProfileParam(next, options.profile)
+  return appendProfileParam(next, options.profile);
 }
 
 export const api = {
   buildWsUrl,
-  getStatus: () => fetchJSON<StatusResponse>('/api/status'),
+  getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -427,745 +449,982 @@ export const api = {
    * widget can catch.
    */
   getAuthMe: () =>
-    fetchJSON<AuthMeResponse>('/api/auth/me', undefined, {
-      allowUnauthorized: true
+    fetchJSON<AuthMeResponse>("/api/auth/me", undefined, {
+      allowUnauthorized: true,
     }),
   logout: () =>
     fetch(`${BASE}/auth/logout`, {
-      method: 'POST',
-      credentials: 'include'
-    }).then(r => {
+      method: "POST",
+      credentials: "include",
+    }).then((r) => {
       // /auth/logout returns 302 → /login. Follow that with a full-page
       // navigation rather than letting fetch() opaquely consume the
       // redirect — the SPA needs to leave the protected area.
-      window.location.assign('/login')
-      return r
+      window.location.assign("/login");
+      return r;
     }),
   getSessions: (
     limit = 20,
     offset = 0,
     profileOrOptions: string | SessionQueryOptions = getManagementProfile(),
-    order: 'created' | 'recent' = 'created'
+    order: "created" | "recent" = "created",
   ) => {
-    const options = normalizeSessionQueryOptions(profileOrOptions, order)
+    const options = normalizeSessionQueryOptions(profileOrOptions, order);
     return fetchJSON<PaginatedSessions>(
-      appendSessionFilters(`/api/sessions?limit=${limit}&offset=${offset}&order=${options.order ?? order}`, options)
-    )
+      appendSessionFilters(
+        `/api/sessions?limit=${limit}&offset=${offset}&order=${options.order ?? order}`,
+        options,
+      ),
+    );
   },
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest`, profile)
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest`,
+        profile,
+      ),
     ),
   getSessionDetail: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<SessionInfo>(appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile)),
+    fetchJSON<SessionInfo>(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
+    ),
   getSessionLatestDescendant: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionLatestDescendantResponse>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/latest-descendant`, profile)
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+        profile,
+      ),
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean }>(appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile), {
-      method: 'DELETE'
-    }),
+    fetchJSON<{ ok: boolean }>(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
+      {
+        method: "DELETE",
+      },
+    ),
   getEmptySessionsCount: (profile = getManagementProfile()) =>
-    fetchJSON<{ count: number }>(appendProfileParam('/api/sessions/empty/count', profile)),
+    fetchJSON<{ count: number }>(
+      appendProfileParam("/api/sessions/empty/count", profile),
+    ),
   deleteEmptySessions: (profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; deleted: number }>(appendProfileParam('/api/sessions/empty', profile), {
-      method: 'DELETE'
-    }),
+    fetchJSON<{ ok: boolean; deleted: number }>(
+      appendProfileParam("/api/sessions/empty", profile),
+      {
+        method: "DELETE",
+      },
+    ),
   bulkDeleteSessions: (ids: string[], profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; deleted: number }>('/api/sessions/bulk-delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids, profile: profile || undefined })
+    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/bulk-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, profile: profile || undefined }),
     }),
   renameSession: (id: string, title: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; title: string }>(`/api/sessions/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, profile: profile || undefined })
-    }),
+    fetchJSON<{ ok: boolean; title: string }>(
+      `/api/sessions/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, profile: profile || undefined }),
+      },
+    ),
   getSessionStats: (profile = getManagementProfile()) =>
-    fetchJSON<SessionStoreStats>(appendProfileParam('/api/sessions/stats', profile)),
+    fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
     appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/export`, profile),
-  importSessions: (sessions: Array<Record<string, unknown>>, profile = getManagementProfile()) =>
-    fetchJSON<SessionImportResponse>('/api/sessions/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessions, profile: profile || undefined })
+  importSessions: (
+    sessions: Array<Record<string, unknown>>,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<SessionImportResponse>("/api/sessions/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessions, profile: profile || undefined }),
     }),
-  pruneSessions: (older_than_days: number, source?: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; removed: number; skipped_open: number }>('/api/sessions/prune', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        older_than_days,
-        source,
-        profile: profile || undefined
-      })
-    }),
+  pruneSessions: (
+    older_than_days: number,
+    source?: string,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<{ ok: boolean; removed: number; skipped_open: number }>(
+      "/api/sessions/prune",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          older_than_days,
+          source,
+          profile: profile || undefined,
+        }),
+      },
+    ),
   listFiles: (path?: string) => {
-    const query = path ? `?path=${encodeURIComponent(path)}` : ''
-    return fetchJSON<ManagedFilesResponse>(`/api/files${query}`)
+    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    return fetchJSON<ManagedFilesResponse>(`/api/files${query}`);
   },
-  readFile: (path: string) => fetchJSON<ManagedFileReadResponse>(`/api/files/read?path=${encodeURIComponent(path)}`),
+  readFile: (path: string) =>
+    fetchJSON<ManagedFileReadResponse>(
+      `/api/files/read?path=${encodeURIComponent(path)}`,
+    ),
   uploadFile: (path: string, file: File, overwrite = true) => {
     // Stream the raw bytes as multipart/form-data. Do NOT set Content-Type —
     // the browser adds the multipart boundary automatically. Sending the file
     // as base64 JSON (the old path) inflated the body ~33%, buffered the whole
     // file in memory, and 502'd on large backup archives behind the proxy
     // (NS-501).
-    const form = new FormData()
-    form.append('path', path)
-    form.append('overwrite', String(overwrite))
-    form.append('file', file, file.name)
-    return fetchJSON<ManagedFileWriteResponse>('/api/files/upload-stream', {
-      method: 'POST',
-      body: form
-    })
+    const form = new FormData();
+    form.append("path", path);
+    form.append("overwrite", String(overwrite));
+    form.append("file", file, file.name);
+    return fetchJSON<ManagedFileWriteResponse>("/api/files/upload-stream", {
+      method: "POST",
+      body: form,
+    });
   },
   createDirectory: (path: string) =>
-    fetchJSON<ManagedFileWriteResponse>('/api/files/mkdir', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path })
+    fetchJSON<ManagedFileWriteResponse>("/api/files/mkdir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
     }),
   deleteFile: (path: string, recursive = false) =>
-    fetchJSON<{ ok: boolean; path: string }>('/api/files', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path, recursive })
+    fetchJSON<{ ok: boolean; path: string }>("/api/files", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, recursive }),
     }),
   getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
-    const qs = new URLSearchParams()
-    if (params.file) qs.set('file', params.file)
-    if (params.lines) qs.set('lines', String(params.lines))
-    if (params.level && params.level !== 'ALL') qs.set('level', params.level)
-    if (params.component && params.component !== 'all') qs.set('component', params.component)
-    return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`)
+    const qs = new URLSearchParams();
+    if (params.file) qs.set("file", params.file);
+    if (params.lines) qs.set("lines", String(params.lines));
+    if (params.level && params.level !== "ALL") qs.set("level", params.level);
+    if (params.component && params.component !== "all") qs.set("component", params.component);
+    return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
   },
   getAnalytics: (days: number, profile = getManagementProfile()) =>
-    fetchJSON<AnalyticsResponse>(appendProfileParam(`/api/analytics/usage?days=${days}`, profile)),
+    fetchJSON<AnalyticsResponse>(
+      appendProfileParam(`/api/analytics/usage?days=${days}`, profile),
+    ),
   getModelsAnalytics: (days: number, profile = getManagementProfile()) =>
-    fetchJSON<ModelsAnalyticsResponse>(appendProfileParam(`/api/analytics/models?days=${days}`, profile)),
+    fetchJSON<ModelsAnalyticsResponse>(
+      appendProfileParam(`/api/analytics/models?days=${days}`, profile),
+    ),
   getConfig: (profile = getManagementProfile()) =>
-    fetchJSON<Record<string, unknown>>(appendProfileParam('/api/config', profile)),
-  getDefaults: () => fetchJSON<Record<string, unknown>>('/api/config/defaults'),
-  getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>('/api/config/schema'),
+    fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
+  getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
+  getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: (profile = getManagementProfile()) =>
-    fetchJSON<ModelInfoResponse>(appendProfileParam('/api/model/info', profile)),
-  getModelOptions: (profileOrOptions?: string | { profile?: string; refresh?: boolean }) => {
-    const profile = typeof profileOrOptions === 'string' ? profileOrOptions : profileOrOptions?.profile
-    const refresh = typeof profileOrOptions === 'object' && !!profileOrOptions.refresh
-    const qs = new URLSearchParams()
-    if (profile) qs.set('profile', profile)
-    if (refresh) qs.set('refresh', '1')
+    fetchJSON<ModelInfoResponse>(appendProfileParam("/api/model/info", profile)),
+  getModelOptions: (
+    profileOrOptions?: string | { profile?: string; refresh?: boolean },
+  ) => {
+    const profile =
+      typeof profileOrOptions === "string"
+        ? profileOrOptions
+        : profileOrOptions?.profile;
+    const refresh =
+      typeof profileOrOptions === "object" && !!profileOrOptions.refresh;
+    const qs = new URLSearchParams();
+    if (profile) qs.set("profile", profile);
+    if (refresh) qs.set("refresh", "1");
     // Dashboard surfaces (Models page, profile builder, cron) are
     // management/setup UIs: keep the full provider universe with setup
     // affordances. The endpoint now defaults to the configured subset for
     // desktop chat pickers (#56974), so opt in explicitly here.
-    qs.set('include_unconfigured', '1')
-    const suffix = qs.toString() ? `?${qs.toString()}` : ''
-    return fetchJSON<ModelOptionsResponse>(`/api/model/options${suffix}`)
+    qs.set("include_unconfigured", "1");
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<ModelOptionsResponse>(`/api/model/options${suffix}`);
   },
   getAuxiliaryModels: (profile = getManagementProfile()) =>
-    fetchJSON<AuxiliaryModelsResponse>(appendProfileParam('/api/model/auxiliary', profile)),
-  getMoaModels: () => fetchJSON<MoaConfigResponse>('/api/model/moa'),
+    fetchJSON<AuxiliaryModelsResponse>(
+      appendProfileParam("/api/model/auxiliary", profile),
+    ),
+  getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
   saveMoaModels: (body: MoaConfigResponse) =>
-    fetchJSON<MoaConfigResponse & { ok: boolean }>('/api/model/moa', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+    fetchJSON<MoaConfigResponse & { ok: boolean }>("/api/model/moa", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     }),
-  setModelAssignment: (body: ModelAssignmentRequest, profile = getManagementProfile()) =>
-    fetchJSON<ModelAssignmentResponse>(appendProfileParam('/api/model/set', profile), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    }),
+  setModelAssignment: (
+    body: ModelAssignmentRequest,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<ModelAssignmentResponse>(
+      appendProfileParam("/api/model/set", profile),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
   saveConfig: (config: Record<string, unknown>, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean }>(appendProfileParam('/api/config', profile), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ config })
+    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config", profile), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config }),
     }),
   getConfigRaw: (profile = getManagementProfile()) =>
-    fetchJSON<{ yaml: string; path?: string }>(appendProfileParam('/api/config/raw', profile)),
+    fetchJSON<{ yaml: string; path?: string }>(
+      appendProfileParam("/api/config/raw", profile),
+    ),
   saveConfigRaw: (yaml_text: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean }>(appendProfileParam('/api/config/raw', profile), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ yaml_text })
+    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config/raw", profile), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ yaml_text }),
     }),
-  getEnvVars: () => fetchJSON<Record<string, EnvVarInfo>>('/api/env'),
+  getEnvVars: () => fetchJSON<Record<string, EnvVarInfo>>("/api/env"),
   setEnvVar: (key: string, value: string) =>
-    fetchJSON<{ ok: boolean }>('/api/env', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key, value })
+    fetchJSON<{ ok: boolean }>("/api/env", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value }),
     }),
   deleteEnvVar: (key: string) =>
-    fetchJSON<{ ok: boolean }>('/api/env', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key })
+    fetchJSON<{ ok: boolean }>("/api/env", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
     }),
   revealEnvVar: (key: string) =>
-    fetchJSON<{ key: string; value: string }>('/api/env/reveal', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key })
+    fetchJSON<{ key: string; value: string }>("/api/env/reveal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
     }),
 
   // Cron jobs
-  getCronJobs: (profile = 'all') => fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  getCronDeliveryTargets: () => fetchJSON<{ targets: CronDeliveryTarget[] }>('/api/cron/delivery-targets'),
-  createCronJob: (job: CronJobMutation, profile = 'default') =>
+  getCronJobs: (profile = "all") =>
+    fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
+  getCronDeliveryTargets: () =>
+    fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
+  createCronJob: (job: CronJobMutation, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(job)
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(job),
     }),
-  pauseCronJob: (id: string, profile = 'default') =>
-    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, {
-      method: 'POST'
-    }),
-  updateCronJob: (id: string, updates: CronJobMutation, profile = 'default') =>
-    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ updates })
-    }),
-  resumeCronJob: (id: string, profile = 'default') =>
-    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/resume?profile=${encodeURIComponent(profile)}`, {
-      method: 'POST'
-    }),
-  triggerCronJob: (id: string, profile = 'default') =>
-    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/trigger?profile=${encodeURIComponent(profile)}`, {
-      method: 'POST'
-    }),
-  deleteCronJob: (id: string, profile = 'default') =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, {
-      method: 'DELETE'
-    }),
+  pauseCronJob: (id: string, profile = "default") =>
+    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+  updateCronJob: (
+    id: string,
+    updates: CronJobMutation,
+    profile = "default",
+  ) =>
+    fetchJSON<CronJob>(
+      `/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates }),
+      },
+    ),
+  resumeCronJob: (id: string, profile = "default") =>
+    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/resume?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+  triggerCronJob: (id: string, profile = "default") =>
+    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/trigger?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+  deleteCronJob: (id: string, profile = "default") =>
+    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
   // Automation Blueprints — parameterized automation blueprints
-  getAutomationBlueprints: () => fetchJSON<{ blueprints: AutomationBlueprint[] }>('/api/cron/blueprints'),
-  instantiateAutomationBlueprint: (body: { blueprint: string; values: Record<string, string> }, profile = 'default') =>
+  getAutomationBlueprints: () =>
+    fetchJSON<{ blueprints: AutomationBlueprint[] }>("/api/cron/blueprints"),
+  instantiateAutomationBlueprint: (
+    body: { blueprint: string; values: Record<string, string> },
+    profile = "default",
+  ) =>
     fetchJSON<CronJob>(`/api/cron/blueprints/instantiate?profile=${encodeURIComponent(profile)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     }),
 
   // Profiles
-  getProfiles: () => fetchJSON<{ profiles: ProfileInfo[] }>('/api/profiles'),
-  getActiveProfile: () => fetchJSON<ActiveProfileInfo>('/api/profiles/active'),
+  getProfiles: () =>
+    fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
+  getActiveProfile: () =>
+    fetchJSON<ActiveProfileInfo>("/api/profiles/active"),
   setActiveProfile: (name: string) =>
-    fetchJSON<{ ok: boolean; active: string }>('/api/profiles/active', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
+    fetchJSON<{ ok: boolean; active: string }>("/api/profiles/active", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
     }),
   createProfile: (body: {
-    name: string
-    clone_from?: string | null
-    clone_from_default?: boolean
-    clone_all?: boolean
-    no_skills?: boolean
-    description?: string
-    provider?: string
-    model?: string
-    mcp_servers?: McpServerCreate[]
-    keep_skills?: string[]
-    hub_skills?: string[]
+    name: string;
+    clone_from?: string | null;
+    clone_from_default?: boolean;
+    clone_all?: boolean;
+    no_skills?: boolean;
+    description?: string;
+    provider?: string;
+    model?: string;
+    mcp_servers?: McpServerCreate[];
+    keep_skills?: string[];
+    hub_skills?: string[];
   }) =>
     fetchJSON<{
-      ok: boolean
-      name: string
-      path: string
-      model_set?: boolean
-      mcp_written?: number
-      skills_disabled?: number
-      hub_installs?: Array<{ identifier: string; pid: number | null }>
-    }>('/api/profiles', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      ok: boolean;
+      name: string;
+      path: string;
+      model_set?: boolean;
+      mcp_written?: number;
+      skills_disabled?: number;
+      hub_installs?: Array<{ identifier: string; pid: number | null }>;
+    }>("/api/profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     }),
   updateProfileDescription: (name: string, description: string) =>
     fetchJSON<{ ok: boolean; description: string; description_auto: boolean }>(
       `/api/profiles/${encodeURIComponent(name)}/description`,
       {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description })
-      }
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description }),
+      },
     ),
   describeProfileAuto: (name: string, overwrite = true) =>
-    fetchJSON<ProfileDescribeAutoResult>(`/api/profiles/${encodeURIComponent(name)}/describe-auto`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ overwrite })
-    }),
+    fetchJSON<ProfileDescribeAutoResult>(
+      `/api/profiles/${encodeURIComponent(name)}/describe-auto`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overwrite }),
+      },
+    ),
   setProfileModel: (name: string, provider: string, model: string) =>
-    fetchJSON<{ ok: boolean; provider: string; model: string }>(`/api/profiles/${encodeURIComponent(name)}/model`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, model })
-    }),
+    fetchJSON<{ ok: boolean; provider: string; model: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/model`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, model }),
+      },
+    ),
   renameProfile: (name: string, newName: string) =>
-    fetchJSON<{ ok: boolean; name: string; path: string }>(`/api/profiles/${encodeURIComponent(name)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ new_name: newName })
-    }),
+    fetchJSON<{ ok: boolean; name: string; path: string }>(
+      `/api/profiles/${encodeURIComponent(name)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_name: newName }),
+      },
+    ),
   deleteProfile: (name: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    fetchJSON<{ ok: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
   getProfileSetupCommand: (name: string) =>
-    fetchJSON<{ command: string }>(`/api/profiles/${encodeURIComponent(name)}/setup-command`),
+    fetchJSON<{ command: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/setup-command`,
+    ),
   getProfileSoul: (name: string) =>
-    fetchJSON<{ content: string; exists: boolean }>(`/api/profiles/${encodeURIComponent(name)}/soul`),
+    fetchJSON<{ content: string; exists: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}/soul`,
+    ),
   updateProfileSoul: (name: string, content: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/profiles/${encodeURIComponent(name)}/soul`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content })
-    }),
+    fetchJSON<{ ok: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}/soul`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    ),
 
   // Skills & Toolsets
   //
   // All calls accept an optional ``profile`` so the Skills page can manage
   // any profile's skills/toolsets — not just the one the dashboard process
   // runs under. Omitted/empty profile = the dashboard's own profile.
-  getSkills: (profile?: string) => fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
+  getSkills: (profile?: string) =>
+    fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
   toggleSkill: (name: string, enabled: boolean, profile?: string) =>
-    fetchJSON<{ ok: boolean }>('/api/skills/toggle', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, enabled, profile: profile || undefined })
+    fetchJSON<{ ok: boolean }>("/api/skills/toggle", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, enabled, profile: profile || undefined }),
     }),
   getSkillContent: (name: string, profile?: string) =>
     fetchJSON<SkillContent>(
-      `/api/skills/content?name=${encodeURIComponent(name)}${profile ? `&profile=${encodeURIComponent(profile)}` : ''}`
+      `/api/skills/content?name=${encodeURIComponent(name)}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
     ),
   createSkill: (skill: { name: string; content: string; category?: string }, profile?: string) =>
-    fetchJSON<SkillWriteResult>('/api/skills', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...skill, profile: profile || undefined })
+    fetchJSON<SkillWriteResult>("/api/skills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...skill, profile: profile || undefined }),
     }),
   updateSkillContent: (name: string, content: string, profile?: string) =>
-    fetchJSON<SkillWriteResult>('/api/skills/content', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, content, profile: profile || undefined })
+    fetchJSON<SkillWriteResult>("/api/skills/content", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, content, profile: profile || undefined }),
     }),
-  getToolsets: (profile?: string) => fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
+  getToolsets: (profile?: string) =>
+    fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
   toggleToolset: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; platform: string; enabled: boolean }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}`,
       {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled, profile: profile || undefined })
-      }
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled, profile: profile || undefined }),
+      },
     ),
   getToolsetConfig: (name: string, profile?: string) =>
-    fetchJSON<ToolsetConfig>(`/api/tools/toolsets/${encodeURIComponent(name)}/config${profileQuery(profile)}`),
+    fetchJSON<ToolsetConfig>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}/config${profileQuery(profile)}`,
+    ),
   selectToolsetProvider: (name: string, provider: string, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; provider: string }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
       {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider, profile: profile || undefined })
-      }
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, profile: profile || undefined }),
+      },
     ),
   saveToolsetEnv: (name: string, env: Record<string, string>, profile?: string) =>
-    fetchJSON<ToolsetEnvResult>(`/api/tools/toolsets/${encodeURIComponent(name)}/env`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ env, profile: profile || undefined })
-    }),
+    fetchJSON<ToolsetEnvResult>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}/env`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ env, profile: profile || undefined }),
+      },
+    ),
   runToolsetPostSetup: (name: string, key: string, profile?: string) =>
-    fetchJSON<ActionResponse & { key: string }>(`/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key, profile: profile || undefined })
-    }),
+    fetchJSON<ActionResponse & { key: string }>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, profile: profile || undefined }),
+      },
+    ),
 
   // Session search (FTS5)
-  searchSessions: (q: string, profileOrOptions: string | SessionQueryOptions = getManagementProfile()) => {
-    const options = normalizeSessionQueryOptions(profileOrOptions)
+  searchSessions: (
+    q: string,
+    profileOrOptions: string | SessionQueryOptions = getManagementProfile(),
+  ) => {
+    const options = normalizeSessionQueryOptions(profileOrOptions);
     return fetchJSON<SessionSearchResponse>(
-      appendSessionFilters(`/api/sessions/search?q=${encodeURIComponent(q)}`, options)
-    )
+      appendSessionFilters(
+        `/api/sessions/search?q=${encodeURIComponent(q)}`,
+        options,
+      ),
+    );
   },
 
   // OAuth provider management
-  getOAuthProviders: () => fetchJSON<OAuthProvidersResponse>('/api/providers/oauth'),
+  getOAuthProviders: () =>
+    fetchJSON<OAuthProvidersResponse>("/api/providers/oauth"),
   disconnectOAuthProvider: (providerId: string) =>
-    fetchJSON<{ ok: boolean; provider: string }>(`/api/providers/oauth/${encodeURIComponent(providerId)}`, {
-      method: 'DELETE'
-    }),
+    fetchJSON<{ ok: boolean; provider: string }>(
+      `/api/providers/oauth/${encodeURIComponent(providerId)}`,
+      {
+        method: "DELETE",
+      },
+    ),
   startOAuthLogin: (providerId: string) =>
-    fetchJSON<OAuthStartResponse>(`/api/providers/oauth/${encodeURIComponent(providerId)}/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}'
-    }),
+    fetchJSON<OAuthStartResponse>(
+      `/api/providers/oauth/${encodeURIComponent(providerId)}/start`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      },
+    ),
   submitOAuthCode: (providerId: string, sessionId: string, code: string) =>
-    fetchJSON<OAuthSubmitResponse>(`/api/providers/oauth/${encodeURIComponent(providerId)}/submit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, code })
-    }),
+    fetchJSON<OAuthSubmitResponse>(
+      `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, code }),
+      },
+    ),
   pollOAuthSession: (providerId: string, sessionId: string) =>
     fetchJSON<OAuthPollResponse>(
-      `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}`
+      `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}`,
     ),
   cancelOAuthSession: (sessionId: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`, {
-      method: 'DELETE'
-    }),
+    fetchJSON<{ ok: boolean }>(
+      `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: "DELETE",
+      },
+    ),
 
   // Messaging platforms (gateway channels)
-  getMessagingPlatforms: () => fetchJSON<MessagingPlatformsResponse>('/api/messaging/platforms'),
+  getMessagingPlatforms: () =>
+    fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
-    fetchJSON<{ ok: boolean; platform: string }>(`/api/messaging/platforms/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    }),
+    fetchJSON<{ ok: boolean; platform: string }>(
+      `/api/messaging/platforms/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
   testMessagingPlatform: (id: string) =>
-    fetchJSON<MessagingPlatformTestResult>(`/api/messaging/platforms/${encodeURIComponent(id)}/test`, {
-      method: 'POST'
-    }),
+    fetchJSON<MessagingPlatformTestResult>(
+      `/api/messaging/platforms/${encodeURIComponent(id)}/test`,
+      { method: "POST" },
+    ),
   startTelegramOnboarding: (body: { bot_name?: string }) =>
-    fetchJSON<TelegramOnboardingStartResponse>('/api/messaging/telegram/onboarding/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    }),
+    fetchJSON<TelegramOnboardingStartResponse>(
+      "/api/messaging/telegram/onboarding/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
   getTelegramOnboardingStatus: (pairingId: string) =>
-    fetchJSON<TelegramOnboardingStatusResponse>(`/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`),
-  applyTelegramOnboarding: (pairingId: string, body: { allowed_user_ids: string[]; profile?: string }) =>
+    fetchJSON<TelegramOnboardingStatusResponse>(
+      `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
+    ),
+  applyTelegramOnboarding: (
+    pairingId: string,
+    body: { allowed_user_ids: string[]; profile?: string },
+  ) =>
     fetchJSON<TelegramOnboardingApplyResponse>(
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
       {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      }
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
     ),
   cancelTelegramOnboarding: (pairingId: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`, {
-      method: 'DELETE'
-    }),
-  startWhatsAppOnboarding: (body: { mode?: 'bot' | 'self-chat'; allowed_users?: string }) =>
-    fetchJSON<WhatsAppOnboardingStartResponse>('/api/messaging/whatsapp/onboarding/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    }),
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
+      { method: "DELETE" },
+    ),
+  startWhatsAppOnboarding: (body: {
+    mode?: "bot" | "self-chat";
+    allowed_users?: string;
+  }) =>
+    fetchJSON<WhatsAppOnboardingStartResponse>(
+      "/api/messaging/whatsapp/onboarding/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
   getWhatsAppOnboardingStatus: (pairingId: string) =>
-    fetchJSON<WhatsAppOnboardingStatusResponse>(`/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`),
+    fetchJSON<WhatsAppOnboardingStatusResponse>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+    ),
   applyWhatsAppOnboarding: (
     pairingId: string,
-    body: { mode?: 'bot' | 'self-chat'; allowed_users?: string; profile?: string }
+    body: { mode?: "bot" | "self-chat"; allowed_users?: string; profile?: string },
   ) =>
     fetchJSON<WhatsAppOnboardingApplyResponse>(
       `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}/apply`,
       {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      }
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
     ),
   cancelWhatsAppOnboarding: (pairingId: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`, {
-      method: 'DELETE'
-    }),
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+      { method: "DELETE" },
+    ),
 
   // Gateway / update actions
-  restartGateway: () => fetchJSON<ActionResponse>('/api/gateway/restart', { method: 'POST' }),
-  updateHermes: () => fetchJSON<ActionResponse>('/api/hermes/update', { method: 'POST' }),
+  restartGateway: () =>
+    fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  updateHermes: () =>
+    fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
   checkHermesUpdate: (force = false) =>
-    fetchJSON<UpdateCheckResponse>(`/api/hermes/update/check${force ? '?force=true' : ''}`),
+    fetchJSON<UpdateCheckResponse>(
+      `/api/hermes/update/check${force ? "?force=true" : ""}`,
+    ),
   getActionStatus: (name: string, lines = 200) =>
-    fetchJSON<ActionStatusResponse>(`/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`),
+    fetchJSON<ActionStatusResponse>(
+      `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
+    ),
 
   // Dashboard plugins
-  getPlugins: () => fetchJSON<PluginManifestResponse[]>('/api/dashboard/plugins'),
-  rescanPlugins: () => fetchJSON<{ ok: boolean; count: number }>('/api/dashboard/plugins/rescan'),
+  getPlugins: () =>
+    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  rescanPlugins: () =>
+    fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
-  getPluginsHub: () => fetchJSON<PluginsHubResponse>('/api/dashboard/plugins/hub'),
+  getPluginsHub: () => fetchJSON<PluginsHubResponse>("/api/dashboard/plugins/hub"),
 
-  getPluginsCatalog: () => fetchJSON<CatalogResponse>('/api/dashboard/plugins/catalog'),
+  getPluginsCatalog: () =>
+    fetchJSON<CatalogResponse>("/api/dashboard/plugins/catalog"),
 
   installAgentPlugin: (body: AgentPluginInstallRequest) =>
-    fetchJSON<AgentPluginInstallResponse>('/api/dashboard/agent-plugins/install', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...body })
+    fetchJSON<AgentPluginInstallResponse>("/api/dashboard/agent-plugins/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body }),
     }),
 
   enableAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/enable`,
-      { method: 'POST' }
+      { method: "POST" },
     ),
 
   disableAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/disable`,
-      { method: 'POST' }
+      { method: "POST" },
     ),
 
   updateAgentPlugin: (name: string) =>
-    fetchJSON<AgentPluginUpdateResponse>(`/api/dashboard/agent-plugins/${pluginPath(name)}/update`, { method: 'POST' }),
+    fetchJSON<AgentPluginUpdateResponse>(
+      `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
+      { method: "POST" },
+    ),
 
   removeAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string }>(`/api/dashboard/agent-plugins/${pluginPath(name)}`, { method: 'DELETE' }),
+    fetchJSON<{ ok: boolean; name: string }>(
+      `/api/dashboard/agent-plugins/${pluginPath(name)}`,
+      { method: "DELETE" },
+    ),
 
   savePluginProviders: (body: PluginProvidersPutRequest) =>
-    fetchJSON<{ ok: boolean }>('/api/dashboard/plugin-providers', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+    fetchJSON<{ ok: boolean }>("/api/dashboard/plugin-providers", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     }),
 
   setPluginVisibility: (name: string, hidden: boolean) =>
-    fetchJSON<{ ok: boolean; name: string; hidden: boolean }>(`/api/dashboard/plugins/${pluginPath(name)}/visibility`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hidden })
-    }),
+    fetchJSON<{ ok: boolean; name: string; hidden: boolean }>(
+      `/api/dashboard/plugins/${pluginPath(name)}/visibility`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hidden }),
+      },
+    ),
 
   // Dashboard themes
-  getThemes: () => fetchJSON<DashboardThemesResponse>('/api/dashboard/themes'),
+  getThemes: () =>
+    fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
   setTheme: (name: string) =>
-    fetchJSON<{ ok: boolean; theme: string }>('/api/dashboard/theme', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
+    fetchJSON<{ ok: boolean; theme: string }>("/api/dashboard/theme", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
     }),
-  getFontPref: () => fetchJSON<DashboardFontResponse>('/api/dashboard/font'),
+  getFontPref: () =>
+    fetchJSON<DashboardFontResponse>("/api/dashboard/font"),
   setFontPref: (font: string) =>
-    fetchJSON<{ ok: boolean; font: string }>('/api/dashboard/font', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ font })
+    fetchJSON<{ ok: boolean; font: string }>("/api/dashboard/font", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ font }),
     }),
 
-  ...createMcpApi(fetchJSON),
+  // ── Admin: MCP servers ──────────────────────────────────────────────
+  getMcpServers: () => fetchJSON<{ servers: McpServer[] }>("/api/mcp/servers"),
+  addMcpServer: (body: McpServerCreate) =>
+    fetchJSON<McpServer>("/api/mcp/servers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  authMcpServer: (name: string) =>
+    fetchJSON<McpOAuthFlow>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
+      { method: "POST" },
+    ),
+  getMcpOAuthFlow: (flowId: string) =>
+    fetchJSON<McpOAuthFlow>(
+      `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`,
+    ),
+  removeMcpServer: (name: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+  testMcpServer: (name: string) =>
+    fetchJSON<McpTestResult>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/test`,
+      { method: "POST" },
+    ),
+  setMcpServerEnabled: (name: string, enabled: boolean) =>
+    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/enabled`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    ),
+  getMcpCatalog: () =>
+    fetchJSON<{ entries: McpCatalogEntry[]; diagnostics: McpCatalogDiagnostic[] }>(
+      "/api/mcp/catalog",
+    ),
+  installMcpCatalogEntry: (
+    name: string,
+    env: Record<string, string> = {},
+    enable = true,
+    network?: McpNetwork,
+  ) =>
+    fetchJSON<{ ok: boolean; name: string; background: boolean; action?: string }>(
+      "/api/mcp/catalog/install",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, env, enable, ...(network ? { network } : {}) }),
+      },
+    ),
 
   // ── Admin: Pairing ──────────────────────────────────────────────────
   // The mutating endpoints read the profile off the BODY, so the query-param
   // rewrite in withManagementProfile doesn't reach them — send it explicitly
   // or an approval lands in the wrong profile's whitelist.
-  getPairing: () => fetchJSON<PairingResponse>('/api/pairing'),
+  getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
   approvePairing: (platform: string, request_id: string) =>
-    fetchJSON<{ ok: boolean; user: PairingUser }>('/api/pairing/approve', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    fetchJSON<{ ok: boolean; user: PairingUser }>("/api/pairing/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         platform,
         request_id,
-        profile: getManagementProfile() || undefined
-      })
+        profile: getManagementProfile() || undefined,
+      }),
     }),
   revokePairing: (platform: string, user_id: string) =>
-    fetchJSON<{ ok: boolean }>('/api/pairing/revoke', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    fetchJSON<{ ok: boolean }>("/api/pairing/revoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         platform,
         user_id,
-        profile: getManagementProfile() || undefined
-      })
+        profile: getManagementProfile() || undefined,
+      }),
     }),
   clearPendingPairing: () =>
-    fetchJSON<{ ok: boolean; cleared: number }>('/api/pairing/clear-pending', {
-      method: 'POST'
+    fetchJSON<{ ok: boolean; cleared: number }>("/api/pairing/clear-pending", {
+      method: "POST",
     }),
 
   // ── Admin: Webhooks ─────────────────────────────────────────────────
-  getWebhooks: () => fetchJSON<WebhooksResponse>('/api/webhooks'),
-  enableWebhooks: () => fetchJSON<WebhookEnableResponse>('/api/webhooks/enable', { method: 'POST' }),
+  getWebhooks: () => fetchJSON<WebhooksResponse>("/api/webhooks"),
+  enableWebhooks: () =>
+    fetchJSON<WebhookEnableResponse>("/api/webhooks/enable", { method: "POST" }),
   createWebhook: (body: WebhookCreate) =>
-    fetchJSON<WebhookRoute & { secret: string }>('/api/webhooks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+    fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     }),
   deleteWebhook: (name: string) =>
     fetchJSON<{ ok: boolean }>(`/api/webhooks/${encodeURIComponent(name)}`, {
-      method: 'DELETE'
+      method: "DELETE",
     }),
   setWebhookEnabled: (name: string, enabled: boolean) =>
-    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(`/api/webhooks/${encodeURIComponent(name)}/enabled`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled })
-    }),
+    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
+      `/api/webhooks/${encodeURIComponent(name)}/enabled`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    ),
 
   // ── Admin: Credential pool ──────────────────────────────────────────
-  getCredentialPool: () => fetchJSON<{ providers: CredentialPoolProvider[] }>('/api/credentials/pool'),
-  addCredentialPoolEntry: (provider: string, api_key: string, label?: string) =>
-    fetchJSON<{ ok: boolean; provider: string; count: number }>('/api/credentials/pool', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, api_key, label })
-    }),
+  getCredentialPool: () =>
+    fetchJSON<{ providers: CredentialPoolProvider[] }>("/api/credentials/pool"),
+  addCredentialPoolEntry: (
+    provider: string,
+    api_key: string,
+    label?: string,
+  ) =>
+    fetchJSON<{ ok: boolean; provider: string; count: number }>(
+      "/api/credentials/pool",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, api_key, label }),
+      },
+    ),
   removeCredentialPoolEntry: (provider: string, index: number) =>
     fetchJSON<{ ok: boolean; provider: string; count: number }>(
       `/api/credentials/pool/${encodeURIComponent(provider)}/${index}`,
-      { method: 'DELETE' }
+      { method: "DELETE" },
     ),
 
   // ── Admin: Memory provider ──────────────────────────────────────────
-  getMemory: () => fetchJSON<MemoryStatus>('/api/memory'),
+  getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
   getMemoryProviderConfig: (provider: string) =>
-    fetchJSON<MemoryProviderConfig>(`/api/memory/providers/${encodeURIComponent(provider)}/config`),
+    fetchJSON<MemoryProviderConfig>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+    ),
   updateMemoryProviderConfig: (provider: string, values: Record<string, unknown>) =>
-    fetchJSON<{ ok: boolean; active: string }>(`/api/memory/providers/${encodeURIComponent(provider)}/config`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ values })
-    }),
+    fetchJSON<{ ok: boolean; active: string }>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      },
+    ),
   setupMemoryProvider: (provider: string, values: Record<string, unknown> = {}) =>
-    fetchJSON<MemoryProviderSetupResponse>(`/api/memory/providers/${encodeURIComponent(provider)}/setup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ values })
-    }),
+    fetchJSON<MemoryProviderSetupResponse>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/setup`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      },
+    ),
   setMemoryProvider: (provider: string) =>
-    fetchJSON<{ ok: boolean; active: string }>('/api/memory/provider', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider })
+    fetchJSON<{ ok: boolean; active: string }>("/api/memory/provider", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider }),
     }),
-  resetMemory: (target: 'all' | 'memory' | 'user') =>
-    fetchJSON<{ ok: boolean; deleted: string[] }>('/api/memory/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target })
+  resetMemory: (target: "all" | "memory" | "user") =>
+    fetchJSON<{ ok: boolean; deleted: string[] }>("/api/memory/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target }),
     }),
 
   // ── Admin: Gateway lifecycle ────────────────────────────────────────
-  startGateway: () => fetchJSON<ActionResponse>('/api/gateway/start', { method: 'POST' }),
-  stopGateway: () => fetchJSON<ActionResponse>('/api/gateway/stop', { method: 'POST' }),
+  startGateway: () =>
+    fetchJSON<ActionResponse>("/api/gateway/start", { method: "POST" }),
+  stopGateway: () =>
+    fetchJSON<ActionResponse>("/api/gateway/stop", { method: "POST" }),
 
   // ── Admin: Operations ───────────────────────────────────────────────
-  runDoctor: () => fetchJSON<ActionResponse>('/api/ops/doctor', { method: 'POST' }),
-  runSecurityAudit: () => fetchJSON<ActionResponse>('/api/ops/security-audit', { method: 'POST' }),
+  runDoctor: () =>
+    fetchJSON<ActionResponse>("/api/ops/doctor", { method: "POST" }),
+  runSecurityAudit: () =>
+    fetchJSON<ActionResponse>("/api/ops/security-audit", { method: "POST" }),
   runBackup: (output?: string) =>
-    fetchJSON<ActionResponse>('/api/ops/backup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ output })
+    fetchJSON<ActionResponse>("/api/ops/backup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ output }),
     }),
-  downloadBackup: (archive: string) => authedFetch(`/api/ops/backup/download?archive=${encodeURIComponent(archive)}`),
+  downloadBackup: (archive: string) =>
+    authedFetch(
+      `/api/ops/backup/download?archive=${encodeURIComponent(archive)}`,
+    ),
   runImport: (archive: string, force = false) =>
-    fetchJSON<ActionResponse>('/api/ops/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ archive, force })
+    fetchJSON<ActionResponse>("/api/ops/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archive, force }),
     }),
   runImportUpload: (file: File, force = false) => {
-    const form = new FormData()
-    form.append('force', String(force))
-    form.append('file', file, file.name)
-    return fetchJSON<ActionResponse>('/api/ops/import-upload', {
-      method: 'POST',
-      body: form
-    })
+    const form = new FormData();
+    form.append("force", String(force));
+    form.append("file", file, file.name);
+    return fetchJSON<ActionResponse>("/api/ops/import-upload", {
+      method: "POST",
+      body: form,
+    });
   },
-  getHooks: () => fetchJSON<HooksResponse>('/api/ops/hooks'),
+  getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
   createHook: (body: HookCreate) =>
-    fetchJSON<{ ok: boolean; event: string; command: string; approved: boolean }>('/api/ops/hooks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    }),
+    fetchJSON<{ ok: boolean; event: string; command: string; approved: boolean }>(
+      "/api/ops/hooks",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
   deleteHook: (event: string, command: string) =>
-    fetchJSON<{ ok: boolean }>('/api/ops/hooks', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ event, command })
+    fetchJSON<{ ok: boolean }>("/api/ops/hooks", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event, command }),
     }),
-  getSystemStats: () => fetchJSON<SystemStats>('/api/system/stats'),
+  getSystemStats: () => fetchJSON<SystemStats>("/api/system/stats"),
 
   // ── Admin: Curator ──────────────────────────────────────────────────
-  getCurator: () => fetchJSON<CuratorStatus>('/api/curator'),
+  getCurator: () => fetchJSON<CuratorStatus>("/api/curator"),
   setCuratorPaused: (paused: boolean) =>
-    fetchJSON<{ ok: boolean; paused: boolean }>('/api/curator/paused', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paused })
+    fetchJSON<{ ok: boolean; paused: boolean }>("/api/curator/paused", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paused }),
     }),
-  runCurator: () => fetchJSON<ActionResponse>('/api/curator/run', { method: 'POST' }),
+  runCurator: () =>
+    fetchJSON<ActionResponse>("/api/curator/run", { method: "POST" }),
 
   // ── Admin: Portal ───────────────────────────────────────────────────
-  getPortal: () => fetchJSON<PortalStatus>('/api/portal'),
+  getPortal: () => fetchJSON<PortalStatus>("/api/portal"),
 
   // ── Admin: Diagnostics (backgrounded) ───────────────────────────────
-  runPromptSize: () => fetchJSON<ActionResponse>('/api/ops/prompt-size', { method: 'POST' }),
-  runDump: () => fetchJSON<ActionResponse>('/api/ops/dump', { method: 'POST' }),
-  runConfigMigrate: () => fetchJSON<ActionResponse>('/api/ops/config-migrate', { method: 'POST' }),
+  runPromptSize: () =>
+    fetchJSON<ActionResponse>("/api/ops/prompt-size", { method: "POST" }),
+  runDump: () => fetchJSON<ActionResponse>("/api/ops/dump", { method: "POST" }),
+  runConfigMigrate: () =>
+    fetchJSON<ActionResponse>("/api/ops/config-migrate", { method: "POST" }),
   runDebugShare: (opts?: { redact?: boolean; lines?: number }) =>
-    fetchJSON<DebugShareResponse>('/api/ops/debug-share', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    fetchJSON<DebugShareResponse>("/api/ops/debug-share", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         redact: opts?.redact ?? true,
-        lines: opts?.lines ?? 200
-      })
+        lines: opts?.lines ?? 200,
+      }),
     }),
 
-  getCheckpoints: () => fetchJSON<CheckpointsResponse>('/api/ops/checkpoints'),
-  pruneCheckpoints: () => fetchJSON<ActionResponse>('/api/ops/checkpoints/prune', { method: 'POST' }),
+
+  getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
+  pruneCheckpoints: () =>
+    fetchJSON<ActionResponse>("/api/ops/checkpoints/prune", { method: "POST" }),
 
   // ── Admin: Skills hub ───────────────────────────────────────────────
   // ``profile`` scopes install/uninstall/update and the installed-state
   // annotations to that profile (omitted = the dashboard's own profile).
   installSkillFromHub: (identifier: string, profile?: string) =>
-    fetchJSON<ActionResponse>('/api/skills/hub/install', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ identifier, profile: profile || undefined })
+    fetchJSON<ActionResponse>("/api/skills/hub/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier, profile: profile || undefined }),
     }),
   uninstallSkillFromHub: (name: string, profile?: string) =>
-    fetchJSON<ActionResponse>('/api/skills/hub/uninstall', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, profile: profile || undefined })
+    fetchJSON<ActionResponse>("/api/skills/hub/uninstall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, profile: profile || undefined }),
     }),
   updateSkillsFromHub: (profile?: string) =>
-    fetchJSON<ActionResponse>('/api/skills/hub/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profile: profile || undefined })
+    fetchJSON<ActionResponse>("/api/skills/hub/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: profile || undefined }),
     }),
-  searchSkillsHub: (q: string, source = 'all', limit = 20, profile?: string) =>
+  searchSkillsHub: (q: string, source = "all", limit = 20, profile?: string) =>
     fetchJSON<SkillHubSearchResponse>(
-      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}${profile ? `&profile=${encodeURIComponent(profile)}` : ''}`
+      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
     ),
   getSkillHubSources: (profile?: string) =>
-    fetchJSON<SkillHubSourcesResponse>(`/api/skills/hub/sources${profileQuery(profile)}`),
+    fetchJSON<SkillHubSourcesResponse>(
+      `/api/skills/hub/sources${profileQuery(profile)}`,
+    ),
   previewSkillFromHub: (identifier: string) =>
-    fetchJSON<SkillHubPreview>(`/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`),
+    fetchJSON<SkillHubPreview>(
+      `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
+    ),
   scanSkillFromHub: (identifier: string) =>
-    fetchJSON<SkillHubScan>(`/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`)
-}
-
-/** Per-call overrides for {@link fetchJSON}. */
-interface FetchJSONOptions {
-  /** When true, a 401 response is surfaced as a normal thrown error rather
-   *  than triggering the loopback stale-token page reload. Use for probes
-   *  whose 401 is an expected signal (e.g. /api/auth/me in non-gated mode)
-   *  rather than evidence of a rotated session token. */
-  allowUnauthorized?: boolean
-}
+    fetchJSON<SkillHubScan>(
+      `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
+    ),
+};

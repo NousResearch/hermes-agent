@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { useNavigate } from 'react-router'
 
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { openStarMapNodeMenuFor } from '@/app/starmap/context-menu-handle'
 import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
 import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
@@ -40,8 +41,8 @@ import {
 import { isWebUrl, resolveDomTarget } from './target'
 
 /** Marks a surface that owns PLAIN right-clicks itself (the user-message
- *  reaction bubble and the Star Map canvas). Owned targets inside it — links,
- *  images, editables, selections — still get the app menu. */
+ *  reaction bubble). Owned targets inside it — links, images, editables,
+ *  selections — still get the app menu. */
 export const CONTEXT_MENU_SKIP_ATTR = 'data-context-menu-skip'
 
 const LOOPBACK_HOST_RE = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)$/i
@@ -605,8 +606,8 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
  *
  * Every right-click in the app resolves here first. Radix-owned surfaces
  * (session rows and other `context-menu-trigger` wrappers) keep their own
- * menus; the reaction bubble keeps plain right-clicks; terminals answer
- * through their registered xterm handles; everything else gets a menu
+ * menus; the reaction bubble keeps plain right-clicks; terminals and the
+ * Star Map answer through registered handles; everything else gets a menu
  * assembled from what the click landed on — link, image, editable,
  * selection — with the window verbs as the empty-target fallback. Replaced
  * both the native Electron menu and the shell fallback wrapper, so labels
@@ -634,6 +635,15 @@ export function AppContextMenu() {
         return
       }
 
+      // The Star Map owns node hits, but empty canvas space still reaches the
+      // shell fallback below. A canvas-wide opt-out would lose that fallback.
+      if (openStarMapNodeMenuFor(element, event.clientX, event.clientY)) {
+        event.preventDefault()
+        event.stopPropagation()
+
+        return
+      }
+
       // A terminal's canvas has no DOM to resolve; its registered handle
       // carries the xterm selection and paste path instead.
       const terminal = terminalMenuHandleFor(element)
@@ -648,8 +658,8 @@ export function AppContextMenu() {
       const target = resolveDomTarget(element)
       const owned = Boolean(target.linkUrl || target.onImage || target.editable || target.selectionText)
 
-      // Skip-marked surfaces own bare right-clicks; owned DOM targets inside
-      // them still open the corresponding app menu.
+      // The reaction bubble owns bare right-clicks; a link inside it still
+      // opens the link menu.
       if (!owned && element?.closest(`[${CONTEXT_MENU_SKIP_ATTR}]`)) {
         return
       }

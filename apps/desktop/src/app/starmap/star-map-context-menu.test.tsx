@@ -95,4 +95,26 @@ describe('StarMap context menu ownership', () => {
     expect(screen.getByText('Archive skill')).toBeTruthy()
     expect($contextMenu.get()).toBeNull()
   })
+
+  it('keeps the shell fallback on empty starfield', async () => {
+    vi.stubGlobal('ResizeObserver', TestResizeObserver)
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(1)
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
+
+    const { container } = render(
+      <MemoryRouter>
+        <AppContextMenu />
+        <StarMap graph={graph} />
+      </MemoryRouter>
+    )
+
+    const canvas = container.querySelector('canvas')!
+
+    await waitFor(() => expect(canvas.style.width).toBe('400px'))
+    fireEvent.contextMenu(canvas, { clientX: 20, clientY: 20 })
+
+    expect(await screen.findByText('Settings')).toBeTruthy()
+    expect(screen.queryByText('Edit skill…')).toBeNull()
+  })
 })

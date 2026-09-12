@@ -308,30 +308,50 @@ class TestProfiles:
         assert cc.GENERAL_PROFILE.toolset is None
         assert cc.GENERAL_PROFILE.guidance == ""
 
-    def test_skill_demotion_gated_on_focus(self, tmp_path):
-        # Names-only demotion is opt-in via focus mode — the default (auto)
-        # and forced (on) postures leave the skill index untouched. Under
-        # focus, clearly-non-coding categories are demoted (never hidden) and
+    def test_skill_demotion_gated_on_explicit_coding_modes(self, tmp_path):
+        # Names-only demotion is opt-in via focus/on modes — the default (auto)
+        # leaves the skill index untouched. Under explicit coding modes,
+        # clearly-non-coding categories are demoted (never hidden) and
         # coding-adjacent ones keep full entries (deny-list semantics).
         _git_init(tmp_path)
-        for raw in ("auto", "on"):
+        auto = cc.resolve_runtime_mode(
+            platform="cli", cwd=tmp_path, config={"agent": {"coding_context": "auto"}}
+        )
+        assert auto.is_coding is True
+        assert auto.compact_skill_categories() == frozenset()
+        for raw in ("focus", "on"):
             mode = cc.resolve_runtime_mode(
                 platform="cli", cwd=tmp_path, config={"agent": {"coding_context": raw}}
             )
             assert mode.is_coding is True
-            assert mode.compact_skill_categories() == frozenset()
-        focus = cc.resolve_runtime_mode(
-            platform="cli", cwd=tmp_path,
-            config={"agent": {"coding_context": "focus"}},
-        )
-        assert focus.is_coding is True
-        compact = focus.compact_skill_categories()
-        assert "social-media" in compact and "smart-home" in compact
-        for kept in ("github", "devops", "software-development", "data-science"):
-            assert kept not in compact
+            compact = mode.compact_skill_categories()
+            assert "social-media" in compact and "smart-home" in compact
+            for kept in ("github", "devops", "software-development", "data-science"):
+                assert kept not in compact
         # General posture demotes nothing.
         general = cc.resolve_runtime_mode(platform="telegram", cwd=tmp_path, config={})
         assert general.compact_skill_categories() == frozenset()
+
+    def test_forced_on_demotes_non_coding_skills_on_messaging_platform(self, tmp_path):
+        mode = cc.resolve_runtime_mode(
+            platform="telegram", cwd=tmp_path,
+            config={"agent": {"coding_context": "on"}},
+        )
+
+        assert mode.profile is cc.CODING_PROFILE
+        assert mode.compact_skill_categories() == frozenset(
+            cc.CODING_PROFILE.compact_skill_categories
+        )
+
+    @pytest.mark.parametrize(
+        "config",
+        [{}, {"agent": {"coding_context": "auto"}}, {"agent": {"coding_context": "off"}}],
+    )
+    def test_messaging_platform_defaults_do_not_demote_skills(self, tmp_path, config):
+        mode = cc.resolve_runtime_mode(platform="telegram", cwd=tmp_path, config=config)
+
+        assert mode.profile is cc.GENERAL_PROFILE
+        assert mode.compact_skill_categories() == frozenset()
 
 
 # ── detection signals ───────────────────────────────────────────────────────

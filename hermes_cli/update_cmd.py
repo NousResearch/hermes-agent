@@ -759,6 +759,529 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
         sys.exit(1)
 
 
+def _portable_git_candidates() -> list:
+    """PortableGit candidate paths: shared root first, then profile home.
+
+    The Hermes-managed PortableGit tree lives under the SHARED root
+    (``<root>/git/...``), not the profile-scoped HERMES_HOME
+    (``<root>/profiles/<name>``), so a profile-scoped ``hermes update`` must
+    look there (monerostar review, #87876). The profile-home candidate is
+    kept as a fallback for custom layouts that place it there.
+    """
+    candidates = []
+    try:
+        for root in (get_default_hermes_root(), Path(get_hermes_home())):
+            candidates.append(
+                root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
+            )
+    except Exception:
+        pass
+    return candidates
+
+
+def _locate_real_git() -> Optional[Path]:
+    """Find a real Git-for-Windows binary that is not a broken trampoline.
+
+    The trampoline symptom is PATH-level: ``bin\\git.exe`` / ``cmd\\git.exe``
+    (both ~46KB shims) fail to re-exec git-core, while the real binary at
+    ``mingw64\\libexec\\git-core\\git.exe`` (≈4.4MB) works when invoked
+    directly (#87876). Check the standard Git for Windows locations plus the
+    Hermes-managed PortableGit copy; accept the first candidate that runs and
+    does NOT print the trampoline guard. Returns None when nothing suitable
+    is found — callers then keep the broken command and let the existing
+    fetch-failure ZIP fallback handle it.
+    """
+    candidates = [
+        Path(r"C:\Program Files\Git\mingw64\libexec\git-core\git.exe"),
+        Path(r"C:\Program Files (x86)\Git\mingw64\libexec\git-core\git.exe"),
+    ] + _portable_git_candidates()
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            result = subprocess.run(
+                [str(candidate), "--version"],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=15,
+            )
+        except Exception:
+            continue
+        output = ((result.stdout or "") + (result.stderr or "")).lower()
+        if "fork bomb" in output:
+            continue
+        return candidate
+    return None
+
+
+def _ensure_non_trampoline_git(git_cmd: list) -> list:
+    """Swap a broken Git-for-Windows trampoline for a real git binary.
+
+    Runs up front, right after the git command is built. When the resolved
+    ``git`` is a broken trampoline, locate the real binary and rebuild the
+    command with it so fetch/pull/checkout keep working with a real git
+    instead of degrading to the ZIP fallback. When no real binary can be
+    found, leave the command untouched — the existing fetch-failure handler
+    already falls back to the ZIP path on Windows. No-op off Windows (the
+    trampoline is a Git-for-Windows artifact) and when git is healthy.
+    """
+    if sys.platform != "win32":
+        return git_cmd
+    if not _git_is_trampoline(git_cmd):
+        return git_cmd
+    real_git = _locate_real_git()
+    if real_git is None:
+        print(
+            "⚠ Detected a broken git trampoline and could not locate a real "
+            "git binary — the update will fall back to the ZIP path."
+        )
+        return git_cmd
+    print(
+        f"⚠ Detected a broken git trampoline; switching to real git at "
+        f"{real_git}"
+    )
+    return [str(real_git)] + list(git_cmd[1:])
+
+
+def _discard_lockfile_churn(git_cmd, repo_root):
+    """Restore tracked ``package-lock.json`` files that npm dirtied locally.
+
+    npm rewrites lockfiles non-deterministically at install/build time. On a
+    managed install those diffs are never intentional, so we discard them so
+    ``hermes update`` sees a clean tree instead of autostashing every run.
+    Best-effort; only ever touches files named ``package-lock.json``.
+    """
+    try:
+        diff = subprocess.run(
+            git_cmd + ["diff", "--name-only"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if diff.returncode != 0:
+            return
+        dirty_package_dirs = {
+            Path(line.strip()).parent
+            for line in diff.stdout.splitlines()
+            if line.strip().endswith("package.json")
+        }
+        dirty = [
+            line.strip()
+            for line in diff.stdout.splitlines()
+            if line.strip().endswith("package-lock.json")
+            and Path(line.strip()).parent not in dirty_package_dirs
+        ]
+        if not dirty:
+            return
+        subprocess.run(
+            git_cmd + ["checkout", "--", *dirty],
+            cwd=repo_root,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            check=False,
+        )
+        print(f"→ Discarded npm lockfile churn ({len(dirty)} file(s))")
+    except Exception:
+        # Never let lockfile cleanup block an update.
+        pass
+
+def _normalize_managed_eol(git_cmd, repo_root):
+    """Take a managed checkout off ``core.autocrlf=true`` without leaving it dirty.
+
+    Git for Windows ships ``core.autocrlf=true`` in its system config, which
+    renormalizes this repo's LF text files to CRLF in the working tree. That
+    breaks ``git checkout`` on update with "Your local changes would be
+    overwritten", so ``install.ps1`` pins ``core.autocrlf=false`` on the managed
+    clone (#67730). Checkouts created before that landed never got the pin and
+    cannot receive it — the bootstrap installer reuses its build-pinned
+    ``install.ps1`` forever — so ``hermes update``, which ships with the checkout
+    itself, is the only path left that can fix them.
+
+    The pin and the cleanup are one operation. Under ``autocrlf=true`` git
+    compares normalized content, so a CRLF working tree reads clean; pinning
+    alone would expose every text file as modified and hand the update an
+    autostash of the whole tree. So the pin is written only after the tree is
+    verified clean under it, and a checkout we cannot fully normalize is left
+    exactly as it was. Best-effort: never blocks an update.
+    """
+    # -c, not config: evaluate the tree as it WOULD look pinned, without
+    # persisting anything we might not be able to follow through on.
+    probe = git_cmd + ["-c", "core.autocrlf=false"]
+
+    def _dirty(*extra):
+        out = subprocess.run(
+            probe + ["diff", "-z", "--name-only", *extra],
+            cwd=repo_root,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if out.returncode != 0:
+            return None
+        return {p for p in out.stdout.split("\0") if p}
+
+    def _real_dirty():
+        # Files with a *content* change once CRLF differences are ignored.
+        # NOTE: ``diff --name-only --ignore-cr-at-eol`` still LISTS CR-only
+        # files (the name list is computed from blob/stat differences before
+        # the CR filter is applied), so it cannot be used to isolate real
+        # edits. ``--numstat`` does honor the filter: a CR-only file produces
+        # no numstat record, while a genuinely-edited file does. Parse the
+        # paths out of numstat instead.
+        out = subprocess.run(
+            probe + ["-c", "core.quotepath=false",
+                     "diff", "--numstat", "--ignore-cr-at-eol"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if out.returncode != 0:
+            return None
+        paths = set()
+        for line in out.stdout.splitlines():
+            if not line.strip():
+                continue
+            # Format: "<added>\t<deleted>\t<path>". Rename detection is off in
+            # plain diff, so there is exactly one path field per record.
+            parts = line.split("\t", 2)
+            if len(parts) == 3 and parts[2]:
+                paths.add(parts[2])
+        return paths
+
+    def _eol_only():
+        all_dirty, real_dirty = _dirty(), _real_dirty()
+        if all_dirty is None or real_dirty is None:
+            return None
+        return all_dirty - real_dirty
+
+    try:
+        effective = subprocess.run(
+            git_cmd + ["config", "--get", "core.autocrlf"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        # Only "true" rewrites LF to CRLF on checkout. Unset, false, and input
+        # all leave the working tree alone, so there is nothing to repair.
+        if effective.stdout.strip().lower() != "true":
+            return
+
+        eol_only = _eol_only()
+        if eol_only is None:
+            return
+        if eol_only:
+            # Pathspec over stdin, not argv: a fully renormalized checkout is
+            # thousands of paths, well past the Windows command-line limit.
+            subprocess.run(
+                probe
+                + ["checkout", "--pathspec-from-file=-", "--pathspec-file-nul", "--"],
+                cwd=repo_root,
+                input="\0".join(sorted(eol_only)),
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                check=False,
+            )
+            if _eol_only():
+                # Still dirty — persisting the pin here would only surface churn
+                # we failed to clear. Leave the checkout as we found it.
+                return
+            print(f"→ Normalized line-ending churn ({len(eol_only)} file(s))")
+
+        subprocess.run(
+            git_cmd + ["config", "core.autocrlf", "false"],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+        )
+    except Exception:
+        # Never let line-ending cleanup block an update.
+        pass
+
+
+def _desktop_app_present(desktop_dir: Path) -> bool:
+    """Return whether a packaged or source Desktop build exists."""
+    return (
+        _m()._desktop_packaged_executable(desktop_dir) is not None
+        or _m()._desktop_dist_exists(desktop_dir)
+    )
+
+
+def _rebuild_desktop_after_update(
+    desktop_dir: Path, *, had_desktop_app_before_update: bool
+) -> bool:
+    """Rebuild an installed Desktop app when its source or artifact changed.
+
+    Returns ``False`` only when a rebuild was attempted and failed, so the
+    caller can withhold ``✓ Update complete!`` and (in gateway mode) write
+    a failing ``.update_exit_code`` (#88251). Every other outcome — nothing
+    to rebuild, up to date, build succeeded, Desktop never installed —
+    returns ``True``.
+    """
+    # The release tree is ignored by git and can disappear during an update.
+    # Its pre-update presence is enough to restore it; do not make people who
+    # have never used Desktop pay for an Electron build.
+    has_desktop_app = had_desktop_app_before_update or _desktop_app_present(desktop_dir)
+    if not (
+        (desktop_dir / "package.json").exists()
+        and _m()._resolve_node_runtime_npm()
+        and has_desktop_app
+    ):
+        return True
+
+    print("→ Checking if desktop app needs rebuilding...")
+    # Consult the content-hash stamp IN-PROCESS first. The spawned
+    # `hermes desktop --build-only` subprocess re-imports the whole CLI stack
+    # (~1-3 s) just to reach the same _m()._desktop_build_needed check; when
+    # the stamp already says "up to date" we can skip the spawn entirely. The
+    # update path never passes --source, so the subprocess would run with
+    # source_mode=False — mirror that here. Any error in the pre-check falls
+    # through to the subprocess.
+    skip_desktop_build = False
+    try:
+        skip_desktop_build = not _m()._desktop_build_needed(
+            desktop_dir, _m().PROJECT_ROOT, source_mode=False
+        )
+    except Exception:
+        skip_desktop_build = False
+    if skip_desktop_build:
+        print("  ✓ Desktop app up to date")
+        return True
+
+    desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
+    # Capture the (very loud) Electron/vite build output into update.log
+    # instead of streaming it to the terminal. On the rare nonzero exit,
+    # retry once after waiting again for the venv — this covers a
+    # still-settling rebuild window the first wait didn't fully catch — then
+    # surface the captured tail so the failure is debuggable.
+    #
+    # Start the build subprocess with the Hermes-managed Node on PATH: when
+    # `hermes update` runs inside the desktop updater chain (Desktop →
+    # hermes-setup → hermes update), the shell PATH customizations are lost,
+    # so a bare-PATH child would fail with `node: not found` before cmd_gui can
+    # self-heal.
+    from hermes_constants import with_hermes_node_path
+
+    build_env = with_hermes_node_path()
+    build_result = _m()._run_logged_subprocess(
+        desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env
+    )
+    if build_result.returncode != 0:
+        build_result = _m()._run_logged_subprocess(
+            desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env
+        )
+    if build_result.returncode != 0:
+        print("  ⚠ Desktop build failed (run `hermes desktop` to retry)")
+        tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
+        if tail:
+            print(tail)
+        from hermes_constants import display_hermes_home as _dhh
+
+        print(f"  Full build log: {_dhh()}/logs/update.log")
+        return False
+    print("  ✓ Desktop app up to date")
+    return True
+
+
+def _path_uid(path) -> Optional[int]:
+    """Owner uid of ``path`` via ``os.stat`` — ``None`` when unreadable.
+
+    Separate seam so tests can simulate root-owned files without chown
+    (which needs root). Never raises.
+    """
+    try:
+        return os.stat(path, follow_symlinks=False).st_uid
+    except OSError:
+        return None
+
+
+def _venv_foreign_owned_paths(venv_root, limit: int = 5) -> list:
+    """Bounded scan for venv entries not owned by the current user (#83529).
+
+    A venv that was ever touched by ``sudo pip`` / ``sudo hermes`` contains
+    root-owned files (classically ``*.dist-info/INSTALLER``). A later normal
+    ``hermes update`` then dies mid-mutation inside ``uv pip install -e .``
+    ("Permission denied (os error 13)") with ``venv/bin/hermes`` already
+    deleted — the CLI is bricked. Same philosophy as the contended-venv gate
+    (#87331): a venv we cannot safely mutate is never mutated at all.
+
+    Checks a deliberately BOUNDED set (no full recursion — must never be
+    slow): the venv root, each direct entry of ``venv/bin``, the top-level
+    entries of the first ``lib/python*/site-packages`` found, and the direct
+    children of each ``*.dist-info`` there. Caps stat calls at ~2000 and
+    returned paths at ``limit``. POSIX-only: returns ``[]`` on Windows
+    (no ``os.geteuid``) and when running as root. Swallows every per-entry
+    ``OSError`` and returns ``[]`` on any structural surprise — this helper
+    must NEVER raise and must never add noticeable latency to update.
+
+    Returns a list of ``(path_str, uid)`` tuples, at most ``limit`` long.
+    """
+    try:
+        if not hasattr(os, "geteuid"):
+            return []  # windows-footgun: ok — POSIX ownership concept only
+        euid = os.geteuid()  # windows-footgun: ok — guarded by hasattr above
+        if euid == 0:
+            return []  # root can rewrite anything; nothing to refuse
+
+        venv_root = Path(venv_root)
+        budget = 2000  # max stat() calls — hard bound on preflight cost
+        foreign: list = []
+
+        def _check(p) -> bool:
+            """stat one path; True while scan should continue."""
+            nonlocal budget
+            if budget <= 0 or len(foreign) >= limit:
+                return False
+            budget -= 1
+            uid = _path_uid(p)
+            if uid is not None and uid != euid:
+                foreign.append((str(p), uid))
+            return budget > 0 and len(foreign) < limit
+
+        def _scan_dir(d, recurse_dist_info: bool = False) -> None:
+            try:
+                entries = list(os.scandir(d))
+            except OSError:
+                return
+            for entry in entries:
+                if not _check(entry.path):
+                    return
+                if recurse_dist_info and entry.name.endswith(".dist-info"):
+                    try:
+                        children = list(os.scandir(entry.path))
+                    except OSError:
+                        continue
+                    for child in children:
+                        if not _check(child.path):
+                            return
+
+        if not _check(venv_root):
+            return foreign[:limit]
+        _scan_dir(venv_root / "bin")
+
+        # First lib/python*/site-packages (POSIX venv layout).
+        site_packages = next(
+            iter(sorted(venv_root.glob("lib/python*/site-packages"))), None
+        )
+        if site_packages is not None:
+            _scan_dir(site_packages, recurse_dist_info=True)
+
+        return foreign[:limit]
+    except Exception:
+        # Preflight is advisory: any structural surprise means "no verdict",
+        # never a crashed or blocked update.
+        return []
+
+
+def _repo_foreign_owned_paths(project_root, limit: int = 5) -> list:
+    """Bounded scan for repo-tree entries not owned by the current user (#102193).
+
+    A repo that was ever touched by ``sudo hermes`` / ``sudo git`` contains
+    root-owned files (classically under ``.git/objects``). A later normal
+    ``hermes update`` then dies at autostash (``insufficient permission``)
+    or mid-pull — after the venv gate below already passed, because that
+    gate only scans ``venv/``. Same refuse-before-mutate philosophy.
+
+    Bounded like :func:`_venv_foreign_owned_paths` (no full recursion):
+    the repo root's direct entries, ``.git`` top level, and the top level
+    of each ``.git/objects`` fan-out dir (where sudo-created objects land).
+    Caps stat calls at ~2000 and returned paths at ``limit``. POSIX-only
+    with the same never-raise, never-slow contract (reuses ``_path_uid``).
+    """
+    try:
+        if not hasattr(os, "geteuid"):
+            return []  # windows-footgun: ok — POSIX ownership concept only
+        euid = os.geteuid()  # windows-footgun: ok — guarded by hasattr above
+        if euid == 0:
+            return []  # root can rewrite anything; nothing to refuse
+
+        root = Path(project_root)
+        budget = 2000  # max stat() calls — hard bound on preflight cost
+        foreign: list = []
+
+        def _check(p) -> bool:
+            """stat one path; True while scan should continue."""
+            nonlocal budget
+            if budget <= 0 or len(foreign) >= limit:
+                return False
+            budget -= 1
+            uid = _path_uid(p)
+            if uid is not None and uid != euid:
+                foreign.append((str(p), uid))
+            return budget > 0 and len(foreign) < limit
+
+        try:
+            entries = list(os.scandir(root))
+        except OSError:
+            return []
+        for entry in entries:
+            if not _check(entry.path):
+                return foreign[:limit]
+            if entry.name == ".git" and entry.is_dir(follow_symlinks=False):
+                try:
+                    git_entries = list(os.scandir(entry.path))
+                except OSError:
+                    continue
+                for git_entry in git_entries:
+                    if not _check(git_entry.path):
+                        return foreign[:limit]
+                    if git_entry.name == "objects" and git_entry.is_dir(
+                        follow_symlinks=False
+                    ):
+                        try:
+                            fanout = list(os.scandir(git_entry.path))
+                        except OSError:
+                            continue
+                        for fan in fanout:
+                            if not _check(fan.path):
+                                return foreign[:limit]
+
+        return foreign[:limit]
+    except Exception:
+        # Preflight is advisory: any structural surprise means "no verdict",
+        # never a crashed or blocked update.
+        return []
+
+
+def _refuse_update_if_venv_foreign_owned(project_root) -> None:
+    """Refuse-before-mutate ownership gate for the dependency install (#83529).
+
+    Runs after the code pull (pulling code is safe) and immediately before
+    the first venv mutation. If the venv contains files owned by another
+    uid, the ``uv pip install -e .`` below would die mid-mutation and brick
+    the install — so refuse up front, with the exact recovery command,
+    while the venv is still fully intact. Also covers the repo tree itself
+    (``.git/objects`` etc.), where sudo-created files break autostash
+    before the venv is even reached (#102193). No subprocess calls here:
+    update tests mock ``subprocess.run`` with sequenced side effects.
+    """
+    venv_foreign = _venv_foreign_owned_paths(Path(project_root) / "venv")
+    if venv_foreign:
+        print("\n✗ Update stopped: this install's venv contains files owned by another user.")
+        print("  Updating now would fail midway (Permission denied) and leave Hermes broken.")
+        print("  This usually happens after running hermes or pip with sudo. Offending paths:")
+        for p, uid in venv_foreign:
+            print(f"    - {p} (owner uid {uid})")
+        print("\n  Fix ownership, then re-run the update:")
+        print(f"    sudo chown -R $(id -un): {project_root}")
+        print("    hermes update")
+        print("\n  Nothing in the venv was modified.")
+        sys.exit(1)
+    # Repo tree itself (not just venv/): sudo-created files under
+    # .git/objects break autostash before the venv is even reached (#102193).
+    repo_foreign = _repo_foreign_owned_paths(project_root)
+    if not repo_foreign:
+        return
+    print("\n✗ Update stopped: this install's repo tree contains files owned by another user.")
+    print("  Updating now would fail midway (Permission denied) and leave Hermes broken.")
+    print("  This usually happens after running hermes or git with sudo. Offending paths:")
+    for p, uid in repo_foreign:
+        print(f"    - {p} (owner uid {uid})")
+    print("\n  Fix ownership, then re-run the update:")
+    print(f"    sudo chown -R $(id -un): {project_root}")
+    print("    hermes update")
+    print("\n  Nothing was modified.")
+    sys.exit(1)
+
+
 def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha) -> None:
     """Post-pull syntax guard: roll back to *pre_pull_sha* and ``sys.exit(1)`` when a critical
     file no longer compiles (a bad admin-merge past CI must not brick the CLI)."""

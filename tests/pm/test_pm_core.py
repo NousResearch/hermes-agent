@@ -415,7 +415,7 @@ def test_gc_removes_fetch_cache_archives(pm_env):
 
 
 def test_env_for_never_installs(pm_env):
-    from pm.ensure import env_for
+    from pm import env_for
 
     _, runtime, *_ = pm_env
     env = env_for("faketool", base_env={})

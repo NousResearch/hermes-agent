@@ -104,7 +104,6 @@ class Resolved:
 
 def resolve_best(
     name: str,
-    targets: list[str],
     latest_by_target: dict[str, list[str]],
     locked: Optional[str],
     style: str,
@@ -152,7 +151,7 @@ def resolve_package(package, targets: list[str], locked: Optional[str], *, artif
         t: list(package.latest_versions(t, locked=locked) or [])
         for t in targets
     }
-    decision = resolve_best(package.name, targets, latest, locked, package.version_style)
+    decision = resolve_best(package.name, latest, locked, package.version_style)
     if decision.style == "minor" and decision.version is not None and artifacts is not None:
         for target, version in decision.per_target.items():
             current = artifacts.get(target, artifacts.get("any", []))
@@ -321,7 +320,7 @@ def github_release_tags(repo: str, *, strip_prefix: str = "") -> list[str]:
 
 
 def npm_dist_tags(name: str) -> dict:
-    return _get_json(f"https://registry.npmjs.org/{name}").get("dist-tags", {})
+    return _get_json(f"https://registry.npmjs.org/-/package/{name}/dist-tags")
 
 
 def node_latest_versions() -> list[str]:

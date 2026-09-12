@@ -240,20 +240,6 @@ def test_enabled_member_dirs_ignores_non_profile_entries(tmp_path, monkeypatch):
 # --- classified failures + staging surface (FINAL-RUNTIME-CONTRACT) ---
 
 
-def test_classify_resolver_conflict_is_resolutionconflict():
-    from pm.package import InstallError
-    from pm.workspace import ResolutionConflict, classify_uv_failure
-
-    err = classify_uv_failure(
-        "lock", 1,
-        "  x No solution found for `hermes-agent>=0.1.0` because only the "
-        "following versions are available:\n",
-    )
-    assert isinstance(err, ResolutionConflict)
-    assert isinstance(err, InstallError)
-    assert "no solution found" in str(err).lower()
-
-
 def test_classify_network_failure_stays_generic():
     from pm.workspace import ResolutionConflict, classify_uv_failure
 

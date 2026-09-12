@@ -208,6 +208,8 @@ def test_worker_sync_reuses_unions_and_reports_real_lock_drift(locked_project, b
     pm.lock_project(source, offline=True, explicit=True)
     assert pm.check() == []
     parent_path, parent_env = list(sys.path), dict(os.environ)
+    # The worker imports its own class; this trap affects only inline installs.
+    monkeypatch.setattr("pm.packages.Venv.apply", lambda *a, **kw: pytest.fail("venv apply ran in caller"))
 
     pm.sync_venv(["chosen"], explicit=True, plugin_dirs=[])
     first = selected_venv(source)

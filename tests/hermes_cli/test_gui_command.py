@@ -1226,7 +1226,7 @@ def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, ca
 
 def test_gui_successful_pack_swaps_new_app_into_release(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(main_desktop, "_ensure_desktop_exe_launchable", lambda _root, exe: (exe, False))
+    monkeypatch.setattr(main_desktop, "_desktop_exe_integrity_error", lambda exe: None)
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     live_exe = _make_packaged_executable(root, monkeypatch)

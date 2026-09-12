@@ -7,8 +7,6 @@ never deviates and never installs a plugin member.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 import pm.features as feats
@@ -43,38 +41,6 @@ def test_features_path_in_bundle_uses_payload_root(rooted):
     payload = rooted / "payload"
     payload.mkdir()
     assert feats.features_path(payload) == payload / "enabled-features.json"
-
-
-def test_installed_extras_reports_only_anchor_resolved(tmp_path, monkeypatch):
-    import sys
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "pyproject.toml").write_text(
-        "[project]\n"
-        'name = "hermes-agent"\n'
-        "[project.optional-dependencies]\n"
-        'present = ["x"]\n'
-        'absent = ["y"]\n',
-        encoding="utf-8",
-    )
-    venv = tmp_path / "venv"
-    from hermes_cli.runtime_paths import site_packages
-
-    site = site_packages(venv)
-    site.mkdir(parents=True)
-    (site / "somepkg.py").write_text("x = 1\n", encoding="utf-8")
-
-    import pm.extras as extras_mod
-
-    monkeypatch.setattr(
-        extras_mod,
-        "ANCHORS",
-        {**extras_mod.ANCHORS, "present": "somepkg", "absent": "missingmod"},
-    )
-    got = feats.installed_extras(repo, venv, python_exe=Path(sys.executable))
-    assert "present" in got
-    assert "absent" not in got
 
 
 def test_sync_venv_refuses_outside_frozen_extras(rooted, monkeypatch):

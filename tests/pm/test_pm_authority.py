@@ -265,24 +265,40 @@ def test_failed_restore_preserves_both_interrupted_versions(pm_env, monkeypatch)
     assert (previous / "saved").read_text() == "previous"
 
 
-def test_poisoned_fetch_cache_is_redownloaded(pm_env):
-    """The fetch cache is keyed on the FULL sha and re-hashed before it is
-    trusted; poisoned bytes are deleted and re-downloaded."""
+@pytest.mark.parametrize("poisoned", [False, True], ids=["warm", "corrupt"])
+def test_fetch_cache_verification_is_owned_by_downloader(pm_env, monkeypatch, poisoned):
+    """Real cached bytes are checked in planning and under the partial lock;
+    corrupt bytes must be replaced, without an extra Store-layer hash."""
+    import pm.downloader as downloader
+    import pm.store as store_mod
+
     env = pm_env
-    runtime = env["runtime"]
-    store = Store(runtime / "scratch-store")
+    store = Store(env["runtime"] / "scratch-store")
     url = f"{env['base_url']}/faketool-1.0.tar.gz"
     digest = env["digest"]
-
-    first = store.fetch(url, digest, runtime / "scratch-store")
+    with store.scratch() as scratch:
+        first = store.fetch(url, digest, scratch)
     assert sha_of(first) == digest
+    size = first.stat().st_size
+    if poisoned:
+        first.write_bytes(b"poisoned")
 
-    # Poison the cached entry: same name, wrong bytes.
-    with open(first, "wb") as f:
-        f.write(b"poisoned")
+    hashes = []
+    for module, symbol in [(store_mod, "sha256_file"), (downloader, "_sha256_file")]:
+        original = getattr(module, symbol)
 
-    second = store.fetch(url, digest, runtime / "scratch-store")
+        def counted(path, original=original, owner=module.__name__):
+            hashes.append((owner, path.stat().st_size))
+            return original(path)
+
+        monkeypatch.setattr(module, symbol, counted)
+
+    with store.scratch() as scratch:
+        second = store.fetch(url, digest, scratch)
+    assert second == first
     assert sha_of(second) == digest
+    expected_sizes = [len(b"poisoned"), len(b"poisoned"), size] if poisoned else [size, size]
+    assert hashes == [("pm.downloader", size) for size in expected_sizes]
 
 
 def sha_of(path: Path) -> str:

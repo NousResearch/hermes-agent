@@ -18,10 +18,11 @@ from pm.paths import lockfile_path
 from pm.registry import walk
 from pm.store import current_target
 
+_ROOTS = {"python": ["uv"], "node": ["npm"], "all": ["npm", "uv"]}
+
 
 def packages(toolchain: str) -> list[str]:
-    roots = {"python": ["python", "uv"], "node": ["npm"], "all": ["python", "uv", "npm"]}
-    return sorted(package.name for package in walk(roots[toolchain]))
+    return sorted(package.name for package in walk(_ROOTS[toolchain]))
 
 
 def file_commands(destination: str, values: dict) -> None:
@@ -114,12 +115,13 @@ def install(args) -> None:
     from pm.cli import _live_progress
     from pm.ensure import ensure, env_for
     from pm.lock import Facts
+    from pm.package import compose_env
     from pm.packages import uv_cache_dir
     from pm.paths import facts_path, store_root
     from pm.registry import get_package
 
     names = packages(args.toolchain)
-    for name in names:
+    for name in _ROOTS[args.toolchain]:
         ensure(name, explicit=True, progress=_live_progress(name))
     facts = Facts(facts_path())
     target = current_target()
@@ -128,8 +130,9 @@ def install(args) -> None:
         name: get_package(name).binary(store_root() / facts.get(name)["entry"], target)
         for name in public_names
     }
-    environment = env_for(*public_names)
-    path = env_for(*public_names, base_env={})["PATH"].split(os.pathsep)
+    environment = env_for(*public_names, base_env={})
+    path = environment["PATH"].split(os.pathsep)
+    environment = compose_env([environment])
     exported = {}
     outputs = {f"{name}-path": str(binaries[name]) for name in public_names}
     if "python" in names:

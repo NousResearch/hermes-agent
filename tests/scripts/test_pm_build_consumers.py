@@ -26,10 +26,13 @@ def test_ci_setup_exports_no_installer_path_or_policy(tmp_path, monkeypatch, loc
 
     monkeypatch.setattr(setup_toolchain, "packages", lambda _: ["python", "uv"])
     manager = importlib.import_module("pm.ensure")
-    monkeypatch.setattr(manager, "ensure", lambda *args, **kwargs: None)
+    ensured = []
+    monkeypatch.setattr(manager, "ensure", lambda name, **kwargs: ensured.append((name, kwargs["explicit"])))
+    composed = []
 
     def environment(*names, base_env=None):
         assert "uv" not in names
+        composed.append(names)
         return {"PATH": str(Path(sys.executable).parent)}
 
     def package(name):
@@ -43,6 +46,8 @@ def test_ci_setup_exports_no_installer_path_or_policy(tmp_path, monkeypatch, loc
     for name, path in files.items():
         monkeypatch.setenv(name, str(path))
     setup_toolchain.install(SimpleNamespace(toolchain="python", home=tmp_path / "ci"))
+    assert ensured == [("uv", True)]  # ensure already walks uv's Python dependency.
+    assert composed == [("python",)]
     outputs = dict(line.split("=", 1) for line in files["GITHUB_OUTPUT"].read_text(encoding="utf-8").splitlines())
     exported = dict(line.split("=", 1) for line in files["GITHUB_ENV"].read_text(encoding="utf-8").splitlines())
     assert "uv-path" not in outputs

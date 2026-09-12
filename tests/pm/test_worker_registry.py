@@ -166,6 +166,7 @@ def test_non_importable_registration_fails_with_package_remedy(kind):
 
 
 def test_file_registered_package_runs_its_own_definition_in_child(tmp_path, monkeypatch):
+    existing = registry.package_definitions()
     source = tmp_path / "package.py"
     source.write_text(textwrap.dedent("""\
         from pm import Package, InstallError, register
@@ -181,7 +182,9 @@ def test_file_registered_package_runs_its_own_definition_in_child(tmp_path, monk
     # Public registration also works without a decorator at import time.
     pm.register(module.ExternalPackage)
     definitions = registry.package_definitions()
-    assert [item["name"] for item in definitions] == [module.ExternalPackage.name]
+    assert [item["name"] for item in definitions] == [
+        *[item["name"] for item in existing], module.ExternalPackage.name,
+    ]
     result = _child(definitions, """\
         package = get_package('external-worker-test')
         try:

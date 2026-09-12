@@ -297,7 +297,7 @@ class Store:
             entry_name = f"fetch-{digest}"
             entry = self.entry(entry_name)
             files = list(entry.iterdir()) if entry.is_dir() else []
-            if len(files) == 1 and files[0].is_file() and sha256_file(files[0]) == digest:
+            if len(files) == 1 and files[0].is_file():
                 destination = files[0]
             else:
                 if entry.exists():

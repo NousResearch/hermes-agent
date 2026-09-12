@@ -63,7 +63,6 @@ def test_best_in_minor():
 def test_semver_picks_highest_shared_version():
     r = resolve_best(
         "node",
-        ["win32-x64", "linux-x64"],
         {"win32-x64": ["26.8.1", "26.7.0"], "linux-x64": ["26.8.1", "26.7.0"]},
         locked="26.7.0",
         style="semver",
@@ -76,7 +75,6 @@ def test_semver_picks_highest_shared_version():
 def test_semver_no_update_when_up_to_date():
     r = resolve_best(
         "node",
-        ["win32-x64"],
         {"win32-x64": ["26.7.0"]},
         locked="26.7.0",
         style="semver",
@@ -88,7 +86,6 @@ def test_semver_no_update_when_up_to_date():
 def test_semver_divergent_targets_no_shared_version():
     r = resolve_best(
         "gh",
-        ["win32-x64", "linux-x64"],
         {"win32-x64": ["2.97.0"], "linux-x64": ["2.96.0"]},
         locked="2.95.0",
         style="semver",
@@ -106,7 +103,6 @@ def test_minor_style_shared_minor_with_per_target_patches():
     moves to the highest shared major.minor; each target pins its own patch."""
     r = resolve_best(
         "ffmpeg",
-        ["linux-x64", "win32-x64"],
         {"linux-x64": ["9.1.2", "9.0.1"], "win32-x64": ["9.1.0", "9.0.1"]},
         locked="9.0.1",
         style="minor",
@@ -120,7 +116,6 @@ def test_minor_style_no_shared_minor_blocks_update():
     """posix on 9.1, win32 still on 9.0 — no minor every target serves."""
     r = resolve_best(
         "ffmpeg",
-        ["linux-x64", "win32-x64"],
         {"linux-x64": ["9.1.2"], "win32-x64": ["9.0.3"]},
         locked="9.0.1",
         style="minor",
@@ -135,7 +130,6 @@ def test_minor_style_patch_drift_within_shared_minor_is_up_to_date():
     move (patches live in per-target urls)."""
     r = resolve_best(
         "ffmpeg",
-        ["linux-x64", "win32-x64"],
         {"linux-x64": ["9.1.2"], "win32-x64": ["9.1.0"]},
         locked="9.1",
         style="minor",
@@ -148,7 +142,7 @@ def test_minor_style_patch_drift_within_shared_minor_is_up_to_date():
 
 
 def test_no_source_anywhere():
-    r = resolve_best("chromium", ["win32-x64"], {"win32-x64": []}, locked="1208+145", style="semver")
+    r = resolve_best("chromium", {"win32-x64": []}, locked="1208+145", style="semver")
     assert r.version is None
     assert r.reason == "no source"
     assert not r.changed
@@ -158,7 +152,6 @@ def test_missing_source_for_one_target_skipped():
     """A target whose index is unreachable must not block the others."""
     r = resolve_best(
         "node",
-        ["win32-x64", "linux-x64"],
         {"win32-x64": ["26.8.1"], "linux-x64": []},
         locked="26.7.0",
         style="semver",

@@ -8,8 +8,8 @@ non-PE file, or a wrong-architecture tree shipped as the new app — Windows
 then refuses to launch it with "This app can't run on your computer"
 (此应用无法在你的电脑上运行) and the user has no working install left.
 
-These tests exercise the behavior contract only: synthetic PE files go in,
-verdicts/rollbacks come out.
+These tests exercise PE validation and rejection before publication. Windows
+host/architecture probes stay native; the Linux callback witness checks staging.
 """
 
 from __future__ import annotations
@@ -200,59 +200,80 @@ def test_expected_machines_prefers_user_runnable_api_over_arch_name(monkeypatch)
 
 
 
-# ─── rollback ───────────────────────────────────────────────────────────────
+# ─── staged integrity gate ─────────────────────────────────────────────────
 
 
-def _win_tree(tmp_path: Path) -> tuple[Path, Path]:
+@pytest.mark.platforms("linux")
+def test_corrupt_staged_app_keeps_live_bytes_without_backup_recovery(tmp_path, monkeypatch, capsys):
+    """Exercise publication and PE parsing, not Windows host/architecture discovery."""
     desktop_dir = tmp_path / "apps" / "desktop"
-    exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
-    return desktop_dir, exe
+    live_exe = desktop_dir / "release" / "linux-unpacked" / "hermes"
+    make_pe(live_exe)
+    live_bytes = live_exe.read_bytes()
+    assert main_desktop._parse_pe_machine(live_exe) == PE_AMD64
+    # The host-native layout makes discovery/swap real; PE is just fixture data.
+    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staged_exe = make_pe(staging / "linux-unpacked" / "hermes", truncate_to=0x300)
+    staged_bytes = staged_exe.read_bytes()
+    backup_exe = make_pe(staging / "linux-unpacked.bak" / "hermes")
+    old_diagnostic = staging / "linux-unpacked.corrupt" / "diagnostic"
+    old_diagnostic.parent.mkdir()
+    old_diagnostic.write_bytes(b"previous diagnostic")
+    # Raw in-place pack recovery material is not owned by this transaction.
+    live_backup = make_pe(live_exe.parent.with_name("linux-unpacked.bak") / "hermes")
 
+    checked = []
 
-def test_rollback_restores_backup_and_keeps_corrupt_copy(tmp_path):
-    desktop_dir, exe = _win_tree(tmp_path)
-    make_pe(exe, PE_AMD64, truncate_to=0x300)  # corrupt new build
-    backup_exe = desktop_dir / "release" / "win-unpacked.bak" / "Hermes.exe"
-    make_pe(backup_exe, PE_AMD64)  # valid old build
+    def check_pe(path):
+        checked.append(path)
+        try:
+            main_desktop._parse_pe_machine(path)
+        except ValueError as exc:
+            return str(exc)
+        return None
 
-    with patch("hermes_cli.main_desktop._windows_native_machine", return_value="AMD64"):
-        restored = main_desktop._rollback_desktop_from_backup(exe)
+    discard = main_desktop._discard_desktop_staging
 
-    assert restored == exe
-    # The restored exe is the old, valid build.
-    assert main_desktop._parse_pe_machine(exe) == PE_AMD64
-    assert exe.stat().st_size == 0x400
-    # Corrupt tree preserved for diagnostics; backup consumed.
-    assert (desktop_dir / "release" / "win-unpacked.corrupt" / "Hermes.exe").exists()
-    assert not backup_exe.exists()
+    def check_before_discard(path):
+        assert path == staging
+        assert staged_exe.read_bytes() == staged_bytes
+        assert backup_exe.read_bytes() == live_bytes
+        assert old_diagnostic.read_bytes() == b"previous diagnostic"
+        discard(path)
 
+    monkeypatch.setattr(main_desktop, "_discard_desktop_staging", check_before_discard)
+    with patch.object(main_desktop.os, "rename", wraps=main_desktop.os.rename) as rename:
+        with pytest.raises(RuntimeError, match="previous desktop app was left untouched"):
+            main_desktop._promote_staged_desktop_app(desktop_dir, staging, integrity_check=check_pe)
+        rename.assert_not_called()
 
-
-
-# ─── _ensure_desktop_exe_launchable (the gate) ──────────────────────────────
-
-
-
-
+    assert checked == [staged_exe]
+    assert live_exe.read_bytes() == live_bytes
+    assert live_backup.read_bytes() == live_bytes
+    assert not staging.exists()
+    assert not list((desktop_dir / "release").glob("*.previous"))
+    out = capsys.readouterr().out
+    assert "integrity check" in out
+    assert "truncated executable" in out
 
 
 @pytest.mark.platforms("windows")
 def test_gate_fails_clearly_without_backup(tmp_path, capsys):
-    """``platforms("windows")``: ``_ensure_desktop_exe_launchable`` is a documented
-    no-op off Windows, so the fake was the only reason the gate ran at all.
-    """
-    desktop_dir, exe = _win_tree(tmp_path)
-    fake = exe
-    fake.parent.mkdir(parents=True)
-    fake.write_bytes(b"<html>proxy error</html>" + b" " * 600)
+    """Exercise the default Windows PE check, without injecting a validator."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    exe = staging / "win-unpacked" / "Hermes.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"<html>proxy error</html>" + b" " * 600)
 
-    verified, rolled_back = main_desktop._ensure_desktop_exe_launchable(desktop_dir, exe)
+    with pytest.raises(RuntimeError, match="produced no launchable app"):
+        main_desktop._promote_staged_desktop_app(desktop_dir, staging)
 
-    assert verified is None
-    assert rolled_back is False
+    assert not staging.exists()
+    assert not (desktop_dir / "release").exists()
     out = capsys.readouterr().out
     assert "integrity check" in out
-    assert "No usable backup" in out
+    assert "missing MZ header" in out
 
 
 # ─── end-to-end: `hermes desktop --build-only` exits nonzero on corrupt exe ─
@@ -325,7 +346,7 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     assert live_exe.read_bytes() == live_bytes
     assert main_desktop._parse_pe_machine(live_exe) == PE_AMD64
     # ...the staged corrupt tree was discarded...
-    assert not list((desktop_dir / "release").glob(".staging-*"))
+    assert not list(desktop_dir.glob(".staging-*"))
 
     out = capsys.readouterr().out
     assert "integrity check" in out

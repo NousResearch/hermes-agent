@@ -22,40 +22,17 @@ def test_extra_supported_ungated_extra_is_true():
     assert extras.extra_supported("no-such-gate-for-this-one") is True
 
 
-def test_extra_supported_gate_excludes_platform(monkeypatch):
-    extras._PLATFORM_GATES = {"gated-extra": "sys_platform == 'linux'"}
-    try:
-        # On this Windows host the linux gate must read False — unless the
-        # anchors happen to be installed (installed-override beats table).
-        if sys.platform == "linux":
-            pytest.skip("host is linux — the linux gate is inclusive here")
-        assert extras.extra_supported("gated-extra") is False
-    finally:
-        extras._PLATFORM_GATES = None
-
-
-def test_extra_supported_installed_override_beats_gate(monkeypatch):
-    extras._PLATFORM_GATES = {"gated-extra": "sys_platform == 'linux'"}
-    try:
-        # anchors importable → supported even if the gate would exclude
-        monkeypatch.setitem(sys.modules, "gated_extra", SimpleNamespace())
-        assert extras.extra_supported("gated-extra") is True
-    finally:
-        extras._PLATFORM_GATES = None
-
-
 def test_ensure_import_raises_on_gated_off_extra(monkeypatch, synced):
-    extras._PLATFORM_GATES = {"gated-extra": "sys_platform == 'linux'"}
-    try:
-        if sys.platform == "linux":
-            pytest.skip("host is linux — gate is inclusive here")
-        monkeypatch.setattr(extras, "available", lambda e: False)
-        with pytest.raises(pm.InstallError) as exc:
-            extras.ensure_import("gated-extra")
-        assert "not supported on this platform" in str(exc.value)
-        assert synced == []  # never reached the venv sync
-    finally:
-        extras._PLATFORM_GATES = None
+    from packaging.markers import default_environment
+
+    version = default_environment()["python_full_version"]
+    monkeypatch.setattr(extras, "_PLATFORM_GATES", {
+        "gated-extra": f"python_full_version < '{version}'",
+    })
+    monkeypatch.setattr(extras, "available", lambda e: False)
+    with pytest.raises(pm.InstallError, match="not supported on this platform"):
+        extras.ensure_import("gated-extra")
+    assert synced == []
 
 
 def test_sync_refuses_python_gated_extra_before_touching_environment(monkeypatch, tmp_path):

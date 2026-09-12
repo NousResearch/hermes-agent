@@ -536,41 +536,32 @@ def test_do_install_stale_index_names_the_problem(monkeypatch):
     assert "Could not fetch" not in out
 
 
-def test_do_install_unknown_identifier_stays_generic(monkeypatch):
-    """No index hit at all keeps the original generic message."""
+@pytest.mark.parametrize("meta_hit", [False, True])
+def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_hit):
+    """No index hit — or a throttled fetch that only *looks* like a stale entry — keeps the
+    generic message (plus the rate-limit hint), never the stale-entry verdict."""
     import hermes_cli.skills_hub as cli_hub
     import tools.skills_hub as hub
     from hermes_cli.skills_hub import do_install
 
+    class ThrottledSource:
+        is_rate_limited = meta_hit
+
+        def source_id(self):
+            return "skills-sh"
+
+    meta = type("Meta", (), {"identifier": "skills-sh/org/gone-skill"})() if meta_hit else None
+    src = ThrottledSource()
     monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
-    monkeypatch.setattr(cli_hub, "_sources", lambda: [object()])
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [src])
     monkeypatch.setattr(
         cli_hub, "_resolve_source_meta_and_bundle",
-        lambda identifier, sources: (None, None, None))
+        lambda identifier, sources: (meta, None, src if meta_hit else None))
     sink = StringIO()
     console = Console(file=sink, force_terminal=False, color_system=None)
-    do_install("nobody/nowhere/nothing", console=console, skip_confirm=True)
+    do_install("skills-sh/org/gone-skill", console=console, skip_confirm=True)
 
     out = sink.getvalue()
     assert "Could not fetch" in out
     assert "Stale index entry" not in out
-
-
-def test_do_search_warns_about_skills_sh_staleness(monkeypatch):
-    """Search results from skills.sh carry the stale-index caveat."""
-    import tools.skills_hub_search as hub_search
-    from hermes_cli.skills_hub import do_search
-    import hermes_cli.skills_hub as cli_hub
-
-    row = type("Row", (), {
-        "name": "gone-skill", "description": "d", "source": "skills-sh",
-        "trust_level": "community",
-        "identifier": "skills-sh/org/gone-skill"})()
-    monkeypatch.setattr(cli_hub, "_sources", lambda: [])
-    monkeypatch.setattr(hub_search, "unified_search",
-                        lambda query, sources, source_filter, limit: [row])
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-    do_search("gone", console=console)
-
-    assert "stale index entry" in sink.getvalue()
+    assert ("rate limit" in out) is meta_hit

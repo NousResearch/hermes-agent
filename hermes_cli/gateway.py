@@ -117,8 +117,12 @@ class WindowsGatewayService:
     gateway_create_time: float = 0.0
 
 
-def _get_service_pids(all_profiles: bool = False) -> set:
+def _get_service_pids(all_profiles: bool = False, *, fail_closed: bool = False) -> set:
     """PIDs managed by systemd/launchd gateway services (excluded from stale-process sweeps).
+
+    ``fail_closed``: a service-manager query that times out re-raises ``subprocess.TimeoutExpired``
+    instead of being skipped. Destructive callers (the orphan reaper) need this: a supervised PID
+    missing from the result because ``launchctl`` stalled must abort the sweep, not become a kill.
 
     Relies on the service manager committing the new PID before the restart command returns.
     ``all_profiles`` widens the current profile's unit/label to the whole ``hermes-gateway*`` /
@@ -164,9 +168,15 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                         pid = int(show.stdout.strip())
                         if pid > 0:
                             pids.add(pid)
-                    except (ValueError, subprocess.TimeoutExpired):
+                    except subprocess.TimeoutExpired:
+                        if fail_closed:
+                            raise
+                    except ValueError:
                         pass
-            except (FileNotFoundError, subprocess.TimeoutExpired):
+            except subprocess.TimeoutExpired:
+                if fail_closed:
+                    raise
+            except FileNotFoundError:
                 pass
 
     # --- launchd (macOS) ---
@@ -183,6 +193,8 @@ def _get_service_pids(all_profiles: bool = False) -> set:
             try:
                 _domain, pid = _locate_launchd_gateway_service(label)
             except subprocess.TimeoutExpired:
+                if fail_closed:
+                    raise
                 continue
             if pid is not None and pid > 0:
                 pids.add(pid)
@@ -201,7 +213,10 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                                     pids.add(pid)
                             except ValueError:
                                 pass
-            except (FileNotFoundError, subprocess.TimeoutExpired):
+            except subprocess.TimeoutExpired:
+                if fail_closed:
+                    raise
+            except FileNotFoundError:
                 pass
 
     return pids
@@ -1636,6 +1651,8 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
 
     from gateway.status import _pid_exists, get_process_start_time, write_planned_stop_marker
     own = _reaper_exclusion_pids(extra_exclude)
+    if own is None:
+        return False
     try:
         # On Windows also drop Task Scheduler-owned candidates (the pidfile-less gap).
         orphans = [
@@ -1680,12 +1697,17 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     return reaped
 
 
-def _reaper_exclusion_pids(extra_exclude: set | None) -> set[int]:
-    """PIDs the orphan reaper must never kill: self, caller extras, service-managed, recorded."""
+def _reaper_exclusion_pids(extra_exclude: set | None) -> set[int] | None:
+    """PIDs the orphan reaper must never kill: self, caller extras, service-managed, recorded.
+
+    Returns ``None`` when the exclusion set could not be built completely on macOS: launchd PID
+    discovery is the ONLY thing standing between a supervised gateway and the SIGTERM below, so an
+    incomplete answer must abort the sweep rather than shrink the exclusion set.
+    """
     own = {os.getpid()} | (extra_exclude or set())
     # Service-managed gateways are never orphans (on macOS supports_systemd_services() is False, so a
     # launchd gateway would otherwise be SIGTERM'd); all_profiles because the scan sees siblings too.
-    with contextlib.suppress(Exception):
+    try:
         # This covers macOS launchd (supports_systemd_services() is False there, so without this the launchd
         # gateway looks like an unsupervised orphan and gets SIGTERM'd, causing launchd to restart it — or
         # leaving it down under KeepAlive.SuccessfulExit=false) and any systemd unit reachable from a host
@@ -1695,7 +1717,16 @@ def _reaper_exclusion_pids(extra_exclude: set | None) -> set[int]:
         # cover the whole ai.hermes.gateway* fleet — not just the current profile's label — or a sibling
         # profile's launchd gateway is misclassified as an unsupervised orphan and reaped. Same class as the
         # update-sweep fix in #74075.
-        own |= _get_service_pids(all_profiles=True)
+        # fail_closed on macOS: a transient launchctl stall must abort this destructive sweep instead
+        # of exposing the root/sibling launchd gateway PID as an apparent orphan. Elsewhere the
+        # exclusion set is best-effort, as before.
+        own |= _get_service_pids(all_profiles=True, fail_closed=is_macos())
+    except subprocess.TimeoutExpired:
+        # Only reachable with fail_closed=True, i.e. on macOS.
+        logger.debug("Skipping orphan reap: launchd PID discovery was incomplete", exc_info=True)
+        return None
+    except Exception:
+        pass
     # Exempt the recorded gateway PID and its parent chain (on Windows the Scheduled-Task bootstrap's
     # ``gateway run`` argv matches the scan; killing it takes the gateway down). Use the RAW pidfile +
     # lock records, not only the validated probe: get_running_pid returns None on any validation

@@ -5,11 +5,83 @@ prevented the ticker thread from firing, causing all other jobs to be fast-forwa
 """
 
 import concurrent.futures
+import logging
 import threading
 import time
 from unittest.mock import patch
 
 import pytest
+
+
+class TestMaxParallelLoggedUnconditionally:
+    """The resolved cron.max_parallel_jobs must be logged even when the
+    gateway ticker calls tick(verbose=False) — otherwise an operator
+    configuring max_parallel_jobs has no way to confirm it took effect
+    (upstream #98338)."""
+
+    def test_logs_resolved_max_workers_with_verbose_false(self, tmp_path, monkeypatch, caplog):
+        import cron.scheduler as sched
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._running_job_ids.clear()
+
+        jobs = [
+            {"id": f"job-{i}", "name": f"Job {i}", "prompt": "test",
+             "schedule": "every 5m", "enabled": True,
+             "next_run_at": "2020-01-01T00:00:00", "deliver": "local"}
+            for i in range(2)
+        ]
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
+        monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
+        monkeypatch.setattr(sched, "run_job", lambda j, **_kw: (True, "out", "resp", None))
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
+        monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
+
+        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            n = sched.tick(verbose=False)
+
+        assert n == 2
+        log_lines = [r.getMessage() for r in caplog.records
+                     if "Running" in r.message and "in parallel" in r.message]
+        assert any(
+            "in parallel (max_workers=" in line and "job-0" not in line
+            for line in log_lines
+        ), f"expected max_parallel log with verbose=False; got: {log_lines}"
+        # Must mention the resolved max_workers (or 'unbounded').
+        assert any("max_workers=" in line for line in log_lines)
+
+        sched._shutdown_parallel_pool()
+
+    def test_logs_unbounded_when_no_max_parallel_set(self, tmp_path, monkeypatch, caplog):
+        import cron.scheduler as sched
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._running_job_ids.clear()
+
+        job = {"id": "job-x", "name": "Job X", "prompt": "test",
+               "schedule": "every 5m", "enabled": True,
+               "next_run_at": "2020-01-01T00:00:00", "deliver": "local"}
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+        monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
+        monkeypatch.setattr(sched, "run_job", lambda j, **_kw: (True, "out", "resp", None))
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
+        monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
+
+        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            n = sched.tick(verbose=False)
+
+        assert n == 1
+        lines = [r.getMessage() for r in caplog.records
+                 if "in parallel (max_workers=" in r.message]
+        assert any("max_workers=unbounded" in line for line in lines), lines
+
+        sched._shutdown_parallel_pool()
 
 
 class TestPersistentPool:

@@ -12,7 +12,7 @@ EXPECTED_GEMINI_ROUTING_DEFAULTS = {
     "enabled": False,
     "profiles": [],
     "default_route": "gemini",
-    "default_data_classification": "restricted",
+    "default_data_classification": "standard",
     "command": "agy",
     "model": "gemini-3.8-flash-low",
     "effort": "low",
@@ -21,6 +21,8 @@ EXPECTED_GEMINI_ROUTING_DEFAULTS = {
     "max_output_bytes": 131_072,
     "fallback_to_delegation_model": True,
     "receipt_db": "routing/gemini-routing.sqlite3",
+    "retention": {"raw_days": 30, "aggregate_days": 180},
+    "extra_args": [],
     "review": {
         "enabled": False,
         "timezone": "America/Los_Angeles",
@@ -108,6 +110,10 @@ def test_explicit_profile_scope_is_preserved(tmp_path, monkeypatch):
         ({"max_input_bytes": 0}, "max_input_bytes"),
         ({"max_output_bytes": -1}, "max_output_bytes"),
         ({"fallback_to_delegation_model": 1}, "fallback_to_delegation_model"),
+        ({"retention": []}, "retention"),
+        ({"retention": {"raw_days": 0, "aggregate_days": 180}}, "retention.raw_days"),
+        ({"retention": {"raw_days": 30, "aggregate_days": False}}, "retention.aggregate_days"),
+        ({"extra_args": "--sandbox"}, "extra_args"),
         ({"review": {**EXPECTED_GEMINI_ROUTING_DEFAULTS["review"], "sample_size": 0}}, "review.sample_size"),
     ],
 )

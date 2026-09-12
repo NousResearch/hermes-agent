@@ -14,14 +14,14 @@ thread) — no mocked spawn.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+import shlex
 import sys
 import time
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="live Windows background-executor E2E"
-)
+pytestmark = pytest.mark.windows_only
 
 
 @pytest.fixture()
@@ -46,6 +46,15 @@ def _wait_exit(reg, sid, timeout=60):
             return sess
         time.sleep(0.2)
     raise AssertionError(f"session {sid} did not exit within {timeout}s")
+
+
+def _wait_output(session, marker, timeout=30):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if marker in session.output_buffer:
+            return session.output_buffer
+        time.sleep(0.1)
+    raise AssertionError(f"session {session.id} did not emit {marker!r}: {session.output_buffer!r}")
 
 
 class TestWindowsSpawnParity:
@@ -101,3 +110,29 @@ class TestWindowsSpawnParity:
         result = registry.kill_process(session.id)
         assert result.get("status") in {"killed", "already_exited"}
         assert session.systemd_unit == ""
+
+    def test_kill_process_windows_pty_reaps_owned_tree(self, registry, tmp_path):
+        """The real pywinpty path must not leave descendants below its wrapper."""
+        import psutil
+
+        script = tmp_path / "pty-tree.py"
+        script.write_text(
+            "import os, subprocess, sys, time\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            "print(f'PTY_TREE_PIDS={os.getpid()},{child.pid}', flush=True)\n"
+            "time.sleep(120)\n",
+            encoding="utf-8",
+        )
+        command = f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(script)))}"
+        session = registry.spawn_local(command, use_pty=True)
+        output = _wait_output(session, "PTY_TREE_PIDS=")
+        payload = output.split("PTY_TREE_PIDS=", 1)[1].splitlines()[0].strip()
+        owned = [psutil.Process(int(pid)) for pid in payload.split(",")]
+
+        result = registry.kill_process(session.id)
+
+        assert result["status"] == "killed"
+        deadline = time.time() + 5
+        while time.time() < deadline and any(registry._proc_alive(proc) for proc in owned):
+            time.sleep(0.1)
+        assert not [proc.pid for proc in owned if registry._proc_alive(proc)]

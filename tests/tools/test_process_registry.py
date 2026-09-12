@@ -1268,6 +1268,53 @@ class TestKillProcess:
         finally:
             registry._running.pop(s.id, None)
 
+    @pytest.mark.windows_only
+    def test_windows_pty_kill_verifies_tree_before_finishing(self, registry, monkeypatch):
+        s = _make_session(sid="proc_windows_pty", command="nested hermes")
+        s.pid = 424242
+        s.host_start_time = 99
+        s._pty = MagicMock()
+        registry._running[s.id] = s
+        calls = []
+
+        monkeypatch.setattr(
+            registry,
+            "_terminate_host_pid",
+            lambda pid, expected_start, *, verify=False: calls.append(
+                (pid, expected_start, verify)
+            ),
+        )
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "killed"
+        assert calls == [(424242, 99, True)]
+        s._pty.terminate.assert_called_once_with(force=True)
+
+    @pytest.mark.windows_only
+    def test_windows_pty_partial_tree_kill_retains_session(self, registry, monkeypatch):
+        s = _make_session(sid="proc_windows_pty", command="nested hermes")
+        s.pid = 424242
+        s.host_start_time = 99
+        s._pty = MagicMock()
+        registry._running[s.id] = s
+
+        monkeypatch.setattr(
+            registry,
+            "_terminate_host_pid",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("live owned pids: 100, 101")
+            ),
+        )
+
+        result = registry.kill_process(s.id)
+
+        assert result == {"status": "error", "error": "live owned pids: 100, 101"}
+        assert registry._running[s.id] is s
+        assert s.id not in registry._finished
+        assert s.exited is False
+        s._pty.terminate.assert_not_called()
+
 
 # =========================================================================
 # Tool handler

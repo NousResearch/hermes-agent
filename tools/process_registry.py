@@ -754,7 +754,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return ProcessRegistry._config_seconds("daemon_term_grace_seconds", 2.0)
 
     @classmethod
-    def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
+    def _terminate_host_pid(
+        cls, pid: int, expected_start: Optional[int] = None, *, verify: bool = False,
+    ) -> None:
         """Terminate a host-visible PID and its descendants.
         ``expected_start`` (kernel start time at spawn) is re-validated first: a mismatch
         or dead PID means the number was recycled onto a stranger and we refuse to touch
@@ -762,7 +764,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         children before the parent (so trees aren't reparented to init and survive), then
         SIGKILLs survivors after ``terminal.daemon_term_grace_seconds``. Windows:
         ``taskkill /T /F`` (psutil's stale PPID links miss orphans there); ``os.kill``
-        is the fallback."""
+        is the fallback. ``verify`` snapshots the owned Windows tree before termination
+        and raises while any member survives, so callers do not discard retry/diagnostic
+        state after a partial tree kill."""
         if expected_start is not None and not cls._host_pid_is_ours(pid, expected_start):
             logger.warning(
                 "Refusing to terminate host pid %d: start-time mismatch — "
@@ -773,13 +777,40 @@ class ProcessRegistry(ProcessCheckpointMixin):
             with suppress(OSError, ProcessLookupError, PermissionError):
                 os.kill(pid, signal.SIGTERM)
         if _IS_WINDOWS:
+            targets = []
+            if verify:
+                import psutil
+                try:
+                    parent = psutil.Process(pid)
+                    targets = parent.children(recursive=True) + [parent]
+                except (psutil.NoSuchProcess, psutil.AccessDenied, OSError) as exc:
+                    raise RuntimeError(
+                        f"Could not snapshot Windows process tree rooted at pid {pid}: {exc}"
+                    ) from exc
+            result = None
             try:
-                subprocess.run(
+                result = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True,
                     encoding='utf-8', errors='replace', timeout=10, creationflags=windows_hide_flags(),
                     stdin=subprocess.DEVNULL)
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
                 _sigterm_quietly()
+            if verify:
+                grace = max(cls._daemon_term_grace_seconds(), 0.5)
+                deadline = time.monotonic() + grace
+                survivors = [proc for proc in targets if cls._proc_alive(proc)]
+                while survivors and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    survivors = [proc for proc in targets if cls._proc_alive(proc)]
+                if survivors:
+                    survivor_pids = ", ".join(str(proc.pid) for proc in survivors)
+                    detail = ""
+                    if result is not None and result.returncode != 0:
+                        detail = f"; taskkill exited {result.returncode}: {(result.stderr or result.stdout).strip()}"
+                    raise RuntimeError(
+                        f"Windows process tree rooted at pid {pid} still has live owned pids: "
+                        f"{survivor_pids}{detail}"
+                    )
             return
         import psutil
         gone = (psutil.NoSuchProcess, psutil.AccessDenied, OSError)
@@ -1761,6 +1792,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
         PID. Returns a final result dict when the kill cannot proceed (recycled/dead
         recovered PID, or no runtime handle), else None."""
         if session._pty:
+            if _IS_WINDOWS and session.pid:
+                # pywinpty's terminate() only tears down the PTY wrapper. Snapshot and
+                # kill its host-visible tree first, then close the now-dead PTY handle.
+                self._terminate_host_pid(
+                    session.pid, session.host_start_time, verify=True,
+                )
+                with suppress(Exception):
+                    session._pty.terminate(force=True)
+                return None
             try:
                 session._pty.terminate(force=True)
             except Exception:

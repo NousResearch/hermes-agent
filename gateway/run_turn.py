@@ -3854,6 +3854,12 @@ class GatewayTurnMixin:
                         logger.debug("Heartbeat edit failed: %s", _ee)
                         _notify_res = None
                 if not (_notify_res and getattr(_notify_res, "success", False)):
+                    # The edit above awaited; a drain/restart notice may have gone out meanwhile, and
+                    # a fresh "Working" bubble after it reads as a contradiction (#10990).
+                    if not self._should_emit_long_running_notification(
+                        session_key, agent_holder[0], _executor_task_holder[0]
+                    ):
+                        break
                     _notify_res = await _notify_adapter.send(
                         source.chat_id, _heartbeat_text,
                         metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),

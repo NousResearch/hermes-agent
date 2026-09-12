@@ -74,6 +74,19 @@ def test_rejects_empty_name():
         reg.register_provider(Bad())
 
 
+def test_registration_normalizes_provider_name():
+    class MixedCase(_Provider):
+        pass
+
+    MixedCase.name = "  Mixed_Name  "
+    provider = MixedCase()
+
+    reg.register_provider(provider)
+
+    assert reg.get_provider("mixed_name") is provider
+    assert reg.plugin_backend_names() == ["mixed_name"]
+
+
 @pytest.mark.parametrize("reserved", sorted(reg.BUILTIN_BACKEND_NAMES))
 def test_rejects_builtin_names(reserved):
     class Shadow(_Provider):
@@ -183,6 +196,42 @@ def test_abc_defaults():
     assert p.setup_instructions() == []
     rows = p.doctor_checks()
     assert rows and rows[0][0] is True
+    assert p.get_config_schema() == {}
+
+
+def test_resolve_config_returns_a_defensive_snapshot():
+    raw = {"workspace": {"name": "demo"}}
+
+    resolved = _Provider().resolve_config(raw)
+
+    assert resolved == raw
+    resolved["workspace"]["name"] = "changed"
+    assert raw == {"workspace": {"name": "demo"}}
+
+
+@pytest.mark.parametrize("key", ["__proto__.token", "constructor.value", "prototype.flag"])
+def test_config_schema_rejects_prototype_polluting_paths(key):
+    class Unsafe(_Provider):
+        def get_config_schema(self):
+            return {key: {"type": "string"}}
+
+    with pytest.raises(ValueError, match="unsafe"):
+        Unsafe().validated_config_schema()
+
+
+@pytest.mark.parametrize("metadata_key", ["const", "default", "example", "examples", "options", "value"])
+def test_secret_config_schema_rejects_value_bearing_metadata(metadata_key):
+    class Leaky(_Provider):
+        def get_config_schema(self):
+            return {
+                "token": {
+                    "type": "secret",
+                    metadata_key: "TOP-SECRET",
+                }
+            }
+
+    with pytest.raises(ValueError, match="secret.*metadata"):
+        Leaky().validated_config_schema()
 
 
 def test_probe_needs_setup_when_unavailable():

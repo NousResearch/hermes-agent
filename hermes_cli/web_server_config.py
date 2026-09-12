@@ -3,6 +3,7 @@
 
 import logging
 import os
+import re
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple
 from agent.model_metadata import is_local_endpoint
@@ -367,6 +368,31 @@ def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
             plugin_names = []
         if plugin_names:
             merge("terminal.backend", [*tb_options, *plugin_names])
+
+    try:
+        from agent.terminal_env_registry import list_providers as _list_terminal_providers
+
+        for provider in _list_terminal_providers():
+            try:
+                provider_name = provider.name.strip().lower()
+                if not re.fullmatch(r"[a-z][a-z0-9_-]*", provider_name):
+                    raise ValueError(f"unsafe terminal provider name {provider_name!r}")
+                for field_name, field_schema in provider.validated_config_schema().items():
+                    full_key = f"terminal.backends.{provider_name}.{field_name}"
+                    if full_key in CONFIG_SCHEMA or full_key in overlay:
+                        raise ValueError(f"duplicate terminal provider config field {full_key!r}")
+                    overlay[full_key] = {
+                        **field_schema,
+                        "category": "terminal",
+                        "terminal_backend": provider_name,
+                    }
+            except Exception:
+                _log.warning(
+                    "Ignoring invalid config schema from terminal provider %r",
+                    getattr(provider, "name", "<unknown>"),
+                )
+    except Exception:
+        _log.debug("Could not enumerate terminal provider config schemas")
 
     return {**CONFIG_SCHEMA, **overlay} if overlay else CONFIG_SCHEMA
 

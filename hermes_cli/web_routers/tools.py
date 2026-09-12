@@ -131,12 +131,23 @@ def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
 
             provider = get_provider(name)
             if provider is not None:
-                return provider.probe()
+                try:
+                    from tools.terminal_tool_backends import _resolve_plugin_backend_config
+
+                    backend_config = _resolve_plugin_backend_config(provider)
+                    return provider.probe_with_config(backend_config)
+                except Exception:
+                    _log.warning(
+                        "Terminal provider %s configuration could not be loaded for probing",
+                        name,
+                    )
+                    return ("unavailable", "Provider configuration could not be loaded.")
         except Exception:
             pass
         return ("unavailable", f"Unknown backend: {name}")
-    except Exception as exc:  # pragma: no cover — belt-and-braces guard
-        return ("unavailable", f"Probe failed: {exc}")
+    except Exception:  # pragma: no cover — belt-and-braces guard
+        _log.warning("Terminal backend %s probe failed", name)
+        return ("unavailable", "Backend probe failed.")
 
 
 # Toolsets whose backends carry a selectable model catalog, mapped to the

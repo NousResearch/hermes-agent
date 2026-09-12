@@ -48,7 +48,8 @@ from tools.terminal_tool_config import (
     _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
 )
 from tools.terminal_tool_backends import (
-    _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
+    PluginTerminalEnvironmentError, _REQUIREMENT_CHECKERS,
+    _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
 )
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 from tools.tool_backend_helpers import coerce_modal_mode, managed_nous_tools_enabled
@@ -1250,6 +1251,11 @@ def terminal_tool(
         return r.result_json
     except EnvironmentConnectionError as e:
         return _degraded_result(e, task_id)
+    except PluginTerminalEnvironmentError:
+        logger.error("Plugin terminal backend initialization failed")
+        return _error_json(
+            "Plugin terminal backend could not be initialized.", status="error"
+        )
     except Exception as e:
         return _fatal_error_json(e)
 

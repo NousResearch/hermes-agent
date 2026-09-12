@@ -55,11 +55,15 @@ vi.mock('./data', () => ({
 const RELAY_PUSH_DEBOUNCE_MS = 250
 const RELAY_DRAIN_INTERVAL_MS = 30_000
 
-const route = (id: string): ProfileRoute => ({
+const route = (
+  id: string,
+  options: { mode?: ProfileRoute['mode']; primary?: true; profile?: string } = {}
+): ProfileRoute => ({
   connectionId: id,
-  mode: 'remote',
-  profile: 'default',
-  targetProfile: 'default'
+  mode: options.mode ?? 'remote',
+  ...(options.primary === true ? { primary: true } : {}),
+  profile: options.profile ?? 'default',
+  targetProfile: options.profile ?? 'default'
 })
 
 /** Every RPC through one table, recording what each connection was asked. */
@@ -277,6 +281,65 @@ describe('push-notified drain (#93091)', () => {
 })
 
 describe('relay-route socket retention (#93594)', () => {
+  it('does not poll or retain the non-primary local source of a remote-primary Desktop', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [
+      route('remote-primary', { primary: true }),
+      route('remote-primary', { primary: true, profile: 'research' }),
+      route('local', { mode: 'local' }),
+      route('local', { mode: 'local', profile: 'research' })
+    ])
+    const pins = trackRetention()
+    const calls = respondWith(() => ({ envelopes: [] }))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    await pushAndSettle()
+
+    expect(calls).toHaveLength(0)
+    expect(pins).toHaveLength(0)
+
+    stopBotRelay()
+  })
+
+  it('preserves local-primary, multi-remote, and fail-open peer sets', async () => {
+    for (const routes of [
+      [route('local', { mode: 'local', primary: true }), route('remote-peer')],
+      [route('remote-primary', { primary: true }), route('remote-peer')],
+      [route('remote-primary'), route('local', { mode: 'local' })],
+      [route('remote-primary', { primary: true }), route('local', { mode: 'local', primary: true })],
+      [
+        route('remote-primary', { primary: true }),
+        route('remote-primary', { profile: 'research' }),
+        route('local', { mode: 'local' })
+      ],
+      [
+        route('remote-primary', { primary: true }),
+        route('local', { mode: 'local' }),
+        route('unexpected-local', { mode: 'local' })
+      ],
+      [
+        route('remote-primary', { primary: true }),
+        { ...route('remote-peer'), primary: false } as unknown as ProfileRoute,
+        route('local', { mode: 'local' })
+      ]
+    ]) {
+      hostMock.profileRoutes = vi.fn(async () => routes)
+      const pins = trackRetention()
+      const calls = respondWith(() => ({ envelopes: [] }))
+      const { startBotRelay, stopBotRelay } = await loadRelay()
+
+      startBotRelay()
+      await vi.advanceTimersByTimeAsync(0)
+      await pushAndSettle()
+
+      expect(new Set(calls.map(call => call.connectionId))).toEqual(new Set(routes.map(item => item.connectionId)))
+      expect(pins.map(pin => pin.route.connectionId)).toEqual([...new Set(routes.map(item => item.connectionId))])
+
+      stopBotRelay()
+    }
+  })
+
   it('pins each connection ONCE across many drain ticks', async () => {
     const pins = trackRetention()
 

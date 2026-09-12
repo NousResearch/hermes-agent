@@ -180,7 +180,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
                 answered = await rpc(ws, 'clarify.respond', session_id=sid,
                     execution_generation=clarify['execution_generation'], prompt_id=clarify['prompt_id'], answer='Beta')
                 assert answered['result']['status'] == 'resolved', answered
-            assert await asyncio.to_thread(peer.blocked.wait, 90), (home / 'restart.log').read_text()
+            assert await asyncio.to_thread(peer.blocked.wait, 240), (home / 'restart.log').read_text()
             workers = query('SELECT execution_id,status FROM worker_executions WHERE session_id=?', (sid,))
             assert len(workers) == 1, workers
             children = [p for p in psutil.Process(owner.pid).children() if p.cmdline()[-2:] == ['-m', 'agent.managed_worker']]

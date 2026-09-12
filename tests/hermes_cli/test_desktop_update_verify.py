@@ -63,3 +63,61 @@ def test_default_root_is_the_imported_checkout_not_cwd(tmp_path, monkeypatch):
     assert seen['desktop'] == verify.checkout_root() / 'apps' / 'desktop'
     assert (verify.checkout_root() / 'hermes_cli' / 'desktop_update_verify.py').is_file()
     assert verify.checkout_root() != tmp_path
+
+
+def _exe_only_under(root):
+    desktop = (root / 'apps' / 'desktop').resolve()
+    exe = desktop / 'release' / 'fixture' / 'Hermes.exe'
+
+    def packaged_exe(desktop_path):
+        if desktop_path.resolve() == desktop:
+            return exe
+        return None
+
+    return packaged_exe
+
+
+def test_cwd_derived_root_falls_back_to_imported_checkout(bundle, tmp_path, monkeypatch):
+    # Stale windows.ps1 still passes Path.cwd()/HERMES_HOME; that root has no
+    # packaged exe. The imported checkout is healthy and must be consulted.
+    healthy, _, _ = bundle
+    hermes_home = tmp_path / 'hermes_home'
+    hermes_home.mkdir()
+    monkeypatch.setattr(verify, '_desktop_packaged_executable', _exe_only_under(healthy))
+    monkeypatch.setattr(verify, 'checkout_root', lambda: healthy)
+    verify.verify_windows_desktop_update(hermes_home)
+
+
+def test_missing_exe_on_both_roots_still_fails(tmp_path, monkeypatch):
+    empty = tmp_path / 'empty_checkout'
+    empty.mkdir()
+    wrong = tmp_path / 'hermes_home'
+    wrong.mkdir()
+    monkeypatch.setattr(verify, 'checkout_root', lambda: empty)
+    with pytest.raises(RuntimeError, match='executable is missing'):
+        verify.verify_windows_desktop_update(wrong)
+
+
+def test_damaged_supplied_root_with_exe_does_not_fall_back(bundle, tmp_path, monkeypatch):
+    # Fail-closed: a caller root that HAS an exe must be verified as-is.
+    # Integrity/ASAR/stamp errors must not silently switch to checkout_root().
+    healthy, _, _ = bundle
+    supplied = tmp_path / 'supplied_damaged'
+    resources = supplied / 'apps' / 'desktop' / 'release' / 'fixture' / 'resources'
+    resources.mkdir(parents=True)
+    (resources / 'app.asar').write_bytes(b'not an asar')
+    monkeypatch.setattr(verify, '_desktop_packaged_executable', _exe_only_under(supplied))
+    monkeypatch.setattr(verify, 'checkout_root', lambda: healthy)
+    with pytest.raises(RuntimeError, match='archive or main entry is invalid'):
+        verify.verify_windows_desktop_update(supplied)
+
+
+def test_caller_missing_exe_surfaces_checkout_verification_error(bundle, tmp_path, monkeypatch):
+    damaged, archive, _ = bundle
+    archive.write_bytes(b'not an asar')
+    hermes_home = tmp_path / 'hermes_home'
+    hermes_home.mkdir()
+    monkeypatch.setattr(verify, '_desktop_packaged_executable', _exe_only_under(damaged))
+    monkeypatch.setattr(verify, 'checkout_root', lambda: damaged)
+    with pytest.raises(RuntimeError, match='archive or main entry is invalid'):
+        verify.verify_windows_desktop_update(hermes_home)

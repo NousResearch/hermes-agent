@@ -80,9 +80,19 @@ def verify_windows_desktop_update(project_root: Path | None = None) -> None:
     The root defaults to the imported checkout, never the caller's cwd: the hand-off
     is spawned from HERMES_HOME by the pre-update Desktop, and a cwd-derived root
     reported a healthy install as "Desktop executable is missing" (Sep 2026).
+
+    An explicit root with no packaged exe is retried once against the imported
+    checkout so a stale in-flight ``windows.ps1`` (``Path.cwd()`` / HERMES_HOME)
+    cannot fail a healthy install that already carries this module.
     """
+    imported = checkout_root()
     if project_root is None:
-        project_root = checkout_root()
+        project_root = imported
+    elif (
+        _desktop_packaged_executable(project_root / "apps" / "desktop") is None
+        and project_root.resolve() != imported.resolve()
+    ):
+        project_root = imported
     desktop = project_root / "apps" / "desktop"
     executable = _desktop_packaged_executable(desktop)
     if executable is None:

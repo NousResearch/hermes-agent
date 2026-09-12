@@ -564,8 +564,10 @@ class TestSetupWizardDeploymentShape:
         ({"apiKey": "***", "hosts": {"hermes": {}}}, True),
         ({"apiKey": "***", "hosts": {"hermes": {"pinUserPeer": False, "peerName": "eri"}}}, False),
         ({"apiKey": "***", "hosts": {"hermes": {"enabled": True, "workspace": "hermes", "peerName": "eri"}}}, False),
+        ({"apiKey": "***", "enabled": True, "workspace": "hermes", "peerName": "eri"}, False),
     ], ids=["fresh-config-defaults-to-single", "empty-host-block-defaults-to-single",
-            "configured-multi-keeps-multi", "existing-install-without-mapping-keys-keeps-multi"])
+            "configured-multi-keeps-multi", "existing-install-without-mapping-keys-keeps-multi",
+            "legacy-root-level-install-keeps-multi"])
     def test_choice_default_follows_config(self, monkeypatch, tmp_path, initial_cfg, expected_pin):
         """Enter on a fresh config picks the pinned personal shape. An existing install, with or
         without mapping keys, keeps its detected shape so Enter never merges every account onto one peer."""

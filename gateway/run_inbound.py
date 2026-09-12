@@ -679,6 +679,23 @@ class GatewayInboundMixin:
         target_command = target.lstrip("/")
         return target_command.split()[0] if target_command else target_command
 
+    def _hm_canonicalize_model_alias_event(self, event: "MessageEvent") -> "MessageEvent":
+        """Rewrite a typed ``/<model-alias>`` into the canonical ``/model <alias>`` form.
+
+        Returns the ORIGINAL event when the typed name is not a configured model alias
+        (``DIRECT_ALIASES`` from ``config.yaml model_aliases:`` / built-in ``MODEL_ALIASES``),
+        or when a higher-priority name (built-in / quick / plugin / skill bundle / active
+        skill / disabled skill) already claims it — those always win. Resolver failures fail
+        CLOSED: the event comes back unchanged and the typed text is delivered as-is.
+        """
+        from gateway._model_alias_normalize import canonicalize_event_for_model_alias
+        from gateway.run import _check_unavailable_skill
+        return canonicalize_event_for_model_alias(
+            event,
+            config=getattr(self, "config", None),
+            unavailable_skill_fn=_check_unavailable_skill,
+        )
+
     async def _hm_command_hooks(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str, command: str, canonical: str
     ) -> Tuple[bool, Optional[str], Optional[str]]:
@@ -723,6 +740,13 @@ class GatewayInboundMixin:
                 new_command = str(hook_result.get("command_name", "")).strip().lstrip("/")
                 if new_command:
                     event.text = f"/{new_command} {str(hook_result.get('raw_args', '')).strip()}".strip()
+                    # A hook may rewrite to a model alias (/sonnet): hand the caller the
+                    # canonical command name so dispatch, the access gate and the model
+                    # side-effect mirror all see the command that actually runs.
+                    _alias_norm = self._hm_canonicalize_model_alias_event(event)
+                    if _alias_norm is not event:
+                        event.text = _alias_norm.text
+                        return False, None, "model"
                     return False, None, event.get_command()
         return False, None, None
 
@@ -1203,6 +1227,17 @@ class GatewayInboundMixin:
         # — Discord interaction passthrough builds its own MessageEvent and
         # calls handle_message directly, so a teardown on the relay's inbound
         # handler left those turns muted.
+
+        # Model-alias shortcut: turn /<alias> into /model <alias> before the
+        # pending-update / pending-clarify / slash-confirm / estop intercepts, so
+        # /sonnet and /model sonnet behave identically when a detached update process
+        # is waiting for an answer (or a clarifying question is pending). Done via
+        # dataclasses.replace so the original event is left untouched (no hidden alias
+        # attribute) and we never re-enter _handle_message — no duplicate
+        # pre_gateway_dispatch / auth / inbound-activity side effects. Higher-priority
+        # command names (built-in / quick / plugin / skill / bundle / disabled skill)
+        # always win — the helper bails out when the name is occupied.
+        event = self._hm_canonicalize_model_alias_event(event)
 
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:

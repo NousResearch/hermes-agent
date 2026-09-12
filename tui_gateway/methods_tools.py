@@ -856,8 +856,27 @@ def _(rid, params: dict) -> dict:
                 except Exception as e:
                     return _err(rid, 5030, f"slash worker start failed: {e}")
     try:
-        payload = {"output": worker.run(cmd) or "(no output)"}
-        if warning := _mirror_slash_side_effects(sid, session, cmd):
+        output, slash_meta = worker.run_with_meta(cmd)
+        # The mirror decision MUST come from the worker-reported RESOLVED metadata
+        # (``resolved_model`` / ``resolved_provider`` / ``base_url`` / ``api_mode`` /
+        # ``scope``). The worker ran inside the session's ``profile_home`` scope, so its
+        # snapshot reflects THAT profile's provider / model resolution — never the parent
+        # process's global alias cache. The parent MUST NOT re-parse ``raw_args`` and MUST
+        # NOT rebuild ``/model <alias>``: doing so would pin Profile B's session to
+        # Profile A's resolution when the two disagree.
+        warning = ""
+        if isinstance(slash_meta, dict) and slash_meta.get("side_effect") == "model_switch":
+            try:
+                warning = _mirror_resolved_model_switch(sid, session, slash_meta)
+            except Exception as exc:
+                warning = f"model mirror failed: {exc}"
+        else:
+            # Non-model command (or a built-in/quick/plugin/bundle/skill that reports no
+            # model side effect) — pass through verbatim so the other mirror side effects
+            # (compress, personality, prompt, …) still fire.
+            warning = _mirror_slash_side_effects(sid, session, cmd)
+        payload = {"output": output or "(no output)"}
+        if warning:
             payload["warning"] = warning
         if base in _SESSION_CONTROL_SLASHES:
             _publish_session_control_snapshot(sid, session)

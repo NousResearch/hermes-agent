@@ -181,6 +181,23 @@ def _commit_model_switch(
     if not one_turn:
         HermesCLI._persist_model_switch_to_session(cli, result)
 
+    # Surface structured resolved-result metadata so a parent TUI process can mirror the
+    # live session without re-deriving any alias or re-reading this profile's provider
+    # config. The worker (this process) ran inside the session's ``profile_home`` scope,
+    # so these resolved values reflect that profile's provider / model resolution.
+    #
+    # SECURITY: never include credentials (``api_key``, tokens, ``Authorization``). The
+    # parent re-resolves credentials by entering the session's ``profile_home`` scope.
+    cli._last_slash_metadata = {
+        "side_effect": "model_switch",
+        "canonical": "model",
+        "scope": "once" if one_turn else ("global" if persist_global else "session"),
+        "resolved_model": str(getattr(result, "new_model", "") or ""),
+        "resolved_provider": str(getattr(result, "target_provider", "") or ""),
+        "base_url": str(getattr(result, "base_url", "") or "") or None,
+        "api_mode": str(getattr(result, "api_mode", "") or "") or None,
+    }
+
 
 def _persist_global_switch(cli, result) -> None:
     """Write the switched route to config.yaml (--global). base_url/api_mode are freshly resolved

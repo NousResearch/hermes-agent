@@ -3208,6 +3208,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         cmd_lower = command.lower().strip()  # lowercase only for matching; args keep their case
         cmd_original = command.strip()
 
+        # Reset side-effect metadata for the next command. Each ``process_command``
+        # invocation produces its own metadata snapshot; a stale snapshot from a previous
+        # turn must NOT leak into the parent process's mirror decision.
+        self._last_slash_metadata = None
+
         # Aliases resolve via the central registry (hermes_cli/commands.py).
         from hermes_cli.commands import resolve_command as _resolve_cmd
         _base_word = cmd_lower.split()[0].lstrip("/")
@@ -3360,6 +3365,27 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         """Unique-prefix expansion against built-in COMMANDS + skill commands/bundles (agrees with tab-completion)."""
         from hermes_cli.commands import COMMANDS
         typed_base = cmd_lower.split()[0]
+        # Model-alias shortcut: /<alias> -> /model <alias>. Done BEFORE prefix-matching so
+        # a typed alias like /ds-flash expands to /model ds-flash (and then to the resolved
+        # provider/model), instead of being misclassified as an unknown /d token. Mirrors
+        # the gateway's behaviour and reuses the same alias dictionaries. Reached only
+        # after built-in / quick / plugin / bundle / skill dispatch, so a registered
+        # command with the same name always wins.
+        try:
+            from hermes_cli.model_switch import (
+                _ensure_direct_aliases,
+                DIRECT_ALIASES,
+                MODEL_ALIASES,
+            )
+
+            _ensure_direct_aliases()
+            _alias_key = typed_base.lstrip("/").strip().lower()
+            if _alias_key in DIRECT_ALIASES or _alias_key in MODEL_ALIASES:
+                remainder = cmd_original[len(typed_base):].strip()
+                aliased = f"/model {_alias_key} {remainder}".strip()
+                return self.process_command(aliased)
+        except ImportError:
+            pass
         all_known = set(COMMANDS) | set(skill_commands) | set(skill_bundles)
         matches = [c for c in all_known if c.startswith(typed_base)]
         if len(matches) > 1:

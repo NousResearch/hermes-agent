@@ -18955,6 +18955,12 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
         def run(self, cmd):
             return f"ran {cmd}"
 
+        # slash.exec consumes the worker's resolved side-effect metadata, so the
+        # double must serve the same protocol as _SlashWorker (no model side
+        # effect here → meta is None).
+        def run_with_meta(self, cmd):
+            return f"ran {cmd}", None
+
         def close(self):
             pass
 

@@ -256,10 +256,40 @@ def cron_tick():
 
 
 def cron_runs(job_id: Optional[str] = None, limit: int = 20):
-    """Show indexed durable cron execution history."""
+    """Show indexed durable cron execution history for a job reference (ID or name).
+
+    A name works because every other job-targeting cron command accepts one (pause, resume,
+    remove, edit, run all go through resolve_job_ref). This one used to pass its argument to
+    the executions query verbatim, so a name matched no rows and printed "No cron execution
+    attempts recorded." — the very message a never-fired job prints, telling a user their
+    healthy job had never run while the ledger held hundreds of completed executions.
+
+    Resolution is additive, never a gate: the ledger outlives the job it describes, so a
+    reference resolving to nothing is still tried as a literal job id. That keeps
+    ``cron runs <id-of-deleted-job>`` working — exactly when history matters most. "Not found"
+    is reserved for a reference matching no job AND no execution.
+    """
     from cron.executions import list_executions
-    records = list_executions(job_id=job_id, limit=limit)
+    resolved = job_id
+    known_job = False
+    if job_id is not None:
+        from cron.jobs import AmbiguousJobReference, resolve_job_ref
+        try:
+            job = resolve_job_ref(job_id)
+        except AmbiguousJobReference as exc:
+            print(color(str(exc), Colors.RED))
+            for match in exc.matches:
+                print(f"  {match['id']}  (name: {match.get('name')!r})")
+            return
+        if job:
+            resolved = job["id"]
+            known_job = True
+    records = list_executions(job_id=resolved, limit=limit)
     if not records:
+        if job_id is not None and not known_job:
+            # Neither a live job nor any ledger row answers to this reference.
+            print(color(f"Job not found: {job_id}", Colors.RED))
+            return
         print("No cron execution attempts recorded.")
         return
     for record in records:
@@ -718,13 +748,33 @@ def cron_notepad(args) -> int:
     non-empty notepads into the job prompt on each run.
     """
     from cron import notepad
-    job_id = str(getattr(args, "job_id", "") or "")
+    job_ref = str(getattr(args, "job_id", "") or "")
     action = getattr(args, "notepad_action", None) or "list"
     key = getattr(args, "key", None)
     value = getattr(args, "value", None)
-    if not job_id:
+    if not job_ref:
         print(color("A job ID is required.", Colors.RED))
         return 1
+    # Resolve a name to the canonical id before touching storage. The notepad is keyed by job
+    # id and the scheduler reads it back with job["id"] (cron/scheduler.py,
+    # render_notepad_section), so a note written under a name the user typed would sit where
+    # nothing ever reads it — a silent loss of the state the notepad exists to keep.
+    #
+    # A reference that resolves to nothing is used as-is rather than refused: notepad rows
+    # outlive the job, and a running cron agent writes to its own notepad by id through this
+    # CLI. Failing closed would break that write path for any job the resolver cannot see
+    # (another profile's job, one removed mid-run) — a lookup convenience turned into an outage.
+    from cron.jobs import AmbiguousJobReference, resolve_job_ref
+    job_id = job_ref
+    try:
+        job = resolve_job_ref(job_ref)
+    except AmbiguousJobReference as exc:
+        print(color(str(exc), Colors.RED))
+        for match in exc.matches:
+            print(f"  {match['id']}  (name: {match.get('name')!r})")
+        return 1
+    if job:
+        job_id = job["id"]
     try:
         if action not in ("set", "get", "delete"):  # list (default)
             notes = notepad.list_notes(job_id)

@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_BROWSER_CDP_PORT = 9222
 DEFAULT_BROWSER_CDP_URL = f"http://127.0.0.1:{DEFAULT_BROWSER_CDP_PORT}"
 
+_DARWIN_SYSTEM_APPS_ROOT = "/Applications"
 
 @dataclass(frozen=True)
 class _Browser:
@@ -692,10 +693,12 @@ def _debug_candidate_paths(system: str):
     """Yield possible debug-browser binaries in launch order (may include None/missing)."""
     install_bases = (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
                      os.environ.get("LOCALAPPDATA"))
+    if system == "Darwin":
+        # Both roots, system first — see get_darwin_browser_app_paths().
+        yield from get_darwin_browser_app_paths()
+        return
     for b in _BROWSERS:
-        if system == "Darwin":
-            yield b.mac_app
-        elif system == "Windows":
+        if system == "Windows":
             yield from map(shutil.which, b.win_bins)
             for base in filter(None, install_bases):
                 for parts in b.win_install:
@@ -703,13 +706,40 @@ def _debug_candidate_paths(system: str):
         else:
             yield from map(shutil.which, b.linux_bins)
             yield from b.linux_paths
-    if system not in ("Darwin", "Windows"):
+    if system != "Windows":
         # WSL: Windows installs under ``/mnt/c/...`` are POSIX paths regardless of the host
         # OS, so join with posixpath (os.path.join would emit backslashes on nt).
         for b in _BROWSERS:
             for base in ("/mnt/c/Program Files", "/mnt/c/Program Files (x86)"):
                 for parts in b.win_install:
                     yield posixpath.join(base, *parts)
+
+
+def _darwin_app_suffixes() -> tuple[str, ...]:
+    """Bundle-relative executable paths, e.g. ``Chromium.app/Contents/MacOS/Chromium``.
+
+    Derived from ``_BROWSERS`` rather than restated, so the macOS bundle list keeps
+    a single source of truth: ``_Browser.mac_app`` already holds the ``/Applications``
+    absolute path, and a browser added there is discovered under both roots for free.
+    """
+    prefix = f"{_DARWIN_SYSTEM_APPS_ROOT}/"
+    return tuple(b.mac_app[len(prefix):] for b in _BROWSERS if b.mac_app.startswith(prefix))
+
+
+def get_darwin_browser_app_paths(home: str | None = None) -> tuple[str, ...]:
+    """Return system and per-user macOS browser bundle executable paths.
+
+    A browser installed into ``~/Applications`` — an ordinary per-user install that
+    needs no admin rights — was invisible to ``browser.connect``, which searched
+    ``/Applications`` only. Both roots are searched now, per browser and system
+    first, so a machine-wide install still wins over a per-user copy.
+    """
+    if home is None:
+        home = os.path.expanduser("~")
+    roots = [_DARWIN_SYSTEM_APPS_ROOT]
+    if home:
+        roots.append(os.path.join(home, "Applications"))
+    return tuple(os.path.join(root, suffix) for suffix in _darwin_app_suffixes() for root in roots)
 
 
 def get_chrome_debug_candidates(system: str) -> list[str]:

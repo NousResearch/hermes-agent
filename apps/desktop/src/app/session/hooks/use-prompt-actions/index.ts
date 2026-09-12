@@ -745,6 +745,21 @@ export function usePromptActions({
         return false
       }
 
+      // #105176: the foreground ref can still name a session whose turn
+      // already settled (a stale busy on the composer fires a steer for it).
+      // Redirecting it would echo the bubble into a chat the user never typed
+      // in and RPC an idle session whose text the backend can cross-deliver
+      // into another session's live run. Refuse before the optimistic insert
+      // so the caller queues the text for the live conversation instead. An
+      // unknown session (no cached state) still goes through: absence of
+      // cache is not evidence of idleness, and the gateway authoritatively
+      // rejects idle redirects.
+      const liveTurn = $sessionStates.get()[sessionId]
+
+      if (liveTurn && !liveTurn.busy && !liveTurn.streamId && !liveTurn.awaitingResponse) {
+        return false
+      }
+
       // Accepted whether the live turn was redirected in place or queued for
       // the next turn (the build window, before the agent is wired) — either
       // way the correction reaches the model, so record it once as a real user

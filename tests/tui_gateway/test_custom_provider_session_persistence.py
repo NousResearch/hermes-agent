@@ -844,6 +844,8 @@ class TestRuntimeModelConfigDropsStaleKeys:
 
         config = _runtime_model_config(_agent_like(provider="nous"), None)
 
-        assert config == {"model": "deepseek/deepseek-v4-flash-0731", "provider": "nous"}
+        assert config == {
+            "model": "deepseek/deepseek-v4-flash-0731", "provider": "nous", "service_tier": "normal",
+        }
 
 

@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import re
+import socket
 import sys
 import urllib.error
 import urllib.parse
@@ -31,6 +32,19 @@ LIST_TIMEOUT_S = 30
 #: Slack added to the caller's wait budget so the gateway's own receipt window
 #: (``bot_mode.receipt_after_seconds``) always fits inside the HTTP timeout.
 _DM_TIMEOUT_SLACK_S = 30
+
+#: §D3: after a read timeout on a *delivery* POST — the request that carries an
+#: idempotency key — the identical request is replayed once with this wait
+#: budget. Admission is idempotent on that key, so the replay can never admit a
+#: second delivery: it replays the reservation and returns the true envelope.
+_DM_REPLAY_WAIT_SECONDS = 1
+
+#: HTTP read ceiling for that replay. A replayed reservation answers
+#: immediately (no turn runs), so this stays far below ``DM_TIMEOUT_S``.
+_DM_REPLAY_TIMEOUT_S = 30
+
+#: The run/status read's ``object`` tag — the read-path twin of SEND_RESULT_OBJECT.
+RUN_OBJECT = "hermes.peer.run"
 
 #: The delivery envelope's ``object`` tag (§1.2). Its presence marks a peer that
 #: understands queued receipts; anything else is the legacy reply shape.
@@ -80,7 +94,7 @@ def _peer_secret(name: str) -> str:
 
 def _request(
     url: str, key: str, *, method: str = "GET", body: dict | None = None,
-    timeout: int = LIST_TIMEOUT_S, headers: dict[str, str] | None = None) -> dict:
+    timeout: float = LIST_TIMEOUT_S, headers: dict[str, str] | None = None) -> dict:
     from hermes_cli.urllib_security import open_credentialed_url
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request_headers = {
@@ -229,6 +243,77 @@ def _peer_failure(peer_name: str, exc: Exception) -> int:
     return 1
 
 
+def _is_read_timeout(exc: BaseException) -> bool:
+    """True when *exc* is a socket read timeout, never a connection failure.
+
+    ``urlopen`` wraps a timeout raised before the response headers in
+    ``URLError``, but the one this lane hit fires mid-body: a synchronous peer
+    turn can run for minutes, so the read timeout surfaces from ``resp.read()``
+    as a bare ``socket.timeout`` — which *is* ``TimeoutError`` on Python 3.10+.
+    Both shapes mean the same thing: the request was sent, the answer was lost.
+    """
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return True
+    return (isinstance(exc, urllib.error.URLError)
+            and isinstance(getattr(exc, "reason", None), (TimeoutError, socket.timeout)))
+
+
+class _DeliveryOutcomeUnknown(Exception):
+    """A delivery POST timed out AND its idempotent replay did not answer.
+
+    The first request may still have been admitted, so the caller must report
+    ``unknown`` — never "unreachable", and never a blind resend.
+    """
+
+    def __init__(self, idempotency_key: str) -> None:
+        super().__init__(idempotency_key)
+        self.idempotency_key = idempotency_key
+
+
+def _deliver_with_replay(url: str, key: str, *, body: dict, timeout: float,
+                         headers: dict, idempotency_key: str) -> dict:
+    """POST one delivery, replaying it once on a read timeout (§D3).
+
+    A read timeout on the *delivery* POST does not mean the peer was
+    unreachable: the request may already be admitted, reserved and executing.
+    Nothing may claim "unreachable" for that, so the identical request — same
+    URL, same body, same idempotency key, wait budget pinned to
+    ``_DM_REPLAY_WAIT_SECONDS`` — is re-issued once. Admission is idempotent on
+    the key, so this cannot deliver twice: the server replays the reservation
+    and returns the true envelope (the ``receipt``, or the settled result if
+    the turn has since finished).
+    """
+    try:
+        return _request(url, key, method="POST", body=body, timeout=timeout, headers=headers)
+    except urllib.error.HTTPError:
+        raise  # an HTTP status is an explicit answer, never a lost response
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        if not _is_read_timeout(exc):
+            raise
+    replay_headers = {**headers, "X-Hermes-Wait-Seconds": str(int(_DM_REPLAY_WAIT_SECONDS))}
+    try:
+        return _request(url, key, method="POST", body=body,
+                        timeout=_DM_REPLAY_TIMEOUT_S, headers=replay_headers)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError,
+            RuntimeError) as exc:
+        # Deliberately broad: the first POST may have been admitted, so *any*
+        # failure to read the replay leaves this delivery's outcome unknown.
+        # Reporting the peer as unreachable here is the exact misreport the
+        # receipt contract exists to eliminate.
+        raise _DeliveryOutcomeUnknown(idempotency_key) from exc
+
+
+def _unknown_delivery_detail(idempotency_key: str) -> str:
+    """``do not resend`` wording for a delivery whose outcome could not be read."""
+    try:
+        from tools.bot_delivery_queue import unknown_detail
+
+        tail = unknown_detail(idempotency_key)
+    except Exception:
+        tail = f"outcome unknown; a resend must reuse idempotency_key {idempotency_key}"
+    return f"do not resend — {tail}"
+
+
 def _bot_mode_value(key: str, default):
     """Read one ``bot_mode`` key, falling back to ``default``."""
     try:
@@ -366,6 +451,35 @@ def _emit_dm_envelope(args, envelope: dict, *, session_id: str, idempotency_key:
     return RESULT_EXIT_CODES.get(result, 1)
 
 
+def _emit_unknown_delivery(args, *, peer_name: str, profile: str | None, session_id: str,
+                           idempotency_key: str) -> int:
+    """Report an accepted-but-unverifiable delivery (§D3) without blaming the peer.
+
+    Both the delivery POST and its idempotent replay went unanswered, so the
+    message may still have landed. The wording must never read as "the peer was
+    unreachable" (it wasn't) and must warn against a blind resend.
+    """
+    envelope = {
+        "object": SEND_RESULT_OBJECT,
+        "result": "unknown",
+        "status": "unknown",
+        "reason": "unknown",
+        "retryable": False,
+        "peer": peer_name,
+        "profile": profile,
+        "session_id": session_id,
+        "idempotency_key": idempotency_key,
+        "detail": _unknown_delivery_detail(idempotency_key),
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(envelope))
+    else:
+        print(envelope["detail"], file=sys.stderr)
+        print(f"session_id: {session_id}")
+        print(f"idempotency_key: {idempotency_key}")
+    return RESULT_EXIT_CODES.get("unknown", 1)
+
+
 def _emit(args, payload: dict, text_lines: list[str]) -> int:
     if getattr(args, "json", False):
         print(json.dumps(payload))
@@ -426,6 +540,25 @@ def _peer_list(args) -> int:
     return 0
 
 
+def _emit_unknown_run(args, peer_name: str, profile: str | None, run_id: str) -> int:
+    """A 404 on the READ path is post-retention GC, not a delivery failure.
+
+    Spec T6 / §7: a run's terminal row is deleted at the end of its retention
+    window, so 404 means the record aged out — not that the delivery failed.
+    Exit status stays 0 so a monitor keying on it cannot report a
+    delivered-and-GC'd message as a failure.
+    """
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "peer": peer_name, "profile": profile, "object": RUN_OBJECT,
+            "result": "unknown", "status": "unknown", "run_id": run_id,
+            "reason": "run_not_found", "retryable": False}))
+    else:
+        print(f"{run_id}: unknown — no such run "
+              f"(retention window elapsed; this is not a delivery failure)")
+    return 0
+
+
 def _peer_run_ctl(args, action: str, peer_name: str, profile: str | None, base: str,
                   key: str) -> int:
     """``status`` / ``stop`` on an asynchronous run."""
@@ -438,6 +571,13 @@ def _peer_run_ctl(args, action: str, peer_name: str, profile: str | None, base: 
         result = _request(
             f"{base}/v1/runs/{urllib.parse.quote(run_id, safe='')}" + ("/stop" if stop else ""),
             key, method="POST" if stop else "GET", body={} if stop else None)
+    except urllib.error.HTTPError as exc:
+        # A 404 on the read path is the retention window elapsing, never a
+        # delivery signal. Every other status (and ``stop``, which mutates)
+        # keeps today's failure semantics exactly.
+        if not stop and exc.code == 404:
+            return _emit_unknown_run(args, peer_name, profile, run_id)
+        return _peer_failure(peer_name, exc)
     except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
         return _peer_failure(peer_name, exc)
     if getattr(args, "json", False):
@@ -540,12 +680,15 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
         return 2
     headers = _delivery_headers(idempotency_key, sender_profile, wait_seconds)
     try:
-        result = _request(
+        result = _deliver_with_replay(
             f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/chat", key,
-            method="POST", body={"message": message},
-            timeout=wait_seconds + _DM_TIMEOUT_SLACK_S, headers=headers)
+            body={"message": message}, timeout=wait_seconds + _DM_TIMEOUT_SLACK_S,
+            headers=headers, idempotency_key=idempotency_key)
     except urllib.error.HTTPError as exc:
         return _peer_refusal(peer_name, exc)
+    except _DeliveryOutcomeUnknown:
+        return _emit_unknown_delivery(args, peer_name=peer_name, profile=profile,
+                                      session_id=session_id, idempotency_key=idempotency_key)
     except RuntimeError as exc:
         print(f"Peer '{peer_name}': {exc}", file=sys.stderr)
         return 1
@@ -638,7 +781,9 @@ def build_peer_parser(subparsers) -> None:
             "\n"
             "Exit codes: 0 delivered or accepted (queued receipt), "
             "1 delivery/peer error, 2 usage or refused request.\n"
-            "A receipt means the peer accepted and queued the message — do NOT resend it."),
+            "A receipt means the peer accepted and queued the message — do NOT resend it.\n"
+            "A post-retention 'hermes peer status' 404 is reported as unknown, exit 0 — "
+            "it is not a delivery failure."),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     peer_sub = parser.add_subparsers(dest="peer_action")
 

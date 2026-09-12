@@ -29,6 +29,11 @@ def _run(monkeypatch, capsys, *, base="http://192.168.2.55:8642", raise_on_post=
         return SESSION
 
     monkeypatch.setattr(peer_mod, "_ensure_bot_chat", _ensure)
+    # One request is bounded by `dm_wait_seconds + _DM_TIMEOUT_SLACK_S`, and a lost answer is
+    # replayed once under `_DM_REPLAY_TIMEOUT_S`. Pin both to the test's 0.5 s wait so what is
+    # under test - which failure shape reaches which report - stays fast.
+    monkeypatch.setattr(peer_mod, "_DM_TIMEOUT_SLACK_S", 0.1)
+    monkeypatch.setattr(peer_mod, "_DM_REPLAY_TIMEOUT_S", 0.1)
     if raise_on_post is not None:
         def _request(url, key, **kwargs):
             raise raise_on_post
@@ -41,8 +46,8 @@ def _run(monkeypatch, capsys, *, base="http://192.168.2.55:8642", raise_on_post=
 @pytest.mark.parametrize(
     ("raise_on_post", "raise_on_session", "expected", "forbidden"),
     [
-        (TimeoutError("timed out"), None, "accepted the message but its turn is still running", "Could not reach"),
-        (urllib.error.URLError(TimeoutError("timed out")), None, "Could not reach peer", "still running"),
+        (TimeoutError("timed out"), None, "do not resend — outcome unknown", "Could not reach"),
+        (urllib.error.URLError(TimeoutError("timed out")), None, "do not resend — outcome unknown", "still running"),
         (urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")), None, "Could not reach peer", "still running"),
         (OSError(51, "Network is unreachable"), None, "Could not reach peer", "still running"),
         (TimeoutError("timed out"), TimeoutError("timed out"), "Could not reach peer", "still running"),
@@ -106,7 +111,10 @@ def test_the_real_urllib_stack_raises_the_signatures_the_branch_relies_on(monkey
             conn.close()
 
     assert code == 1
-    if phase == "response":
-        assert "accepted the message but its turn is still running" in err and "Do NOT resend" in err
-    else:
-        assert "Could not reach peer" in err and "still running" not in err
+    # A timeout on the response and one on the connect both reach urllib as a lost answer, and
+    # the branch replays the identical request under the same idempotency key before giving up:
+    # either way the outcome is unreadable, and telling the sender the peer was unreachable is
+    # what makes it resend and run the turn twice.
+    assert "do not resend — outcome unknown" in err
+    assert "reuse idempotency_key" in err
+    assert "Could not reach" not in err

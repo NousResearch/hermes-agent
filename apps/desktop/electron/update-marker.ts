@@ -66,11 +66,11 @@ function parseMarkerInteger(line: unknown): number | null {
 /**
  * Read + interpret the marker.
  *
- * Returns `{ pid, ageMs }` only when an update is GENUINELY still running
- * (parseable pid that is alive, within the age ceiling). Returns `null` for
- * every "no live update" case — absent, unreadable, malformed, dead pid, or
- * past the ceiling — and, when a stale marker file exists, deletes it so it
- * cannot strand future launches.
+ * Returns `{ pid, startedAt, ageMs }` only when an update is GENUINELY still
+ * running (parseable pid that is alive, within the age ceiling). Returns
+ * `null` for every "no live update" case — absent, unreadable, malformed,
+ * dead pid, or past the ceiling — and, when a stale marker file exists,
+ * deletes it so it cannot strand future launches.
  *
  * Pure-ish: file I/O against the given path, plus an injectable pid probe and
  * clock for tests.
@@ -100,11 +100,11 @@ export function readLiveUpdateMarker(
   const pid = parseMarkerInteger(pidLine)
   const startedAt = parseMarkerInteger(startedLine)
   // A wall-clock correction can put a valid live owner's timestamp briefly in
-  // the future. Clamp that case to a fresh age rather than deleting the mutex
-  // and allowing a second updater to overlap the first.
+  // the future. Clamp the reported age to zero for callers, but preserve the
+  // validated acquisition timestamp so hand-offs do not move it backwards.
   const ageMs = startedAt === null ? Infinity : Math.max(0, now() - startedAt * 1000)
 
-  if (pid === null || !isPidAlive(pid, kill) || ageMs > maxAgeMs) {
+  if (pid === null || startedAt === null || !isPidAlive(pid, kill) || ageMs > maxAgeMs) {
     try {
       fs.unlinkSync(file)
     } catch {
@@ -114,7 +114,7 @@ export function readLiveUpdateMarker(
     return null
   }
 
-  return { pid, ageMs }
+  return { pid, startedAt, ageMs }
 }
 
 /**
@@ -163,7 +163,7 @@ export function writeUpdateMarker(
     typeof startedAt === 'number' && Number.isInteger(startedAt)
       ? startedAt
       : owner
-        ? Math.floor((nowMs - owner.ageMs) / 1000)
+        ? owner.startedAt
         : Math.floor(nowMs / 1000)
 
   try {

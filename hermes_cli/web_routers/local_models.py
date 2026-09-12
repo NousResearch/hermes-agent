@@ -312,14 +312,59 @@ def _probe_range_support(url: str) -> int:
     return 0
 
 
+def _range_fully_covered(start: int, end: int, completed: list) -> bool:
+    return any(int(cs) <= start and end <= int(ce) for cs, ce in completed)
+
+
+def _discard_download_partial(tmp: Path, sidecar: Path) -> None:
+    tmp.unlink(missing_ok=True)
+    sidecar.unlink(missing_ok=True)
+
+
+def _write_resume_sidecar(sidecar: Path, url: str, total: int, completed: list) -> None:
+    payload = json.dumps({"url": url, "total": int(total), "completed": [list(p) for p in completed]})
+    scratch = sidecar.with_name(sidecar.name + ".tmp")
+    scratch.write_text(payload, encoding="utf-8")
+    scratch.replace(sidecar)
+
+
+def _load_resume_sidecar(sidecar: Path, url: str, total: int, tmp: Path) -> list | None:
+    """Return completed [start, end] pairs when sidecar+part match this url/total; else None."""
+    if not sidecar.is_file() or not tmp.is_file():
+        return None
+    try:
+        if tmp.stat().st_size != total:
+            return None
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(data, dict) or data.get("url") != url or data.get("total") != total:
+        return None
+    raw = data.get("completed")
+    if not isinstance(raw, list):
+        return None
+    completed = []
+    for item in raw:
+        if (not isinstance(item, (list, tuple)) or len(item) != 2
+                or not all(isinstance(x, int) and not isinstance(x, bool) for x in item)):
+            return None
+        start, end = int(item[0]), int(item[1])
+        if start < 0 or end < start or end >= total:
+            return None
+        completed.append([start, end])
+    return completed
+
+
 def download_file(url: str, dest: Path, job: Dict[str, Any], *, base_done: int = 0, keep_totals: bool = False) -> None:
     """Download url -> dest with byte progress on ``job``; ranged-parallel when the server supports it,
-    single-stream otherwise. Never leaves a .part. Completeness is checked only against what the SERVER
-    declared (range-probe total / Content-Length), never the CATALOG (its sizes may lag a re-upload), so a
+    single-stream otherwise. Incomplete ranged transfers keep a .part and sidecar so the next attempt
+    resumes missing ranges only. Completeness is checked only against what the SERVER declared
+    (range-probe total / Content-Length), never the CATALOG (its sizes may lag a re-upload), so a
     dropped connection still errors instead of staging a truncated file. Multi-file variants: ``base_done``
     offsets progress onto earlier files; ``keep_totals=True`` keeps the per-file size from overwriting the
     variant's total."""
     tmp = dest.with_suffix(".part")
+    sidecar = dest.with_suffix(".part.json")
     dest.parent.mkdir(parents=True, exist_ok=True)
     file_done = [0]
     progress_lock = threading.Lock()
@@ -332,53 +377,76 @@ def download_file(url: str, dest: Path, job: Dict[str, Any], *, base_done: int =
                 file_done[0] += len(chunk)
                 job["done_bytes"] = base_done + file_done[0]
 
-    def fetch_range(start: int, end: int) -> None:
-        try:
-            req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
-            with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "r+b") as f:
-                f.seek(start)
-                pump(r, f)
-        except Exception as exc:  # noqa: BLE001
-            errors.append(exc)
-
-    try:
-        # Probe and preallocation take real seconds on a 20+ GB file — narrate them, or the pane shows a dead '— of X GB'.
-        job["detail"] = "Connecting"
-        total = _probe_range_support(url)
-        if total:
-            if not keep_totals:
-                job["total_bytes"] = total
-            # Preallocate so each worker writes at its own offset.
+    # Probe and preallocation take real seconds on a 20+ GB file — narrate them, or the pane shows a dead '— of X GB'.
+    job["detail"] = "Connecting"
+    total = _probe_range_support(url)
+    if total:
+        if not keep_totals:
+            job["total_bytes"] = total
+        loaded = _load_resume_sidecar(sidecar, url, total, tmp)
+        if loaded is None:
+            _discard_download_partial(tmp, sidecar)
             job["detail"] = f"Reserving {_human_gb(total)} of disk space"
             with open(tmp, "wb") as f:
                 f.truncate(total)
-            job["detail"] = ""
-            n = _DOWNLOAD_CONNECTIONS
-            threads = [threading.Thread(target=fetch_range, daemon=True, name=f"lm-dl-{i}",
-                                        args=(i * total // n, (i + 1) * total // n - 1)) for i in range(n)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-            if errors:
-                raise errors[0]
-            if file_done[0] != total:
-                raise RuntimeError(f"download incomplete ({file_done[0]} of {total} bytes)")
+            completed: list = []
+            _write_resume_sidecar(sidecar, url, total, completed)
         else:
-            # No range support: single stream; completeness judged by the server's
-            # own Content-Length when it sent one — never the catalog.
-            with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
-                length = int(r.headers.get("Content-Length") or 0)
-                if length and not keep_totals:
-                    job["total_bytes"] = length
-                pump(r, f)
-            if length and file_done[0] != length:
-                raise RuntimeError(f"Download ended at {file_done[0]:,} bytes but the server "
-                                   f"said {length:,} — connection dropped? Removed; try again")
+            completed = loaded
+        job["detail"] = ""
+        file_done[0] = sum(end - start + 1 for start, end in completed)
+        job["done_bytes"] = base_done + file_done[0]
+
+        def fetch_range(start: int, end: int) -> None:
+            expected = end - start + 1
+            got = 0
+            try:
+                req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
+                with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "r+b") as f:
+                    f.seek(start)
+                    for chunk in iter(lambda: r.read(_CHUNK), b""):
+                        f.write(chunk)
+                        got += len(chunk)
+                        with progress_lock:
+                            file_done[0] += len(chunk)
+                            job["done_bytes"] = base_done + file_done[0]
+                if got == expected:
+                    with progress_lock:
+                        completed.append([start, end])
+                        _write_resume_sidecar(sidecar, url, total, completed)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        n = _DOWNLOAD_CONNECTIONS
+        missing = [(i * total // n, (i + 1) * total // n - 1) for i in range(n)
+                   if not _range_fully_covered(i * total // n, (i + 1) * total // n - 1, completed)]
+        threads = [threading.Thread(target=fetch_range, daemon=True, name=f"lm-dl-{i}",
+                                    args=span) for i, span in enumerate(missing)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        if errors:
+            raise errors[0]
+        if file_done[0] != total:
+            raise RuntimeError(f"download incomplete ({file_done[0]} of {total} bytes)")
         shutil.move(str(tmp), str(dest))
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
+        sidecar.unlink(missing_ok=True)
+        return
+
+    # No range support: single stream; completeness judged by the server's
+    # own Content-Length when it sent one — never the catalog. Do not invent
+    # resume; "wb" overwrites any leftover .part instead of appending.
+    sidecar.unlink(missing_ok=True)
+    with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
+        length = int(r.headers.get("Content-Length") or 0)
+        if length and not keep_totals:
+            job["total_bytes"] = length
+        pump(r, f)
+    if length and file_done[0] != length:
+        raise RuntimeError(f"Download ended at {file_done[0]:,} bytes but the server "
+                           f"said {length:,} — connection dropped? Try again")
+    shutil.move(str(tmp), str(dest))
 
 
 def _download_plan(entry, variant) -> list:

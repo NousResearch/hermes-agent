@@ -184,7 +184,8 @@ def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatc
     stale — a mismatch against the CATALOG must not fail a download).
     The server's own declared length is the only completeness check:
     fewer bytes than the server promised means a dropped connection, so
-    the job errors and nothing is staged."""
+    the job errors and nothing is staged. A leftover .part on the no-Range
+    path is fail-open (the next attempt overwrites; it does not append)."""
 
     class FakeResponse(io.BytesIO):
         # Body is 17 bytes; the server promises 32 — a truncated stream.
@@ -231,7 +232,6 @@ def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatc
     from hermes_cli.local_runtime.bootstrap import models_dir
 
     assert not (models_dir() / f"{entry_id}.gguf").exists()
-    assert not (models_dir() / f"{entry_id}.part").exists()
 
 
 def test_download_already_downloaded_short_circuits(client, monkeypatch):

@@ -9,6 +9,7 @@ Existing on-disk WAL databases are left alone (no live downgrade).
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 import sys
@@ -68,6 +69,45 @@ class TestApplyWalWalResetGate:
         assert any("instead of enabling WAL" in r.getMessage() for r in caplog.records)
         assert any(sys.executable in r.getMessage() for r in caplog.records)
         conn.close()
+
+    def test_custom_image_warning_recommends_rebuild_not_self_update(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import hermes_cli.image_provenance as image_provenance
+
+        marker = tmp_path / "image-provenance.json"
+        marker.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "deployment_kind": "image",
+                    "manager": "docker",
+                    "image": "example/hermes-runtime",
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(image_provenance, "IMAGE_PROVENANCE_PATH", marker)
+        monkeypatch.setattr(
+            hermes_state_wal,
+            "is_sqlite_wal_reset_vulnerable",
+            lambda version_info=None: True,
+        )
+
+        conn = sqlite3.connect(str(tmp_path / "custom-image.db"))
+        try:
+            with caplog.at_level("WARNING", logger="hermes_state"):
+                apply_wal_with_fallback(conn, db_label="custom-image.db")
+        finally:
+            conn.close()
+
+        warning = next(
+            record.getMessage()
+            for record in caplog.records
+            if "WAL-reset" in record.getMessage()
+        )
+        assert "rebuild the immutable container image and restart Hermes" in warning
+        assert "hermes update" not in warning
 
     def test_existing_wal_left_alone_when_vulnerable(
         self, tmp_path, monkeypatch, caplog

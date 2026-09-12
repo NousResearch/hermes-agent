@@ -59,15 +59,33 @@ def _managed_fal_billing_error(exc: BaseException, what: str) -> Optional[str]:
         payload = response.json()
     except Exception:  # noqa: BLE001 — diagnostics must not mask the provider error
         return None
-    error = payload.get("error") if isinstance(payload, dict) else None
-    if not isinstance(error, dict) or error.get("code") != "BILLING_ERROR":
+    if not isinstance(payload, dict):
         return None
-    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+
+    raw_error = payload.get("error")
+    error_dict = raw_error if isinstance(raw_error, dict) else payload
+
+    code_val = error_dict.get("code") or payload.get("code") or (raw_error if isinstance(raw_error, str) else None)
+    details = error_dict.get("details") if isinstance(error_dict.get("details"), dict) else (
+        payload.get("details") if isinstance(payload.get("details"), dict) else {})
+
+    charge_intent_code = details.get("chargeIntentErrorCode")
+    is_billing_error = (
+        code_val == "BILLING_ERROR"
+        or raw_error == "BILLING_ERROR"
+        or payload.get("code") == "BILLING_ERROR"
+        or charge_intent_code is not None
+    )
+    if not is_billing_error:
+        return None
+
     upstream = details.get("upstreamPayload") if isinstance(details.get("upstreamPayload"), dict) else {}
-    code = upstream.get("code") or details.get("chargeIntentErrorCode") or "billing_error"
-    detail = upstream.get("error") or "Nous Portal rejected the charge authorization"
+    code = upstream.get("code") or charge_intent_code or code_val or "billing_error"
+    msg = error_dict.get("message") or payload.get("message") or "Charge authorization failed"
+    detail = upstream.get("error") or details.get("error") or details.get("detail") or msg or "Nous Portal rejected the charge authorization"
+
     return (
-        f"{error.get('message') or 'Charge authorization failed'} (BILLING_ERROR; {code}: {detail}). "
+        f"{msg} (BILLING_ERROR; {code}: {detail}). "
         "This is a Nous Portal billing configuration issue, not a missing local API key. "
         f"The managed route cannot run this {what} until Nous enables its billing meter; "
         "a direct FAL_KEY is an optional bypass."

@@ -656,10 +656,14 @@ def _confirm_install(c: Console, bundle, category: str) -> bool:
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> None:
+               source_id: Optional[str] = None) -> bool:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
-    cannot resolve to a same-named skill elsewhere."""
+    cannot resolve to a same-named skill elsewhere.
+
+    Returns ``True`` when the requested skill is installed or already present,
+    and ``False`` when resolution, fetch, scan, confirmation, or installation
+    prevents the install from completing."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
     from tools.skills_guard import should_allow_install
@@ -667,17 +671,17 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     ensure_hub_dirs()
     sources = _pinned_sources(c, _sources(), source_id, identifier)
     if sources is None:
-        return
+        return False
     identifier = _full_identifier(identifier, sources, c)
     if not identifier:
-        return
+        return False
     c.print(f"\n[bold]Fetching:[/] {identifier}")
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
     if not bundle:
         _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
-        return
+        return False
     if not _resolve_url_bundle_name(c, bundle, meta, identifier, name_override, skip_confirm):
-        return
+        return False
 
     # URL-sourced skills: pick a category interactively when none was given (TTY only;
     # non-interactive installs fall through to flat install like every other source).
@@ -693,7 +697,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
         if not force:
             c.print("Use --force to reinstall.\n")
-            return
+            return True
 
     extra_metadata = {**(getattr(meta, "extra", {}) or {}), **bundle.metadata}
 
@@ -701,7 +705,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         q_path = quarantine_bundle(bundle)
     except ValueError as exc:
         _invalid_path(c, bundle, exc)
-        return
+        return False
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
     result = _scan_quarantined(c, q_path, bundle, meta, identifier)
@@ -709,7 +713,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if not allowed:
         _install_blocked(c, bundle, reason, result.verdict, f"{len(result.findings)}_findings",
                          q_path=q_path, lead="\n")
-        return
+        return False
     # Advisory second opinion — warn-and-continue by design (PII-class findings are
     # informational); the install confirmation below is where the user decides.
     _print_tier1_advisory(q_path, c)
@@ -720,18 +724,19 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
     if not force and not skip_confirm and not _confirm_install(c, bundle, category):
         shutil.rmtree(q_path, ignore_errors=True)
-        return
+        return False
 
     try:
         install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
     except ValueError as exc:
         _invalid_path(c, bundle, exc, q_path)
-        return
+        return False
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.resolve().relative_to(Path(SKILLS_DIR).resolve()).as_posix()}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
     _announce_blueprint(c, bundle.name)
     _finish_change(c, invalidate_cache, "Skill will be available", "activate")
+    return True
 
 
 def _print_tier1_advisory(skill_dir, console) -> None:
@@ -1319,13 +1324,22 @@ def _tap_cli(args) -> None:
 
 # `hermes skills <action>` -> handler(args). Lambdas late-bind the do_* names so
 # tests that patch("hermes_cli.skills_hub.do_install") still intercept.
+def _install_cli_action(args) -> None:
+    """`hermes skills install`: exit non-zero when the install did not complete (#30631).
+    SystemExit lives only in this CLI wrapper — the slash-command path drops the
+    result as before so in-chat installs never raise."""
+    installed = do_install(args.identifier, category=args.category, force=args.force,
+                           skip_confirm=getattr(args, "yes", False),
+                           name_override=getattr(args, "name", "") or "")
+    if installed is False:
+        sys.exit(1)
+
+
 _CLI_ACTIONS = {
     "browse": lambda a: do_browse(page=a.page, page_size=a.size, source=a.source),
     "search": lambda a: do_search(a.query, source=a.source, limit=a.limit,
                                   as_json=getattr(a, "json", False)),
-    "install": lambda a: do_install(a.identifier, category=a.category, force=a.force,
-                                    skip_confirm=getattr(a, "yes", False),
-                                    name_override=getattr(a, "name", "") or ""),
+    "install": _install_cli_action,
     "inspect": lambda a: do_inspect(a.identifier),
     "list": lambda a: do_list(source_filter=a.source,
                               enabled_only=getattr(a, "enabled_only", False)),

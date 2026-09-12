@@ -565,3 +565,93 @@ def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_
     assert "Could not fetch" in out
     assert "Stale index entry" not in out
     assert ("rate limit" in out) is meta_hit
+
+
+def test_do_install_unknown_short_name_returns_false(monkeypatch):
+    import tools.skills_hub as hub
+    import tools.skills_hub_search as search
+    import hermes_cli.skills_hub as cli_hub
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(cli_hub, "_sources", lambda: ["fake-source"])
+    monkeypatch.setattr(
+        search,
+        "unified_search",
+        lambda query, sources, source_filter="all", limit=20: [],
+    )
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    assert do_install(
+        "definitely-not-a-real-skill-zzz",
+        console=console,
+        skip_confirm=True,
+    ) is False
+    assert "No skill named 'definitely-not-a-real-skill-zzz' found" in sink.getvalue()
+
+
+def test_do_install_suggested_short_name_returns_false(monkeypatch):
+    from types import SimpleNamespace
+
+    import tools.skills_hub as hub
+    import tools.skills_hub_search as search
+    import hermes_cli.skills_hub as cli_hub
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(cli_hub, "_sources", lambda: ["fake-source"])
+    monkeypatch.setattr(
+        search,
+        "unified_search",
+        lambda query, sources, source_filter="all", limit=20: [
+            SimpleNamespace(
+                name="conceptual-diagram",
+                identifier="official/creative/conceptual-diagram",
+            )
+        ],
+    )
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    assert do_install("concept-diagram", console=console, skip_confirm=True) is False
+    output = sink.getvalue()
+    assert "No exact match for 'concept-diagram'" in output
+    assert "official/creative/conceptual-diagram" in output
+
+
+def test_skills_command_exits_nonzero_when_install_fails(monkeypatch):
+    from types import SimpleNamespace
+
+    import hermes_cli.skills_hub as cli_hub
+
+    monkeypatch.setattr(cli_hub, "do_install", lambda *args, **kwargs: False)
+
+    args = SimpleNamespace(
+        skills_action="install",
+        identifier="definitely-not-a-real-skill-zzz",
+        category="",
+        force=False,
+        yes=True,
+        name="",
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli_hub.skills_command(args)
+
+    assert exc.value.code == 1
+
+
+def test_skills_slash_install_does_not_raise_on_failure(monkeypatch):
+    """The in-chat slash path drops the install result (no SystemExit in chat)."""
+    import hermes_cli.skills_hub as cli_hub
+    from io import StringIO as _Sink
+    from rich.console import Console as _Console
+
+    monkeypatch.setattr(cli_hub, "do_install", lambda *args, **kwargs: False)
+
+    sink = _Sink()
+    cli_hub.handle_skills_slash(
+        "/skills install definitely-not-a-real-skill-zzz",
+        console=_Console(file=sink, force_terminal=False, color_system=None),
+    )

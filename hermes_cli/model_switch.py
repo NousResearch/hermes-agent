@@ -841,11 +841,18 @@ def _configured_provider_matches(
     target = model_name.strip().lower()
 
     candidates: list[tuple[str, dict]] = []
+    user_slugs_lower = set()
     if isinstance(user_providers, dict):
         candidates += [(slug, cfg) for slug, cfg in user_providers.items()
                        if isinstance(slug, str) and isinstance(cfg, dict)]
+        user_slugs_lower = {slug.lower() for slug, _ in candidates}
+    # A new-style providers.<slug> entry mirrored into custom_providers (via
+    # get_compatible_custom_providers) carries provider_key == slug; skip the
+    # mirror so one model isn't reported as declared twice (custom:gpt + gpt).
+    # Compare against a normalized (lowercased) set to catch mixed-case slugs.
     candidates += [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
-                   if isinstance(e.get("name"), str) and e["name"].strip()]
+                   if isinstance(e.get("name"), str) and e["name"].strip()
+                   and str(e.get("provider_key") or "").strip().lower() not in user_slugs_lower]
 
     matches: dict[str, str] = {}
     for slug, cfg in candidates:

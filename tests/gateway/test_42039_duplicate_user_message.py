@@ -69,6 +69,8 @@ def _bootstrap(monkeypatch, tmp_path):
     # Mock has_platform_message_id to return False so the dedupe guard
     # (#47237) in gateway/run.py does not skip the append_to_transcript call.
     runner.session_store.has_platform_message_id.return_value = False
+    # The durable tail after the user row landed (gateway write or agent flush) is that user row.
+    runner.session_store.transcript_tail_role.return_value = "user"
     runner.session_store.update_session = MagicMock()
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -173,11 +175,20 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
 
 
 @pytest.mark.asyncio
-async def test_deduped_retry_of_failed_turn_adds_no_second_boundary(monkeypatch, tmp_path):
-    """A platform retry of the same failed message (dedupe skips the user row) must not stack a
-    second boundary behind the first — that would be two consecutive assistant rows."""
+@pytest.mark.parametrize(
+    "tail_role, expected_roles",
+    [("user", ["assistant"]), ("assistant", [])],
+    ids=["agent-flushed-user-row-still-closed", "redelivery-of-closed-turn-adds-nothing"],
+)
+async def test_boundary_keyed_on_durable_tail_when_user_row_is_deduped(
+    monkeypatch, tmp_path, tail_role, expected_roles
+):
+    """The platform-id dedupe skips the gateway's user write in two production shapes: the agent's
+    own turn-start flush already persisted THIS turn's row (tail = user → boundary must still land),
+    and a platform redelivery of an already-closed turn (tail = boundary → nothing may stack)."""
     runner = _bootstrap(monkeypatch, tmp_path)
     runner.session_store.has_platform_message_id.return_value = True
+    runner.session_store.transcript_tail_role.return_value = tail_role
     runner._run_agent = AsyncMock(
         return_value={
             "failed": True,
@@ -191,10 +202,12 @@ async def test_deduped_retry_of_failed_turn_adds_no_second_boundary(monkeypatch,
 
     await runner._handle_message_with_agent(_event(), _source(), "agent:main:telegram:group:-1001:12345", 1)
 
-    assert [
-        call.args[1]["role"] for call in runner.session_store.append_to_transcript.call_args_list
+    rows = [
+        call.args[1] for call in runner.session_store.append_to_transcript.call_args_list
         if len(call.args) >= 2 and call.args[1].get("role") in {"user", "assistant"}
-    ] == []
+    ]
+    assert [row["role"] for row in rows] == expected_roles
+    assert all(row["content"] == runner._FAILED_TURN_NOTICE for row in rows)
 
 
 @pytest.mark.asyncio

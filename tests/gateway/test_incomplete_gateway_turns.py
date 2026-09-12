@@ -98,6 +98,7 @@ def _make_runner(adapter: CaptureSlackAdapter) -> gateway_run.GatewayRunner:
     # (#47237). A bare MagicMock returns a truthy mock, which would wrongly
     # mark the user turn as a duplicate and skip persisting it.
     runner.session_store.has_platform_message_id = MagicMock(return_value=False)
+    runner.session_store.transcript_tail_role = MagicMock(return_value="user")
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}

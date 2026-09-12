@@ -93,23 +93,69 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             store._transcript_reroutes.clear()
             assert store.has_input_owner(sid, owner) is owned, location
             before = db.message_count()
+            open_tail = store.transcript_tail_role(sid) == "user"
             reply = await runner._hmwa_agent_error_reply(
                 RuntimeError("controlled post-compaction failure"),
                 MessageEvent(text="same", source=source, message_id=pid),
                 source, entry, entry.session_key, prepared,
             )
-            # Exception fallback adds the missing user only when unowned, then always
-            # closes the failed turn with a durable assistant safety boundary.
-            assert db.message_count() == before + (not owned) + 1, location
+            # Exception fallback adds the missing user only when unowned, and a boundary iff that
+            # leaves an open user tail on the live route — never anything else.
+            assert db.message_count() == before + (not owned) + ((not owned) or open_tail), location
             assert store.has_input_owner(sid, owner), location
-            live_messages = db.get_messages(child)
-            assert live_messages[-1]["role"] == "assistant"
-            assert live_messages[-1]["content"] == runner._PARTIAL_FAILED_TURN_NOTICE
             assert runner._PARTIAL_FAILED_TURN_NOTICE in reply
+            live_messages = db.get_messages(child)
+            assert not live_messages or live_messages[-1]["role"] != "user", location
+            assert sum(m["role"] == "assistant" for m in live_messages) <= 1, location
             if not owned:
+                assert live_messages[-1]["content"] == runner._PARTIAL_FAILED_TURN_NOTICE
                 persisted_user = live_messages[-2]
                 assert persisted_user["content"] == prepared.persist_user_message
                 assert persisted_user["display_metadata"]["gateway_input_owner"] == owner
+            # A repeated delivery of the same closed turn adds no second boundary.
+            closed = db.message_count()
+            await runner._hmwa_agent_error_reply(
+                RuntimeError("redelivered"), MessageEvent(text="same", source=source, message_id=pid),
+                source, entry, entry.session_key, prepared,
+            )
+            assert db.message_count() == closed, location
+        db.close()
+
+    asyncio.run(check())
+
+
+def test_context_overflow_exception_persists_nothing(tmp_path):
+    """Exception-path overflow (400/500 on a long session) must not write the user row or a
+    boundary — the same no-grow rule as the persist path (#1630)."""
+    import asyncio
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, SessionStore
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+
+        async def stop_typing(event, source):
+            return None
+
+        runner._hmwa_stop_typing_for_turn = stop_typing
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="overflow", user_id="u")
+        entry = store.get_or_create_session(source)
+        db = store._db_for_session_id(entry.session_id)
+        prepared = runner._PreparedTurn(
+            [{"role": "user", "content": "x"}] * 51, "", "x", "x", None, None, entry.session_id, "owner-overflow",
+        )
+        err = RuntimeError("payload too large")
+        err.status_code = 400
+        before = db.message_count()
+        reply = await runner._hmwa_agent_error_reply(
+            err, MessageEvent(text="x", source=source, message_id="m-overflow"), source, entry, entry.session_key, prepared,
+        )
+        assert db.message_count() == before
+        assert reply.startswith("⚠️ Session too large for the model's context window.")
         db.close()
 
     asyncio.run(check())
@@ -142,3 +188,47 @@ def test_context_overflow_error_reply_carries_no_partial_effect_notice():
     assert reply.startswith("⚠️ Session too large for the model's context window.")
     assert reply.endswith("or /reset to start fresh.")
     assert runner._PARTIAL_FAILED_TURN_NOTICE not in reply
+
+
+def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):
+    """First turn of a new session, agent-persisted runtime: the agent's turn-start flush wrote the
+    user row (platform id stamped) before the gateway appends ``session_meta``. The boundary must
+    still land — ``session_meta`` is stripped before the model sees history, so an open user row
+    behind it is exactly the #107070 replay shape."""
+    import asyncio
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, SessionStore
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._session_db = object()  # agent_persisted defaults True
+
+        async def noop(*args, **kwargs):
+            return None
+
+        runner._refresh_agent_cache_message_count = noop
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="fresh", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        db.append_message(sid, "user", "reset the password", platform_message_id="m-1")
+        failed = {"failed": True, "final_response": "429", "error": "429", "messages": [],
+                  "history_offset": 0, "last_prompt_tokens": 0}
+        for _ in range(2):  # second pass = platform redelivery of the same failed message
+            await runner._hmwa_persist_turn_transcript(
+                event=MessageEvent(text="reset the password", source=source, message_id="m-1"),
+                source=source, session_entry=entry, session_key=entry.session_key, agent_result=failed,
+                agent_messages=[], prepared=runner._PreparedTurn([], "", "reset the password", None, None, None, sid, "o"),
+                response="x", agent_failed_early=True, hidden_reasoning_incomplete=False,
+                is_context_overflow_failure=False,
+            )
+        roles = [m["role"] for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        assert roles == ["user", "assistant"]
+        assert store.transcript_tail_role(sid) == "assistant"
+        db.close()
+
+    asyncio.run(check())

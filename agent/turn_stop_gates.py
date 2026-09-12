@@ -24,10 +24,15 @@ logger = logging.getLogger("agent.conversation_loop")
 _MAX_PRE_DELIVERY_REPAIR_ATTEMPTS = 4
 _USE_FINAL_RESPONSE_AS_FALLBACK = object()
 _PRE_DELIVERY_REASON_MAX_CHARS = 2_000
+_PRE_DELIVERY_TERMINAL_RESPONSE = (
+    "No pude completar una respuesta verificable en este turno."
+)
 
 
 def _build_pre_delivery_repair_directive(*, attempt: int, reason: str) -> str:
     """Build the bounded instruction shared by every pre-delivery repair path."""
+    if not 1 <= attempt <= _MAX_PRE_DELIVERY_REPAIR_ATTEMPTS:
+        raise ValueError("pre-delivery repair attempt is outside the bounded retry budget")
     research_stages = (
         "Ejecuta la ruta clínica seleccionada y recupera fuentes primarias pertinentes.",
         "Repite la búsqueda con términos equivalentes y proveedores alternativos.",
@@ -35,19 +40,12 @@ def _build_pre_delivery_repair_directive(*, attempt: int, reason: str) -> str:
         "Ejecuta descubrimiento ampliado con índices biomédicos adicionales y verifica las citas.",
     )
     stage = research_stages[min(max(attempt, 1) - 1, len(research_stages) - 1)]
-    if attempt > _MAX_PRE_DELIVERY_REPAIR_ATTEMPTS:
-        stage += (
-            " No te detengas en una abstención: conserva lo respaldado, elimina únicamente "
-            "la precisión no verificable y termina con una sola línea de divulgación si aún "
-            "queda una limitación general."
-        )
+
     repair_contract = {
         "gate": "pre_delivery",
         "action": "repair",
         "attempt": attempt,
-        "mode": (
-            "standard" if attempt <= _MAX_PRE_DELIVERY_REPAIR_ATTEMPTS else "escalated"
-        ),
+        "mode": "standard",
         "reason": (reason or "policy_block")[:_PRE_DELIVERY_REASON_MAX_CHARS],
         "required": (
             "Retén la respuesta anterior. " + stage + " Regenera una respuesta específica "
@@ -212,9 +210,29 @@ def apply_stop_gates(
                 release(final_response)
         else:
             attempt = int(getattr(agent, "_pre_delivery_repair_attempts", 0) or 0)
-            # A policy block is private recovery state, never a user-facing answer.  Crossing
-            # the standard repair threshold escalates the directive but does not publish a
-            # canned refusal or retain one as an exhaustion fallback.
+            # A policy block is private recovery state, never a user-facing answer. Once the
+            # bounded repair budget is exhausted, terminate with a fixed content-free line;
+            # never re-inject another repair directive or publish any text from the decision.
+            if attempt >= _MAX_PRE_DELIVERY_REPAIR_ATTEMPTS:
+                final_response = _PRE_DELIVERY_TERMINAL_RESPONSE
+                final_msg["content"] = final_response
+                final_msg["finish_reason"] = "pre_delivery_repair_exhausted"
+                agent._pre_delivery_output_cache = {
+                    "transformed": True,
+                    "pre_transform": None,
+                    "response_text": final_response,
+                }
+                from agent.clinical_trace import emit
+                emit(agent, "repair", outcome="failed", repair_count=attempt)
+                release = getattr(agent, "_release_pre_delivery_text", None)
+                if callable(release):
+                    release(final_response)
+                return StopGateVerdict(
+                    continue_turn=False,
+                    final_response=final_response,
+                    pending_verification_response=None,
+                    pending_verification_response_previewed=False,
+                )
             agent._pre_delivery_repair_attempts = attempt + 1
             from agent.clinical_trace import emit
             emit(
@@ -235,13 +253,8 @@ def apply_stop_gates(
                 fallback_response=None, fallback_previewed=False,
             )
             logger.info(
-                "pre_delivery repair nudge issued (attempt %d, mode=%s)",
+                "pre_delivery repair nudge issued (attempt %d)",
                 agent._pre_delivery_repair_attempts,
-                (
-                    "standard"
-                    if agent._pre_delivery_repair_attempts <= _MAX_PRE_DELIVERY_REPAIR_ATTEMPTS
-                    else "escalated"
-                ),
             )
             return verdict
 

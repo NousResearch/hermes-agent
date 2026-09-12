@@ -61,12 +61,13 @@ _META_SKILL_LIBRARY_TASK_RE = re.compile(
 )
 _SOFTWARE_ACTION_RE = re.compile(
     r"\b(?:audit\w*|revis\w*|depur\w*|implement\w*|correg\w*|edit\w*|"
-    r"refactor\w*|test\w*|probar)\b",
+    r"refactor\w*|test\w*|probar|verif\w*|valid\w*)\b",
     re.IGNORECASE,
 )
 _SOFTWARE_ARTIFACT_RE = re.compile(
     r"\b(?:plugin|c[oó]digo|code|repo(?:sitorio)?|runtime|hook|tests?|suite|"
-    r"gateway|clasificador|m[oó]dulo|funci[oó]n|archivo|typescript|python|pytest|vitest)\b",
+    r"gateway|clasificador|m[oó]dulo|funci[oó]n|archivo|typescript|python|pytest|vitest|"
+    r"commit|sha|build|deploy|release|bypass\w*|regresi[oó]n\w*|classif\w*|clasific\w*)\b",
     re.IGNORECASE,
 )
 _BUSINESS_WORKFLOW_RE = re.compile(
@@ -114,8 +115,10 @@ _DIRECT_CARE_REQUEST_RE = re.compile(
     r"\b(?:dime|indica|recomienda|prescribe|administra|dar|usar)\b[^\n]{0,80}"
     r"\b(?:dosis|tratamiento|manejo|pauta|apixab|eliquis|rivarox|xarelto|"
     r"enoxapar|lovenox|anticoagul)\w*\b|\bqu[eé]\s+dosis\b|"
+    r"\b(?:debo|deber[ií]a|conviene)\s+(?:suspend\w*|administr\w*|indic\w*|"
+    r"prescrib\w*|oper\w*|trat\w*|reinici\w*|mant\w*|retir\w*|usar\w*)\b|"
     r"\b(?:tratamiento|manejo|dosis|pauta)\w*\b[^\n]{0,80}\b(?:mi|este|esta|el|la|un|una)\s+paciente\b|"
-    r"\b(?:mi|este|esta|el|la|un|una)\s+paciente\b[^\n]{0,80}\b(?:tratamiento|manejo|dosis|pauta)\w*\b",
+    r"\b(?:mi|mis|este|esta|estos|estas|el|la|los|las|un|una)\s+pacientes?\b",
     re.IGNORECASE,
 )
 
@@ -350,11 +353,13 @@ def _is_clinical(message: str) -> bool:
         if (
             _SOFTWARE_ACTION_RE.search(candidate)
             and _SOFTWARE_ARTIFACT_RE.search(candidate)
+            and not _CLINICAL_SUBJECT_RE.search(candidate)
         ):
             return False
         if (
             _SOFTWARE_ACTION_RE.search(candidate)
             and _BUSINESS_WORKFLOW_RE.search(candidate)
+            and not _CLINICAL_SUBJECT_RE.search(candidate)
         ):
             return False
         if (

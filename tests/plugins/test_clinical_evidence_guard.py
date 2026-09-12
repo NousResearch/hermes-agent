@@ -113,9 +113,92 @@ def test_clinical_request_cannot_be_excluded_as_software_workflow(plugin, artifa
     ) is True
 
 
+@pytest.mark.parametrize(
+    "artifact",
+    ("commit", "push", "sha", "build", "deploy", "release", "ci"),
+)
+def test_patient_care_request_cannot_be_excluded_by_technical_term(
+    plugin, artifact
+):
+    assert plugin._is_clinical(
+        f"Revisa el {artifact}: ¿debo suspender apixaban en mi paciente?"
+    ) is True
+
+
+@pytest.mark.parametrize("context", ("release", "marketing"))
+@pytest.mark.parametrize(
+    "care_request",
+    (
+        "¿debo suspender la anticoagulación?",
+        "¿debo suspender su anticoagulación?",
+        "¿debo suspender anticoagulación?",
+        "¿debo administrar el antibiótico?",
+        "¿debo administrar su antibiótico?",
+        "¿debo administrar antibiótico?",
+        "¿debo indicar cefazolina?",
+        "¿debo reiniciar apixaban?",
+        "¿debo operar? El diagnóstico es un hematoma.",
+    ),
+)
+def test_direct_care_request_cannot_be_excluded_without_explicit_patient_noun(
+    plugin, context, care_request
+):
+    prompt = f"Revisa el {context}: {care_request}"
+
+    assert plugin._is_clinical(prompt) is True
+    assert plugin._on_pre_delivery_scope(prompt) is True
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    (
+        "Audit the CI for postoperative mortality.",
+        "Revisa la dosis IV push de cefazolina.",
+    ),
+)
+def test_ambiguous_software_terms_stay_clinical(plugin, prompt):
+    assert plugin._is_clinical(prompt) is True
+
+
 def test_technical_guard_status_report_is_not_clinical(plugin):
     assert plugin._is_clinical(
         "Corregidos los bypasses de clasificación clínica, plugin, gateway y streaming."
+    ) is False
+
+
+def test_adversarial_verification_of_classifier_bypasses_is_not_clinical(plugin):
+    prompt = (
+        "Adversarially verify the latest clinical classification fix has closed "
+        "mixed technical/clinical bypasses without invalidating the benign "
+        "technical release regressions."
+    )
+
+    assert plugin._is_clinical(prompt) is False
+    assert plugin._on_pre_delivery_scope(prompt) is False
+
+
+def test_release_closure_with_reconstruction_word_is_not_clinical(plugin):
+    response = (
+        "La revisión independiente y las particiones restantes siguen ejecutándose; "
+        "el cierre queda condicionado a sus resultados, al commit, al push y a la "
+        "reconstrucción limpia del SHA definitivo."
+    )
+
+    assert plugin._is_clinical(response) is False
+    assert plugin._on_pre_delivery(response_text=response) == {"action": "allow"}
+
+
+def test_continue_technical_release_follow_up_does_not_inherit_clinical_scope(plugin):
+    history = [
+        {
+            "role": "assistant",
+            "content": "Validando el clinical-evidence-guard antes del commit y del push.",
+        }
+    ]
+
+    assert plugin._on_pre_delivery_scope(
+        "Continúa con lo pendiente de la lista original.",
+        conversation_history=history,
     ) is False
 
 

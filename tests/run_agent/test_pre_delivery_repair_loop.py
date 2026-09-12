@@ -65,7 +65,7 @@ def test_pre_delivery_block_continues_same_turn_with_structured_repair(monkeypat
     assert '"reason": "policy_block"' in messages[1]["content"]
 
 
-def test_pre_delivery_threshold_escalates_without_releasing_gate_message(monkeypatch):
+def test_pre_delivery_threshold_terminates_content_free_without_releasing_gate_message(monkeypatch):
     _disable_other_gates(monkeypatch)
     monkeypatch.setattr("agent.turn_finalizer._prepare_output_for_delivery", lambda *_a, **_k: _block())
     messages = []
@@ -73,13 +73,14 @@ def test_pre_delivery_threshold_escalates_without_releasing_gate_message(monkeyp
 
     verdict = _apply(agent, messages)
 
-    assert verdict.continue_turn is True
-    assert verdict.final_response is None
+    assert verdict.continue_turn is False
+    assert verdict.final_response == turn_stop_gates._PRE_DELIVERY_TERMINAL_RESPONSE
     assert verdict.pending_verification_response is None
-    assert agent._pre_delivery_repair_attempts == turn_stop_gates._MAX_PRE_DELIVERY_REPAIR_ATTEMPTS + 1
-    assert not hasattr(agent, "released")
-    assert messages[-1]["content"].startswith("[PRE_DELIVERY_REPAIR]\n")
-    assert '"mode": "escalated"' in messages[-1]["content"]
+    assert agent._pre_delivery_repair_attempts == turn_stop_gates._MAX_PRE_DELIVERY_REPAIR_ATTEMPTS
+    assert agent.released == turn_stop_gates._PRE_DELIVERY_TERMINAL_RESPONSE
+    assert "candidate" not in agent.released
+    assert "safe terminal degradation" not in agent.released
+    assert messages == []
 
 
 def test_pre_delivery_repair_rows_are_never_durable():
@@ -142,9 +143,9 @@ def test_pre_delivery_hook_lookup_error_still_fails_closed(monkeypatch):
 
     verdict = _apply(agent, [])
 
-    assert verdict.continue_turn is True
-    assert verdict.final_response is None
-    assert not hasattr(agent, "released")
+    assert verdict.continue_turn is False
+    assert verdict.final_response == turn_stop_gates._PRE_DELIVERY_TERMINAL_RESPONSE
+    assert agent.released == turn_stop_gates._PRE_DELIVERY_TERMINAL_RESPONSE
 
 
 def test_repair_directive_contains_only_bounded_reason_code(monkeypatch):
@@ -167,12 +168,21 @@ def test_repair_directive_expands_research_route_by_attempt():
             attempt=attempt,
             reason="policy_block",
         )
-        for attempt in range(1, 6)
+        for attempt in range(1, 5)
     ]
 
     assert "ruta clínica seleccionada" in directives[0]
     assert "proveedores alternativos" in directives[1]
     assert "texto completo" in directives[2]
     assert "descubrimiento ampliado" in directives[3]
-    assert '"mode": "escalated"' in directives[4]
-    assert "No te detengas en una abstención" in directives[4]
+    assert '"mode": "standard"' in directives[3]
+
+
+def test_repair_directive_rejects_attempt_beyond_budget():
+    import pytest
+
+    with pytest.raises(ValueError, match="outside the bounded retry budget"):
+        turn_stop_gates._build_pre_delivery_repair_directive(
+            attempt=turn_stop_gates._MAX_PRE_DELIVERY_REPAIR_ATTEMPTS + 1,
+            reason="policy_block",
+        )

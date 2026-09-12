@@ -32,12 +32,16 @@ _PROPERTIES: Dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
+            "request_handoff",
+            "wait_for_human",
         ],
         "description": (
             "Which action to perform. `capture` is free (no side effects). All other actions "
             "require approval unless auto-approved. Use `set_value` for select/popup elements and "
             "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal)."
+            "focus steal). When a login, 2FA, CAPTCHA or payment step needs the human, call "
+            "`request_handoff` (with `reason`) so they can take over this screen from the Hermes "
+            "Desktop app, then `wait_for_human`; while they hold control every other action is refused."
         ),
     },
     "mode": {
@@ -141,13 +145,14 @@ _PROPERTIES: Dict[str, Any] = {
         ),
     },
     "text": {"type": "string", "description": "Text to type (respects the current layout)."},
+    "reason": {"type": "string", "description": "request_handoff: one sentence telling the human what to do on the screen (e.g. 'Sign in to LinkedIn and complete 2FA')."},
     "keys": {
         "type": "string",
         "description": (
             "Key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return', 'escape', 'tab'. Use '+' to combine."
         ),
     },
-    "seconds": {"type": "number", "description": "Seconds to wait. Max 30."},
+    "seconds": {"type": "number", "description": "wait: seconds to pause (max 30). wait_for_human: how long to block for the hand-back (default 600, max 1800)."},
     "raise_window": {
         "type": "boolean",
         "description": (

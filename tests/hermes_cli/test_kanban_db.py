@@ -442,6 +442,29 @@ def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("result", ["GATE_FAIL", "PORTABLE_GATE_FAIL"])
+def test_terminal_gate_failure_parent_does_not_promote_child(kanban_home, result):
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="failed gate")
+        child = kb.create_task(conn, title="dependent", parents=[parent])
+
+        assert kb.complete_task(conn, parent, result=result)
+
+        assert kb.get_task(conn, child).status == "todo"
+        assert not kb._parents_satisfied(conn, child)
+
+
+def test_terminal_successful_parent_promotes_child(kanban_home):
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="successful parent")
+        child = kb.create_task(conn, title="dependent", parents=[parent])
+
+        assert kb.complete_task(conn, parent, result="PORTABLE_GATE_PASS")
+
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb._parents_satisfied(conn, child)
+
+
 
 
 

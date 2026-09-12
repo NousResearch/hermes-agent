@@ -2030,12 +2030,7 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?", (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if _parents_satisfied(conn, task_id):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
@@ -2069,14 +2064,16 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
 # --- Claim / complete / block ---
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return whether every direct parent is terminal for dependency gating."""
+    """Return whether every direct parent completed without a gate failure."""
     return conn.execute(
         # Check if this task has children that still need the workspace. If any child is not yet
         # done/archived, defer cleanup so the child can read handoff artifacts from the workspace (#33774).
         "SELECT 1 FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
         "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
+        "AND (p.status NOT IN ('done', 'archived') "
+        "OR p.result = 'GATE_FAIL' "
+        "OR substr(p.result, -10) = '_GATE_FAIL') LIMIT 1", (task_id,),
     ).fetchone() is None
 
 

@@ -301,10 +301,10 @@ export interface ThemeSeeds {
 }
 
 const DIFF_DARK = {
-  diffAdded: 'rgb(220,255,220)',
-  diffRemoved: 'rgb(255,220,220)',
-  diffAddedWord: 'rgb(36,138,61)',
-  diffRemovedWord: 'rgb(207,34,46)'
+  diffAdded: 'rgb(20,90,20)',
+  diffRemoved: 'rgb(120,20,20)',
+  diffAddedWord: 'rgb(255,255,255)',
+  diffRemovedWord: 'rgb(255,255,255)'
 }
 
 const DIFF_LIGHT = {

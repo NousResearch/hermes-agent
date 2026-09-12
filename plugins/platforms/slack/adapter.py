@@ -672,6 +672,8 @@ def _slack_per_request_proxy_middleware(proxy_url: Optional[str]) -> Callable[..
 _SOCKET_CLIENT_TASK_ATTRS = ("current_session_monitor", "message_processor", "message_receiver")
 # Teardown wait cap: a task wedged in a network call must not hold up shutdown.
 _SOCKET_TASK_CANCEL_TIMEOUT_S = 3.0
+# close_async() can hang inside aiohttp session/disconnect; must not hold the reconnect lock.
+_SOCKET_HANDLER_CLOSE_TIMEOUT_S = 3.0
 
 
 async def _cancel_socket_tasks(tasks: Any) -> None:
@@ -1111,7 +1113,13 @@ class SlackAdapter(BasePlatformAdapter):
             [task] + [getattr(client, attr, None) for attr in _SOCKET_CLIENT_TASK_ATTRS])
         if handler is not None:
             try:
-                await handler.close_async()
+                await asyncio.wait_for(
+                    handler.close_async(), timeout=_SOCKET_HANDLER_CLOSE_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Slack] Socket Mode handler close timed out after %.1fs; "
+                    "continuing reconnect with a new handler",
+                    _SOCKET_HANDLER_CLOSE_TIMEOUT_S)
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning(
                     "[Slack] Error while closing Socket Mode handler: %s", e, exc_info=True)
@@ -1150,6 +1158,18 @@ class SlackAdapter(BasePlatformAdapter):
             return False
         return (time.time() - last) > (ping_interval * self._socket_ping_stale_factor)
 
+    def _socket_session_closed(self) -> bool:
+        """True when the current handler's aiohttp session is already closed.
+
+        Fail-open: missing client/session or unreadable ``closed`` is not a restart signal.
+        ``is_connected()`` can still lie after the session is gone (#106849).
+        """
+        session = getattr(
+            getattr(self._handler, "client", None), "aiohttp_client_session", None)
+        if session is None:
+            return False
+        return getattr(session, "closed", None) is True
+
     async def _restart_socket_mode(self, reason: str) -> None:
         """Reconnect Socket Mode without rebuilding adapter state."""
         if not self._running:
@@ -1182,6 +1202,9 @@ class SlackAdapter(BasePlatformAdapter):
                 connected = await self._socket_transport_connected()
                 if connected is False:
                     await self._restart_socket_mode("transport disconnected")
+                elif self._socket_session_closed():
+                    # Session already closed while is_connected() still lies or is opaque.
+                    await self._restart_socket_mode("session closed")
                 elif self._socket_ping_pong_stale():
                     # is_connected() can lie on a closed session; staleness catches the zombie.
                     await self._restart_socket_mode("ping/pong stale")

@@ -151,6 +151,95 @@ class TestBlockingGatewayApproval:
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
 
+    def test_approval_resolution_correlates_by_tool_use_id(self):
+        """P2.a: a tap carrying the SDK prompt correlator resolves the
+        MATCHING pending entry — with parallel prompts, FIFO let tapping
+        prompt B's button grant prompt A (tap-B-grants-A misroute)."""
+        from tools.approval import resolve_gateway_approval, _gateway_queues
+        from tools.approval_gateway_wait import _ApprovalEntry
+        session_key = "test-correlate"
+        e1 = _ApprovalEntry({"command": "Bash(a)", "tool_use_id": "toolu_A"})
+        e2 = _ApprovalEntry({"command": "Bash(b)", "tool_use_id": "toolu_B"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        count = resolve_gateway_approval(
+            session_key, "once", tool_use_id="toolu_B"
+        )
+        assert count == 1
+        assert e2.event.is_set()
+        assert e2.result == "once"
+        # The OLDER prompt stays pending — queue[0] was not grabbed.
+        assert not e1.event.is_set()
+        assert e1.result is None
+        assert _gateway_queues[session_key] == [e1]
+
+    def test_fifo_fallback_without_id_is_logged(self, caplog):
+        """Id-less resolutions (text /approve, stale pre-deploy buttons,
+        non-SDK surfaces) keep FIFO — and every single-pop fallback is
+        logged: that line is the only observability left for the misroute
+        class the correlator kills."""
+        import logging
+
+        from tools.approval import resolve_gateway_approval, _gateway_queues
+        from tools.approval_gateway_wait import _ApprovalEntry
+        session_key = "test-fifo-logged"
+        e1 = _ApprovalEntry({"command": "Bash(a)", "tool_use_id": "toolu_A"})
+        e2 = _ApprovalEntry({"command": "Bash(b)", "tool_use_id": "toolu_B"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        with caplog.at_level(logging.INFO, logger="tools.approval"):
+            count = resolve_gateway_approval(session_key, "once")
+        assert count == 1
+        assert e1.event.is_set()  # oldest resolved
+        assert not e2.event.is_set()
+        assert any(
+            "FIFO fallback" in r.getMessage()
+            and session_key in r.getMessage()
+            and "pending=2" in r.getMessage()
+            for r in caplog.records
+        ), "the FIFO fallback must be logged with session + pending count"
+
+    def test_unregister_sets_explicit_expired_result(self):
+        """W11: turn teardown stamps pending entries "expired" — signaling
+        with an unset result let wait loops read teardown as a deny,
+        fabricating user-attributed denials for prompts nobody answered.
+        A result that raced in ahead of teardown is kept."""
+        from tools.approval import register_gateway_notify, unregister_gateway_notify, _gateway_queues
+        from tools.approval_gateway_wait import _ApprovalEntry
+        session_key = "test-teardown-expired"
+        register_gateway_notify(session_key, lambda d: None)
+        pending = _ApprovalEntry({"command": "a"})
+        raced = _ApprovalEntry({"command": "b"})
+        raced.result = "once"  # resolved just before teardown
+        _gateway_queues[session_key] = [pending, raced]
+
+        unregister_gateway_notify(session_key)
+
+        assert pending.event.is_set()
+        assert pending.result == "expired"
+        assert raced.event.is_set()
+        assert raced.result == "once"
+        assert session_key not in _gateway_queues
+
+    def test_unknown_tool_use_id_resolves_nothing(self):
+        """A tap whose correlator matches nothing pending (already resolved
+        or expired) resolves ZERO entries — never queue[0]; the stale-tap
+        rendering (count == 0) keeps working."""
+        from tools.approval import resolve_gateway_approval, _gateway_queues
+        from tools.approval_gateway_wait import _ApprovalEntry
+        session_key = "test-no-match"
+        e1 = _ApprovalEntry({"command": "Bash(a)", "tool_use_id": "toolu_A"})
+        e2 = _ApprovalEntry({"command": "Bash(b)", "tool_use_id": "toolu_B"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        count = resolve_gateway_approval(
+            session_key, "once", tool_use_id="toolu_GONE"
+        )
+        assert count == 0
+        assert not e1.event.is_set() and e1.result is None
+        assert not e2.event.is_set() and e2.result is None
+        assert _gateway_queues[session_key] == [e1, e2]
+
 
 # ------------------------------------------------------------------
 # /approve command

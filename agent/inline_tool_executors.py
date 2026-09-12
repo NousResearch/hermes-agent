@@ -39,6 +39,7 @@ def emit_terminal_post_tool_call(
     error_type: Optional[str] = None,
     error_message: Optional[str] = None,
     middleware_trace: Optional[list] = None,
+    hook_ids: Optional[Dict[str, str]] = None,
 ) -> None:
     """Emit the one terminal ``post_tool_call`` hook for a tool_call_id (best-effort)."""
     try:
@@ -47,7 +48,7 @@ def emit_terminal_post_tool_call(
             function_name=function_name,
             function_args=function_args,
             result=result,
-            **tool_hook_ids(agent, effective_task_id, tool_call_id),
+            **(hook_ids or tool_hook_ids(agent, effective_task_id, tool_call_id)),
             duration_ms=duration_ms,
             status=status,
             error_type=error_type,
@@ -65,6 +66,7 @@ class InlineToolContext:
     effective_task_id: str
     tool_call_id: Optional[str] = None
     messages: Optional[list] = None
+    session_id: str = ""
 
 
 InlineToolExecutor = Callable[[Any, dict, InlineToolContext], Any]
@@ -107,7 +109,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("window", "window", 5), ("sort", "sort"), ("profile", "profile"),
             ("detail", "detail", "adaptive"),
         ),
-        db=session_db, current_session_id=agent.session_id,
+        db=session_db, current_session_id=ctx.session_id or agent.session_id,
     )
 
 

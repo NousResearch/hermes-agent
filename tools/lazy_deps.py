@@ -20,6 +20,7 @@ import site
 import subprocess
 import sys
 import sysconfig
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -27,6 +28,11 @@ from typing import Any, Callable, Optional
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
+
+# pip mutates one shared environment. Even different lazy features must not
+# install concurrently, and same-feature contenders must recheck after the
+# first install completes rather than replaying a stale `missing` snapshot.
+_INSTALL_LOCK = threading.Lock()
 
 
 # Allowlist: "namespace.backend" -> pip specs matching the pyproject extra. Pins are exact
@@ -36,6 +42,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Inference providers ───────────────────────────────────────────────
     # Native Anthropic SDK (provider=anthropic; aggregators use the openai SDK).
     "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
+    # Official Claude Agent SDK (provider=claude-agent-sdk, subscription-OAuth agent loop); bump with the
+    # `claude-agent-sdk` extra in lockstep.
+    "provider.claude_agent_sdk": ("claude-agent-sdk==0.2.144",),
     "provider.bedrock": ("boto3==1.42.89",),
     # Vertex OAuth2 token minting; google-auth is NOT in [all] on purpose.
     "provider.vertex": (
@@ -594,22 +603,28 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             raise FeatureUnavailable(feature, missing, f"refusing to install unsafe spec {spec!r}")
     if not _allow_lazy_installs():
         raise FeatureUnavailable(feature, missing, "lazy installs disabled (security.allow_lazy_installs=false)")
-    if prompt and not _prompt_toolkit_active() and sys.stdin.isatty() and sys.stdout.isatty():
-        try:
-            answer = input(f"\nFeature {feature!r} requires: {', '.join(missing)}\nInstall into the active venv now? [Y/n] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            answer = "n"
-        if answer and answer not in {"y", "yes"}:
-            raise FeatureUnavailable(feature, missing, "user declined install at prompt")
-    logger.info("Lazy-installing %s for feature %r", " ".join(missing), feature)
-    result = _venv_pip_install(missing)
-    if not result.success:  # surface pip's own error (quarantine 404, network), tail-clipped
-        snippet = (result.stderr or result.stdout or "").strip()[-2000:]
-        raise FeatureUnavailable(feature, missing, f"pip install failed: {snippet or 'no error output'}")
-    _invalidate_import_caches()
-    if still_missing := feature_missing(feature):
-        raise FeatureUnavailable(feature, still_missing, "install reported success but packages still not importable (may require Python restart)")
-    logger.info("Lazy install complete for feature %r", feature)
+    with _INSTALL_LOCK:
+        # A contender that waited must not replay a stale `missing` snapshot: re-resolve under the lock so
+        # only one pip process acts on a given missing dependency set.
+        missing = feature_missing(feature)
+        if not missing:
+            return
+        if prompt and not _prompt_toolkit_active() and sys.stdin.isatty() and sys.stdout.isatty():
+            try:
+                answer = input(f"\nFeature {feature!r} requires: {', '.join(missing)}\nInstall into the active venv now? [Y/n] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
+            if answer and answer not in {"y", "yes"}:
+                raise FeatureUnavailable(feature, missing, "user declined install at prompt")
+        logger.info("Lazy-installing %s for feature %r", " ".join(missing), feature)
+        result = _venv_pip_install(missing)
+        if not result.success:  # surface pip's own error (quarantine 404, network), tail-clipped
+            snippet = (result.stderr or result.stdout or "").strip()[-2000:]
+            raise FeatureUnavailable(feature, missing, f"pip install failed: {snippet or 'no error output'}")
+        _invalidate_import_caches()
+        if still_missing := feature_missing(feature):
+            raise FeatureUnavailable(feature, still_missing, "install reported success but packages still not importable (may require Python restart)")
+        logger.info("Lazy install complete for feature %r", feature)
 
 
 def is_available(feature: str) -> bool:
@@ -659,7 +674,8 @@ def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> 
     display = "uv pip install " + (f"--target {target} " if target is not None else "") + " ".join(cleaned)
     logger.info("Installing pip specs %s (target=%s)", " ".join(cleaned), target or "venv")
     try:
-        result = _venv_pip_install(cleaned, timeout=timeout)
+        with _INSTALL_LOCK:
+            result = _venv_pip_install(cleaned, timeout=timeout)
     except Exception as exc:
         logger.warning("install_specs failed unexpectedly: %s", exc)
         return InstallSpecsResult(ok=False, command=display, stderr=f"install failed: {exc}")

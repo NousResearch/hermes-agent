@@ -4288,6 +4288,10 @@ def _resolve_auto_route(
     runtime = _normalize_main_runtime(main_runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
     main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
+    if api_mode == "claude_agent_sdk":
+        from agent.claude_sdk_aux_client import resolve_auto_route as _sdk_auto_route
+
+        return _sdk_auto_route(main_model)
     routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
     if routed is not None:
         return routed
@@ -4313,10 +4317,6 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
     return str(fallback or "")
 
 
-# Centralized Provider Router: resolve_provider_client() is the single entry point for building a configured
-# client (auth, base URL, headers, API format) from (provider, model). Never read auth env vars ad-hoc.
-
-
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Sync client → async counterpart, preserving Codex routing (``is_vision`` adds the Copilot vision header)."""
     from openai import AsyncOpenAI
@@ -4328,6 +4328,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     if isinstance(sync_client, BedrockAuxiliaryClient):
         return AsyncBedrockAuxiliaryClient(sync_client), model
+    with contextlib.suppress(ImportError):
+        from agent.claude_sdk_aux_client import async_client_for as _sdk_async_client_for
+
+        sdk_async = _sdk_async_client_for(sync_client)
+        if sdk_async is not None:
+            return sdk_async, model
     with contextlib.suppress(ImportError):
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
         if isinstance(sync_client, GeminiNativeClient):
@@ -4943,10 +4949,18 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
     return _route_client(req, client, final_model) if client is not None else (None, None)
 
 
+def _resolve_claude_agent_sdk_branch(req: _ResolveRequest) -> _ResolveResult:
+    """Subscription-owned Agent SDK auxiliary facade; policy lives in agent.claude_sdk_aux_client."""
+    from agent.claude_sdk_aux_client import resolve_branch
+
+    return resolve_branch(req)
+
+
 # Explicit providers with a dedicated branch; anything else falls through to named custom
 # providers → azure-foundry → PROVIDER_REGISTRY (order preserved from the original if-chain).
 _EXPLICIT_PROVIDER_BRANCHES: Dict[str, Callable[[_ResolveRequest], _ResolveResult]] = {
     "auto": _resolve_auto_branch,
+    "claude-agent-sdk": _resolve_claude_agent_sdk_branch,
     "openrouter": _resolve_openrouter_branch,
     "nous": _resolve_nous_branch,
     "openai-codex": _resolve_openai_codex_branch,
@@ -6774,6 +6788,10 @@ def _prepare_aux_request(
         resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
     )
+    if _effective_provider_for_client(client, resolved_provider) == "claude-agent-sdk":
+        # An auto-resolved SDK client belongs to the user's subscription; retain that
+        # concrete identity so no recovery rung can bridge it to a metered route.
+        resolved_provider = "claude-agent-sdk"
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
     if not async_mode:
@@ -7412,6 +7430,10 @@ def _call_llm_impl(
                     _last_transient = retry_transient
             raise _last_transient
     except Exception as first_err:
+        if request_provider == "claude-agent-sdk":
+            # The facade is subscription-scoped; a failure is terminal for
+            # this request and must not open a metered recovery route.
+            raise
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
@@ -7561,6 +7583,10 @@ async def _async_call_llm_impl(
                         "once on the same provider before fallback: %s", task or "call", transient_err)
             return await _primary()
     except Exception as first_err:
+        if request_provider == "claude-agent-sdk":
+            # The facade is subscription-scoped; a failure is terminal for
+            # this request and must not open a metered recovery route.
+            raise
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":

@@ -115,8 +115,9 @@ def prepare_iteration(
         except Exception as _step_err:
             logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
 
-    # Tool-calling iterations for the skill nudge; resets whenever skill_manage is used.
-    if agent._skill_nudge_interval > 0 and "skill_manage" in agent.valid_tool_names:
+    # Review cadence is independent of foreground skill_manage exposure: a
+    # routed review runtime may own the actual write surface.
+    if agent._skill_nudge_interval > 0:
         agent._iters_since_skill += 1
 
     # Nous agent keys live ~1 h and a single turn can run for hours: adopt the keepalive's fresh
@@ -295,6 +296,9 @@ class IterationStart:
     api_call_count: Any
     interrupted: Any
     _turn_exit_reason: Any
+    # False when this iteration is the budget grace call (its flag was consumed instead), so a
+    # route that performs no request re-arms the grace call rather than refunding the budget.
+    _iteration_budget_consumed: bool
 
 
 def begin_iteration(
@@ -308,11 +312,13 @@ def begin_iteration(
         _apply_active_turn_redirect, _review_input_budget_exhausted
     )
 
+    budget_consumed = False
+
     def _verdict(action: str) -> IterationStart:
         return IterationStart(
             action=action, original_user_message=original_user_message,
             api_call_count=api_call_count, interrupted=interrupted,
-            _turn_exit_reason=_turn_exit_reason,
+            _turn_exit_reason=_turn_exit_reason, _iteration_budget_consumed=budget_consumed,
         )
 
     _redirect_text = agent._drain_pending_redirect()
@@ -356,7 +362,9 @@ def begin_iteration(
         # Exhaustion retains one toolless grace call regardless of whether an opt-in
         # checkpoint was emitted; the warning never extends the hard budget.
         agent._budget_grace_call = False
-    elif not agent.iteration_budget.consume():
+    elif agent.iteration_budget.consume():
+        budget_consumed = True
+    else:
         _turn_exit_reason = "budget_exhausted"
         if not agent.quiet_mode:
             agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
@@ -377,6 +385,7 @@ class RetryRestartVerdict:
     retry_count: Any
     restart_count: Any
     api_call_count: Any
+    _provider_fallback_call_refunds: Any
     _preflight_compression_blocked: Any
     _turn_exit_reason: Any
 
@@ -387,6 +396,7 @@ def apply_retry_restarts(
     final_response: Any, retry_count: Any, max_retries: Any, api_call_count: Any,
     restart_count: Any, length_continue_retries: Any,
     _preflight_compression_blocked: Any, _turn_exit_reason: Any,
+    _provider_fallback_call_refunds: Any = 0,
 ) -> RetryRestartVerdict:
     """Consume the ``TurnRetryState`` restart flags after the retry loop, in the original
     priority order. Refunds the iteration budget/count for restarts that produced no valid
@@ -407,6 +417,7 @@ def apply_retry_restarts(
             action=action, current_turn_user_idx=current_turn_user_idx,
             final_response=final_response, retry_count=retry_count, restart_count=restart_count,
             api_call_count=api_call_count,
+            _provider_fallback_call_refunds=_provider_fallback_call_refunds,
             _preflight_compression_blocked=_preflight_compression_blocked,
             _turn_exit_reason=_turn_exit_reason,
         )
@@ -485,6 +496,7 @@ def apply_retry_restarts(
         # A stall/failure escalated to the fallback chain: re-issue against the
         # active fallback provider, refunding budget/count for the stalled attempt.
         api_call_count -= 1
+        _provider_fallback_call_refunds += 1
         agent.iteration_budget.refund()
         _retry.restart_with_rebuilt_messages = False
         # Failover shrank the compressor window: clear the preflight block so

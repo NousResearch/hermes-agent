@@ -6,6 +6,19 @@ Interview → SOUL draft → human sign-off → scaffold → child's Bot Chat (f
 
 You draft. The child earns. If you fill `MEMORY.md`, you faked the training loop.
 
+## Installation root
+
+Before any write, discover the root through the same Hermes CLI that owns this session. `hermes -p default config path` uses Hermes's root resolver even from a named profile; it respects custom homes. Do not overwrite `HERMES_HOME` before discovery.
+
+```bash
+unset hermes_root
+root_config="$(hermes -p default config path)" &&
+hermes_root="$(python3 -c 'from pathlib import Path; import sys; p = Path(sys.argv[1]); assert p.is_absolute() and p.name == "config.yaml", "unexpected config path"; print(p.resolve().parent)' "$root_config")" &&
+test -d "$hermes_root"
+```
+
+If any step fails, stop. Verify the resolved root is the intended installation before creating profiles, writing config/SOUL/memory, or linking skills. Never fall back to another installation or create a replacement root to make a missing path work. `hermes_root` is a local shell variable, not a new Hermes setting; resolve it again in a fresh shell. File tools and persisted instructions need the concrete absolute path, not the literal variable. Keep the default SOUL at that root off-limits. Do not change approval settings to perform this discovery or provisioning.
+
 ## Independence
 
 If the bot operates a service — CLI, HTTP API, GUI control socket, ComfyUI, whatever — **do not run the bot on that service's inference path.**
@@ -39,32 +52,32 @@ hermes honcho sync
 hermes -p NAME config set memory.provider honcho
 ```
 
-Verify `hermes honcho peers` shows the profile with a real user peer (not `(not set)`). If `hermes honcho --target-profile NAME status` says not connected, inherit `apiKey`/`baseUrl`/`requestTimeout` from host `hermes` into `hermes_<name>` in `~/.hermes/honcho.json`. Do not print them. Docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/memory-providers#new-profile-fresh-honcho-peer
+Verify `hermes honcho peers` shows the profile with a real user peer (not `(not set)`). If `hermes honcho --target-profile NAME status` says not connected, inherit `apiKey`/`baseUrl`/`requestTimeout` from host `hermes` into `hermes_<name>` in `$hermes_root/honcho.json`. Do not print them. Docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/memory-providers#new-profile-fresh-honcho-peer
 
 ## Scaffold sequence
 
 Alias preflight (next section) first, then:
 
 ```text
-HERMES_HOME="$HOME/.hermes" hermes profile create NAME --no-skills --description "one or two sentences"
-HERMES_HOME="$HOME/.hermes" hermes -p NAME config set model.provider <provider>
-HERMES_HOME="$HOME/.hermes" hermes -p NAME config set model.default <model>
-HERMES_HOME="$HOME/.hermes" hermes -p NAME config unset model.base_url
-HERMES_HOME="$HOME/.hermes" hermes -p NAME config unset model.api_key
-HERMES_HOME="$HOME/.hermes" hermes profile describe NAME --text "same one or two sentences"
+HERMES_HOME="${hermes_root:?resolve installation root first}" hermes profile create NAME --no-skills --description "one or two sentences"
+HERMES_HOME="${hermes_root:?resolve installation root first}" hermes -p NAME config set model.provider <provider>
+HERMES_HOME="${hermes_root:?resolve installation root first}" hermes -p NAME config set model.default <model>
+HERMES_HOME="${hermes_root:?resolve installation root first}" hermes -p NAME config unset model.base_url
+HERMES_HOME="${hermes_root:?resolve installation root first}" hermes -p NAME config unset model.api_key
+HERMES_HOME="${hermes_root:?resolve installation root first}" hermes profile describe NAME --text "same one or two sentences"
 ```
 
 Site-specific follow-ups — ours, shown as worked examples; adapt or delete (details above):
 
 ```text
 # external peer bridge:
-HERMES_HOME="$HOME/.hermes" hermes -p NAME peer add <peer> --url <peer-url> --key "$(head -1 <keyfile>)"
+HERMES_HOME="${hermes_root:?resolve installation root first}" hermes -p NAME peer add <peer> --url <peer-url> --key "$(head -1 <keyfile>)"
 # Honcho memory provider:
-HERMES_HOME="$HOME/.hermes" hermes honcho sync
-HERMES_HOME="$HOME/.hermes" hermes -p NAME config set memory.provider honcho
+HERMES_HOME="${hermes_root:?resolve installation root first}" hermes honcho sync
+HERMES_HOME="${hermes_root:?resolve installation root first}" hermes -p NAME config set memory.provider honcho
 ```
 
-The `HERMES_HOME` prefix matters: inside a named profile `$HERMES_HOME` is `~/.hermes/profiles/<name>`, not `~/.hermes` — unprefixed sibling CLI (`profile create`, `-p NAME config`, `profile describe`) can hit the wrong home. Canonical skills stay under `$HOME/.hermes/skills/`.
+Inside a named profile `$HERMES_HOME` is `$hermes_root/profiles/<name>`. Hermes already resolves sibling profiles against their installation root; the explicit prefixes above pin commands to the verified root rather than replacing it with a hardcoded default. Canonical skills stay under `$hermes_root/skills/`.
 
 `hermes profile describe` writes the roster one-liner (`profile.yaml`) other bots read — not a group-chat log. It does not set the display **title**, which lives in `profile.yaml`: write `ui_meta.hermes-bots.title` there after describe (`config get ui_meta` reads empty until then). And don't "fix" `config get toolsets` off the wrapper key — the spec list is `platform_toolsets.cli`.
 
@@ -90,9 +103,9 @@ Extra skills are context tax and off-mission bait. Three is already a lot (`botm
 
 ## Shared skills (file-level links)
 
-Canonical tree: `~/.hermes/skills/<category>/<name>/` (default Hermes loads this).
+Canonical tree: `$hermes_root/skills/<category>/<name>/` (default Hermes loads this).
 
-Profile path: `~/.hermes/profiles/<bot>/skills/<category>/<name>/` — **real directories**, every *file* a relative symlink.
+Profile path: `$hermes_root/profiles/<bot>/skills/<category>/<name>/` — **real directories**, every *file* a relative symlink.
 
 Never symlink the skill directory itself. Hermes venv is Python 3.11; `Path.rglob("SKILL.md")` does not descend directory symlinks → empty index → the bot cannot see the skill. File-level `SKILL.md` inside a real dir **is** found.
 
@@ -101,12 +114,12 @@ Never symlink the skill directory itself. Hermes venv is Python 3.11; `Path.rglo
 Linker (this skill):
 
 ```text
-python3 "$HOME/.hermes/skills/autonomous-ai-agents/botmaker/scripts/link_skill_tree.py" \
-  "$HOME/.hermes/skills/<category>/<name>" \
-  "$HOME/.hermes/profiles/<bot>/skills/<category>/<name>"
+python3 "${hermes_root:?resolve installation root first}/skills/autonomous-ai-agents/botmaker/scripts/link_skill_tree.py" \
+  "$hermes_root/skills/<category>/<name>" \
+  "$hermes_root/profiles/<bot>/skills/<category>/<name>"
 ```
 
-Writes through the profile path hit the same inode. If a rewrite unlinks first, `ls -l` shows a regular file instead of `l` — that is a second copy starting again. Relink; do not keep both. `skill_manage` patch on a linked `SKILL.md` does that unlink — patch canonical with the file `patch` tool instead. `skill_manage` `file_path` and `skill_view(..., file_path=…)` on `references/` both fail: `Path.resolve()` follows the file symlink into `~/.hermes/skills/…`, then `relative_to` the profile skill dir rejects it. Workaround: `read_file` the canonical path. Do not tell bots to `skill_view` linked references until Hermes allows it.
+Writes through the profile path hit the same inode. If a rewrite unlinks first, `ls -l` shows a regular file instead of `l` — that is a second copy starting again. Relink; do not keep both. `skill_manage` patch on a linked `SKILL.md` does that unlink — patch canonical with the file `patch` tool instead. `skill_manage` `file_path` and `skill_view(..., file_path=…)` on `references/` both fail: `Path.resolve()` follows the file symlink into `$hermes_root/skills/…`, then `relative_to` the profile skill dir rejects it. Workaround: `read_file` the canonical path. Do not tell bots to `skill_view` linked references until Hermes allows it.
 
 Child `SOUL.md` writes: the gate is the signature — mechanics in `soul-craft.md` §Human gate.
 

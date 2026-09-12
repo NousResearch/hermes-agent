@@ -23,6 +23,8 @@ Load your notes skill (if you have one) for filesystem conventions. This file is
 
 Exceptions are dated and expire; none should stay active. (Ours: botmaker's own note briefly existed as *certification pending* during bootstrap. Do not copy that onto children.)
 
+The drift checker verifies rostered profiles exist in the selected installation. It does not require every profile to be rostered: certification determines membership, not directory discovery. Add the new specialist's row as part of the post-certification checklist.
+
 ## Notes
 
 | Note | Frontmatter | Role |
@@ -50,7 +52,7 @@ The roster table on `making-bots.md` is the fleet-state source of truth — whic
 
 ## One home per rule
 
-Every rule has exactly one home — method in the skill tree (`~/.hermes/skills/autonomous-ai-agents/botmaker/`, write the canonical path; profile files are symlinks), fleet state in the roster table on `Bots/making-bots.md`, history in its changelog. When a lesson lands, patch its one owner and add one changelog line naming that owner.
+Every rule has exactly one home — method in the skill tree (`$hermes_root/skills/autonomous-ai-agents/botmaker/`, write the canonical path; profile files are symlinks), fleet state in the roster table on `Bots/making-bots.md`, history in its changelog. When a lesson lands, patch its one owner and add one changelog line naming that owner.
 
 If `making-bots.md` is fresher than this tree, backport before adding anything new — lockstep failed one-directionally for us until we adopted this rule.
 

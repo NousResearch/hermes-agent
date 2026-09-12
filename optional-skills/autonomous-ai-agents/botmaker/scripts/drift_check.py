@@ -3,7 +3,7 @@
 
 Run after every mint and every doc patch:
 
-    python3 ~/.hermes/skills/autonomous-ai-agents/botmaker/scripts/drift_check.py
+    python3 /path/to/botmaker/scripts/drift_check.py --hermes-root /path/to/hermes-home
 
 Exit 0 = clean. Nonzero = drift; each violation prints on its own line.
 
@@ -11,8 +11,8 @@ Checks:
   1. Owner-only markers: mechanics phrases live only in their owner file.
   2. Forbidden strings (frozen enumerations, retired premises) are absent
      from the live scope (skill tree + botmaker profile SOUL/memories).
-  3. The specialist roster table in the vault's making-bots.md matches the
-     profiles that actually exist under ~/.hermes/profiles/. Point the
+  3. Every specialist roster entry names an existing profile in the selected
+     Hermes root. Non-specialists and uncertified profiles need no row. Point the
      BOTMAKER_VAULT_GUIDE env var at your vault's Bots/making-bots.md;
      the check is skipped (with a warning) if it is not set.
   4. Botmaker's profile skill links are file-level symlinks and rglob
@@ -25,28 +25,11 @@ Extend OWNER_ONLY / FORBIDDEN as your fleet earns its own rules.
 """
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import sys
 from pathlib import Path
-
-HOME = Path.home()
-SKILL_TREE = HOME / ".hermes/skills/autonomous-ai-agents/botmaker"
-PROFILE = HOME / ".hermes/profiles/botmaker"
-PROFILES_DIR = HOME / ".hermes/profiles"
-VAULT_GUIDE = Path(os.environ["BOTMAKER_VAULT_GUIDE"]) if os.environ.get("BOTMAKER_VAULT_GUIDE") else None
-
-SKILL_DOCS = [
-    SKILL_TREE / "SKILL.md",
-    SKILL_TREE / "references/process.md",
-    SKILL_TREE / "references/soul-craft.md",
-    SKILL_TREE / "references/vault.md",
-]
-PROFILE_DOCS = [
-    PROFILE / "SOUL.md",
-    PROFILE / "memories/MEMORY.md",
-    PROFILE / "memories/USER.md",
-]
 
 # Phrase -> the one file (relative to the skill tree) allowed to contain it.
 OWNER_ONLY = {
@@ -69,15 +52,36 @@ ROSTER_ROW = re.compile(r"^\|\s*`@[\w-]+`\s*\|\s*`([\w-]+)`\s*\|")
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--hermes-root", required=True, type=Path,
+        help="Verified installation root, not a named profile's home",
+    )
+    args = parser.parse_args()
+    if not args.hermes_root.is_absolute() or not args.hermes_root.is_dir():
+        parser.error("--hermes-root must be an existing absolute directory")
+    # Explicit scope: never silently inspect a different installation under HOME.
+    hermes_root = args.hermes_root.resolve()
+    skill_tree = hermes_root / "skills/autonomous-ai-agents/botmaker"
+    profiles_dir = hermes_root / "profiles"
+    profile = profiles_dir / "botmaker"
+    vault_guide = os.environ.get("BOTMAKER_VAULT_GUIDE")
+    vault_guide = Path(vault_guide) if vault_guide else None
+    skill_docs = [skill_tree / name for name in (
+        "SKILL.md", "references/process.md", "references/soul-craft.md", "references/vault.md",
+    )]
+    profile_docs = [profile / name for name in (
+        "SOUL.md", "memories/MEMORY.md", "memories/USER.md",
+    )]
     errors: list[str] = []
 
     docs: dict[Path, str] = {}
-    for path in SKILL_DOCS:
+    for path in skill_docs:
         if not path.exists():
             errors.append(f"missing file: {path}")
             continue
         docs[path] = path.read_text(encoding="utf-8")
-    for path in PROFILE_DOCS:
+    for path in profile_docs:
         if path.exists():
             docs[path] = path.read_text(encoding="utf-8")
 
@@ -89,7 +93,7 @@ def main() -> int:
             if phrase not in text:
                 continue
             try:
-                rel = str(path.relative_to(SKILL_TREE))
+                rel = path.relative_to(skill_tree).as_posix()
             except ValueError:
                 rel = str(path)
             if rel in allowed:
@@ -106,27 +110,25 @@ def main() -> int:
                 if phrase in line:
                     errors.append(f"forbidden {phrase!r} at {path}:{i}")
 
-    # 3. Roster table vs profiles on disk.
-    if VAULT_GUIDE and VAULT_GUIDE.exists():
+    # 3. The roster lists certified specialists, not every profile in the installation.
+    if vault_guide and vault_guide.exists():
         rostered = {
             m.group(1)
-            for line in VAULT_GUIDE.read_text(encoding="utf-8").splitlines()
+            for line in vault_guide.read_text(encoding="utf-8").splitlines()
             if (m := ROSTER_ROW.match(line))
         }
         on_disk = {
             p.name
-            for p in PROFILES_DIR.iterdir()
+            for p in profiles_dir.iterdir()
             if p.is_dir() and not p.name.startswith(".")
-        } if PROFILES_DIR.is_dir() else set()
-        for name in sorted(on_disk - rostered):
-            errors.append(f"profile exists but has no roster row: {name}")
+        } if profiles_dir.is_dir() else set()
         for name in sorted(rostered - on_disk):
             errors.append(f"roster row names a missing profile: {name}")
     else:
         print("note: BOTMAKER_VAULT_GUIDE not set (or file missing) — roster check skipped")
 
     # 4a. Botmaker's own links: file-level symlinks, discovery intact.
-    skills_dir = PROFILE / "skills"
+    skills_dir = profile / "skills"
     if skills_dir.is_dir():
         link = skills_dir / "autonomous-ai-agents/botmaker/SKILL.md"
         if link.exists() and not link.is_symlink():
@@ -137,8 +139,8 @@ def main() -> int:
 
     # 4b. Whole fleet: a directory symlink anywhere under a profile's skills/
     #     is invisible to rglob — the class defect, checked on every profile.
-    if PROFILES_DIR.is_dir():
-        for prof in sorted(PROFILES_DIR.iterdir()):
+    if profiles_dir.is_dir():
+        for prof in sorted(profiles_dir.iterdir()):
             if not prof.is_dir() or prof.name.startswith("."):
                 continue
             prof_skills = prof / "skills"

@@ -26,12 +26,12 @@ Details: `references/soul-craft.md` (SOUL + human gate), `references/process.md`
 - `Bots/` in the vault needs a specialist note, roster row, or `making-bots.md` changelog
 - A shared skill is about to be copied into a profile (stop; symlink files instead)
 
-Don't use for: operating the inference server, ComfyUI, or any service; general coding; rewriting default `~/.hermes/SOUL.md`; spawning `botmaker-2`. `@hermes` is not the bot coordinator — you are.
+Don't use for: operating the inference server, ComfyUI, or any service; general coding; rewriting default `$hermes_root/SOUL.md`; spawning `botmaker-2`. `@hermes` is not the bot coordinator — you are.
 
 ## Prerequisites
 
 - Hermes CLI (`hermes profile create --help`)
-- Canonical skills live under `~/.hermes/skills/` (default Hermes home), **not** `$HERMES_HOME/skills` when you are the botmaker profile
+- Resolve the installation root as `hermes_root` before any write (`references/process.md` §Installation root). Canonical skills live under `$hermes_root/skills/`, **not** the active named profile's skills directory. Never substitute a different installation's default path.
 - Vault: `<your-vault-path>` (see `references/vault.md`). Vault documentation is an optional convention — if the user has no vault, skip the vault steps.
 - Human guide, fleet roster, changelog: vault `Bots/making-bots.md` (create it on first ship). Method lives here only; fleet state lives there only — patch a lesson's one owner and log one changelog line.
 
@@ -49,7 +49,7 @@ Don't use for: operating the inference server, ComfyUI, or any service; general 
 |---|---|
 | New bot | Alias preflight (Procedure C) → Interview → SOUL draft → human sign-off → `hermes profile create NAME --no-skills --description "…"` |
 | Pin a brain | `hermes -p NAME config set model.provider …` then `model.default …`. Then **unset** the copied `base_url` / `api_key` (create copies your default profile's model block, whatever it currently is) |
-| Shared skill | Canonical `~/.hermes/skills/<cat>/<name>/`; profile files via `scripts/link_skill_tree.py`. Never a directory symlink. Load linked `references/` with `read_file` on the canonical path |
+| Shared skill | Canonical `$hermes_root/skills/<cat>/<name>/`; profile files via `scripts/link_skill_tree.py`. Never a directory symlink. Load linked `references/` with `read_file` on the canonical path |
 | Vault after cert | `Bots/<name>.md` (`type: bot-reference`), roster row on `making-bots.md`, one line on `Home.md` |
 | Child memory | Child writes it. You do not. |
 
@@ -62,7 +62,7 @@ Ask, and do not proceed until 1–3 are sharp:
 1. One-sentence job. If "and also," split into two bots. Job may be a CLI, an HTTP API, a GUI sock — ComfyUI counts. "CLI-only" is how we *create* the profile, not what the specialist is allowed to operate.
 2. Failure the brain must survive → model pin (if the bot's job lives on a local box, that usually means a hosted provider — the bot must still think when the box is down).
 3. What it is not.
-4. Does default Hermes need the same skill? → canonical under `~/.hermes/skills/` + file-level symlinks.
+4. Does default Hermes need the same skill? → canonical under `$hermes_root/skills/` + file-level symlinks.
 5. Who is the client to ping (`@hermes`, another specialist, nobody).
 6. Voice: inherit vs write. Inheritance is tone, not the model's stock identity — that is costume unless the bot *is* a persona bot (if your fleet has one).
 
@@ -88,11 +88,11 @@ If **either** finds anything: `--no-alias` (rationale and the landmines: `refere
 
 - `--no-skills`; never `--clone` / desktop clone. Pin the brain, then unset the copied `base_url`/`api_key`; `config get model` must show only `default` + `provider`.
 - **Peers + memory provider — check after every create** (site-specific; commands and verification: `references/process.md` §Independence). The invariant: every rostered profile has every peer it must reach. Do not print keys.
-- Sibling-profile CLI from this profile: always prefix `HERMES_HOME=$HOME/.hermes`.
+- Sibling-profile CLI: use the verified installation root from `references/process.md`, with an unset-variable guard. Stop if root discovery fails or points outside the intended installation.
 - By default, `SOUL.md` writes prompt your human (`security.protected_instruction_files: true`) — that prompt is the human gate materialized. If your fleet disabled it for headless provisioning (see `profile/config.yaml` in this repo), the signature is the only gate: no human-signed draft or signed spec, no write. If a write is blocked anyway, stop — do **not** sneak it in via the shell.
 - Never hand-edit `config.yaml` — `config set` only (your human may hand-edit their own; you do not). Never copy credentials. Never print `auth.api_key` / `secret_key`.
 
-Then: write signed `SOUL.md`, thin `memories/USER.md` — if the skill is shared, include the **lockstep sentence**: one line stating that the canonical skill lives under `~/.hermes/skills/<category>/<name>/`, the profile files are symlinks, and process changes patch the canonical tree (so later sessions do not re-flag the drift). Then empty-or-tiny `memories/MEMORY.md` (the child fills this). Install the runbook skill; link shared skills file-level (`references/process.md` §Shared skills). Not every specialist needs a custom skill — `@hostadmin` is `hermes-agent` + earned MEMORY. Do not invent a runbook so the folder looks complete.
+Then: write signed `SOUL.md`, thin `memories/USER.md` — if the skill is shared, include the **lockstep sentence**: one line stating that the canonical skill lives under `$hermes_root/skills/<category>/<name>/`, the profile files are symlinks, and process changes patch the canonical tree (so later sessions do not re-flag the drift). Then empty-or-tiny `memories/MEMORY.md` (the child fills this). Install the runbook skill; link shared skills file-level (`references/process.md` §Shared skills). Not every specialist needs a custom skill — `@hostadmin` is `hermes-agent` + earned MEMORY. Do not invent a runbook so the folder looks complete.
 
 Stop. Do not fill the child's `MEMORY.md`. Do not add a vault roster row yet.
 
@@ -139,4 +139,4 @@ A new bot is done when:
 6. `SOUL.md` matches the signed draft (one screen).
 7. Shared skills: `ls -l` on profile `SKILL.md` shows `l` (symlink), canonical is a regular file. `rglob` from the profile skills dir finds `SKILL.md`.
 8. After certification only: vault note + roster row + Home line + `making-bots.md` changelog.
-9. `python3 "$HOME/.hermes/skills/autonomous-ai-agents/botmaker/scripts/drift_check.py"` exits 0.
+9. `python3 "${hermes_root:?resolve installation root first}/skills/autonomous-ai-agents/botmaker/scripts/drift_check.py" --hermes-root "$hermes_root"` exits 0. The roster check validates listed specialists exist; personas, daily drivers, and uncertified profiles need no row.

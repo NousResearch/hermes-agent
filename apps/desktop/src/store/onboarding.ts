@@ -15,6 +15,7 @@ import { translateNow } from '@/i18n'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
+import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { notify, notifyError } from '@/store/notifications'
 import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
@@ -75,6 +76,12 @@ export interface DesktopOnboardingState {
    *  custom endpoint"). Forces the API-key form with the local option
    *  preselected instead of the OAuth picker. */
   localEndpoint: boolean
+  /** True when the backend still owes this user the one-time free-tier
+   *  introduction AND the free tier is what carries inference. It makes the
+   *  overlay show its "Hermes is ready" screen once even though the app is
+   *  configured. The backend's `notice_pending` flag is the only source of
+   *  truth — there is no renderer latch — so an ack clears it everywhere. */
+  freeTierReady: boolean
 }
 
 export interface OnboardingContext {
@@ -155,7 +162,8 @@ const INITIAL: DesktopOnboardingState = {
   requested: false,
   firstRunSkipped: readCachedSkipped(),
   manual: false,
-  localEndpoint: false
+  localEndpoint: false,
+  freeTierReady: false
 }
 
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
@@ -434,6 +442,14 @@ function providerResolutionFailure(reason: null | string) {
     : 'Connected, but Hermes still cannot resolve a usable provider.'
 }
 
+/** Re-read the OAuth provider list into the onboarding cache. Exported so a
+ *  flow that changes a provider's auth state outside onboarding (a free-tier
+ *  sign-in) can keep the cached rows honest instead of leaving the picker
+ *  describing the previous identity. */
+export async function refreshOnboardingProviders() {
+  await refreshProviders()
+}
+
 async function refreshProviders() {
   if (providersRefreshPromise) {
     await providersRefreshPromise
@@ -519,6 +535,8 @@ export function startManualOnboarding(reason: null | string = DEFAULT_MANUAL_ONB
     providers: null,
     requested: true,
     localEndpoint: false,
+    // The picker replaces the free-tier ready screen when the user asked for it.
+    freeTierReady: false,
     // `null` opts out of the prompt banner entirely (e.g. when the user already
     // picked a specific provider and we auto-start its sign-in).
     reason: reason ? reason.trim() || DEFAULT_ONBOARDING_REASON : null,
@@ -581,7 +599,14 @@ export function closeManualOnboarding() {
   providersRefreshPromise = null
   pendingProviderOAuthId = null
 
-  patch({ targetProfile: undefined, manual: false, requested: false, localEndpoint: false, flow: { status: 'idle' } })
+  patch({
+    targetProfile: undefined,
+    manual: false,
+    requested: false,
+    localEndpoint: false,
+    freeTierReady: false,
+    flow: { status: 'idle' }
+  })
 }
 
 export function completeDesktopOnboarding() {
@@ -599,7 +624,8 @@ export function completeDesktopOnboarding() {
     requested: false,
     firstRunSkipped: false,
     manual: false,
-    localEndpoint: false
+    localEndpoint: false,
+    freeTierReady: false
   })
 }
 
@@ -612,7 +638,14 @@ export function completeDesktopOnboarding() {
 export function dismissFirstRunOnboarding() {
   clearPoll()
   writeCachedSkipped(true)
-  patch({ firstRunSkipped: true, requested: false, manual: false, localEndpoint: false, flow: { status: 'idle' } })
+  patch({
+    firstRunSkipped: true,
+    requested: false,
+    manual: false,
+    localEndpoint: false,
+    freeTierReady: false,
+    flow: { status: 'idle' }
+  })
 }
 
 export function setOnboardingMode(mode: OnboardingMode) {
@@ -634,6 +667,7 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
 
   if (runtime.ready) {
     completeDesktopOnboarding()
+    await applyFreeTierIntro(ctx, runtime)
     ctx.onCompleted?.()
 
     return true
@@ -669,6 +703,40 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   await refreshProviders()
 
   return false
+}
+
+/**
+ * Ask the backend whether the one-time free-tier introduction is still owed,
+ * and if so which shape it takes. Pull-based on purpose: the flag lives on the
+ * identity, so a second window (or a reinstall against the same home) shows the
+ * intro exactly once between them.
+ *
+ * The runtime check's route flag picks the shape. When the free tier is the
+ * route inference runs on, the overlay stays up on a ready screen — this is
+ * their first launch and they have nothing else. When a provider of their own
+ * carries inference, the overlay is not warranted: the composer strip (keyed on
+ * the same notice flag) offers the free models without interrupting.
+ */
+async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadinessResult) {
+  setFreeTierRoute(runtime.freeTier)
+  const status = await refreshFreeTierStatus(ctx.requestGateway)
+
+  if (freeTierReadyPending(status, runtime.freeTier ?? null)) {
+    patch({ freeTierReady: true })
+  }
+}
+
+/** "Begin" / "Sign in instead" / "Other providers" all consume the notice — the
+ *  user has seen it. Returns whether the backend recorded it: on a failed write
+ *  the ready screen stays up, because the flag it is keyed on is still pending. */
+export async function ackFreeTierIntro(ctx: OnboardingContext): Promise<boolean> {
+  return ackFreeTierNotice(ctx.requestGateway)
+}
+
+/** Take the ready screen down. Separate from the ack because the overlay plays
+ *  its exit BEFORE unmounting — clearing the flag up front would cut the fade. */
+export function clearFreeTierIntro() {
+  patch({ freeTierReady: false })
 }
 
 // Open a sign-in URL via the desktop bridge, falling back to window.open

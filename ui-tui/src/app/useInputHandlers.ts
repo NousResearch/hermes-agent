@@ -144,10 +144,10 @@ export function applyVoiceRecordResponse(
 }
 
 export function dismissSensitivePrompt(
-  overlay: Pick<OverlayState, 'secret' | 'sudo'>,
+  overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultUnlock'>,
   rpc: GatewayRpc,
   sys: (text: string) => void,
-  cancelMessages: Readonly<{ secret: string; sudo: string }>
+  cancelMessages: Readonly<{ secret: string; sudo: string; vaultUnlock: string }>
 ) {
   if (overlay.sudo) {
     const requestId = overlay.sudo.requestId
@@ -165,6 +165,15 @@ export function dismissSensitivePrompt(
     sys(cancelMessages.secret)
 
     return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
+  }
+
+  if (overlay.vaultUnlock) {
+    const requestId = overlay.vaultUnlock.requestId
+
+    patchOverlayState({ vaultUnlock: null })
+    sys(cancelMessages.vaultUnlock)
+
+    return rpc<SecretRespondResponse>('vault.unlock.respond', { password: '', request_id: requestId })
   }
 }
 
@@ -227,10 +236,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
     }
 
-    if (overlay.sudo || overlay.secret) {
+    if (overlay.sudo || overlay.secret || overlay.vaultUnlock) {
       return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys, {
         secret: ti('sys.secretCancelled'),
-        sudo: ti('sys.sudoCancelled')
+        sudo: ti('sys.sudoCancelled'),
+        vaultUnlock: ti('sys.vaultStaysLocked', { name: overlay.vaultUnlock?.displayName ?? '' })
       })
     }
 
@@ -487,7 +497,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo))) {
+      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo || overlay.vaultUnlock))) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })

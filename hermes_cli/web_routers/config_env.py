@@ -74,12 +74,15 @@ def _env_write_errors(log_msg: str, *, http_passthrough: bool):
 
 
 @config_router.get("/api/config")
-async def get_config(profile: Optional[str] = None):
+async def get_config(profile: Optional[str] = None, include_defaults: bool = True):
     # _profile_scope blocks on the process-wide _SKILLS_PROFILE_LOCK and
     # load_config() reads from disk; a slow lock-holder on the event loop froze
     # the whole gateway for >1s. asyncio.to_thread copies the contextvar
     # context, so the profile override stays scoped to the worker thread.
-    config = await scoped_to_thread(profile, lambda: _normalize_config_for_web(load_config()))
+    # Opt in to saved values so clients can distinguish user choices from defaults.
+    config = await scoped_to_thread(
+        profile, lambda: _normalize_config_for_web(load_config() if include_defaults else read_raw_config())
+    )
     # Strip internal keys that the frontend shouldn't see or send back
     return {k: v for k, v in config.items() if not k.startswith("_")}
 
@@ -126,7 +129,9 @@ async def get_egress_status():
 
 
 @router.put("/api/config")
-async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
+async def update_config(
+    body: ConfigUpdate, profile: Optional[str] = None, preserve_language: bool = False
+):
     def _run():
         approvals_mode_changed = False
         with _profile_scope(body.profile or profile):
@@ -145,7 +150,12 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
                 # serve the pre-save cache on an (mtime_ns, size) collision.
                 # Only approvals.mode feeds session.info, so it is the trigger.
                 approvals_mode_changed = _approval_mode_of(merged) != _approval_mode_of(existing)
-                save_config(merged)
+                # Explicit English must survive default stripping: an absent
+                # language lets the desktop follow the OS on its next launch.
+                # Ordinary settings saves include merged defaults, not a choice.
+                save_config(
+                    merged, preserve_keys={("display", "language")} if preserve_language else None
+                )
         # REST saves bypass the config.set RPC (which re-emits itself), so
         # refresh live sessions' cached approval/YOLO indicators after a mode
         # change. Own-profile saves only: a profile-scoped save targets a

@@ -58,14 +58,14 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 | **Unified package** | `$HERMES_HOME/plugins/<id>/desktop/plugin.js` | plugins that also ship agent-side code | none — same disk pipeline |
 | **Bundled** | `apps/desktop/src/plugins/<id>/plugin.tsx` | in-tree, shipped with the app | the app's own Vite build |
 
-All three take the same `HermesPlugin` contract, appear in **Settings → Plugins**,
+All three take the same `HermesPlugin` contract, appear in **Capabilities → Plugins**,
 and enable/disable live. A unified package is just the disk door scanning inside
 your agent plugin's folder — see
 [One package, both SDKs](#one-package-both-sdks). Everything on this page is
 written against the disk door (what you and the agent write);
 [Bundled plugins](#bundled-plugins) notes the two
 differences. Radio ships as a bundled SDK-only plugin, off by default. Enable it
-in **Settings → Plugins** for free live streams, station search, and status-bar
+in **Capabilities → Plugins** for free live streams, station search, and status-bar
 playback controls with an audio-reactive waveform. It uses the existing plugin
 toggle and contributes nothing while disabled. Reference demos live in the companion
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
@@ -74,8 +74,8 @@ repo.
 ## Quick start — your first plugin
 
 Create `$HERMES_HOME/desktop-plugins/hello/plugin.js` (that's `~/.hermes/...`
-by default, or `~/.hermes/profiles/<name>/...` under a named profile). The folder
-name must equal the plugin `id`.
+by default). Desktop plugins are app-level — one root for every profile, gateway,
+or remote machine the window connects to. The folder name must equal the plugin `id`.
 
 ```javascript
 // ~/.hermes/desktop-plugins/hello/plugin.js
@@ -150,7 +150,7 @@ interface HermesPlugin {
   /** Human name for Settings / about UI. Defaults to `id`. */
   name?: string
   /** Registers on load when the user hasn't chosen (default true). Set false
-   *  for opt-in plugins: they inventory in Settings ▸ Plugins, off until the
+   *  for opt-in plugins: they inventory in Capabilities ▸ Plugins, off until the
    *  user flips the switch. */
   defaultEnabled?: boolean
   /** Called once at load; wire contributions through `ctx`. */
@@ -250,7 +250,7 @@ data: {
 the pane doesn't claim half the zone.
 
 Closing the only pane contributed by a plugin disables that plugin, which can
-be re-enabled from **Settings → Plugins**. When a plugin contributes multiple
+be re-enabled from **Capabilities → Plugins**. When a plugin contributes multiple
 panes, closing one dismisses only that pane and leaves the plugin's other panes,
 commands, and middleware active. **Reset layout** restores dismissed contributed
 panes.
@@ -380,8 +380,9 @@ host.onEvent('gateway.ready', () => {
 
 Both doors persist per profile, so a plugin-driven switch sticks exactly like a
 manual pick. To tint the *active* theme rather than replace it, use
-`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the bundled `accent`
-plugin is the worked example.
+`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the standalone
+[Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
+plugin is the worked example (it is also a complete, installable disk plugin).
 
 ### Composer extensions
 
@@ -695,10 +696,12 @@ construction**.
 ### One package, both SDKs {#one-package-both-sdks}
 
 A feature that needs a desktop UI **and** agent-side code (a Python plugin, its
-backend routes, skills) doesn't have to ship as two co-dependent installs. The
-desktop app also scans `$HERMES_HOME/plugins/<id>/` — the regular agent-plugin
-root — for a `desktop/plugin.js`, and loads it through the exact same pipeline
-as the standalone disk door (hot reload included):
+backend routes, skills) doesn't have to ship as two co-dependent installs. Put a
+`desktop/plugin.js` inside the agent package. When the package lands in any
+local `plugins/` root (default home or a profile), the Electron main process
+copies that half into `$HERMES_HOME/desktop-plugins/<id>/` beside a
+`.hermes-package.json` marker, and the renderer loads it through the exact same
+pipeline as the standalone disk door (hot reload included):
 
 ```
 ~/.hermes/plugins/<id>/           # ONE installable folder
@@ -713,10 +716,18 @@ as the standalone disk door (hot reload included):
 
 The `desktop/plugin.js` half is an ordinary disk plugin — same contract, same
 imports, same `ctx.rest('/…')` reaching the `plugin_api.py` sitting beside it.
-Installing, sharing, or removing the feature is one folder.
+Installing, sharing, or removing the feature is one folder: the app-root copy
+is refreshed when the source `plugin.js` changes (`hermes plugins update`, or
+**Rescan**) and removed when the package folder disappears. The copy is what
+makes the desktop half **app-level**: it exists once, however many profiles
+carry the package, and it never appears or disappears when the user switches
+the Capabilities profile selector. The renderer never scans `plugins/` itself.
+The marker records the package name and its origin (catalog sidecar or git
+remote), which is what the **Install here** button on the Plugins page uses to
+install the agent half into another profile.
 
 Two enable switches still apply, on purpose, and both default to **off**: the
-desktop half ships opt-in — it inventories in **Settings → Plugins** but stays
+desktop half ships opt-in — it inventories in **Capabilities → Plugins** but stays
 disabled until the user toggles it — matching the Python half's
 `plugins.enabled` gate in `config.yaml` (the security boundary below). Dropping
 a package into `~/.hermes/plugins` is inert on every surface until the user
@@ -724,10 +735,11 @@ says otherwise. The desktop half degrades gracefully when the backend half is
 off — `ctx.rest` returns errors, not crashes.
 
 :::note
-The scan is local to the machine the desktop app runs on. Against a remote
+The copy is local to the machine the desktop app runs on. Against a remote
 backend, the remote box's `~/.hermes/plugins` is not reachable as a filesystem —
-only locally installed packages contribute a desktop half (same rule as the
-standalone door).
+only locally installed packages contribute a desktop half this way. For a
+remote backend the install dialog clones the desktop half separately into
+`desktop-plugins/`, the same as a desktop-only repo.
 :::
 
 ### Distributing with an install link {#install-link}
@@ -780,7 +792,7 @@ hermes-agent codebase directly (`hermes_state`, `hermes_cli.config`, …). See
 for the full backend reference — the mount is identical.
 
 :::caution The Python backend is gated separately
-Enabling a plugin in the desktop **Settings → Plugins** panel is a renderer-side
+Enabling a plugin in the desktop **Capabilities → Plugins** panel is a renderer-side
 choice; it does **not** import Python. A user plugin's `plugin_api.py` is
 imported only when the plugin is in the `plugins.enabled` allow-list in
 `config.yaml` (and not in `plugins.disabled`). Project plugins (`./.hermes/`)
@@ -817,7 +829,7 @@ For gateway-wide data (not your own namespace), use `host.request` (JSON-RPC) an
 
 ## Settings, enable state, and storage
 
-Every plugin — enabled or not — inventories in **Settings → Plugins**, where the
+Every plugin — enabled or not — inventories in **Capabilities → Plugins**, where the
 user toggles it live (no app restart), reveals its folder, or rescans. The user's
 choice is remembered:
 

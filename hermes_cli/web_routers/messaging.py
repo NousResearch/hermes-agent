@@ -214,6 +214,12 @@ def _messaging_platform_payload(
         pid_probe=get_running_pid_cached, runtime_reader=read_runtime_status,
         runtime_pid_probe=get_runtime_status_running_pid,
     ).running
+    if not gateway_running:
+        # gateway_state.json outlives its writer and keeps per-platform entries across
+        # restarts, so a stopped gateway that once ran WITHOUT credentials still says
+        # "fatal / No bot token configured" after the user saved a token. Only a live
+        # process's verdict describes the current config; a dead one's is history.
+        runtime_platform = {}
 
     def env_value(key: str) -> str:
         # Profile-scoped: judge only the profile's own .env — the dashboard process's

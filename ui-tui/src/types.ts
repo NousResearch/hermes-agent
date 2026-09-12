@@ -243,6 +243,13 @@ export interface SecretReq {
   requestId: string
 }
 
+/** External password-manager unlock (1Password / Bitwarden) — masked master-password prompt. */
+export interface VaultUnlockReq {
+  backend: string
+  displayName: string
+  requestId: string
+}
+
 export interface PanelData {
   sections: PanelSection[]
   title: string

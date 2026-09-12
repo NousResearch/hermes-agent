@@ -200,13 +200,13 @@ def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
     # Non-string, non-dict leaves are ignored -- catalogs are text-only.
 
 
-@lru_cache(maxsize=1)
-def _configured_language() -> str | None:
-    """Read ``display.language`` from config.yaml once per process.
+@lru_cache(maxsize=8)
+def _config_language_cached(hermes_home: str) -> str | None:
+    """Read ``display.language`` once per profile home (``t()`` is a hot path).
 
-    Dashboard and Ink own their live locale refresh independently. Keeping the
-    shared Python catalog process-stable avoids incidentally changing classic
-    CLI or messaging-platform presentation during this rollout.
+    Dashboard and Ink own their live locale refresh independently. The shared
+    Python catalog remains stable within each profile while multiplexed gateways
+    can still resolve different configured languages for different profiles.
     """
     try:
         from hermes_cli.config import load_config_readonly
@@ -219,26 +219,33 @@ def _configured_language() -> str | None:
     return None
 
 
+def _config_language() -> str | None:
+    from hermes_constants import get_hermes_home
+    return _config_language_cached(str(get_hermes_home()))
+
+
 def reset_language_cache() -> None:
     """Invalidate cached language resolution and locale catalogs.
 
     Call after a deliberate shared-Python language update or in tests. The
     Dashboard and Ink live-refresh paths do not depend on this cache.
     """
-    _configured_language.cache_clear()
+    _config_language_cached.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
 
 
 def get_language() -> str:
-    """Resolve the active language using env > config > default order."""
-    env_lang = os.environ.get("HERMES_LANGUAGE")
-    if env_lang:
-        return _normalize_lang(env_lang)
-    cfg_lang = _configured_language()
-    if cfg_lang:
-        return cfg_lang
-    return DEFAULT_LANGUAGE
+    """Resolve the active language using env > config > default order. ``HERMES_LANGUAGE`` is a
+    per-profile ``.env`` value, so it is read through the secret scope: under multiplexing a raw
+    environ read would impose the default profile's language on every other profile."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
+
+    try:
+        env_lang = get_secret("HERMES_LANGUAGE")
+    except UnscopedSecretError:
+        env_lang = os.environ.get("HERMES_LANGUAGE")  # unscoped default-profile path: environ IS its own value
+    return _normalize_lang(env_lang) if env_lang else _config_language() or DEFAULT_LANGUAGE
 
 
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:

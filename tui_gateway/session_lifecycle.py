@@ -5,6 +5,8 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 
 from __future__ import annotations
 
+import logging
+
 import contextlib
 
 from .method_ctx import bind_module
@@ -193,12 +195,24 @@ def _lifecycle_own_sid(session: dict, sid_hint: str = "") -> str:
     return own_sid
 
 
+def _lock_vault_managers(session: dict) -> None:
+    """A per-session unlock ends with the session that made it; siblings in the same profile keep theirs."""
+    try:
+        from agent.vault_backends import unlock
+
+        if sid := session.get("_sid"):
+            unlock.release_session(sid)
+    except Exception:
+        logging.getLogger(__name__).debug("vault manager lock on session end failed", exc_info=True)
+
+
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
     """Best-effort finalize hook + memory commit; mirrors the CLI exit path so a force-quit mid-turn (double
     Ctrl-C, terminal close, SIGHUP) loses nothing."""
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    _lock_vault_managers(session)
     if (history_ready := session.get("resume_history_ready")) is not None and not history_ready.is_set():
         session["resume_history_error"] = "session resume cancelled"
         history_ready.set()
@@ -424,8 +438,9 @@ def _session_has_active_delegations(sid: str, session: dict | None = None) -> bo
     if session_id:
         # Only when this session may end its durable row by key — never for gateway-originated sessions (TUI is a
         # viewer there). Unknown DB state -> assume ownership.
-        with contextlib.suppress(Exception):
-            db = _get_db()
+        # The row lives in the session's OWN store (a named-profile session's row is invisible to
+        # the launch handle, which would leave this guard permanently dead).
+        with contextlib.suppress(Exception), _session_db(session) as db:
             if db is not None and _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
                 owned_session_key = ""
     if not own_sid and not owned_session_key:
@@ -465,18 +480,10 @@ def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:
 
 
 def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
-    """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``)."""
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
-
-    # Transfer only this exact live generation's capabilities at the authenticated
-    # attachment seam, including records spawned through an older dispatch context.
-    with _active_subagents_lock:
-        _attach_session_transport(session, transport)
-        for record in _active_subagents.values():
-            if (record.get("owner_session_id") == sid
-                    and record.get("owner_session_record") is session
-                    and record.get("owner_transport") is not None):
-                record["owner_transport"] = session["transport"]
+    """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``).
+    Subagent control authority needs no bookkeeping here: it resolves against ``session["transport"]``
+    at RPC time (``tools.delegate_tool_registry._subagent_transport_matches``)."""
+    _attach_session_transport(session, transport)
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.
     session.setdefault("viewers", {})[transport] = time.time()

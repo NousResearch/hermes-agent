@@ -598,6 +598,7 @@ export const AppLayout = memo(function AppLayout({
                 onClarifyQuestionAnswer={actions.answerClarifyQuestion}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
+                onVaultUnlockSubmit={actions.answerVaultUnlock}
               />
             </PerfPane>
 

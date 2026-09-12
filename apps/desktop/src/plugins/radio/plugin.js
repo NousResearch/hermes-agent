@@ -23,7 +23,7 @@ const EN = {
   live: 'Live', paused: 'Paused', connecting: 'Connecting', error: 'Stream unavailable', retry: 'Try again',
   search: 'Find a station…', volume: 'Volume', audioOnly: 'Audio playing · visualizer unavailable',
   mute: 'Mute radio', unmute: 'Unmute radio', save: 'Pin station', unsave: 'Unpin station',
-  visit: 'Visit station website',
+  visit: 'Visit station website', artistProfile: 'Visit artist profile',
   noResults: 'No stations found', searchHint: 'Search by station name. Try jazz, ambient, or house.',
   searchError: 'Station search is unavailable. Your presets still work.', searching: 'Searching stations',
   directory: 'Search powered by Radio Browser', note: 'Live radio · next switches stations',
@@ -35,9 +35,9 @@ const EN = {
 }
 const LOCALES = {
   en: EN,
-  ja: { ...EN, audioOnly: '再生中 · 波形を表示できません', radio: 'ラジオ', browse: 'ステーションを選択', play: 'ラジオを再生', pause: 'ラジオを一時停止', next: '次のステーション', live: 'ライブ', paused: '一時停止', connecting: '接続中', error: '再生できません', retry: '再試行', search: 'ステーションを検索…', volume: '音量', mute: 'ミュート', unmute: 'ミュート解除', save: 'ステーションを固定', unsave: '固定を解除', visit: '公式サイトを開く', noResults: '見つかりませんでした', searchHint: '名前で検索。jazz、ambient、house など。', searchError: '検索できません。おすすめは再生できます。', searching: '検索中', directory: 'Radio Browser による検索', note: 'ライブ放送 · 次へでステーションを切り替え', streamError: '接続できませんでした。再試行するか別のステーションを選んでください。', close: 'ラジオを閉じる', nowPlaying: '再生中', elsewhere: '別のウィンドウで再生中', 'chillsynthDescription': 'やさしい集中 · 暖かなシンセ', 'nightrideDescription': 'シンセウェーブ · 深夜', 'darksynthDescription': 'ダークな電子音 · 高揚感', 'spacesynthDescription': '宇宙的シンセ · レトロな未来', 'paradise-mainDescription': '多彩な選曲 · 人がキュレーション', 'paradise-mellowDescription': 'ゆったりした時間' },
-  zh: { ...EN, audioOnly: '正在播放 · 无法显示波形', radio: '电台', browse: '选择电台', play: '播放电台', pause: '暂停电台', next: '下一个电台', live: '直播', paused: '已暂停', connecting: '正在连接', error: '无法播放', retry: '重试', search: '搜索电台…', volume: '音量', mute: '静音', unmute: '取消静音', save: '置顶电台', unsave: '取消置顶', visit: '访问电台网站', noResults: '没有找到电台', searchHint: '按名称搜索，例如 jazz、ambient 或 house。', searchError: '暂时无法搜索，精选电台仍可使用。', searching: '正在搜索', directory: '搜索由 Radio Browser 提供', note: '直播电台 · 下一首将切换电台', streamError: '无法连接，请重试或选择其他电台。', close: '关闭电台', nowPlaying: '正在播放', elsewhere: '已暂停，正在其他窗口播放', 'chillsynthDescription': '轻松专注 · 温暖合成器', 'nightrideDescription': '合成器浪潮 · 深夜', 'darksynthDescription': '暗黑电子 · 充满能量', 'spacesynthDescription': '宇宙合成器 · 复古未来', 'paradise-mainDescription': '多元风格 · 人工精选', 'paradise-mellowDescription': '放慢节奏' },
-  'zh-hant': { ...EN, audioOnly: '播放中 · 無法顯示波形', radio: '電台', browse: '選擇電台', play: '播放電台', pause: '暫停電台', next: '下一個電台', live: '直播', paused: '已暫停', connecting: '正在連線', error: '無法播放', retry: '重試', search: '搜尋電台…', volume: '音量', mute: '靜音', unmute: '取消靜音', save: '釘選電台', unsave: '取消釘選', visit: '造訪電台網站', noResults: '找不到電台', searchHint: '按名稱搜尋，例如 jazz、ambient 或 house。', searchError: '暫時無法搜尋，精選電台仍可使用。', searching: '正在搜尋', directory: '搜尋由 Radio Browser 提供', note: '直播電台 · 下一首會切換電台', streamError: '無法連線，請重試或選擇其他電台。', close: '關閉電台', nowPlaying: '正在播放', elsewhere: '已暫停，正在其他視窗播放', 'chillsynthDescription': '輕鬆專注 · 溫暖合成器', 'nightrideDescription': '合成器浪潮 · 深夜', 'darksynthDescription': '暗黑電子 · 充滿能量', 'spacesynthDescription': '宇宙合成器 · 復古未來', 'paradise-mainDescription': '多元風格 · 人工精選', 'paradise-mellowDescription': '放慢節奏' }
+  ja: { ...EN, artistProfile: 'アーティストのプロフィールを開く', audioOnly: '再生中 · 波形を表示できません', radio: 'ラジオ', browse: 'ステーションを選択', play: 'ラジオを再生', pause: 'ラジオを一時停止', next: '次のステーション', live: 'ライブ', paused: '一時停止', connecting: '接続中', error: '再生できません', retry: '再試行', search: 'ステーションを検索…', volume: '音量', mute: 'ミュート', unmute: 'ミュート解除', save: 'ステーションを固定', unsave: '固定を解除', visit: '公式サイトを開く', noResults: '見つかりませんでした', searchHint: '名前で検索。jazz、ambient、house など。', searchError: '検索できません。おすすめは再生できます。', searching: '検索中', directory: 'Radio Browser による検索', note: 'ライブ放送 · 次へでステーションを切り替え', streamError: '接続できませんでした。再試行するか別のステーションを選んでください。', close: 'ラジオを閉じる', nowPlaying: '再生中', elsewhere: '別のウィンドウで再生中', 'chillsynthDescription': 'やさしい集中 · 暖かなシンセ', 'nightrideDescription': 'シンセウェーブ · 深夜', 'darksynthDescription': 'ダークな電子音 · 高揚感', 'spacesynthDescription': '宇宙的シンセ · レトロな未来', 'paradise-mainDescription': '多彩な選曲 · 人がキュレーション', 'paradise-mellowDescription': 'ゆったりした時間' },
+  zh: { ...EN, artistProfile: '访问艺人主页', audioOnly: '正在播放 · 无法显示波形', radio: '电台', browse: '选择电台', play: '播放电台', pause: '暂停电台', next: '下一个电台', live: '直播', paused: '已暂停', connecting: '正在连接', error: '无法播放', retry: '重试', search: '搜索电台…', volume: '音量', mute: '静音', unmute: '取消静音', save: '置顶电台', unsave: '取消置顶', visit: '访问电台网站', noResults: '没有找到电台', searchHint: '按名称搜索，例如 jazz、ambient 或 house。', searchError: '暂时无法搜索，精选电台仍可使用。', searching: '正在搜索', directory: '搜索由 Radio Browser 提供', note: '直播电台 · 下一首将切换电台', streamError: '无法连接，请重试或选择其他电台。', close: '关闭电台', nowPlaying: '正在播放', elsewhere: '已暂停，正在其他窗口播放', 'chillsynthDescription': '轻松专注 · 温暖合成器', 'nightrideDescription': '合成器浪潮 · 深夜', 'darksynthDescription': '暗黑电子 · 充满能量', 'spacesynthDescription': '宇宙合成器 · 复古未来', 'paradise-mainDescription': '多元风格 · 人工精选', 'paradise-mellowDescription': '放慢节奏' },
+  'zh-hant': { ...EN, artistProfile: '造訪藝人主頁', audioOnly: '播放中 · 無法顯示波形', radio: '電台', browse: '選擇電台', play: '播放電台', pause: '暫停電台', next: '下一個電台', live: '直播', paused: '已暫停', connecting: '正在連線', error: '無法播放', retry: '重試', search: '搜尋電台…', volume: '音量', mute: '靜音', unmute: '取消靜音', save: '釘選電台', unsave: '取消釘選', visit: '造訪電台網站', noResults: '找不到電台', searchHint: '按名稱搜尋，例如 jazz、ambient 或 house。', searchError: '暫時無法搜尋，精選電台仍可使用。', searching: '正在搜尋', directory: '搜尋由 Radio Browser 提供', note: '直播電台 · 下一首會切換電台', streamError: '無法連線，請重試或選擇其他電台。', close: '關閉電台', nowPlaying: '正在播放', elsewhere: '已暫停，正在其他視窗播放', 'chillsynthDescription': '輕鬆專注 · 溫暖合成器', 'nightrideDescription': '合成器浪潮 · 深夜', 'darksynthDescription': '暗黑電子 · 充滿能量', 'spacesynthDescription': '宇宙合成器 · 復古未來', 'paradise-mainDescription': '多元風格 · 人工精選', 'paradise-mellowDescription': '放慢節奏' }
 }
 
 // Disk plugins are not scanned by Tailwind. Only plugin layout lives here;
@@ -56,6 +56,9 @@ const CSS = `
 .hermes-radio-track{display:flex;align-items:center;gap:5px;height:19px;min-width:0;font-size:11px;line-height:16px;color:var(--ui-text-secondary)}
 .hermes-radio-track-text{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:0}
 .hermes-radio-track[data-track=true]{color:var(--ui-text-primary)}
+.hermes-radio-artist{min-width:0;max-width:55%;flex-shrink:1;font-size:inherit;font-weight:inherit}
+.hermes-radio-artist>span{overflow:hidden;text-overflow:ellipsis}
+.hermes-radio-track-separator{flex-shrink:0;color:var(--ui-text-quaternary)}
 .hermes-radio-bar .radio-name{max-width:112px;min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;text-align:left}
 .hermes-radio-bar .hermes-radio-action{width:16px;height:16px;padding:0;flex-shrink:0}
 .hermes-radio-action-icon{display:flex;align-items:center;justify-content:center;width:12px;height:12px;flex-shrink:0;overflow:hidden}
@@ -394,7 +397,87 @@ function SmallAction({ label, icon, onClick, size = 'micro', pressed, className,
   }) })
 }
 
-function Signal({ player }) {
+function trackCredit(source) {
+  const raw = typeof source?.title === 'string' ? source.title.trim() : ''
+  const explicit = source?.artist || source?.metadata?.artist
+  const parts = raw.match(/^(.+?)\s[-–—]\s(.+)$/)
+  const artist = typeof explicit === 'string' ? explicit.trim() : parts?.[1].trim() || ''
+  // Only separate an explicit artist prefix when it actually matches.
+  const title = parts && parts[1].trim() === artist ? parts[2].trim() : raw
+  return { artist: raw ? artist : '', title }
+}
+
+async function artistRequest(path, signal, ctx) {
+  // The lock and persisted timestamp pace lookups across desktop windows.
+  return navigator.locks.request('hermes:radio:artist-lookup', { signal }, async () => {
+    const delay = Math.max(0, 1100 - (Date.now() - ctx.storage.get('local.artistRequestAt', 0)))
+    if (delay) await new Promise(resolve => setTimeout(resolve, delay))
+    signal.throwIfAborted()
+    ctx.storage.set('local.artistRequestAt', Date.now())
+    const response = await fetch(`https://musicbrainz.org/ws/2/${path}`, {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]), credentials: 'omit',
+      headers: { 'User-Agent': 'HermesRadio/1.0 (https://github.com/NousResearch/hermes-agent)' }
+    })
+    if (!response.ok) throw new Error(`Artist lookup: HTTP ${response.status}`)
+    return response.json()
+  })
+}
+
+function artistProfile(relations) {
+  const links = (relations ?? []).filter(item => !item.ended).flatMap(item => {
+    const href = httpsUrl(item.url?.resource)
+    if (!href) return []
+    const url = new URL(href)
+    if (url.hostname === 'open.spotify.com' && /^\/artist\/[a-zA-Z0-9]{22}\/?$/.test(url.pathname)) return [{ href, rank: 0 }]
+    if (item.type === 'bandcamp' && /^[^.]+\.bandcamp\.com$/.test(url.hostname) && url.pathname === '/') return [{ href, rank: 1 }]
+    if (item.type === 'official homepage' && !['open.spotify.com', 'bandcamp.com'].includes(url.hostname)) return [{ href, rank: 2 }]
+    return []
+  })
+  return links.sort((a, b) => a.rank - b.rank)[0]?.href ?? null
+}
+
+function normalizedArtist(name) {
+  return name.normalize('NFKC').trim().toLowerCase()
+}
+
+async function resolveArtist(artist, signal, ctx) {
+  // Apple's public artist search supplies direct profile URLs without API keys.
+  // Prefer it over a slow/unavailable MusicBrainz lookup; never use song results.
+  const params = new URLSearchParams({ term: artist, entity: 'musicArtist', limit: '10' })
+  try {
+    const result = await fetchJson(`https://itunes.apple.com/search?${params}`, signal)
+    const matches = (result.results ?? []).filter(item => item.wrapperType === 'artist' && normalizedArtist(item.artistName) === normalizedArtist(artist))
+    if (matches.length > 1) return null
+    if (matches.length === 1) {
+      const href = httpsUrl(matches[0].artistLinkUrl)
+      if (href) {
+        const url = new URL(href)
+        if (url.hostname === 'music.apple.com' && /^\/[a-z]{2}\/artist\/[^/]+\/\d+$/.test(url.pathname)) {
+          url.search = ''
+          return url.href
+        }
+      }
+    }
+  } catch (error) {
+    if (signal.aborted) throw error
+  }
+  return resolveMusicBrainzArtist(artist, signal, ctx)
+}
+
+async function resolveMusicBrainzArtist(artist, signal, ctx) {
+  const escaped = artist.replace(/[+\-!(){}\[\]^"~*?:\\/&|]/g, '\\$&')
+  const params = new URLSearchParams({ query: `artist:"${escaped}"`, fmt: 'json', limit: '5' })
+  const result = await artistRequest(`artist/?${params}`, signal, ctx)
+  const matches = (result.artists ?? []).filter(item => normalizedArtist(item.name) === normalizedArtist(artist))
+  // Never turn the top fuzzy match or an ambiguous artist name into a credit.
+  if (matches.length !== 1 || matches[0].score !== 100 || result.artists.length === 5) return null
+  const id = matches[0].id
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id)) return null
+  const profile = await artistRequest(`artist/${id}?inc=url-rels&fmt=json`, signal, ctx)
+  return artistProfile(profile.relations)
+}
+
+function Signal({ player, ctx }) {
   const t = usePluginI18n(ID)
   const station = useValue(player.station)
   const status = useValue(player.status)
@@ -414,12 +497,29 @@ function Signal({ player }) {
   const sources = metadata.data?.icestats?.source
   const source = (Array.isArray(sources) ? sources : sources ? [sources] : []).find(source => source.listenurl?.endsWith(stream.pathname))
   const track = status === 'live' && typeof source?.title === 'string' ? source.title : ''
+  const credit = trackCredit(track ? source : null)
+  const artist = useQuery({
+    queryKey: [ID, 'artist-profile', credit.artist],
+    queryFn: ({ signal }) => resolveArtist(credit.artist, signal, ctx),
+    enabled: Boolean(credit.artist), staleTime: 86400000, gcTime: 86400000,
+    retry: 1, retryDelay: 3000, refetchOnWindowFocus: false
+  })
+  const artistUrl = credit.artist ? artist.data : null
   const text = status === 'live' ? track || (mode === 'activity' ? t('audioOnly') : '') : t(status)
   return jsxs('div', { className: 'hermes-radio-signal', children: [
     jsx(Waveform, { player }),
     jsxs('div', { className: 'hermes-radio-track', 'data-track': Boolean(track), role: 'status', children: [
       status === 'connecting' && jsx(GlyphSpinner, { ariaLabel: t('connecting') }),
-      jsx(Tip, { label: text || undefined, children: jsx('span', { className: 'hermes-radio-track-text', children: text }) })
+      credit.artist && (artistUrl ? jsx(Tip, { label: `${t('artistProfile')}: ${credit.artist}`, children: jsx(Button, {
+        variant: 'text', size: 'inline', asChild: true, className: 'hermes-radio-artist',
+        children: jsxs('a', { href: artistUrl, target: '_blank', rel: 'noopener noreferrer',
+          'aria-label': `${t('artistProfile')}: ${credit.artist}`,
+          onClick: event => { event.preventDefault(); void ctx.os.openExternal(artistUrl) },
+          children: [jsx('span', { children: credit.artist }), jsx(icons.ExternalLink, { style: { width: 10, height: 10 }, 'aria-hidden': true })]
+        })
+      }) }) : jsx('span', { className: 'hermes-radio-track-text', children: credit.artist })),
+      credit.artist && jsx('span', { className: 'hermes-radio-track-separator', 'aria-hidden': true, children: '—' }),
+      jsx(Tip, { label: text || undefined, children: jsx('span', { className: 'hermes-radio-track-text', children: credit.artist ? credit.title : text }) })
     ] })
   ] })
 }
@@ -525,7 +625,7 @@ function RadioBar({ player, ctx }) {
       }) }),
       jsx(PopoverContent, { side: 'top', align: 'end', className: 'hermes-radio-panel', 'aria-label': t('radio'), 'data-tour': 'radio-panel', children:
         jsxs('div', { children: [
-          jsx(Stations, { player }), jsx(Signal, { player }), jsx(Transport, { player, ctx })
+          jsx(Stations, { player }), jsx(Signal, { player, ctx }), jsx(Transport, { player, ctx })
         ] })
       })
     ] }),
@@ -533,6 +633,8 @@ function RadioBar({ player, ctx }) {
     jsx(SmallAction, { label: t('next'), icon: NextArrow, onClick: player.next })
   ] })
 }
+
+export { artistProfile, resolveArtist, trackCredit }
 
 export default {
   id: ID,

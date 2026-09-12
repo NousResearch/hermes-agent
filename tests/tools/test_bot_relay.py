@@ -154,6 +154,30 @@ def test_waiter_command_quotes_and_targets_reply_file(root):
     assert "rm -rf" not in cmd  # sanity: single quoted -c payload
 
 
+def test_waiter_outlives_the_desktop_deliver_deadline():
+    """The Desktop posts its timeout reply when RELAY_DELIVER_TIMEOUT_MS passes. A waiter that gave
+    up first left that reply, and any turn finishing after minute 15, in a file nobody read (#93911).
+    relay-deliver-budget.test.ts pins the TS constants against these Python ones."""
+    desktop_budget_s = (
+        bot_relay.TURN_WAIT_SECONDS_FALLBACK
+        + bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS * bot_relay.TURN_MAX_ATTEMPTS
+        + bot_relay.DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
+    )
+    assert bot_relay.DESKTOP_DELIVER_TIMEOUT_SECONDS == desktop_budget_s
+    assert bot_relay.REPLY_WAIT_SECONDS > desktop_budget_s
+
+
+def test_waiter_give_up_message_states_the_real_budget(root):
+    import shlex
+
+    env = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
+    parts = shlex.split(bot_relay.waiter_command(root, env))
+    code = parts[parts.index("-c") + 1]
+    assert f"deadline = time.time() + {bot_relay.REPLY_WAIT_SECONDS}\n" in code
+    assert f"within {bot_relay.REPLY_WAIT_SECONDS}s" in code
+    assert "within 900s" not in code
+
+
 def test_waiter_picks_up_reply_within_a_sub_second_cadence(root):
     """The reply file is written once; the waiter must notice it fast, not
     on a multi-second sleep (dead air the sender's completion notification
@@ -560,3 +584,38 @@ def test_message_agent_surfaces_runtime_offline_refusal(tmp_path, monkeypatch):
     assert "offline" in out.get("error", "")
     # fail-fast means no envelope was queued
     assert bot_relay.claim_pending_envelopes(home) == []
+
+
+# ── delivery turn author (HERMES_TURN_AUTHOR on the recipient turn) ──────────
+
+
+def test_delivery_turn_author_from_envelope_sender_fields():
+    author = bot_relay.delivery_turn_author("ops", "ops-bot")
+    assert author == {"id": "bot:ops", "name": "ops-bot", "is_bot": True}
+    # The display name falls back to the profile; the id never comes from the handle.
+    assert bot_relay.delivery_turn_author("ops", "") == {"id": "bot:ops", "name": "ops", "is_bot": True}
+    assert bot_relay.delivery_turn_author("", "ops-bot") is None
+    assert bot_relay.delivery_turn_author(None, None) is None
+
+
+def test_delivery_turn_author_qualifies_a_remote_sender_by_its_connection():
+    """A relayed DM always crosses gateways, so the sender's connection id is part of the author id, ``local``
+    included; the recipient's own ``ops`` is the only bare ``bot:ops``."""
+    remote = bot_relay.delivery_turn_author("ops", "ops-bot", "cloud-1")
+    assert remote == {"id": "bot:cloud-1/ops", "name": "ops-bot", "is_bot": True}
+    assert bot_relay.delivery_turn_author("ops", "ops-bot", "local") == {"id": "bot:local/ops", "name": "ops-bot", "is_bot": True}
+    # An older Desktop that sends no connection id still yields an author.
+    assert bot_relay.delivery_turn_author("ops", "ops-bot", "") == {"id": "bot:ops", "name": "ops-bot", "is_bot": True}
+
+
+def test_delivery_env_carries_only_the_given_author(monkeypatch):
+    """The dispatcher's own HERMES_TURN_AUTHOR never reaches the child: dropped without an author, replaced with one."""
+    from agent.turn_author import TURN_AUTHOR_ENV
+
+    monkeypatch.setenv("HERMES_RELAY_TEST_MARKER", "kept")
+    monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
+
+    assert TURN_AUTHOR_ENV not in bot_relay.delivery_env(None)
+    env = bot_relay.delivery_env(bot_relay.delivery_turn_author("ops", "ops"))
+    assert json.loads(env[TURN_AUTHOR_ENV]) == {"id": "bot:ops", "name": "ops", "is_bot": True}
+    assert env["HERMES_RELAY_TEST_MARKER"] == "kept"

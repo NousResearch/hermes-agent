@@ -1258,6 +1258,7 @@ const catalog = {
   'sys.steerQueuedNoTurn': 'no active turn — queued for next: "{text}"',
   'sys.steerRejected': 'steer rejected',
   'sys.sudoCancelled': 'sudo cancelled',
+  'sys.vaultStaysLocked': '{name} stays locked',
   'sys.voiceError': 'voice error: {message}',
   'sys.voiceModeOff': 'voice: mode is off — enable with /voice on',
   'sys.voiceStillTranscribing': 'voice: still transcribing; try again shortly',

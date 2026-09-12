@@ -443,28 +443,35 @@ def _persist_session_row_for_submit(rid, session):
     here); the error reply is the only user-visible signal (desktop maps it to a toast)."""
     try:
         if _ensure_session_db_row(session) is False:
-            return _err(
+            error = _err(
                 rid, 5072,
                 "session storage unavailable: "
                 f"{_db_error or 'state.db could not be opened'} — the message "
                 "was not saved; repair state.db and try again")
-        _persist_branch_seed(session)
+        else:
+            _persist_branch_seed(session)
+            return None
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
-        with session["history_lock"]:
-            session["running"] = False
-            session["last_active"] = time.time()
-            _clear_inflight_turn(session)
         if is_disk_full_error(exc):
-            return _err(
+            error = _err(
                 rid, 5070,
                 "disk full: session storage could not be written — free some disk space and try again")
-        logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
-        return _err(rid, 5071, f"session storage could not be written: {exc}")
-    return None
+        else:
+            logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
+            error = _err(rid, 5071, f"session storage could not be written: {exc}")
+    # No turn thread will start, so neither resume nor the busy queue may see
+    # this rejected prompt as live. Release the slot a turn would normally own.
+    with session["history_lock"]:
+        session["running"] = False
+        session["last_active"] = time.time()
+        session.pop("_hosted_room_task", None)
+        _clear_inflight_turn(session)
+        _release_active_session_slot(session)
+    return error
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback):
+def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author=None):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -494,7 +501,7 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
-        terminal_callback=hosted_terminal_callback)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
 
 
 _TRUNCATION_PARAMS = (
@@ -548,6 +555,13 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    from tools.bot_relay import DeliveryAuthor
+
+    # Only the relay handler can build a DeliveryAuthor. A dict here is a client claiming a sender.
+    raw_author = params.get("_turn_author")
+    if raw_author is not None and not isinstance(raw_author, DeliveryAuthor):
+        return _err(rid, 4124, "turn author is stamped by the gateway, never by a client")
+    turn_author = raw_author.author if raw_author is not None else None
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
@@ -592,7 +606,7 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")))
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -604,6 +618,9 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     if turn_isolation:
+        if turn_author:
+            logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
+                         turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind)
         if not isolated_response.get("error"):
@@ -628,7 +645,7 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback),
+            rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
@@ -1094,7 +1111,8 @@ def _(rid, params: dict) -> dict:
 _LATE_RESPOND_KEYS = {
     "terminal.read.respond": "text", "preview.read.respond": "text", "preview.act.respond": "text",
     "window.read.respond": "text", "tour.respond": "text", "mcp.setup.respond": "result",
-    "sudo.respond": "password", "secret.respond": "value"}
+    "sudo.respond": "password", "secret.respond": "value", "vault.unlock.respond": "password",
+    "vault.save_login.respond": "login", "vault.code.respond": "code"}
 for _name, _key in _LATE_RESPOND_KEYS.items():
     method(_name)(lambda rid, params, _k=_key: _respond(rid, params, _k, allow_expired=True))
 del _name, _key

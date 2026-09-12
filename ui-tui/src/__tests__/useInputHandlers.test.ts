@@ -164,7 +164,8 @@ describe('dismissSensitivePrompt', () => {
 
     const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, {
       secret: 'localized secret cancellation',
-      sudo: 'localized sudo cancellation'
+      sudo: 'localized sudo cancellation',
+      vaultUnlock: 'localized vault cancellation'
     })
 
     expect(getOverlayState().sudo).toBeNull()
@@ -181,12 +182,31 @@ describe('dismissSensitivePrompt', () => {
 
     const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, {
       secret: 'localized secret cancellation',
-      sudo: 'localized sudo cancellation'
+      sudo: 'localized sudo cancellation',
+      vaultUnlock: 'localized vault cancellation'
     })
 
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalledWith('localized secret cancellation')
     expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
+    await pending
+  })
+
+  it('clears a vault unlock overlay with its localized backend message', async () => {
+    resetOverlayState()
+    patchOverlayState({ vaultUnlock: { backend: '1password', displayName: '1Password', requestId: 'vault-1' } })
+    const rpc = vi.fn().mockResolvedValue(null)
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, {
+      secret: 'localized secret cancellation',
+      sudo: 'localized sudo cancellation',
+      vaultUnlock: 'localized vault cancellation'
+    })
+
+    expect(getOverlayState().vaultUnlock).toBeNull()
+    expect(sys).toHaveBeenCalledWith('localized vault cancellation')
+    expect(rpc).toHaveBeenCalledWith('vault.unlock.respond', { password: '', request_id: 'vault-1' })
     await pending
   })
 })

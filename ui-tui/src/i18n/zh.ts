@@ -1221,6 +1221,7 @@ const catalog: Record<TranslationKey, string> = {
   'sys.steerQueuedNoTurn': '没有活跃轮次，已加入队列：「{text}」',
   'sys.steerRejected': '引导已拒绝',
   'sys.sudoCancelled': 'sudo 已取消',
+  'sys.vaultStaysLocked': '{name} 保持锁定',
   'sys.voiceError': '语音错误：{message}',
   'sys.voiceModeOff': '语音：模式未开启——用 /voice on 启用',
   'sys.voiceStillTranscribing': '语音：仍在转写，请稍后再试',

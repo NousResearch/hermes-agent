@@ -1,7 +1,7 @@
 # Radio
 
 Bundled Hermes Desktop plugin, **off by default**. Enable **Radio** in
-Settings → Plugins. Playback starts only when you press Play.
+Capabilities → Plugins. Playback starts only when you press Play.
 
 ## Controls
 
@@ -36,7 +36,13 @@ Both waveform sizes use real audio samples, with two dim previous traces.
 Silence stays flat; reduced motion freezes the display. Streams that cannot
 be analysed retry without CORS and show an activity indicator, not invented
 levels. Nightride and EVE Radio song metadata is fetched while the picker is
-open and playback is active.
+open and playback is active. Artist names link directly to their profile, never
+search results or a song. Apple's public artist lookup resolves unambiguous exact
+names to Apple Music profiles. MusicBrainz is a fallback for Spotify, Bandcamp,
+or official artist homepages. Missing or ambiguous matches stay plain text, with
+no dead link or reserved icon gap. Artist names are sent to these services only
+while the picker shows live metadata; results are cached for a day. MusicBrainz
+requests are paced across windows. No account or API key is needed.
 
 Audio connects directly to broadcasters. Searches send the typed station query
 to Radio Browser. There are no accounts, keys, analytics, recording, or

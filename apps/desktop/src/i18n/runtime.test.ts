@@ -4,6 +4,7 @@ import { fieldCopyForSchemaKey } from '@/app/settings/field-copy'
 
 import { TRANSLATIONS } from './catalog'
 import { setRuntimeI18nLocale, translateNow } from './runtime'
+import { tr } from './tr'
 import { zh } from './zh'
 
 describe('desktop i18n runtime translator', () => {
@@ -34,6 +35,11 @@ describe('desktop i18n runtime translator', () => {
 
     setRuntimeI18nLocale('zh-hant')
     expect(translateNow('cron.promptPlaceholder')).toBe('代理每次執行時應做什麼？')
+
+    setRuntimeI18nLocale('tr')
+    expect(translateNow('common.save')).toBe('Kaydet')
+    expect(translateNow('settings.toolsets.browserRealProfile.label')).toBe('Gerçek tarayıcı profilimi kullan')
+    expect(translateNow('composer.wakingProfile', 'iş profili')).toBe('iş profili uyandırılıyor…')
   })
 
   it('translates settings copy for newly supported locales', () => {
@@ -57,6 +63,11 @@ describe('desktop i18n runtime translator', () => {
 
     expect(fieldCopyForSchemaKey(zh.settings.fieldLabels, field)).toBe('推理过程块')
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
+
+    expect(fieldCopyForSchemaKey(tr.settings.fieldLabels, field)).toBe('Düşünme Blokları')
+    expect(fieldCopyForSchemaKey(tr.settings.fieldDescriptions, field)).toBe(
+      'Arka uç sağladığında düşünme bölümlerini göster.'
+    )
   })
 
   it('falls back to English when the active locale cannot resolve a key', () => {

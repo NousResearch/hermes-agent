@@ -1,6 +1,9 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { BOTS_LOCALES } from '@/plugins/hermes-bots/i18n'
+import { KANBAN_LOCALES } from '@/plugins/kanban/i18n'
+
 import { I18nProvider, useI18n } from './context'
 import { createPluginI18n, registerPluginLocales, translatePlugin, usePluginI18n } from './plugin-i18n'
 import { setRuntimeI18nLocale } from './runtime'
@@ -63,6 +66,19 @@ describe('plugin locale registry', () => {
 
     setRuntimeI18nLocale('ja')
     expect(i18n.t('greet')).toBe('こんにちは')
+  })
+
+  it('resolves the bundled Turkish Kanban and Bot Mode copy', () => {
+    const disposeKanban = registerPluginLocales('kanban-turkish-test', KANBAN_LOCALES)
+    const disposeBots = registerPluginLocales('bots-turkish-test', BOTS_LOCALES)
+
+    expect(translatePlugin('kanban-turkish-test', 'tr', 'newTask', [])).toBe('Yeni görev')
+    expect(translatePlugin('kanban-turkish-test', 'tr', 'notify.artifacts', [2])).toBe('2 çıktı')
+    expect(translatePlugin('bots-turkish-test', 'tr', 'roster.newBotOrGroup', [])).toBe('Yeni bot veya grup sohbeti')
+    expect(translatePlugin('bots-turkish-test', 'tr', 'group.memberCount', [2])).toBe('2 bot')
+
+    disposeKanban()
+    disposeBots()
   })
 })
 

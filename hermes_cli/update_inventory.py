@@ -369,27 +369,38 @@ def match_runtime_outcomes(
 def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     """Print a loud warning for runtimes the restart phase never touched.
 
-    Returns True when at least one planned runtime is unaccounted; the caller escalates like a
-    STALE/DOWN fleet row (exit 1) — a promised restart silently missed is the class this phase
-    exists to kill.
+    Returns True when at least one unaccounted runtime uses an *implemented*
+    restart mechanism; the caller then escalates like a STALE/DOWN fleet row
+    (exit 1). Unimplemented mechanisms (currently ``respawn-argv`` for unit-less
+    ``serve`` / ``dashboard``) are still printed for visibility (#100479) but
+    are not an outstanding update obligation (#107224).
     """
     missed = [o for o in outcomes if o.get("outcome") == "unaccounted"]
     if not missed:
         return False
+    unimplemented = [o for o in missed if o.get("mechanism") == "respawn-argv"]
+    actionable = [o for o in missed if o.get("mechanism") != "respawn-argv"]
     print()
     print("  ⚠ Planned runtimes the restart phase never touched:")
     for o in missed:
-        print(f"    ✗ {o['kind']} [{o['profile']}] pid {o['pid']} — planned mechanism: {o['mechanism']}")
-    print("    Restart them manually, then verify:")
-    if any(o.get("kind") not in _SERVE_KINDS for o in missed):
-        print("      hermes gateway restart                # active profile")
-        print("      hermes -p <profile> gateway restart   # named profile")
-    if any(o.get("kind") in _SERVE_KINDS for o in missed):
-        # A serve/dashboard is not reachable by any `gateway restart` command: name the process, not the wrong verb.
-        # See #100479.
-        print("      systemctl --user restart hermes-serve.service   # unit-managed serve")
-        print("      relaunch `hermes serve` / `hermes dashboard` / the Desktop app")
-    return True
+        print(f"    ✗ {o['kind']} [{o['profile']}] pid {o['pid']} — planned mechanism: {o.get('mechanism')}")
+    if unimplemented:
+        print(
+            "    The respawn-argv mechanism is not implemented and is not an"
+            " outstanding update obligation. Relaunch those serve/dashboard"
+            " processes when convenient."
+        )
+    if actionable:
+        print("    Restart them manually, then verify:")
+        if any(o.get("kind") not in _SERVE_KINDS for o in actionable):
+            print("      hermes gateway restart                # active profile")
+            print("      hermes -p <profile> gateway restart   # named profile")
+        if any(o.get("kind") in _SERVE_KINDS for o in actionable):
+            # A serve/dashboard is not reachable by any `gateway restart` command: name the process, not the wrong verb.
+            # See #100479. Do not recommend hermes-serve.service for respawn-argv leftovers (#107224).
+            print("      systemctl --user restart hermes-serve.service   # unit-managed serve")
+            print("      relaunch `hermes serve` / `hermes dashboard` / the Desktop app")
+    return bool(actionable)
 
 
 def record_plan_in_receipt(plan: UpdatePlan) -> None:

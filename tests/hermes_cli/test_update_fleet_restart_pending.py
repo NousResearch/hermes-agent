@@ -413,15 +413,19 @@ def test_clean_update_warns_about_surviving_pre_update_serve_runtime(
     assert "pre-update code" in out
 
 
-def test_clean_update_escalates_surviving_serve_as_unaccounted(
+def test_clean_update_surviving_serve_is_unaccounted_but_not_an_obligation(
     monkeypatch, tmp_path, capsys
 ):
-    """#100479 end to end: the plan inventoried a gateway (restarted through
-    ``hermes-gateway.service``) and an unmanaged ``serve`` on the same
-    default profile. The serve survives the update as the SAME process, so
-    the update must (1) warn, (2) reconcile it as ``unaccounted`` instead of
-    borrowing the gateway's restart, and (3) exit 1 with a ``partial``
-    receipt — not print a clean success."""
+    """#100479 visibility + #107224 not an obligation: the plan inventoried
+    a gateway (restarted through ``hermes-gateway.service``) and an unmanaged
+    ``serve`` on the same default profile. The serve survives as the SAME
+    process, so the update must (1) warn, (2) reconcile it as ``unaccounted``
+    instead of borrowing the gateway's restart, and (3) succeed and clear
+    the marker — respawn-argv is not an outstanding update obligation.
+
+    Fleet snapshot is pinned healthy so empty ``collect_fleet_versions`` plus
+    a planned gateway cannot independently fail-close the update.
+    """
     from hermes_cli.update_inventory import (
         RuntimeRecord, UpdatePlan, _restart_mechanism,
     )
@@ -460,21 +464,108 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
         pi, "ledger_entries",
         lambda **_k: [{"pid": 5555, "purpose": "serve", "create_time": 1000.0}],
     )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **_k: [{
+            "profile": "default",
+            "pid": 4444,
+            "code_sha": "def456",
+            "state": "current",
+        }],
+    )
+    monkeypatch.setattr(update_cmd_fleet._time, "sleep", lambda *_a, **_k: None)
 
-    with pytest.raises(SystemExit) as excinfo:
-        hermes_main.cmd_update(args)
-    assert excinfo.value.code == 1
+    hermes_main.cmd_update(args)
 
     out = capsys.readouterr().out
     assert "pid 5555" in out and "pre-update code" in out
     assert "Planned runtimes the restart phase never touched" in out
-    assert "serve [default] pid 5555" in out
+    never_touched = out.split("never touched", 1)[1]
+    assert "serve [default] pid 5555" in never_touched
 
     latest = get_hermes_home() / "logs" / "update_receipts" / "latest.json"
     receipt = json.loads(latest.read_text(encoding="utf-8"))
-    assert receipt["outcome"] == "partial"
+    assert receipt["outcome"] == "success"
     by_pid = {o["pid"]: o["outcome"] for o in receipt["runtime_outcomes"]}
     assert by_pid == {4444: "restarted", 5555: "unaccounted"}
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_clean_update_surviving_unitless_serve_is_visible_not_obligation(
+    monkeypatch, tmp_path, capsys
+):
+    """#107224 sibling of the #100479 e2e: gateway unit restarted, unit-less
+    serve pid 5555 still the same incarnation. Visibility stays (unaccounted
+    receipt row + never-touched warning) but the unimplemented respawn-argv
+    leftover is not an update obligation — no exit 1, marker cleared.
+
+    Fleet snapshot is pinned healthy so the only incomplete signal under test
+    is ``report_unaccounted_runtimes`` (empty collect_fleet_versions plus a
+    planned gateway would otherwise fail-closed on its own).
+    """
+    from hermes_cli.update_inventory import (
+        RuntimeRecord, UpdatePlan, _restart_mechanism,
+    )
+    import hermes_cli.update_inventory as ui
+
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
+
+    plan = UpdatePlan()
+    plan.runtimes = [
+        RuntimeRecord(kind="gateway", profile="default", pid=4444,
+                      supervisor="systemd",
+                      restart_via=_restart_mechanism("systemd", "default")),
+        RuntimeRecord(kind="serve", profile="default", pid=5555,
+                      supervisor="manual-serve",
+                      restart_via=_restart_mechanism("manual-serve", "default"),
+                      detail={"create_time": 1000.0}),
+    ]
+    monkeypatch.setattr(ui, "collect_runtime_inventory", lambda: plan)
+    real_match = ui.match_runtime_outcomes
+
+    def _match(p, **kw):
+        kw["restarted_services"] = list(kw.get("restarted_services") or []) + [
+            "hermes-gateway.service"
+        ]
+        return real_match(p, **kw)
+
+    monkeypatch.setattr(ui, "match_runtime_outcomes", _match)
+    import hermes_cli.process_identity as pi
+
+    monkeypatch.setattr(
+        pi, "ledger_entries",
+        lambda **_k: [{"pid": 5555, "purpose": "serve", "create_time": 1000.0}],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **_k: [{
+            "profile": "default",
+            "pid": 4444,
+            "code_sha": "def456",
+            "state": "current",
+        }],
+    )
+    monkeypatch.setattr(update_cmd_fleet._time, "sleep", lambda *_a, **_k: None)
+
+    hermes_main.cmd_update(args)
+
+    out = capsys.readouterr().out
+    assert "pid 5555" in out and "pre-update code" in out
+    assert "Planned runtimes the restart phase never touched" in out
+    never_touched = out.split("never touched", 1)[1]
+    assert "serve [default] pid 5555" in never_touched
+    assert "respawn-argv" in never_touched
+    # Obligation hint only; the stale-serve warning above this block may still
+    # mention hermes-serve.service as a generic relaunch example.
+    assert "hermes-serve.service" not in never_touched
+
+    latest = get_hermes_home() / "logs" / "update_receipts" / "latest.json"
+    receipt = json.loads(latest.read_text(encoding="utf-8"))
+    assert receipt["outcome"] == "success"
+    by_pid = {o["pid"]: o["outcome"] for o in receipt["runtime_outcomes"]}
+    assert by_pid == {4444: "restarted", 5555: "unaccounted"}
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
 
 
 def test_interrupt_between_pull_and_restart_leaves_marker(

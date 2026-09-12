@@ -5,8 +5,10 @@ Pins:
   derives display strings (policy table is data, not prose).
 - match_runtime_outcomes classifies every planned runtime against the restart
   phase's bookkeeping: restarted / stopped / failed / unaccounted.
-- report_unaccounted_runtimes escalates (returns True) ONLY on unaccounted
-  rows — the silent-miss tripwire.
+- report_unaccounted_runtimes prints every unaccounted row, but escalates
+  (returns True) only for implemented mechanisms. Unimplemented
+  ``respawn-argv`` leftovers stay visible (#100479) without becoming an
+  update obligation (#107224).
 """
 
 from hermes_cli.update_inventory import (
@@ -191,9 +193,11 @@ def test_external_supervisor_counts_as_restarted():
 
 
 def test_unmanaged_serve_runtime_under_default_profile_is_unaccounted():
-    """#100479: an sshd-spawned `serve --isolated` has no systemd unit and
-    shares the default profile with the gateway. A gateway-only restart
-    must not be read as covering it — it must trip the tripwire instead."""
+    """#100479 visibility + #107224 not an obligation: an sshd-spawned
+    ``serve --isolated`` has no systemd unit and shares the default profile
+    with the gateway. A gateway-only restart must not be read as covering
+    it (still ``unaccounted``) but respawn-argv is not an outstanding
+    update obligation."""
     serve_runtime = RuntimeRecord(
         kind="serve",
         profile="default",
@@ -209,7 +213,7 @@ def test_unmanaged_serve_runtime_under_default_profile_is_unaccounted():
     by_pid = {o["pid"]: o["outcome"] for o in outcomes}
     assert by_pid[100] == "restarted"
     assert by_pid[900] == "unaccounted"
-    assert report_unaccounted_runtimes(outcomes) is True
+    assert report_unaccounted_runtimes(outcomes) is False
 
 
 def _serve(profile: str, pid: int, kind: str = "serve") -> RuntimeRecord:
@@ -301,11 +305,137 @@ def test_unaccounted_serve_report_names_serve_remedy_not_gateway_restart(capsys)
         restarted_services=["hermes-gateway"], relaunched_profiles=[],
         externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
     )
-    assert report_unaccounted_runtimes(outcomes) is True
+    assert report_unaccounted_runtimes(outcomes) is False
     out = capsys.readouterr().out
     assert "serve [default] pid 900" in out
-    assert "hermes-serve.service" in out
+    assert "hermes-serve.service" not in out
     assert "hermes gateway restart" not in out
+    assert "not an outstanding update obligation" in out
+
+
+def test_respawn_argv_only_unaccounted_is_printed_but_does_not_escalate(capsys):
+    """#107224: a unit-less serve classified ``respawn-argv`` stays visible
+    but is not an outstanding update obligation — the mechanism is not
+    implemented, and recommending ``hermes-serve.service`` is the wrong
+    remedy (Desktop-SSH isolated tokens are unlinked at startup)."""
+    outcomes = match_runtime_outcomes(
+        _plan(_serve("default", 2124430)),
+        restarted_services=["hermes-gateway.service"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert outcomes[0]["mechanism"] == "respawn-argv"
+    assert outcomes[0]["outcome"] == "unaccounted"
+    assert report_unaccounted_runtimes(outcomes) is False
+    out = capsys.readouterr().out
+    assert "never touched" in out
+    assert "2124430" in out
+    assert "respawn-argv" in out
+    assert "hermes-serve.service" not in out
+    assert "hermes gateway restart" not in out
+    assert "not implemented" in out
+    assert "not an outstanding update obligation" in out
+
+
+def test_actionable_unaccounted_still_escalates_including_mixed(capsys):
+    """Fail-open: any unaccounted mechanism other than respawn-argv still
+    escalates. Mixed actionable + respawn-argv still escalates (because of
+    the actionable row) and still prints the leftover serve."""
+    manual = match_runtime_outcomes(
+        _plan(_rt("default", 100)),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert manual[0]["mechanism"] == "manual"
+    assert report_unaccounted_runtimes(manual) is True
+
+    systemd_gw = match_runtime_outcomes(
+        _plan(_rt("default", 101, supervisor="systemd")),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert systemd_gw[0]["mechanism"] == "systemd"
+    assert report_unaccounted_runtimes(systemd_gw) is True
+
+    systemd_serve = RuntimeRecord(
+        kind="serve",
+        profile="default",
+        pid=902,
+        supervisor="systemd",
+        restart_via=_restart_mechanism("systemd", "default"),
+    )
+    systemd_serve_out = match_runtime_outcomes(
+        _plan(systemd_serve),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert systemd_serve_out[0]["mechanism"] == "systemd"
+    assert systemd_serve_out[0]["outcome"] == "unaccounted"
+    assert report_unaccounted_runtimes(systemd_serve_out) is True
+    serve_out = capsys.readouterr().out
+    assert "hermes-serve.service" in serve_out
+
+    desktop_serve = RuntimeRecord(
+        kind="serve",
+        profile="default",
+        pid=88,
+        supervisor="desktop",
+        restart_via=_restart_mechanism("desktop", "default"),
+    )
+    desktop_out = match_runtime_outcomes(
+        _plan(desktop_serve),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert desktop_out[0]["mechanism"] == "desktop"
+    assert report_unaccounted_runtimes(desktop_out) is True
+    capsys.readouterr()  # drain desktop serve remedy hint
+
+    mixed = match_runtime_outcomes(
+        _plan(_rt("default", 119641, supervisor="systemd"), _serve("default", 2124430)),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert {o["pid"]: o["outcome"] for o in mixed} == {
+        119641: "unaccounted", 2124430: "unaccounted",
+    }
+    assert report_unaccounted_runtimes(mixed) is True
+    mixed_out = capsys.readouterr().out
+    assert "119641" in mixed_out and "2124430" in mixed_out
+    assert "respawn-argv" in mixed_out
+    assert "hermes gateway restart" in mixed_out
+    # The only serve miss is respawn-argv — do not recommend a static unit.
+    assert "hermes-serve.service" not in mixed_out
+
+    assert report_unaccounted_runtimes([
+        {"kind": "gateway", "profile": "default", "pid": 1,
+         "mechanism": "mystery", "outcome": "unaccounted"},
+    ]) is True
+    assert report_unaccounted_runtimes([
+        {"kind": "gateway", "profile": "default", "pid": 2, "outcome": "unaccounted"},
+    ]) is True
+
+
+def test_restarted_gateway_plus_respawn_argv_serve_does_not_escalate(capsys):
+    """Reported receipt shape (#107224): systemd gateway restarted + unit-less
+    serve unaccounted must not re-arm the fleet_restart_pending marker."""
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("default", 119641, supervisor="systemd"), _serve("default", 2124430)),
+        restarted_services=["hermes-gateway.service"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    by_pid = {o["pid"]: o for o in outcomes}
+    assert by_pid[119641]["outcome"] == "restarted"
+    assert by_pid[119641]["mechanism"] == "systemd"
+    assert by_pid[2124430]["outcome"] == "unaccounted"
+    assert by_pid[2124430]["mechanism"] == "respawn-argv"
+    assert report_unaccounted_runtimes(outcomes) is False
+    out = capsys.readouterr().out
+    assert "never touched" in out
+    assert "2124430" in out and "respawn-argv" in out
+    assert "119641" not in out
+    assert "hermes-serve.service" not in out
+    assert "hermes gateway restart" not in out
+    assert "not an outstanding update obligation" in out
 
 
 def test_mixed_fleet_only_the_missed_one_escalates(capsys):

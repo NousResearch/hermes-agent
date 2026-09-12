@@ -179,8 +179,13 @@ The union roster is what multi-gateway surfaces (and the built-in
 
 Each `(connection, profile)` pair gets its own socket, and Desktop caches the
 gateway descriptor it dialed so the next open joins the same connection —
-background agents keep streaming while you look at another gateway. Nothing is
-spawned or reaped on your behalf: each gateway owns its own lifetime.
+background agents keep streaming while you look at another gateway. Desktop
+never spawns or reaps a *remote* gateway; each one owns its own lifetime. For a
+**local** profile, the first open runs `hermes gateway ensure`, which attaches
+to that profile's running gateway or, when there is none, installs and starts a
+persistent per-profile gateway (a systemd/launchd service where one exists,
+otherwise a detached daemon). That gateway keeps running after you close the
+app — it has no idle shutdown — until you stop it with `hermes gateway stop`.
 
 Approval buttons route back to the session's owning backend, not whichever
 profile is currently selected. For a local secondary profile, Desktop can use

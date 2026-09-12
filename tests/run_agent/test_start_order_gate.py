@@ -95,6 +95,9 @@ def _make_agent(monkeypatch):
     )
     stub.interrupt = _ra.AIAgent.interrupt.__get__(stub)
     stub.clear_interrupt = _ra.AIAgent.clear_interrupt.__get__(stub)
+    # Real peek (the batch wait-loop calls it every poll); the __init__-less stub
+    # has no _pending_steer_lock, so it reads the absent slot unlocked → False.
+    stub._has_pending_steer = _ra.AIAgent._has_pending_steer.__get__(stub)
     stub._apply_pending_steer_to_tool_results = lambda *a, **kw: None
     stub._guardrail_block_result = lambda d: json.dumps({"error": "blocked"})
     return stub

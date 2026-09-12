@@ -1042,12 +1042,18 @@ install_node_line() {
 
     # Resolve the latest v${node_line}.x.x tarball name from the index page
     local index_url="https://nodejs.org/dist/latest-v${node_line}.x/"
-    local tarball_name
-    tarball_name=$(curl -fsSL "$index_url" \
-        | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
-        | head -1)
+    local tarball_name=""
+    # `tar xf` shells out to xz for .tar.xz; minimal Debian/DietPi/WSL images ship tar without it
+    # and the extract dies mid-way ("xz: Cannot exec"). Only pick .tar.xz when xz is present (#11197).
+    if command -v xz >/dev/null 2>&1; then
+        tarball_name=$(curl -fsSL "$index_url" \
+            | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
+            | head -1)
+    else
+        log_info "xz not found — using the .tar.gz Node.js archive"
+    fi
 
-    # Fallback to .tar.gz if .tar.xz not available
+    # Fallback to .tar.gz if .tar.xz not available (or xz is missing)
     if [ -z "$tarball_name" ]; then
         tarball_name=$(curl -fsSL "$index_url" \
             | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.gz" \

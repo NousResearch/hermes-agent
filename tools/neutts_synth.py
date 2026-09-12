@@ -12,6 +12,12 @@ import struct
 import sys
 from pathlib import Path
 
+# Both `python tools/neutts_synth.py` and `python -m tools.neutts_synth` are supported.
+if __package__:
+    from .tts_tool_segments import decode_segments, pcm_from_samples, write_pcm_segments
+else:
+    from tts_tool_segments import decode_segments, pcm_from_samples, write_pcm_segments
+
 
 def _write_wav(path: str, samples, sample_rate: int = 24000) -> None:
     """Write a WAV file from float32 samples (no soundfile dependency)."""
@@ -28,7 +34,9 @@ def _write_wav(path: str, samples, sample_rate: int = 24000) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="NeuTTS synthesis helper")
-    parser.add_argument("--text", required=True, help="Text to synthesize")
+    speech = parser.add_mutually_exclusive_group(required=True)
+    speech.add_argument("--text", help="Text to synthesize")
+    speech.add_argument("--segments-stdin", action="store_true", help="Read speech/pause segments as JSON from stdin")
     parser.add_argument("--out", required=True, help="Output WAV path")
     parser.add_argument("--ref-audio", required=True, help="Reference voice audio path")
     parser.add_argument("--ref-text", required=True, help="Reference voice transcript path")
@@ -36,6 +44,12 @@ def main():
                         help="HuggingFace backbone model repo")
     parser.add_argument("--device", default="cpu", help="Device (cpu/cuda/mps)")
     args = parser.parse_args()
+    segments = None
+    if args.segments_stdin:
+        try:
+            segments = decode_segments(sys.stdin.read())
+        except (ValueError, TypeError) as exc:
+            parser.error(str(exc))
 
     ref_audio = Path(args.ref_audio).expanduser()
     ref_text_path = Path(args.ref_text).expanduser()
@@ -59,15 +73,20 @@ def main():
         backbone_device="gpu" if args.device == "cuda" else args.device,
         codec_repo="neuphonic/neucodec",
         codec_device=args.device)
-    wav = tts.infer(args.text, tts.encode_reference(str(ref_audio)), ref_text)
-
+    reference = tts.encode_reference(str(ref_audio))
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        import soundfile as sf
-        sf.write(str(out_path), wav, 24000)
-    except ImportError:
-        _write_wav(str(out_path), wav, 24000)
+    if segments is not None:
+        write_pcm_segments(str(out_path), (
+            (segment, pcm_from_samples(tts.infer(segment.text, reference, ref_text)))
+            for segment in segments))
+    else:
+        wav = tts.infer(args.text, reference, ref_text)
+        try:
+            import soundfile as sf
+            sf.write(str(out_path), wav, 24000)
+        except ImportError:
+            _write_wav(str(out_path), wav, 24000)
     print(f"OK: {out_path}", file=sys.stderr)
 
 

@@ -56,6 +56,8 @@ from tools.tts_tool_providers import (
     _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
     _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
 from tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generate_piper_tts
+from tools.tts_tool_segments import (
+    LOCAL_TTS_PROVIDERS, SpeechChunk, SpeechSegment, local_paragraph_pause_ms, plan_speech_chunks)
 from tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
@@ -225,11 +227,18 @@ def _select_builtin_engine(provider: str) -> tuple:
         "or set up NeuTTS for local synthesis.")
 
 
-def _synthesize_builtin(engine: str, text: str, file_str: str, tts_config: Dict[str, Any], instructions: Optional[str]) -> None:
+def _synthesize_builtin(
+    engine: str, text: str, file_str: str, tts_config: Dict[str, Any], instructions: Optional[str],
+    *, segments: Optional[tuple[SpeechSegment, ...]] = None,
+) -> None:
     """Run the already-selected built-in *engine*."""
     entry = _BUILTIN_DISPATCH.get(engine)
     logger.info("Generating speech with %s...", entry[1] if entry else "Edge TTS")
-    if entry is None:
+    if segments is not None:
+        if engine not in LOCAL_TTS_PROVIDERS:
+            raise ValueError("Structured speech segments require a local TTS engine")
+        globals()[entry[2]](text, file_str, tts_config, segments=segments)
+    elif entry is None:
         _run_edge_tts(text, file_str, tts_config)
     elif engine == "openai":
         _generate_openai_tts(text, file_str, tts_config, instructions=instructions)
@@ -330,6 +339,7 @@ def _tool_failure(prefix: str, provider: str, exc: BaseException) -> str:
 def _text_to_speech_single(
     text: str, file_str: str, *, provider: str, tts_config: Dict[str, Any],
     command_provider_config: Optional[Dict[str, Any]], want_opus: bool, instructions: Optional[str],
+    segments: Optional[tuple[SpeechSegment, ...]] = None,
 ) -> str:
     """Synthesize one provider-safe chunk into *file_str*; returns the result envelope.
 
@@ -355,7 +365,10 @@ def _text_to_speech_single(
             provider, error = _select_builtin_engine(provider)
             if error:
                 return error
-            _synthesize_builtin(provider, text, file_str, tts_config, instructions)
+            if segments is None:
+                _synthesize_builtin(provider, text, file_str, tts_config, instructions)
+            else:
+                _synthesize_builtin(provider, text, file_str, tts_config, instructions, segments=segments)
         if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
             return _error_json(f"TTS generation produced no output (provider: {provider})")
 
@@ -380,7 +393,9 @@ class _ChunkFailed(Exception):
     """One chunk's synthesis returned an error envelope; message is the final tool error text."""
 
 
-def _synthesize_chunks(chunks: List[str], base_path: Path, generated_artifacts: set, **single_kwargs) -> tuple:
+def _synthesize_chunks(
+    chunks: List[str | SpeechChunk], base_path: Path, generated_artifacts: set, **single_kwargs,
+) -> tuple:
     """Synthesize chunks into ``<base>.chunkNNN<ext>`` (or ``base`` alone) -> ``(encoded_paths, results)``.
 
     Every touched path lands in *generated_artifacts* for the caller's sweep. Raises
@@ -393,7 +408,11 @@ def _synthesize_chunks(chunks: List[str], base_path: Path, generated_artifacts: 
         if len(chunks) > 1:
             chunk_path = base_path.with_name(f"{base_path.stem}.chunk{index:03d}{base_path.suffix}")
         generated_artifacts.add(str(chunk_path))
-        raw_result = _text_to_speech_single(chunk, str(chunk_path), **single_kwargs)
+        if isinstance(chunk, SpeechChunk):
+            raw_result = _text_to_speech_single(
+                chunk.text, str(chunk_path), segments=chunk.segments, **single_kwargs)
+        else:
+            raw_result = _text_to_speech_single(chunk, str(chunk_path), **single_kwargs)
         try:
             chunk_result = json.loads(raw_result)
         except (json.JSONDecodeError, TypeError):
@@ -420,17 +439,23 @@ def text_to_speech_tool(
     separate valid files and no over-limit artifact is ever returned."""
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
+    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    try:
+        pause_ms = local_paragraph_pause_ms(provider, tts_config)
+    except ValueError as exc:
+        return _tool_failure("TTS configuration error", provider, exc)
     try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
         from tools.tts_text_normalize import prepare_spoken_text
-        text = prepare_spoken_text(text, max_chars=None)
+        text = (prepare_spoken_text(text, max_chars=None, preserve_paragraphs=True) if pause_ms
+                else prepare_spoken_text(text, max_chars=None))
     except Exception:
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
-    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
-    chunks = _split_text_for_tts(text, max_len)
+    chunks = (plan_speech_chunks(text, max_len, pause_ms) if pause_ms
+              else _split_text_for_tts(text, max_len))
     if not chunks:
         return tool_error("Text is required", success=False)
     if len(chunks) > 1:

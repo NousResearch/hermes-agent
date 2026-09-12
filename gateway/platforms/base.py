@@ -2707,7 +2707,7 @@ class BasePlatformAdapter(ABC):
         job."""
         try:
             from tools.tts_text_normalize import prepare_spoken_text
-            return prepare_spoken_text(text, max_chars=None)
+            return prepare_spoken_text(text, max_chars=None, preserve_paragraphs=True)
         except Exception:
             # Keep auto-TTS best-effort if the normalizer ever fails.
             text = re.sub(r'<think[\s>].*?</think>', ' ', text, flags=re.DOTALL)

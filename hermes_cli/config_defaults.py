@@ -1036,16 +1036,19 @@ DEFAULT_CONFIG = {
         },
         "minimax": {"model": "speech-02-hd", "voice_id": "English_expressive_narrator"},
         "kittentts": {
+            "paragraph_pause_ms": 600,  # 0 disables inter-paragraph silence
             "model": "KittenML/kitten-tts-nano-0.8-int8",  # nano 25MB; micro 41MB; mini 80MB
             "voice": "Jasper",
         },
         "neutts": {
+            "paragraph_pause_ms": 600,  # 0 disables inter-paragraph silence
             "ref_audio": "",  # path to reference voice audio (empty = bundled default)
             "ref_text": "",   # path to reference voice transcript (empty = bundled default)
             "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
             "device": "cpu",  # cpu, cuda, or mps
         },
         "piper": {
+            "paragraph_pause_ms": 600,  # 0 disables inter-paragraph silence
             # Voice name (downloaded on first use) or absolute path to a .onnx file; list:
             # github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md. Optional keys: voices_dir
             # (~/.hermes/cache/piper-voices/), use_cuda, length_scale (2.0 = twice as slow),

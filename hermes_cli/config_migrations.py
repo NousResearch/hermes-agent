@@ -647,6 +647,19 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "  ✓ Removed gateway.multiplex_profile_allowlist — the multiplexing gateway now serves "
             "every profile under profiles/. Delete or archive a profile you do not want served."),
         extra_guard=lambda raw: "multiplex_profile_allowlist" in raw)),
+    # 43 → 44: curator prunes faster — stale 30→14 days, archive 90→30 days. A skill nobody has
+    # touched in a month is prompt weight, not knowledge; archival is recoverable. Only the OLD
+    # defaults are rewritten; an explicit user value is preserved.
+    (44, _rewrite_stale_default(
+        section="curator", key="stale_after_days", old=30, new=14,
+        added="curator.stale_after_days=14 (was: 30)",
+        message="  ✓ curator.stale_after_days 30→14 — unused skills are flagged stale after two weeks.")),
+    (44, _rewrite_stale_default(
+        section="curator", key="archive_after_days", old=90, new=30,
+        added="curator.archive_after_days=30 (was: 90)",
+        message=(
+            "  ✓ curator.archive_after_days 90→30 — skills unused for a month are archived to "
+            "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
 )
 
 

@@ -682,6 +682,25 @@ def _kill_process_group_posix(proc) -> None:
         descendants = psutil.Process(proc.pid).children(recursive=True)
     except Exception:
         descendants = []
+    # Darwin #97296: tool child may share the gateway's process group. killpg
+    # would take down the gateway — fall back to per-process kill (#107029).
+    # getpgrp unavailable/raising must fail-open to the existing killpg path.
+    try:
+        sharing_own_pgrp = pgid == os.getpgrp()
+    except Exception:
+        sharing_own_pgrp = False
+    if sharing_own_pgrp:
+        for child in descendants:
+            try:
+                child.kill()
+            except Exception:
+                pass
+        try:
+            proc.kill()
+            proc.wait(timeout=2.0)
+        except Exception:
+            pass
+        return
     try:
         os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
         if not _wait_for_group_exit(proc, pgid, 1.0):

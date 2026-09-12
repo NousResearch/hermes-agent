@@ -1,5 +1,6 @@
 """Tests for hermes_constants module."""
 
+import ctypes
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -1141,8 +1142,8 @@ class TestWindowsNodeArchDetection:
         # Prism reports the emulated x64 view in both env vars...
         monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
         monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
-        # ...but GetNativeSystemInfo sees the real ARM64 host (12 = PROCESSOR_ARCHITECTURE_ARM64).
-        monkeypatch.setattr(hermes_constants, "_windows_native_machine_code", lambda: 12)
+        # ...but IsWow64Process2's pNativeMachine sees the real ARM64 host (IMAGE_FILE_MACHINE_ARM64).
+        monkeypatch.setattr(hermes_constants, "_windows_native_machine_code", lambda: 0xAA64)
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setattr(hermes_constants, "managed_node_tree_in_use", lambda _home=None: False)
 
@@ -1190,7 +1191,7 @@ class TestWindowsNodeArchDetection:
         node_exe.write_text("fake-x64-node", encoding="utf-8")
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
         monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setattr(hermes_constants, "_windows_native_machine_code", lambda: 12)  # real ARM64 host
+        monkeypatch.setattr(hermes_constants, "_windows_native_machine_code", lambda: 0xAA64)  # real ARM64 host (IMAGE_FILE_MACHINE_ARM64)
 
         def fake_probe(argv, **kwargs):
             class _Result:
@@ -1214,7 +1215,7 @@ class TestWindowsNodeArchDetection:
         (node_dir / "node.exe").write_text("fake-arm64-node", encoding="utf-8")
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
         monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setattr(hermes_constants, "_windows_native_machine_code", lambda: 12)
+        monkeypatch.setattr(hermes_constants, "_windows_native_machine_code", lambda: 0xAA64)
 
         def fake_probe(argv, **kwargs):
             class _Result:
@@ -1230,6 +1231,62 @@ class TestWindowsNodeArchDetection:
         monkeypatch.setattr(hermes_constants, "_run_version_probe", fake_probe)
 
         assert hermes_constants._managed_node_tree_outdated(home) is False
+
+
+class TestWindowsNativeMachineCodeQuery:
+    """_windows_native_machine_code must go through IsWow64Process2's pNativeMachine out-param,
+    not GetNativeSystemInfo -- which, per Microsoft's own docs, reports the *emulated* view (not
+    the true host) when called from an x86/x64 process under Prism emulation on ARM64, i.e. the
+    exact #108893 scenario. These drive the real ctypes marshaling code (not a monkeypatched
+    wrapper) so a regression back to GetNativeSystemInfo-only behavior fails here."""
+
+    @staticmethod
+    def _fake_kernel32(*, native_machine=None, include_get_native_system_info=False):
+        kernel32 = SimpleNamespace(GetCurrentProcess=lambda: -1)
+        if native_machine is not None:
+
+            def fake_iswow64process2(_handle, process_machine_ptr, native_machine_ptr):
+                process_machine_ptr.contents.value = 0x8664  # running as x64 under emulation
+                native_machine_ptr.contents.value = native_machine
+                return 1
+
+            kernel32.IsWow64Process2 = fake_iswow64process2
+        if include_get_native_system_info:
+            kernel32.GetNativeSystemInfo = lambda *_a, **_k: (_ for _ in ()).throw(
+                AssertionError("GetNativeSystemInfo must not be called; it reports the emulated view")
+            )
+        return kernel32
+
+    def test_reads_native_machine_from_iswow64process2(self, monkeypatch):
+        fake_windll = SimpleNamespace(kernel32=self._fake_kernel32(native_machine=0xAA64))  # IMAGE_FILE_MACHINE_ARM64
+        monkeypatch.setattr(ctypes, "windll", fake_windll, raising=False)
+
+        assert hermes_constants._windows_native_machine_code() == 0xAA64
+        assert hermes_constants._windows_native_arch() == "arm64"
+
+    def test_ignores_getnativesysteminfo_even_when_present(self, monkeypatch):
+        """A fake environment where GetNativeSystemInfo exists (and would raise if called) proves
+        the real host arch is read via IsWow64Process2, not GetNativeSystemInfo."""
+        fake_windll = SimpleNamespace(
+            kernel32=self._fake_kernel32(native_machine=0xAA64, include_get_native_system_info=True)
+        )
+        monkeypatch.setattr(ctypes, "windll", fake_windll, raising=False)
+
+        assert hermes_constants._windows_native_machine_code() == 0xAA64
+
+    def test_returns_none_when_iswow64process2_unavailable(self, monkeypatch):
+        fake_windll = SimpleNamespace(kernel32=self._fake_kernel32())  # no IsWow64Process2 attribute
+        monkeypatch.setattr(ctypes, "windll", fake_windll, raising=False)
+
+        assert hermes_constants._windows_native_machine_code() is None
+
+    def test_returns_none_when_iswow64process2_fails(self, monkeypatch):
+        kernel32 = self._fake_kernel32()
+        kernel32.IsWow64Process2 = lambda _handle, _pm, _nm: 0  # BOOL FALSE
+        fake_windll = SimpleNamespace(kernel32=kernel32)
+        monkeypatch.setattr(ctypes, "windll", fake_windll, raising=False)
+
+        assert hermes_constants._windows_native_machine_code() is None
 
 
 class TestHealAttemptFlagSemantics:

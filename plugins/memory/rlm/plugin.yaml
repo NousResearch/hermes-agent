@@ -1,0 +1,3 @@
+name: rlm
+version: 0.1.0
+description: "Local cohesive memory plane backed by RLM fused retrieval, GBrain durable knowledge, and episodic continuity."

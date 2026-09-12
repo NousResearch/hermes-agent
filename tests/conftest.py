@@ -622,6 +622,23 @@ def _neutralize_kanban_memory_guard(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_git_safe_directory_read(request, monkeypatch):
+    """Skip the ``git config --get-all safe.directory`` pre-read in ``noninteractive_git_env()``.
+
+    Many tests fake ``subprocess.run``/``Popen`` with a fixed sequence of expected git calls;
+    the pre-read is an extra spawn that would trip them. Tests of the carve-out itself opt in
+    with ``@pytest.mark.real_safe_directory``.
+    """
+    if request.node.get_closest_marker("real_safe_directory"):
+        return
+    try:
+        from hermes_cli import _subprocess_compat
+    except Exception:
+        return
+    monkeypatch.setattr(_subprocess_compat, "_user_safe_directories", lambda base_env: [], raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_webbrowser(monkeypatch):
     """Record browser-open attempts instead of opening real browser windows."""
     import webbrowser as _webbrowser
@@ -1246,6 +1263,11 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         f"{_GATEWAY_LOOKALIKE_MARK}: the test spawns and reaps its own stub "
         "child whose argv matches the gateway runtime matcher; only the "
         "real-gateway spawn check is lifted, os.kill stays guarded.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_safe_directory: run the real `git config --get-all safe.directory` pre-read in "
+        "noninteractive_git_env() (autouse fixture otherwise stubs it to no entries).",
     )
     config.addinivalue_line(
         "markers",

@@ -93,7 +93,7 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
     groupName: context.group,
     members,
     viewer: member,
-    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member.name))
+    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member))
   })
 
   // Images riding this delta (user attachments — member entries don't
@@ -279,7 +279,7 @@ async function runGroupContinuationMember(
     // The continuation prompt centers on what the member missed:
     // everything since its watermark, which includes the reply
     // that cites it.
-    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member.name))
+    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member))
   })
 
   let continuationReply: null | string = null

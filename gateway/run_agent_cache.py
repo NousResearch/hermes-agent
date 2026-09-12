@@ -597,18 +597,45 @@ class GatewayAgentCacheMixin:
             return
         self._spawn_release_thread(
             self._release_evicted_agent_soft, (agent,), f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
+            session_key=session_key,
         )
 
-    def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool) -> None:
+    def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool,
+                              session_key: Optional[str] = None) -> None:
         """Run a release on a daemon thread. ``inline_fallback`` runs it inline (best-effort) when no
-        thread can start (interpreter shutdown); otherwise a spawn failure propagates, as on main."""
+        thread can start (interpreter shutdown); otherwise a spawn failure propagates, as on main.
+        The thread runs inside the owning profile's scope (see ``_run_release_in_profile_scope``)."""
+        import contextvars
+        ctx = contextvars.copy_context()
         try:
-            threading.Thread(target=target, args=args, daemon=True, name=name).start()
+            threading.Thread(target=ctx.run, args=(self._run_release_in_profile_scope, target, args, session_key),
+                             daemon=True, name=name).start()
         except Exception:
             if not inline_fallback:
                 raise
             with suppress(Exception):
-                target(*args)
+                ctx.run(self._run_release_in_profile_scope, target, args, session_key)
+
+    def _run_release_in_profile_scope(self, target, args: tuple, session_key: Optional[str]) -> None:
+        """Call ``target(*args)`` under the profile that owns ``session_key``. Threads start with an
+        EMPTY context, so a bare thread would commit end-of-session memory (provider ``on_session_end``
+        reads credentials/home at call time) under the LAUNCH profile — lost memories or a secondary's
+        transcript extracted into the default profile's provider namespace. In-turn callers already
+        carry the scope (``copy_context`` preserves it); the unscoped housekeeping sweep resolves the
+        owner from the session key (``agent:<profile>:...``) and enters that profile's scope."""
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        if current_secret_scope() is not None or not is_multiplex_active():
+            target(*args)
+            return
+        from gateway.run import _profile_runtime_scope
+        from hermes_constants import get_hermes_home
+        home = None
+        store = getattr(self, "session_store", None)
+        if session_key and store is not None:
+            with suppress(Exception):
+                home = store._profile_home_for_key(session_key)
+        with _profile_runtime_scope(home or get_hermes_home()):
+            target(*args)
 
     def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
         """Commit the live transcript to memory providers before resource-only eviction."""
@@ -763,7 +790,8 @@ class GatewayAgentCacheMixin:
         while plan:
             key, agent = plan.pop(0)  # FIFO — evict LRU-first order preserved
             try:
-                self._commit_then_release_soft(agent, key)
+                # Pressure sweeps run from the unscoped housekeeping watcher: enter each owner's scope.
+                self._run_release_in_profile_scope(self._commit_then_release_soft, (agent, key), key)
             except Exception as _e:
                 logger.debug("Pressure release failed for %s: %s", key, _e)
             del agent
@@ -803,7 +831,8 @@ class GatewayAgentCacheMixin:
             if agent is not None:
                 # Commit end-of-session memory, then soft-release, both on the daemon thread so the
                 # (possibly network-bound) provider call never blocks the held cache lock.
-                self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-evict-{key[:24]}", inline_fallback=False)
+                self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-evict-{key[:24]}",
+                                           inline_fallback=False, session_key=key)
 
     def _sweep_idle_cached_agents(self) -> int:
         """Evict cached agents idle past the idle TTL (lock acquired internally; cleanup on daemon
@@ -829,5 +858,6 @@ class GatewayAgentCacheMixin:
                 _cache.pop(key, None)
         for key, agent in to_evict:
             logger.info("Agent cache idle-TTL evict: session=%s (idle=%.0fs)", key, now - getattr(agent, "_last_activity_ts", now))
-            self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-idle-{key[:24]}", inline_fallback=False)
+            self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-idle-{key[:24]}",
+                                       inline_fallback=False, session_key=key)
         return len(to_evict)

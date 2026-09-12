@@ -26,14 +26,25 @@ _cache_lock = threading.Lock()
 _tz_cache: Dict[Tuple[str, str], Tuple[str, Optional[ZoneInfo]]] = {}
 
 
+def _env_timezone() -> str:
+    """``HERMES_TIMEZONE`` when it may speak for the active profile. Under the multiplexed
+    gateway the env var holds only the DEFAULT profile's value (bridged from its config.yaml at
+    startup), so every routed profile must read its own config.yaml instead."""
+    from agent.secret_scope import is_multiplex_active  # lazy: secret_scope pulls in more than a clock needs
+
+    if is_multiplex_active():
+        return ""
+    return os.getenv("HERMES_TIMEZONE", "").strip()
+
+
 def _timezone_cache_identity() -> Tuple[str, str]:
-    tz_env = os.getenv("HERMES_TIMEZONE", "").strip()
+    tz_env = _env_timezone()
     return ("environment", tz_env) if tz_env else ("config", str(get_config_path()))
 
 
 def _resolve_timezone_name() -> str:
     """Read the configured IANA timezone string (or ``""``). Does file I/O — callers cache."""
-    tz_env = os.getenv("HERMES_TIMEZONE", "").strip()
+    tz_env = _env_timezone()
     if tz_env:
         return tz_env
     try:
@@ -61,13 +72,13 @@ def _resolve_timezone_name() -> str:
     return ""
 
 
-def get_timezone() -> Optional[ZoneInfo]:
-    """Return the active profile's configured ZoneInfo, or None (server-local)."""
+def _timezone_entry() -> Tuple[str, Optional[ZoneInfo]]:
+    """Cached ``(configured name, ZoneInfo | None)`` for the active profile."""
     cache_identity = _timezone_cache_identity()
     with _cache_lock:
         entry = _tz_cache.get(cache_identity)
         if entry is not None:
-            return entry[1]
+            return entry
     # Resolve outside the lock (config file I/O); first writer wins so concurrent resolvers of the
     # same identity converge on one ZoneInfo object.
     name = _resolve_timezone_name()
@@ -78,7 +89,18 @@ def get_timezone() -> Optional[ZoneInfo]:
         except Exception as exc:
             logger.warning("Invalid timezone '%s': %s. Falling back to server local time.", name, exc)
     with _cache_lock:
-        return _tz_cache.setdefault(cache_identity, (name, tz))[1]
+        return _tz_cache.setdefault(cache_identity, (name, tz))
+
+
+def get_timezone() -> Optional[ZoneInfo]:
+    """Return the active profile's configured ZoneInfo, or None (server-local)."""
+    return _timezone_entry()[1]
+
+
+def get_timezone_name() -> str:
+    """The active profile's configured IANA timezone string, or ``""`` (server-local). Same
+    resolution and cache as :func:`get_timezone`; for handing ``TZ`` to sandboxed children."""
+    return _timezone_entry()[0]
 
 
 def reset_cache() -> None:

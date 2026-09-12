@@ -15,7 +15,7 @@ class ProcessCheckpointMixin:
 
     def _write_checkpoint(self, extra_entries: Optional[List[Dict[str, Any]]] = None):
         """Write running process metadata to the checkpoint file atomically."""
-        from tools.process_registry import CHECKPOINT_PATH, _CHECKPOINT_FIELDS
+        from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
 
         try:
             with self._lock:
@@ -39,7 +39,7 @@ class ProcessCheckpointMixin:
                     tracked_ids = {item.get("session_id") for item in entries}
                     entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
             from utils import atomic_json_write
-            atomic_json_write(CHECKPOINT_PATH, entries)
+            atomic_json_write(_checkpoint_path(), entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
@@ -47,14 +47,15 @@ class ProcessCheckpointMixin:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
         were recovered as detached sessions."""
         from tools.process_registry import (
-            CHECKPOINT_PATH, ProcessSession, _CHECKPOINT_FIELDS,
+            ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
             _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
         )
 
-        if not CHECKPOINT_PATH.exists():
+        checkpoint_path = _checkpoint_path()
+        if not checkpoint_path.exists():
             return 0
         try:
-            entries = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8-sig"))
+            entries = json.loads(checkpoint_path.read_text(encoding="utf-8-sig"))
         except Exception:
             return 0
         recovered = 0
@@ -62,6 +63,12 @@ class ProcessCheckpointMixin:
         for entry in entries:
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
+                continue
+            # The registry is process-global, so every profile's checkpoint carries every live
+            # process; a multiplexer recovering several homes must adopt each session once.
+            with self._lock:
+                already_tracked = entry.get("session_id") in self._running
+            if already_tracked:
                 continue
             if pid_scope != "host":  # in-sandbox PIDs mean nothing once the env handle is gone
                 logger.info(

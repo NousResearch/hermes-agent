@@ -570,7 +570,9 @@ def _scan_gateway_pids(
     pids: list[int] = []
     # Strict matcher shared with gateway.status: requires a real ``gateway run`` argv, so
     # ``gateway status``/``dashboard`` siblings and ``python -m tui_gateway`` don't match.
-    from gateway.status import looks_like_gateway_command_line, looks_like_gateway_runtime_command_line
+    from gateway.status import (
+        looks_like_gateway_command_line, looks_like_gateway_runtime_command_line, profile_flag_value,
+    )
     current_home = str(get_hermes_home().resolve())
     # Forward slashes on both sides of the HERMES_HOME= match (mirrors gateway.status).
     current_home_lc = current_home.lower().replace("\\", "/")
@@ -581,9 +583,9 @@ def _scan_gateway_pids(
     def _matches_current_profile(command: str) -> bool:
         command_lc = command.lower().replace("\\", "/")
         if current_profile_name:
+            # Token equality, not substring: `-p ops` must not claim (or SIGTERM) an `-p ops-2` gateway.
             return (
-                f"--profile {current_profile_name_lc}" in command_lc
-                or f"-p {current_profile_name_lc}" in command_lc
+                profile_flag_value(command_lc) == current_profile_name_lc
                 or f"hermes_home={current_home_lc}" in command_lc
             )
 
@@ -4383,13 +4385,16 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         return False
 
     try:
-        from gateway.status import _pid_exists, _pid_from_record, _read_pid_record
-        rec = _read_pid_record(default_root / "gateway.pid")
-        if not rec:
+        from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
+        if live_default_gateway_pid() is None:
             return False
-        pid = _pid_from_record(rec)
-        if not pid or not _pid_exists(pid):
-            return False
+        from hermes_cli.profiles import normalize_profile_name
+        # The live gateway's own record wins: the CLI process cannot see an env-only opt-in on the
+        # default profile (`hermes -p X` loads X's .env) and a config edit after start is not live yet.
+        # Only a record without the key (pre-multiplex writer) falls through to config derivation.
+        recorded = recorded_served_profiles(default_root)
+        if recorded is not None:
+            return normalize_profile_name(suffix) in {normalize_profile_name(p) for p in recorded}
 
         from gateway.config import _env_multiplex_profiles_override
         cfg_path = default_root / "config.yaml"
@@ -4407,31 +4412,27 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
             if not (cfg.get("multiplex_profiles") or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")):
                 return False
 
-        gateway_cfg = cfg.get("gateway", {}) or {}
-        if "multiplex_profile_allowlist" in cfg:
-            raw_allowlist = cfg.get("multiplex_profile_allowlist")
-        else:
-            raw_allowlist = gateway_cfg.get("multiplex_profile_allowlist")
-        from gateway.config import _normalize_multiplex_profile_allowlist
-        from hermes_cli.profiles import normalize_profile_name
-        profile_allowlist = _normalize_multiplex_profile_allowlist(raw_allowlist)
-        return profile_allowlist is None or normalize_profile_name(suffix) in profile_allowlist
+        return True  # a multiplexing default gateway serves every named profile
     except Exception:
         logger.debug("Multiplexer-serving probe failed", exc_info=True)
         return False
 
 
-def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
-    """Refuse a named-profile gateway when a multiplexing default gateway already serves it (a second one
-    would double-bind its platforms: two pollers on one token, port fights). ``--force`` overrides."""
+def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
+    """Print the served-profile refusal and return True when a named-profile gateway must not start:
+    a multiplexing default gateway already serves it (a second one would double-bind its platforms: two
+    pollers on one token, port fights). ``--force`` overrides. Shared by ``run`` and the service verbs
+    (``start``/``install``/``restart``): a refusal only inside ``gateway run`` leaves the service manager
+    to discover it — systemd parks the unit on exit 78 while the CLI prints "started"; launchd
+    (KeepAlive, no exit-status gating) respawns it every ThrottleInterval forever."""
     if force:
-        return
+        return False
     try:
         suffix = _current_profile_name()
     except Exception:
-        return
+        return False
     if not named_profile_served_by_running_multiplexer():
-        return
+        return False
 
     print_error(
         f"The default gateway is running as a profile multiplexer and already "
@@ -4449,6 +4450,13 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     print()
     print("  Pass --force to start a separate profile gateway anyway (not")
     print("  recommended while the multiplexer is running).")
+    return True
+
+
+def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
+    """Exit-78 form of ``_named_profile_refused_under_multiplexer`` for the CLI entry points."""
+    if not _named_profile_refused_under_multiplexer(force=force):
+        return
     # EX_CONFIG, not 1: the refusal is decided purely by config, so it is permanent. The systemd unit
     # (Restart=always, StartLimitIntervalSec=0) relies on RestartPreventExitStatus=78 as its only
     # backstop — exit 1 turned a correct refusal into an unbounded restart loop; s6 maps 78 to
@@ -6102,6 +6110,8 @@ def _cmd_install(args):
         managed_error("install gateway service")
         return
     force = getattr(args, "force", False)
+    # `--force` doubles as the reinstall flag here; a served profile's unit would only ever exit 78.
+    _guard_named_profile_under_multiplexer(force=force)
     system = getattr(args, "system", False)
     run_as_user = getattr(args, "run_as_user", None)
     if _service_mgmt_blocked():
@@ -6140,6 +6150,7 @@ def _cmd_uninstall(args):
 def _cmd_start(args):
     system = getattr(args, "system", False)
     start_all = getattr(args, "all", False)
+    _guard_named_profile_under_multiplexer(force=getattr(args, "force", False))
     if not start_all and _dispatch_via_service_manager_if_s6("start"):
         return
     if start_all:
@@ -6161,6 +6172,19 @@ def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
     stop_all = getattr(args, "all", False)
     system = getattr(args, "system", False)
+    if not stop_all and not find_gateway_pids() and named_profile_served_by_running_multiplexer():
+        # A served profile owns no gateway to stop; "No gateway running for this profile" (exit 0) would
+        # contradict `gateway status` ("running via the default-profile multiplexer") on the same profile.
+        # A `--force`-started separate gateway HAS a pid of its own and is stopped normally.
+        print_error(
+            f"The default gateway is running as a profile multiplexer and serves profile "
+            f"'{_current_profile_name()}' — there is no separate gateway for this profile to stop."
+        )
+        print("  Stop or restart the multiplexer from the default profile instead:")
+        print()
+        print("    hermes gateway stop      # takes every served profile offline")
+        print("    hermes gateway restart")
+        sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
     # Under s6 a bare pkill is seen as a crash and restarted; go through the supervisor.
     if stop_all and _dispatch_all_via_service_manager_if_s6("stop"):
         return
@@ -6203,6 +6227,8 @@ def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
+    force = getattr(args, "force", False)
+    _guard_named_profile_under_multiplexer(force=force)
     if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
         return
     if not restart_all and _dispatch_via_service_manager_if_s6("restart"):
@@ -6249,7 +6275,7 @@ def _cmd_restart(args):
         print("✓ Stopped gateway for this profile")
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
     print("Starting gateway...")
-    run_gateway(verbose=0)
+    run_gateway(verbose=0, force=force)
 
 
 # ``hermes gateway status`` hints for a manually-run / stopped gateway, keyed by host kind.

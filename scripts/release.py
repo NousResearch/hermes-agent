@@ -2401,13 +2401,59 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
     )
     UV_LOCK_FILE.write_text(uv_text, encoding="utf-8")
 
-    return [
+    updated = [
         str(VERSION_FILE),
         str(PYPROJECT_FILE),
         str(DESKTOP_PKG_FILE),
         str(PKG_LOCK_FILE),
         str(UV_LOCK_FILE),
     ]
+
+    # Keep the bootstrap installer (Hermes-Setup.dmg CFBundleShortVersionString)
+    # in lockstep with the Python package version. Tauri reads `version` from
+    # package.json + tauri.conf.json; a hardcoded 0.0.1 ships in the DMG.
+    installer_pkg = REPO_ROOT / "apps" / "bootstrap-installer" / "package.json"
+    if installer_pkg.exists():
+        pkg_text = installer_pkg.read_text(encoding="utf-8")
+        pkg_text = re.sub(
+            r'("version"\s*:\s*)"[^"]+"',
+            rf'\g<1>"{semver}"',
+            pkg_text,
+            count=1,
+        )
+        installer_pkg.write_text(pkg_text, encoding="utf-8")
+        updated.append(str(installer_pkg))
+
+    installer_tauri = (
+        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json"
+    )
+    if installer_tauri.exists():
+        pkg_text = installer_tauri.read_text(encoding="utf-8")
+        pkg_text = re.sub(
+            r'("version"\s*:\s*)"[^"]+"',
+            rf'\g<1>"{semver}"',
+            pkg_text,
+            count=1,
+        )
+        installer_tauri.write_text(pkg_text, encoding="utf-8")
+        updated.append(str(installer_tauri))
+
+    installer_cargo = (
+        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.toml"
+    )
+    if installer_cargo.exists():
+        cargo_text = installer_cargo.read_text(encoding="utf-8")
+        cargo_text = re.sub(
+            r'^version\s*=\s*"[^"]+"',
+            f'version = "{semver}"',
+            cargo_text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        installer_cargo.write_text(cargo_text, encoding="utf-8")
+        updated.append(str(installer_cargo))
+
+    return updated
 
 
 def resolve_author(name: str, email: str) -> str:

@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { $localRuntimeJobs, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
@@ -115,20 +115,20 @@ function renderPane() {
 
 // The fresh-machine states these tests exercise now lead with the
 // quickstart card; the full pane (runtime rows, model list, browser)
-// is one 'Configure…' click away. Render and click through.
-async function renderFullPane() {
-  const result = renderPane()
+// is one 'Let me choose' click away. Render and click through.
+async function renderFullPane(): Promise<ReturnType<typeof renderPane>> {
+  const result: ReturnType<typeof renderPane> = renderPane()
 
   // Wait for status to load: the pane either shows the setup card (click
   // through to the full pane) or, when an active runtime/model job routes
   // straight to the full pane, the runtime section directly.
-  await waitFor(() => {
+  await waitFor((): void => {
     expect(
-      Boolean(screen.queryByRole('button', { name: /configure/i })) || screen.queryAllByText(/this machine/i).length > 0
+      Boolean(screen.queryByRole('button', { name: /let me choose/i })) || screen.queryAllByText(/this machine/i).length > 0
     ).toBe(true)
   })
 
-  const configure = screen.queryByRole('button', { name: /configure/i })
+  const configure: HTMLElement | null = screen.queryByRole('button', { name: /let me choose/i })
 
   if (configure) {
     fireEvent.click(configure)
@@ -222,9 +222,11 @@ describe('LocalModelsSettings', () => {
     }
 
     mocked.getLocalCatalog.mockResolvedValue({ models: [spilledFull] })
-    await renderFullPane()
+    renderPane()
     await screen.findByText('Spilled Full')
 
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /browse models/i })).toBeTruthy()
     expect(screen.getByText('Full 256K context').className).not.toContain('emerald')
   })
 
@@ -413,7 +415,7 @@ describe('quickstart', () => {
     renderPane()
 
     expect(await screen.findByText('Qwen3.6 27B — 17.6 GB')).toBeTruthy()
-    // One job, one view: no Set up / Configure buttons while it runs.
+    // One job, one view: no setup or model-choice buttons while it runs.
     expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
   })
 
@@ -433,6 +435,51 @@ describe('quickstart', () => {
 })
 
 describe('BrowseSection', () => {
+  it('keeps manual spill selection and HF browsing available without an automatic recommendation', async (): Promise<void> => {
+    const stagedId: string = 'Spilled-Model-Q4_K_M'
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true })
+    mocked.getLocalCatalog.mockResolvedValue({ models: [SPILLED_MODEL] })
+    renderPane()
+
+    await screen.findByText('Spilled Model')
+    expect(screen.getByText('No automatic recommendation for this machine')).toBeTruthy()
+    expect(screen.getByText('Uses system RAM')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+
+    // Attach the browser-only scroll method to the real search container,
+    // so a missing or misdirected click handler cannot satisfy the assertion.
+    const search: HTMLElement = screen.getByPlaceholderText(/search models/i)
+    const browse: Element | null = search.closest('#local-model-browse')
+    expect(browse).not.toBeNull()
+    const scroll: Mock<(options?: boolean | ScrollIntoViewOptions) => void> = vi.fn()
+    Object.defineProperty(browse, 'scrollIntoView', { configurable: true, value: scroll })
+    fireEvent.click(screen.getByRole('button', { name: /browse models/i }))
+    expect(scroll).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+    expect(mocked.downloadLocalModel).not.toHaveBeenCalled()
+
+    // The backend reports the completed download on refresh. Use must send
+    // the staged variant id, not the catalog family id or an automatic pick.
+    mocked.downloadLocalModel.mockResolvedValue({ already_downloaded: true, job_id: null })
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      models: [{ id: stagedId, size_bytes: SPILLED_MODEL.size_bytes, size_label: SPILLED_MODEL.size_label }]
+    })
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [{ ...SPILLED_MODEL, downloaded: true, downloaded_model_id: stagedId }]
+    })
+    fireEvent.click(screen.getByRole('button', { name: /download ·/i }))
+    await waitFor((): void => {
+      expect(mocked.downloadLocalModel).toHaveBeenCalledWith(SPILLED_MODEL.id)
+    })
+    mocked.activateLocalModel.mockResolvedValue({ job_id: 'explicit-spill' })
+    fireEvent.click(await screen.findByRole('button', { name: /^use$/i }))
+    await waitFor((): void => {
+      expect(mocked.activateLocalModel).toHaveBeenCalledWith(stagedId)
+    })
+    expect(mocked.quickstartLocalModels).not.toHaveBeenCalled()
+  })
+
   it('searches HF after a pause and shows fit-priced files on demand', async () => {
     vi.useFakeTimers()
 
@@ -458,7 +505,7 @@ describe('BrowseSection', () => {
         await vi.runOnlyPendingTimersAsync()
       })
       // Fresh machine leads with the quickstart card — enter the full pane.
-      fireEvent.click(screen.getByRole('button', { name: /configure/i }))
+      fireEvent.click(screen.getByRole('button', { name: /let me choose/i }))
 
       const box = screen.getByPlaceholderText(/search models/i)
       fireEvent.change(box, { target: { value: 'qwen' } })

@@ -60,7 +60,7 @@ class GatewayConfigLoadersMixin:
         HERMES_PREFILL_MESSAGES_FILE env wins, then top-level prefill_messages_file in config.yaml,
         then legacy agent.prefill_messages_file. Relative paths resolve from ~/.hermes/.
         """
-        from gateway.run import _hermes_home, _load_gateway_runtime_config
+        from gateway.run import _gateway_config_home, _load_gateway_runtime_config
         file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
         if not file_path:
             cfg = _load_gateway_runtime_config()
@@ -71,7 +71,7 @@ class GatewayConfigLoadersMixin:
             return []
         path = Path(file_path).expanduser()
         if not path.is_absolute():
-            path = _hermes_home / path
+            path = _gateway_config_home() / path
         if not path.exists():
             logger.warning("Prefill messages file not found: %s", path)
             return []
@@ -381,9 +381,13 @@ class GatewayConfigLoadersMixin:
 
     @staticmethod
     def _load_background_notifications_mode() -> str:
-        """Background process notification mode from env/config (default ``concise``)."""
+        """Background process notification mode from env/config (default ``concise``), resolved for
+        the AMBIENT profile — callers deciding for another profile's event enter its scope first
+        (``_completion_event_scope``). The env override reads through the secret scope so a served
+        secondary sees its own ``.env`` value, not the launch profile's ``os.environ``."""
         from gateway.run import _load_gateway_runtime_config
-        mode = os.getenv("HERMES_BACKGROUND_NOTIFICATIONS", "")
+        from gateway.authz_mixin import _platform_gate_env
+        mode = _platform_gate_env("HERMES_BACKGROUND_NOTIFICATIONS")
         if not mode:
             raw = cfg_get(_load_gateway_runtime_config(), "display", "background_process_notifications")
             if raw is False:
@@ -426,13 +430,23 @@ class GatewayConfigLoadersMixin:
         ``self._fallback_model`` at process start, so a chain configured (or changed) after ``hermes
         gateway`` was running never reached messaging sessions even though the same process's cron jobs fell
         back correctly. Fixes #60955.
+
+        Reads the ACTIVE gateway home (the routed profile under multiplexing, else the launch home)
+        and keeps one last-known-good chain per home: a single runner-wide slot filled from the launch
+        home handed every secondary profile the default profile's fallback chain.
         """
-        from gateway.run import _hermes_home
+        from gateway.run import _gateway_config_home
+        from hermes_constants import hermes_home_key
+        home = _gateway_config_home()
+        by_home = getattr(self, "_fallback_model_by_home", None)
+        if by_home is None:
+            by_home = self._fallback_model_by_home = {}
+        home_key = hermes_home_key(home)
         try:
             from hermes_cli.config import read_user_config_raw
-            cfg_path = _hermes_home / "config.yaml"
+            cfg_path = home / "config.yaml"
             if not cfg_path.exists():
-                self._fallback_model = None
+                by_home[home_key] = self._fallback_model = None
                 return self._fallback_model
             # Raw primitive (raises on parse failure) is required here: the canonical fail-open
             # loader would return {} on a torn mid-edit write and WIPE the last known-good chain.
@@ -448,8 +462,9 @@ class GatewayConfigLoadersMixin:
                     cfg = expanded
         except Exception:
             logger.debug("fallback_providers refresh: config.yaml read failed; keeping last known-good chain", exc_info=True)
+            self._fallback_model = by_home.get(home_key, self._fallback_model)
             return self._fallback_model
-        self._fallback_model = get_fallback_chain(cfg) or None
+        by_home[home_key] = self._fallback_model = get_fallback_chain(cfg) or None
         return self._fallback_model
 
     @staticmethod

@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from agent.message_sanitization import _sanitize_surrogates
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
 from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
@@ -508,7 +508,9 @@ class SessionDB(
     def _open_writer(self) -> None:
         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
         malformed sqlite_master), generation stamp."""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Never materialize a deleted/archived named profile's home: a multiplexer or Desktop backend
+        # still holding the profile's route would otherwise re-scaffold it on the next turn (#94590).
+        mkdir_under_hermes_home(self.db_path.parent)
         # Read-only file/sidecar preflight BEFORE the first connection: an actionable message
         # instead of an opaque "attempt to write a readonly database" from inside _init_schema.
         preflight_db_writability(self.db_path, db_label="state.db")

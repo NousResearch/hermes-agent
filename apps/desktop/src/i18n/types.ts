@@ -5,177 +5,9 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-import type { WisdomMuteCopy, WisdomSyncCopy } from '@hermes/shared'
-
 import type { TipId } from '@/lib/tips/catalog'
 
 export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
-
-export interface WisdomTranslations {
-  syncRecovery?: WisdomSyncCopy
-  notificationPreferences: WisdomMuteCopy
-  title: string
-  loading: string
-  unavailable: string
-  setup: string
-  setupDisclosure: string
-  setupAction: string
-  settingUp: string
-  scanLocal: string
-  orgWide: string
-  sharedSkills: (count: number) => string
-  localCandidates: (count: number) => string
-  contributionWorkflow: string
-  potential: string
-  potentialHelp: string
-  noSuggestions: string
-  browseLocal: (count: number) => string
-  browseLocalHelp: string
-  ownerReview: string
-  ownerReviewHelp: string
-  noDrafts: string
-  noShared: string
-  noDescription: string
-  serverScanPassed: string
-  localOnly: string
-  qualifiedLocally: string
-  qualificationFirst: (organizationName?: string | null) => string
-  qualificationReturning: string
-  savedLocally: string
-  prepare: string
-  continueDraft: string
-  reviewExact: string
-  runSetupStep: string
-  confirmSetupPrerequisite: string
-  setupCommand: string
-  setupStepApprovalNotice: string
-  openDraft: string
-  draftState: (state: string) => string
-  authoritative: string
-  versionHistory: string
-  versions: string
-  versionDetails: (version: number) => string
-  immutableVersion: string
-  published: (date: string) => string
-  releaseExplanation: string
-  viewInPortal: string
-  backToSkill: string
-  backToVersions: string
-  prepareTitle: string
-  prepareNotice: string
-  ownerDescription: string
-  systemSpecification: string
-  cancel: string
-  submit: string
-  submitting: string
-  readEvery: string
-  publishToTeam: string
-  submitForApproval: string
-  publishLocalNotice: string
-  submitLocalNotice: string
-  reloadReview: string
-  editReview: string
-  editOwnerDescription: string
-  unsavedChanges: string
-  saveAndRescan: string
-  savingRevision: string
-  resetChanges: string
-  reviewedHashes: string
-  ownerReviewExact: string
-  localOverlay: string
-  close: string
-  approve: string
-  publishing: string
-  proposalTitle: string
-  localSuggestion: string
-  preparingLocal: string
-  whySuggested: string
-  sharePrompt: string
-  reviewFirst: string
-  notNow: string
-  yes: string
-  share: string
-  sharePreparationNotice: string
-  reviewPreviousPage: string
-  reviewNextPage: string
-  muteNotificationsSoon: string
-  unmuteNotificationsSoon: string
-  openCollective: string
-  prepareExact: string
-  skillName: string
-  whatItDoes: string
-  editDefaultsNotice: string
-  detailedRequirements: string
-  hideDetailedRequirements: string
-  specificationNotice: string
-  openFullReview: string
-  sendPrivateReview: string
-  saveLocal: string
-  savingLocal: string
-  source: string
-  preview: string
-  localDraft: string
-  serverReviewed: string
-  serverEnforced: string
-  localAdvisory: string
-  qualificationLabel: string
-  scanPassed: string
-  reviewFindings: string
-  scanAvailable: string
-  scanUnavailable: string
-  reviewed: string
-  contentHash: string
-  authorDescriptionHash: string
-  packageManifestHash: string
-  serverReviewNotice: string
-  decline: string
-  approvePublish: string
-  checkUpdates: (count: number) => string
-  checking: string
-  refreshShared: string
-  refreshingShared: string
-  installReferenceLabel: string
-  installReferencePlaceholder: string
-  installReferenceHelp: string
-  reviewInstall: string
-  planningInstall: string
-  updateModeLabel: string
-  updateModeDefault: string
-  updateModeManual: string
-  updateModeAutomatic: string
-  updateModeRequired: string
-  updateModeHelp: string
-  updateModePlan: (mode: string) => string
-  install: string
-  uninstall: string
-  checkSkill: string
-  updateAvailable: (version?: number) => string
-  reviewUpdate: string
-  installed: (version: number, mode: string) => string
-  confirmAction: (action: string) => string
-  acceptCompatibility: string
-  acceptSensitive: string
-  preserveModified: string
-  alreadyCurrent: string
-  ownerCopyLabel: string
-  serverFactsLabel: string
-  notifications: string
-  activityReady: (count: number) => string
-  aSkill: string
-  decisionPublished: (skill: string) => string
-  decisionChanges: (skill: string) => string
-  decisionDeclined: (skill: string) => string
-  decisionChanged: (skill: string, state: string) => string
-  installedNotice: (skill: string, version?: string) => string
-  updatedNotice: (skill: string, version?: string) => string
-  updateNotice: (skill: string, version?: string) => string
-  newSkillNotice: (skill: string) => string
-  unavailableNotice: (skill: string) => string
-  archivedNotice: (skill: string) => string
-  takedownNotice: (skill: string) => string
-  viewSkill: string
-  markSeen: string
-}
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -233,6 +65,12 @@ export interface Translations {
     retry: string
     grant: string
     connected: string
+    checking: string
+    waitingSignIn: string
+    notConnected: string
+    notAvailable: string
+    startWith: (count: number) => string
+    startWithout: string
     skipped: string
     disabled: string
     failed: string
@@ -248,10 +86,9 @@ export interface Translations {
     ownerMissing: string
     search: string
     empty: string
-    continue: string
-    continueBusy: string
-    continueFailed: string
     disclaimer: string
+    connectTitle: (app: string) => string
+    describe: (app: string) => string
     execution: string
   }
   sessionImport: {
@@ -463,6 +300,10 @@ export interface Translations {
       transcriptionUnavailable: string
       tryRecordingAgain: string
       unavailable: string
+      liveEnded: string
+      liveError: string
+      liveDelegationFailed: string
+      liveUnavailable: (reason: string) => string
     }
     // Native OS notification copy (titles + generic fallback bodies). Dynamic
     // bodies (the agent's reply, a command, an error) are passed through raw.
@@ -1287,6 +1128,9 @@ export interface Translations {
       /** Recommended-badge tooltip by resolver branch; unknown keys (newer
        *  backend) simply show no tooltip. */
       recommendedReason: Record<string, string>
+      noRecommendationTitle: string
+      noRecommendationDetail: string
+      noRecommendationAction: string
       downloaded: string
       downloadAction: (size: string) => string
       downloadProgress: (done: string, total: string) => string
@@ -1524,16 +1368,13 @@ export interface Translations {
   }
 
   skills: {
-    collective: WisdomTranslations
     tabSkills: string
     tabToolsets: string
     configuringProfile: string
     tabMcp: string
-    tabCollective: string
     all: string
     searchSkills: string
     searchToolsets: string
-    searchCollective: string
     refresh: string
     refreshing: string
     loading: string
@@ -2549,6 +2390,13 @@ export interface Translations {
     stopDictation: string
     transcribingDictation: string
     voiceControls: string
+    voiceEngine: string
+    voiceEngineChained: string
+    voiceEngineLive: string
+    voiceEngineLiveNeedsKey: string
+    voiceEngineChangeFailed: string
+    voiceEngineChainedShort: string
+    voiceEngineLiveShort: string
     voiceDictation: string
     speakReplies: string
     stopSpeakingReplies: string
@@ -2573,6 +2421,7 @@ export interface Translations {
     queuedPaused: (count: number) => string
     attachmentOnly: string
     emptyTurn: string
+    hiddenQueued: string
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string
@@ -2919,6 +2768,14 @@ export interface Translations {
    *  model is told to speak the user's language from its first real turn, and
    *  an English opener above a Japanese reply reads as two different agents.
    *  `nameSuggestion` offers the OS account name as a default. */
+  handoffTour: {
+    profileTitle: string
+    profileText: string
+    sessionsTitle: string
+    sessionsText: string
+    stayTitle: string
+    stayText: string
+  }
   guidedGreeting: {
     line: string
     nameSuggestion: (name: string) => string

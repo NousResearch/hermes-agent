@@ -1,4 +1,4 @@
-/** Beat scheduling keeps synthesized audio and animation on one clock. */
+/** Synthesized cues for the intro. The clock in use-intro-clock.ts calls them on the score's beats. */
 
 import { $hapticsMuted } from '@/store/haptics'
 
@@ -95,7 +95,7 @@ export function startPad(): IntroPad {
     setLevel: v => {
       const t = ac.currentTime
 
-      // The filter opens with the swell so the chord brightens as it rises.
+      // The lowpass cutoff rises with the level, so the chord brightens as it swells.
       lp.frequency.cancelScheduledValues(t)
       lp.frequency.setTargetAtTime(600 + v * 900, t, 0.5)
       g.gain.setTargetAtTime(v * 0.11, t, 0.35)

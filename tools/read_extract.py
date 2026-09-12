@@ -151,8 +151,10 @@ def _hosted_ocr_config() -> tuple:
     """(enabled, api_key, api_url); never raises, no network. Maintainer decision: the ONLY route
     is a direct ``FIRECRAWL_API_KEY`` (anydoc defaults api_url); the Nous gateway's Parse proxy
     live-probed broken, so it is NOT used. ``file_tools.hosted_ocr: false`` disables even with a
-    key."""
-    api_key = os.environ.get("FIRECRAWL_API_KEY") or None
+    key. The key is a profile credential: read through the secret scope so a multiplexed
+    secondary never spends (or reveals its documents to) the default profile's Firecrawl key."""
+    from agent.secret_scope import get_secret
+    api_key = get_secret("FIRECRAWL_API_KEY") or None
     enabled = api_key is not None
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config_readonly

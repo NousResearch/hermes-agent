@@ -39,7 +39,6 @@ from hermes_cli.models_catalog_static import (
     _LIVE_FIRST_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
     _OPENAI_FAST_MODE_PREFIXES,
-    _OPENROUTER_VARIANT_SUFFIXES,
     _PROVIDER_ALIASES,
     _PROVIDER_LABELS,
     _PROVIDER_MODELS,
@@ -828,13 +827,6 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
         name_lower == model.lower()
         for provider in providers
         for model in _provider_catalog_names(provider))
-
-
-def _openrouter_variant_base(model_id: str) -> Optional[str]:
-    """Base model id when ``model_id`` carries a recognized OpenRouter routing-variant suffix
-    (``x-ai/grok-4:nitro`` → ``x-ai/grok-4``), else ``None``."""
-    base, sep, suffix = (model_id or "").rpartition(":")
-    return base if sep and base and suffix.lower() in _OPENROUTER_VARIANT_SUFFIXES else None
 
 
 def _resolve_static_model_alias(

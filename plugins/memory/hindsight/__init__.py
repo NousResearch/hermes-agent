@@ -36,6 +36,7 @@ from .embedded import (
     _RETRIABLE_CONNECTION_MARKERS, _build_embedded_profile_env,
     _check_local_runtime, _embedded_profile_env_path,
     _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
+    _may_rewrite_profile_env,
 )
 from .embedded_runtime import ensure_daemon_and_url as _start_sideenv_daemon
 from .settings import (
@@ -253,17 +254,20 @@ def _load_config() -> dict:
         except Exception:
             pass
 
+    # Mode, bank (the data partition), endpoint and retain shaping are per-profile .env values like
+    # the key beside them: read through the secret scope so a multiplexed secondary never inherits
+    # the default profile's bank/mode. Tuning knobs (timeouts, budget) stay process-global.
     return {
-        "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
+        "mode": get_secret("HINDSIGHT_MODE", "") or "cloud",
         "apiKey": get_secret("HINDSIGHT_API_KEY", ""),
         "timeout": _parse_int_setting(os.environ.get("HINDSIGHT_TIMEOUT"), _DEFAULT_TIMEOUT),
         "idle_timeout": _parse_int_setting(os.environ.get("HINDSIGHT_IDLE_TIMEOUT"), _DEFAULT_IDLE_TIMEOUT),
-        "retain_tags": os.environ.get("HINDSIGHT_RETAIN_TAGS", ""),
-        "observation_scopes": os.environ.get("HINDSIGHT_RETAIN_OBSERVATION_SCOPES", ""),
+        "retain_tags": get_secret("HINDSIGHT_RETAIN_TAGS", "") or "",
+        "observation_scopes": get_secret("HINDSIGHT_RETAIN_OBSERVATION_SCOPES", "") or "",
         "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", _DEFAULT_RETAIN_SOURCE),
         "retain_user_prefix": os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
         "retain_assistant_prefix": os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
-        "banks": {"hermes": {"bankId": os.environ.get("HINDSIGHT_BANK_ID", "hermes"),
+        "banks": {"hermes": {"bankId": get_secret("HINDSIGHT_BANK_ID", "") or "hermes",
                              "budget": os.environ.get("HINDSIGHT_BUDGET", "mid"), "enabled": True}},
     }
 
@@ -369,7 +373,7 @@ class HindsightMemoryProvider(MemoryProvider):
             if mode in _LOCAL_MODES:
                 return _check_local_runtime()[0]
             return mode == "local_external" or bool(
-                _cloud_api_key(cfg) or cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", ""))
+                _cloud_api_key(cfg) or cfg.get("api_url") or get_secret("HINDSIGHT_API_URL", ""))
         except Exception:
             return False
 
@@ -478,7 +482,15 @@ class HindsightMemoryProvider(MemoryProvider):
         # own ProfileManager/get_url, never a hardcoded port.
         changed = _load_simple_env(_embedded_profile_env_path(cfg)) != _build_embedded_profile_env(cfg)
         if changed:
-            _materialize_embedded_profile_env(cfg)
+            if _may_rewrite_profile_env(cfg):
+                _materialize_embedded_profile_env(cfg)
+            else:
+                # A scopeless worker must neither erase a persisted key nor stop
+                # the daemon that still uses it. The side-env manager reuses it.
+                logger.warning(
+                    "Hindsight profile env for %r holds an LLM API key this process cannot see; "
+                    "leaving the file and running daemon untouched.", profile)
+                changed = False
         url = _start_sideenv_daemon(cfg, restart=changed)
         self._api_url = url
         _ensure_client_dependency()
@@ -728,7 +740,7 @@ class HindsightMemoryProvider(MemoryProvider):
         """Endpoint, bank and mode selectors from *cfg* (env fallbacks where documented)."""
         self._api_key = _cloud_api_key(cfg)
         default_url = _DEFAULT_LOCAL_URL if self._mode in {"local_embedded", "local_external"} else _DEFAULT_API_URL
-        self._api_url = cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
+        self._api_url = cfg.get("api_url") or get_secret("HINDSIGHT_API_URL", "") or default_url
         self._llm_base_url = cfg.get("llm_base_url", "")
 
         banks = cfg_get(cfg, "banks", "hermes", default={})

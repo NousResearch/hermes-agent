@@ -1116,6 +1116,19 @@ DEFAULT_CONFIG = {
     },
 
     "voice": {
+        # How the Desktop voice conversation is wired:
+        #   chained  — STT → Hermes turn → TTS (the stt.* / tts.* providers below)
+        #   gpt-live — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
+        #              DELEGATES every real request to Hermes (any model / provider you have
+        #              selected); needs an OpenAI API key. $0.05/min voice layer billing.
+        "voice_chat_mode": "chained",
+        "gpt_live": {
+            "model": "gpt-live-1",
+            "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
+            # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
+            "instructions": "",
+            # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
+        },
         "record_key": "ctrl+b",
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
         "max_recording_seconds": 120,
@@ -1355,35 +1368,6 @@ DEFAULT_CONFIG = {
         # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
         # See #79686.
         "ledger": True,
-    },
-
-    # Collective Wisdom — local qualification plus owner-consented sharing.
-    # The sync.base_url transport and existing Nous OAuth token are reused;
-    # no Gateway secret or URL is exposed to renderer clients.
-    "wisdom": {
-        "enabled": False,
-        "portal_url": "https://portal.nousresearch.com",
-        "request_timeout": 30,
-        "notifications": {
-            "delivery_mode": "agent",  # Use fixed to opt out of agent-written advice.
-            "decisions": "immediate",
-            "installed_updates": "immediate",
-            "new_skills": "daily",
-        },
-        # Agent-led sharing: a weekly agent review of real 7-day usage
-        # proposes at most a few bespoke skills to share, with fixed copy and
-        # native buttons. When disabled, only the deterministic qualification
-        # triggers (consecutive-day / refinement) surface candidates.
-        # Active only with notifications.delivery_mode: agent. Server policy
-        # controls eligibility and frequency, never the local rollout choice.
-        "agent_led": {
-            "window_days": 7,
-            "min_aggregate_count": 3,
-            "max_candidates": 3,
-            "dismiss_suppression_days": 30,
-            "popular_install_threshold": 10,
-            "review_interval_hours": 24 * 7,
-        },
     },
 
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks
@@ -1920,9 +1904,6 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
-        # Named-profile allowlist for multiplex mode. None = serve all; [] = default only.
-        "multiplex_profile_allowlist": None,
-
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,
@@ -2401,7 +2382,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 42,  # Config schema version - bump this when adding new required fields
+    "_config_version": 43,  # Config schema version - bump this when adding new required fields
 }
 
 

@@ -467,6 +467,78 @@ class TestBuildCallKwargsMaxTokens:
 
 
 
+class TestAuxiliaryReasoningCapabilityGate:
+    """The auxiliary call path (call_llm/async_call_llm -> _build_call_kwargs ->
+    _project_provider_profile -> profile.build_api_kwargs_extras) must honor a
+    ``model_overrides.<provider>.<model>.supports_reasoning: false`` override exactly
+    like the main chat-completions path does (#t_d56d5c00 round 3).
+
+    Before this fix, ``_project_provider_profile`` called
+    ``profile.build_api_kwargs_extras(...)`` without ``provider=``, so
+    ``CustomProfile._model_declared_reasoning_incapable`` could never look up the
+    override and the client kept sending ``reasoning_effort``/``think`` to a model
+    that 400s on it — the same wire field that produced the fleet-wide crash loop,
+    just reached via compression/title_generation/moa_reference/moa_aggregator/vision
+    instead of a main agent turn.
+    """
+
+    def test_declared_incapable_model_emits_no_reasoning_fields(self, monkeypatch):
+        import agent.models_dev as models_dev
+        from agent.auxiliary_client import _build_call_kwargs
+
+        monkeypatch.setattr(
+            models_dev, "explicit_supports_reasoning_override",
+            lambda provider, model: False if (provider, model) == ("custom:ollama-local", "qwen3-coder-30b-tools-64k") else None,
+        )
+        kwargs = _build_call_kwargs(
+            provider="custom:ollama-local",
+            model="qwen3-coder-30b-tools-64k",
+            messages=[{"role": "user", "content": "hi"}],
+            base_url="http://localhost:11434/v1",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        extra_body = kwargs.get("extra_body") or {}
+        assert "reasoning_effort" not in kwargs
+        assert "reasoning" not in extra_body
+        assert "think" not in extra_body
+
+    def test_project_provider_profile_passes_provider_through(self, monkeypatch):
+        """Direct unit check on the plumbing itself: the lookup must actually be
+        invoked with the caller's provider id, not skipped for lack of one."""
+        import agent.models_dev as models_dev
+        from agent.auxiliary_client import _project_provider_profile
+
+        calls = []
+
+        def _fake_override(provider, model):
+            calls.append((provider, model))
+            return False if (provider, model) == ("custom:ollama-local", "qwen3-coder-30b-tools-64k") else None
+
+        monkeypatch.setattr(models_dev, "explicit_supports_reasoning_override", _fake_override)
+        projection = _project_provider_profile(
+            "custom:ollama-local", "custom:ollama-local", "qwen3-coder-30b-tools-64k",
+            "http://localhost:11434/v1", {"enabled": True, "effort": "high"},
+        )
+        assert calls, "explicit_supports_reasoning_override was never consulted — provider= didn't reach the gate"
+        assert projection.top_level == {}
+        assert projection.reasoning_extra == {}
+
+    def test_no_override_keeps_existing_auxiliary_behavior(self, monkeypatch):
+        """A model with no explicit override is unaffected on the auxiliary path too."""
+        import agent.models_dev as models_dev
+        from agent.auxiliary_client import _build_call_kwargs
+
+        monkeypatch.setattr(models_dev, "explicit_supports_reasoning_override", lambda provider, model: None)
+        kwargs = _build_call_kwargs(
+            provider="custom:some-other-endpoint",
+            model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            base_url="https://ark.example.com/v1",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kwargs.get("reasoning_effort") == "high"
+
+
 class TestNousTagsScoping:
     def test_tags_injected_when_provider_is_nous(self, monkeypatch):
         import agent.auxiliary_client as aux

@@ -26,16 +26,40 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
     return bool(host) and (host == "ollama.com" or host.endswith(".ollama.com") or "ollama" in host.split("."))
 
 
+def _model_declared_reasoning_incapable(provider: str | None, model: str | None) -> bool:
+    """True only when the user's ``model_overrides.<provider>.<model>.supports_reasoning``
+    is explicitly ``false``. Never guesses from a catalog miss — most custom/local models
+    have no models.dev entry at all, and treating "uncatalogued" as "no reasoning" would
+    silently mute the override escape hatch this exists for. See #89xxx: qwen3-coder-30b
+    on custom:ollama-local 400'd with ``think value "high" is not supported for this
+    model`` because the client sent ``reasoning_effort``/``think`` unconditionally —
+    the operator's ``supports_reasoning: false`` override had no wire-shape consumer."""
+    if not provider or not model:
+        return False
+    try:
+        from agent.models_dev import explicit_supports_reasoning_override
+        return explicit_supports_reasoning_override(provider, model) is False
+    except Exception:
+        return False
+
+
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
     def build_api_kwargs_extras(
-        self, *, reasoning_config: dict | None = None, ollama_num_ctx: int | None = None, **ctx: Any
+        self, *, reasoning_config: dict | None = None, ollama_num_ctx: int | None = None,
+        provider: str | None = None, **ctx: Any
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
         if ollama_num_ctx:
             extra_body["options"] = {"num_ctx": ollama_num_ctx}
+        # A model explicitly declared reasoning-incapable (model_overrides supports_reasoning:
+        # false) never receives a reasoning/think param, even when the agent's global
+        # reasoning_effort is set — the fleet default (e.g. "high") must not reach an
+        # endpoint that 400s on any think/reasoning_effort value (#89xxx).
+        if _model_declared_reasoning_incapable(provider, ctx.get("model")):
+            return extra_body, top_level
         # disabled -> top-level reasoning_effort="none" (Ollama's /v1 ignores
         # extra_body.think) plus think=False only on Ollama URLs; enabled+effort ->
         # top-level reasoning_effort clamped to the OpenAI-compat wire (GLM/ARK,

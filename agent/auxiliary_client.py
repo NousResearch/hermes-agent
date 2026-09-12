@@ -6068,9 +6068,13 @@ def _project_provider_profile(
         profile = get_provider_profile(provider_norm)
         if profile is not None:
             body = profile.build_extra_body(model=model, base_url=effective_base, reasoning_config=reasoning_config) or {}
+            # provider= (unnormalized, matching the main chat-completions path's
+            # agent.provider) is required so CustomProfile._model_declared_reasoning_incapable
+            # can look up model_overrides.<provider>.<model>.supports_reasoning — without it
+            # the gate can never fire on this call path (see #t_d56d5c00 round 3).
             reasoning_extra, top_level = profile.build_api_kwargs_extras(
                 reasoning_config=reasoning_config, supports_reasoning=reasoning_config is not None,
-                model=model, base_url=effective_base,
+                model=model, base_url=effective_base, provider=provider,
             )
             reasoning_extra = reasoning_extra or {}
             top_level = top_level or {}

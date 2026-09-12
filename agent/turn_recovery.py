@@ -1326,6 +1326,17 @@ def route_classified_error(
     from agent.conversation_loop import _arm_fallback_restart, _ra
     from agent.model_metadata import estimate_request_tokens_rough
 
+    try:  # Wedged-child watchdog (managed llama.cpp only; no-op elsewhere, never raises).
+        _w_base = str(base_url or "")
+        if "127.0.0.1" in _w_base:
+            from hermes_cli.local_runtime.supervisor import report_inference_result
+
+            _w_reason = getattr(getattr(classified, "reason", None), "value", "") or ""
+            report_inference_result(_w_base, str(model or ""), ok=False,
+                                    reason=str(_w_reason))
+    except Exception:  # noqa: BLE001 — telemetry must never break error recovery
+        pass
+
     _provider_overflow_recovery_pending = False
     is_rate_limited = False
     _wrapped_output_cap_budget = None

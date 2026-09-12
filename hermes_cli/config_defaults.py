@@ -2381,6 +2381,13 @@ DEFAULT_CONFIG = {
         "backend": "auto",
         "models_max": 4,  # Router process: how many models may be resident at once.
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
+        # Wedged-child watchdog (issue #104050): a router child can stay alive
+        # with health-200 while every inference 500s. Count consecutive
+        # server_error/timeout failures per model; at the threshold probe with a
+        # real completion and escalate (unload, then child bounce). Cooldown-bounded.
+        "watchdog_enabled": True,
+        "watchdog_failure_threshold": 3,
+        "watchdog_cooldown_s": 300,
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },

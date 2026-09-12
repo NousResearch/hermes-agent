@@ -193,6 +193,15 @@ def check_api_response(
         _last_preflight_pressure = None
 
     _retry.has_retried_429 = False
+    try:  # Wedged-child watchdog reset (managed llama.cpp only; no-op elsewhere).
+        _w_base = str(getattr(agent, "base_url", "") or "")
+        if "127.0.0.1" in _w_base:
+            from hermes_cli.local_runtime.supervisor import report_inference_result
+
+            report_inference_result(_w_base, str(getattr(agent, "model", "") or ""),
+                                    ok=True)
+    except Exception:  # noqa: BLE001 — telemetry must never break the turn
+        pass
     # Clearing Nous rate-limit state proves the limit reset so other sessions may resume.
     if agent.provider == "nous":
         try:

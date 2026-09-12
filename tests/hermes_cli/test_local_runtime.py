@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,6 +39,7 @@ class _StubHandler(BaseHTTPRequestHandler):
     models: dict | None = None
     require_auth = False
     chat_answer = "Paris"
+    chat_status = 200
     requests_processing = 0
     slots: list = []
 
@@ -75,6 +79,10 @@ class _StubHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         if self.path == "/v1/chat/completions":
+            status = getattr(type(self), "chat_status", 200)
+            if status != 200:
+                self._send(status, {"error": {"message": "Compute error"}})
+                return
             self._send(200, {"choices": [{"message": {
                 "role": "assistant", "content": self.chat_answer}}]})
         elif self.path == "/models/load":
@@ -811,3 +819,270 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
         "hermes_cli.local_runtime.binaries.ensure_runtime_installed", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped
+
+
+# ── wedged-child watchdog (issue #104050) ────────────────────
+
+
+def _make_watchdog(tmp_path, port, **kw):
+    """Supervisor pointed at the stub with watchdog knobs exposed."""
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    params = {"watchdog_failure_threshold": 2, "watchdog_cooldown_s": 0}
+    params.update(kw)
+    return LlamaServerSupervisor(
+        install_dir=tmp_path, models_dir=tmp_path, port=port, **params)
+
+
+def _wait_until(fn, timeout_s=60.0):
+    """Poll for background watchdog recovery. Generous: the recovery itself
+    polls the router up to 15s inside unload_model, and loaded CI hosts
+    schedule localhost threads slowly — the assertion, not the timing, is
+    what the test pins."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if fn():
+            return True
+        time.sleep(0.05)
+    return fn()
+
+
+def _wedged(handler, model_id="m"):
+    handler.models = {"data": [{"id": model_id, "status": {"value": "loaded"}}]}
+    handler.chat_status = 500
+
+
+def test_watchdog_unloads_wedged_child_at_threshold(stub_server, tmp_path):
+    """Consecutive 500s trip the threshold: the model is unloaded so the
+    router autoloads a fresh child on the next request."""
+    port, handler = stub_server
+    _wedged(handler)
+    sup = _make_watchdog(tmp_path, port)
+    sup.note_inference_result("m", ok=False, reason="server_error")
+    assert getattr(handler, "unloaded", []) == []
+    sup.note_inference_result("m", ok=False, reason="server_error")
+    assert _wait_until(lambda: getattr(handler, "unloaded", []) == ["m"])
+
+
+def test_watchdog_ignores_router_pressure_reasons(stub_server, tmp_path):
+    """Rate limits and overloads are router-level pressure, not a wedged
+    child — they never feed the streak."""
+    port, handler = stub_server
+    _wedged(handler)
+    sup = _make_watchdog(tmp_path, port)
+    for _ in range(5):
+        sup.note_inference_result("m", ok=False, reason="rate_limit")
+        sup.note_inference_result("m", ok=False, reason="overloaded")
+    time.sleep(1.0)
+    assert getattr(handler, "unloaded", []) == []
+
+
+def test_watchdog_success_resets_the_streak(stub_server, tmp_path):
+    port, handler = stub_server
+    _wedged(handler)
+    sup = _make_watchdog(tmp_path, port, watchdog_failure_threshold=3)
+    sup.note_inference_result("m", ok=False, reason="server_error")
+    sup.note_inference_result("m", ok=False, reason="server_error")
+    sup.note_inference_result("m", ok=True)
+    sup.note_inference_result("m", ok=False, reason="server_error")
+    sup.note_inference_result("m", ok=False, reason="server_error")
+    time.sleep(1.0)
+    assert getattr(handler, "unloaded", []) == []
+
+
+def test_watchdog_disabled_counts_nothing(stub_server, tmp_path):
+    port, handler = stub_server
+    _wedged(handler)
+    sup = _make_watchdog(tmp_path, port, watchdog_enabled=False)
+    for _ in range(5):
+        sup.note_inference_result("m", ok=False, reason="server_error")
+    time.sleep(1.0)
+    assert getattr(handler, "unloaded", []) == []
+    assert sup._consec_failures == {}
+
+
+def test_watchdog_probe_pass_skips_unload(stub_server, tmp_path):
+    """A passing probe means the failures were transient — no escalation."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "m", "status": {"value": "loaded"}}]}
+    handler.chat_status = 200
+    handler.chat_answer = "Paris"
+    sup = _make_watchdog(tmp_path, port, watchdog_failure_threshold=1)
+    sup.note_inference_result("m", ok=False, reason="server_error")
+    assert _wait_until(lambda: sup._recovery_at != {})
+    time.sleep(1.0)
+    assert getattr(handler, "unloaded", []) == []
+
+
+def test_watchdog_cooldown_bounds_recovery(stub_server, tmp_path):
+    port, handler = stub_server
+    _wedged(handler)
+    sup = _make_watchdog(tmp_path, port, watchdog_failure_threshold=1,
+                         watchdog_cooldown_s=3600)
+    sup.note_inference_result("m", ok=False, reason="server_error")
+    assert _wait_until(lambda: getattr(handler, "unloaded", []) == ["m"])
+    sup.note_inference_result("m", ok=False, reason="server_error")
+    time.sleep(1.5)
+    assert getattr(handler, "unloaded", []) == ["m"]
+
+
+def test_watchdog_first_recovery_fires_on_fresh_boot(stub_server, tmp_path, monkeypatch):
+    """Fresh-boot sentinel: on a machine booted seconds ago time.monotonic()
+    is tiny, so a 0.0-default 'last recovery' looks recent and wrongly
+    cooldown-blocks the first-ever recovery (CI runners boot fresh — this
+    failed deterministically there while passing on long-uptime dev boxes)."""
+    import time as _time
+
+    port, handler = stub_server
+    _wedged(handler)
+    sup = _make_watchdog(tmp_path, port, watchdog_failure_threshold=1,
+                         watchdog_cooldown_s=3600)
+    monkeypatch.setattr(_time, "monotonic", lambda: 100.0)
+    try:
+        sup.note_inference_result("m", ok=False, reason="server_error")
+    finally:
+        monkeypatch.undo()
+    assert _wait_until(lambda: getattr(handler, "unloaded", []) == ["m"])
+
+
+def test_watchdog_bad_config_values_fall_back_to_defaults(tmp_path):
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(
+        install_dir=tmp_path, models_dir=tmp_path, port=9999,
+        watchdog_failure_threshold="many", watchdog_cooldown_s=None)
+    assert sup.watchdog_failure_threshold == 3
+    assert sup.watchdog_cooldown_s == 300.0
+    sup.note_inference_result("m", ok=False, reason="server_error")  # no router; no raise
+
+
+def test_report_routes_only_the_managed_endpoint(stub_server, tmp_path, monkeypatch):
+    """Foreign loopback servers and missing supervisors are ignored; the
+    managed base_url feeds the ledger."""
+    from hermes_cli.local_runtime import bootstrap
+    from hermes_cli.local_runtime.supervisor import report_inference_result
+
+    port, handler = stub_server
+    _wedged(handler)
+    sup = _make_watchdog(tmp_path, port)
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", sup)
+
+    report_inference_result("http://127.0.0.1:9/v1", "m", ok=False, reason="server_error")
+    report_inference_result("https://api.example.com/v1", "m", ok=False, reason="server_error")
+    report_inference_result(None, "m", ok=False, reason="server_error")
+    assert sup._consec_failures == {}
+
+    report_inference_result(sup.base_url, "m", ok=False, reason="server_error")
+    report_inference_result(sup.base_url, "m", ok=False, reason="server_error")
+    assert _wait_until(lambda: getattr(handler, "unloaded", []) == ["m"])
+
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    report_inference_result(sup.base_url, "m", ok=False, reason="server_error")  # no raise
+
+
+def test_bounce_ignores_sigterm_then_kills(tmp_path):
+    """A child that survives SIGTERM (the observed wedge) gets SIGKILL."""
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(install_dir=tmp_path, models_dir=tmp_path, port=9999)
+    sup.proc = SimpleNamespace(pid=4242)
+    calls = []
+
+    class Child:
+        def cmdline(self):
+            return ["llama-server", "--model", "/models/m.gguf"]
+
+        def terminate(self):
+            calls.append("term")
+
+        def is_running(self):
+            return True
+
+        def kill(self):
+            calls.append("kill")
+
+    class Psutil:
+        @staticmethod
+        def Process(pid):
+            assert pid == 4242
+            return SimpleNamespace(children=lambda recursive=False: [Child()])
+
+    sys.modules["psutil"] = Psutil()  # test-only stub
+    try:
+        sup._bounce_wedged_children("m")
+    finally:
+        del sys.modules["psutil"]
+    assert calls == ["term", "kill"]
+
+
+def test_bounce_skips_children_serving_other_models(tmp_path):
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(install_dir=tmp_path, models_dir=tmp_path, port=9999)
+    sup.proc = SimpleNamespace(pid=4242)
+    calls = []
+
+    class Child:
+        def cmdline(self):
+            return ["llama-server", "--model", "/models/other.gguf"]
+
+        def terminate(self):
+            calls.append("term")
+
+        def is_running(self):
+            return True
+
+    class Psutil:
+        @staticmethod
+        def Process(pid):
+            return SimpleNamespace(children=lambda recursive=False: [Child()])
+
+    sys.modules["psutil"] = Psutil()  # test-only stub
+    try:
+        sup._bounce_wedged_children("m")
+    finally:
+        del sys.modules["psutil"]
+    assert calls == []
+    sup.proc = None
+    sup._bounce_wedged_children("m")  # no router; silent no-op
+
+
+def test_child_matcher_ignores_binary_and_flag_names():
+    """Substring over the whole command line false-positives: 'm' is in
+    'lla**m**a-server' and '--**m**odel'. Only model-path tokens count."""
+    from hermes_cli.local_runtime.supervisor import _child_serves_model
+
+    child = SimpleNamespace(
+        cmdline=lambda: ["llama-server", "--model", "/models/other.gguf"])
+    assert _child_serves_model(child, "m") is False
+    child = SimpleNamespace(
+        cmdline=lambda: ["llama-server", "--model", "/models/m.gguf"])
+    assert _child_serves_model(child, "m") is True
+    child = SimpleNamespace(cmdline=lambda: ["llama-server", "--model", "m"])
+    assert _child_serves_model(child, "m") is True
+
+    class Denied:
+        def cmdline(self):
+            raise PermissionError("denied")
+
+    assert _child_serves_model(Denied(), "m") is False
+    assert _child_serves_model(child, "") is False
+
+
+def test_resolve_requires_unambiguous_match(stub_server, tmp_path):
+    """With several resident models a loose key matching more than one must
+    recover nothing — never unload a healthy child's model by mistake."""
+    port, handler = stub_server
+    handler.models = {"data": [
+        {"id": "qqq-one", "status": {"value": "loaded"}},
+        {"id": "qqq-two", "status": {"value": "loaded"}},
+    ]}
+    handler.chat_status = 500
+    sup = _make_watchdog(tmp_path, port, watchdog_failure_threshold=1)
+    sup.note_inference_result("qqq", ok=False, reason="server_error")
+    assert _wait_until(lambda: sup._recovery_at != {})
+    time.sleep(1.0)
+    assert getattr(handler, "unloaded", []) == []
+
+    sup.note_inference_result("qqq-one", ok=False, reason="server_error")
+    assert _wait_until(lambda: getattr(handler, "unloaded", []) == ["qqq-one"])

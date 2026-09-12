@@ -2066,6 +2066,20 @@ class MatrixAdapter(BasePlatformAdapter):
                 reply_to_author_name = await self._get_display_name(room_id, reply_to_author_id)
         return body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name
 
+    def _resolve_channel_skills(
+        self, channel_id: str, parent_id: str | None = None) -> list[str] | None:
+        """Auto-skill binding(s) for a room/thread from ``channel_skill_bindings``
+        (``{id: "<room id>", skills: [...]}``; ``skill: "<name>"`` also accepted). Exact
+        *channel_id* first, then *parent_id* (threads inherit the parent room's binding)."""
+        from gateway.platforms.base import resolve_channel_skills
+        return resolve_channel_skills(self.config.extra, channel_id, parent_id)
+
+    def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
+        """Per-room ephemeral prompt from ``channel_prompts``: exact *channel_id* first, then
+        *parent_id* (threads inherit the parent room's prompt). Blank prompts count as absent."""
+        from gateway.platforms.base import resolve_channel_prompt
+        return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
+
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
         **extra) -> Optional[MessageEvent]:
@@ -2084,12 +2098,18 @@ class MatrixAdapter(BasePlatformAdapter):
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         elif _is_bare_media_filename(media_msgtype, body):
             body = ""  # transport filename, not user text
+        # Per-room persona: exact thread/event id first, parent room as fallback (threads inherit),
+        # mirroring Discord/Telegram. Both fields are ephemeral (never persisted to transcript).
+        parent_id = room_id if _thread_id and _thread_id != room_id else None
+        channel_prompt = self._resolve_channel_prompt(_thread_id or room_id, parent_id)
+        channel_skills = self._resolve_channel_skills(_thread_id or room_id, parent_id)
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
             reply_to_author_name=reply_to_author_name,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
-            user_id=sender, user_name=display_name, **extra)
+            user_id=sender, user_name=display_name,
+            auto_skill=channel_skills, channel_prompt=channel_prompt, **extra)
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
@@ -3065,6 +3085,12 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     if "max_message_length" in matrix_cfg:
         seeded["max_message_length"] = matrix_cfg["max_message_length"]
         _set_env("MATRIX_MAX_MESSAGE_LENGTH", str(matrix_cfg["max_message_length"]))
+    # Per-room persona plumbing (parity with discord/telegram): ``channel_prompts`` already
+    # reaches ``extra`` via the core shared-key loop; ``channel_skill_bindings`` is restricted to
+    # discord+slack there, so seed it here (extra-only — no env bridge, multiplex-safe).
+    bindings = matrix_cfg.get("channel_skill_bindings")
+    if isinstance(bindings, list) and bindings:
+        seeded["channel_skill_bindings"] = bindings
     return seeded or None
 
 

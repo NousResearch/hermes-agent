@@ -550,6 +550,59 @@ See also: [admin/user slash command split](../../reference/slash-commands.md#per
 To find a Room ID: in Element, go to the room → **Settings** → **Advanced** → the **Internal room ID** is shown there (starts with `!`).
 :::
 
+## Per-room prompts (`channel_prompts`)
+
+Per-room ephemeral system prompts that are injected on every turn in the matching Matrix room or thread without being persisted to transcript history.
+
+```yaml
+matrix:
+  channel_prompts:
+    "!fitnessroom:matrix.example.org": |
+      You are Greg the coach. DB-first, evidence over vibes.
+    "!cfodebrief:matrix.example.org": |
+      You are Greg the CFO. Terse, numbers, deltas never balances.
+```
+
+Behavior:
+- Exact thread/event ID matches win.
+- If a message arrives inside a thread and that thread has no explicit entry, Hermes falls back to the parent room ID.
+- Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
+
+Use the room's **internal ID** (`!abc...:server`), not its alias (`#room:server`).
+
+## Per-room skill bindings (`channel_skill_bindings`)
+
+Auto-load a skill whenever a new session starts in a specific room. Unlike per-room prompts (which are injected on every turn), skill bindings inject the skill content as a user message at **session start** — it becomes part of the conversation history and does not need to be reloaded on subsequent turns.
+
+This is ideal for rooms with a dedicated purpose (a fitness-coaching room, a finance-debrief room, etc.) where you don't want the model's own skill selector to decide whether to load on every short reply.
+
+```yaml
+matrix:
+  channel_skill_bindings:
+    # Fitness room — always runs in "fitness-coach" mode
+    - id: "!fitnessroom:matrix.example.org"
+      skills:
+        - fitness-coach
+    # CFO debrief room — preload multiple skills in order
+    - id: "!cfodebrief:matrix.example.org"
+      skills:
+        - finance
+        - writing-plans
+    # Short form: single skill as a string (must be an installed skill name)
+    - id: "!supportroom:matrix.example.org"
+      skill: hubspot-on-demand
+```
+
+:::warning Skill names must exist
+If the bound skill isn't installed, the gateway logs `[Gateway] Auto-skill '<name>' not found` and the turn proceeds without it. Verify names with `hermes skills list`.
+:::
+```
+
+Notes:
+- The binding matches by room ID. For threaded messages in a bound room, the thread inherits the parent room's binding.
+- The skill is loaded only at session start (new session). If you change the binding, run `/new` for it to take effect.
+- Combine with `channel_prompts` for per-room tone/constraints on top of the skill's instructions.
+
 ## Commands in Matrix
 
 Hermes supports the same gateway commands in Matrix that it supports on other

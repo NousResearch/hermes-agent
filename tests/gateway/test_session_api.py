@@ -41,6 +41,7 @@ def auth_adapter(session_db):
 def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application()
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_get("/api/projects", adapter._handle_list_projects)
     app.router.add_get("/api/sessions", adapter._handle_list_sessions)
     app.router.add_post("/api/sessions", adapter._handle_create_session)
     app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
@@ -62,6 +63,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
         data = await resp.json()
 
     features = data["features"]
+    assert features["project_resources"] is True
     assert features["session_resources"] is True
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
@@ -72,6 +74,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["skills_api"] is True
     assert features["realtime_voice"] is False
     assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
+    assert data["endpoints"]["projects"] == {"method": "GET", "path": "/api/projects"}
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
@@ -80,6 +83,203 @@ async def test_capabilities_advertises_session_control_surface(adapter):
         "method": "POST",
         "path": "/v1/runs/{run_id}/steer",
     }
+
+
+@pytest.mark.asyncio
+async def test_sessions_expose_workspace_and_linked_project(
+    adapter, session_db, tmp_path, monkeypatch
+):
+    from hermes_cli import projects_db as pdb
+
+    home = tmp_path / "profile-home"
+    repo = tmp_path / "repos" / "hermes-agent"
+    workdir = repo / "apps" / "desktop"
+    workdir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with pdb.connect_closing() as conn:
+        project_id = pdb.create_project(
+            conn,
+            name="Hermes Agent",
+            slug="hermes-agent",
+            folders=[str(repo)],
+        )
+
+    session_id = session_db.create_session(
+        "workspace-session",
+        "api_server",
+        cwd=str(workdir),
+        git_repo_root=str(repo),
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        list_resp = await cli.get("/api/sessions")
+        assert list_resp.status == 200, await list_resp.text()
+        listed = next(
+            row
+            for row in (await list_resp.json())["data"]
+            if row["id"] == session_id
+        )
+
+        get_resp = await cli.get(f"/api/sessions/{session_id}")
+        assert get_resp.status == 200, await get_resp.text()
+        fetched = (await get_resp.json())["session"]
+
+    for row in (listed, fetched):
+        assert row["cwd"] == str(workdir)
+        assert row["git_repo_root"] == str(repo)
+        assert row["project_id"] == project_id
+        assert row["project_slug"] == "hermes-agent"
+
+
+@pytest.mark.asyncio
+async def test_projects_list_counts_visible_sessions_without_creating_parallel_state(
+    adapter, session_db, tmp_path, monkeypatch
+):
+    from hermes_cli import projects_db as pdb
+
+    home = tmp_path / "profile-home"
+    project_repo = tmp_path / "repos" / "project"
+    discovered_repo = tmp_path / "repos" / "discovered"
+    project_repo.mkdir(parents=True)
+    discovered_repo.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with pdb.connect_closing() as conn:
+        project_id = pdb.create_project(
+            conn,
+            name="Project",
+            folders=[str(project_repo)],
+        )
+        pdb.set_active(conn, project_id)
+        pdb.record_discovered_repos(
+            conn,
+            [
+                (str(project_repo), "project-cache"),
+                (str(discovered_repo), "discovered-cache"),
+            ],
+        )
+
+    session_db.create_session(
+        "project-session",
+        "api_server",
+        cwd=str(project_repo / "src"),
+        git_repo_root=str(project_repo),
+    )
+    session_db.create_session(
+        "discovered-session",
+        "api_server",
+        cwd=str(discovered_repo / "src"),
+        git_repo_root=str(discovered_repo),
+    )
+    archived_id = session_db.create_session(
+        "archived-project-session",
+        "api_server",
+        cwd=str(project_repo),
+        git_repo_root=str(project_repo),
+    )
+    session_db.set_session_archived(archived_id, True)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/projects")
+        assert resp.status == 200, await resp.text()
+        payload = await resp.json()
+
+    assert payload["object"] == "list"
+    assert payload["active_id"] == project_id
+    assert len(payload["data"]) == 1
+    assert payload["data"][0]["id"] == project_id
+    assert payload["data"][0]["session_count"] == 1
+    repo_counts = {
+        repo["label"]: repo["session_count"]
+        for repo in payload["discovered_repos"]
+    }
+    assert repo_counts == {"project-cache": 1, "discovered-cache": 1}
+
+
+@pytest.mark.asyncio
+async def test_empty_projects_read_does_not_create_projects_db(
+    adapter, tmp_path, monkeypatch
+):
+    from hermes_cli import projects_db as pdb
+
+    home = tmp_path / "empty-profile-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    db_path = pdb.projects_db_path()
+    assert not db_path.exists()
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/projects")
+        assert resp.status == 200, await resp.text()
+        payload = await resp.json()
+
+        sessions_resp = await cli.get("/api/sessions")
+        assert sessions_resp.status == 200, await sessions_resp.text()
+
+    assert payload == {
+        "object": "list",
+        "data": [],
+        "discovered_repos": [],
+        "active_id": None,
+    }
+    assert not db_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_projects_read_captures_context_scoped_profile_before_thread_offload(
+    adapter, session_db, tmp_path, monkeypatch
+):
+    from hermes_cli import projects_db as pdb
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    default_home = tmp_path / "default-home"
+    worker_home = tmp_path / "worker-home"
+    default_repo = tmp_path / "repos" / "default"
+    worker_repo = tmp_path / "repos" / "worker"
+    default_repo.mkdir(parents=True)
+    worker_repo.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+    with pdb.connect_closing(default_home / "projects.db") as conn:
+        pdb.create_project(conn, name="Default", folders=[str(default_repo)])
+    with pdb.connect_closing(worker_home / "projects.db") as conn:
+        worker_project_id = pdb.create_project(
+            conn, name="Worker", folders=[str(worker_repo)]
+        )
+    session_db.create_session(
+        "worker-session",
+        "api_server",
+        cwd=str(worker_repo / "src"),
+        git_repo_root=str(worker_repo),
+    )
+
+    @web.middleware
+    async def worker_profile_scope(request, handler):
+        token = set_hermes_home_override(worker_home)
+        try:
+            return await handler(request)
+        finally:
+            reset_hermes_home_override(token)
+
+    app = web.Application(middlewares=[worker_profile_scope])
+    app.router.add_get("/api/projects", adapter._handle_list_projects)
+    app.router.add_get("/api/sessions", adapter._handle_list_sessions)
+    async with TestClient(TestServer(app)) as cli:
+        projects_resp = await cli.get("/api/projects")
+        assert projects_resp.status == 200, await projects_resp.text()
+        projects = (await projects_resp.json())["data"]
+
+        sessions_resp = await cli.get("/api/sessions")
+        assert sessions_resp.status == 200, await sessions_resp.text()
+        sessions = (await sessions_resp.json())["data"]
+
+    assert [(project["name"], project["session_count"]) for project in projects] == [
+        ("Worker", 1)
+    ]
+    assert sessions[0]["project_id"] == worker_project_id
 
 
 @pytest.mark.asyncio

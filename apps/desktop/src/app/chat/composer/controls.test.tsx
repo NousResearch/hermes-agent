@@ -155,6 +155,19 @@ describe('ComposerControls shortcut tooltips', () => {
 
     await expectShortcutTooltip('Queue message', 'Ctrl+↵')
   })
+
+  // Compaction forces busyAction to 'queue' even with an empty composer (see
+  // index.tsx), so the primary control — not just the secondary ghost button,
+  // which only renders when there's a payload — must present as Queue too.
+  it('presents the primary control as Queue (not Stop) with an empty composer while busyAction is queue', async () => {
+    renderControls({ busy: true, busyAction: 'queue', hasComposerPayload: false })
+
+    expect(screen.queryByLabelText('Stop')).toBeNull()
+    const primary = screen.getByLabelText('Queue message')
+    expect((primary as HTMLButtonElement).type).toBe('submit')
+
+    await expectShortcutTooltip('Queue message', 'Ctrl+↵')
+  })
 })
 
 describe('wake-word ear visibility', () => {

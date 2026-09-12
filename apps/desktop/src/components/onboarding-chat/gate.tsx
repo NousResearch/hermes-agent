@@ -19,8 +19,8 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
   const intro = useStore($introReveal)
 
   // A guide is owed the moment the renderer knows it (cinematic with the film
-  // seen, or a relaunch mid-guide). Take the solo shape NOW, before the
-  // gateway opens — otherwise the normal shell paints at full size for the
+  // seen, or a relaunch mid-guide). Take the solo shape now, before the
+  // gateway opens. Otherwise the normal shell paints at full size for the
   // seconds the backend takes to come up, and then snaps down to the guide.
   useEffect(() => {
     if (gate.guideQueued && intro.phase === 'hidden') {

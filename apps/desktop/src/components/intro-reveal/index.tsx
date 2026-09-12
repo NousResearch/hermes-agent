@@ -38,7 +38,7 @@ export function IntroRevealGate({ enabled }: IntroRevealGateProps) {
 
     // Observe the store edge directly: a failed native open can finish before
     // React renders the playing phase. Take the guide's shape on the same
-    // tick — finishIntroReveal shows the main window right after this fires.
+    // tick: finishIntroReveal shows the main window right after this fires.
     return $introReveal.listen((state, previous) => {
       if (state.phase === 'hidden' && previous?.phase !== 'hidden') {
         queueGuideAfterIntro()

@@ -148,7 +148,7 @@ def test_failed_turn_write_is_retried_at_session_end(provider):
     provider._client.fail_add = True
     provider.sync_turn("hello", "hi there", session_id="session-1")
     assert provider._client.add_calls == []
-    assert provider._pending_turns == [{"user": "hello", "assistant": "hi there"}]
+    assert provider._pending_turns == [{"user": "hello", "assistant": "hi there", "session_id": "session-1"}]
 
     provider._client.fail_add = False
     provider.on_session_end([])
@@ -176,6 +176,32 @@ def test_session_switch_flushes_pending_to_old_session(provider):
     provider.on_session_switch("session-2", reset=True)
     assert provider._client.add_calls[0]["custom_id"] == _capture_custom_id("session-1")
     assert provider._session_id == "session-2"
+    assert provider._pending_turns == []
+
+
+def test_failed_switch_flush_keeps_old_session_turns_for_later_retry(provider):
+    provider._client.fail_add = True
+    provider.sync_turn("old turn", "old reply", session_id="session-1")
+    provider.on_session_switch("session-2", reset=True)  # flush fails: service unavailable at the boundary
+    assert provider._session_id == "session-2"
+    assert provider._pending_turns == [{"user": "old turn", "assistant": "old reply", "session_id": "session-1"}]
+
+    provider._client.fail_add = False
+    provider.sync_turn("new turn", "new reply", session_id="session-2")
+    calls = provider._client.add_calls
+    assert [c["custom_id"] for c in calls] == [_capture_custom_id("session-1"), _capture_custom_id("session-2")]
+    assert calls[0]["metadata"]["session_id"] == "session-1" and "old turn" in calls[0]["content"]
+    assert calls[1]["metadata"]["session_id"] == "session-2" and "new turn" in calls[1]["content"]
+    assert provider._pending_turns == []
+
+
+def test_failed_switch_flush_is_retried_at_shutdown(provider):
+    provider._client.fail_add = True
+    provider.sync_turn("old turn", "old reply", session_id="session-1")
+    provider.on_session_switch("session-2", reset=True)
+    provider._client.fail_add = False
+    provider.shutdown()
+    assert provider._client.add_calls[0]["custom_id"] == _capture_custom_id("session-1")
     assert provider._pending_turns == []
 
 

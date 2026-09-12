@@ -282,7 +282,7 @@ async def _start_gateway_start_control_socket(runner):
 def _start_gateway_start_cron_and_housekeeping(runner):
     """Start the cron scheduler thread + gateway housekeeping thread; returns
     ``(cron_stop, cron_provider, cron_thread, housekeeping_thread)``."""
-    from gateway.run import (Any, Dict, Platform, _multiplex_profile_homes, _start_gateway_housekeeping, asyncio, logger, threading)
+    from gateway.run import (Any, Dict, Platform, _cron_tick_profile_homes, _start_gateway_housekeeping, asyncio, logger, threading)
     # The event loop is passed so cron delivery can use live adapters (E2EE support).
     from cron.scheduler_provider import (
         InProcessCronScheduler, resolve_cron_scheduler, scheduler_for_profile_mode)
@@ -295,14 +295,15 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     # Multiplex: tell the ticker which profile homes to tick, else secondary profiles' jobs never run.
     if isinstance(cron_provider, InProcessCronScheduler) and multiplex_cron:
         try:
-            profile_homes = _multiplex_profile_homes(runner.config)
+            profile_homes = _cron_tick_profile_homes(runner.config)
             if profile_homes:
                 cron_start_kwargs["profile_homes"] = profile_homes
                 # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.
                 cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
-                # runner.adapters belongs to "default"; naming it keeps the ticker from routing a secondary's
-                # cron through the default bot (even before that profile's adapter connects).
-                cron_start_kwargs["default_profile"] = "default"
+                # runner.adapters belongs to the LAUNCH profile (default, or the --profile name); naming
+                # it keeps the ticker from routing a secondary's cron through that bot and lets a named
+                # multiplexer's own jobs reuse its live adapters.
+                cron_start_kwargs["default_profile"] = runner._primary_profile_name
                 logger.info(
                     "Cron scheduler will tick %d profile(s) under multiplex: %s", len(profile_homes),
                     [p[0] if isinstance(p, tuple) else p for p in profile_homes])

@@ -609,3 +609,84 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+@pytest.mark.linux_only
+def test_pending_restart_catchup_normalizes_user_bus(monkeypatch, capsys):
+    """#107477: the catch-up path reaches a linger-enabled user manager from a bus-less dispatcher.
+
+    ``_run_pending_fleet_restart`` enumerates systemd scopes through
+    ``_systemd_gateway_unit_listings``; without bus normalization a ``sudo -u`` /
+    cron / SSH dispatch fails the user-scope listing and the whole update exits 1
+    even though the fleet restarted. The fake systemctl below reproduces the
+    manager: the user scope answers only when the bus env is set.
+    """
+    import os
+    import subprocess
+
+    import hermes_cli.gateway as gateway_cli
+
+    # Bus-less dispatcher: no session bus in the environment.
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    # A linger-enabled user manager is reachable on disk.
+    runtime_dir = f"/run/user/{os.getuid()}"
+    monkeypatch.setattr(gateway_cli, "_runtime_dir_is_ours", lambda d: str(d) == runtime_dir)
+    monkeypatch.setattr(gateway_cli, "_path_exists_safe", lambda p: str(p) == f"{runtime_dir}/bus")
+    # Empty fleet: no PIDs to stop, no macOS/Windows supervisors.
+    monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda **k: [])
+    monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+
+    def fake_systemctl(cmd, *, timeout):
+        if "list-units" in cmd:
+            if "--user" in cmd and "XDG_RUNTIME_DIR" not in os.environ:
+                return subprocess.CompletedProcess(cmd, 1, "", "Failed to connect to user scope bus")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "active", "")
+
+    monkeypatch.setattr(update_cmd_fleet, "_systemctl", fake_systemctl)
+
+    assert update_cmd._run_pending_fleet_restart() is True
+    assert "Pending fleet restart completed" in capsys.readouterr().out
+    assert os.environ["XDG_RUNTIME_DIR"] == runtime_dir
+    assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={runtime_dir}/bus"
+
+
+@pytest.mark.linux_only
+def test_pending_restart_catchup_stays_failed_without_user_bus(monkeypatch, capsys):
+    """#107477 fail-closed: with no user manager on disk the listing still fails honestly.
+
+    Pins that the normalization never fabricates a bus: when neither the
+    runtime dir nor the bus socket exists, the user-scope listing fails and
+    the catch-up reports incomplete instead of clearing the obligation.
+    """
+    import os
+    import subprocess
+
+    import hermes_cli.gateway as gateway_cli
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(gateway_cli, "_runtime_dir_is_ours", lambda d: False)
+    monkeypatch.setattr(gateway_cli, "_path_exists_safe", lambda p: False)
+    monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda **k: [])
+    monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+
+    def fake_systemctl(cmd, *, timeout):
+        if "list-units" in cmd:
+            if "--user" in cmd and "XDG_RUNTIME_DIR" not in os.environ:
+                return subprocess.CompletedProcess(cmd, 1, "", "Failed to connect to user scope bus")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "active", "")
+
+    monkeypatch.setattr(update_cmd_fleet, "_systemctl", fake_systemctl)
+
+    assert update_cmd._run_pending_fleet_restart() is False
+    assert "XDG_RUNTIME_DIR" not in os.environ
+    assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ

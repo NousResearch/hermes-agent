@@ -218,7 +218,15 @@ def _systemd_gateway_unit_listings(on_list_timeout=None):
 
     A missing systemctl skips the scope silently; a listing timeout skips it after
     ``on_list_timeout(scope, exc)`` (when given) so the other scope is still processed.
+
+    Normalizes the user-bus environment first so bus-less dispatchers
+    (``sudo -u``, cron, systemd services, SSH wrappers) reach a linger-enabled
+    user manager instead of failing the user-scope listing (#107477).
     """
+    from hermes_cli.gateway import _ensure_user_systemd_env
+
+    with suppress(Exception):
+        _ensure_user_systemd_env()
     for scope, scope_cmd in _SYSTEMD_SCOPES:
         try:
             result = _systemctl(scope_cmd + _LIST_GATEWAY_UNITS, timeout=10)

@@ -541,4 +541,22 @@ test('promoting a queued background waiter lets it take the reserved foreground 
     assert.match(mainSource, /new LocalBackendSpawnCoordinator\(poolLimits\.maxBackends\)/)
     assert.match(mainSource, /localBackendSpawnCoordinator\.setLimit\(poolLimits\.maxBackends\)/)
   })
+
+  test('main.ts initializes logging before persisted pool limits can emit a startup log', () => {
+    const poolLimitsRead = mainSource.indexOf('let poolLimits = readPersistedPoolLimits()')
+
+    assert.ok(poolLimitsRead >= 0, 'persisted pool limits must be read during startup')
+
+    for (const declaration of [
+      'const hermesLog = []',
+      "let desktopLogBuffer = ''",
+      'let desktopLogFlushTimer = null',
+      'let desktopLogFlushPromise = Promise.resolve()'
+    ]) {
+      const declarationIndex = mainSource.indexOf(declaration)
+
+      assert.ok(declarationIndex >= 0, `missing logging declaration: ${declaration}`)
+      assert.ok(declarationIndex < poolLimitsRead, `${declaration} must initialize before persisted pool limits are read`)
+    }
+  })
 }

@@ -1,7 +1,15 @@
 import { atom } from 'nanostores'
 
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
-import { $petActivity, $petInfo, $petUnread, clearPetUnread, type PetActivity, type PetInfo } from '@/store/pet'
+import {
+  $petActivity,
+  $petInfo,
+  $petRoam,
+  $petUnread,
+  clearPetUnread,
+  type PetActivity,
+  type PetInfo
+} from '@/store/pet'
 import { $awaitingResponse, $busy } from '@/store/session'
 
 /**
@@ -48,6 +56,8 @@ export interface PetOverlayStatePayload {
   unread: boolean
   /** Latest reaction — bumping its id forwards a burst to the overlay. */
   reaction: PetReaction | null
+  /** Whether the overlay should wander while the agent is idle. */
+  roam: boolean
 }
 
 export type PetOverlayControl =
@@ -147,7 +157,8 @@ function currentPayload(): PetOverlayStatePayload {
     busy: $busy.get(),
     awaiting: $awaitingResponse.get(),
     unread: $petUnread.get(),
-    reaction: $petReaction.get()
+    reaction: $petReaction.get(),
+    roam: $petRoam.get()
   }
 }
 
@@ -184,7 +195,8 @@ function openOverlay(request: PetOverlayOpenRequest): void {
     $busy.subscribe(pushNow),
     $awaitingResponse.subscribe(pushNow),
     $petUnread.subscribe(pushNow),
-    $petReaction.subscribe(pushNow)
+    $petReaction.subscribe(pushNow),
+    $petRoam.subscribe(pushNow)
   ]
 }
 

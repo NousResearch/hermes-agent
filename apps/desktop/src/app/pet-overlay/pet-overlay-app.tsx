@@ -3,10 +3,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { PetHeartField, playVibeHearts } from '@/components/chat/vibe-hearts'
 import { PetBubble } from '@/components/pet/pet-bubble'
-import { PetSprite } from '@/components/pet/pet-sprite'
+import { PetSprite, roamWalkRow } from '@/components/pet/pet-sprite'
+import { usePetOverlayRoam } from '@/components/pet/use-pet-overlay-roam'
 import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { Mail } from '@/lib/icons'
-import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
+import { $petActivity, $petAtRest, $petInfo, $petRoamDir, setPetInfo } from '@/store/pet'
 import { overlayWindowSize } from '@/store/pet-overlay'
 import { setAwaitingResponse, setBusy } from '@/store/session'
 
@@ -58,12 +59,18 @@ interface DragState {
   width: number
   height: number
   moved: boolean
+  lastX: number
+  lastY: number
 }
 
 export function PetOverlayApp() {
   const info = useStore($petInfo)
+  const atRest = useStore($petAtRest)
+  const roamDir = useStore($petRoamDir)
   const [composerOpen, setComposerOpen] = useState(false)
   const [draft, setDraft] = useState('')
+  const [roamEnabled, setRoamEnabled] = useState(false)
+  const [roamReplanKey, setRoamReplanKey] = useState(0)
   // Mirrored from the main renderer: a finish landed while you were away.
   const [unread, setUnread] = useState(false)
 
@@ -95,6 +102,7 @@ export function PetOverlayApp() {
       setBusy(Boolean(payload.busy))
       setAwaitingResponse(Boolean(payload.awaiting))
       setUnread(Boolean(payload.unread))
+      setRoamEnabled(Boolean(payload.roam))
 
       // Play a reaction on a new id (ignore the first sync, which just primes it).
       const reaction = payload.reaction ?? null
@@ -208,6 +216,8 @@ export function PetOverlayApp() {
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
     dragRef.current = {
       height: window.outerHeight,
+      lastX: window.screenX,
+      lastY: window.screenY,
       moved: false,
       offX: e.screenX - window.screenX,
       offY: e.screenY - window.screenY,
@@ -228,35 +238,51 @@ export function PetOverlayApp() {
       drag.moved = true
     }
 
+    drag.lastX = e.screenX - drag.offX
+    drag.lastY = e.screenY - drag.offY
     window.hermesDesktop?.petOverlay?.setBounds({
       height: drag.height,
       width: drag.width,
-      x: e.screenX - drag.offX,
-      y: e.screenY - drag.offY
+      x: drag.lastX,
+      y: drag.lastY
+    })
+  }
+
+  const finishMovedDrag = (drag: DragState) => {
+    // A drag cancels any deferred single-click so the composer can't pop open
+    // after you reposition the pet.
+    clearTimeout(clickTimerRef.current)
+    clickTimerRef.current = undefined
+
+    // A roam beat may be sleeping or paused in its old animation. Restart it
+    // now so a pet released in mid-air immediately resolves the surface below.
+    setRoamReplanKey(key => key + 1)
+
+    // Remember the last bounds sent during the drag. Pointer-cancel events do
+    // not always carry useful screen coordinates, so these live on DragState.
+    window.hermesDesktop?.petOverlay?.control({
+      bounds: { height: drag.height, width: drag.width, x: drag.lastX, y: drag.lastY },
+      type: 'bounds'
     })
   }
 
   const onPetPointerUp = (e: React.PointerEvent) => {
     const drag = dragRef.current
     dragRef.current = null
-    ;(e.target as Element).releasePointerCapture?.(e.pointerId)
+    const target = e.target as Element
+
+    if (target.hasPointerCapture?.(e.pointerId)) {
+      target.releasePointerCapture?.(e.pointerId)
+    }
 
     if (!drag) {
       return
     }
 
     if (drag.moved) {
-      // A drag cancels any deferred single-click so the composer can't pop open
-      // after you reposition the pet.
-      clearTimeout(clickTimerRef.current)
-      clickTimerRef.current = undefined
-
-      // Remember the spot on the desktop (screen coords) so the pet reopens here
-      // next time / after a restart.
-      window.hermesDesktop?.petOverlay?.control({
-        bounds: { height: drag.height, width: drag.width, x: e.screenX - drag.offX, y: e.screenY - drag.offY },
-        type: 'bounds'
-      })
+      drag.lastX = e.screenX - drag.offX
+      drag.lastY = e.screenY - drag.offY
+      finishMovedDrag(drag)
 
       return
     }
@@ -282,6 +308,20 @@ export function PetOverlayApp() {
       clickTimerRef.current = undefined
       setComposerOpen(open => !open)
     }, DOUBLE_CLICK_MS)
+  }
+
+  const onPetPointerCancel = (e: React.PointerEvent) => {
+    const drag = dragRef.current
+    dragRef.current = null
+    const target = e.target as Element
+
+    if (target.hasPointerCapture?.(e.pointerId)) {
+      target.releasePointerCapture?.(e.pointerId)
+    }
+
+    if (drag?.moved) {
+      finishMovedDrag(drag)
+    }
   }
 
   const send = () => {
@@ -312,6 +352,21 @@ export function PetOverlayApp() {
   }, [])
 
   usePetZoomGesture(petRef, onScale, Boolean(info.enabled && info.spritesheetBase64))
+
+  const isInteracting = useCallback(() => Boolean(dragRef.current || composerOpenRef.current), [])
+  const petW = (info.frameW ?? DEFAULT_FRAME_W) * (info.scale ?? DEFAULT_SCALE)
+  const petH = (info.frameH ?? DEFAULT_FRAME_H) * (info.scale ?? DEFAULT_SCALE)
+
+  usePetOverlayRoam({
+    enabled: Boolean(roamEnabled && atRest && info.enabled && info.spritesheetBase64 && !composerOpen),
+    isInteracting,
+    loopMs: info.loopMs ?? 1100,
+    petH,
+    petW,
+    replanKey: roamReplanKey
+  })
+
+  const walk = roamWalkRow(roamDir, info.stateRows)
 
   // Grow/shrink the OS overlay window to fit the pet at its current scale so the
   // sprite is never cropped — covers both the wheel gesture here and a scale
@@ -416,6 +471,7 @@ export function PetOverlayApp() {
       )}
 
       <div
+        onPointerCancel={onPetPointerCancel}
         onPointerDown={onPetPointerDown}
         onPointerMove={onPetPointerMove}
         onPointerUp={onPetPointerUp}
@@ -432,8 +488,14 @@ export function PetOverlayApp() {
         <div style={{ marginBottom: 4 }}>
           <PetBubble />
         </div>
-        <div style={{ lineHeight: 0, position: 'relative' }}>
-          <PetSprite info={info} pauseWhenUnfocused={false} />
+        <div
+          style={{
+            lineHeight: 0,
+            position: 'relative',
+            transform: roamDir !== 0 && walk.mirror ? 'scaleX(-1)' : 'none'
+          }}
+        >
+          <PetSprite info={info} pauseWhenUnfocused={false} rowOverride={walk.row} />
 
           {/* Hearts on the popped-out pet — identical to in-window. */}
           <PetHeartField

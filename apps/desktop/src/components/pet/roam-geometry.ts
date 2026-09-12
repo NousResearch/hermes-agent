@@ -54,7 +54,6 @@ export const overlapsX = (from: Ledge, to: Ledge): boolean =>
  * (always `ledges[0]`) if the pet is somehow below everything.
  */
 export function resolveLedge(ledges: Ledge[], x: number, y: number, petH: number): Ledge {
-  const bottom = y + petH
   let best: Ledge | null = null
 
   for (const ledge of ledges) {
@@ -62,7 +61,7 @@ export function resolveLedge(ledges: Ledge[], x: number, y: number, petH: number
       continue
     }
 
-    if (ledge.y >= bottom - GROUND_EPS && (!best || ledge.y < best.y)) {
+    if (groundTop(ledge, petH) >= y - GROUND_EPS && (!best || ledge.y < best.y)) {
       best = ledge
     }
   }

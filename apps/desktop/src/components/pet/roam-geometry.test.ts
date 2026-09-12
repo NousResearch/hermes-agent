@@ -48,4 +48,11 @@ describe('resolveLedge', () => {
     const justAbove = resolveLedge([floor], 10, floor.y - petH - GROUND_EPS + 0.5, petH)
     expect(justAbove).toBe(floor)
   })
+
+  it('keeps the surface selected after the feet are sunk to the rendered resting position', () => {
+    const petH = 100
+    const restingY = groundTop(shelf, petH)
+
+    expect(resolveLedge([floor, shelf], 200, restingY, petH)).toBe(shelf)
+  })
 })

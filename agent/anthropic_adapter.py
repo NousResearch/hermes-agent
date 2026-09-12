@@ -571,8 +571,11 @@ def build_anthropic_kwargs(
         elif tool_choice is None or isinstance(tool_choice, str):
             # A forced tool name goes through the OAuth normalizer too: every tools[] entry is
             # mcp__-prefixed/aliased there, so the literal would leak and name a nonexistent tool.
+            # Server tools are the exception — they keep their canonical name in tools[] (see
+            # _apply_claude_code_identity), so forcing one must name it verbatim.
+            forced_server_tool = any("type" in t and t.get("name") == tool_choice for t in anthropic_tools)
             kwargs["tool_choice"] = _TOOL_CHOICE_MAP.get(tool_choice) or {
-                "type": "tool", "name": to_wire(tool_choice) if to_wire else tool_choice
+                "type": "tool", "name": to_wire(tool_choice) if to_wire and not forced_server_tool else tool_choice
             }
     # Map reasoning_config to Anthropic's thinking parameter. Claude 4.6+ models use adaptive thinking +
     # output_config.effort. Older models use manual thinking with budget_tokens. MiniMax Anthropic-compat

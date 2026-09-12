@@ -40,7 +40,7 @@ def format_message(content: str) -> str:
     placeholders: Dict[str, str] = {}
 
     def _ph(value: str) -> str:
-        key = f"\x00GC{len(placeholders)}\x00"
+        key = f"@@HERMES_GC_PH_{len(placeholders)}@@"
         placeholders[key] = value
         return key
 
@@ -58,7 +58,11 @@ def format_message(content: str) -> str:
     text = _INVISIBLE_RE.sub("", text)
     # Collapse double spaces left over from stripped chars.
     text = re.sub(r"  +", " ", text)
-    for key, value in placeholders.items():
+    # Restore outer placeholders first so nested keys inside values
+    # (bold/link/header wrapping code) still expand. NUL-wrapped GC{n}
+    # tokens leaked as "GC1" in Chat when restore order was wrong or
+    # when the API stripped NULs.
+    for key, value in reversed(list(placeholders.items())):
         text = text.replace(key, value)
     return text
 

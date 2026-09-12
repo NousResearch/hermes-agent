@@ -404,3 +404,24 @@ describe('httpStatusError', () => {
     expect(httpStatusError(0, 'boom').statusCode).toBe(500)
   })
 })
+
+describe('readStatusCode', () => {
+  it('reads statusCode property when present', () => {
+    const err = new Error('401: session_expired')
+    ;(err as any).statusCode = 401
+    expect(readStatusCode(err)).toBe(401)
+  })
+
+  it('parses status code from message string when statusCode property is omitted', () => {
+    expect(readStatusCode(new Error('401: session_expired'))).toBe(401)
+    expect(readStatusCode(new Error('401: Unauthorized'))).toBe(401)
+    expect(readStatusCode(new Error('403: Forbidden'))).toBe(403)
+    expect(readStatusCode(new Error('500: Internal Server Error'))).toBe(500)
+  })
+
+  it('returns NaN for errors without status code pattern', () => {
+    expect(readStatusCode(new Error('connection reset'))).toBeNaN()
+    expect(readStatusCode(null)).toBeNaN()
+    expect(readStatusCode(undefined)).toBeNaN()
+  })
+})

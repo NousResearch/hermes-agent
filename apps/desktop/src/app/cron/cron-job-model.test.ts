@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 
 import {
   cronEditorUpdates,
+  cronModelChoiceLabel,
   jobIsScriptOnly,
+  jobModelRouting,
+  MODEL_FLEET_VALUE,
   parseCronDeliveryTargets,
   toggleCronDeliveryTarget,
   validateCronEditor
@@ -56,6 +59,43 @@ describe('cron delivery targets', () => {
 
   it('does not allow the final delivery target to be unchecked', () => {
     expect(toggleCronDeliveryTarget('origin', 'origin', false)).toBe('origin')
+  })
+})
+
+describe('jobModelRouting', () => {
+  it('reports pinned jobs with provider and model', () => {
+    expect(jobModelRouting({ model: 'hermes-4', provider: 'nous' }, null)).toEqual({
+      kind: 'pinned',
+      label: 'nous · hermes-4'
+    })
+    expect(jobModelRouting({ model: 'hermes-4', provider: '' }, null)).toEqual({ kind: 'pinned', label: 'hermes-4' })
+  })
+
+  it('reports the cron-fleet default when the job is unpinned and a fleet model is configured', () => {
+    expect(jobModelRouting({ model: '', provider: '' }, { model: 'deepseek-v4-flash', provider: 'opencode-go' })).toEqual(
+      { kind: 'fleet', label: 'opencode-go · deepseek-v4-flash' }
+    )
+  })
+
+  it('reports global default when unpinned and no fleet model is configured', () => {
+    expect(jobModelRouting({ model: '', provider: '' }, null)).toEqual({ kind: 'global', label: 'Global default' })
+    expect(jobModelRouting({ model: '', provider: '' }, { model: '', provider: '' })).toEqual({
+      kind: 'global',
+      label: 'Global default'
+    })
+  })
+})
+
+describe('cronModelChoiceLabel', () => {
+  it('labels the fleet sentinel with the configured cron.model', () => {
+    expect(cronModelChoiceLabel(MODEL_FLEET_VALUE, { model: 'deepseek-v4-flash', provider: 'opencode-go' })).toBe(
+      'Fleet default (cron.model): opencode-go · deepseek-v4-flash'
+    )
+  })
+
+  it('falls back to the plain global default label for the empty slot', () => {
+    expect(cronModelChoiceLabel(MODEL_FLEET_VALUE, null)).toBe('Fleet default (cron.model)')
+    expect(cronModelChoiceLabel('anything-else', null)).toBe('Default (global model)')
   })
 })
 

@@ -38,7 +38,7 @@ cd "$SCRIPT_DIR"
 export UV_NO_CONFIG=1
 
 echo ""
-echo -e "${CYAN}⚕ Hermes Agent Setup${NC}"
+echo -e "${CYAN}☤ Hermes Agent Setup${NC}"
 echo ""
 
 # ============================================================================

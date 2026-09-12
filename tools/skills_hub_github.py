@@ -179,6 +179,25 @@ class GitHubSource(SkillSource):
         # + governance card; `trusted` via tools/skills_guard.py::TRUSTED_REPOS.
         {"repo": "NVIDIA/skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
+        # --- Science bucket ---
+        # Two scientific-skill repos share one hub category via the tap-level "bucket" key so
+        # their skills surface together. Both stay `community` trust on purpose (NOT in
+        # tools/skills_guard.py::TRUSTED_REPOS): the guard scans every skill and INSTALL_POLICY
+        # auto-installs only "safe" ones. Skills wrap third-party tools with their OWN licenses
+        # (some GPL; KEGG is commercial for non-academic use) — surfaced per skill, not vetted here.
+        # K-Dense-AI/scientific-agent-skills: flat skills/<name>/, MIT.
+        {"repo": "K-Dense-AI/scientific-agent-skills", "path": "skills/", "bucket": "science"},
+        # synthetic-sciences/openscience: Apache-2.0, nested backend/cli/skills/<category>/<name>/.
+        # _list_skills_in_repo walks ONE level under a tap path, so each category is its own tap
+        # (same one-entry-per-inner-path pattern as openai/skills above).
+        *(
+            {"repo": "synthetic-sciences/openscience", "path": f"backend/cli/skills/{_cat}/", "bucket": "science"}
+            for _cat in (
+                "biology", "chemistry", "cloud-compute", "coding", "data-engineering", "databases",
+                "document-parsing", "llm-tools", "ml-inference", "ml-training", "other", "physics",
+                "quantum", "research", "scholar-evaluation", "visualization", "writing",
+            )
+        ),
     ]
 
     SOURCE_ID = "github"
@@ -210,7 +229,7 @@ class GitHubSource(SkillSource):
         query_lower = query.lower()
         for tap in self.taps:
             try:
-                for skill in self._list_skills_in_repo(tap["repo"], tap.get("path", "")):
+                for skill in self._list_skills_in_repo(tap["repo"], tap.get("path", ""), tap.get("bucket")):
                     if _matches_query(query_lower, skill.name, skill.description, skill.tags):
                         results.append(skill)
             except Exception as e:
@@ -316,9 +335,11 @@ class GitHubSource(SkillSource):
 
     # -- Internal helpers --
 
-    def _list_skills_in_repo(self, repo: str, path: str) -> List[SkillMeta]:
-        """List skill directories in a GitHub repo path, using cached index."""
-        cache_key = f"{repo}_{path}".replace("/", "_").replace(" ", "_")
+    def _list_skills_in_repo(self, repo: str, path: str, bucket: Optional[str] = None) -> List[SkillMeta]:
+        """List skill directories in a GitHub repo path, using cached index. ``bucket`` labels every
+        skill from a tap whose repo ships no ``skills.sh.json`` grouping, so several repos can share one
+        hub category (e.g. "science"); a sidecar grouping still wins when present."""
+        cache_key = f"{repo}_{path}_{bucket or ''}".replace("/", "_").replace(" ", "_")
         cached = _cached_metas(cache_key)
         if cached is not None:
             return cached
@@ -337,7 +358,7 @@ class GitHubSource(SkillSource):
             dir_name = entry["name"]
             meta = self.inspect(f"{repo}/{prefix}/{dir_name}" if prefix else f"{repo}/{dir_name}")
             if meta:
-                category = groupings and (groupings.get(meta.name) or groupings.get(dir_name))
+                category = (groupings and (groupings.get(meta.name) or groupings.get(dir_name))) or bucket
                 if category:
                     meta.extra["category"] = category
                 skills.append(meta)

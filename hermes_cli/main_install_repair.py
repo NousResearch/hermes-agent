@@ -1,4 +1,4 @@
-"""Historical update markers and interrupted Windows launcher recovery."""
+"""Update dependency diagnostics, historical markers and Windows launcher recovery."""
 
 import logging
 import os
@@ -224,6 +224,42 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
             stale.unlink()
         except OSError:
             pass  # still locked or in use — try again next run
+
+
+def _configured_features_missing_deps() -> list[tuple[str, str]]:
+    """Check configured platforms/MCP in the fresh, selected update-build child.
+
+    PM preserves recorded extras atomically, but configuration can reference an
+    unselected SDK. Never call this in the updater's stale import graph (#10651).
+    """
+    missing: list[tuple[str, str]] = []
+    try:
+        from gateway.config import load_gateway_config
+        from gateway.platform_registry import platform_registry
+
+        for platform in load_gateway_config().get_connected_platforms():
+            entry = platform_registry.get(platform.value)
+            if entry is not None and not entry.check_fn():
+                missing.append((entry.label, entry.install_hint or "Run `hermes setup` to install support."))
+    except Exception as exc:
+        logger.debug("configured-platform dependency check skipped: %s", exc)
+    try:
+        import importlib.util
+        from hermes_cli.config import load_config_readonly
+
+        if (load_config_readonly().get("mcp_servers") or {}) and importlib.util.find_spec("mcp") is None:
+            missing.append(("MCP servers", "Run `hermes pm install` to install MCP support."))
+    except Exception as exc:
+        logger.debug("configured-MCP dependency check skipped: %s", exc)
+    return missing
+
+
+def _warn_configured_features_missing_deps() -> None:
+    missing = _configured_features_missing_deps()
+    if missing:
+        print("  ⚠ Configured features whose dependencies are still missing — the gateway will fail to load them on restart:")
+        for feature, hint in missing:
+            print(f"    - {feature}: {hint}")
 
 
 def _load_console_script_names() -> list[str]:

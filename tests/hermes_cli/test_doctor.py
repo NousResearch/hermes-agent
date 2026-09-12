@@ -142,6 +142,31 @@ class TestDoctorToolAvailabilitySummary:
 
         assert [item["name"] for item in filtered] == ["web"]
 
+    def test_image_gen_without_provider_reports_setup_hint_not_system_dependency(self, monkeypatch):
+        """image_gen declares no single env var (FAL / managed Nous / plugin providers); an
+        unconfigured backend is a setup problem and must say so, and it counts toward the
+        'run hermes setup' summary like any missing key (#9516)."""
+        unavailable = [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]},
+                       {"name": "homeassistant", "env_vars": [], "tools": []}]
+        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"image_gen"})
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", lambda: [])
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: ([], unavailable),
+            TOOLSET_REQUIREMENTS={"image_gen": {"name": "image_gen"}, "homeassistant": {"name": "homeassistant"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            f = doctor_tools._check_tool_availability(False)
+        out = buf.getvalue()
+
+        image_line = next(line for line in out.splitlines() if "image_gen" in line)
+        assert "hermes tools" in image_line and "system dependency" not in image_line and "unavailable" in image_line
+        assert "system dependency not met" in next(line for line in out.splitlines() if "homeassistant" in line)
+        assert any("hermes setup" in issue for issue in f.issues)
+
     def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):
         """#78412: selected firecrawl with is_available=False must warn."""
         class _Unavailable:
@@ -191,7 +216,7 @@ class TestDoctorToolAvailabilitySummary:
 
 class TestDoctorEnvFileEncoding:
     """Regression for #18637 (bug 3): `hermes doctor` crashed on Windows
-    Chinese locale (GBK) because `.env` was read with Path.read_text() which
+    Chinese locale (GBK) because `.env` was read with Path.read_text(encoding="utf-8") which
     defaults to the system locale encoding, not UTF-8."""
 
     def test_doctor_reads_env_as_utf8_even_when_locale_is_not_utf8(
@@ -360,7 +385,7 @@ class TestDoctorMemoryProviderSection:
         if provider:
             config["provider"] = provider
         config = {"memory": config}
-        (home / "config.yaml").write_text(yaml.safe_dump(config))
+        (home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
         return home
 
     def _run_doctor_and_capture(
@@ -480,7 +505,7 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
                 },
             }
         )
-    )
+    , encoding="utf-8")
 
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
@@ -1549,11 +1574,15 @@ class TestDoctorDeprecatedConfigAndEnv:
 
 
 class TestMacOSTCCGrants:
-    """macOS TCC grant persistence check (issue #86385)."""
+    """macOS TCC grant persistence check (issue #86385).
 
+    Native macOS gates cover the real platform branch and codesign lookup;
+    faking sys.platform on Linux cannot supply the macOS executable.
+    """
+
+    @pytest.mark.platforms("not macos")
     def test_silent_on_non_macos(self, monkeypatch, capsys, tmp_path):
         """Non-macOS: the check must produce no output even with a bundle present."""
-        monkeypatch.setattr(doctor_mod.sys, "platform", "linux")
         monkeypatch.setattr(
             doctor_platform,
             "_desktop_app_bundle",
@@ -1562,16 +1591,16 @@ class TestMacOSTCCGrants:
         doctor_platform.check_macos_tcc_grants()
         assert capsys.readouterr().out == ""
 
+    @pytest.mark.platforms("macos")
     def test_silent_when_no_desktop_bundle(self, monkeypatch, capsys):
         """No locally-built desktop bundle: nothing to check, no output."""
-        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(doctor_platform, "_desktop_app_bundle", lambda: None)
         doctor_platform.check_macos_tcc_grants()
         assert capsys.readouterr().out == ""
 
+    @pytest.mark.platforms("macos")
     def test_warns_on_cdhash_pinned_dr(self, monkeypatch, capsys, tmp_path):
         """Pre-#73681 builds have a cdhash-pinned DR → warn that grants reset."""
-        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
             doctor_platform,
             "_desktop_app_bundle",
@@ -1588,9 +1617,9 @@ class TestMacOSTCCGrants:
         assert "cdhash-pinned" in out
         assert "hermes update" in out
 
+    @pytest.mark.platforms("macos")
     def test_ok_and_repair_info_on_identifier_dr(self, monkeypatch, capsys, tmp_path):
         """Post-#73681 identifier-only DR → stable + stale-grant repair info."""
-        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
             doctor_platform,
             "_desktop_app_bundle",
@@ -1612,11 +1641,11 @@ class TestMacOSTCCGrants:
         assert "toggle" in out
         assert "relaunch" in out
 
+    @pytest.mark.platforms("macos")
     def test_ok_on_certificate_anchored_dr(self, monkeypatch, capsys, tmp_path):
         """A cert-anchored DR (hermes desktop --setup-tcc-identity, or a
         notarized release) classifies as stable in its own class — no upgrade
         hint, still prints the stale-grant repair info."""
-        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
             doctor_platform,
             "_desktop_app_bundle",
@@ -1634,9 +1663,9 @@ class TestMacOSTCCGrants:
         assert "--setup-tcc-identity" not in out
         assert "tccutil reset ScreenCapture com.nousresearch.hermes" in out
 
+    @pytest.mark.platforms("macos")
     def test_warns_when_dr_unreadable(self, monkeypatch, capsys, tmp_path):
         """codesign failure → warn, never crash."""
-        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
             doctor_platform,
             "_desktop_app_bundle",
@@ -1647,9 +1676,9 @@ class TestMacOSTCCGrants:
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out
 
+    @pytest.mark.platforms("macos")
     def test_warns_when_dr_empty_string(self, monkeypatch, capsys, tmp_path):
         """Empty DR output must not false-positive as a stable identity."""
-        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
             doctor_platform,
             "_desktop_app_bundle",
@@ -1661,9 +1690,9 @@ class TestMacOSTCCGrants:
         assert "could not read code-signing requirement" in out
         assert "stable" not in out
 
+    @pytest.mark.platforms("macos")
     def test_warns_when_codesign_times_out(self, monkeypatch, capsys, tmp_path):
         """A hanging codesign must degrade to the unreadable-DR warning, never crash."""
-        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
             doctor_platform,
             "_desktop_app_bundle",
@@ -1679,9 +1708,9 @@ class TestMacOSTCCGrants:
         assert "could not read code-signing requirement" in out
         assert "stable" not in out
 
+    @pytest.mark.platforms("macos")
     def test_warns_when_codesign_missing(self, monkeypatch, capsys, tmp_path):
         """No codesign binary → same graceful unreadable-DR warning."""
-        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
             doctor_platform,
             "_desktop_app_bundle",

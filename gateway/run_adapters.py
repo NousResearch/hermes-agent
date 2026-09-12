@@ -873,6 +873,7 @@ class GatewayAdapterLifecycleMixin:
             from gateway.status import write_runtime_status
             from gateway.pairing import PairingStore
             served = [active] + sorted(name for name, _home in profile_homes if name != active)
+            self._note_served_profiles(profile_homes)
             for name in served:
                 if name and name not in self.pairing_stores:
                     self.pairing_stores[name] = (
@@ -955,6 +956,11 @@ class GatewayAdapterLifecycleMixin:
         connected = 0
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
+                continue
+            # Runtime re-scan of a served profile (config/.env changed): only platforms that are not
+            # already live or queued for reconnect are built — never a second poller on the same bot.
+            if platform in profile_map or platform in (
+                    (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}):
                 continue
             # No credential in THIS profile's scope: an adapter would fan inbound across every such profile.
             if multiplex and not _platform_has_bot_credential(platform, platform_config):

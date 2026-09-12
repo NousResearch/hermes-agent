@@ -82,6 +82,11 @@ def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None
 
 def build_update_products(project_root: Path, *, desktop: bool) -> None:
     """Prepare the selected union once; a failed product aborts the update."""
+    # Both current updates and historical takeover reach this in a fresh target
+    # interpreter, never in the updater's pre-sync import graph.
+    from hermes_cli.main_install_repair import _warn_configured_features_missing_deps
+
+    _warn_configured_features_missing_deps()
     env = source_build_env(explicit=True)
     workspaces = ("ui-tui", "web") + (("apps/desktop",) if desktop else ())
     prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)

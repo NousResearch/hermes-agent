@@ -337,13 +337,17 @@ bootstrap_python() {
         path[2] == "packages" && path[3] == "python" && $2 == "version" && depth == 3 { print $4; exit }
     ' "$INSTALL_DIR/pm/lock.json" | cut -d+ -f1 | cut -d. -f1,2)"
     [ -n "$_py" ] || _py="3.14"
-    # Stages are separate processes. Reuse uv's current managed interpreter
-    # without rewriting its installation on every warm path publication.
-    if ! boot_py="$("$UV_CMD" python find --managed-python "$_py" 2>/dev/null)"; then
+    # Only base interpreters qualify: an activated app venv must not become
+    # PM's bootstrap parent. Prefer the existing managed Python, then a host
+    # Python of the same supported minor before attempting a download (#10778).
+    # This interpreter only boots PM; PM still owns the exact runtime pin.
+    if ! boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py" 2>/dev/null)" \
+        && ! boot_py="$("$UV_CMD" python find --system --no-project "$_py" 2>/dev/null)"; then
         "$UV_CMD" python install --no-bin "$_py" || fail "bootstrap Python installation failed"
-        boot_py="$("$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed"
+        boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed"
     fi
     boot_py="${boot_py%$'\r'}"
+    [ -x "$boot_py" ] && "$boot_py" --version >/dev/null 2>&1 || fail "bootstrap Python is not executable: $boot_py"
 }
 
 # uv exits before PM can replace its tool entry. pm.cli then prepares and

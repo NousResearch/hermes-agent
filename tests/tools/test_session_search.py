@@ -81,6 +81,7 @@ class TestSchema:
         assert "window" in params
         # Shared
         assert "role_filter" in params
+        assert params["include_reasoning"]["default"] is False
         # Mode is inferred from which args are set — no explicit mode param
         assert "mode" not in params
 
@@ -98,7 +99,7 @@ class TestSchema:
             "sort",
             "profile",
         ]
-        assert parameters == [*historical_prefix, "detail"]
+        assert parameters == [*historical_prefix, "detail", "include_reasoning"]
 
 
 class TestFormatTimestamp:
@@ -207,6 +208,29 @@ class TestBrowseShape:
 # =========================================================================
 
 class TestDiscoveryShape:
+    @pytest.mark.parametrize(
+        ("reasoning_field", "reasoning_value", "needle"),
+        [
+            ("reasoning", "reasoning-only-alpha", "reasoning-only-alpha"),
+            ("reasoning_content", "reasoning-only-beta", "reasoning-only-beta"),
+            ("reasoning_details", [{"type": "reasoning.summary", "summary": "reasoning-only-gamma"}],
+             "reasoning-only-gamma"),
+        ],
+    )
+    def test_reasoning_search_is_opt_in_and_anchors_the_snippet(
+        self, db, reasoning_field, reasoning_value, needle
+    ):
+        db.create_session("reasoning_session", source="cli")
+        message_id = db.append_message(
+            "reasoning_session", role="assistant", content="", **{reasoning_field: reasoning_value}
+        )
+
+        assert json.loads(session_search(query=needle, db=db))["results"] == []
+
+        result = json.loads(session_search(query=needle, include_reasoning=True, db=db))
+        assert result["results"][0]["match_message_id"] == message_id
+        assert needle in result["results"][0]["snippet"]
+
     def test_discovery_field_plan_preserves_full_default_result(self, db, monkeypatch):
         _seed_modpack_sessions(db)
         original = db.search_messages

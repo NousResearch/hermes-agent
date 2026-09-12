@@ -44,7 +44,9 @@ test('listen binds a loopback listener and wait resolves with the redirect param
     state: null | string
   }>
 
-  const res = await fetch(`${redirectUri}?code=abc123&state=st-1`)
+  const res = await fetch(
+    `${redirectUri}?code=abc123&state=st-1&iss=${encodeURIComponent('https://mcp.cloudflare.com')}`
+  )
 
   assert.equal(res.status, 200)
   assert.match(await res.text(), /return to Hermes/)
@@ -54,6 +56,7 @@ test('listen binds a loopback listener and wait resolves with the redirect param
   assert.equal(result.code, 'abc123')
   assert.equal(result.state, 'st-1')
   assert.equal(result.error, null)
+  assert.equal(result.iss, 'https://mcp.cloudflare.com')
 
   // Listener is one-shot: the port must be closed after the callback.
   await assert.rejects(fetch(`${redirectUri}?code=again&state=st-1`))

@@ -2011,6 +2011,10 @@ class CLITuiMixin:
         mid-session.
         """
         from cli import logger
+        # pt_key_to_sequence is a pure helper (no config dependency); import it outside the try so the
+        # Ctrl+B fallback still resolves when the config/normalize imports below fail (#101757) — otherwise
+        # pt_key_to_sequence stays an unbound local and the return raises UnboundLocalError.
+        from hermes_cli.voice import pt_key_to_sequence
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key) Default: Ctrl+B (avoids
         # conflict with Ctrl+R readline reverse-search). Config spellings (ctrl/control/alt/option/opt) are
         # normalized to prompt_toolkit's c-x / a-x format via
@@ -2023,7 +2027,6 @@ class CLITuiMixin:
             from hermes_cli.config import load_config
             from hermes_cli.voice import (
                 normalize_voice_record_key_for_prompt_toolkit,
-                pt_key_to_sequence,
                 voice_record_key_from_config)
             _raw_key = voice_record_key_from_config(load_config())
             _voice_key = normalize_voice_record_key_for_prompt_toolkit(_raw_key)

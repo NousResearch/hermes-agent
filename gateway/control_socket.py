@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -48,6 +49,14 @@ def _fits_sun_path(path: Path) -> bool:
     return len(str(path).encode("utf-8")) <= _MAX_UNIX_PATH
 
 
+# bind() answers with one of these when the filesystem under the home cannot host an AF_UNIX
+# socket at all — Docker Desktop / virtiofs bind mounts (the documented ~/.hermes:/opt/data
+# layout) reject it with EOPNOTSUPP. EADDRINUSE is deliberately ABSENT: that means a live
+# sibling for this home, which must keep failing loudly rather than being shadowed by a
+# second socket in the temp dir.
+_BIND_UNSUPPORTED_ERRNOS = frozenset({errno.EOPNOTSUPP, errno.ENOTSUP, errno.EPERM, errno.EACCES})
+
+
 def _fallback_socket_path(home: Path) -> Path:
     """Short temp-dir path for homes whose direct socket path exceeds sun_path: ``tempfile.gettempdir()``
     then ``/tmp`` (POSIX); if nothing fits the tempdir candidate is returned anyway — bind fails
@@ -63,17 +72,37 @@ def resolve_server_socket_path(home: Path) -> tuple[Path, Optional[Path]]:
     return (direct, None) if _fits_sun_path(direct) else (_fallback_socket_path(home), Path(home) / _POINTER_FILENAME)
 
 
-def resolve_client_socket_path(home: Path) -> Optional[Path]:
-    """Where a client should connect for ``home``, or None when nothing exists."""
-    direct = Path(home) / _SOCKET_FILENAME
-    if direct.exists():
-        return direct
+def _path_present(path: Path) -> bool:
+    """``exists()`` that answers False instead of raising: on a Docker/virtiofs bind mount a
+    stale socket inode cannot be stat'ed, and an unguarded probe propagates EOPNOTSUPP."""
+    with contextlib.suppress(OSError):
+        return path.exists()
+    return False
+
+
+def client_socket_candidates(home: Path) -> list[Path]:
+    """Sockets to try for ``home``, best first: the pointer target, then the in-home path.
+
+    A pointer is written only when the server deliberately bound elsewhere, so a pointer
+    naming a present target is the authoritative answer. It is a CANDIDATE LIST rather than
+    one path because a crashed fallback server leaves the pointer and its dead socket file
+    behind; the next server binds in-home, and clients must fall through to it.
+    """
+    candidates: list[Path] = []
     with contextlib.suppress(OSError):
         pointer = Path(home) / _POINTER_FILENAME
-        target = pointer.read_text(encoding="utf-8").strip() if pointer.is_file() else ""
-        if target and Path(target).exists():
-            return Path(target)
-    return None
+        target = pointer.read_text(encoding="utf-8").strip() if _path_present(pointer) else ""
+        if target and _path_present(Path(target)):
+            candidates.append(Path(target))
+    direct = Path(home) / _SOCKET_FILENAME
+    if _path_present(direct):
+        candidates.append(direct)
+    return candidates
+
+
+def resolve_client_socket_path(home: Path) -> Optional[Path]:
+    """Where a client should connect for ``home``, or None when nothing exists."""
+    return next(iter(client_socket_candidates(home)), None)
 
 
 def _detect_supervisor() -> str:
@@ -144,13 +173,13 @@ class GatewayControlServer:
             logger.warning("Gateway control socket failed to start (non-fatal): %s", exc)
             return False
 
-    async def _start_posix(self) -> bool:
-        bind_path, pointer_file = resolve_server_socket_path(self._home)
-        # We only get here after winning the PID-file O_EXCL race, so any existing
-        # file is stale or a collision — never a live sibling.
+    async def _bind_unix(self, bind_path: Path) -> None:
+        # We only get here after winning the PID-file O_EXCL race, so any existing file is
+        # stale or a collision — never a live sibling. Unlink UNCONDITIONALLY: on the same
+        # bind mounts a stale socket inode cannot be stat'ed, so an exists()-gated cleanup
+        # never fires and asyncio raises on the leftover instead.
         with contextlib.suppress(OSError):
-            if bind_path.exists():
-                bind_path.unlink()
+            bind_path.unlink()
         # Restrictive umask so the socket is never world-connectable, even for the instant before chmod.
         old_umask = os.umask(0o177)
         try:
@@ -159,10 +188,32 @@ class GatewayControlServer:
             os.umask(old_umask)
         with contextlib.suppress(OSError):
             os.chmod(bind_path, 0o600)
+
+    async def _start_posix(self) -> bool:
+        bind_path, pointer_file = resolve_server_socket_path(self._home)
+        try:
+            await self._bind_unix(bind_path)
+        except OSError as exc:
+            # A home short enough to FIT sun_path can still be unable to host a socket.
+            # Reuse the long-path mechanism (temp-dir socket + in-home pointer) so clients
+            # resolve it unchanged. Only when we were binding in-home: a fallback path that
+            # refuses has nowhere left to go.
+            if pointer_file is not None or exc.errno not in _BIND_UNSUPPORTED_ERRNOS:
+                raise
+            fallback = _fallback_socket_path(self._home)
+            logger.info("Gateway control socket cannot bind at %s (%s); falling back to %s",
+                        bind_path, exc.strerror or exc.errno, fallback)
+            await self._bind_unix(fallback)
+            bind_path, pointer_file = fallback, Path(self._home) / _POINTER_FILENAME
         self._bind_path = bind_path
         if pointer_file is not None:
             pointer_file.write_text(str(bind_path), encoding="utf-8")
             self._pointer_file = pointer_file
+        else:
+            # Binding in-home: drop any pointer a previous fallback run left behind, or
+            # clients would keep preferring its dead socket over this live one.
+            with contextlib.suppress(OSError):
+                (Path(self._home) / _POINTER_FILENAME).unlink()
         logger.info("Gateway control socket listening at %s", bind_path)
         return True
 
@@ -293,15 +344,15 @@ def _read_response_line(read: Callable[[], bytes], deadline: float) -> Optional[
 
 
 def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[bytes]:
-    path = resolve_client_socket_path(home)
-    if path is None:
-        return None
-    # OSError covers ConnectionRefusedError / FileNotFoundError on connect and socket.timeout on read.
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock, contextlib.suppress(OSError):
-        sock.settimeout(timeout)
-        sock.connect(str(path))
-        sock.sendall(request)
-        return _read_response_line(lambda: sock.recv(65536), time.monotonic() + timeout)
+    # Try every candidate: a crashed fallback server leaves a pointer to a dead socket, and
+    # the answer is then the in-home socket further down the list.
+    for path in client_socket_candidates(home):
+        # OSError covers ConnectionRefusedError / FileNotFoundError on connect and socket.timeout on read.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock, contextlib.suppress(OSError):
+            sock.settimeout(timeout)
+            sock.connect(str(path))
+            sock.sendall(request)
+            return _read_response_line(lambda: sock.recv(65536), time.monotonic() + timeout)
     return None
 
 

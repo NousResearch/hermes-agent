@@ -13,6 +13,7 @@ NOTE: a failing action raises before the HAR is flushed -- you get no file.
 Fix the selector (try --headed to watch) and rerun.
 """
 import argparse
+import os
 import sys
 import time
 
@@ -47,6 +48,9 @@ def main() -> int:
     ap.add_argument("--headed", action="store_true")
     args = ap.parse_args()
 
+    if os.path.islink(args.har_path):
+        raise ValueError(f"refusing to write HAR through symlink: {args.har_path}")
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.headed)
         context = browser.new_context(
@@ -63,6 +67,7 @@ def main() -> int:
                 pass  # some pages never fully idle; the trailing --wait covers it
         time.sleep(args.wait)
         context.close()  # flushes the HAR
+        os.chmod(args.har_path, 0o600)
         browser.close()
     print(f"HAR written: {args.har_path}")
     return 0

@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
+import { isFocusWithin } from '@/lib/keybinds/combo'
+import { isMacPlatform } from '@/lib/platform'
 import { openSession } from '@/app/open-session'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
@@ -353,7 +355,10 @@ export function useDesktopIntegrations({
   // Native browser gestures (⌘R, a mouse's back/forward buttons, a trackpad
   // swipe) that landed on the app's own chrome rather than inside a page — main
   // answers those against the focused guest and never asks. Only ⌘R has an
-  // app-level meaning to fall back to; an unfocused swipe is a no-op.
+  // app-level meaning to fall back to; an unfocused swipe is a no-op. This IPC
+  // path still serves the macOS View > Reload item; the keyboard chord itself
+  // is routed by the capture-phase handler below (main's before-input-event
+  // only claims ⌘R for webview guests now).
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onPreviewNav?.(command => {
       if (!commandFocusedPreview(command) && command === 'reload') {
@@ -362,6 +367,39 @@ export function useDesktopIntegrations({
     })
 
     return () => unsubscribe?.()
+  }, [])
+
+  // Ctrl/Cmd+R reaching the renderer (main's before-input-event hook now only
+  // claims it when focus is inside a webview guest page — the only case main
+  // can act on directly). Route by focus:
+  //   1. the terminal pane owns the chord — readline reverse-i-search needs
+  //      the key to reach the shell, so pass it through untouched,
+  //   2. a preview tab's own chrome (address bar / toolbar) reloads that tab,
+  //   3. anywhere else keeps the old app-level meaning: reload the client.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const accel = (isMacPlatform() ? event.metaKey : event.ctrlKey) && !event.altKey
+
+      if (event.key.toLowerCase() !== 'r' || !accel || event.shiftKey) {
+        return
+      }
+
+      if (isFocusWithin('[data-terminal]')) {
+        return // the terminal gets the key — bash reverse-i-search
+      }
+
+      event.preventDefault()
+
+      if (commandFocusedPreview('reload')) {
+        return // reloaded the focused preview tab
+      }
+
+      window.location.reload()
+    }
+
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [])
 
   // File > Open Folder… — same open-folder-as-project upsert as the ⌘O keybind.

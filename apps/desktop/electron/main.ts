@@ -7176,9 +7176,19 @@ function installPreviewShortcut(window) {
     // see #77845), so a menu accelerator would leave Windows and Linux with no
     // way to reload a page at all. ⇧⌘R is left alone — that is `forceReload`,
     // the unconditional whole-window escape hatch.
+    //
+    // Only claim the chord when the user is INSIDE a webview guest page: that
+    // webContents is out-of-process, so main is the only party that can
+    // reload it. Everywhere else the key is passed through to the renderer,
+    // which owns the rest of the routing — the terminal pane needs Ctrl+R to
+    // reach the shell (readline reverse-i-search), and the preview-nav
+    // registry answers when a preview tab's own chrome has focus. Without
+    // this carve-out the renderer never saw the key at all, and Ctrl+R typed
+    // in the terminal hard-reloaded the whole client.
     if (key === 'r' && accel && !input.shift) {
-      event.preventDefault()
-      sendPreviewNavCommand('reload')
+      if (commandFocusedGuest('reload')) {
+        event.preventDefault()
+      }
     }
   })
 }

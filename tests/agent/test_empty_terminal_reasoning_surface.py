@@ -1,17 +1,14 @@
 """Tests for the empty-terminal reasoning surface.
 
-When the empty-response ladder is fully exhausted (prefill continuation,
-empty-content retries, provider fallback) and the model produced structured
-reasoning but no visible text, the DELIVERED final_response is a clearly
-labeled reasoning excerpt instead of a bare "(empty)" — the reasoning often
-contains the actual answer. Idea credit: PR #48795 (@ligl0325).
+When a clean-stop response has no ordinary content but does have structured
+reasoning, that reasoning is the final answer without entering the recovery
+ladder. Idea credit: PR #48795 (@ligl0325).
 
 Invariants pinned here:
 - The persisted assistant message keeps the "(empty)" sentinel and the
   ``_empty_terminal_sentinel`` marker (replay semantics unchanged).
-- Raw reasoning is NEVER promoted earlier in the ladder — a reasoning-only
-  response still goes through prefill continuation first.
-- A truly empty exhaustion (no reasoning either) still returns "(empty)".
+- Inline think-only content still goes through the recovery ladder.
+- A truly empty response (no reasoning either) still uses the recovery ladder.
 """
 
 from __future__ import annotations
@@ -81,10 +78,8 @@ def _truly_empty_response():
     )
 
 
-def test_exhausted_reasoning_only_delivers_labeled_excerpt(tmp_path, monkeypatch):
-    """After the full ladder is exhausted on reasoning-only responses, the
-    delivered text is the labeled excerpt — not a bare '(empty)' — while the
-    transcript keeps its existing sentinel-scaffolding semantics."""
+def test_clean_stop_reasoning_only_returns_on_first_call(tmp_path, monkeypatch):
+    """A clean stop promotes structured reasoning without a recovery call."""
     agent = _build_agent(tmp_path, monkeypatch)
     monkeypatch.setattr(
         agent, "_interruptible_api_call",
@@ -93,20 +88,8 @@ def test_exhausted_reasoning_only_delivers_labeled_excerpt(tmp_path, monkeypatch
 
     result = agent.run_conversation("what is the answer?")
 
-    final = result["final_response"]
-    assert "(empty)" != final
-    assert "only internal reasoning" in final
-    assert "The answer is 42" in final
-
-    # Persistence semantics unchanged: the delivered excerpt is
-    # delivery-only. The turn finalizer strips the "(empty)" terminal
-    # sentinel from the transcript tail (replay safety, existing design),
-    # and the labeled excerpt must never be persisted as assistant content.
-    assert not any(
-        m.get("role") == "assistant"
-        and "only internal reasoning" in (m.get("content") or "")
-        for m in result["messages"]
-    )
+    assert result["final_response"] == "The answer is 42 because of the calculation above."
+    assert result["api_calls"] == 1
 
 
 def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):
@@ -128,13 +111,24 @@ def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):
     assert "only internal reasoning" not in final
 
 
-def test_reasoning_never_promoted_before_ladder_exhaustion(tmp_path, monkeypatch):
-    """A reasoning-only response must first go through prefill continuation —
-    if the model then produces real text, THAT is the answer, and no labeled
-    reasoning excerpt appears."""
+def test_inline_thinking_still_uses_recovery_ladder(tmp_path, monkeypatch):
+    """Inline think blocks are not ordinary empty content and remain recoverable."""
     agent = _build_agent(tmp_path, monkeypatch)
     responses = [
-        _reasoning_only_response(),
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="<think>working it out</think>",
+                    reasoning=None,
+                    reasoning_content=None,
+                    reasoning_details=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+            model="test-model",
+        ),
         SimpleNamespace(
             choices=[SimpleNamespace(
                 message=SimpleNamespace(
@@ -158,4 +152,4 @@ def test_reasoning_never_promoted_before_ladder_exhaustion(tmp_path, monkeypatch
     result = agent.run_conversation("what is the answer?")
 
     assert result["final_response"] == "42."
-    assert "only internal reasoning" not in result["final_response"]
+    assert result["api_calls"] == 2

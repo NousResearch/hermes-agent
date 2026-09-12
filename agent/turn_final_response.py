@@ -73,6 +73,20 @@ def finish_text_response(
         )
 
     final_response = assistant_message.content or ""
+    ordinary_content_empty = assistant_message.content is None or (
+        isinstance(assistant_message.content, str)
+        and not assistant_message.content.strip()
+    )
+    if (
+        finish_reason == "stop"
+        and not assistant_message.tool_calls
+        and ordinary_content_empty
+    ):
+        from agent.auxiliary_client import extract_content_or_reasoning
+
+        structured_response = extract_content_or_reasoning(assistant_message)
+        if structured_response:
+            final_response = structured_response
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.
     agent._mute_post_response = False

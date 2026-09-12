@@ -36,16 +36,23 @@ def share(service, actor, version):
     from gateway.hosted_room_discussion import validate_user_payload
     from gateway.session_group_files import dispatch_group_files
     from gateway.session_hosted_attachments import append_user_event
-    uploaded = dispatch_group_files(service, actor, "groups.attachment.upload", dict(
+    request = dict(
         room_id="room", upload_id=f"upload-{version}", name="report.txt", kind="file", mime="text/plain",
-        data_base64=base64.b64encode(f"version {version}".encode()).decode()))
-    # The actual client forwards the whole upload result, without projecting keys.
-    payload = validate_user_payload(dict(text="Shared", thread_id=f"thread-{version}", attachments=[uploaded]))
+        data_base64=base64.b64encode(f"version {version}".encode()).decode())
+    uploaded = dispatch_group_files(service, actor, "groups.attachment.upload", request)
+    assert uploaded["sha256"] == hashlib.sha256(f"version {version}".encode()).hexdigest()
+    assert uploaded["state"] == "uploaded" and uploaded["idempotent"] is False
+    assert isinstance(uploaded["created_at"], (int, float))
     gateway, epoch = service._owned_authority("room")
+    assert uploaded["room_id"] == "room" and uploaded["authority"] == dict(gateway_id=gateway, epoch=epoch)
+    assert dispatch_group_files(service, actor, "groups.attachment.upload", request) == {**uploaded, "idempotent": True}
+    # The parent-owned client fix projects the five manifest fields before Send.
+    entry = {key: uploaded[key] for key in ("attachment_id", "kind", "name", "size", "mime")}
+    payload = validate_user_payload(dict(text="Shared", thread_id=f"thread-{version}", attachments=[entry]))
     append_user_event(service, room_id="room", event_id=f"event-{version}",
                       payload=payload, gateway_id=gateway, epoch=epoch)
     event = hosted_rooms.read_events(service.db_path, room_id="room")["events"][-1]
-    assert event["payload"]["attachments"] == [uploaded]
+    assert event["payload"]["attachments"] == [entry]
     return uploaded
 
 
@@ -67,7 +74,7 @@ def test_handlers_preserve_catalog_versions_scope_and_canonical_wire_format(file
                     authority_gateway_id=gateway, authority_epoch=1)
     data = dispatch_group_files(reopened, reader, "groups.attachment.download", selected)
     assert base64.b64decode(data["data_base64"]) == b"version 1"
-    assert data["sha256"] == hashlib.sha256(b"version 1").hexdigest() and data["event_id"] == "event-1"
+    assert data["sha256"] == first["sha256"] and data["event_id"] == "event-1"
     assert data["room_id"] == "room" and data["authority"] == page["authority"]
     # Existing clients need no new parameters or decoder to keep downloading.
     old_wire = {key: selected[key] for key in ("room_id", "event_id", "attachment_id")}

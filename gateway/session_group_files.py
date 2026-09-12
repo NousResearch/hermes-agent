@@ -152,6 +152,4 @@ def dispatch_group_files(service, actor, method: str, params: dict) -> dict:
         raise RuntimeStoreError(reason) from exc
     except (TypeError, ValueError, KeyError) as exc:
         raise RuntimeStoreError("invalid_params") from exc
-    if method == "groups.attachment.upload":
-        return {key: result[key] for key in ("attachment_id", "kind", "name", "size", "mime")}
     return {**result, "room_id": supplied["room_id"], "authority": {"gateway_id": origin[0], "epoch": origin[1]}}

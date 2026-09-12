@@ -23,6 +23,7 @@ These tests pin the corrected behavior.
 """
 import asyncio
 import json
+import sys
 import time
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -614,14 +615,36 @@ def test_oauth_catalog_marks_external_providers_not_disconnectable():
     assert providers["claude-code"]["disconnect_hint"]
     cmd = providers["claude-code"]["disconnect_command"]
     # Windows must surface a PowerShell-native delete; POSIX keeps the legacy
-    # form. Both forms should reference the .claude credentials path.
+    # form. Both forms should reference the exact .credentials.json path.
     if sys.platform == "win32":
         assert cmd is not None
         assert "rm -f" not in cmd
         assert "powershell" in cmd.lower()
-        assert ".claude" in cmd
+        assert r".claude\.credentials.json" in cmd
     else:
         assert cmd and ".claude/.credentials.json" in cmd
+
+
+def test_claude_code_disconnect_command_platform_matrix(monkeypatch):
+    """Verify claude-code disconnect command targets exact hidden file across platforms."""
+    from hermes_cli.web_routers.oauth import _oauth_provider_disconnect_command
+
+    provider = {"id": "claude-code", "flow": "external"}
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    win_cmd = _oauth_provider_disconnect_command(provider)
+    assert win_cmd is not None
+    assert "rm -f" not in win_cmd
+    assert "powershell" in win_cmd.lower()
+    assert r"$env:USERPROFILE\.claude\.credentials.json" in win_cmd
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    mac_cmd = _oauth_provider_disconnect_command(provider)
+    assert mac_cmd == 'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; rm -f ~/.claude/.credentials.json'
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    linux_cmd = _oauth_provider_disconnect_command(provider)
+    assert linux_cmd == "rm -f ~/.claude/.credentials.json"
 
 
 def test_external_oauth_disconnect_rejected_before_auth_mutation(monkeypatch):

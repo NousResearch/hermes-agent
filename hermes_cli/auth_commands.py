@@ -15,8 +15,8 @@ from agent.credential_pool import (
     AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, REFRESHABLE_OAUTH_PROVIDERS, _exhausted_until,
-    _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
-    load_pool)
+    _normalize_custom_pool_name, canonical_custom_pool_key, get_pool_strategy,
+    label_from_token, list_custom_pool_providers, load_pool)
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_constants import OPENROUTER_BASE_URL
@@ -78,7 +78,16 @@ _PROVIDER_ALIASES = {
 
 def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
-    return _PROVIDER_ALIASES.get(normalized) or _resolve_custom_provider_input(normalized) or normalized
+    alias = _PROVIDER_ALIASES.get(normalized)
+    if alias:
+        return alias
+    custom = _resolve_custom_provider_input(normalized)
+    if custom:
+        # Literal canonical built-in names stay built-in; display aliases of a
+        # configured custom route use that route's isolated pool namespace.
+        if normalized not in PROVIDER_REGISTRY and normalized != "openrouter":
+            return canonical_custom_pool_key(normalized)
+    return normalized
 
 
 def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
@@ -330,13 +339,37 @@ def _add_api_key_credential(args, provider: str, pool) -> PooledCredential:
     return entry
 
 
+def _merge_custom_alias_pools(target: str, aliases: list[str]) -> None:
+    """Merge safe same-route custom aliases into *target* before adding a key."""
+    for alias in aliases:
+        normalized = str(alias or "").strip().lower()
+        if normalized and normalized != target and normalized.startswith(CUSTOM_POOL_PREFIX):
+            _migrate_legacy_custom_pool_key(target, normalized)
+
+
 def auth_add_command(args) -> None:
-    provider = _normalize_provider(getattr(args, "provider", ""))
+    raw_provider = str(getattr(args, "provider", "") or "").strip().lower()
+    if raw_provider.startswith(CUSTOM_POOL_PREFIX):
+        provider = canonical_custom_pool_key(raw_provider, preserve_explicit=True)
+    else:
+        provider = _normalize_provider(raw_provider)
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
         raise SystemExit(f"Unknown provider: {provider}")
     if configured_provider is not None:
         _migrate_legacy_custom_pool_key(provider, configured_provider["pool_key"])
+    elif raw_provider.startswith(CUSTOM_POOL_PREFIX):
+        from agent.credential_pool import custom_provider_pool_key_candidates
+        custom_entry = next((
+            entry for entry in _get_custom_provider_entries()
+            if provider == canonical_custom_pool_key(raw_provider, entry.get("base_url"))
+        ), None)
+        if custom_entry is not None:
+            candidates = custom_provider_pool_key_candidates(
+                custom_entry.get("base_url"),
+                custom_entry.get("provider_key") or custom_entry.get("name"),
+            )
+            _merge_custom_alias_pools(provider, list(candidates) + [raw_provider])
 
     is_custom = provider.startswith(CUSTOM_POOL_PREFIX)
     requested_type = str(getattr(args, "auth_type", "") or "").strip().lower()

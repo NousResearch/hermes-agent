@@ -2,6 +2,7 @@ import base64
 import json
 import time
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -657,6 +658,109 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["requested_provider"] == "local"
     assert resolved["capabilities"] == {"openai_native_compaction": True}
     assert resolved["source"] == "custom_provider:Local"
+
+
+def test_named_custom_builtin_collision_uses_namespaced_pool(monkeypatch):
+    """Main runtime must not send credential_pool.openrouter to providers.openrouter's custom host."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "openrouter": {
+                    "name": "Private Relay",
+                    "base_url": "https://relay.example.test/v1",
+                    "default_model": "relay-model",
+                },
+            },
+        },
+    )
+    built_in = MagicMock()
+    built_in.has_credentials.return_value = True
+    built_in.select.return_value = MagicMock(
+        runtime_api_key="public-openrouter-key", access_token="public-openrouter-key",
+    )
+    custom = MagicMock()
+    custom.has_credentials.return_value = True
+    custom.select.return_value = MagicMock(
+        runtime_api_key="private-router-key", access_token="private-router-key",
+    )
+    monkeypatch.setattr(
+        rp, "load_pool",
+        lambda key: {"openrouter": built_in, "custom:openrouter": custom}[key],
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool._load_config_safe",
+        lambda: {
+            "providers": {
+                "openrouter": {
+                    "name": "Private Relay",
+                    "base_url": "https://relay.example.test/v1",
+                    "default_model": "relay-model",
+                },
+            },
+        },
+    )
+
+    canonical = rp.resolve_runtime_provider(requested="custom:openrouter")
+    alias = rp.resolve_runtime_provider(requested="custom:private-relay")
+
+    for resolved in (canonical, alias):
+        assert resolved["provider"] == "custom"
+        assert resolved["base_url"] == "https://relay.example.test/v1"
+        assert resolved["api_key"] == "private-router-key"
+        assert resolved["source"] == "pool:custom:openrouter"
+    built_in.select.assert_not_called()
+
+
+def test_named_custom_foreign_base_override_does_not_borrow_pool(monkeypatch):
+    """Main runtime must not send configured custom credentials to a foreign override."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "relay": {
+                    "name": "Relay",
+                    "base_url": "https://relay.example.test/v1",
+                    "api_key": "saved-private-key",
+                },
+            },
+        },
+    )
+    pool = MagicMock()
+    pool.has_credentials.return_value = True
+    pool.select.return_value = MagicMock(
+        runtime_api_key="pooled-private-key", access_token="pooled-private-key",
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda key: pool)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom:relay",
+        explicit_base_url="https://foreign.example.test/v1",
+    )
+
+    assert resolved["base_url"] == "https://foreign.example.test/v1"
+    assert resolved["api_key"] == "no-key-required"
+    assert resolved["api_key"] not in {"saved-private-key", "pooled-private-key"}
+    pool.select.assert_not_called()
+
+
+def test_disabled_custom_alias_does_not_fall_through_to_builtin(monkeypatch):
+    """A disabled custom display alias such as kimi remains fail-closed."""
+    config = {
+        "providers": {
+            "private-kimi": {
+                "name": "kimi",
+                "base_url": "https://relay.example.test/v1",
+                "enabled": False,
+            },
+        },
+    }
+    monkeypatch.setattr(rp._config_mod, "load_config", lambda: config)
+
+    with pytest.raises(ValueError, match="disabled"):
+        rp.resolve_runtime_provider(requested="kimi")
 
 
 def test_named_custom_provider_filters_capabilities_at_lookup_boundary(monkeypatch):

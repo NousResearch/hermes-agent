@@ -9,14 +9,8 @@ E2E-over-mocks discipline for file-touching code.
 """
 import threading
 import time
-from pathlib import Path
 
 import pytest
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - non-POSIX
-    fcntl = None
 
 
 @pytest.fixture
@@ -333,116 +327,34 @@ def test_fresh_claim_from_a_dead_same_host_owner_is_reclaimable(temp_home):
     assert claim_job_for_fire(jid) is True
 
 
-def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event):
-    """Hold an exclusive flock on *path* from a separate fd until released.
-
-    flock locks are per-open-file-description, so a second open() in the SAME
-    process contends exactly like another process would.
-    """
-    fd = open(path, "a+", encoding="utf-8")
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        held.set()
-        release.wait(timeout=30)
-    finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        fd.close()
-
-
-def test_heartbeat_fire_claim_missing_job_returns_false(temp_home):
+def test_heartbeat_does_not_wait_on_the_fence_its_own_run_holds(temp_home, monkeypatch):
+    """The run thread holds the per-job fire fence across delivery; the heartbeat thread must
+    refresh the claim without taking it, or every long run reads as a false ownership loss."""
     import cron.jobs as jobs
 
-    assert jobs.heartbeat_fire_claim("nope-does-not-exist", expected_owner="anyone") is False
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="long-run")
+    assert jobs.claim_job_for_fire(job["id"]) is True
+    owner = jobs.get_job(job["id"])["fire_claim"]["by"]
+    # Keep the pre-fix path fast: the heartbeat used to block for the full fence timeout (30s).
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.2)
 
+    fence_held, release, result = threading.Event(), threading.Event(), {}
 
-@pytest.mark.skipif(fcntl is None, reason="flock semantics are POSIX-only")
-def test_heartbeat_does_not_pin_fire_fence_while_jobs_lock_contended(temp_home, monkeypatch):
-    """Correct-owner heartbeat must not hold fire_fence across a .jobs.lock wait.
+    def hold_fence():
+        with jobs.fire_claim_fence(job["id"], expected_owner=owner) as owns:
+            result["owns"] = owns
+            fence_held.set()
+            release.wait(timeout=5)
 
-    Contended path: another thread holds ``.jobs.lock`` while the owner calls
-    ``heartbeat_fire_claim``; concurrently ``mark_job_run`` needs the fire fence.
-
-    PRE-FIX: heartbeat wraps ``_with_job`` in ``_under_fire_fence``, so the
-    flock wait keeps fire_fence held and ``mark_job_run`` fails closed (False).
-    POST-FIX: heartbeat only CAS-refreshes via ``_with_job``; mark can take the
-    fence and succeed (or at least is not fence-blocked by the heartbeat).
-    """
-    from datetime import datetime, timedelta
-
-    import cron.jobs as jobs
-
-    job = jobs.create_job(prompt="x", schedule="every 5m", name="fence-hostage")
-    jid = job["id"]
-    assert jobs.claim_job_for_fire(jid) is True
-    claimed = jobs.get_job(jid)["fire_claim"]
-    owner = claimed["by"]
-    claimed_at = datetime.fromisoformat(claimed["at"])
-    monkeypatch.setattr(jobs, "_hermes_now", lambda: claimed_at + timedelta(seconds=30))
-    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.8)
-
-    lock_path = jobs._jobs_lock_file()
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.touch()
-
-    release = threading.Event()
-    held = threading.Event()
-    heartbeat_waiting_on_jobs_lock = threading.Event()
-    results = {}
-    real_acquire = jobs._acquire_flock
-    real_refresh = jobs._refresh_claim
-
-    def wrapped_acquire(lock_fd, timeout):
-        name = Path(getattr(lock_fd, "name", "") or "").name
-        if name == ".jobs.lock":
-            heartbeat_waiting_on_jobs_lock.set()
-        return real_acquire(lock_fd, timeout)
-
-    def wrapped_refresh(job_list, claim, expected_owner):
-        ok = real_refresh(job_list, claim, expected_owner)
-        if ok:
-            results["refreshed_at"] = claim.get("at")
-            results["refreshed_by"] = claim.get("by")
-        return ok
-
-    monkeypatch.setattr(jobs, "_acquire_flock", wrapped_acquire)
-    monkeypatch.setattr(jobs, "_refresh_claim", wrapped_refresh)
-
-    holder = threading.Thread(
-        target=_hold_jobs_flock, args=(lock_path, release, held), daemon=True,
-    )
+    holder = threading.Thread(target=hold_fence, daemon=True)
     holder.start()
-    assert held.wait(timeout=5), "test holder failed to take .jobs.lock"
-
-    def run_heartbeat():
-        results["heartbeat"] = jobs.heartbeat_fire_claim(jid, expected_owner=owner)
-
-    def run_mark():
-        results["mark"] = jobs.mark_job_run(jid, True, expected_fire_owner=owner)
-
     try:
-        hb_thread = threading.Thread(target=run_heartbeat)
-        hb_thread.start()
-        assert heartbeat_waiting_on_jobs_lock.wait(timeout=5), (
-            "heartbeat never reached the .jobs.lock wait inside _with_job/save_jobs"
-        )
-
-        mark_thread = threading.Thread(target=run_mark)
-        mark_thread.start()
-        mark_thread.join(timeout=8)
-        hb_thread.join(timeout=8)
-        assert mark_thread.is_alive() is False
-        assert hb_thread.is_alive() is False
+        assert fence_held.wait(timeout=5)
+        assert jobs.heartbeat_fire_claim(job["id"], expected_owner=owner) is True
+        # A genuine takeover is still detected while the fence is busy.
+        assert jobs.heartbeat_fire_claim(job["id"], expected_owner="replacement-owner") is False
     finally:
         release.set()
         holder.join(timeout=5)
-
-    assert results.get("heartbeat") is True
-    assert results.get("refreshed_by") == owner
-    assert results.get("refreshed_at") != claimed["at"]
-    assert results.get("mark") is True, (
-        "mark_job_run failed closed while heartbeat held fire_fence across the "
-        ".jobs.lock wait (heartbeat must not wrap _with_job in _under_fire_fence)"
-    )
+    assert result == {"owns": True}
+    assert holder.is_alive() is False

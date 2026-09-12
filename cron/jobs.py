@@ -2600,7 +2600,10 @@ def claim_job_for_fire(
 
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
-    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
+    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim.
+    Deliberately NOT under ``_under_fire_fence``: the run thread holds the per-job fence across
+    delivery, and the fence's reentrancy is per thread, so the heartbeat thread would time out and
+    report a false ownership loss. ``_jobs_lock`` already serializes the compare-and-refresh."""
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 

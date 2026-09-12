@@ -13,13 +13,23 @@ Behavior contracts pinned here:
    doctor-based fix hint (not a bare optional-package warning).
 3. ``hermes doctor --fix`` installs ``hermes-agent[mcp]`` into the running
    interpreter and re-verifies; a pip failure degrades to a manual hint.
+4. Availability probes the real runtime import contract (not just the top-level
+   package) in a clean interpreter, so broken/partial installs are reported.
+5. ``doctor --fix`` resolves an install path the interpreter's owner accepts:
+   pip-less ``uv tool`` venvs fall back to ``uv pip --python``, and layouts with
+   neither pip nor uv degrade to a manual hint instead of a failed pip run.
 """
 
 import asyncio
+import os
+import sys
+import venv as venv_mod
 
 import pytest
 
 from hermes_cli import doctor_platform
+
+_PIP_INSTALL_CMD = [sys.executable, "-m", "pip", "install", "hermes-agent[mcp]"]
 
 
 # =========================================================================
@@ -58,6 +68,7 @@ class _RunResult:
 def test_fix_installs_extra_and_verifies(monkeypatch, capsys):
     availability = iter([False, True])  # missing at check time, present after the install
     monkeypatch.setattr(doctor_platform, "_mcp_sdk_available", lambda: next(availability))
+    monkeypatch.setattr(doctor_platform, "_mcp_install_cmd", lambda: _PIP_INSTALL_CMD)
     captured = {}
 
     def fake_run(cmd, **kwargs):
@@ -67,13 +78,13 @@ def test_fix_installs_extra_and_verifies(monkeypatch, capsys):
     monkeypatch.setattr(doctor_platform.subprocess, "run", fake_run)
     f = doctor_platform._check_mcp_sdk(True)
     assert not f.issues and not f.manual_issues
-    assert captured["cmd"][:4] == [doctor_platform.sys.executable, "-m", "pip", "install"]
-    assert "hermes-agent[mcp]" in captured["cmd"]
+    assert captured["cmd"] == _PIP_INSTALL_CMD
     assert "installed" in capsys.readouterr().out
 
 
 def test_fix_pip_failure_degrades_to_manual_hint(monkeypatch):
     monkeypatch.setattr(doctor_platform, "_mcp_sdk_available", lambda: False)
+    monkeypatch.setattr(doctor_platform, "_mcp_install_cmd", lambda: _PIP_INSTALL_CMD)
     monkeypatch.setattr(doctor_platform.subprocess, "run", lambda cmd, **kw: _RunResult(1, "no network"))
     f = doctor_platform._check_mcp_sdk(True)
     assert not f.issues
@@ -83,13 +94,71 @@ def test_fix_pip_failure_degrades_to_manual_hint(monkeypatch):
 
 def test_fix_install_succeeds_but_sdk_still_missing(monkeypatch):
     monkeypatch.setattr(doctor_platform, "_mcp_sdk_available", lambda: False)
+    monkeypatch.setattr(doctor_platform, "_mcp_install_cmd", lambda: _PIP_INSTALL_CMD)
     monkeypatch.setattr(doctor_platform.subprocess, "run", lambda cmd, **kw: _RunResult())
     f = doctor_platform._check_mcp_sdk(True)
     assert len(f.manual_issues) == 1
 
 
+def test_fix_without_pip_or_uv_degrades_to_manual_hint(monkeypatch, capsys):
+    monkeypatch.setattr(doctor_platform, "_mcp_sdk_available", lambda: False)
+    monkeypatch.setattr(doctor_platform, "_mcp_install_cmd", lambda: None)
+    ran = []
+    monkeypatch.setattr(doctor_platform.subprocess, "run",
+                        lambda cmd, **kw: ran.append(cmd) or _RunResult())
+    f = doctor_platform._check_mcp_sdk(True)
+    assert ran == []  # no install attempt without an owner-compatible path
+    assert not f.issues
+    assert len(f.manual_issues) == 1
+    assert "uv tool install" in f.manual_issues[0]
+
+
 # =========================================================================
-# 3. transport error names doctor --fix, not the setup wizard
+# 3. availability probes the real runtime import contract
+# =========================================================================
+
+
+def test_probe_covers_the_runtime_import_surface():
+    probe = doctor_platform._MCP_SDK_PROBE
+    assert "ClientSession" in probe
+    assert "StdioServerParameters" in probe
+    assert "stdio_client" in probe
+
+
+def test_broken_top_level_mcp_package_is_not_available(tmp_path, monkeypatch):
+    # A partial install: `mcp` resolves, but the runtime symbols do not. The probe
+    # runs in a clean interpreter, so PYTHONPATH shadowing is honored end to end.
+    (tmp_path / "mcp").mkdir()
+    (tmp_path / "mcp" / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    assert doctor_platform._mcp_sdk_available() is False
+
+
+# =========================================================================
+# 4. install-path resolution: pip-less venvs fall back to uv, else manual
+# =========================================================================
+
+
+@pytest.mark.skipif(os.name == "nt", reason="posix venv layout")
+def test_install_cmd_skips_pipless_interpreter_without_uv(tmp_path, monkeypatch):
+    venv_mod.EnvBuilder(with_pip=False, symlinks=True).create(str(tmp_path / "venv"))
+    py = str(tmp_path / "venv" / "bin" / "python")
+    monkeypatch.setattr(doctor_platform.shutil, "which", lambda name: None)
+    assert doctor_platform._mcp_install_cmd(py) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="posix venv layout")
+def test_install_cmd_falls_back_to_uv_for_pipless_interpreter(tmp_path, monkeypatch):
+    venv_mod.EnvBuilder(with_pip=False, symlinks=True).create(str(tmp_path / "venv"))
+    py = str(tmp_path / "venv" / "bin" / "python")
+    monkeypatch.setattr(doctor_platform.shutil, "which",
+                        lambda name: "/usr/local/bin/uv" if name == "uv" else None)
+    assert doctor_platform._mcp_install_cmd(py) == [
+        "/usr/local/bin/uv", "pip", "install", "--python", py, "hermes-agent[mcp]"]
+
+
+# =========================================================================
+# 5. transport error names doctor --fix, not the setup wizard
 # =========================================================================
 
 

@@ -67,8 +67,19 @@ def _normalize_dashboard_cron_updates(updates: Dict[str, Any], profile_home: Pat
 
 
 def _job_profile(job_id: str, profile: Optional[str]) -> str:
-    """Profile owning ``job_id`` (explicit or discovered); 404 when none."""
-    selected = profile or _find_cron_job_profile(job_id)
+    """Profile owning ``job_id`` (explicit or discovered); 404 when none.
+
+    An explicit served profile is honored when its store contains the job.
+    ``all`` is a list-aggregation scope, not a store, so it falls through to
+    discovery. A store miss falls back to ``_find_cron_job_profile`` rather
+    than 404ing on the wrong profile. Unknown profile names still raise
+    ``Profile '…' does not exist.`` via ``_call_cron_for_profile``.
+    """
+    requested = (profile or "").strip()
+    if requested and requested.lower() != "all":
+        if _call_cron_for_profile(requested, "get_job", job_id):
+            return requested
+    selected = _find_cron_job_profile(job_id)
     if not selected:
         raise _job_not_found()
     return selected

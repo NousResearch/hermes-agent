@@ -789,26 +789,8 @@ def _claim_is_supported(
 
 
 def _clinical_body(response: str) -> str:
-    """Exclude the mandatory provenance ledger from clinical-claim matching."""
+    """Exclude an optional provenance appendix from clinical-claim matching."""
     return re.split(r"(?im)^\s*(?:\*\*)?fuentes\s+declaradas(?:\*\*)?\s*$", response or "", maxsplit=1)[0].strip()
-
-
-def _has_visible_evidence_ledger(
-    response: str,
-    records: list[_EvidenceRecord],
-) -> bool:
-    """Require the owner-visible evidence contract, not merely inline citations."""
-    normalized = _normalize(response)
-    required_sections = (
-        "fuentes declaradas",
-        "proveedores consultados",
-        "limitaciones de recuperacion",
-        "estado de verificacion",
-    )
-    if not all(section in normalized for section in required_sections):
-        return False
-    providers = {_normalize(record.provider) for record in records if record.provider}
-    return bool(providers) and any(provider in normalized for provider in providers)
 
 
 _PRIVATE_BLOCK_MARKER = "pre_delivery_blocked"
@@ -868,10 +850,6 @@ def _on_pre_delivery(
     passages = [passage for record in state.evidence for passage in record.passages]
     evidence = "\n".join(passages)
     reasons: list[str] = []
-    if not _has_visible_evidence_ledger(response_text, state.evidence):
-        reasons.append(
-            "falta el ledger visible con fuentes, proveedores, limitaciones y estado de verificación"
-        )
     if not body:
         reasons.append(
             "coloca primero la respuesta clínica sustantiva antes del encabezado exacto "

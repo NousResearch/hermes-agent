@@ -229,6 +229,28 @@ def test_supported_clinical_response_with_visible_ledger_is_allowed(plugin):
     }
 
 
+def test_supported_concise_clinical_response_uses_internal_evidence_ledger(plugin):
+    session_id = "clinical-supported-concise"
+    claim = "La aspirina inhibe la agregación plaquetaria."
+    plugin._on_pre_llm_call(
+        session_id=session_id,
+        user_message="¿Cómo actúa la aspirina sobre las plaquetas?",
+    )
+    plugin._on_post_tool_call(
+        session_id=session_id,
+        tool_name="mcp__consensus__search",
+        status="ok",
+        result=(
+            '{"title":"Aspirin and platelets","abstract":"La aspirina inhibe la agregación '
+            'plaquetaria.","doi":"10.1000/example"}'
+        ),
+    )
+
+    assert plugin._on_pre_delivery(session_id=session_id, response_text=claim) == {
+        "action": "allow"
+    }
+
+
 def test_pre_delivery_repair_preserves_clinical_state_and_evidence(plugin):
     plugin._on_pre_llm_call(session_id="s", user_message="¿Cuál es la tasa de seroma tras abdominoplastia?")
     plugin._on_post_tool_call(

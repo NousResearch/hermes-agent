@@ -2892,7 +2892,15 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+# ``session_id``/``cache_scope`` ride the context-local runtime only: ``set_runtime_main`` already
+# stores them, but they were missing here, so ``_normalize_main_runtime`` dropped them from any
+# *explicitly scoped* bind (``scoped_runtime_main`` / ``main_runtime=``). Callers that re-bind a
+# finished turn's session — post-turn auxiliary work such as the goal judge — therefore lost the
+# OpenCode relay's session affinity and got HTTP 400 MissingSessionID. They stay out of the legacy
+# mirrors (``_RUNTIME_MAIN_FIELDS``) on purpose: globals are shared across concurrent sessions.
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
+    "requested_provider", "session_id", "cache_scope",
+)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:

@@ -60,3 +60,23 @@ def test_auxiliary_calls_share_the_main_turn_session_key():
         assert "x-opencode-session" not in (other.get("extra_headers") or {})
     finally:
         aux._RUNTIME_MAIN_CONTEXT.reset(token)
+
+
+def test_scoped_runtime_main_keeps_the_session_key():
+    """Post-turn callers re-bind a finished turn's session so their auxiliary calls stay on the same
+    relay backend. Regression: ``session_id`` was missing from ``_MAIN_RUNTIME_CONTEXT_FIELDS``, so
+    ``_normalize_main_runtime`` dropped it and every scoped call went out without the header."""
+    with aux.scoped_runtime_main({"session_id": "sess-affinity-1"}):
+        kwargs = aux._build_call_kwargs("opencode-go", "glm-5", _MSGS, base_url="https://opencode.ai/zen/go/v1")
+        assert kwargs["extra_headers"]["x-opencode-session"] == "sess-affinity-1"
+
+
+def test_a_call_with_no_runtime_at_all_still_sends_the_header():
+    """Callers with no session to re-bind (the kanban/loop judges) must still satisfy the relay:
+    a missing header is a hard 400, a stable per-process fallback key is not."""
+    from agent.opencode_affinity import _FALLBACK_SESSION_KEY
+
+    aux.clear_runtime_main()
+    kwargs = aux._build_call_kwargs("opencode-go", "glm-5", _MSGS, base_url="https://opencode.ai/zen/go/v1")
+    assert kwargs["extra_headers"]["x-opencode-session"] == _FALLBACK_SESSION_KEY
+    assert _FALLBACK_SESSION_KEY  # never empty — an empty key still 400s

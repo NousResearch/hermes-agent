@@ -13,6 +13,7 @@ class GatewayChatView:
         self.session_id = snapshot["stored_session_id"]
         self.generation = snapshot.get("execution_generation", 0)
         self.prompts = {p["prompt_id"]: p for p in snapshot.get("prompts", [])}
+        self.pending = snapshot.get("pending", [])
         self.quiet = quiet
         self.finite = False
         self.streams = {}
@@ -21,6 +22,19 @@ class GatewayChatView:
         self.failure = None
         from hermes_cli.gateway_mutations import PreparedMutations
         self.mutations = PreparedMutations()
+
+    def show_pending(self):
+        unknown = any(row["status"] == "unknown" for row in self.pending)
+        if unknown:
+            print("Execution outcome unknown after restart. Discard acknowledges the lost turn "
+                  "without replaying it; queued work may then continue.", file=sys.stderr)
+        for row in self.pending:
+            admission = row["admission_id"]
+            if row["status"] == "unknown":
+                print(f"Unknown admission: {admission}\n/discard {admission}", file=sys.stderr)
+            elif row["status"] == "queued":
+                context = "waiting behind unknown work" if unknown else "waiting to run"
+                print(f"Queued admission: {admission} ({context})", file=sys.stderr)
 
     def show_prompt(self, prompt):
         print(f"\n{prompt.get('description') or prompt.get('question') or 'Approval required'}", file=sys.stderr)
@@ -131,6 +145,7 @@ class GatewayChatView:
     async def run(self, query=None, *, oneshot=False):
         self.quiet = self.quiet or oneshot
         self.finite = oneshot
+        self.show_pending()
         for prompt in self.prompts.values():
             self.show_prompt(prompt)
         renderer = asyncio.create_task(self.render())

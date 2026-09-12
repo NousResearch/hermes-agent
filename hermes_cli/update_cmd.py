@@ -1216,6 +1216,10 @@ def _finish_already_up_to_date(
             _write_gateway_update_exit_code(False)
         _finalize_receipt("partial", 'Update receipt finalize (current checkout) failed: %s')
         sys.exit(1)
+    # Happy path: checkout repair succeeded — persist a success receipt so a
+    # subsequent ``hermes update`` no longer sees the stale failed receipt.
+    # See #104448.
+    _finalize_receipt("success", 'Update receipt finalize failed: %s')
 
 
 def _apply_pulled_update(

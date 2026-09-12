@@ -135,7 +135,9 @@ describe('I18nProvider', () => {
 
   it('does not overwrite unsupported configured languages', async () => {
     const configClient: I18nConfigClient = {
-      getConfig: vi.fn().mockResolvedValue({ display: { language: 'de' } }),
+      // Bewusst kein echter Sprachcode: Locales wie 'de' oder 'es' koennen mit
+      // der Zeit unterstuetzt werden, was diese Zusicherung still umdrehen wuerde.
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'xx' } }),
       saveConfig: vi.fn()
     }
 

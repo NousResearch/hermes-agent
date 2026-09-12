@@ -9,6 +9,7 @@ on-disk delivery queue under a tmp HERMES_HOME.
 import asyncio
 import json
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -306,7 +307,13 @@ def test_run_id_equals_delivery_id_and_status_row_carries_the_projection(adapter
     assert row["delivery_status"] == "delivered"
     assert row["result"] == "delivered"
     assert row["attempts"] == 1
-    assert row["retention_until"] == 0
+    # D4: the delivery handle lives for the registry's retention window like every
+    # other run row. With ``retention_until=0`` the row sat on the default age window
+    # and no later write extended it, so a sender still polling the delivery could get
+    # 404 "Run not found" for a delivery the receiver had accepted.
+    assert row["retention_until"] > time.time() + 60
+    assert row["retention_until"] == pytest.approx(
+        time.time() + RunIdempotencyStore.RETENTION_SECONDS, abs=120)
     assert {"object", "run_id", "status"} <= set(row)
 
 

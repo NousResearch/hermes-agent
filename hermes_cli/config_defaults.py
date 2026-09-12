@@ -2370,7 +2370,7 @@ DEFAULT_CONFIG = {
         "region": "global",
     },
     # Managed llama.cpp runtime (docs: user-guide/local-models): official binaries, one supervised
-    # llama-server in router mode. No context/VRAM knobs by design.
+    # llama-server in router mode. Context may be capped; memory policy remains automatic.
     "local_runtime": {
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
@@ -2381,6 +2381,9 @@ DEFAULT_CONFIG = {
         "backend": "auto",
         "models_max": 4,  # Router process: how many models may be resident at once.
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
+        # Optional positive token cap. None = automatic window policy; values above a model's
+        # native context are clamped to native.
+        "context_window": None,
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },

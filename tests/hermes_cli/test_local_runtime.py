@@ -749,14 +749,18 @@ def test_runtime_provider_seam_explicit_base_url_wins(tmp_path, monkeypatch):
 
 
 def test_local_runtime_config_defaults_shape():
-    """Contract: the section exists, is off by default, and carries no
-    context/VRAM knobs (design: constants, not knobs)."""
+    """Contract: the section exists, is off by default, and exposes only
+    the bounded context cap (the remaining policy values stay constants)."""
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
     cfg = DEFAULT_CONFIG["local_runtime"]
     assert cfg["enabled"] is False
     assert isinstance(cfg["tag"], str) and cfg["tag"].startswith("b")
-    forbidden = [k for k in cfg if "context" in k or "ctx" in k or "vram" in k or "kv" in k]
+    assert cfg["context_window"] is None
+    forbidden = [
+        k for k in cfg
+        if k != "context_window" and ("context" in k or "ctx" in k or "vram" in k or "kv" in k)
+    ]
     assert forbidden == [], f"policy constants leaked into config: {forbidden}"
 
 

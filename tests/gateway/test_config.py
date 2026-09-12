@@ -46,6 +46,18 @@ class TestHomeChannelRoundtrip:
 
 
 class TestPlatformConfigRoundtrip:
+    def test_toplevel_adapter_keys_promoted_into_extra(self):
+        """Adapter settings written directly under the platform block (the documented
+        ``platforms.webhook.port`` shape) reach ``extra``; an explicit ``extra:`` value wins and
+        typed fields never leak into ``extra`` (#10206)."""
+        pc = PlatformConfig.from_dict({
+            "enabled": True, "reply_to_mode": "all", "typing_indicator": False,
+            "port": 9100, "routes": {"gh": {"prompt": "x"}}, "extra": {"port": 9999},
+        })
+        assert pc.extra == {"port": 9999, "routes": {"gh": {"prompt": "x"}}}
+        assert pc.reply_to_mode == "all" and pc.typing_indicator is False
+        assert PlatformConfig.from_dict(pc.to_dict()).extra == pc.extra
+
     def test_to_dict_from_dict(self):
         pc = PlatformConfig(
             enabled=True,

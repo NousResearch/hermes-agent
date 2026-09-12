@@ -125,8 +125,8 @@ def merge_platform_sections(yaml_cfg: dict, gateway_cfg: Any, gw_data: dict) -> 
     ``gateway.platforms.*`` → top-level ``platforms.*`` → ``gateway.<platform>`` subsections (nested
     first so top-level config keeps precedence, matching the gateway.streaming fallback). An
     ``enabled`` key in any block sets the ``_enabled_explicit`` marker consumed by the env pass.
-    Finally api_server's port/key/host/cors_origins/model_name are bridged into ``extra`` so
-    ``gateway.api_server.port: 8642`` reaches the adapter (mirrors the env path).
+    Top-level adapter keys (``gateway.api_server.port: 8642``) reach ``extra`` in
+    ``PlatformConfig.from_dict``.
     """
     platforms_data = _dict_slot(gw_data, "platforms")
 
@@ -150,13 +150,6 @@ def merge_platform_sections(yaml_cfg: dict, gateway_cfg: Any, gw_data: dict) -> 
     merge(nested_gateway.get("platforms"))
     merge(yaml_cfg.get("platforms"))
     merge({k: v for k, v in nested_gateway.items() if k != "platforms" and isinstance(v, dict) and _is_platform_name(k)})
-
-    api_plat = platforms_data.get("api_server")
-    if isinstance(api_plat, dict):
-        api_extra = _dict_slot(api_plat, "extra")
-        for key in ("port", "key", "host", "cors_origins", "model_name"):
-            if key in api_plat and key not in api_extra:
-                api_extra[key] = api_plat.pop(key)
     return platforms_data
 
 
@@ -212,15 +205,6 @@ _SHARED_KEYS: tuple = (
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
 )
 
-# Top-level port/host/secret bridged into ``extra`` for adapters that read them from config.extra
-# (PlatformConfig.from_dict only reads the ``extra:`` sub-key, so ``platforms.webhook.port`` would be lost).
-_PORT_BRIDGE_KEYS: dict = {
-    Platform.WEBHOOK: ("port", "host", "secret"),
-    Platform.MSGRAPH_WEBHOOK: ("port", "host", "secret"),
-    Platform.API_SERVER: ("port", "host"),
-}
-
-
 def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict) -> dict:
     bridged: dict = {}
     for key, only, transform in _SHARED_KEYS:
@@ -230,9 +214,6 @@ def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict) -> dict:
             bridged[key] = _dm_behavior_choice(platform_cfg[key], gw_data.get("unauthorized_dm_behavior", "pair"))
         else:
             bridged[key] = transform(platform_cfg[key]) if transform else platform_cfg[key]
-    for key in _PORT_BRIDGE_KEYS.get(plat, ()):
-        if key in platform_cfg and key not in platform_cfg.get("extra", {}):
-            bridged[key] = platform_cfg[key]
     return bridged
 
 

@@ -77,6 +77,21 @@ def fake_tool(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_partial_media_failure_exits_one(fake_tool, capsys):
+    fake_tool.payload = {
+        "error": "Failed to deliver 1 of 1 Telegram media attachments",
+        "partial_success": True,
+        "message_id": "m123",
+    }
+
+    args = _parse(["--to", "telegram:12345", "Daily report"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+
+    assert exc.value.code == 1
+    assert "Failed to deliver" in capsys.readouterr().err
+
+
 
 
 def test_file_decode_error_suggests_media_directive(fake_tool, capsys, monkeypatch, tmp_path):

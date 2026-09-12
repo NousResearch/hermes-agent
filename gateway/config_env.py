@@ -19,6 +19,7 @@ from gateway.config import (
     HomeChannel,
     Platform,
     PlatformConfig,
+    _getenv,
     _getenv_str,
     _has_usable_api_server_key,
     platform_binds_port,
@@ -258,6 +259,37 @@ def _ReplyMode(platform: Platform, env: str):
 
 
 # --- platform-unique branches ------------------------------------------------
+
+def _bluebubbles(config: GatewayConfig) -> None:
+    """Explicit environment overrides win; absent values preserve YAML behavior."""
+    server_url, password = getenv("BLUEBUBBLES_SERVER_URL"), getenv("BLUEBUBBLES_PASSWORD")
+    if server_url and password:
+        _enable_from_env(config, Platform.BLUEBUBBLES)
+    platform = config.platforms.get(Platform.BLUEBUBBLES)
+    if platform is None:
+        return
+    extra = platform.extra
+    if server_url:
+        extra["server_url"] = server_url.rstrip("/")
+    if password:
+        extra["password"] = password
+    for key, env, default, parse in (
+        ("webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1", str),
+        ("webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", 8645, _int_or(8645)),
+        ("webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook", str),
+        ("send_read_receipts", "BLUEBUBBLES_SEND_READ_RECEIPTS", True, is_truthy_value),
+    ):
+        value = _getenv(env)
+        if value is None:
+            extra.setdefault(key, default)
+        else:
+            extra[key] = parse(value)
+    mention = _getenv("BLUEBUBBLES_REQUIRE_MENTION")
+    if mention is not None:
+        extra["require_mention"] = _truthy_token(mention)
+    if patterns := getenv("BLUEBUBBLES_MENTION_PATTERNS"):
+        extra["mention_patterns"] = _mention_patterns(patterns)
+
 
 def _telegram_fallback_ips(config: GatewayConfig) -> None:
     if ips := getenv("TELEGRAM_FALLBACK_IPS"):
@@ -603,19 +635,7 @@ _ENV_STEPS: tuple = (
         ),
         home="WEIXIN_HOME_CHANNEL", home_strip=True,
     ),
-    # BlueBubbles (iMessage). ``require_mention`` is always written: an unset env reads as "" → False.
-    _Cred(
-        Platform.BLUEBUBBLES, ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"),
-        fixed=(
-            ("server_url", "BLUEBUBBLES_SERVER_URL", "", _strip_slash), ("password", "BLUEBUBBLES_PASSWORD"),
-            ("webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
-            ("webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", "", _int_or(8645)),
-            ("webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
-            ("send_read_receipts", "BLUEBUBBLES_SEND_READ_RECEIPTS", "true", is_truthy_value),
-            ("require_mention", "BLUEBUBBLES_REQUIRE_MENTION", "", _truthy_token),
-        ),
-        optional=(("mention_patterns", "BLUEBUBBLES_MENTION_PATTERNS", _mention_patterns),),
-    ),
+    _bluebubbles,
     _Home(Platform.BLUEBUBBLES, "BLUEBUBBLES_HOME_CHANNEL"),
     # QQ (Official Bot API v2)
     _Cred(

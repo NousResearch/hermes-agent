@@ -2,6 +2,7 @@
 inbound webhooks (text, media attachments, typing indicators, read receipts)."""
 
 import asyncio
+import errno
 import json
 import logging
 import os
@@ -24,7 +25,11 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from .media_cache import ext_for_mime
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import (
+    MessageDeduplicator,
+    compile_mention_patterns,
+    strip_markdown,
+)
 from utils import TRUTHY_STRINGS
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
@@ -53,10 +58,37 @@ MAX_TEXT_LENGTH = 4000
 # `require_mention: true` without custom aliases uses Hermes wake words.
 DEFAULT_MENTION_PATTERNS = [r"(?<![\w@])@?hermes\s+agent\b[,:\-]?", r"(?<![\w@])@?hermes\b[,:\-]?"]
 
-# Tapback associatedMessageType codes: 2000-2005 added, 3000-3005 removed (love, like, dislike, ...).
-_TAPBACK_CODES = {*range(2000, 2006), *range(3000, 3006)}
-_MESSAGE_EVENTS = {"new-message", "message", "updated-message"}  # webhook event types carrying user messages
+# Tapback reaction codes (BlueBubbles associatedMessageType values)
+_TAPBACK_ADDED = {
+    2000: "love", 2001: "like", 2002: "dislike",
+    2003: "laugh", 2004: "emphasize", 2005: "question",
+}
+_TAPBACK_REMOVED = {
+    3000: "love", 3001: "like", 3002: "dislike",
+    3003: "laugh", 3004: "emphasize", 3005: "question",
+}
+_VALID_REACTIONS = {"love", "like", "dislike", "laugh", "emphasize", "question"}
+_REACTION_ALIASES = {
+    "loved": "love",
+    "liked": "like",
+    "disliked": "dislike",
+    "laughed": "laugh",
+    "emphasized": "emphasize",
+    "questioned": "question",
+}
 
+# Only new-message (plus the legacy message alias) starts an agent turn.
+# BlueBubbles emits updated-message for receipt, delivery, and attachment state
+# changes, often with a different chat GUID shape for the same iMessage.
+_MESSAGE_EVENTS = {"new-message", "message"}
+_WEBHOOK_EVENTS = ["new-message"]
+
+# BlueBubbles sends each webhook once and only logs non-2xx responses. Retry
+# attachment downloads inside that one delivery rather than relying on the
+# provider to redeliver the webhook.
+_ATTACHMENT_RETRY_DELAYS = (0.25, 0.75)
+
+# Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 _PAGINATION_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
@@ -84,6 +116,15 @@ def _normalize_server_url(raw: str) -> str:
     if value and not re.match(r"^https?://", value, flags=re.I):
         value = f"http://{value}"
     return value.rstrip("/")
+
+
+def _bool_setting(value: Any, default: bool = False) -> bool:
+    """Parse config booleans without treating the string ``false`` as true."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _closed_ext(mime: str, overrides: Dict[str, str], fallback: str) -> str:
@@ -118,11 +159,49 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self.server_url = _normalize_server_url(_setting(extra, "server_url", "BLUEBUBBLES_SERVER_URL"))
         self.password = extra.get("password") or _get_scoped_secret("BLUEBUBBLES_PASSWORD", "")
-        self.webhook_host = _setting(extra, "webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
-        self.webhook_port = int(_setting(extra, "webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
-        path = str(_setting(extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH))
-        self.webhook_path = path if path.startswith("/") else f"/{path}"
-        self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        self.webhook_host = (
+            extra.get("webhook_host")
+            or os.getenv("BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
+        )
+        self.webhook_port = int(
+            extra.get("webhook_port")
+            or os.getenv("BLUEBUBBLES_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
+        )
+        self.webhook_path = (
+            extra.get("webhook_path")
+            or os.getenv("BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH)
+        )
+        if not str(self.webhook_path).startswith("/"):
+            self.webhook_path = f"/{self.webhook_path}"
+        self.send_read_receipts = _bool_setting(
+            extra.get("send_read_receipts"), default=True
+        )
+        self.typing_indicators = _bool_setting(
+            extra.get("typing_indicators"),
+            default=getattr(config, "typing_indicator", True),
+        )
+        self.config.typing_indicator = self.typing_indicators
+        try:
+            self.typing_refresh_interval = max(
+                1.0, float(extra.get("typing_refresh_interval", 4.0))
+            )
+        except (TypeError, ValueError):
+            self.typing_refresh_interval = 4.0
+        self.auto_react = _bool_setting(extra.get("auto_react"), default=True)
+        configured_reaction = str(extra.get("auto_react_type") or "like").strip().lower()
+        configured_reaction = _REACTION_ALIASES.get(
+            configured_reaction, configured_reaction
+        )
+        if configured_reaction not in _VALID_REACTIONS:
+            logger.warning(
+                "[bluebubbles] invalid auto_react_type %r; using 'like'",
+                configured_reaction,
+            )
+            configured_reaction = "like"
+        self.auto_react_type = configured_reaction
+        self.split_paragraph_replies = _bool_setting(
+            extra.get("split_paragraph_replies"), default=False
+        )
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
             _require_mention = _get_scoped_secret("BLUEBUBBLES_REQUIRE_MENTION")
@@ -131,9 +210,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             extra["mention_patterns"] if "mention_patterns" in extra else _get_scoped_secret("BLUEBUBBLES_MENTION_PATTERNS"))
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
+        self._outbound_only = False
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._message_dedup = MessageDeduplicator(ttl_seconds=300)
+        self._inflight_message_ids: Dict[str, asyncio.Future] = {}
 
     # --- API helpers ---
 
@@ -196,6 +278,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # --- Lifecycle ---
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
+        self._outbound_only = False
         if not self.server_url or not self.password:
             logger.error("[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required")
             return False
@@ -214,41 +297,97 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                         self.server_url, self._private_api_enabled, self._helper_connected)
         except Exception as exc:
             logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, exc)
-            await self._close_client()
+            await self._cleanup_local_resources()
             return False
-        # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
-        # with no Content-Length.
         # Explicit body cap: BlueBubbles webhook events are small JSON (or form-encoded) payloads.
         # client_max_size makes aiohttp enforce the cap on every read path — including chunked requests that
         # carry no Content-Length (same pattern as webhook.py / raft, #58536/#58902).
         app = web.Application(client_max_size=_WEBHOOK_MAX_BODY_BYTES)
-        app.router.add_get("/health", lambda _: web.Response(text="ok"))
+
+        async def health(_request):
+            return web.Response(text="ok")
+
+        app.router.add_get("/health", health)
         app.router.add_post(self.webhook_path, self._handle_webhook)
         # The webhook auth value rides in the query string (BlueBubbles cannot send custom headers)
         # — keep it out of aiohttp access logs.
         self._runner = web.AppRunner(app, access_log=None)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
-        await site.start()
+        try:
+            await self._runner.setup()
+            site = web.TCPSite(
+                self._runner, self.webhook_host, self.webhook_port
+            )
+            await site.start()
+        except asyncio.CancelledError:
+            await asyncio.shield(self._cleanup_local_resources())
+            raise
+        except Exception as exc:
+            if isinstance(exc, OSError) and exc.errno == errno.EADDRINUSE:
+                # A one-shot sender may share the long-running gateway's listener.
+                # It owns only its REST client, never the durable webhook.
+                runner, self._runner = self._runner, None
+                await runner.cleanup()
+                self._outbound_only = True
+                self._mark_connected()
+                return True
+            logger.error(
+                "[bluebubbles] failed to start webhook listener on %s:%s: %s",
+                self.webhook_host,
+                self.webhook_port,
+                exc,
+            )
+            await self._cleanup_local_resources()
+            return False
+        logger.info(
+            "[bluebubbles] webhook listening on http://%s:%s%s",
+            self.webhook_host,
+            self.webhook_port,
+            self.webhook_path,
+        )
+
+        # Inbound delivery is not healthy until BlueBubbles accepts the
+        # registration. Registration/migration is cancellation-safe and server
+        # ownership is reconciled before local resources are released.
+        try:
+            registered = await self._register_webhook()
+        except asyncio.CancelledError:
+            try:
+                await self._unregister_webhook()
+            finally:
+                await self._cleanup_local_resources()
+            raise
+        if not registered:
+            logger.error("[bluebubbles] webhook registration failed")
+            # Do not unregister here: failure does not prove ownership of a
+            # same-URL server registration.
+            await self._cleanup_local_resources()
+            return False
+
         self._mark_connected()
-        logger.info("[bluebubbles] webhook listening on http://%s:%s%s", self.webhook_host, self.webhook_port,
-                    self.webhook_path)
-        await self._register_webhook()  # the server only sends events to webhooks registered via its API
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
         return True
 
-    async def _close_client(self) -> None:
-        if self.client:
-            await self.client.aclose()
-            self.client = None
-
     async def disconnect(self) -> None:
-        await self._unregister_webhook()
-        await self._close_client()
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
+        if not self._outbound_only:
+            await self._unregister_webhook()
+        await self._cleanup_local_resources()
+
+    async def _cleanup_local_resources(self) -> None:
+        """Close local HTTP resources without changing server registrations."""
+        client, self.client = self.client, None
+        if client:
+            try:
+                await client.aclose()
+            except Exception as exc:
+                logger.debug("[bluebubbles] HTTP client cleanup failed: %s", exc)
+
+        runner, self._runner = self._runner, None
+        if runner:
+            try:
+                await runner.cleanup()
+            except Exception as exc:
+                logger.debug("[bluebubbles] webhook runner cleanup failed: %s", exc)
         self._mark_disconnected()
 
     @property
@@ -271,51 +410,258 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _webhook_register_url_for_log(self) -> str:
         return self._webhook_register_url_with("***")
 
-    async def _find_registered_webhooks(self, url: str) -> list:
-        """Return list of BB webhook entries matching *url*."""
-        with suppress(Exception):
-            data = (await self._api_get("/api/v1/webhook")).get("data")
+    async def _find_registered_webhooks(
+        self, url: str
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Return same-URL registrations, or ``None`` when lookup fails."""
+        try:
+            response = await self._api_get("/api/v1/webhook")
+            data = response.get("data")
             if isinstance(data, list):
-                return [wh for wh in data if wh.get("url") == url]
-        return []
+                return [webhook for webhook in data if webhook.get("url") == url]
+            logger.warning("[bluebubbles] webhook lookup returned invalid data")
+        except Exception as exc:
+            logger.warning("[bluebubbles] failed to list registered webhooks: %s", exc)
+        return None
+
+    async def _remove_registered_webhooks(
+        self, webhooks: List[Dict[str, Any]]
+    ) -> bool:
+        """Best-effort cleanup after a working registration is available."""
+        assert self.client is not None
+        removed_all = True
+        for webhook in webhooks:
+            webhook_id = webhook.get("id")
+            if not webhook_id:
+                removed_all = False
+                continue
+            try:
+                response = await self.client.delete(
+                    self._api_url(f"/api/v1/webhook/{webhook_id}")
+                )
+                response.raise_for_status()
+            except Exception as exc:
+                removed_all = False
+                logger.warning(
+                    "[bluebubbles] failed to remove stale webhook registration: %s",
+                    exc,
+                )
+        return removed_all
+
+    async def _post_webhook_registration(
+        self, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Let an ambiguous idempotent POST settle before cancellation escapes."""
+        post = asyncio.create_task(self._api_post("/api/v1/webhook", payload))
+        try:
+            return await asyncio.shield(post)
+        except asyncio.CancelledError as cancelled:
+            try:
+                await post
+            except Exception as exc:
+                logger.warning(
+                    "[bluebubbles] registration failed while connect was cancelled: %s",
+                    exc,
+                )
+            raise cancelled
+
+    async def _migrate_webhook_registration(
+        self,
+        webhook_url: str,
+        existing: List[Dict[str, Any]],
+        payload: Dict[str, Any],
+    ) -> bool:
+        """Replace stale same-URL hooks with rollback and ownership safety.
+
+        BlueBubbles registration POST is idempotent by URL and does not update
+        an existing row's events. The stale row must therefore be removed
+        before the desired event set can be created.
+        """
+        assert self.client is not None
+        if any(webhook.get("id") is None for webhook in existing):
+            logger.warning("[bluebubbles] stale webhook has no ID; migration aborted")
+            return False
+
+        removed: List[Dict[str, Any]] = []
+        for webhook in existing:
+            webhook_id = webhook.get("id")
+            try:
+                response = await self.client.delete(
+                    self._api_url(f"/api/v1/webhook/{webhook_id}")
+                )
+                response.raise_for_status()
+            except Exception as exc:
+                logger.warning(
+                    "[bluebubbles] failed to remove stale webhook registration: %s",
+                    exc,
+                )
+                if removed:
+                    current = await self._find_registered_webhooks(webhook_url)
+                    if current == []:
+                        rollback_events = list(
+                            removed[0].get("events") or _WEBHOOK_EVENTS
+                        )
+                        try:
+                            await self._api_post(
+                                "/api/v1/webhook",
+                                {"url": webhook_url, "events": rollback_events},
+                            )
+                        except Exception as rollback_exc:
+                            logger.error(
+                                "[bluebubbles] failed to restore webhook after "
+                                "partial stale cleanup: %s",
+                                rollback_exc,
+                            )
+                return False
+            removed.append(webhook)
+
+        try:
+            response = await self._post_webhook_registration(payload)
+            status = response.get("status", 0)
+            data = response.get("data")
+            returned_events = data.get("events") if isinstance(data, dict) else None
+            if not isinstance(status, int) or not 200 <= status < 300:
+                raise RuntimeError(f"replacement returned status {status}")
+            if returned_events is not None and set(returned_events) != set(
+                payload["events"]
+            ):
+                raise RuntimeError("replacement retained the stale event set")
+        except Exception as exc:
+            logger.warning(
+                "[bluebubbles] webhook replacement failed; reconciling state: %s",
+                exc,
+            )
+            current = await self._find_registered_webhooks(webhook_url)
+            if current is None:
+                logger.error(
+                    "[bluebubbles] cannot verify webhook state after replacement "
+                    "failure; rollback skipped to avoid changing an unknown owner"
+                )
+                return False
+
+            expected_events = set(payload["events"])
+            exact = [
+                webhook
+                for webhook in current
+                if set(webhook.get("events") or []) == expected_events
+            ]
+            if exact:
+                logger.info(
+                    "[bluebubbles] replacement committed despite local failure"
+                )
+                return True
+
+            if current:
+                logger.error(
+                    "[bluebubbles] webhook URL is occupied after replacement "
+                    "failure; rollback skipped rather than deleting an unowned hook"
+                )
+                return False
+
+            rollback_events = list(removed[0].get("events") or _WEBHOOK_EVENTS)
+            try:
+                rollback = await self._api_post(
+                    "/api/v1/webhook",
+                    {"url": webhook_url, "events": rollback_events},
+                )
+                rollback_status = rollback.get("status", 0)
+                if not isinstance(rollback_status, int) or not 200 <= rollback_status < 300:
+                    raise RuntimeError(
+                        f"rollback returned status {rollback_status}"
+                    )
+            except Exception as rollback_exc:
+                logger.error(
+                    "[bluebubbles] failed to restore prior webhook registration: %s",
+                    rollback_exc,
+                )
+            return False
+
+        logger.info(
+            "[bluebubbles] webhook registration migrated: %s",
+            self._webhook_register_url_for_log,
+        )
+        return True
+
+    async def _run_webhook_migration(
+        self,
+        webhook_url: str,
+        existing: List[Dict[str, Any]],
+        payload: Dict[str, Any],
+    ) -> bool:
+        """Finish an ownership-sensitive migration before cancellation escapes."""
+        migration = asyncio.create_task(
+            self._migrate_webhook_registration(webhook_url, existing, payload)
+        )
+        try:
+            return await asyncio.shield(migration)
+        except asyncio.CancelledError as cancelled:
+            try:
+                await migration
+            except Exception as exc:
+                logger.warning(
+                    "[bluebubbles] migration failed during cancellation: %s", exc
+                )
+            raise cancelled
 
     async def _register_webhook(self) -> bool:
-        """Register this webhook URL, reusing an existing registration if present (crash resilience —
-        avoids duplicates after an unclean shutdown)."""
+        """Ensure one same-URL registration has the exact desired event set."""
         if not self.client:
-            return False
-        webhook_url, log_url = self._webhook_register_url, self._webhook_register_url_for_log
-        if await self._find_registered_webhooks(webhook_url):
-            logger.info("[bluebubbles] webhook already registered: %s", log_url)
-            return True
-        try:
-            res = await self._api_post("/api/v1/webhook",
-                                       {"url": webhook_url, "events": ["new-message", "updated-message"]})
-            status = res.get("status", 0)
-            if 200 <= status < 300:
-                logger.info("[bluebubbles] webhook registered with server: %s", log_url)
-                return True
-            logger.warning("[bluebubbles] webhook registration returned status %s: %s", status, res.get("message"))
-            return False
-        except Exception as exc:
-            logger.warning("[bluebubbles] failed to register webhook with server: %s", exc)
             return False
 
-    async def _unregister_webhook(self) -> bool:
-        """Remove *all* registrations matching our URL (cleans up crash duplicates)."""
-        if not self.client:
+        webhook_url = self._webhook_register_url
+        existing = await self._find_registered_webhooks(webhook_url)
+        if existing is None:
             return False
-        removed = False
+
+        expected_events = set(_WEBHOOK_EVENTS)
+        exact = [
+            webhook
+            for webhook in existing
+            if set(webhook.get("events") or []) == expected_events
+        ]
+        if exact:
+            logger.info(
+                "[bluebubbles] webhook already registered: %s",
+                self._webhook_register_url_for_log,
+            )
+            keep = exact[0]
+            stale = [webhook for webhook in existing if webhook is not keep]
+            if stale:
+                await self._remove_registered_webhooks(stale)
+            return True
+
+        payload = {"url": webhook_url, "events": list(_WEBHOOK_EVENTS)}
+        if existing:
+            return await self._run_webhook_migration(webhook_url, existing, payload)
+
         try:
-            for wh in await self._find_registered_webhooks(self._webhook_register_url):
-                if wh_id := wh.get("id"):
-                    (await self.client.delete(self._api_url(f"/api/v1/webhook/{wh_id}"))).raise_for_status()
-                    removed = True
-            if removed:
-                logger.info("[bluebubbles] webhook unregistered: %s", self._webhook_register_url_for_log)
+            response = await self._post_webhook_registration(payload)
+            status = response.get("status", 0)
+            if isinstance(status, int) and 200 <= status < 300:
+                logger.info(
+                    "[bluebubbles] webhook registered with server: %s",
+                    self._webhook_register_url_for_log,
+                )
+                return True
+            logger.warning(
+                "[bluebubbles] webhook registration returned status %s: %s",
+                status,
+                response.get("message"),
+            )
         except Exception as exc:
-            logger.debug("[bluebubbles] failed to unregister webhook (non-critical): %s", exc)
-        return removed
+            logger.warning(
+                "[bluebubbles] failed to register webhook with server: %s", exc
+            )
+        return False
+
+    async def _unregister_webhook(self) -> bool:
+        """Keep the fixed-URL registration durable across gateway reconnects.
+
+        BlueBubbles POST is idempotent by URL, so neither its response nor a
+        subsequent lookup can prove which concurrent process created the row.
+        Deleting it on disconnect could remove another process's registration.
+        """
+        return False
 
     # --- Chat GUID resolution ---
 
@@ -333,16 +679,27 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if target in self._guid_cache:
             self._guid_cache.move_to_end(target)
             return self._guid_cache[target]
-        with suppress(Exception):
-            payload = await self._api_post("/api/v1/chat/query", {"limit": 100, "offset": 0})
-            for chat in payload.get("data", []) or []:
-                if (chat.get("chatIdentifier") or chat.get("identifier")) != target:
-                    continue
-                if guid := chat.get("guid") or chat.get("chatGuid"):
-                    self._guid_cache[target] = guid
-                    while len(self._guid_cache) > _GUID_CACHE_SIZE:
-                        self._guid_cache.popitem(last=False)
-                return guid
+        try:
+            limit = 100
+            for page in range(50):  # safety cap for unexpectedly large servers
+                payload = await self._api_post(
+                    "/api/v1/chat/query",
+                    {"limit": limit, "offset": page * limit},
+                )
+                chats = payload.get("data", []) or []
+                for chat in chats:
+                    guid = chat.get("guid") or chat.get("chatGuid")
+                    identifier = chat.get("chatIdentifier") or chat.get("identifier")
+                    if identifier == target:
+                        if guid:
+                            self._guid_cache[target] = guid
+                            while len(self._guid_cache) > _GUID_CACHE_SIZE:
+                                self._guid_cache.popitem(last=False)
+                        return guid
+                if len(chats) < limit:
+                    break
+        except Exception:
+            pass
         return None
 
     async def _create_chat_for_handle(self, address: str, message: str) -> SendResult:
@@ -362,18 +719,75 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         text = self.format_message(content)
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
-        # Each paragraph becomes its own iMessage bubble; truncate any still too long.
-        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()] or [text]
-        chunks = [c for para in paragraphs for c in (
-            [para] if len(para) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(para, self.MAX_MESSAGE_LENGTH))]
+        # Keep a normal assistant response in one iMessage bubble. Paragraph
+        # splitting made one answer look like duplicate replies. It remains an
+        # explicit opt-in, while over-limit messages are always chunked.
+        if self.split_paragraph_replies:
+            paragraphs = [
+                p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()
+            ]
+            chunks: List[str] = []
+            for para in paragraphs or [text]:
+                if len(para) <= self.MAX_MESSAGE_LENGTH:
+                    chunks.append(para)
+                else:
+                    chunks.extend(
+                        self.truncate_message(
+                            para, max_length=self.MAX_MESSAGE_LENGTH
+                        )
+                    )
+        elif len(text) <= self.MAX_MESSAGE_LENGTH:
+            chunks = [text]
+        else:
+            chunks = self.truncate_message(
+                text, max_length=self.MAX_MESSAGE_LENGTH
+            )
         last = SendResult(success=True)
-        for chunk in chunks:
-            guid = await self._resolve_chat_guid(chat_id)
+        guid: Optional[str] = None
+        for index, chunk in enumerate(chunks):
             if not guid:
-                if self._private_api_enabled and ("@" in chat_id or _ADDRESS_RE.match(chat_id)):  # address → new chat
-                    return await self._create_chat_for_handle(chat_id, chunk)
-                return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
-            payload: Dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
+                guid = await self._resolve_chat_guid(chat_id)
+            if not guid:
+                # If the target looks like an address, create the chat with the
+                # first chunk, then resolve it before sending any remainder.
+                if self._private_api_enabled and (
+                    "@" in chat_id or re.match(r"^\+\d+", chat_id)
+                ):
+                    created = await self._create_chat_for_handle(chat_id, chunk)
+                    if not created.success or index == len(chunks) - 1:
+                        return created
+                    last = created
+                    raw = created.raw_response if isinstance(created.raw_response, dict) else {}
+                    data = raw.get("data") if isinstance(raw, dict) else {}
+                    if isinstance(data, dict):
+                        guid = data.get("chatGuid") or data.get("chatGUID")
+                        chat = data.get("chat")
+                        if not guid and isinstance(chat, dict):
+                            guid = chat.get("guid") or chat.get("chatGuid")
+                    if guid:
+                        self._guid_cache[chat_id] = str(guid)
+                    else:
+                        guid = await self._resolve_chat_guid(chat_id)
+                    if not guid:
+                        return SendResult(
+                            success=False,
+                            error=(
+                                "BlueBubbles created the chat but could not resolve it "
+                                "to deliver the remaining message chunks"
+                            ),
+                            message_id=created.message_id,
+                            raw_response=created.raw_response,
+                        )
+                    continue
+                return SendResult(
+                    success=False,
+                    error=f"BlueBubbles chat not found for target: {chat_id}",
+                )
+            payload: Dict[str, Any] = {
+                "chatGuid": guid,
+                "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
+                "message": chunk,
+            }
             if reply_to and self._private_api_enabled and self._helper_connected:
                 payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)
             if not (last := await self._post_message("/api/v1/message/text", payload)).success:
@@ -439,16 +853,74 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     # --- Typing indicators / read receipts (private API only) ---
 
+    def get_typing_refresh_interval(self) -> float:
+        """Use BlueBubbles' cadence in the shared base typing lifecycle."""
+        return self.typing_refresh_interval
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        await self._private_api_chat_call(chat_id, "typing", "post")
+        if self.typing_indicators:
+            await self._private_api_chat_call(chat_id, "typing", "post")
 
     async def stop_typing(self, chat_id: str) -> None:
-        await self._private_api_chat_call(chat_id, "typing", "delete")
+        if self.typing_indicators:
+            await self._private_api_chat_call(chat_id, "typing", "delete")
 
     async def mark_read(self, chat_id: str) -> bool:
         return await self._private_api_chat_call(chat_id, "read", "post")
 
-    # --- Chat info ---
+    # ------------------------------------------------------------------
+    # Tapback reactions and processing UX
+    # ------------------------------------------------------------------
+
+    async def _send_reaction(
+        self, chat_id: str, message_id: Optional[str], reaction: str
+    ) -> bool:
+        if (
+            not self._private_api_enabled
+            or not self._helper_connected
+            or not self.client
+            or not chat_id
+            or not message_id
+        ):
+            return False
+        try:
+            guid = await self._resolve_chat_guid(chat_id)
+            if not guid:
+                return False
+            response = await self._api_post(
+                "/api/v1/message/react",
+                {
+                    "chatGuid": guid,
+                    "selectedMessageGuid": message_id,
+                    "reaction": reaction,
+                    "partIndex": 0,
+                },
+            )
+            status = response.get("status")
+            if not isinstance(status, int) or not 200 <= status < 300:
+                logger.debug(
+                    "[bluebubbles] reaction returned invalid or unsuccessful status %r",
+                    status,
+                )
+                return False
+            return True
+        except Exception as exc:
+            logger.debug("[bluebubbles] reaction failed: %s", exc)
+            return False
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Acknowledge processing with one native tapback and no text ack."""
+        if not self.auto_react:
+            return
+        await self._send_reaction(
+            getattr(event.source, "chat_id", ""),
+            getattr(event, "message_id", None),
+            self.auto_react_type,
+        )
+
+    # ------------------------------------------------------------------
+    # Chat info
+    # ------------------------------------------------------------------
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         is_group = ";+;" in (chat_id or "")
@@ -489,7 +961,23 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), exc)
             return None
 
-    # --- Webhook handling ---
+    async def _download_attachment_with_retries(
+        self, att_guid: str, att_meta: Dict[str, Any]
+    ) -> Optional[str]:
+        """Bound retries to the provider's single webhook delivery."""
+        cached = await self._download_attachment(att_guid, att_meta)
+        if cached:
+            return cached
+        for delay in _ATTACHMENT_RETRY_DELAYS:
+            await asyncio.sleep(delay)
+            cached = await self._download_attachment(att_guid, att_meta)
+            if cached:
+                return cached
+        return None
+
+    # ------------------------------------------------------------------
+    # Webhook handling
+    # ------------------------------------------------------------------
 
     def _extract_payload_record(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         data = payload.get("data")
@@ -500,6 +988,37 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if isinstance(payload.get("message"), dict):
             return payload.get("message")
         return payload if isinstance(payload, dict) else None
+
+    def _claim_inbound_message(
+        self, message_id: str
+    ) -> tuple[Optional[asyncio.Future], bool]:
+        """Reserve a GUID, or return the existing in-flight outcome."""
+        if self._message_dedup.contains(message_id):
+            return None, False
+        existing = self._inflight_message_ids.get(message_id)
+        if existing is not None:
+            return existing, False
+        claim = asyncio.get_running_loop().create_future()
+        self._inflight_message_ids[message_id] = claim
+        return claim, True
+
+    def _finish_inbound_claim(
+        self,
+        message_id: Optional[str],
+        claim: Optional[asyncio.Future],
+        *,
+        accepted: bool,
+    ) -> None:
+        """Commit a successful handoff, or release a failed reservation."""
+        if not message_id or claim is None:
+            return
+        if self._inflight_message_ids.get(message_id) is not claim:
+            return
+        self._inflight_message_ids.pop(message_id, None)
+        if accepted:
+            self._message_dedup.is_duplicate(message_id)
+        if not claim.done():
+            claim.set_result(accepted)
 
     @staticmethod
     def _value(*candidates: Any) -> Optional[str]:
@@ -515,26 +1034,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             form = parse_qs(body)
             payload_str = (form.get("payload") or form.get("data") or form.get("message") or [""])[0]
             return json.loads(payload_str) if payload_str else {}
-
-    async def _collect_attachments(self, record: Dict[str, Any]):
-        """Download inbound attachments; returns (media_urls, media_types, msg_type)."""
-        media_urls: List[str] = []
-        media_types: List[str] = []
-        msg_type = MessageType.TEXT
-        for att in record.get("attachments") or []:
-            att_guid = att.get("guid", "")
-            cached = await self._download_attachment(att_guid, att) if att_guid else None
-            if not cached:
-                continue
-            mime = (att.get("mimeType") or "").lower()
-            media_urls.append(cached)
-            media_types.append(mime)
-            is_voice = mime.startswith("audio/") or (att.get("uti") or "").endswith("caf")
-            msg_type = (MessageType.PHOTO if mime.startswith("image/") else MessageType.VOICE if is_voice
-                        else MessageType.VIDEO if mime.startswith("video/") else MessageType.DOCUMENT)
-        if len(media_urls) > 1 and any(m.split("/")[0] == "image" for m in media_types):  # any image → PHOTO
-            msg_type = MessageType.PHOTO
-        return media_urls, media_types, msg_type
 
     def _webhook_token(self, request) -> Optional[str]:
         return (request.query.get("password") or request.query.get("guid") or request.headers.get("x-password")
@@ -574,33 +1073,154 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if record.get("isFromMe") or record.get("fromMe") or record.get("is_from_me"):
             return _ok()
         assoc_type = record.get("associatedMessageType")
-        if isinstance(assoc_type, int) and assoc_type in _TAPBACK_CODES:  # tapback reactions delivered as messages
-            return _ok()
-        text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
-        media_urls, media_types, msg_type = await self._collect_attachments(record)
+        if isinstance(assoc_type, int) and assoc_type in {
+            **_TAPBACK_ADDED,
+            **_TAPBACK_REMOVED,
+        }:
+            return web.Response(text="ok")
+
+        message_id = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        claim: Optional[asyncio.Future] = None
+        if message_id:
+            claim, is_owner = self._claim_inbound_message(message_id)
+            if claim is None:
+                logger.info("[bluebubbles] duplicate inbound message ignored")
+                return web.Response(text="ok")
+            if not is_owner:
+                accepted = await asyncio.shield(claim)
+                return web.Response(
+                    text="ok" if accepted else "handoff unavailable",
+                    status=200 if accepted else 503,
+                )
+
+        text = (
+            self._value(
+                record.get("text"), record.get("message"), record.get("body")
+            )
+            or ""
+        )
+
+        # --- Inbound attachment handling ---
+        attachments = record.get("attachments") or []
+        if not isinstance(attachments, list):
+            self._finish_inbound_claim(message_id, claim, accepted=False)
+            return web.json_response({"error": "invalid attachments"}, status=400)
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        msg_type = MessageType.TEXT
+        attachment_failed = False
+
+        for att in attachments:
+            try:
+                if not isinstance(att, dict):
+                    attachment_failed = True
+                    continue
+                att_guid = att.get("guid", "")
+                if not att_guid:
+                    attachment_failed = True
+                    continue
+                cached = await self._download_attachment_with_retries(att_guid, att)
+                if not cached:
+                    attachment_failed = True
+                    continue
+                mime = (att.get("mimeType") or "").lower()
+                media_urls.append(cached)
+                media_types.append(mime)
+                if mime.startswith("image/"):
+                    msg_type = MessageType.PHOTO
+                elif mime.startswith("audio/") or (att.get("uti") or "").endswith(
+                    "caf"
+                ):
+                    msg_type = MessageType.VOICE
+                elif mime.startswith("video/"):
+                    msg_type = MessageType.VIDEO
+                else:
+                    msg_type = MessageType.DOCUMENT
+            except asyncio.CancelledError:
+                self._finish_inbound_claim(message_id, claim, accepted=False)
+                raise
+            except Exception:
+                attachment_failed = True
+                logger.exception(
+                    "[bluebubbles] inbound attachment failed; preserving other content"
+                )
+
+        if attachment_failed:
+            logger.warning(
+                "[bluebubbles] one or more inbound attachments remained unavailable "
+                "after bounded retries; preserving recoverable message content"
+            )
+
+        # With multiple attachments, prefer PHOTO if any images present
+        if len(media_urls) > 1:
+            mime_prefixes = {(m or "").split("/")[0] for m in media_types}
+            if "image" in mime_prefixes:
+                msg_type = MessageType.PHOTO
+
         if not text and media_urls:
             text = "(attachment)"
+        if attachments and not text and not media_urls:
+            # BlueBubbles will not redeliver this webhook. Preserve the user
+            # turn even when every attachment remains unavailable so the agent
+            # can acknowledge the failed media instead of silently losing it.
+            text = "(attachment unavailable)"
+        # --- End attachment handling ---
+
         chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
         if not sender or not (chat_guid or chat_identifier) or not text:
+            self._finish_inbound_claim(message_id, claim, accepted=False)
             return web.json_response({"error": "missing message fields"}, status=400)
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
-                logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")
-                return _ok()
+                logger.debug(
+                    "[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)"
+                )
+                self._finish_inbound_claim(message_id, claim, accepted=True)
+                return web.Response(text="ok")
             text = self._clean_mention_text(text)
-        source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or sender,
-                                   chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
-                                   chat_id_alt=chat_identifier)
-        event = MessageEvent(
-            text=text, message_type=msg_type, source=source, raw_message=payload,
-            message_id=self._value(record.get("guid"), record.get("messageGuid"), record.get("id")),
-            reply_to_message_id=self._value(record.get("threadOriginatorGuid"), record.get("associatedMessageGuid")),
-            media_urls=media_urls, media_types=media_types)
-        task = asyncio.create_task(self.handle_message(event))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-        if self.send_read_receipts and session_chat_id:  # fire-and-forget read receipt
+        try:
+            source = self.build_source(
+                chat_id=session_chat_id,
+                chat_name=chat_identifier or sender,
+                chat_type="group" if is_group else "dm",
+                user_id=sender,
+                user_name=sender,
+                chat_id_alt=chat_identifier,
+            )
+            event = MessageEvent(
+                text=text,
+                message_type=msg_type,
+                source=source,
+                raw_message=payload,
+                message_id=message_id,
+                reply_to_message_id=self._value(
+                    record.get("threadOriginatorGuid"),
+                    record.get("associatedMessageGuid"),
+                ),
+                media_urls=media_urls,
+                media_types=media_types,
+            )
+            # BasePlatformAdapter.handle_message returns after accepting the
+            # handoff and spawning agent work; awaiting it lets us release a
+            # failed claim without waiting for the agent turn itself.
+            await self.handle_message(event)
+        except asyncio.CancelledError:
+            self._finish_inbound_claim(message_id, claim, accepted=False)
+            raise
+        except Exception:
+            self._finish_inbound_claim(message_id, claim, accepted=False)
+            logger.exception("[bluebubbles] failed to hand off inbound message")
+            return web.Response(text="handoff unavailable", status=503)
+
+        self._finish_inbound_claim(message_id, claim, accepted=True)
+
+        # Fire-and-forget read receipt
+        if self.send_read_receipts and session_chat_id:
             asyncio.create_task(self.mark_read(session_chat_id))
         return _ok()

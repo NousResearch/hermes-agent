@@ -198,6 +198,9 @@ _SHARED_KEYS: tuple = (
     ("unauthorized_dm_behavior", None, "dm"),
     ("notice_delivery", None, lambda v: _normalize_choice(v, {"public", "private"}, "public")),
     *_plain("reply_prefix", "reply_in_thread", "cron_continuable_surface", "require_mention", "send_read_receipts"),
+    *((key, frozenset({Platform.BLUEBUBBLES}), None) for key in (
+        "auto_react", "auto_react_type", "split_paragraph_replies", "typing_indicators",
+        "typing_refresh_interval", "webhook_host", "webhook_path", "webhook_port")),
     ("allowed_chats", _TELEGRAM, None),
     ("group_allowed_chats", _TELEGRAM, None),
     ("allowed_topics", _TELEGRAM, None),
@@ -230,6 +233,8 @@ def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict) -> dict:
             bridged[key] = _dm_behavior_choice(platform_cfg[key], gw_data.get("unauthorized_dm_behavior", "pair"))
         else:
             bridged[key] = transform(platform_cfg[key]) if transform else platform_cfg[key]
+    if plat == Platform.BLUEBUBBLES and "typing_indicators" in platform_cfg:
+        bridged["typing_indicator"] = platform_cfg["typing_indicators"]
     for key in _PORT_BRIDGE_KEYS.get(plat, ()):
         if key in platform_cfg and key not in platform_cfg.get("extra", {}):
             bridged[key] = platform_cfg[key]

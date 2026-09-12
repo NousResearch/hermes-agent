@@ -2566,6 +2566,10 @@ class BasePlatformAdapter(ABC):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator; ``metadata`` carries platform context (Slack thread_id)."""
 
+    def get_typing_refresh_interval(self) -> float:
+        """Return the shared inbound typing refresh cadence for this platform."""
+        return 2.0
+
     async def stop_typing(self, chat_id: str) -> None:
         """Stop a persistent typing indicator; override where typing runs as a loop."""
 
@@ -3883,6 +3887,8 @@ class BasePlatformAdapter(ABC):
         kwargs: Dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):
             kwargs["stop_event"] = interrupt_event
+        if self._accepts_kwarg(self._keep_typing, "interval", var_kw=False, unknown=True):
+            kwargs["interval"] = self.get_typing_refresh_interval()
         return asyncio.create_task(self._keep_typing(event.source.chat_id, **kwargs))
 
     async def _extract_response_content(self, response: str, event: MessageEvent, session_key: str,

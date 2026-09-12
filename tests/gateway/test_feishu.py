@@ -952,6 +952,8 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.source.user_name, "张三")
         self.assertEqual(event.source.user_id_alt, "on_union")
         self.assertEqual(event.source.chat_name, "Feishu DM")
+        # Reply anchors / slash-command thread checks read source.message_id, not event.message_id.
+        self.assertEqual(event.source.message_id, "om_text")
 
 
     @patch.dict(

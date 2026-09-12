@@ -838,8 +838,22 @@ def _handle_create(args: dict, **kw) -> str:
                     if _is_dispatcher_owned_worker() else None)
         self_task = kb.get_task(conn, self_tid) if self_tid else None
         # The worker/API runtime may be transient; the owning task's origin is durable.
-        session_id = (args.get("session_id") or (self_task.session_id if self_task else None)
-                      or _current_origin_session_id() or os.environ.get("HERMES_SESSION_ID"))
+        session_id = args.get("session_id") or (self_task.session_id if self_task else None)
+        if not session_id and not self_tid:
+            # Registry kwargs are host-supplied, unlike model-visible args. The agent/tool
+            # boundary forwards the running coordinator's session id explicitly, so prefer
+            # it over process state that in-process child construction can overwrite.
+            session_id = kw.get("session_id")
+        session_id = session_id or _current_origin_session_id()
+        if not session_id:
+            from gateway.session_context import get_session_env
+            # Keep the legacy env fallback for workers and non-Discord callers. A Discord
+            # delivery route alone is not a session identity, so an unbound direct call
+            # must not stamp a child/sibling id left in process-global state.
+            if self_tid or get_session_env(
+                "HERMES_SESSION_PLATFORM", ""
+            ).lower() != "discord":
+                session_id = os.environ.get("HERMES_SESSION_ID")
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id

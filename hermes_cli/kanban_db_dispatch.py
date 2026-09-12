@@ -315,6 +315,12 @@ def _terminate_reclaimed_worker(
         info["terminated"] = True
         return info
     except OSError:
+        # Windows raises OSError (winerror 87) — not ProcessLookupError —
+        # for a dead pid (#101638). A pid that no longer exists is gone
+        # regardless of errno; only a still-alive pid defers the reclaim.
+        if not _kb._pid_alive(pid):
+            info["terminated"] = True
+            return info
         return info
 
     if _poll_worker_exit(pid):
@@ -1229,7 +1235,8 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
+        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL"
+        + (" AND COALESCE(review_hold, 0) = 0" if status == "review" else ""),
         (status,),
     ).fetchall()
     if not rows:
@@ -1709,10 +1716,13 @@ def _tick_spawn_budget(
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order. Parked review cards
+    (``review_hold``, #101638) are not dispatch sources — the operator parked
+    them for a human/dependency, so the dispatcher never enumerates them."""
+    hold_filter = " AND COALESCE(review_hold, 0) = 0" if status == "review" else ""
     return conn.execute(
         "SELECT id, assignee FROM tasks "
-        f"WHERE status = '{status}' AND claim_lock IS NULL "
+        f"WHERE status = '{status}' AND claim_lock IS NULL{hold_filter} "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
 

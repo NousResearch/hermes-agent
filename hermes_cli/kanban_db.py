@@ -710,6 +710,8 @@ class Task:
     # done / budget exhausted (-> kanban_block); ``goal_max_turns`` None -> goals default.
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    # Review-lane park flag (#101638); True = dispatcher must not auto-claim.
+    review_hold: bool = False
     session_id: Optional[str] = None         # originating HERMES_SESSION_ID; NULL from CLI/dashboard
     # VALID_BLOCK_KINDS or None (legacy); kept across unblock so a same-kind re-block reads as a loop.
     block_kind: Optional[str] = None
@@ -731,6 +733,7 @@ class Task:
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
+            review_hold=bool(g("review_hold")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
 
@@ -941,7 +944,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Review-lane park flag (#101638). Set when ``request_review`` overrides
+    -- a live claim via ``force=True`` (operator parking: "wait for a human /
+    -- dependency, do NOT auto-spawn a reviewer"). Meaningful only while
+    -- ``status = 'review'``: ``claim_review_task`` refuses held cards and
+    -- the dispatcher skips them in the review lane. Cleared on a normal
+    -- worker handoff (``expected_run_id``), an explicit human claim
+    -- (``force=True``), or when the card leaves review. 0 = dispatch-hot.
+    review_hold          INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2164,11 +2175,17 @@ def claim_task(
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, force: bool = False,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
-    separately from the implementer."""
+    separately from the implementer.
+
+    A parked card (``review_hold``, set by a forced ``request_review`` over a
+    live claim — #101638) is refused unless ``force`` (explicit human pull,
+    which unparks). A leaked open run from a dead worker is reclaimed in the
+    same txn, mirroring :func:`claim_task`.
+    """
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -2184,6 +2201,22 @@ def claim_review_task(
                     {"reason": "parent_reopened", "source_status": "review"},
                 )
             return None
+        hold = conn.execute(
+            "SELECT COALESCE(review_hold, 0) FROM tasks WHERE id = ? AND status = 'review'",
+            (task_id,),
+        ).fetchone()
+        if hold and hold[0] and not force:
+            return None
+        if force:
+            # ponytail: single-row flag clear; a lane column beats an event scan.
+            conn.execute(
+                "UPDATE tasks SET review_hold = 0 WHERE id = ? AND status = 'review'",
+                (task_id,),
+            )
+        # Close a leaked prior run so the CAS below doesn't strand it.
+        _reclaim_dangling_run(
+            conn, task_id, statuses=("review",), now=now, note="invariant recovery on review re-claim",
+        )
         run_id = _claim_and_open_run(
             conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
         )
@@ -3051,18 +3084,27 @@ def request_review(
             *(() if reviewer is None else (reviewer,)), task_id,
             *(() if expected_run_id is None else (int(expected_run_id),)),
         )
+        # #101638: force-overriding a LIVE claim parks the card in review —
+        # the operator takes the handoff out of the dispatch loop ("wait for
+        # a human/dependency"). A normal worker handoff (ownership proof via
+        # ``expected_run_id``, or a move from ``ready``) stays dispatch-hot.
+        forced_park = bool(
+            force and expected_run_id is None
+            and trow["status"] == "running" and trow["claim_lock"] is not None
+        )
         cur = conn.execute(
             """
             UPDATE tasks
                SET status        = 'review',
                    claim_lock    = NULL,
                    claim_expires = NULL,
-                   worker_pid    = NULL
+                   worker_pid    = NULL,
+                   review_hold   = ?
             """ + assignee_sql + """
              WHERE id = ?
                AND status IN ('running', 'ready')
             """ + run_guard,
-            params,
+            (int(forced_park), *params),
         )
         if cur.rowcount != 1:
             return _ret(
@@ -3080,6 +3122,7 @@ def request_review(
                 "summary": _first_line(summary, 400) or None,
                 "implementer": implementer,
                 "reviewer": reviewer,
+                **({"forced": True} if forced_park else {}),
             },
             run_id=run_id,
         )
@@ -3319,7 +3362,8 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
             # consecutive_failures deliberately PRESERVED: review reopen is not
             # a success signal; only complete_task resets the breaker (#35072).
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "review_hold = 0 "
             + (", assignee = ?" if implementer else "")
             + " WHERE id = ? AND status = 'review'",
             params,

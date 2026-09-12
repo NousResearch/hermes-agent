@@ -321,13 +321,45 @@ def is_routable_provider(provider: Optional[str]) -> bool:
 # ── runtime builders ───────────────────────────────────────────────────────────────────────
 
 
+def _custom_pool_candidates_for_request(
+    rp: Any, base_url: str, requested_provider: str, custom_provider: Dict[str, Any],
+) -> list[str]:
+    """Credential-pool candidates for one explicit custom identity.
+
+    Canonical identity comes first, followed by legacy aliases that still map
+    to the same configured endpoint. A colliding built-in's bare pool key is
+    excluded, so backward compatibility cannot reopen credential disclosure.
+    """
+    from agent.credential_pool import canonical_custom_pool_key
+
+    canonical = canonical_custom_pool_key(
+        requested_provider, base_url,
+        preserve_explicit=str(requested_provider or "").strip().lower().startswith("custom:"),
+    )
+    provider_name = custom_provider.get("provider_key") or custom_provider.get("name") or requested_provider
+    legacy = list(rp.custom_provider_pool_key_candidates(base_url, provider_name))
+    provider_key = _normalize_custom_provider_name(str(custom_provider.get("provider_key") or ""))
+    try:
+        collides = bool(provider_key and str(rp.auth_mod.resolve_provider(provider_key) or "").strip().lower() == provider_key)
+    except rp.AuthError:
+        collides = False
+    if collides:
+        legacy = [key for key in legacy if str(key).strip().lower() != provider_key]
+    return list(dict.fromkeys(
+        key for key in (canonical, *legacy) if str(key or "").strip()
+    ))
+
+
 def _try_resolve_from_custom_pool(
-    base_url: str, provider_label: str, api_mode_override: Optional[str] = None, provider_name: Optional[str] = None
+    base_url: str, provider_label: str, api_mode_override: Optional[str] = None,
+    provider_name: Optional[str] = None, *, pool_candidates: Optional[list[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Runtime dict from the first credential pool that owns this custom endpoint, else None."""
     rp = _rp()
     try:
-        raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name))
+        raw_keys = list(pool_candidates) if pool_candidates is not None else list(
+            rp.custom_provider_pool_key_candidates(base_url, provider_name)
+        )
     except Exception:
         raw_keys = []
     # Order-preserving dedupe of normalized keys.
@@ -475,9 +507,16 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
-    pool_result = rp._try_resolve_from_custom_pool(
+    configured_base = str(custom_provider.get("base_url") or "").strip().rstrip("/")
+    endpoint_overridden = bool(
+        explicit_base_url and configured_base
+        and _normalize_base_url_for_match(base_url) != _normalize_base_url_for_match(configured_base)
+    )
+    pool_result = None if endpoint_overridden else rp._try_resolve_from_custom_pool(
         base_url, "custom", custom_provider.get("api_mode"),
-        provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+        pool_candidates=_custom_pool_candidates_for_request(
+            rp, base_url, requested_provider, custom_provider,
+        ),
     )
     if pool_result:
         # The pool doesn't know the custom_providers fields — propagate them here too.
@@ -486,8 +525,10 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     explicit_key = (explicit_api_key or "").strip()
     candidates = [
         explicit_key,
-        _clean(custom_provider.get("api_key", "")),
-        rp._getenv(_clean(custom_provider.get("key_env", "")), "").strip(),
+        *([] if endpoint_overridden else [
+            _clean(custom_provider.get("api_key", "")),
+            rp._getenv(_clean(custom_provider.get("key_env", "")), "").strip(),
+        ]),
         *rp._host_gated_env_key_candidates(base_url, ollama=False),
     ]
     api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")
@@ -495,7 +536,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # mid-session); both wire clients accept a callable api_key (the Entra ID contract). An
     # explicit --api-key still wins as the one-off recovery escape hatch.
     key_cmd = _clean(custom_provider.get("key_cmd", ""))
-    if key_cmd and not rp.has_usable_secret(explicit_key):
+    if key_cmd and not endpoint_overridden and not rp.has_usable_secret(explicit_key):
         from agent.command_token_source import build_command_token_provider
         token_provider = build_command_token_provider(key_cmd, str(custom_provider.get("name", requested_provider) or "custom"))
         if token_provider is not None:

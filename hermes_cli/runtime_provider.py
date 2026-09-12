@@ -420,7 +420,8 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
 # ── extracted collaborators (re-exported; see module docstring) ────────────────────────────
 
 from hermes_cli.runtime_provider_custom import (  # noqa: E402,F401
-    _apply_custom_provider_extras, _custom_provider_request_overrides, _filter_capabilities, _find_custom_identity,
+    _apply_custom_provider_extras, _custom_pool_candidates_for_request, _custom_provider_request_overrides,
+    _filter_capabilities, _find_custom_identity,
     _get_named_custom_provider, _lift_common_custom_fields, _lift_extra_headers,
     _lift_model_capabilities, _normalize_base_url_for_match, _normalize_custom_provider_name, _resolve_named_custom_runtime,
     _try_resolve_from_custom_pool, canonical_custom_identity, find_custom_provider_identity,
@@ -756,15 +757,43 @@ _VERTEX_NAMES = ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai
 _LOCAL_BYPASS_CLOUD_HOSTS = ("openrouter.ai", "anthropic.com", "openai.com")
 
 
+def _is_configured_custom_alias(provider: str) -> bool:
+    """Whether raw config declares *provider* as a custom identity, enabled or not."""
+    normalized = (provider or "").strip().lower()
+    if not normalized:
+        return False
+    try:
+        full_cfg = _config_mod.load_config()
+        entries = []
+        providers = full_cfg.get("providers") if isinstance(full_cfg, dict) else None
+        if isinstance(providers, dict):
+            entries.extend((str(key), value) for key, value in providers.items() if isinstance(value, dict))
+        legacy = full_cfg.get("custom_providers") if isinstance(full_cfg, dict) else None
+        if isinstance(legacy, list):
+            entries.extend(("", value) for value in legacy if isinstance(value, dict))
+        from hermes_cli.providers import custom_provider_aliases
+        return any(
+            normalized in custom_provider_aliases(str(entry.get("name") or key), key)
+            for key, entry in entries
+        )
+    except Exception:
+        return False
+
+
 def _raise_if_provider_disabled(requested_provider: str) -> None:
-    """Honour ``providers.<name>.enabled: false`` for built-ins too (the custom lookup gate only
-    covers custom blocks); a typed error lets the fallback chain advance."""
+    """Honour disabled custom aliases and built-in provider blocks."""
     full_cfg = _config_mod.load_config()
     provs_cfg = full_cfg.get("providers") if isinstance(full_cfg, dict) else None
     block = provs_cfg.get(requested_provider) if isinstance(provs_cfg, dict) else None
+    if not isinstance(block, dict) and isinstance(provs_cfg, dict):
+        from hermes_cli.providers import custom_provider_aliases
+        block = next((
+            entry for key, entry in provs_cfg.items()
+            if isinstance(entry, dict)
+            and requested_provider in custom_provider_aliases(str(entry.get("name") or key), str(key))
+        ), None)
     if isinstance(block, dict) and not _config_mod.is_provider_enabled(block):
-        raise ValueError(f"provider {requested_provider!r} is disabled in config "
-                         f"(providers.{requested_provider}.enabled: false)")
+        raise ValueError(f"provider {requested_provider!r} is disabled in config")
 
 
 def _resolve_vertex_runtime(requested_provider: str) -> Dict[str, Any]:

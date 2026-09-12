@@ -106,7 +106,7 @@ def aux_probe_mode():
         _aux_probe_state.active = prev
 
 
-from agent.credential_pool import load_pool
+from agent.credential_pool import load_pool, canonical_custom_pool_key
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, get_model_context_length,
     strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
@@ -3257,11 +3257,29 @@ def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> boo
     return task in _TIMEOUT_NO_RETRY_TASKS and _is_timeout_error(exc) and "no-progress timeout" not in str(exc)
 
 
-def _evict_cached_clients(provider: str) -> None:
-    """Drop cached auxiliary clients for a provider so fresh creds are used."""
-    normalized = _normalize_aux_provider(provider)
+def _evict_cached_clients(provider: str, *, pool_key: Optional[str] = None) -> None:
+    """Drop cached auxiliary clients for one provider/pool identity."""
+    raw_provider = str(provider or "").strip().lower()
+    normalized = _normalize_aux_provider(raw_provider)
     with _client_cache_lock:
-        for key in [key for key in _client_cache if _normalize_aux_provider(str(key[0])) == normalized]:
+        keys = []
+        for key in _client_cache:
+            # Current keys are profile-prefixed; legacy/tests may still inject
+            # the older provider-first shape.
+            cached_provider = str(
+                key[1] if len(key) > 1 and isinstance(key[1], str)
+                else (key[0] if key else "")
+            ).strip().lower()
+            same_provider = (
+                cached_provider == raw_provider
+                if raw_provider == "custom" or raw_provider.startswith("custom:")
+                else _normalize_aux_provider(cached_provider) == normalized
+            )
+            cached_pool_hint = str(key[9] if len(key) > 9 else "")
+            same_pool = bool(pool_key and cached_pool_hint.startswith(f"{pool_key}:"))
+            if same_provider or same_pool:
+                keys.append(key)
+        for key in keys:
             client = _client_cache.get(key, (None, None, None))[0]
             if client is not None:
                 _close_cached_client(client)
@@ -3286,19 +3304,82 @@ def _evict_cached_client_instance(target: Any) -> bool:
     return evicted
 
 
-def _pool_cache_hint(provider: str, *, main_runtime: Optional[Dict[str, Any]] = None) -> str:
+def _is_named_custom_identity(provider: Optional[str]) -> bool:
+    """True when a requested provider resolves to a configured custom entry."""
+    raw = str(provider or "").strip().lower()
+    if not raw or raw in {"auto", "custom"}:
+        return False
+    try:
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+        return _get_named_custom_provider(raw) is not None
+    except Exception:
+        return False
+
+
+def _is_custom_provider_reference(provider: Optional[str]) -> bool:
+    """True when the spelling denotes custom intent, even if the entry is disabled/missing."""
+    raw = str(provider or "").strip().lower()
+    if not raw or raw in {"auto", "custom"}:
+        return False
+    if raw.startswith("custom:"):
+        return True
+    if _is_named_custom_identity(raw):
+        return True
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.providers import custom_provider_aliases
+        config = load_config_readonly()
+        entries = []
+        providers = config.get("providers") if isinstance(config, dict) else None
+        if isinstance(providers, dict):
+            entries.extend(
+                (str(key), value) for key, value in providers.items() if isinstance(value, dict)
+            )
+        legacy = config.get("custom_providers") if isinstance(config, dict) else None
+        if isinstance(legacy, list):
+            entries.extend(("", value) for value in legacy if isinstance(value, dict))
+        return any(
+            raw in custom_provider_aliases(str(entry.get("name") or key), key)
+            for key, entry in entries
+        )
+    except Exception:
+        return False
+
+
+def _pool_key_for_route(provider: str, base_url: Optional[str] = None) -> str:
+    """Credential-pool identity for one exact runtime route.
+
+    Explicit ``custom:<name>`` identities must retain their namespace until the
+    configured endpoint resolves them to a durable ``providers.<key>`` or legacy
+    ``custom:<name>`` pool. A custom identity that collides with a canonical
+    built-in always uses its explicit ``custom:`` namespace. Built-ins keep
+    their normalized pool identity.
+    """
+    raw = str(provider or "").strip().lower()
+    if raw == "custom" or raw.startswith("custom:") or _is_named_custom_identity(raw):
+        return canonical_custom_pool_key(raw, base_url)
+    return _normalize_aux_provider(raw)
+
+
+def _pool_cache_hint(
+    provider: str, *, base_url: Optional[str] = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
+) -> str:
     """Return a stable cache discriminator for pooled providers."""
-    normalized = _normalize_aux_provider(provider)
-    if normalized == "auto":
+    route_provider = str(provider or "").strip().lower()
+    route_base_url = base_url
+    if _normalize_aux_provider(route_provider) == "auto":
         runtime = _normalize_main_runtime(main_runtime)
-        normalized = _normalize_aux_provider(runtime.get("provider") or _read_main_provider())
-    if normalized in {"", "auto", "custom"}:
+        route_provider = str(runtime.get("provider") or _read_main_provider() or "").strip().lower()
+        route_base_url = str(runtime.get("base_url") or route_base_url or "")
+    pool_key = _pool_key_for_route(route_provider, route_base_url)
+    if pool_key in {"", "auto", "custom"}:
         return ""
-    entry = _peek_pool_entry(normalized)
+    entry = _peek_pool_entry(pool_key)
     if entry is None:
         return ""
     entry_id = str(getattr(entry, "id", "") or "").strip()
-    return f"{normalized}:{entry_id}" if entry_id else ""
+    return f"{pool_key}:{entry_id}" if entry_id else ""
 
 
 # Ordered (host, provider) tables for inferring a backend from a client base URL.
@@ -3328,12 +3409,34 @@ def _recoverable_pool_provider(
     None when the client targets a different host than the session's configured endpoint for that
     provider: a rejection there says nothing about the key, so rotating/quarantining it would kill a
     working credential (Miho report — proxy users)."""
-    normalized = _normalize_aux_provider(resolved_provider)
+    raw_provider = str(resolved_provider or "").strip().lower()
     base = str(getattr(client, "base_url", "") or "")
+    normalized = _normalize_aux_provider(raw_provider)
     runtime = _normalize_main_runtime(main_runtime)
     rt_base = str(runtime.get("base_url") or "")
     rt_key = runtime.get("api_key")
     client_key = getattr(client, "api_key", None)
+    if raw_provider == "custom" or raw_provider.startswith("custom:") or _is_named_custom_identity(raw_provider):
+        # A runtime/session override to another origin is not evidence that the
+        # configured pool credential is bad. Refuse rotation before touching
+        # any key in that pool.
+        configured_base = ""
+        with contextlib.suppress(Exception):
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+            custom_entry = _get_named_custom_provider(raw_provider)
+            configured_base = str((custom_entry or {}).get("base_url") or "")
+        expected_base = configured_base or rt_base
+        if expected_base and base and base_url_origin(base) != base_url_origin(expected_base):
+            return None
+        pool_key = _pool_key_for_route(raw_provider, configured_base or base)
+        pool = _load_pool_with_credentials(pool_key) if pool_key else None
+        if pool is None:
+            return None
+        entry_id_for_key = getattr(pool, "entry_id_for_api_key", None)
+        if callable(entry_id_for_key) and isinstance(client_key, str) and client_key:
+            if entry_id_for_key(client_key) is None:
+                return None
+        return pool_key
     # Only the SESSION's own key is shielded, and only when it was sent somewhere other than the
     # session's origin (scheme+host+port — a port or HTTPS→HTTP change is a different trust boundary).
     # An independently owned auxiliary pool keeps rotating at its own origin.
@@ -3371,14 +3474,17 @@ def _recoverable_pool_provider(
 def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
-    ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if
-    another process already rotated (current() would be None).
+    ``provider`` is already the exact pool identity selected by
+    ``_recoverable_pool_provider``. Do not normalize it: doing so turns
+    ``custom:openrouter`` back into the built-in ``openrouter`` pool.
+    ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool
+    entry even if another process already rotated (current() would be None).
     """
-    normalized = _normalize_aux_provider(provider)
+    pool_key = str(provider or "").strip().lower()
     try:
-        pool = load_pool(normalized)
+        pool = load_pool(pool_key)
     except Exception as load_exc:
-        logger.debug("Auxiliary client: could not load pool for %s recovery: %s", normalized, load_exc)
+        logger.debug("Auxiliary client: could not load pool for %s recovery: %s", pool_key, load_exc)
         return False
     if not pool or not pool.has_credentials():
         return False
@@ -3394,12 +3500,12 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         )
         if next_entry is None:
             return False
-        _evict_cached_clients(normalized)
+        _evict_cached_clients(provider, pool_key=pool_key)
         return True
 
     if _is_auth_error(exc):
         if pool.try_refresh_current() is not None:
-            _evict_cached_clients(normalized)
+            _evict_cached_clients(provider, pool_key=pool_key)
             return True
         return _rotate(401)
     if _is_payment_error(exc):
@@ -3558,9 +3664,17 @@ def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") ->
 
 
 def _auth_refresh_provider_for_route(resolved_provider: Optional[str], client_base_url: str) -> str:
-    """Provider whose short-lived credentials should be refreshed; auto-routed calls keep
-    ``resolved_provider == "auto"``, so infer the backend from the client's base URL."""
-    normalized = _normalize_aux_provider(resolved_provider)
+    """Provider whose short-lived credentials should be refreshed.
+
+    Explicit custom namespaces never borrow a built-in OAuth refresh flow;
+    their credential lifecycle is owned by their exact custom pool/key source.
+    Auto-routed calls keep ``resolved_provider == "auto"``, so infer the backend
+    from the client's base URL.
+    """
+    raw = str(resolved_provider or "").strip().lower()
+    if raw == "custom" or raw.startswith("custom:"):
+        return raw
+    normalized = _normalize_aux_provider(raw)
     if normalized and normalized != "auto":
         return normalized
     return _provider_for_host(client_base_url, _AUTH_REFRESH_PROVIDER_BY_HOST) or normalized
@@ -4370,10 +4484,14 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
         return model_name
 
 
-def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_base: str) -> Any:
+def _named_custom_api_key(
+    custom_entry: Dict[str, Any], provider: str, custom_base: str, *, original_provider: str = "",
+) -> Any:
     """Credential for a named custom provider: inline api_key → key_env → key_cmd → credential pool → placeholder.
     Aux resolves named custom providers here, not via _resolve_named_custom_runtime, so key_cmd must be
-    honoured at the same precedence or every aux call 401s."""
+    honoured at the same precedence or every aux call 401s. Pool candidates are supplied by the
+    configured custom entry, which preserves durable ``providers.<key>`` and legacy ``custom:<name>``
+    identities without consulting an unrelated built-in pool."""
     custom_key: Any = (custom_entry.get("api_key") or "").strip()
     custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
     if not custom_key and custom_key_env:
@@ -4386,7 +4504,14 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
         with contextlib.suppress(Exception):
             from agent.credential_pool import custom_provider_pool_key_candidates
             pool_name = custom_entry.get("provider_key") or custom_entry.get("name") or provider
-            for pool_key in custom_provider_pool_key_candidates(custom_base, pool_name):
+            pool_keys = custom_provider_pool_key_candidates(custom_base, pool_name)
+            if custom_entry.get("provider_key"):
+                from hermes_cli.runtime_provider_custom import _custom_pool_candidates_for_request
+                import hermes_cli.runtime_provider as runtime_provider
+                pool_keys = _custom_pool_candidates_for_request(
+                    runtime_provider, custom_base, original_provider or provider, custom_entry,
+                )
+            for pool_key in pool_keys:
                 try:
                     pool = load_pool(pool_key)
                 except Exception:
@@ -4739,7 +4864,19 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # whatever the caller left blank, never replaces what the caller set (compression prompts carry
     # conversation history, so a silently swapped destination is a data-routing bug, not a nuisance).
     custom_base = (req.explicit_base_url or custom_entry.get("base_url") or "").strip()
-    custom_key = (req.explicit_api_key or "").strip() or _named_custom_api_key(custom_entry, provider, custom_base)
+    configured_base = str(custom_entry.get("base_url") or "").strip()
+    key_for_explicit_endpoint = (req.explicit_api_key or "").strip()
+    if req.explicit_base_url and configured_base and (
+        base_url_origin(custom_base) != base_url_origin(configured_base)
+    ):
+        # The entry's inline/env/cmd/pool credentials belong to its configured
+        # origin. An endpoint override crosses a trust boundary and must carry
+        # its own explicit key (or remain keyless), never borrow saved auth.
+        custom_key = key_for_explicit_endpoint or "no-key-required"
+    else:
+        custom_key = key_for_explicit_endpoint or _named_custom_api_key(
+            custom_entry, provider, custom_base, original_provider=req.original_provider,
+        )
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
                        "api_key — request will be sent with placeholder no-key-required "
@@ -4971,6 +5108,22 @@ def resolve_provider_client(
     # Keep the pre-alias name so a custom_providers entry named like a built-in alias
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.
     original_provider = (provider or "").strip().lower()
+    if original_provider not in _EXPLICIT_PROVIDER_BRANCHES and _is_custom_provider_reference(original_provider):
+        # Resolve raw custom intent before lossy aliases (e.g. kimi →
+        # kimi-coding). Disabled aliases remain explicit and fail closed.
+        try:
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+            custom_entry_before_alias = _get_named_custom_provider(original_provider)
+            if custom_entry_before_alias is None:
+                return None, None
+        except ImportError:
+            return None, None
+        provider = _normalize_aux_provider(provider)
+        req = _ResolveRequest(
+            provider, original_provider, model, async_mode, raw_codex,
+            explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
+        )
+        return _resolve_named_custom_branch(req) or (None, None)
     provider = _normalize_aux_provider(provider)
     # MoA chokepoint: "moa" is not an HTTP provider; resolve to the aggregator so direct callers don't
     # dead-end in unknown-provider. Unresolvable preset → leave untouched for the normal diagnostic.
@@ -5017,6 +5170,22 @@ def resolve_provider_client(
         provider, original_provider, model, async_mode, raw_codex,
         explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
     )
+    # An explicit ``custom:<name>`` identity is stronger than a built-in name
+    # collision. Resolve it before the dedicated built-in branches; otherwise
+    # ``custom:openrouter`` normalizes to ``openrouter`` and silently uses the
+    # public OpenRouter endpoint + credential pool instead of the configured
+    # custom endpoint. Bare provider names keep the existing built-in-first
+    # behavior. Named-custom resolution is import-optional in both positions.
+    if original_provider.startswith("custom:"):
+        try:
+            result = _resolve_named_custom_branch(req)
+        except ImportError:
+            result = None
+        # ``custom:`` is an explicit namespace boundary. If that named entry
+        # does not exist, fail closed instead of reinterpreting the suffix as
+        # a built-in provider and potentially sending different credentials to
+        # a different endpoint.
+        return result if result is not None else (None, None)
     branch = _EXPLICIT_PROVIDER_BRANCHES.get(provider)
     if branch is not None:
         return branch(req)
@@ -5222,6 +5391,14 @@ def resolve_vision_provider_client(
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
     )
+    raw_requested = str(requested or "").strip().lower()
+    if raw_requested.startswith("custom:"):
+        client, final_model = _get_cached_client(
+            raw_requested, resolved_model or "", async_mode,
+            base_url=resolved_base_url or "", api_key=resolved_api_key or "",
+            api_mode=resolved_api_mode or "", main_runtime=runtime, is_vision=True,
+        )
+        return raw_requested, client, (final_model if client is not None else None)
     requested = _normalize_vision_provider(requested)
     if resolved_base_url:
         provider_for_base_override = requested if requested and requested not in {"", "auto"} else "custom"
@@ -5320,7 +5497,7 @@ def _client_cache_key(
     # `auto` resolves through the main runtime and task-specific policy, so both join the key.
     runtime_key = tuple(_runtime_cache_discriminator(f, runtime.get(f, "")) for f in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
     task_key = (task or "", _task_prefers_fast_model(task)) if provider == "auto" else ""
-    pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
+    pool_hint = _pool_cache_hint(provider, base_url=base_url, main_runtime=main_runtime)
     # Model MUST be in the key: concurrent calls to the same endpoint with different models would
     # share an entry, and the second builder's _store_cached_client would close the first's client.
     model_key = model or runtime.get("model", "")
@@ -5552,7 +5729,16 @@ def _get_cached_client(
     # and retry an exhausted key.
     effective_api_key = api_key
     if not effective_api_key:
-        _pe = _peek_pool_entry(_normalize_aux_provider(provider))
+        allow_pool_prefetch = True
+        if base_url and _is_custom_provider_reference(provider):
+            with contextlib.suppress(Exception):
+                from hermes_cli.runtime_provider import _get_named_custom_provider
+                custom_entry = _get_named_custom_provider(provider)
+                configured_base = str((custom_entry or {}).get("base_url") or "")
+                if configured_base and base_url_origin(base_url) != base_url_origin(configured_base):
+                    allow_pool_prefetch = False
+        _pool_key = _pool_key_for_route(provider, base_url) if allow_pool_prefetch else ""
+        _pe = _peek_pool_entry(_pool_key) if _pool_key else None
         if _pe is not None:
             effective_api_key = _pool_runtime_api_key(_pe) or api_key
     client, default_model = resolve_provider_client(
@@ -6698,6 +6884,11 @@ def _resolve_call_client(
             api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
+            explicit_custom = _is_custom_provider_reference(resolved_provider)
+            if explicit_custom:
+                raise RuntimeError(
+                    f"Explicit custom provider '{resolved_provider}' is not configured; refusing vision fallback"
+                )
             logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
                            resolved_provider)
             effective_provider, client, final_model = resolve_vision_provider_client(
@@ -6712,9 +6903,13 @@ def _resolve_call_client(
             task=task)
         effective_provider = _effective_provider_for_client(client, resolved_provider)
         if client is None:
+            _explicit = (resolved_provider or "").strip().lower()
+            if _is_custom_provider_reference(_explicit):
+                raise RuntimeError(
+                    f"Explicit custom provider '{_explicit}' is not configured; refusing text fallback"
+                )
             # Explicit provider with no credentials: honor the task fallback_chain before
             # raising (fallback entries may use OAuth / credential-pool auth).
-            _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit)
@@ -6969,7 +7164,8 @@ def _ladder_credential_rungs(
     Returns ``(response, None)`` or ``(None, first_err)`` to fall through."""
     client, task, tag, resolved_provider = route.client, route.task, route.tag, route.resolved_provider
     auth_refresh_provider = _auth_refresh_provider_for_route(resolved_provider, route.base_info)
-    if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None}
+    if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None, "custom"}
+            and not str(auth_refresh_provider).startswith("custom:")
             and not client_is_nous):
         refresh_kwargs = ({"failed_api_key": getattr(client, "api_key", "")}
                           if auth_refresh_provider == "anthropic" else {})

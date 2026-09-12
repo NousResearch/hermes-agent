@@ -494,6 +494,63 @@ def _pool_keys_for_custom_entry(norm_name: str, entry: Dict[str, Any]) -> List[s
     return keys
 
 
+def _configured_custom_pool_key(provider_norm: str, base_url: Optional[str]) -> Optional[str]:
+    """Exact configured pool key, or None when identity/origin does not match."""
+    requested_aliases = _requested_custom_name_aliases(provider_norm)
+    for norm_name, entry in _iter_custom_providers():
+        aliases = _custom_entry_name_aliases(norm_name, entry)
+        aliases.update({f"{CUSTOM_POOL_PREFIX}{alias}" for alias in tuple(aliases) if alias})
+        entry_url = _norm_url(entry.get("base_url"))
+        alias_match = bool(requested_aliases & aliases)
+        if alias_match and base_url and entry_url and _norm_url(base_url) != entry_url:
+            continue
+        if not alias_match and not (
+            base_url and entry_url and _norm_url(base_url) == entry_url
+            and provider_norm == "custom"
+        ):
+            continue
+        provider_key = _normalize_custom_pool_name(str(entry.get("provider_key") or ""))
+        if provider_key:
+            try:
+                canonical = auth_mod.resolve_provider(provider_key)
+                if str(canonical or "").strip().lower() == provider_key:
+                    return f"{CUSTOM_POOL_PREFIX}{provider_key}"
+            except Exception:
+                pass
+            return provider_key
+        return f"{CUSTOM_POOL_PREFIX}{norm_name}"
+    return None
+
+
+def canonical_custom_pool_key(
+    provider: Optional[str], base_url: Optional[str] = None, *, preserve_explicit: bool = False,
+) -> str:
+    """Return the exact pool namespace for a configured custom route.
+
+    Provider keys that collide with canonical built-ins cannot use their bare
+    durable slug because that slug already belongs to the built-in pool. Every
+    display alias of such an entry maps to ``custom:<provider_key>``. An
+    explicit ``custom:<provider-key>`` for a non-colliding entry remains
+    prefixed (the caller explicitly requested a separate custom pool); its
+    display alias and bare durable slug retain the durable pool.
+    Unknown identities are returned unchanged so callers fail closed.
+    """
+    provider_norm = _normalize_custom_pool_name(str(provider or ""))
+    if not provider_norm:
+        return ""
+    try:
+        configured_key = _configured_custom_pool_key(provider_norm, base_url)
+    except Exception:
+        return provider_norm
+    if configured_key is None:
+        return provider_norm
+    if preserve_explicit and provider_norm.startswith(CUSTOM_POOL_PREFIX):
+        suffix = provider_norm[len(CUSTOM_POOL_PREFIX):]
+        if configured_key == suffix:
+            return provider_norm
+    return configured_key
+
+
 def custom_provider_pool_key_candidates(
     base_url: Optional[str],
     provider_name: Optional[str] = None,
@@ -644,6 +701,26 @@ def credential_pool_matches_provider(
     provider_norm = str(provider or "").strip().lower()
     if not pool_provider or not provider_norm:
         return False
+    if provider_norm == "custom" or provider_norm.startswith(CUSTOM_POOL_PREFIX):
+        try:
+            canonical_pool = canonical_custom_pool_key(provider_norm, base_url)
+        except Exception:
+            return False
+        if canonical_pool != provider_norm or provider_norm.startswith(CUSTOM_POOL_PREFIX):
+            # A configured identity is valid only at that configured endpoint;
+            # matching pool names cannot override origin affinity.
+            configured_for_route = _configured_custom_pool_key(provider_norm, base_url)
+            if configured_for_route is None:
+                return False
+            if pool_provider == canonical_pool:
+                return True
+            canonical_is_custom = canonical_pool.startswith(CUSTOM_POOL_PREFIX)
+            candidates = custom_provider_pool_key_candidates(base_url or "")
+            safe_legacy = {
+                str(key).strip().lower() for key in candidates
+                if not canonical_is_custom or str(key).strip().lower().startswith(CUSTOM_POOL_PREFIX)
+            }
+            return pool_provider in safe_legacy
     if not pool_provider.startswith(CUSTOM_POOL_PREFIX):
         if pool_provider == provider_norm:
             return True
@@ -681,18 +758,9 @@ def resolve_runtime_pool_key(provider: Optional[str], base_url: Optional[str]) -
         return credential_pool_matches_provider(candidate, provider_norm, base_url=base_url)
 
     try:
-        if provider_norm == "custom":
-            candidate = get_custom_provider_pool_key(base_url)
-            if candidate and _accepts(candidate):
-                return str(candidate).strip().lower()
-        else:
-            # Named/exact custom runtimes are keyed by identity: search the
-            # configured candidates by identity before endpoint so a sibling
-            # sharing the URL cannot lend its pool.
-            for normalized_name, entry in _iter_custom_providers():
-                for candidate in _pool_keys_for_custom_entry(normalized_name, entry):
-                    if _accepts(candidate):
-                        return candidate
+        candidate = canonical_custom_pool_key(provider_norm, base_url)
+        if candidate and _accepts(candidate):
+            return candidate
     except Exception:
         pass
     return provider_norm

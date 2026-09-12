@@ -282,6 +282,11 @@ kanban:
   review_dispatch: true            # default: spawn the assigned profile with
                                    # the bundled sdlc-review skill. Set false
                                    # for human-only review boards.
+  block_recurrence_limit: 2        # default: same-cause block -> unblock ->
+                                   # re-block cycles before a task routes to
+                                   # triage for a human. Set 0 to disable on
+                                   # agent-to-agent boards where blocks are
+                                   # always resolved by comment.
 ```
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`

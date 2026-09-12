@@ -880,7 +880,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         }
       };
       const markCompositionEnd = (ev: CompositionEvent) => {
-        mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
+        // compositionend fires for every IME commit, desktop CJK included —
+        // only arm the mobile-replacement window when a mobile-like keyboard
+        // is actually in play, or desktop IME text gets routed through
+        // Gboard-style replacement heuristics it was never meant for
+        // (#106487).
+        if (isMobileLike) {
+          mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
+        }
         compositionForwarder.onCompositionEnd(ev.data);
       };
 

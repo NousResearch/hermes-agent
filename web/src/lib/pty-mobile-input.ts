@@ -77,12 +77,19 @@ export function shouldTreatInputAsMobileReplacement(
   data: string | null | undefined,
   isMobileLike: boolean,
 ): boolean {
+  if (inputType === "insertReplacementText") {
+    return true;
+  }
+  // insertFromComposition/insertCompositionText fire for *any* IME commit,
+  // desktop CJK included — they are not mobile-specific like
+  // insertReplacementText. Gating them on isMobileLike keeps the
+  // Gboard-style replacement heuristics off the desktop IME path, where the
+  // committed text should be forwarded unchanged (#106487).
   if (
-    inputType === "insertReplacementText" ||
     inputType === "insertFromComposition" ||
     inputType === "insertCompositionText"
   ) {
-    return true;
+    return isMobileLike;
   }
   return isMobileLike && inputType === "insertText" && (data?.length ?? 0) > 1;
 }

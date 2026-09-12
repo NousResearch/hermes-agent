@@ -17,6 +17,8 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
+
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
@@ -24,9 +26,14 @@ class FakeTerminal {
     registerOscHandler: vi.fn(),
   };
   unicode = { activeVersion: "" };
+  // A real textarea so ChatPage's beforeinput/compositionend IME wiring
+  // (guarded by `if (term.textarea)`) actually runs under test.
+  textarea = document.createElement("textarea");
+  dataHandler: ((data: string) => void) | null = null;
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
   attachCustomKeyEventHandler() {
@@ -49,8 +56,13 @@ class FakeTerminal {
 
   loadAddon() {}
 
-  onData() {
-    return { dispose() {} };
+  onData(cb: (data: string) => void) {
+    this.dataHandler = cb;
+    return {
+      dispose: () => {
+        this.dataHandler = null;
+      },
+    };
   }
 
   onResize() {
@@ -146,7 +158,7 @@ class FakeWebSocket {
     this.readyState = 3;
   }
 
-  send() {}
+  send = vi.fn();
 }
 
 type CloseEventLike = {
@@ -191,6 +203,7 @@ async function render(ui: ReactNode) {
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
+  FakeTerminal.instances = [];
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
   apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/pty?channel=chat-1");
@@ -320,6 +333,68 @@ describe("ChatPage", () => {
       "resize",
       "scroll",
     ]);
+  });
+});
+
+function dispatchBeforeInput(
+  target: EventTarget,
+  inputType: string,
+  data: string,
+) {
+  const event = new Event("beforeinput", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "inputType", { value: inputType });
+  Object.defineProperty(event, "data", { value: data });
+  target.dispatchEvent(event);
+}
+
+function dispatchCompositionEnd(target: EventTarget, data: string) {
+  const event = new Event("compositionend", { bubbles: true });
+  Object.defineProperty(event, "data", { value: data });
+  target.dispatchEvent(event);
+}
+
+describe("ChatPage desktop IME input (#106487)", () => {
+  it("forwards a desktop IME composition commit unchanged instead of running mobile-replacement heuristics", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    await vi.waitFor(() => expect(FakeTerminal.instances).toHaveLength(1));
+
+    const term = FakeTerminal.instances[0];
+    const ws = FakeWebSocket.instances[0];
+    expect(term.dataHandler).not.toBeNull();
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    // Seed the tracked composer line with the same CJK text the IME is
+    // about to (re-)commit. Some browser/IME combinations re-fire the final
+    // composition commit; this is the scenario where the Latin-oriented
+    // "duplicated last word" replacement heuristic can fire against CJK
+    // text once the mobile-replacement window is (wrongly) armed on
+    // desktop.
+    act(() => {
+      term.dataHandler!("你好");
+    });
+
+    act(() => {
+      dispatchBeforeInput(term.textarea, "insertCompositionText", "你好");
+      dispatchCompositionEnd(term.textarea, "你好");
+      term.dataHandler!("你好");
+    });
+
+    const sent = ws.send.mock.calls.map((call) => call[0] as string);
+    // Desktop IME text must reach the PTY unchanged — not prefixed with
+    // DELETE bytes from a mistaken mobile line-replacement.
+    expect(sent.some((data) => data.includes("\x7f"))).toBe(false);
+    expect(sent.at(-1)).toBe("你好");
   });
 });
 

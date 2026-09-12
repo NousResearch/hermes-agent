@@ -338,3 +338,234 @@ class XAIStreamer(StreamingTTSProvider):
                 if exc.__class__.__name__ != "ConnectionClosed":
                     logger.warning("xAI WS receive failed: %s", exc)
                 return
+
+
+# ---------------------------------------------------------------------------
+# Breeze — local warm-GPU streaming server (self-hosted, no cloud key)
+# ---------------------------------------------------------------------------
+
+DEFAULT_BREEZE_BASE_URL = "http://127.0.0.1:7860"
+
+# Cache the /health probe briefly so ``available()`` (called during every
+# provider resolution) doesn't hit the loopback socket on a hot path.
+_BREEZE_HEALTH_TTL = 5.0
+_breeze_health_cache: dict[str, tuple[float, bool, Optional[int]]] = {}
+_breeze_health_lock = None  # lazily set to a threading.Lock in _breeze_health
+
+
+def _breeze_base_url() -> str:
+    """Resolve the Breeze server base URL: config > env > localhost default."""
+    try:
+        section = (_load_tts_config().get("breeze") or {})
+        configured = str(section.get("base_url") or "").strip()
+        if configured:
+            return configured.rstrip("/")
+    except Exception:
+        pass
+    return (get_env_value("BREEZE_TTS_URL") or DEFAULT_BREEZE_BASE_URL).rstrip("/")
+
+
+def _breeze_health(base_url: str) -> tuple[bool, Optional[int]]:
+    """Return ``(reachable, sample_rate)`` for the Breeze server at *base_url*.
+
+    Cached for ``_BREEZE_HEALTH_TTL`` seconds per URL. Never raises — an
+    unreachable or malformed server reports ``(False, None)`` so the resolver
+    quietly falls back to the whole-file path.
+    """
+    global _breeze_health_lock
+    import threading as _threading
+    import time as _time
+
+    if _breeze_health_lock is None:
+        _breeze_health_lock = _threading.Lock()
+
+    now = _time.monotonic()
+    with _breeze_health_lock:
+        cached = _breeze_health_cache.get(base_url)
+        if cached is not None and (now - cached[0]) < _BREEZE_HEALTH_TTL:
+            return cached[1], cached[2]
+
+    ok, sr = False, None
+    try:
+        import json as _json
+        import urllib.request as _urlreq
+
+        with _urlreq.urlopen(f"{base_url}/health", timeout=1.5) as resp:
+            payload = _json.loads(resp.read().decode("utf-8") or "{}")
+        ok = str(payload.get("status") or "").lower() == "ok"
+        try:
+            sr = int(payload.get("sample_rate")) if payload.get("sample_rate") else None
+        except (TypeError, ValueError):
+            sr = None
+    except Exception as exc:
+        logger.debug("Breeze health check failed for %s: %s", base_url, exc)
+
+    with _breeze_health_lock:
+        _breeze_health_cache[base_url] = (now, ok, sr)
+    return ok, sr
+
+
+@register("breeze")
+class BreezeStreamer(StreamingTTSProvider):
+    """Local Breeze TTS 2 warm streaming server → s16le mono PCM.
+
+    Breeze serves chunked ``audio/pcm`` from ``POST /v1/audio/speech`` (see the
+    ``breeze-tts`` project: https://github.com/breezeblue-ai/breeze-tts). It runs
+    *below* real-time (~0.7x on a GB10), so we
+    buffer each clause to completion before yielding it: the consumer then hands
+    the adapter a gap-free clause instead of risking a within-word underrun.
+    The latency win comes from sentence-level pipelining upstream
+    (:class:`SentenceChunker`) — synthesis of the next clause overlaps playback
+    of the current one — not from sub-clause streaming, which this server is too
+    slow to sustain against a real-time sink.
+
+    Config (``tts.breeze`` in config.yaml)::
+
+        tts:
+          breeze:
+            base_url: http://127.0.0.1:7860   # or $BREEZE_TTS_URL
+            ref_audio: /path/to/reference.mp3  # optional voice-clone reference
+            ref_text: "Transcript of the reference clip."
+            instruction: "Speak clearly and naturally."
+            cfg_scale: 1.0
+            seed: 42
+          streaming:
+            provider: breeze                  # pin (base provider may differ)
+
+    ``ref_audio`` + ``ref_text`` must be supplied together (Breeze rejects one
+    without the other); omit both for the server's default speaker.
+    """
+
+    sample_rate = 24000  # refined from the server's X-Sample-Rate at init
+
+    _BOUNDARY = "----HermesBreezeStreamerBoundary"
+
+    def __init__(self, tts_config: Dict, section: Dict):
+        super().__init__(tts_config, section)
+        self.base_url = str(section.get("base_url") or _breeze_base_url()).rstrip("/")
+        self.instruction = str(section.get("instruction") or "Speak clearly and naturally.")
+        self.cfg_scale = section.get("cfg_scale", 1.0)
+        self.seed = section.get("seed", 42)
+        self.ref_audio = str(section.get("ref_audio") or "").strip()
+        self.ref_text = str(section.get("ref_text") or "").strip()
+        # Breeze serves one synthesis at a time (HTTP 409 while busy). Verbal
+        # acks, the whole-file fallback, and overlapping turns can hold the lock,
+        # so a clause request may need to wait. Poll until it frees rather than
+        # dropping the clause — up to ``busy_timeout`` seconds.
+        try:
+            self.busy_timeout = float(section.get("busy_timeout", 20.0))
+        except (TypeError, ValueError):
+            self.busy_timeout = 20.0
+        # Prefer an explicitly configured rate; otherwise adopt the server's.
+        configured_sr = section.get("sample_rate")
+        if configured_sr:
+            try:
+                self.sample_rate = int(configured_sr)
+            except (TypeError, ValueError):
+                pass
+        else:
+            _ok, sr = _breeze_health(self.base_url)
+            if sr:
+                self.sample_rate = sr
+
+    @staticmethod
+    def available() -> bool:
+        ok, _sr = _breeze_health(_breeze_base_url())
+        return ok
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        yield from _capped(self._request(text), "Breeze streaming TTS")
+
+    # -- HTTP ------------------------------------------------------------
+
+    def _request_form(self) -> tuple[str, Dict[str, str]]:
+        """Return ``(mode, fields)`` for the speech request.
+
+        ``mode`` is ``"multipart"`` when a readable ``ref_audio`` is configured
+        (voice clone), else ``"urlencoded"`` (text-only). ``fields["text"]`` is
+        left ``None`` here and filled per-request in :meth:`_request`.
+        """
+        import os as _os
+
+        fields = {
+            "text": None,  # filled per-request in _request
+            "instruction": self.instruction,
+            "cfg_scale": str(self.cfg_scale),
+            "seed": str(self.seed),
+        }
+        if self.ref_audio and self.ref_text and _os.path.isfile(self.ref_audio):
+            fields["ref_text"] = self.ref_text
+            return "multipart", fields
+        return "urlencoded", fields
+
+    def _request(self, text: str) -> Iterator[bytes]:
+        import time as _time
+        import urllib.error as _urlerr
+        import urllib.parse as _urlparse
+        import urllib.request as _urlreq
+
+        mode, fields = self._request_form()
+        fields = dict(fields)
+        fields["text"] = text
+        url = f"{self.base_url}/v1/audio/speech"
+
+        if mode == "multipart":
+            data, content_type = self._multipart(fields)
+        else:
+            data = _urlparse.urlencode(fields).encode("utf-8")
+            content_type = "application/x-www-form-urlencoded"
+
+        # The server synthesises one request at a time (HTTP 409 while busy).
+        # Poll until it frees rather than dropping the clause. The 409 is raised
+        # by urlopen() before any body arrives (the lock is taken server-side at
+        # request start), so retrying before the first chunk never re-emits
+        # already-yielded audio.
+        deadline = _time.monotonic() + self.busy_timeout
+        while True:
+            req = _urlreq.Request(
+                url, data=data, method="POST",
+                headers={"Content-Type": content_type},
+            )
+            try:
+                with _urlreq.urlopen(req, timeout=180) as resp:
+                    while True:
+                        chunk = resp.read(16384)
+                        if not chunk:
+                            return
+                        yield chunk
+                return
+            except _urlerr.HTTPError as exc:
+                if exc.code == 409 and _time.monotonic() < deadline:
+                    _time.sleep(0.4)
+                    continue
+                raise
+            except _urlerr.URLError as exc:
+                raise RuntimeError(
+                    f"Breeze server unreachable at {self.base_url}: {exc}"
+                ) from exc
+
+    def _multipart(self, fields: Dict[str, str]) -> tuple[bytes, str]:
+        import os as _os
+
+        boundary = self._BOUNDARY
+        chunks: List[bytes] = []
+        for key, value in fields.items():
+            chunks.append(f"--{boundary}\r\n".encode())
+            chunks.append(
+                f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
+            )
+            chunks.append(str(value).encode("utf-8") + b"\r\n")
+
+        with open(self.ref_audio, "rb") as fh:
+            ref_bytes = fh.read()
+        filename = _os.path.basename(self.ref_audio)
+        ctype = "audio/mpeg" if filename.lower().endswith(".mp3") else "audio/wav"
+        chunks.append(f"--{boundary}\r\n".encode())
+        chunks.append(
+            f'Content-Disposition: form-data; name="ref_audio"; '
+            f'filename="{filename}"\r\n'.encode()
+        )
+        chunks.append(f"Content-Type: {ctype}\r\n\r\n".encode())
+        chunks.append(ref_bytes + b"\r\n")
+        chunks.append(f"--{boundary}--\r\n".encode())
+        return b"".join(chunks), f"multipart/form-data; boundary={boundary}"

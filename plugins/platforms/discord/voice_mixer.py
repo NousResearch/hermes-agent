@@ -75,6 +75,164 @@ class MixerChild:
         return samples
 
 
+class StreamingMixerChild:
+    """A speech child fed incrementally instead of from a fixed buffer.
+
+    Holds a growable byte buffer of 48 kHz / stereo / s16le PCM (Discord-native
+    frame format).  :meth:`feed` appends bytes from the asyncio loop thread;
+    :meth:`read_frame` is drained one 20 ms frame at a time from discord.py's
+    sender thread.  The two are guarded by a lock.
+
+    Underrun policy: while the buffer is empty and the child is **not** closed
+    (synthesis of the next clause hasn't caught up), :meth:`read_frame` returns
+    a silence frame so the child stays live and keeps the ambient ducked — the
+    gap is a quiet beat, not the end of speech.  Once :meth:`close` is called
+    and the buffer drains, the child finishes and the mixer drops it (releasing
+    the duck).
+    """
+
+    __slots__ = (
+        "name", "_buf", "_lock", "gain", "is_speech",
+        "_closed", "_finished", "fade_frames", "_fade_done",
+    )
+
+    def __init__(self, name: str, *, gain: float = 1.0, fade_in_ms: int = 40):
+        self.name = name
+        self._buf = bytearray()
+        self._lock = threading.Lock()
+        self.gain = float(gain)
+        self.is_speech = True
+        self._closed = False
+        self._finished = False
+        self.fade_frames = max(0, fade_in_ms // FRAME_LENGTH_MS)
+        self._fade_done = 0
+
+    @property
+    def finished(self) -> bool:
+        return self._finished
+
+    def feed(self, pcm: bytes) -> None:
+        """Append 48 kHz stereo s16le PCM bytes (thread-safe)."""
+        if not pcm:
+            return
+        with self._lock:
+            self._buf.extend(pcm)
+
+    def close(self) -> None:
+        """Signal end-of-turn: drain what's buffered, then finish."""
+        with self._lock:
+            self._closed = True
+
+    def clear_and_close(self) -> None:
+        """Drop any buffered audio and finish immediately (barge-in/abort).
+
+        Unlike :meth:`close` (which lets the buffer drain first), this stops the
+        child at once so a barge-in cuts speech mid-word instead of playing one
+        more frame.  The mixer drops it on the next :meth:`read_frame`.
+        """
+        with self._lock:
+            self._buf.clear()
+            self._closed = True
+            self._finished = True
+
+    def read_frame(self) -> "Optional[np.ndarray]":
+        """Return the next 20 ms frame, a silence frame on underrun, or None."""
+        if self._finished:
+            return None
+
+        underrun = False
+        with self._lock:
+            if len(self._buf) >= FRAME_SIZE:
+                chunk = bytes(self._buf[:FRAME_SIZE])
+                del self._buf[:FRAME_SIZE]
+            elif self._closed:
+                if self._buf:
+                    # Final partial frame — pad to a whole frame, then finish.
+                    chunk = bytes(self._buf) + b"\x00" * (FRAME_SIZE - len(self._buf))
+                    self._buf.clear()
+                    self._finished = True
+                else:
+                    self._finished = True
+                    return None
+            else:
+                underrun = True
+                chunk = None
+
+        np = _require_numpy()
+        if underrun:
+            # Keep the child alive without advancing the fade-in ramp.
+            return np.zeros(SAMPLES_PER_FRAME * CHANNELS, dtype=np.float32)
+
+        samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+        gain = self.gain
+        if self.fade_frames and self._fade_done < self.fade_frames:
+            self._fade_done += 1
+            gain *= self._fade_done / self.fade_frames
+        if gain != 1.0:
+            samples = samples * gain
+        return samples
+
+
+class PcmResamplerTo48Stereo:
+    """Stateful resampler: source-rate mono/stereo s16le → 48 kHz stereo s16le.
+
+    Streaming TTS providers emit PCM at their own rate (Breeze: 24 kHz mono);
+    the mixer is Discord-native 48 kHz stereo.  This converts each incoming
+    chunk, carrying a byte remainder (a sample split across chunk boundaries)
+    and the last source sample (for gap-free linear interpolation across
+    chunks) so back-to-back ``feed`` calls join without a click.
+    """
+
+    __slots__ = ("src_rate", "src_channels", "_rem", "_carry")
+
+    def __init__(self, src_rate: int, src_channels: int = 1):
+        self.src_rate = int(src_rate)
+        self.src_channels = max(1, int(src_channels))
+        self._rem = b""
+        self._carry: "Optional[float]" = None
+
+    def feed(self, pcm: bytes) -> bytes:
+        if not pcm:
+            return b""
+        np = _require_numpy()
+        data = self._rem + pcm
+        frame_bytes = 2 * self.src_channels
+        n = (len(data) // frame_bytes) * frame_bytes
+        self._rem = data[n:]
+        if n == 0:
+            return b""
+
+        arr = np.frombuffer(data[:n], dtype=np.int16).astype(np.float32)
+        if self.src_channels > 1:
+            arr = arr.reshape(-1, self.src_channels).mean(axis=1)
+
+        # Prepend the carried tail so the segment starts where the last ended.
+        if self._carry is not None:
+            arr = np.concatenate(([np.float32(self._carry)], arr))
+        if len(arr) < 2:
+            self._carry = float(arr[-1])
+            return b""
+
+        if self.src_rate == 48000:
+            out = arr[1:] if self._carry is not None else arr
+        else:
+            ratio = 48000.0 / self.src_rate
+            out_n = int((len(arr) - 1) * ratio)
+            if out_n <= 0:
+                self._carry = float(arr[-1])
+                return b""
+            xs = np.arange(out_n, dtype=np.float32) / ratio
+            idx = np.floor(xs).astype(np.int64)
+            frac = xs - idx
+            idx = np.clip(idx, 0, len(arr) - 2)
+            out = arr[idx] * (1.0 - frac) + arr[idx + 1] * frac
+
+        self._carry = float(arr[-1])
+        stereo = np.repeat(out[:, None], CHANNELS, axis=1).reshape(-1)
+        np.clip(stereo, -32768, 32767, out=stereo)
+        return stereo.astype(np.int16).tobytes()
+
+
 class VoiceMixer(discord.AudioSource):
     """Continuous ``discord.AudioSource`` mixing N children: :meth:`set_ambient` installs the
     looping idle bed, :meth:`play_speech` layers a one-shot clip over it (ducking the bed).
@@ -117,6 +275,32 @@ class VoiceMixer(discord.AudioSource):
             self._duck_release_left = 0
             if self._ambient is not None:
                 self._ambient.gain = self._duck_gain
+
+    def play_stream(self, *, gain: Optional[float] = None,
+                    fade_in_ms: int = 40) -> "StreamingMixerChild":
+        """Install a continuously-fed speech child and return it.
+
+        Unlike :meth:`play_speech` (which takes a complete clip), the returned
+        child is fed incrementally via :meth:`StreamingMixerChild.feed` as PCM
+        arrives from a streaming TTS provider.  It ducks the ambient bed for as
+        long as it is installed and, on buffer underrun, emits silence (rather
+        than finishing) so a mid-turn gap between clauses is a brief quiet beat
+        under the ambient rather than the stream ending.  Call
+        :meth:`StreamingMixerChild.close` at end-of-turn so it drains and
+        releases the duck.
+        """
+        child = StreamingMixerChild(
+            "speech-stream",
+            gain=self._speech_gain if gain is None else float(gain),
+            fade_in_ms=fade_in_ms,
+        )
+        with self._lock:
+            self._speech.append(child)
+            self._speech_active = True
+            self._duck_release_left = 0
+            if self._ambient is not None:
+                self._ambient.gain = self._duck_gain
+        return child
 
     @property
     def speech_active(self) -> bool:

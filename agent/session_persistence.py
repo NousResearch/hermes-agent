@@ -181,6 +181,8 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
+        if "_output_transform_original" in msg:
+            row["_output_transform_original"] = msg["_output_transform_original"]
     return row
 
 

@@ -44,7 +44,15 @@ def resolve_and_repair_transcript_batch(
         target_id = int(target_row["id"])
         decoded = decode_content_fn(target_row["content"])
         msg["_row_id"] = target_id
-        if is_content_blank(decoded):
+        if "_output_transform_original" in msg and decoded == msg["_output_transform_original"]:
+            # Only the owning finalizer may replace its known pre-transform row.
+            # The caller already checked session/turn leases in this transaction.
+            conn.execute(
+                "UPDATE messages SET content = ?, api_content = NULL "
+                "WHERE id = ? AND session_id = ? AND active = 1",
+                (encode_content_fn(msg.get("content")), target_id, session_id),
+            )
+        elif is_content_blank(decoded):
             conn.execute(
                 "UPDATE messages SET content = ? "
                 "WHERE id = ? AND session_id = ? AND active = 1",
@@ -80,6 +88,7 @@ def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: L
     """Stamp _DB_PERSISTED_MARKER and sync canonical row ID / content onto live dicts after commit."""
     for written, row in zip(batch_msgs, batch_rows):
         written[_DB_PERSISTED_MARKER] = True
+        written.pop("_output_transform_original", None)
         if isinstance(row.get("_row_id"), int):
             written["_row_id"] = row["_row_id"]
         if "_canonical_content" in row:

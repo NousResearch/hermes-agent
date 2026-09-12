@@ -400,24 +400,36 @@ def _last_turn_reasoning(messages) -> Optional[Any]:
 
 def _apply_output_hooks(
     agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
-    messages,
+    messages, interrupted=False,
 ) -> Tuple[Any, bool, Optional[Any]]:
     """Fire ``transform_llm_output`` then ``post_llm_call`` once per turn after the tool loop.
     Returns ``(final_response, transformed, pre_transform_response)``."""
     transformed, pre_transform = False, None
-    # First hook to return a string wins; None/empty leaves the text unchanged.
-    for _hook_result in _invoke_hook_safely(
-        "transform_llm_output", logger,
-        response_text=final_response,
-        session_id=agent.session_id or "",
-        model=agent.model,
-        platform=platform,
-    ):
-        if isinstance(_hook_result, str) and _hook_result:
-            pre_transform, final_response, transformed = final_response, _hook_result, True
-            break
-    # Detached forks are internal work and must not publish turns under the parent's session ID.
-    if not getattr(agent, "_persist_disabled", False):
+    try:
+        from hermes_cli.lifecycle import transform_llm_output
+        replacement, transformed = transform_llm_output(
+            final_response, session_id=agent.session_id or "", model=agent.model, platform=platform,
+        )
+        if transformed:
+            pre_transform, final_response = final_response, replacement
+            # Only the current terminal assistant row owns this reply. Never search
+            # past a user boundary or rewrite an earlier matching tool preamble.
+            for message in reversed(messages):
+                if message.get("role") == "user":
+                    break
+                if message.get("role") == "assistant":
+                    if not message.get("tool_calls"):
+                        if message.get(_DB_PERSISTED_MARKER) and isinstance(message.get("_row_id"), int):
+                            message["_output_transform_original"] = message.get("content")
+                            message.pop(_DB_PERSISTED_MARKER, None)
+                            agent._db_flush_scan_prefix = None
+                        message["content"] = final_response
+                        message.pop("api_content", None)
+                    break
+    except Exception as exc:
+        logger.warning("transform_llm_output hook failed: %s", exc)
+    # Detached forks and interrupted turns do not publish completed-turn hooks.
+    if not interrupted and not getattr(agent, "_persist_disabled", False):
         _invoke_hook_safely(
             "post_llm_call", logger,
             session_id=agent.session_id,
@@ -481,9 +493,6 @@ def finalize_turn(
             agent, final_response, interrupted, failed
         )
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
-        if not interrupted and not failed:
-            _micro_compact_after_turn(agent, messages, final_response, logger)
-        agent._persist_session(messages, conversation_history)
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
 
@@ -505,11 +514,19 @@ def finalize_turn(
     _platform = getattr(agent, "platform", None) or ""
     _response_transformed = False
     _pre_transform_response = None
-    if final_response and not interrupted:
+    if final_response:
         final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(
             agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
             turn_id=turn_id, original_user_message=original_user_message, messages=messages,
+            interrupted=interrupted,
         )
+
+    if not interrupted and not failed:
+        _micro_compact_after_turn(agent, messages, final_response, logger)
+
+    # Persist the transformed terminal row, not the pre-transform text.
+    _guarded_cleanup("persist_session", lambda: agent._persist_session(messages, conversation_history),
+                     _cleanup_errors, logger)
 
     # Context engine observation hook: the turn finished with the finalized transcript.
     # Fail-open. ``_last_turn_usage`` is the last response's canonical usage dict, or

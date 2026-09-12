@@ -838,6 +838,11 @@ class TurnRunner:
 
     def _setup_stream_consumer(self, platform_key):
         ctx = self._ctx
+        from hermes_cli.lifecycle import has_hook
+        if has_hook("transform_llm_output"):
+            # Whole-response transforms cannot protect text already displayed or
+            # spoken. Deliver once through finalization, including interrupts.
+            return None, None, (lambda *_args, **_kwargs: None), False
         stream_consumer = None
         # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
         # run_sync only reads it via the holder for delta-callback wiring.

@@ -1,19 +1,4 @@
-"""Tests for the ``transform_llm_output`` plugin hook.
-
-The hook fires inside ``AIAgent.run_conversation`` once the tool-calling
-loop has produced a final response. Driving the full agent loop from a
-unit test would be prohibitively heavy, so these tests exercise the
-invoke_hook dispatch semantics that the wiring in ``run_agent.py``
-depends on:
-
-    for _hook_result in _transform_results:
-        if isinstance(_hook_result, str) and _hook_result:
-            final_response = _hook_result
-            break  # First non-empty string wins
-
-Mirrors ``test_transform_tool_result_hook.py`` which tests the equivalent
-contract for the generic tool-result seam.
-"""
+"""Plugin discovery and sequential final-output transform contracts."""
 
 from pathlib import Path
 
@@ -133,3 +118,73 @@ def test_no_plugins_returns_empty_results(tmp_path, monkeypatch):
         platform="",
     )
     assert results == []
+
+
+def test_transform_pipeline_composes_in_registration_order(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_pipeline"
+    hermes_home.mkdir()
+    _make_enabled_plugin(
+        hermes_home, "first",
+        'ctx.register_hook("transform_llm_output", lambda **kw: kw["response_text"] + "-one")',
+    )
+    _make_enabled_plugin(
+        hermes_home, "second",
+        'ctx.register_hook("transform_llm_output", lambda **kw: kw["response_text"] + "-two")',
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    mgr = PluginManager()
+    mgr.discover_and_load()
+    text, transformed = mgr.transform_llm_output(
+        "base", session_id="s1", model="m", platform="cli"
+    )
+    assert text == "base-one-two"
+    assert transformed is True
+
+
+def test_transform_pipeline_continues_after_failure(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_failure"
+    hermes_home.mkdir()
+    _make_enabled_plugin(
+        hermes_home, "raising",
+        'def _boom(**kw):\n        raise RuntimeError("boom")\n    ctx.register_hook("transform_llm_output", _boom)',
+    )
+    _make_enabled_plugin(
+        hermes_home, "later",
+        'ctx.register_hook("transform_llm_output", lambda **kw: "safe")',
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    mgr = PluginManager()
+    mgr.discover_and_load()
+    text, transformed = mgr.transform_llm_output(
+        "unsafe", session_id="s1", model="m", platform="cli"
+    )
+    assert text == "safe"
+    assert transformed is True
+
+
+def test_registered_transform_disables_gateway_raw_delivery(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.config import StreamingConfig
+
+    _make_enabled_plugin(tmp_path, "guard",
+        'ctx.register_hook("transform_llm_output", lambda **kw: "safe")')
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    manager = PluginManager()
+    manager.discover_and_load()
+    monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+    audio = Mock()
+    status = Mock()
+    runner = object.__new__(TurnRunner)
+    runner._ctx = SimpleNamespace(streaming_tts_consumer_holder=[audio],
+        interim_assistant_messages_enabled=True, _run_still_current=lambda: True,
+        _status_adapter=status, resolve_display_setting=lambda *_args: None,
+        user_config={}, source=SimpleNamespace())
+    runner._runner = SimpleNamespace(config=SimpleNamespace(streaming=StreamingConfig(enabled=True)),
+        _adapter_for_source=lambda _source: None)
+    consumer, delta, commentary, enabled = runner._setup_stream_consumer("telegram")
+    assert consumer is None and delta is None and enabled is False
+    commentary("secret", already_streamed=False)
+    commentary("secret", already_streamed=True)
+    assert not audio.mock_calls and not status.mock_calls

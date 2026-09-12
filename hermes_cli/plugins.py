@@ -107,7 +107,7 @@ _install_plugin_debug_handler()
 
 VALID_HOOKS: Set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
-    # transform_llm_output: return a replacement string (first non-None wins) or None.
+    # transform_llm_output: sequential replacements; None/empty retain the current text.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
@@ -1677,6 +1677,11 @@ def _delivery_manager() -> PluginManager:
         _join_background_discovery()
         manager.discover_and_load()
     return manager
+
+
+def transform_llm_output(response_text: str, **kwargs: Any) -> tuple[str, bool]:
+    """Compose output callbacks while preserving timeout and signature compatibility."""
+    return _delivery_manager().transform_llm_output(response_text, **kwargs)
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:

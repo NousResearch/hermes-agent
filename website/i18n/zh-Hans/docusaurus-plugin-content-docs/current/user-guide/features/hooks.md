@@ -384,7 +384,7 @@ def register(ctx):
 | `transform_terminal_output` | Transform | 前台进程输出完成有界捕获后、最终 output limit 前；第一个字符串替换输出。 | `command`, `output`, `returncode`, `task_id`, `env_type` | 命令/输出可能含凭据。 |
 | `pre_llm_call` | 指令/控制 | 每轮 loop 前一次；所有有效字符串或 `{"context": ...}` 会拼接并注入用户消息。 | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | 完整用户消息和会话历史。 |
 | `post_llm_call` | 观察者 | 成功且未中断的轮次 finalize 时；忽略返回值。 | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | 完整 prompt、response 和 history。 |
-| `transform_llm_output` | Transform | `post_llm_call` 和最终交付前；第一个非空字符串替换 response。 | `response_text`, `session_id`, `model`, `platform` | 完整最终 assistant 文本。 |
+| `transform_llm_output` | Transform | `post_llm_call` 和最终交付前；非空字符串按注册顺序依次转换 response。 | `response_text`, `session_id`, `model`, `platform` | 完整最终 assistant 文本。 |
 | `pre_verify` | 指令/控制 | 有界的代码编辑 verify gate；第一个有效 continue/block-stop 指令让轮次继续。 | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | 草稿 response 和变更路径。 |
 | `pre_api_request` | 观察者 | 每次 provider attempt 发请求前；忽略返回值。 | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | 高敏感：兼容字段 `user_message`、`conversation_history`、`request_messages` 故意保留原始值；新 consumer 应优先用已清理的 `request`。 |
 | `post_api_request` | 观察者 | Provider success 归一化后；忽略返回值。 | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | 可用已清理的 `response`，但原始归一化 `assistant_message` 可能含模型/用户内容；`usage` 是计费数据。 |
@@ -1125,7 +1125,7 @@ def my_callback(
 | `model` | `str` | 产生响应的模型名称（如 `anthropic/claude-sonnet-4.6`）。 |
 | `platform` | `str` | 交付平台（`cli`、`telegram`、`discord` 等；未设置时为空）。 |
 
-**返回值：** 非空 `str` 替换响应文本，`None` 或空字符串保持不变。当多个插件注册时，**第一个非空字符串生效**。与 tool/terminal transform 不同，空字符串不会作为替换值。
+**返回值：** 非空 `str` 替换响应文本，`None` 或空字符串保持不变。当多个插件注册时，**按注册顺序依次转换**；每个回调接收上一个回调的结果。与 tool/terminal transform 不同，空字符串不会作为替换值。
 
 **使用场景：** 应用个性/词汇转换（海盗腔、海绵宝宝体）、从最终文本中脱敏用户特定标识符、追加项目特定签名页脚、在不消耗 SOUL 指令 token 的情况下执行内部风格指南。
 
@@ -1141,7 +1141,7 @@ def register(ctx):
     ctx.register_hook("transform_llm_output", spongebob)
 ```
 
-此 hook 受非空、非中断响应保护——不会在停止按钮中断或空轮次时触发。异常会被记录为警告，不会中断 agent 执行。
+此 hook 对非空响应触发，包括中断时的部分响应。异常和超时会记录警告，后续回调仍继续执行。转换后的文本用于当前轮的持久化和观察者；旧轮次不变。注册输出转换时，gateway 禁用 token 流和中间 assistant 预览，避免绕过最终转换。
 
 ### API request 观察者 hook
 

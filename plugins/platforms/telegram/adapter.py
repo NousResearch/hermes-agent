@@ -299,6 +299,43 @@ _RICH_PROTECTED_REGION_RE = re.compile(
     re.MULTILINE)
 
 
+# Telegram Rich Markdown interprets paired literal dollar signs as inline
+# LaTeX delimiters. Protect currency only on rich-rendered lines containing
+# multiple amounts; leave ordinary prose, legitimate math, code, and shell
+# variables unchanged.
+_RICH_CURRENCY_PROTECTED_RE = re.compile(
+    r"(?P<fence>`{3,}|~{3,})[^\n]*\n.*?(?P=fence)|(?P<ticks>`+)(?!`)[^\n]*?(?P=ticks)(?!`)"
+    r"|(?<!\\)\$(?:[^$\n]*[=^_+*/{}<>!|:−×÷≤≥\\-][^$\n]*|[A-Za-z0-9]+)\$(?!\d)",
+    re.DOTALL,
+)
+_RICH_CURRENCY_AMOUNT_RE = re.compile(r"(?<![\\`\w])\$\d+(?:,\d{3})*(?:\.\d+)?")
+_RICH_CURRENCY_PLACEHOLDER = "\x00HERMES_RICH_CURRENCY_{index}\x00"
+
+
+def _protect_rich_currency(text: str) -> str:
+    """Wrap multiple same-line currency amounts in inline code."""
+    stashed: list[str] = []
+
+    def stash(match: re.Match[str]) -> str:
+        stashed.append(match.group(0))
+        return _RICH_CURRENCY_PLACEHOLDER.format(index=len(stashed) - 1)
+
+    masked = _RICH_CURRENCY_PROTECTED_RE.sub(stash, text)
+    lines = masked.split("\n")
+    for index, line in enumerate(lines):
+        if len(_RICH_CURRENCY_AMOUNT_RE.findall(line)) < 2:
+            continue
+        lines[index] = _RICH_CURRENCY_AMOUNT_RE.sub(
+            lambda match: f"`{match.group(0)}`", line
+        )
+    protected = "\n".join(lines)
+    for index, original in enumerate(stashed):
+        protected = protected.replace(
+            _RICH_CURRENCY_PLACEHOLDER.format(index=index), original
+        )
+    return protected
+
+
 def _rich_normalize_linebreaks(text: str) -> str:
     """Convert lone ``\\n`` (a Markdown soft break) to hard breaks for sendRichMessage; ``\\n\\n``,
     fenced code and pipe tables are left untouched."""
@@ -1317,7 +1354,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> Dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
         escaping destroys table pipes."""
-        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(_protect_rich_currency(content))}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload

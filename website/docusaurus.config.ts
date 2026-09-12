@@ -24,7 +24,7 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'zh-Hans'],
+    locales: ['en', 'zh-Hans', 'id'],
     localeConfigs: {
       en: {
         label: 'English',
@@ -32,6 +32,10 @@ const config: Config = {
       'zh-Hans': {
         label: '简体中文',
         htmlLang: 'zh-Hans',
+      },
+      id: {
+        label: 'Bahasa Indonesia',
+        htmlLang: 'id',
       },
     },
   },

@@ -293,7 +293,14 @@ class MattermostAdapter(BasePlatformAdapter):
     # --- Optional overrides ---
 
     async def send_typing(self, chat_id: str, metadata: _Metadata = None) -> None:
-        await self._api_post(f"users/{self._bot_user_id}/typing", {"channel_id": chat_id})
+        payload = {"channel_id": chat_id}
+        if self._reply_mode == "thread" and isinstance(metadata, dict):
+            # Gateway thread metadata already carries the root post ID. Keep
+            # typing in that thread without a post lookup on every heartbeat.
+            root_id = metadata.get("thread_id") or metadata.get("root_id")
+            if root_id:
+                payload["parent_id"] = str(root_id)
+        await self._api_post(f"users/{self._bot_user_id}/typing", payload)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         payload = _with_mentions_disabled({"message": self.format_message(content)})

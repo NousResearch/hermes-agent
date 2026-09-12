@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 import uuid
 
 from gateway.session_contract import (
-    AdmissionReceipt, PendingAdmission, Principal, SessionHandle, SessionRef, Submission,
+    CANONICAL_GATEWAY_PROTOCOL, AdmissionReceipt, PendingAdmission, Principal, SessionHandle, SessionRef, Submission,
     SubscriptionSnapshot,
 )
 from gateway.session_events import SessionEvents
@@ -70,7 +70,8 @@ class SessionAuthority:
                 restore_api_session(self, ref.session_id)
         from gateway.config import Platform
         source = self.sessions[ref.session_id].source
-        if source is not None and source.platform == Platform.LOCAL and source.user_id != actor.subject:
+        if (source is not None and source.platform == Platform.LOCAL
+                and source.user_id != actor.subject and 'session:operator' not in actor.capabilities):
             raise RuntimeStoreError('permission_denied')
 
     def _require_admission_open(self):
@@ -159,6 +160,7 @@ class SessionAuthority:
             # prepared mutation must present.
             live.event_stream.publish(ref.session_id, {
                 'stored_session_id': ref.session_id, 'pending': pending,
+                'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,
                 'running': handle.execution_state == 'running',
                 'execution_generation': handle.execution_generation,
                 'revision': handle.revision,
@@ -236,6 +238,14 @@ class SessionAuthority:
         finite = admit_finite(request.payload)
         payload = {'text': request.payload['text'], **finite,
                    **admit_attachments(request.payload.get('attachments'))}
+        from gateway.config import Platform
+        source = self.sessions[request.ref.session_id].source
+        if source is not None and source.platform == Platform.LOCAL and source.user_id != actor.subject:
+            # Durable server authorization, not a client payload field. The original
+            # principal remains the admission/retry identity across owner restarts.
+            payload['local_operator_v1'] = {
+                'profile_id': self.profile_id, 'session_id': request.ref.session_id,
+                'principal_id': actor.subject}
         row = admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                   session_id=request.ref.session_id, request_id=request.request_id,
                                   payload=payload, intent=request.intent)
@@ -348,9 +358,9 @@ class SessionAuthority:
                     if 'local_automation_v1' in first['payload']:
                         from gateway.session_automation import check_local_automation
                         check_local_automation(self, ref, first)
-                    elif (first['principal_id'] != live.source.user_id
-                          or not {'text'} <= set(first['payload']) <= {'text', 'attachments_v1', 'finite'}):
-                        raise RuntimeStoreError('permission_denied')
+                    else:
+                        from gateway.session_operator import check_local_input
+                        check_local_input(self, ref, first)
                 if first is not None and 'native_text_v1' in first['payload']:
                     from gateway.session_envelope import check_native_route
                     await check_native_route(self.runner, first['payload'], ref.session_id, live.source,
@@ -401,16 +411,30 @@ class SessionAuthority:
                 waiter.set_result(response)
 
 
-async def initialize_session_authority(runner, *, profile_id, instance_id):
-    """Call after exclusive profile ownership, before connecting adapters/API."""
-    db = getattr(runner._session_db, '_db', runner._session_db)
+async def initialize_session_authority(runner, *, profile_id, instance_id, db=None, register=True):
+    """Call after exclusive profile ownership, before connecting adapters/API.
+
+    ``register=False`` builds a served secondary's authority without making it the runner's
+    launch authority (``runner.session_authority``); the per-home registry owns the lookup.
+    """
+    if db is None:
+        db = getattr(runner._session_db, '_db', runner._session_db)
     epoch = begin_runtime_epoch(db, instance_id=instance_id)
     recover_session_inputs(db, epoch=epoch)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
-    runner.session_authority = authority
+    if register:
+        runner.session_authority = authority
     from gateway.session_cron import bind_owner
     bind_owner(authority)
-    runner.session_store._local_authority_epoch = epoch
+    store = runner.session_store
+    if register:
+        store._local_authority_epoch = epoch
+    # Local resets write the owning profile's store; the epoch fence must be that store's.
+    epochs = getattr(store, '_local_authority_epochs', None)
+    if epochs is None:
+        epochs = store._local_authority_epochs = {}
+    from pathlib import Path
+    epochs[Path(db.db_path).resolve()] = epoch
     from gateway.session_local_recovery import recover_local_sessions
     recover_local_sessions(authority)
     return authority

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
+from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
 from gateway.session_controls import AuthorityConnection
 from hermes_state import SessionDB
 from hermes_state_runtime import begin_runtime_epoch
@@ -22,7 +23,8 @@ async def test_repeated_resume_and_close_preserve_only_live_memberships(tmp_path
         peer = AuthorityConnection(authority, object(), {'user_id': 'human'})
         request = {'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}}
         for connection in (first, peer, first, first):
-            assert 'result' in await connection.dispatch(request)
+            result = (await connection.dispatch(request))['result']
+            assert result['info'] == {'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL}
         members = authority.sessions['s'].subscribers
         assert len(members) == 2
         await first.close()

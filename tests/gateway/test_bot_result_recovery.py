@@ -26,13 +26,14 @@ def test_bot_reply_recovery_uses_exact_terminal_admission(tmp_path):
         if settle:
             retain_result(db, epoch=epoch, row=row, result={'result': {'final_response': reply}, 'usage': {}})
         records.append(dict(status='canonical', admission_id=admission['admission_id'],
-                            delivery_id=key, profile_home=str(tmp_path), session_id='bot'))
+                            delivery_id=key, profile_home=str(tmp_path), session_id='bot', message=key))
     db.close()
     db = SessionDB(path)
     try:
         epoch = begin_runtime_epoch(db, instance_id='restart')
         recover_session_inputs(db, epoch=epoch)
         authority = SimpleNamespace(db=db)
+        assert [_result(authority, record)['message'] for record in records] == ['one', 'two', 'three']
         assert _result(authority, records[0])['reply'] == 'exact first reply'
         assert _result(authority, records[0])['status'] == 'settled'
         assert _result(authority, records[1])['reply'] == 'later reply is not first'

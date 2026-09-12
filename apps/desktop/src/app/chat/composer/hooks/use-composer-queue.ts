@@ -241,6 +241,7 @@ export function useComposerQueue({
           onSubmit(entry.text, {
             attachments: entry.attachments,
             ...(entry.displayText ? { displayText: entry.displayText } : {}),
+            ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
             fromQueue: true,
             submission_id: entry.id,
             sessionId: drainRuntimeSessionId,

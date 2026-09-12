@@ -19,7 +19,15 @@ import { useVoiceEngineName, VoiceEngineRows } from './voice-engine-rows'
  * button so the primary press stays a single unambiguous action; the tooltip
  * names the engine so the choice is visible before pressing.
  */
-export function StartVoiceButton({ disabled, label, onStart }: { disabled: boolean; label: string; onStart: () => void }) {
+export function StartVoiceButton({
+  disabled,
+  label,
+  onStart
+}: {
+  disabled: boolean
+  label: string
+  onStart: () => void
+}) {
   const { t } = useI18n()
   const engine = useVoiceEngineName()
 

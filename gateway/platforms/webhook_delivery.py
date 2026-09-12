@@ -60,12 +60,17 @@ def retained_destination(adapter, chat_id):
     """Readback also checks today's connector and authorization; retained data is not a grant."""
     from gateway.session_envelope import restore_native, _validate_native
     runner = adapter.gateway_runner or getattr(adapter._message_handler, '__self__', None)
-    authority = getattr(runner, 'session_authority', None)
-    if authority is None:
+    from gateway.session_authorities import active_authority, all_authorities
+    if not all_authorities(runner):
         return validate_destination(adapter._delivery_info.get(chat_id))
-    rows = authority.db._read_all("""SELECT payload_json FROM session_admissions
+    # The reply leg runs in the routed profile's scope; that ledger holds the destination. A
+    # delivery id is unique per route, so an unscoped caller may search every served ledger.
+    scoped = active_authority(runner)
+    candidates = [scoped] if scoped is not None else all_authorities(runner)
+    query = """SELECT payload_json FROM session_admissions
         WHERE json_extract(payload_json, '$.native_text_v1.source.chat_id')=?
-          AND json_extract(payload_json, '$.native_text_v1.source.platform')='webhook'""", (chat_id,))
+          AND json_extract(payload_json, '$.native_text_v1.source.platform')='webhook'"""
+    rows = [row for authority in candidates for row in authority.db._read_all(query, (chat_id,))]
     if len(rows) != 1:
         raise RuntimeStoreError('not_found')
     payload = json.loads(rows[0]['payload_json'])

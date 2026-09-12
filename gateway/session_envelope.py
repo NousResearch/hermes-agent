@@ -117,7 +117,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False):
     # ordinary admissions must bind homes too, including execution after restart.
     if provenance is not None and not getattr(runner.config, 'multiplex_profiles', False):
         from hermes_state_runtime import list_session_admissions
-        authority = runner.session_authority
+        from gateway.session_authorities import active_authority
+        authority = active_authority(runner)
         entry = runner.session_store.lookup_by_session_key(envelope['route'])
         if entry is not None:
             legacy = deepcopy(payload)

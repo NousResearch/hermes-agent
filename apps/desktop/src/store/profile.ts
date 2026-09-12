@@ -400,11 +400,12 @@ export const $hydrationSyncProfile = atom<string | null>(null)
 // `hermes gateway ensure` round-trip plus the socket connect before the sidebar
 // can repopulate. The pointer entering a profile square in the rail signals the
 // switch a few hundred ms before the click lands, so we run the same dial +
-// connect chain then (openGatewayForProfile — without activating).
+// connect chain then on the requested source, without activating. The canonical
+// gateway owns local execution; Desktop only prepares a viewer connection.
 // `ensureBackend` in the Electron main is idempotent (a cached profile returns
 // its existing connectionPromise), so the real switch joins the in-flight work
 // instead of duplicating it — and a pre-warm for an already-open profile is a
-// no-op. Throttled per profile so drive-by hovers can't spam dial attempts;
+// no-op. Throttled per (connection, profile) so hovers can't spam dial attempts;
 // failures stay silent here and surface on the real switch, which owns
 // retry/error UX.
 const PREWARM_MIN_INTERVAL_MS = 60_000
@@ -429,8 +430,9 @@ export function prewarmProfileBackend(name: string, connectionId: null | string 
     return
   }
 
-  prewarmedAt.set(key, now)
-  openGatewayForProfile(key).catch(() => undefined)
+  prewarmedAt.set(scope, now)
+  const dial = connection ? openGatewayForAgent(connection, key) : openGatewayForProfile(key)
+  dial.catch(() => undefined)
 }
 
 let gatewaySwitch: Promise<void> | null = null

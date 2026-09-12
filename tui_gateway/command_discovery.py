@@ -128,8 +128,6 @@ class _Catalog:
 def _catalog_registry(cat: _Catalog, module_loader) -> None:
     commands = module_loader("hermes_cli.commands")
     for cmd in commands.COMMAND_REGISTRY:
-        if not commands.command_available(cmd):
-            continue
         meta = commands.command_desktop_meta(cmd)
         cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
         if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
@@ -204,10 +202,7 @@ def command_catalog(load_cfg=None, module_loader=import_module) -> dict:
     except Exception as e:
         warning = f"skill discovery unavailable: {e}"
     return {
-        "pairs": cat.pairs, "sub": {
-            k: v[:] for k, v in module_loader("hermes_cli.commands").SUBCOMMANDS.items()
-            if module_loader("hermes_cli.commands").command_available(k)
-        },
+        "pairs": cat.pairs, "sub": {k: v[:] for k, v in module_loader("hermes_cli.commands").SUBCOMMANDS.items()},
         "canon": cat.canon,
         "commands": cat.commands,
         "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],

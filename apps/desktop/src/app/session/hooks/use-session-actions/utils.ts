@@ -1678,7 +1678,7 @@ export function applyRuntimeInfo(
 
   // App/profile-level reporting is session-independent — a tile's runtime
   // reports backend skew and credential warnings just as usefully.
-  reportBackendContract(info.desktop_contract)
+  reportBackendContract(info.desktop_contract, info.desktop_protocol)
 
   if (info.approval_mode !== undefined) {
     reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)

@@ -1006,6 +1006,25 @@ class TestConfigSupportFloor:
         assert (tmp_path / ".env").read_text(encoding="utf-8") == expected_env
 
 
+class TestRetiredMultiplexAllowlist:
+    def test_v43_drops_multiplex_profile_allowlist_from_user_config(self, tmp_path, monkeypatch):
+        """The multiplexer serves every profile; a stale allowlist must not linger in config.yaml."""
+        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_cli.config_migrations import run_migrations
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "_config_version": 42,
+            "gateway": {"multiplex_profiles": True, "multiplex_profile_allowlist": ["worker"]},
+        }), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        run_migrations(42, {"env_added": [], "config_added": [], "warnings": []}, quiet=True)
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert "multiplex_profile_allowlist" not in raw["gateway"]
+        assert raw["gateway"]["multiplex_profiles"] is True
+        assert "multiplex_profile_allowlist" not in DEFAULT_CONFIG["gateway"]
+
+
 class TestCustomProviderCompatibility:
     """Custom provider compatibility across legacy and v12+ config schemas.
 

@@ -64,6 +64,12 @@ class ProcessCheckpointMixin:
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
                 continue
+            # The registry is process-global, so every profile's checkpoint carries every live
+            # process; a multiplexer recovering several homes must adopt each session once.
+            with self._lock:
+                already_tracked = entry.get("session_id") in self._running
+            if already_tracked:
+                continue
             if pid_scope != "host":  # in-sandbox PIDs mean nothing once the env handle is gone
                 logger.info(
                     "Skipping recovery for non-host process: %s (pid=%s, scope=%s)",

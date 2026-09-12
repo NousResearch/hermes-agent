@@ -79,8 +79,10 @@ def api_policy_scope():
 
 
 def admit_api_turn(adapter, **kwargs):
-    authority = adapter.gateway_runner.session_authority
-    if adapter._ensure_session_db() is not authority.db:
+    # ``/p/<profile>/`` middleware scoped this request; the routed home's authority admits it.
+    from gateway.session_authorities import active_authority
+    authority = active_authority(adapter.gateway_runner)
+    if authority is None or adapter._ensure_session_db() is not authority.db:
         raise RuntimeStoreError('profile_mismatch')
     sid = kwargs.get('session_id') or uuid.uuid4().hex
     declared_key = kwargs.get('gateway_session_key') if kwargs.get('bind_declared_conversation') else None
@@ -122,9 +124,12 @@ def admit_api_turn(adapter, **kwargs):
 
 def recover_api_turns(adapter):
     """Recover committed work only after the real API adapter is published."""
-    authority = getattr(adapter.gateway_runner, 'session_authority', None)
-    if authority is None:
-        return
+    from gateway.session_authorities import all_authorities
+    for authority in all_authorities(adapter.gateway_runner):
+        _recover_api_turns(adapter, authority)
+
+
+def _recover_api_turns(adapter, authority):
     from hermes_state_runtime import list_session_admissions
     import logging
     with authority.db._read_ctx() as conn:

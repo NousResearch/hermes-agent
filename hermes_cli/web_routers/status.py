@@ -18,7 +18,9 @@ from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
-from gateway.status import derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents, resolve_gateway_liveness
+from gateway.status import (
+    derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
+    profile_platforms_from_multiplexer, resolve_gateway_liveness)
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
@@ -250,6 +252,11 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     runtime = local_runtime
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
+    if liveness.runtime is not None and profile_dir is not None:
+        # Served by the multiplexer: its record is this profile's runtime, with the profile's own
+        # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape.
+        runtime = {**liveness.runtime,
+                   "platforms": profile_platforms_from_multiplexer(liveness.runtime, profile_dir.name)}
 
     gateway_state = None
     gateway_platforms: dict = {}

@@ -94,7 +94,7 @@ def _closed_ext(mime: str, overrides: Dict[str, str], fallback: str) -> str:
 
 def _setting(extra: Dict[str, Any], key: str, env: str, default: str = "") -> Any:
     """Config ``extra[key]`` wins over env var ``env`` (falsy values fall through)."""
-    return extra.get(key) or os.getenv(env, default)
+    return extra.get(key) or _get_scoped_secret(env, default)
 
 
 def _temp_guid() -> str:
@@ -125,10 +125,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
-            _require_mention = os.getenv("BLUEBUBBLES_REQUIRE_MENTION")
+            _require_mention = _get_scoped_secret("BLUEBUBBLES_REQUIRE_MENTION")
         self.require_mention = str(_require_mention).strip().lower() in TRUTHY_STRINGS
         self._mention_patterns = self._compile_mention_patterns(
-            extra["mention_patterns"] if "mention_patterns" in extra else os.getenv("BLUEBUBBLES_MENTION_PATTERNS"))
+            extra["mention_patterns"] if "mention_patterns" in extra else _get_scoped_secret("BLUEBUBBLES_MENTION_PATTERNS"))
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None

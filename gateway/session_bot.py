@@ -16,8 +16,9 @@ from tools.bot_live_delivery import _delivery_id, _locked, _read, _write
 
 
 def _home(authority, actor, profile):
+    from gateway.session_authorities import served_profile_name
     home = Path(authority.db.db_path).parent.resolve()
-    name = home.name if home.parent.name == 'profiles' else 'default'
+    name = served_profile_name(home)
     if actor.profile_id != authority.profile_id or profile not in (name, 'hermes' if name == 'default' else name):
         raise RuntimeStoreError('profile_mismatch')
     if 'session:submit' not in actor.capabilities:
@@ -59,7 +60,7 @@ def _result(authority, record):
         status = record['status']
     return {k: v for k, v in dict(status=status, delivery_id=record['delivery_id'],
         profile_home=record['profile_home'], session_id=record['session_id'],
-        admission_id=record['admission_id'], reply=reply).items()}
+        admission_id=record['admission_id'], message=record['message'], reply=reply).items()}
 
 
 async def _record_reply(authority, home, key, future):
@@ -73,8 +74,9 @@ async def _record_reply(authority, home, key, future):
 
 def relay_operation(connection, operation, params):
     authority, actor = connection.authority, connection.actor
+    from gateway.session_authorities import served_profile_name
     home = Path(authority.db.db_path).parent.resolve()
-    name = home.name if home.parent.name == 'profiles' else 'default'
+    name = served_profile_name(home)
     _home(authority, actor, name)
     if 'session:control' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')

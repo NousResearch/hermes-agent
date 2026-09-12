@@ -14,11 +14,13 @@ hosted_rooms:
     helper: /absolute/path/to/profiles/helper
 ```
 
-The name must match the destination profile name. Start that profile's gateway
-separately. Directory existence alone does not authorize execution. Configuration
-entries are exposed as roster metadata without reading the destination config or
-sessions. `gateway.multiplex_profiles` remains unsupported by the canonical owner;
-this is separate-process topology, not shared database multiplexing.
+The name must match the destination profile name. The destination profile needs a
+live owner: its own standalone gateway, or the default multiplexer serving it under
+`gateway.multiplex_profiles` (each served profile gets its own authority and
+database there). Directory existence alone does not authorize execution.
+Configuration entries are exposed as roster metadata without reading the
+destination config or sessions. Hosted-room execution across two profiles served
+by the same multiplexer is not live-certified yet.
 
 The destination reverse-checks current room ownership, membership, exact durable
 task identity, hosted generation and frozen prompt with the source at submit and

@@ -141,21 +141,29 @@ class GatewayRuntimeAPI:
                 or not ws.client or ws.client.host not in {'127.0.0.1', '::1'}):
             await ws.close(code=4403)
             return
+        operator = True
         try:
-            grant = self.runner.session_ticket_store.redeem(
-                ticket, profile_id=self.runner.session_authority.profile_id,
-                purpose='interactive')
+            grant = self.runner.session_ticket_store.redeem(ticket, profile_id=None, purpose='interactive')
         except PermissionError:
+            operator = False
             try:
-                grant = self.runner.session_ticket_store.redeem(
-                    ticket, profile_id=self.runner.session_authority.profile_id,
-                    purpose='worker-adoption')
+                grant = self.runner.session_ticket_store.redeem(ticket, profile_id=None, purpose='worker-adoption')
             except PermissionError:
                 # Browser/OAuth tickets have a separate issuer.
                 return await self.app(scope, receive, send)
+        from gateway.session_authorities import authority_for_profile_id
+        authority = authority_for_profile_id(self.runner, grant['profile_id'])
+        if authority is None:
+            await ws.close(code=4403)
+            return
+        # The ticket names the served profile; this connection binds to that home's authority.
+        scope['hermes.session_authority'] = authority
+        from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
         from tui_gateway.ws import handle_ws
-        await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
-                                          'profile_id': grant['profile_id'],
-                                          'instance_id': grant['instance_id'],
-                                          'capabilities': grant['capabilities'], 'native_bootstrap': True},
-                        subprotocol='hermes-gateway-v1')
+        from gateway.session_authorities import owner_scope
+        with owner_scope(authority):
+            await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
+                                              'profile_id': grant['profile_id'],
+                                              'instance_id': grant['instance_id'],
+                                              'capabilities': grant['capabilities'], 'native_bootstrap': True},
+                            subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)

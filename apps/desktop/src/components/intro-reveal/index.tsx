@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
+import { takeGuideShape } from '@/components/onboarding-chat/assembly'
 import {
   $introReveal,
   finishIntroReveal,
@@ -36,10 +37,12 @@ export function IntroRevealGate({ enabled }: IntroRevealGateProps) {
     }
 
     // Observe the store edge directly: a failed native open can finish before
-    // React renders the playing phase.
+    // React renders the playing phase. Take the guide's shape on the same
+    // tick: finishIntroReveal shows the main window right after this fires.
     return $introReveal.listen((state, previous) => {
       if (state.phase === 'hidden' && previous?.phase !== 'hidden') {
         queueGuideAfterIntro()
+        takeGuideShape()
       }
     })
   }, [enabled])
@@ -51,7 +54,7 @@ export function IntroRevealGate({ enabled }: IntroRevealGateProps) {
     }
   }, [enabled, intro.phase, onboarding.firstRunSkipped])
 
-  // The native surface owns rAF: the hidden main renderer's clock is throttled.
+  // The native surface runs the frame loop: the hidden main renderer's animation frames are throttled.
   useEffect(() => {
     if (intro.phase === 'hidden') {
       return

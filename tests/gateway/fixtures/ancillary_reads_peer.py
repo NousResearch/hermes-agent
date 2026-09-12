@@ -31,7 +31,7 @@ async def probe(mode):
         return connect(api.api_origin.replace('http:', 'ws:') + '/api/ws?ticket=' + ticket)
 
     try:
-        async with socket() as ws, socket('stranger') as stranger:
+        async with socket() as ws, socket('peer_operator') as peer_operator:
             created = await rpc(ws, 'session.create', request_id='read-owner', source='gui', toolsets=[])
             assert 'result' in created, created
             sid = created['result']['session_id']
@@ -40,8 +40,13 @@ async def probe(mode):
             methods = ['session.control.read', 'process.list', 'subagent.list', 'subagent.tail']
             for method in methods:
                 args = {'subagent_id': 'unowned'} if method == 'subagent.tail' else {}
-                denied = await rpc(stranger, method, session_id=sid, **args)
-                assert denied.get('error', {}).get('message') == 'permission_denied', denied
+                shared = await rpc(peer_operator, method, session_id=sid, **args)
+                original = await rpc(ws, method, session_id=sid, **args)
+                # Both tickets are verified dashboard operators; underlying child
+                # membership checks still apply, including the absent tail target.
+                assert shared.get('result') == original.get('result'), (shared, original)
+                assert shared.get('error') == original.get('error'), (shared, original)
+                assert shared.get('error', {}).get('message') != 'permission_denied', shared
                 denied = await rpc(ws, method, session_id=sid, profile='foreign', **args)
                 assert denied.get('error', {}).get('message') == 'profile_mismatch', denied
 

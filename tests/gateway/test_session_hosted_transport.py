@@ -3,14 +3,23 @@ import asyncio
 import json
 import threading
 from dataclasses import asdict
+from types import SimpleNamespace
 
 import pytest
 
 from tests.gateway.test_session_hosted_rpc import owner  # noqa: F401
 
 
-def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, tmp_path):
+def _server(home):
     from gateway.control_socket import GatewayControlServer
+    descriptor = {'runtime_protocol': 1, 'state': 'ready', 'instance_id': 'test',
+                  'authority_epoch': 1, 'served_profiles': [{'home': str(home), 'profile_id': str(home)}],
+                  'capabilities': ['session-authority-v1'], 'api_origin': 'http://127.0.0.1:1',
+                  'supervisor': 'none'}
+    return GatewayControlServer(home, verb_handlers={'identify': lambda: descriptor})
+
+
+def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, tmp_path):
     from gateway.session_hosted_transport import (
         HostedRoomOwnerRPC, install_hosted_transport, check_remote_hosted_admission,
         owner_request,
@@ -21,6 +30,8 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, t
     source, target = tmp_path / 'source', tmp_path / 'target'
     source.mkdir(mode=0o700)
     target.mkdir(mode=0o700)
+    authority.profile_id = str(target)
+    source_authority = SimpleNamespace(profile_id=str(source))
     allowed = [True]
     task = TaskIdentity('room', 'task', 'thread', 'turn')
     def attest(selector, operation, params):
@@ -32,8 +43,8 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, t
             if operation == 'submit' and params['prompt'] != 'input':
                 raise RuntimeStoreError('permission_denied')
         return {'owner': 'room-owner', 'target_home': authority.profile_id, 'prompt': 'input', 'attachments': []}
-    servers = [GatewayControlServer(source), GatewayControlServer(target)]
-    install_hosted_transport(servers[0], authority, loop, attest=attest)
+    servers = [_server(source), _server(target)]
+    install_hosted_transport(servers[0], source_authority, loop, attest=attest)
     install_hosted_transport(servers[1], authority, loop, attest=lambda *a: None)
     for server in servers:
         assert asyncio.run_coroutine_threadsafe(server.start(), loop).result()
@@ -124,14 +135,13 @@ def test_source_attestation_binds_bytes_to_task_member_and_current_home(tmp_path
             result = service.attest(selector, 'attachment', {**params, 'index': 0, 'offset': offset})
             chunks.append(base64.b64decode(result['data_base64']))
         assert b''.join(chunks) == data
-        from gateway.control_socket import GatewayControlServer
         from gateway.session_hosted_transport import install_hosted_transport, _attachment_data
         # The same chunk protocol crosses a real private socket; the target never
         # receives a filesystem path or opens the source database.
         loop = asyncio.new_event_loop()
         thread = threading.Thread(target=loop.run_forever)
         thread.start()
-        server = GatewayControlServer(tmp_path)
+        server = _server(tmp_path)
         install_hosted_transport(server, authority, loop, attest=service.attest)
         assert asyncio.run_coroutine_threadsafe(server.start(), loop).result()
         try:

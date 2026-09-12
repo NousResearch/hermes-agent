@@ -27,6 +27,9 @@ export interface QueuedPromptEntry {
    *  text the agent receives. A queued `/skill` invocation carries the whole
    *  expanded skill body as `text` — the UI shows the invocation instead. */
   displayText?: string
+  /** A hidden note (a setup line for the model) parked while the turn ran. The panel
+   *  shows a neutral label and the drain submits it hidden again. */
+  displayKind?: 'hidden'
   attachments: ComposerAttachment[]
   queuedAt: number
 }
@@ -141,7 +144,7 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { id?: string; text: string; attachments: ComposerAttachment[]; displayText?: string }
+  payload: { id?: string; text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -153,6 +156,7 @@ export const enqueueQueuedPrompt = (
     id: payload.id ?? nextId(),
     text: payload.text,
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
+    ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
     attachments: cloneAttachments(payload.attachments),
     queuedAt: Date.now()
   }

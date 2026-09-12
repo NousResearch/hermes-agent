@@ -321,6 +321,7 @@ function TileChat({
           onRestoreToMessage={actions.restoreToMessage}
           onRetryResume={onRetryResume}
           onSteer={actions.steerPrompt}
+          onSteerHidden={actions.injectHiddenPrompt}
           onSubmit={actions.submitText}
           onThreadMessagesChange={actions.handleThreadMessagesChange}
           onToggleSelectedPin={noop}

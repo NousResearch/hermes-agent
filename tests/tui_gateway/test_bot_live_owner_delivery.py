@@ -75,7 +75,6 @@ def test_viewer_poller_never_discovers_or_claims_bot_execution(monkeypatch, tmp_
     delivered = []
     poll = rebind(session_notifications._notification_poller_loop, {
         'time': time, '_LOOP_POLL_SECONDS': 0, '_KANBAN_POLL_SECONDS': 0,
-        '_WISDOM_POLL_SECONDS': 0, '_sync_wisdom_activity_notice': lambda *a: None,
         '_poll_bot_live_delivery_once': lambda *a: calls.append('legacy-claim'),
         '_maybe_fire_tui_loop_tick': lambda *a: None,
         '_maybe_fire_tui_heartbeat_tick': lambda *a: None,

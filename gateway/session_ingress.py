@@ -44,9 +44,15 @@ async def execute_admission(authority, ref, row):
             from gateway.session_automation import restore_local_automation
             event = restore_local_automation(authority, ref, row)
     provenance = row['payload'].get('native_text_v1', {}).get('provenance')
+    from gateway.run import _profile_runtime_scope
+    # Under multiplex, owner-side execution runs under the OWNING profile's home (agent build,
+    # config, secrets, state.db), never the launch profile's ambient scope; native provenance
+    # refines it. A single-profile gateway keeps its ambient scope byte-for-byte.
     scope = nullcontext()
+    if getattr(getattr(authority.runner, 'config', None), 'multiplex_profiles', False):
+        from gateway.session_authorities import owner_scope
+        scope = owner_scope(authority, hydrate_secrets=True)
     if provenance is not None:
-        from gateway.run import _profile_runtime_scope
         from gateway.session_ingress_context import restore_provenance
         home = restore_provenance(authority.runner, event.source, provenance)
         scope = _profile_runtime_scope(home)

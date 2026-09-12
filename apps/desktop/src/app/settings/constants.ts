@@ -255,8 +255,20 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
   'voice.gpt_live.voice': [
-    'marin', 'cedar', 'quartz', 'ripple', 'vesper', 'willow', 'stone', 'gleam', 'meridian',
-    'bossa', 'tempo', 'beacon', 'delta', 'cinder'
+    'marin',
+    'cedar',
+    'quartz',
+    'ripple',
+    'vesper',
+    'willow',
+    'stone',
+    'gleam',
+    'meridian',
+    'bossa',
+    'tempo',
+    'beacon',
+    'delta',
+    'cinder'
   ],
   // OpenAI TTS voices — the union across models (per the OpenAI TTS API
   // docs). Model-specific narrowing happens in enumOptionsFor():
@@ -616,7 +628,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
       'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Hermes — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute.',
     gptLive: {
       voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
-      instructions: 'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
+      instructions:
+        'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
     }
   },
   tts: {

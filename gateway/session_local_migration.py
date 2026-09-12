@@ -88,7 +88,8 @@ def adopt_legacy_session(authority, actor, row):
     if policy.model is None:
         policy = replace(policy, model=_resolve_gateway_model(policy.config()))
     policy = bind_launch_key(authority, sid, policy, None, config_secrets=private)
-    source = SessionSource(platform=Platform.LOCAL, chat_id=sid, user_id=actor.subject, chat_type='dm')
+    from gateway.session_local_recovery import local_source
+    source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)
     now = datetime.fromtimestamp(row['started_at'], timezone.utc)
     entry = SessionEntry(route, row['id'], now, now, origin=source, platform=Platform.LOCAL)

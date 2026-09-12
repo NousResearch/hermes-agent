@@ -330,102 +330,11 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Command catalog / dispatch ──────────────────────────────────────────────
-class _Catalog:
-    """Accumulator for commands.catalog: ``pairs`` (every [key, desc]), ``canon`` (lowercase
-    key/alias → canonical key), ``commands`` (key → desktop meta) and ordered categories."""
-
-    def __init__(self) -> None:
-        self.pairs: list[list[str]] = []
-        self.canon: dict[str, str] = {}
-        self.commands: dict[str, dict[str, str | None]] = {}
-        self.cat_map: dict[str, list[list[str]]] = {}  # insertion order = category order
-
-    def add(self, key: str, desc: str, cat: str) -> None:
-        self.canon[key.lower()] = key
-        self.pairs.append([key, desc])
-        self.cat_map.setdefault(cat, []).append([key, desc])
-
-
-def _catalog_registry(cat: _Catalog) -> None:
-    commands = _tools_mod("hermes_cli.commands")
-    for cmd in commands.COMMAND_REGISTRY:
-        meta = commands.command_desktop_meta(cmd)
-        cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
-        if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
-            continue
-        cat.add(f"/{cmd.name}", commands._build_description(cmd), cmd.category)
-        for a in cmd.aliases:
-            cat.canon[f"/{a}".lower()] = f"/{cmd.name}"
-    for name, desc, category in _TUI_EXTRA:
-        # Registry command/alias wins over a colliding TUI extra (e.g. /compact, /sessions).
-        if name.lower() not in cat.canon:
-            cat.add(name, desc, category)
-
-
-def _catalog_quick_commands(cat: _Catalog) -> None:
-    qcmds = _load_cfg().get("quick_commands", {}) or {}
-    if not (isinstance(qcmds, dict) and qcmds):
-        return
-    cat.cat_map.setdefault("User commands", [])  # category exists even when every entry is malformed
-    for qname, qc in sorted(qcmds.items()):
-        if not isinstance(qc, dict):
-            continue
-        qtype = qc.get("type", "")
-        default_desc = {"exec": f"exec: {qc.get('command', '')}", "alias": f"alias → {qc.get('target', '')}"}
-        desc = str(qc.get("description") or default_desc.get(qtype, qtype or "quick command"))
-        cat.add(f"/{qname}", desc, "User commands")
-
-
-def _catalog_plugin_commands(cat: _Catalog) -> None:
-    plugin_cmds = _tools_mod("hermes_cli.plugins").get_plugin_commands() or {}
-    if plugin_cmds:
-        cat.cat_map.setdefault("Plugin commands", [])
-    for pname, info in sorted(plugin_cmds.items()):
-        key = f"/{pname}"
-        if not isinstance(info, dict) or key.lower() in cat.canon:
-            continue
-        cat.add(key, str(info.get("description") or "Plugin command"), "Plugin commands")
-        mode = info.get("argument_mode")
-        if mode not in {"options", "text", "mixed"}:
-            mode = "text" if str(info.get("args_hint") or "").strip() else None
-        cat.commands[key] = {"argument_mode": mode, "desktop": None}
-
-
-def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
-    """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them)."""
-    usage, origin_of = _skill_usage_lookup()
-    for k, info in sorted(_tools_mod("agent.skill_commands").scan_skill_commands().items()):
-        cat.pairs.append([k, str(info.get("description", "Skill"))])
-        name = str(info.get("name") or k.lstrip("/"))
-        skills[k] = {"usage": usage(name), "origin": origin_of(name)}
-
-
 @_rpc("commands.catalog", 5020)
 def _(rid, params: dict) -> dict:
-    """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
-    (skills' message wins, then quick commands', then plugins')."""
-    cat = _Catalog()
-    _catalog_registry(cat)
-    warning = ""
-    try:
-        _catalog_quick_commands(cat)
-    except Exception as e:
-        warning = f"quick_commands discovery unavailable: {e}"
-    try:
-        _catalog_plugin_commands(cat)
-    except Exception as e:
-        warning = warning or f"plugin command discovery unavailable: {e}"
-    skills: dict[str, dict] = {}
-    try:
-        _catalog_skills(cat, skills)
-    except Exception as e:
-        warning = f"skill discovery unavailable: {e}"
-    return _ok(rid, {
-        "pairs": cat.pairs, "sub": {k: v[:] for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()},
-        "canon": cat.canon,
-        "commands": cat.commands,
-        "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],
-        "skills": skills, "skill_count": len(skills), "warning": warning})
+    """Registry-backed slash metadata, categorized, no aliases (shared builder in command_discovery)."""
+    from tui_gateway.command_discovery import command_catalog
+    return _ok(rid, command_catalog(load_cfg=_load_cfg, module_loader=_tools_mod))
 
 
 @method("cli.exec")

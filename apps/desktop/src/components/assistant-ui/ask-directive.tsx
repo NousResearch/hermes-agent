@@ -25,6 +25,7 @@ import { useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
+import { answeredAfter } from '@/lib/chat-messages/parts'
 import { cn } from '@/lib/utils'
 
 // Picked questions, module-scoped: transcript virtualization remounts
@@ -50,12 +51,20 @@ export function AskDirective({ attrs, streaming }: { attrs: Record<string, strin
   const wantsInput = attrs.input === 'true' || attrs.input === 'yes'
   const [picked, setPicked] = useState<null | string>(() => (settled.has(identity) ? '' : null))
 
+  // A typed reply answers the question too. The card only knew about its own
+  // buttons, so someone who answered in the composer came back to six live
+  // chips under a question they had already dealt with. Any user message
+  // after this one closes the ask.
+  const answeredInComposer = answeredAfter(useStore(view.$messages), messageId)
+
+  const closed = picked !== null || answeredInComposer
+
   if (!question || (options.length === 0 && !wantsInput)) {
     return null
   }
 
   const submit = (value: string) => {
-    if (picked !== null || streaming || !value.trim()) {
+    if (closed || streaming || !value.trim()) {
       return
     }
 
@@ -79,11 +88,11 @@ export function AskDirective({ attrs, streaming }: { attrs: Record<string, strin
                 'max-w-full shrink-0 rounded-full border px-3 py-1.5 text-left text-[12px] whitespace-normal wrap-anywhere transition-colors',
                 picked === option
                   ? 'border-primary bg-primary text-primary-foreground'
-                  : picked !== null
+                  : closed
                     ? 'border-border/60 text-muted-foreground/50'
                     : 'border-border bg-card hover:border-primary/50 hover:bg-primary/10'
               )}
-              disabled={picked !== null || streaming}
+              disabled={closed || streaming}
               key={option}
               onClick={() => submit(option)}
               type="button"

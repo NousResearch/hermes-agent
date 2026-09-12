@@ -31,6 +31,8 @@ export interface GatewayEvent<P = unknown> {
   /** Registry connection whose socket delivered the event (renderer-side tag;
    * absent for the local/legacy primary path). */
   connectionId?: string
+  /** Session-scoped replay generation on canonical gateways. */
+  replay_epoch?: string
   session_id?: string
   type: GatewayEventName
 }
@@ -134,13 +136,14 @@ export class JsonRpcGatewayClient {
    */
   private replayHold: Map<string, GatewayEvent[]> | null = null
   /**
-   * Server process identity for the replay contract (from gateway.ready /
+   * Legacy server process identity for the replay contract (from gateway.ready /
    * session.events.since). Seq counters are in-process on the backend, so a
    * restart resets them while we still hold high watermarks — without this
    * check events_since(sid, 97) returns [] + truncated=false forever and we
    * silently believe nothing was missed.
    */
   private replayEpoch: string | null = null
+  private replayEpochBySession = new Map<string, string>()
   private readonly eventHandlers = new Map<string, Set<(event: GatewayEvent) => void>>()
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<Omit<GatewayClientOptions, 'socketFactory'>> &
@@ -504,6 +507,8 @@ export class JsonRpcGatewayClient {
     const sid = event.session_id
     const seq = (event as { seq?: unknown }).seq
 
+    if (sid) { this.adoptSessionReplayEpoch(sid, event.replay_epoch) }
+
     if (!sid || typeof seq !== 'number' || !Number.isFinite(seq)) {
       return
     }
@@ -549,32 +554,38 @@ export class JsonRpcGatewayClient {
 
       // One RPC per known session keeps params flat; sessions are few (<20).
       const results = await Promise.allSettled(
-        entries.map(([sid, lastSeen]) =>
-          this.request<{ events?: Array<{ type: string; session_id?: string; seq?: number; payload?: unknown }> }>(
+        entries.map(([sid, lastSeen]) => {
+          const epoch = this.replayEpochBySession.get(sid) ?? this.replayEpoch
+
+          return this.request<{ events?: Array<{ type: string; session_id?: string; seq?: number; payload?: unknown }> }>(
             'session.events.since',
-            { session_id: sid, last_seen: lastSeen },
+            { session_id: sid, last_seen: lastSeen, ...(epoch ? { replay_epoch: epoch } : {}) },
             REPLAY_REQUEST_TIMEOUT_MS
           )
-        )
+        })
       )
 
-      for (const result of results) {
+      for (const [index, result] of results.entries()) {
         if (result.status !== 'fulfilled' || !Array.isArray(result.value?.events)) {
           continue
         }
 
-        const epoch = (result.value as { epoch?: unknown }).epoch
+        const response = result.value as { epoch?: unknown; replay_epoch?: unknown }
+        const sessionEpoch = response.replay_epoch
+        const epoch = response.epoch
 
-        if (typeof epoch === 'string' && epoch && this.replayEpoch && epoch !== this.replayEpoch) {
+        if (typeof sessionEpoch === 'string' && sessionEpoch) {
+          // Canonical responses also include `epoch`, but it is session-local,
+          // not the legacy process identity. Never reset unrelated cursors.
+          if (this.adoptSessionReplayEpoch(entries[index][0], sessionEpoch)) { continue }
+        } else if (typeof epoch === 'string' && epoch && this.replayEpoch && epoch !== this.replayEpoch) {
           // Backend restarted: its seq numbering reset, so our watermarks —
           // and this replay window — are meaningless. Drop them and start
           // fresh under the new epoch.
           this.adoptReplayEpoch(epoch)
 
           continue
-        }
-
-        if (typeof epoch === 'string' && epoch && !this.replayEpoch) {
+        } else if (typeof epoch === 'string' && epoch && !this.replayEpoch) {
           this.replayEpoch = epoch
         }
 
@@ -602,6 +613,9 @@ export class JsonRpcGatewayClient {
     const sid = event.session_id
     const seq = (event as { seq?: unknown }).seq
 
+    // Parked frames reach here only after the replay window has been applied.
+    if (sid) { this.adoptSessionReplayEpoch(sid, event.replay_epoch) }
+
     if (sid && typeof seq === 'number' && Number.isFinite(seq)) {
       const prev = this.lastSeenSeq.get(sid) ?? 0
 
@@ -626,10 +640,24 @@ export class JsonRpcGatewayClient {
     }
 
     if (this.replayEpoch !== null) {
-      this.lastSeenSeq.clear()
+      for (const sid of this.lastSeenSeq.keys()) {
+        if (!this.replayEpochBySession.has(sid)) { this.lastSeenSeq.delete(sid) }
+      }
     }
 
     this.replayEpoch = epoch
+  }
+
+  /** Returns true when an established session numbering has changed. */
+  private adoptSessionReplayEpoch(sid: string, epoch: unknown): boolean {
+    if (typeof epoch !== 'string' || !epoch) { return false }
+    const previous = this.replayEpochBySession.get(sid)
+    const changed = previous !== undefined && previous !== epoch
+
+    if (changed) { this.lastSeenSeq.delete(sid) }
+    this.replayEpochBySession.set(sid, epoch)
+
+    return changed
   }
 
   /** Release frames parked during a replay fetch, seq-gated against dupes. */

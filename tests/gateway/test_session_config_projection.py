@@ -49,7 +49,13 @@ def test_client_config_projection_keeps_session_policy_and_secrets_private(tmp_p
                     assert (await rpc(ws, method, **params))['error']['message'] == reason
                 other_url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws?token=other-controls-actor'
                 async with connect(other_url) as other:
-                    assert (await rpc(other, 'config.get', key='full', session_id=sid))['error']['message'] == 'permission_denied'
+                    # Verified dashboard operators receive the same redacted projection.
+                    shared = await rpc(other, 'config.get', key='full', session_id=sid)
+                    current = await rpc(ws, 'config.get', key='full', session_id=sid)
+                    assert 'result' in shared, shared
+                    assert shared['result'] == current['result']
+                    assert 'PRIVATE_VOICE' not in json.dumps(shared)
+                    assert (await rpc(other, 'config.get', key='reasoning', session_id=sid))['result']['value'] == 'low'
                 assert (home / 'config.yaml').read_bytes() == before
                 assert not admissions(home) and not peer.requests
         asyncio.run(probe())
@@ -72,7 +78,11 @@ def test_model_options_uses_frozen_selection_without_composer_global_writes(tmp_
                 assert (await rpc(ws, 'model.options', session_id=sid, refresh='yes'))['error']['message'] == 'invalid_params'
                 other_url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws?token=other-controls-actor'
                 async with connect(other_url) as other:
-                    assert (await rpc(other, 'model.options', session_id=sid))['error']['message'] == 'permission_denied'
+                    shared = await rpc(other, 'model.options', session_id=sid)
+                    current = await rpc(ws, 'model.options', session_id=sid)
+                    assert shared.get('result', {}).get('model') == 'frozen-picker', shared
+                    assert shared['result'] == current['result']
+                    assert 'loopback-only' not in json.dumps(shared)
                 assert (home / 'config.yaml').read_bytes() == before
                 assert not admissions(home) and not peer.requests
         asyncio.run(probe())

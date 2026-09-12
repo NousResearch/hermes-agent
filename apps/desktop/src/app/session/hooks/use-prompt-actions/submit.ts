@@ -953,9 +953,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               status: result.status
             })
 
-            if (result.status === 'queued') {
-              dropOptimistic(sessionId)
-            } else if (result.status === 'terminal') {
+            // Queued is also the initial receipt for an idle session's first
+            // turn. Keep its input and any start event that raced this ACK;
+            // explicit queue-only sends never inserted an optimistic bubble.
+            if (result.status === 'terminal') {
               // Deduplication does not start a turn or promise another terminal
               // event. Remove our duplicate bubble, but preserve any live turn
               // that an owner event established while the receipt was in flight.

@@ -672,8 +672,15 @@ export class GatewayClient extends EventEmitter {
 
       if (ev) {
         // The canonical client owns readiness after runtime.describe. Forwarding
-        // the listener's legacy ready as well creates two sessions/startup turns.
-        if (this.isCanonical && ev.type === 'gateway.ready') { return }
+        // the listener's legacy ready as well creates two sessions/startup turns,
+        // but its transport capabilities still have to be negotiated.
+        if (this.isCanonical && ev.type === 'gateway.ready') {
+          if (ev.payload?.heartbeat && this.ws?.readyState === WS_OPEN) {
+            this.startHeartbeat(this.ws)
+          }
+
+          return
+        }
 
         if (this.isCanonical) {
           const shared = ev as GatewayEvent & { authority_epoch?: number; execution_generation?: number }

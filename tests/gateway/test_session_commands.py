@@ -102,14 +102,14 @@ def test_ordinary_daemon_slash_skill_uses_durable_fifo(tmp_path):
                                    ({'command': 'approve'}, 'unsupported_command')]:
                 denied = await command(**params)
                 assert denied['error']['message'] == reason, denied
-            # A second valid credential is a different actor, not session ownership.
+            # A second dashboard operator shares access but still obeys the busy fence.
             other_url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws?token=owned-slash-negative'
             async with connect(other_url) as other:
                 for method, payload in [('slash.exec', {'command': 'title stolen'}),
                                         ('command.dispatch', {'name': 'title', 'arg': 'stolen'})]:
-                    denied = await rpc(other, method, session_id=sid, **payload)
-                    receipts.append(denied)
-                    assert denied.get('error', {}).get('message') == 'permission_denied', denied
+                    result = await rpc(other, method, session_id=sid, **payload)
+                    receipts.append(result)
+                    assert 'mid-turn' in result.get('result', {}).get('output', ''), result
             peer.release.set()
             async with asyncio.timeout(45):
                 while any(row[1] != 'terminal' for row in rows()):

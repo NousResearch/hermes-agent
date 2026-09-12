@@ -261,7 +261,8 @@ class _SendFailed(Exception):
     """Raised by handle_ws._reply when a reply could not be written: ends the read loop."""
 
 
-async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None) -> None:
+async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None,
+                    operator: bool = False) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
     ``{user_id, provider}`` recorded at WS-upgrade auth, stored as ``WSTransport.auth_identity`` (the only identity
     authority for browser-controller registration); callers that omit it (harnesses, embedded TUI child) get None."""
@@ -290,10 +291,11 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
-        authority = getattr(getattr(getattr(ws, 'app', None), 'state', None), 'session_authority', None)
+        authority = (getattr(ws, 'scope', None) or {}).get('hermes.session_authority') or getattr(
+            getattr(getattr(ws, 'app', None), 'state', None), 'session_authority', None)
         if authority is not None:
             from gateway.session_controls import AuthorityConnection
-            authority_connection = AuthorityConnection(authority, transport, auth_identity or {})
+            authority_connection = AuthorityConnection(authority, transport, auth_identity or {}, operator=operator)
         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
         # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy

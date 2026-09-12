@@ -637,6 +637,16 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "  ✓ Removed cron.model_drift_guard — unpinned cron jobs now keep running on the "
             "model/provider they were created under when the global default changes, instead "
             "of being skipped. Pin a job or set cron.model to move it."))),
+    # 42 → 43: gateway.multiplex_profile_allowlist is gone. A multiplexing default gateway serves
+    # every live profile under profiles/; a profile that must not be served is archived or deleted.
+    (43, functools.partial(
+        _rewrite_key, section="gateway", key="multiplex_profile_allowlist", new=None,
+        match=lambda _cur: True,
+        added="removed gateway.multiplex_profile_allowlist",
+        message=(
+            "  ✓ Removed gateway.multiplex_profile_allowlist — the multiplexing gateway now serves "
+            "every profile under profiles/. Delete or archive a profile you do not want served."),
+        extra_guard=lambda raw: "multiplex_profile_allowlist" in raw)),
 )
 
 

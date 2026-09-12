@@ -289,6 +289,121 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     client.close()
   })
 
+  it('keeps canonical replay epochs session-local while retaining the legacy gateway epoch', async () => {
+    const client = makeClient()
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+
+    const ready = (epoch: string) => sock.serverFrame({
+      jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: epoch } }
+    })
+
+    const live = (session_id: string, seq: number, replay_epoch?: string) => sock.serverFrame({
+      jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id, seq, replay_epoch }
+    })
+
+    ready('gateway-A')
+    live('s1', 7, 's1-A')
+    live('s2', 9, 's2-A')
+    live('legacy', 20)
+    live('s1', 1, 's1-B')
+    expect(client.getSeqWatermarks()).toEqual({ s1: 1, s2: 9, legacy: 20 })
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+
+    const requests = sock.sent.map(raw => JSON.parse(raw) as ReturnType<FakeWebSocket['lastRequest']>)
+    expect(requests).toHaveLength(3)
+    expect(requests.map(req => req.params)).toEqual(expect.arrayContaining([
+      { session_id: 's1', last_seen: 1, replay_epoch: 's1-B' },
+      { session_id: 's2', last_seen: 9, replay_epoch: 's2-A' },
+      { session_id: 'legacy', last_seen: 20, replay_epoch: 'gateway-A' }
+    ]))
+
+    for (const req of requests) {
+      const sid = req.params.session_id
+      const epoch = req.params.replay_epoch
+      const seq = Number(req.params.last_seen) + 1
+      sock.serverFrame({
+        jsonrpc: '2.0', id: req.id,
+        result: {
+          events: [{ type: 'message.delta', session_id: sid, seq }], epoch,
+          ...(sid === 'legacy' ? {} : { replay_epoch: epoch }),
+          latest_seq: seq, truncated: false, count: 1
+        }
+      })
+    }
+
+    await vi.waitFor(() => {
+      expect(client.getSeqWatermarks()).toEqual({ s1: 2, s2: 10, legacy: 21 })
+    })
+
+    // A legacy process restart must not erase canonical session cursors.
+    ready('gateway-B')
+    expect(client.getSeqWatermarks()).toEqual({ s1: 2, s2: 10 })
+    client.close()
+  })
+
+  it('applies parked session epochs after replay so a new generation does not poison the old gap', async () => {
+    const client = makeClient()
+    const seen: string[] = []
+    client.on('message.delta', event => {
+      const frame = event as unknown as { replay_epoch: string; seq: number }
+      seen.push(`${frame.replay_epoch}:${frame.seq}`)
+    })
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+    sock.serverFrame({
+      jsonrpc: '2.0', method: 'event',
+      params: { type: 'message.delta', session_id: 's1', seq: 5, replay_epoch: 'old' }
+    })
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+    const req = sock.lastRequest()
+    expect(req.method).toBe('session.events.since')
+
+    // These arrive before the response, but belong AFTER the old replay gap.
+    for (const seq of [1, 2]) {
+      sock.serverFrame({
+        jsonrpc: '2.0', method: 'event',
+        params: { type: 'message.delta', session_id: 's1', seq, replay_epoch: 'new' }
+      })
+    }
+
+    expect(client.getSeqWatermarks()).toEqual({ s1: 5 })
+    expect(seen).toEqual(['old:5'])
+    sock.serverFrame({
+      jsonrpc: '2.0', id: req.id,
+      result: {
+        // Include an overlapping old frame: early epoch adoption would replay it twice.
+        events: [5, 6, 7].map(seq => ({ type: 'message.delta', session_id: 's1', seq, replay_epoch: 'old' })),
+        epoch: 'old', replay_epoch: 'old', latest_seq: 7, truncated: false, count: 3
+      }
+    })
+    await vi.waitFor(() => {
+      expect(seen).toEqual(['old:5', 'old:6', 'old:7', 'new:1', 'new:2'])
+    })
+    expect(client.getSeqWatermarks()).toEqual({ s1: 2 })
+
+    client.invalidate('drop')
+    const third = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await third
+    expect(sock.lastRequest().params).toEqual({ session_id: 's1', last_seen: 2, replay_epoch: 'new' })
+    client.close()
+  })
+
   it('clears stale watermarks when the backend epoch changes (restart poisoning)', async () => {
     const client = makeClient()
 

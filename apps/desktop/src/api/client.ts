@@ -2,7 +2,7 @@ import { type GatewayEvent, type GatewayEventName, JsonRpcGatewayClient } from '
 
 import type { HermesApiRequest } from '@/global'
 
-import { CanonicalDesktopProtocol } from './canonical-protocol'
+import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol } from './canonical-protocol'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -77,7 +77,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
         if (!ticket) {throw new Error('Native gateway requires a fresh private ticket')}
         parsed.searchParams.delete('ticket')
 
-        return new WebSocket(parsed.toString(), ['hermes-gateway-v1', `hermes-gateway-ticket.${ticket}`])
+        return new WebSocket(parsed.toString(), [CANONICAL_GATEWAY_PROTOCOL, `hermes-gateway-ticket.${ticket}`])
       }
     })
     this.onEvent(event => { if (this.canonical) { this.protocol.event(event) } })

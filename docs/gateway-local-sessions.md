@@ -27,6 +27,37 @@ admission, not inference completion. Closing every viewer leaves the execution a
 pending approval alive. A new viewer can resume the same identity and answer through
 `approval.respond({session_id, execution_generation, prompt_id, choice})`.
 
+## Deliberate behavior change: shared operator access
+
+Verified operators of the same gateway profile may attach to canonical local sessions
+created through another operator authentication path. This replaces the creator-subject-only
+access fence for those operators: the existing dashboard gate already grants operator access,
+so changing from native CLI/TUI to an authenticated dashboard must not create a second runtime
+or prevent attachment solely because the raw identities differ. This is shared access, not
+shared identity: creation receipts keep the original owner, and admissions and retries keep
+the submitting principal.
+
+The server issues `session:operator` only at these existing trusted boundaries:
+
+- Native interactive bootstrap ticket redemption (not worker-adoption tickets).
+- The dashboard WebSocket upgrade gate, including authenticated dashboard login tickets,
+  the process-lifetime internal credential for server-spawned PTY clients, and the verified
+  legacy session token when that authentication path is enabled.
+- The HTTP mutation gate, after a verified dashboard Session, native HTTP owner grant,
+  or permitted legacy session token has been accepted.
+
+A client cannot request this scope in RPC parameters or an identity capability list.
+Operator scope does not replace profile, instance, per-operation capability, subscription,
+revision, or generation checks. It does not upgrade messaging, room, worker, or service
+credentials, or permit remote first-claim adoption of unowned historical transcripts. If
+restricted dashboard identities are introduced, these issuance gates must reflect that
+restriction rather than treating every accepted dashboard credential as an operator.
+
+Cross-subject local submissions carry a private, server-written profile/session/principal
+binding for queued execution and recovery. It is not exposed in model requests or public
+session snapshots. This change does not expose the gateway listener remotely or implement
+OpenAI API-to-local session affinity; those remain separate integration paths.
+
 ## Deliberately limited compatibility
 
 - `source` accepts `cli` (default), `tui`, or `gui`. These select the existing agent
@@ -46,11 +77,11 @@ pending approval alive. A new viewer can resume the same identity and answer thr
   `invalid_params`. Provider credentials/routing and reasoning/service-tier defaults still
   use the existing gateway resolution lifecycle; this is not full launch-option parity.
   No supported launch field mutates daemon-wide configuration or process environment.
-- Fresh creation currently requires the identity stamped by the existing gated WS ticket
-  path. The legacy ungated `?token=` path in this base does not stamp identity and cannot
-  create. The authentication/bootstrap integration must supply the proper server principal;
-  callers cannot provide one in RPC parameters. Resume-only capabilities must not be
-  promoted to `session:create` by that integration.
+- Fresh creation requires a server-authenticated identity with `session:create`, supplied
+  by the gated dashboard or native bootstrap path. The verified legacy `?token=` route
+  stamps a session-token identity and also supports creation. Callers cannot provide an
+  identity in RPC parameters, and operator scope does not promote resume-only capabilities
+  to `session:create`.
 - `session.list({limit})` returns authorized **live** authority sessions (`scope: "live"`),
   not the full historical session picker. `session.info({session_id})` is a lightweight,
   authorized view of source, current model, lazy-agent status, and profile ID.
@@ -58,9 +89,10 @@ pending approval alive. A new viewer can resume the same identity and answer thr
   epoch, and the narrow implemented creation contract. It does not claim full runtime
   protocol readiness, reveal credentials/paths, start an agent, or renew a turn lease.
 - Cold restart restores valid private local policies and server-owned routes before execution.
-  Local sessions are scoped to their authenticated creating principal and profile. Caller
-  source/native context cannot reconstruct or authorize a local route. Missing, malformed,
-  foreign-profile or mismatched policy/identity fails closed, including preclaim checks;
+  Creation receipts remain bound to their authenticated creating principal and profile;
+  verified operators in that profile may access the canonical session without replacing
+  that binding. Caller source/native context cannot reconstruct or authorize a local route.
+  Missing, malformed, foreign-profile or mismatched policy/identity fails closed, including preclaim checks;
   historical pre-extension sessions without a receipt are not silently treated as CLI.
 - Never-started queued local inputs resume through the same authority FIFO after bootstrap
   readiness. Interrupted started inputs become `unknown`, are never replayed, and pause
@@ -82,6 +114,21 @@ pending approval alive. A new viewer can resume the same identity and answer thr
   Clients continue resuming the creation ID, not an internal physical continuation ID.
 
 ## Verification
+
+`tests/gateway/test_operator_cross_surface.py` exercises native-created/dashboard-attached
+and dashboard-created/native-attached sessions through real bootstrap and dashboard
+login/callback/cookie/ticket paths in a disposable gateway process. The identity provider and
+model endpoint are test fixtures. It verifies client disconnect/reconnect, FIFO admission and
+retry, retained attribution and model context, unchanged system messages, and private
+operator provenance absent from public responses and model requests. It does **not** kill
+and restart the gateway process, directly compare simultaneous live fanout, or exercise
+shared approval/clarify across those two authentication methods.
+
+`tests/gateway/test_session_operator_scope.py` covers queued operator input across a fresh
+authority epoch using a stub executor and a paused scheduler. This is unit-level recovery
+evidence, not real cross-surface cold-process restart certification. The existing recovery
+fixtures described below provide separate coverage; their results must not be presented as
+a new end-to-end cross-authentication gateway-crash test.
 
 `tests/gateway/test_local_session.py` launches a disposable process with temporary HOME
 and HERMES_HOME, the production composed HTTP/WS listener, real single-use authenticated

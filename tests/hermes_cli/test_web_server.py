@@ -542,14 +542,14 @@ class TestWebServerEndpoints:
         assert payload["recents"]["sessions"] == []
 
     def test_startup_eager_reconcile_heals_stale_store(self):
-        """The lifespan's eager reconcile brings a stale store current.
+        """The OWNER's startup open brings a stale store current; the dashboard only reads.
 
         #79531/#80037: after `hermes update` an old-schema state.db used to
         stay stale until the first NEW session forced a writable open —
         every /api/sessions poll 500ed with "no such column" in between.
-        The lifespan now schedules one writable open at startup; this
-        exercises that worker directly against a store missing
-        sessions.last_read_at and asserts the schema is brought current.
+        Under the unified runtime the dashboard is a zero-writer view: its
+        eager probe must NOT heal (#107688 two-writer vector), and the
+        gateway owner's writable acquisition is what reconciles the schema.
         """
         import sqlite3
 
@@ -571,7 +571,21 @@ class TestWebServerEndpoints:
         finally:
             legacy.close()
 
+        # Dashboard probe: read-only, never heals (no writable open from a viewer).
         _web_server_lifecycle._eager_reconcile_own_session_db()
+        stale = sqlite3.connect(str(db_path))
+        try:
+            assert "last_read_at" not in {row[1] for row in stale.execute("PRAGMA table_info(sessions)")}
+        finally:
+            stale.close()
+
+        # Owner path: the gateway's writable acquisition reconciles the schema at startup.
+        from hermes_state_registry import acquire, release_or_close
+        owner = acquire(db_path)
+        try:
+            pass
+        finally:
+            release_or_close(owner)
 
         healed = sqlite3.connect(str(db_path))
         try:

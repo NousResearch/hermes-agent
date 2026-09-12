@@ -2,21 +2,6 @@
 import threading
 from contextlib import nullcontext
 
-import pytest
-
-
-@pytest.mark.parametrize('entitled', [False, True])
-def test_catalog_filters_all_wisdom_projections(monkeypatch, entitled):
-    from tui_gateway.command_discovery import command_catalog
-    monkeypatch.setattr('hermes_wisdom.entitlement.is_entitled', lambda: entitled)
-    monkeypatch.setattr('hermes_cli.plugins.get_plugin_commands', lambda: {})
-    monkeypatch.setattr('agent.skill_commands.scan_skill_commands', lambda: {})
-    catalog = command_catalog(load_cfg=lambda: {})
-    for projection in ('commands', 'canon', 'sub'):
-        assert ('/wisdom' in catalog[projection]) is entitled
-    assert any(key == '/wisdom' for key, _ in catalog['pairs']) is entitled
-
-
 def test_live_message_count_tracks_serialized_projection(monkeypatch):
     from tui_gateway import server
     monkeypatch.setattr(server, '_session_db', lambda session: nullcontext(None))

@@ -808,10 +808,7 @@ class TestSecondaryProfileConfigHandling:
         from gateway.config import GatewayConfig
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = GatewayConfig(
-            multiplex_profiles=True,
-            multiplex_profile_allowlist=["bad", "good"],
-        )
+        runner.config = GatewayConfig(multiplex_profiles=True)
         runner.adapters = {}
         runner._profile_adapters = {}
         runner.pairing_stores = {
@@ -828,9 +825,8 @@ class TestSecondaryProfileConfigHandling:
             runner._profile_adapters[profile_name] = {}
             return 2
 
-        def fake_profiles_to_serve(multiplex, profile_allowlist=None):
+        def fake_profiles_to_serve(multiplex):
             assert multiplex is True
-            assert profile_allowlist == ["bad", "good"]
             return [
                 ("default", Path("/tmp/default")),
                 ("bad", Path("/tmp/bad")),
@@ -879,7 +875,7 @@ class TestSecondaryProfileConfigHandling:
 
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex, profile_allowlist=None: [
+            lambda multiplex: [
                 ("default", Path("/tmp/default")),
                 ("unsafe", Path("/tmp/unsafe")),
             ],

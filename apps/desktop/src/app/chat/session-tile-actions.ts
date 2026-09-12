@@ -364,6 +364,37 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     }
   }, [bindRecoveredRuntime, copy.stopFailed, requestSessionGateway, update])
 
+  // A hidden note mid-turn rides session.steer into the model's next tool
+  // result: no optimistic bubble, no user turn. The main composer has the same
+  // primitive in use-prompt-actions.
+  const injectHiddenPrompt = useCallback(
+    async (rawText: string): Promise<boolean> => {
+      const text = rawText.trim()
+      const sessionId = runtimeIdRef.current
+
+      if (!text || !sessionId) {
+        return false
+      }
+
+      try {
+        const { result } = await withSessionNotFoundResume(
+          sessionId,
+          storedIdRef.current,
+          liveId => requestSessionGateway<{ status?: string }>('session.steer', { session_id: liveId, text }),
+          {
+            requestGateway: requestSessionGateway,
+            onRecovered: bindRecoveredRuntime
+          }
+        )
+
+        return result?.status === 'queued'
+      } catch {
+        return false
+      }
+    },
+    [bindRecoveredRuntime, requestSessionGateway]
+  )
+
   const steerPrompt = useCallback(
     async (rawText: string, mode: 'interrupt' | 'steer' = 'interrupt'): Promise<boolean> => {
       const text = rawText.trim()
@@ -669,6 +700,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       dismissError,
       editMessage,
       handleThreadMessagesChange,
+      injectHiddenPrompt,
       reloadFromMessage,
       restoreToMessage,
       steerPrompt,
@@ -679,6 +711,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       dismissError,
       editMessage,
       handleThreadMessagesChange,
+      injectHiddenPrompt,
       reloadFromMessage,
       restoreToMessage,
       steerPrompt,

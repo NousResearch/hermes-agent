@@ -2,6 +2,7 @@
 import hashlib
 import json
 import logging
+from pathlib import Path
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
@@ -13,6 +14,33 @@ from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 def local_identity(profile_id, principal_id, request_id):
     identity = json.dumps([profile_id, principal_id, request_id], separators=(',', ':'))
     return 'local-' + hashlib.sha256(identity.encode()).hexdigest()
+
+
+def local_adapter_map(authority):
+    """The adapter map a LOCAL session of *authority* lives in: ``runner.adapters`` for the launch
+    profile, ``runner._profile_adapters[name]`` for a served secondary (its routed home, so
+    ``_adapter_for_source`` / ``_adapters_for_profile`` resolve the right transport)."""
+    runner = authority.runner
+    registry = getattr(runner, 'session_authorities', None)
+    name = registry.profile_name(authority) if registry is not None else None
+    if name is None:
+        return runner.adapters
+    profile_adapters = getattr(runner, '_profile_adapters', None)
+    if profile_adapters is None:
+        profile_adapters = runner._profile_adapters = {}
+    return profile_adapters.setdefault(name, {})
+
+
+def local_source(authority, chat_id, user_id):
+    """LOCAL SessionSource for a session owned by *authority*. A served secondary's local sessions
+    carry its profile so ``build_session_key`` namespaces them (``agent:<name>:local:...``) and the
+    SessionStore writes their rows to that profile's ``state.db``, not the launch store."""
+    source = SessionSource(platform=Platform.LOCAL, chat_id=chat_id, user_id=user_id, chat_type='dm')
+    registry = getattr(authority.runner, 'session_authorities', None)
+    name = registry.profile_name(authority) if registry is not None else None
+    if name is not None:
+        source.profile = name
+    return source
 
 
 def restore_local_session(authority, sid):
@@ -27,8 +55,7 @@ def restore_local_session(authority, sid):
                    local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
         if receipt['session_id'] != sid or sid != chat_id:
             raise ValueError('identity mismatch')
-        source = SessionSource(platform=Platform.LOCAL, chat_id=chat_id,
-                               user_id=receipt['principal_id'], chat_type='dm')
+        source = local_source(authority, chat_id, receipt['principal_id'])
         store = authority.runner.session_store
         route = store._generate_session_key(source)
         if receipt['route'] != route:
@@ -49,10 +76,11 @@ def restore_local_session(authority, sid):
         if isinstance(exc, RuntimeStoreError):
             raise
         raise RuntimeStoreError('storage_unavailable') from exc
-    adapter = authority.runner.adapters.get(Platform.LOCAL)
+    adapters = local_adapter_map(authority)
+    adapter = adapters.get(Platform.LOCAL)
     if adapter is None:
         adapter = LocalSessionAdapter(authority)
-        authority.runner.adapters[Platform.LOCAL] = adapter
+        adapters[Platform.LOCAL] = adapter
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise RuntimeStoreError('runtime_draining')
     live = authority.sessions.get(sid)
@@ -95,7 +123,10 @@ def reset_local_session(store, old_entry, session_id, now, display_name):
         origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
         display_name=display_name if display_name is not None else old_entry.display_name,
         is_fresh_reset=True)
-    reset_local_target(store._db_for_key(old_entry.session_key), epoch=store._local_authority_epoch,
+    db = store._db_for_key(old_entry.session_key)
+    epochs = getattr(store, '_local_authority_epochs', None) or {}
+    epoch = epochs.get(Path(db.db_path).resolve(), store._local_authority_epoch) if db is not None else store._local_authority_epoch
+    reset_local_target(db, epoch=epoch,
                        parent_session_id=old_entry.session_id, entry=entry.to_dict())
     store._entries[old_entry.session_key] = entry
     return entry

@@ -108,8 +108,15 @@ An interrupted started admission becomes `unknown` and pauses its session's FIFO
 its followers do not automatically run. Legacy synthetic restart turns are excluded
 from sessions with canonical admission history, so they cannot race the durable
 queue or bypass an unknown pause. Completed inputs are not reinferred on restart.
-This recovery does not enable multiplex profile authorities, which remain refused
-by the ordinary bootstrap.
+Under `gateway.multiplex_profiles` the bootstrap builds one session authority per
+served profile home (the default plus every directory under `profiles/`), each bound
+to that home's `state.db` and entered under that profile's runtime scope. Every
+admission path (bot message, `/p/<profile>/` API and webhook, cron fire, kanban
+dispatch, native CLI/Desktop/ACP attach) resolves its authority from the routed
+profile's home, so recovery, FIFO order and exactly-once settlement hold per profile
+and a secondary's rows never land in the default's ledger. A served secondary's
+clients discover the multiplexer through the default home's descriptor
+(`served_profiles`) and attach to its control socket with their own `profile_id`.
 
 ## Shared authority local slash commands
 

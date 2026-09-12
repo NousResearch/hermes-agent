@@ -391,8 +391,7 @@ class WebhookAdapter(BasePlatformAdapter):
             return _PROFILE_REJECTED
         try:
             from hermes_cli.profiles import profiles_to_serve
-            allowlist = getattr(cfg, "multiplex_profile_allowlist", None)
-            served = {name for name, _ in profiles_to_serve(multiplex=True, profile_allowlist=allowlist)}
+            served = {name for name, _ in profiles_to_serve(multiplex=True)}
         except Exception:
             return _PROFILE_REJECTED
         return profile if profile in served else _PROFILE_REJECTED
@@ -594,7 +593,9 @@ class WebhookAdapter(BasePlatformAdapter):
             return _json_error("Admission unavailable; retry this delivery", 503)
         if getattr(event, '_webhook_duplicate', False):
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
-        authority = self._message_handler.__self__.session_authority
+        from gateway.session_authorities import active_authority, authority_for_profile_id
+        runner = self._message_handler.__self__
+        authority = authority_for_profile_id(runner, receipt.ref.profile_id) or active_authority(runner)
         task = asyncio.create_task(self._finalize_delivery(event, authority, receipt))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)

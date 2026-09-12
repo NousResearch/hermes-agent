@@ -9,6 +9,7 @@ import uuid
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
+from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -67,10 +68,16 @@ def authorize_local_source(runner, source):
         return None
     # A forged profile must not miss this adapter and fall into a messaging
     # allow-all policy. Local source identity is owned by this authority alone.
-    adapter = runner._primary_adapters().get(Platform.LOCAL)
+    from gateway.session_authorities import all_authorities
+    owners = all_authorities(runner)
+    adapter = runner._adapters_for_profile(source.profile).get(Platform.LOCAL)
     if not isinstance(adapter, LocalSessionAdapter):
-        return None
-    if adapter.authority is not getattr(runner, 'session_authority', None):
+        # A LOCAL source naming a profile this runtime does not serve must fail closed rather
+        # than fall into a messaging allow-all policy; legacy runners (no authority) stay None.
+        return False if owners else None
+    # The adapter's authority must be one THIS runtime owns (the launch authority or a served
+    # secondary's), never a stale/foreign object that happens to carry a LOCAL adapter.
+    if not any(adapter.authority is owner for owner in owners):
         return False
     return adapter.authorize_source(source)
 
@@ -131,8 +138,8 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
                 raise RuntimeStoreError('admission_conflict')
         return restore_local_session(authority, sid)
     policy = bind_launch_key(authority, sid, policy, params.get("api_key"), config_secrets=private_secrets)
-    source = SessionSource(platform=Platform.LOCAL, chat_id=sid,
-                           user_id=actor.subject, chat_type='dm')
+    from gateway.session_local_recovery import local_source
+    source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)
     now = datetime.now(timezone.utc)
     entry = SessionEntry(route, sid, now, now, origin=source, platform=Platform.LOCAL)
@@ -146,7 +153,8 @@ def publish_local_policy(authority, session_id):
     from hermes_state_local import local_receipt
     from gateway.session_policy import restore_policy
     live = authority.sessions[session_id]
-    adapter = authority.runner.adapters[Platform.LOCAL]
+    from gateway.session_local_recovery import local_adapter_map
+    adapter = local_adapter_map(authority)[Platform.LOCAL]
     adapter.policies[live.source.chat_id] = restore_policy(local_receipt(authority.db, session_id)['policy'])
     authority.runner._evict_cached_agent(live.route)
 
@@ -158,4 +166,5 @@ def local_session_info(authority, ref):
     policy = policy_for_source(authority.runner, live.source)
     return {'source': policy.source if policy else live.source.platform.value,
             'model': getattr(agent, 'model', policy.model if policy else None), 'lazy': agent is None,
-            'profile_id': authority.profile_id, **({'cwd': policy.cwd} if policy else {})}
+            'profile_id': authority.profile_id, 'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,
+            **({'cwd': policy.cwd} if policy else {})}

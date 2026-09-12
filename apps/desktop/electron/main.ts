@@ -203,11 +203,11 @@ import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
 import { downloadViaTokenToFile } from './gateway-download-transport'
 import {
+  downloadGatewayFile,
   filenameFromContentDisposition,
   fsPumpDeps,
   gatewayFilePath,
   gatewayFileRequestPaths,
-  isNotFoundError,
   parseDataUrlToBuffer,
   pumpStreamToFile,
   resolveGatewayFileBackend,
@@ -216,7 +216,7 @@ import {
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
-import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
+import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -286,7 +286,6 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
-import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { createParentStartMarkerResolver } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -909,6 +908,7 @@ const SKIP_QUIT_CONFIRM = process.env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM === '1'
 // Nous free tier gate, decided ONCE here and stamped onto every backend spawn
 // (desktopBackendSpawnEnv) and the renderer (hermes:launch-flags).
 const GUEST_ONBOARDING = guestOnboardingEnabled()
+const SKIP_INTRO = skipIntroEnabled()
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -7894,28 +7894,13 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
 
   const url = `${connection.baseUrl}${requestPaths.download}`
 
-  try {
-    const auth = await gatedFileAuth(connection)
-
-    if (auth.kind === 'bearer') {
-      return await downloadViaTokenToFile(url, auth.token, ctx, finalizeGatewayDownload, { bearer: auth.token })
-    }
-
-    if (auth.kind === 'cookie') {
-      return await downloadViaOauthSessionToFile(url, ctx)
-    }
-
-    return await downloadViaTokenToFile(url, auth.token, ctx, finalizeGatewayDownload, { gatewayDescriptor: connection.gatewayEndpoint ? connection : undefined })
-  } catch (error) {
-    // Desktop and the remote gateway update independently. A gateway predating
-    // /api/fs/download 404s here; fall back (ONLY on 404) to the older capped
-    // data-URL route so downloads keep working against older backends.
-    if (isNotFoundError(error)) {
-      return await saveGatewayFileViaDataUrl(connection, requestPaths.dataUrl, ctx)
-    }
-
-    throw error
-  }
+  return downloadGatewayFile(connection.baseUrl, connection.authMode === 'oauth', {
+    ensureNativeAccessToken,
+    requestWithBearer: bearer => downloadViaTokenToFile(url, null, ctx, finalizeGatewayDownload, { bearer }),
+    requestWithCookie: () => downloadViaOauthSessionToFile(url, ctx),
+    requestWithToken: () => downloadViaTokenToFile(url, connection.token, ctx, finalizeGatewayDownload, { gatewayDescriptor: connection.gatewayEndpoint ? connection : undefined }),
+    requestWithDataUrl: () => saveGatewayFileViaDataUrl(connection, requestPaths.dataUrl, ctx)
+  })
 }
 
 // Compatibility fallback: fetch the file through the capped
@@ -7927,17 +7912,7 @@ async function saveGatewayFileViaDataUrl(
   requestPath: string,
   ctx: GatewayFileSaveContext
 ) {
-  const url = `${connection.baseUrl}${requestPath}`
-  const auth = await gatedFileAuth(connection)
-  let json: unknown
-
-  if (auth.kind === 'bearer') {
-    json = await fetchJson(url, null, { bearer: auth.token })
-  } else if (auth.kind === 'cookie') {
-    json = await fetchJsonViaOauthSession(url)
-  } else {
-    json = await fetchJson(url, auth.token, { gatewayDescriptor: connection.gatewayEndpoint ? connection : undefined })
-  }
+  const json = await fetchJsonForBackend(connection, requestPath)
 
   const dataUrl =
     json && typeof json === 'object' && 'dataUrl' in json && typeof json.dataUrl === 'string' ? json.dataUrl : ''
@@ -10706,19 +10681,7 @@ async function fetchJsonForProfile(profile, path) {
 async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
   const conn = await ensureBackend(profile)
 
-  if (conn.authMode === 'oauth') {
-    // Native RFC 8252 flow: authenticate with the bearer token (cookieless)
-    // when we hold one for this gateway; otherwise use the cookie partition.
-    const nativeAt = await ensureNativeAccessToken(conn.baseUrl).catch(() => null)
-
-    if (nativeAt) {
-      return fetchJson(url, null, { ...opts, bearer: nativeAt, headers: conn.headers })
-    }
-
-    return fetchJsonViaOauthSession(url, { ...opts, headers: conn.headers })
-  }
-
-  return fetchJson(url, conn.token, { ...opts, headers: conn.headers, gatewayDescriptor: conn.gatewayEndpoint ? conn : undefined })
+  return fetchJsonForBackend(conn, path, { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
 }
 
 async function probeRemoteAuthMode(rawUrl) {
@@ -12047,7 +12010,7 @@ const backendShutdown = createBackendShutdownCoordinator(async () => {
   const primary = backendConnectionState.invalidate()
 
   stopBackendChild(primary)
-  await Promise.all([waitForBackendExit(primary), stopAllPoolBackends()])
+  await waitForTeardown([localShutdown, waitForBackendExit(primary), stopAllPoolBackends()], 7_000)
 })
 
 const quitTeardown = createQuitTeardownCoordinator(() => app.quit())
@@ -15758,57 +15721,19 @@ async function handleHermesApiRequest(request) {
     const connection = await ensureBackend(routeProfile, { passive: request?.passive })
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-    const url = `${connection.baseUrl}${apiRoute.requestPath}`
-
-    // OAuth gateways authenticate REST via EITHER a native bearer token
-    // (cookieless RFC 8252 flow) OR the HttpOnly session cookie held in the OAuth
-    // partition. Prefer the native bearer when present (mirroring
-    // mintGatewayWsTicket): the native flow never sets a cookie, so routing an
-    // oauth-mode REST call through the cookie-only path returns 401 no_cookie even
-    // though a valid bearer is held. Cookie mode rides Electron's net stack bound
-    // to the OAuth partition so the cookie attaches automatically. Token/local
-    // modes keep using the static session-token header.
-    if (connection.authMode === 'oauth') {
-      // The OAuth path rides electron.net with JSON headers; multipart isn't
-      // wired there. Fail loudly rather than corrupting the upload.
-      if (request?.upload) {
-        throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
-      }
-
-      // Native bearer first (cookieless). ensureNativeAccessToken transparently
-      // refreshes a near-expiry AT via /auth/native/refresh; a null return means
-      // no native session (resolveOauthRestAuth then selects the cookie path).
-      const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
-      const restAuth = resolveOauthRestAuth(nativeAt)
-
-      if (restAuth.kind === 'bearer') {
-        response = await fetchJson(url, null, {
-          method: request?.method,
-          body: request?.body,
-          timeoutMs,
-          bearer: restAuth.token
-        })
-      } else {
-        response = await fetchJsonViaOauthSession(url, {
-          method: request?.method,
-          body: request?.body,
-          timeoutMs
-        })
-      }
-    } else if (connection.gatewayEndpoint) {
+    if (connection.gatewayEndpoint) {
       response = await redialLocalGateway({
         ensure: () => ensureBackend(routeProfile),
         forget: () => forgetLocalGatewayDescriptor(routeProfile),
-        use: current => fetchJson(`${current.baseUrl}${apiRoute.requestPath}`, current.token, {
+        use: current => fetchJsonForBackend(current, apiRoute.requestPath, {
           method: request?.method,
           body: request?.body,
           upload: request?.upload,
-          timeoutMs,
-          gatewayDescriptor: current
+          timeoutMs
         })
       })
     } else {
-      response = await fetchJson(url, connection.token, {
+      response = await fetchJsonForBackend(connection, apiRoute.requestPath, {
         method: request?.method,
         body: request?.body,
         upload: request?.upload,
@@ -16268,7 +16193,8 @@ ipcMain.on('hermes:translucency:support', event => {
 ipcMain.on('hermes:launch-flags', event => {
   event.returnValue = {
     localModels: process.argv.includes('--local') || process.platform === 'win32' || process.platform === 'darwin',
-    guestOnboarding: GUEST_ONBOARDING
+    guestOnboarding: GUEST_ONBOARDING,
+    skipIntro: SKIP_INTRO
   }
 })
 
@@ -17376,7 +17302,6 @@ app.on('before-quit', event => {
 
   const backendNeedsWait = backendQuitNeedsWait({
     connectionPending: backendConnectionState.getPendingPromise() !== null || localBackendLifecycle.hasPending(),
-    poolPending: poolStopper.hasPending(),
     processAttached: backendConnectionState.getProcess() !== null,
     shutdownPending: backendShutdown.isPending()
   })

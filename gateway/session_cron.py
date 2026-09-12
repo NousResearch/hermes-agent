@@ -87,7 +87,8 @@ def _create(authority, actor, params):
     policy = replace(policy, source='cron', platform='cron', model=_load_cron_job_config(job, jid, job.get('name') or jid).model,
                      request_json=json.dumps({'cron_job': job, 'extra_prompt': extra, 'request_id': request_id}))
     policy = bind_launch_key(authority, sid, policy, None, config_secrets=private)
-    source = SessionSource(platform=Platform.LOCAL, chat_id=sid, user_id=actor.subject, chat_type='dm')
+    from gateway.session_local_recovery import local_source
+    source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)
     now = datetime.now(timezone.utc)
     entry = SessionEntry(route, sid, now, now, origin=source, platform=Platform.LOCAL)
@@ -117,14 +118,18 @@ async def operation(authority, name, params, actor=None):
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, sid)
         from gateway.config import Platform
-        policy = authority.runner.adapters[Platform.LOCAL].policies[sid]
+        from gateway.session_local_recovery import local_adapter_map
+        policy = local_adapter_map(authority)[Platform.LOCAL].policies[sid]
         frozen = json.loads(policy.request_json)
         if frozen['extra_prompt'] != params['extra_prompt']:
             raise RuntimeStoreError('admission_conflict')
         state['job'] = frozen['cron_job']
         return state
     if name == 'submit':
-        ref, request_id = _create(authority, actor, params)
+        from gateway.session_authorities import owner_scope
+        # The job id, jobs file and gateway config belong to the OWNING profile.
+        with owner_scope(authority):
+            ref, request_id = _create(authority, actor, params)
         row = admit_session_input(authority.db, epoch=authority.epoch, principal_id=actor.subject,
                                   session_id=ref.session_id, request_id=request_id,
                                   payload={'text': params['extra_prompt'] or ''})

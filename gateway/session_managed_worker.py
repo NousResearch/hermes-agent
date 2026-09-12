@@ -172,9 +172,30 @@ def _prompt_frame(authority, ref, row, worker, frame):
     return True
 
 
+def _worker_env(authority):
+    """Child env for the OWNING profile under multiplex: its HERMES_HOME plus its ``.env``
+    secrets over a scrubbed base, never the launch profile's process environment (the same
+    rule MCP stdio children and shell hooks follow). Single-profile gateways inherit the
+    process env byte-for-byte, exactly as before."""
+    from pathlib import Path
+    from agent.secret_scope import is_multiplex_active
+    home = Path(str(authority.profile_id))
+    if not is_multiplex_active() or not home.is_absolute():
+        return None
+    from agent.secret_scope import build_profile_secret_scope
+    from tools.environments.local import build_subprocess_env
+    env = build_subprocess_env(scrub_secrets=True)
+    env.update({k: v for k, v in build_profile_secret_scope(home).items() if v is not None})
+    env['HERMES_HOME'] = str(home)
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(env)
+    return env
+
+
 async def execute_managed(authority, ref, row, policy):
+    env = await asyncio.to_thread(_worker_env, authority)
     process = await asyncio.to_thread(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
-        cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE,
+        cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True)
     worker = ManagedWorker(process)
     workers = getattr(authority, '_managed_workers', None)

@@ -72,7 +72,10 @@ class GatewayClient:
 
 
 def _session_ticket(home: Path, endpoint, *, purpose="interactive") -> str:
+    from hermes_cli.gateway_runtime import control_home_for
     from hermes_cli.gateway_runtime_discovery import _socket_path, _identify_response
+    # A served secondary's ticket is minted by the multiplexer's socket, bound to the secondary.
+    home = control_home_for(home, endpoint)
     request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket", "params": {
         "profile_id": endpoint.profile_id, "instance_id": endpoint.instance_id, "purpose": purpose,
     }}).encode() + b"\n"

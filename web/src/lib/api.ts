@@ -2,7 +2,6 @@ import { buildHermesWebSocketUrl } from "@hermes/shared";
 import { createDashboardSessionMutations } from "./session-mutations";
 
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
-import type { WisdomMuteControl, WisdomMuteDuration, WisdomMuteSnapshot, WisdomSyncSnapshot } from '@hermes/shared'
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied

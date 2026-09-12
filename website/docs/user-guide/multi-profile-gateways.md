@@ -126,7 +126,13 @@ profile 'coder'. ...
 
 The refusal happens in the CLI before any service manager is touched, so a served
 profile never ends up with a permanently failed systemd unit or a launchd respawn
-loop. The Desktop app's per-profile "Start gateway" action is refused the same way.
+loop. `hermes -p coder gateway stop` refuses the same way (exit 78) when coder has no
+gateway of its own — there is nothing to stop but the multiplexer, which
+`hermes gateway stop` on the default profile takes down for every served profile.
+The dashboard and Desktop app follow the CLI: for a served profile the "Start" and
+"Stop" gateway actions answer `409` with the same explanation, and "Restart"
+restarts the multiplexer (the process that actually serves the profile) instead of
+spawning a `-p coder gateway restart` that could only fail.
 "Served" is read from the running gateway's own record (`served_profiles` in the
 default home's `gateway_state.json`), so it stays correct when the multiplexer was
 enabled only through `GATEWAY_MULTIPLEX_PROFILES` in the default profile's
@@ -246,7 +252,9 @@ There is a single process-level PID and lock (the multiplexer, under the default
 home). `hermes status` on the default profile reports the multiplexer and lists
 the profiles it serves (`Serves: coder, research`); `hermes -p coder status`,
 `hermes -p coder gateway status` and `hermes -p coder cron status` all report
-"running via the default-profile multiplexer" instead of "stopped". The single
+"running via the default-profile multiplexer" instead of "stopped", and the
+dashboard's `/api/status?profile=coder` / Channels page report the multiplexer as
+coder's running gateway (with coder's own adapters as its platforms). The single
 `gateway_state.json` lives under the default home: secondary adapters appear
 there as `<profile>:<platform>` entries beside `served_profiles`; nothing is
 written under a secondary profile's home.

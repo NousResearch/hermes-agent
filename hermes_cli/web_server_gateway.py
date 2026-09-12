@@ -356,8 +356,36 @@ def _spawn_hermes_action(
 
 
 def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
+    """``hermes [-p X] gateway <verb>`` argv for a dashboard lifecycle action. A profile served by the
+    live default multiplexer has no gateway of its own: ``restart`` targets the multiplexer (the process
+    that actually serves X — a ``-p X gateway restart`` child only exits 78 into the action log while the
+    UI reports "restarted"); ``start``/``stop`` are refused by the caller (``multiplexed_profile_refusal``)."""
     from hermes_cli.web_server_profiles import _profile_cli_args
-    return _profile_cli_args(profile) + ["gateway", verb]
+    args = _profile_cli_args(profile)
+    if args and verb == "restart" and multiplexed_profile_refusal(args[-1], verb) is not None:
+        args = []
+    return args + ["gateway", verb]
+
+
+def _profile_is_multiplexed(profile: str) -> bool:
+    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+    return named_profile_served_by_running_multiplexer(profile)
+
+
+def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[str]:
+    """Refusal text for ``gateway start``/``stop`` on a profile the live default multiplexer serves and
+    that has no gateway of its own (a ``--force``-started separate one is managed normally), else None.
+    The spawned ``hermes -p X gateway <verb>`` would only print exit-78 / "no gateway running for this
+    profile" into an action log nobody reads while the UI shows the verb as done."""
+    requested = (profile or "").strip()
+    if not requested or requested.lower() in {"current", "default"} or not _profile_is_multiplexed(requested):
+        return None
+    from hermes_cli.profiles import _check_gateway_running
+    from hermes_cli.web_server_profiles import _resolve_profile_dir
+    if _check_gateway_running(_resolve_profile_dir(requested)):
+        return None
+    return (f"The default gateway already serves profile '{requested}' as a multiplexer; "
+            f"{verb} it from the default profile instead of a separate gateway for this profile.")
 
 
 def _restart_gateway_after(profile: Optional[str], *, what: str, label: str) -> dict[str, Any]:

@@ -283,6 +283,35 @@ def _is_auth_error(exc: BaseException) -> bool:
     return getattr(exc.response, "status_code", None) == 401 if isinstance(exc, http_types) else True
 
 
+def _is_http_session_expired_401(exc: BaseException) -> bool:
+    """True when ``exc`` is an HTTP 401 caused by **server-side session GC**, not credential revocation.
+
+    Streamable-HTTP servers (e.g. Composio) issue a session ID on first connect and include it as
+    ``MCP-Session-ID`` in every subsequent POST.  After the server idles and GCs that session
+    (~3 min for Composio) it returns 401 — not because the API key expired, but because it no
+    longer recognises the session.  The correct recovery is a fresh transport reconnect, not an
+    OAuth token refresh.
+
+    Detection: the failing request carried an ``MCP-Session-ID`` header (proving we had an
+    established transport session) AND the response status is 401.  Credential-rejection 401s
+    happen on the very first request (no session ID yet) or after an explicit token revocation.
+
+    See #106094.
+    """
+    _, http_types = _get_auth_error_types()
+    if not http_types or not isinstance(exc, http_types):
+        return False
+    if getattr(getattr(exc, "response", None), "status_code", None) != 401:
+        return False
+    # The request that failed must have carried an MCP-Session-ID header: that means we already
+    # had a proven server-side session that the server subsequently GC'd.
+    request = getattr(exc, "request", None) or getattr(getattr(exc, "response", None), "request", None)
+    if request is None:
+        return False
+    req_headers = getattr(request, "headers", {})
+    return any(str(k).lower() == "mcp-session-id" for k in req_headers)
+
+
 # Lower-cased substrings meaning the transport session expired / was GC'd (OAuth token still valid).
 # Substrings (lower-cased match) that indicate the MCP server rejected the request because its server-side
 # transport session expired / was garbage-collected. See #13383.

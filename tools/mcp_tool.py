@@ -685,6 +685,7 @@ _PLUGIN_COMPAT_LAZY = {
     'InvalidMcpUrlError': ('tools.mcp_tool_errors', 'InvalidMcpUrlError'),
     'MCP_TOOL_NAME_PREFIX': ('tools.mcp_tool_schema', 'MCP_TOOL_NAME_PREFIX'),
     'NonMcpEndpointError': ('tools.mcp_tool_errors', 'NonMcpEndpointError'),
+    '_is_http_session_expired_401': ('tools.mcp_tool_errors', '_is_http_session_expired_401'),
     'discover_mcp_tools': ('tools.mcp_tool_discovery', 'discover_mcp_tools'),
     'get_mcp_status': ('tools.mcp_tool_discovery', 'get_mcp_status'),
     'get_registered_mcp_server_names': ('tools.mcp_tool_discovery', 'get_registered_mcp_server_names'),

@@ -914,7 +914,26 @@ def _build_anthropic_client_from_runtime(agent, rt: Dict[str, Any]) -> None:
 
 def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
     """Rebuild the primary client from a ``_primary_runtime`` snapshot (MoA facade / native Anthropic / OpenAI wire)."""
-    if (agent.provider or "").strip().lower() == "moa":
+    if (agent.provider or "").strip().lower() == "bedrock":
+        # Bedrock never uses an OpenAI client: converse goes through
+        # boto3 directly, Claude-on-Bedrock through the AnthropicBedrock
+        # SDK. Rebuilding via _create_openai_client raises a spurious
+        # OPENAI_API_KEY error and permanently strands the fallback
+        # chain (#102860).
+        from agent.anthropic_adapter import build_anthropic_bedrock_client
+        region = (
+            rt.get("bedrock_region")
+            or getattr(agent, "_bedrock_region", "us-east-1")
+            or "us-east-1"
+        )
+        agent._bedrock_region = region
+        if agent.api_mode == "anthropic_messages":
+            agent._anthropic_client = build_anthropic_bedrock_client(region)
+        else:
+            # converse uses boto3 per-request; no long-lived client.
+            agent._anthropic_client = None
+        agent.client = None
+    elif (agent.provider or "").strip().lower() == "moa":
         # MoA has empty client_kwargs; rebuild via the shared facade factory so the
         # reference_callback relay survives recovery.
         from agent.moa_loop import build_moa_facade
@@ -2074,7 +2093,9 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
-        "client_kwargs": dict(agent._client_kwargs),
+        # Bedrock region for restore_primary_runtime: boto3 / the
+        # AnthropicBedrock SDK resolve it outside client_kwargs (#102860).
+        "bedrock_region": getattr(agent, "_bedrock_region", ""),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,

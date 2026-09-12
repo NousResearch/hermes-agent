@@ -267,7 +267,8 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
           setVoicePlaybackState(currentState('speaking', options))
         }
 
-        const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))
+        const mimeType = tts.wire === 'openai-speech' ? 'audio/ogg; codecs=opus' : 'audio/mpeg'
+        const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }))
 
         try {
           await new Promise<void>((resolve, reject) => {

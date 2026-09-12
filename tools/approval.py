@@ -126,10 +126,13 @@ def register_gateway_notify(session_key: str, cb) -> None:
         _gateway_notify_cbs[session_key] = cb
 
 
-def unregister_gateway_notify(session_key: str) -> None:
+def unregister_gateway_notify(session_key: str, approval_resolver=None) -> None:
     """Unregister the callback and wake ALL blocked threads for this session so
-    they don't hang forever (agent run finished or interrupted)."""
+    they don't hang forever (agent run finished or interrupted). Revoke an
+    optional run resolver under the same lock as queue teardown."""
     with _lock:
+        if approval_resolver is not None:
+            approval_resolver.revoke()
         _gateway_notify_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
@@ -728,6 +731,18 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if spec.user_approved:
             return _user_approved(session_key, description)
         return _approved()
+
+    # A run cancellation can revoke the resolver after presence/unattended checks
+    # but before this shared decision engine reaches the gateway branch. Never
+    # create a pending approval once the exact API run can no longer receive a reply.
+    if is_gateway and not approval_context._api_approval_resolver_available(session_key):
+        return deny(
+            spec.gateway_refused,
+            "blocked",
+            reason="approval resolver unavailable",
+            reason_addendum="",
+            timeout_addendum="",
+        )
 
     if spec.transport:
         attempt = _present_with_selected_transport(

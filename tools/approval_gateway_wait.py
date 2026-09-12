@@ -117,6 +117,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     the leader, so the follower falls through to a fresh prompt."""
     from tools import approval as _approval
 
+    # A cancelled /v1/runs executor can outlive the request task. Re-check the
+    # revocable capability before adding a new queue entry, so a stale worker
+    # cannot create an approval nobody can resolve after teardown.
+    if not _ctx._api_approval_resolver_available(session_key):
+        return {"resolved": False, "choice": "deny", "reason": "approval resolver unavailable"}
+
     primary_key = approval_data.get("pattern_key", "")
     payload = {
         "command": approval_data.get("command", ""),
@@ -127,6 +133,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     }
     keys = list(approval_data.get("pattern_keys") or [])
     with _approval._lock:
+        if not _ctx._api_approval_resolver_available(session_key):
+            return {"resolved": False, "choice": "deny", "reason": "approval resolver unavailable"}
         leader = next((e for e in _approval._gateway_queues.get(session_key, [])
                        if e.data.get("command") == approval_data.get("command")
                        and list(e.data.get("pattern_keys") or []) == keys), None)
@@ -137,6 +145,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
 
     entry = _ApprovalEntry(approval_data)
     with _approval._lock:
+        if not _ctx._api_approval_resolver_available(session_key):
+            return {"resolved": False, "choice": "deny", "reason": "approval resolver unavailable"}
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
     def _drop_entry() -> None:

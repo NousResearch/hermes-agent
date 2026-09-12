@@ -226,17 +226,36 @@ async def test_idle_restart_drain_holds_events_outside_adapter_lifecycle(
         return None
 
     adapter.set_message_handler(drain_handler)
-    events = [
+    text_events = [
         MessageEvent(
             text=text, message_type=MessageType.TEXT, source=source, message_id=f"m{index}"
         )
         for index, text in enumerate(("first", "second"), start=1)
     ]
+    media_events = [
+        MessageEvent(
+            text="",
+            message_type=MessageType.DOCUMENT,
+            source=source,
+            message_id="m3",
+            media_urls=["/tmp/report.pdf"],
+            media_types=["application/pdf"],
+        ),
+        MessageEvent(
+            text="caption",
+            message_type=MessageType.PHOTO,
+            source=source,
+            message_id="m4",
+            media_urls=["/tmp/photo.png", "/tmp/note.mp3", "/tmp/demo.mp4"],
+            media_types=["image/png", "audio/mpeg", "video/mp4"],
+        ),
+    ]
+    events = text_events + media_events
     for event in events:
         await adapter.handle_message(event)
         await adapter._session_tasks[session_key]
 
-    assert handled == ["m1", "m2"]
+    assert handled == ["m1", "m2", "m3", "m4"]
     assert adapter._pending_messages == {}
     assert session_key not in adapter._active_sessions
     assert runner._session_state(session_key).conversation.queued_events == events
@@ -244,12 +263,19 @@ async def test_idle_restart_drain_holds_events_outside_adapter_lifecycle(
     flush_dir = tmp_path / "pending_messages"
     flush_dir.mkdir()
     monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
-    assert flush_overflow_to_file({session_key: events}) == 2
+    assert flush_overflow_to_file({session_key: events}) == 4
     recovered_db = MagicMock()
-    assert recover_pending_to_db(recovered_db) == 2
+    assert recover_pending_to_db(recovered_db) == 4
     assert [
         call.kwargs["content"] for call in recovered_db.append_message.call_args_list
-    ] == ["first", "second"]
+    ] == [
+        "first",
+        "second",
+        "[User sent a file: /tmp/report.pdf]",
+        "caption\n[User sent an image: /tmp/photo.png]\n"
+        "[User sent audio: /tmp/note.mp3]\n"
+        "[User sent a video: /tmp/demo.mp4]",
+    ]
 
 
 @pytest.mark.asyncio

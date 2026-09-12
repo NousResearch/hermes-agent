@@ -91,6 +91,12 @@ class GatewayBusySessionMixin:
             return False
         if not session_id:
             return False
+        media_urls = getattr(event, "media_urls", None) or []
+        if media_urls:
+            from gateway.run import _build_media_placeholder
+
+            media_text = _build_media_placeholder(event)
+            event.text = "\n".join(part for part in (event.text, media_text) if part)
         event.session_id = session_id
         overflow.append(event)
         event._gateway_accepted = True

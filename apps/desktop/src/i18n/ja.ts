@@ -2090,6 +2090,9 @@ export const ja = defineLocale({
     scriptOnlyEditHint: 'スクリプトのみのジョブ（AI プロンプトなし）。ジョブ ID:',
     saveChanges: '変更を保存',
     createAction: 'Cron を作成',
+    modelSwitcher: 'モデル',
+    modelUpdated: 'モデルを更新しました',
+    changeModel: 'モデルを変更',
     tabs: {
       jobs: 'ジョブ',
       blueprints: 'ブレーンプリント'

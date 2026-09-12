@@ -11,9 +11,10 @@ from typing import NoReturn
 from hermes_cli._old_updater import stop_for_relaunch
 
 
-def _reload_hermes_constants() -> None:
-    # Shim to suppress old updater work until relaunch. Never re-execute live globals.
-    return None
+def _reload_hermes_constants() -> NoReturn:
+    # Shim to suppress old updater work until relaunch. Callers dereference the
+    # result, so None crashes. Stop without re-executing live globals.
+    stop_for_relaunch()
 
 
 def ensure_uv(*args, **kwargs) -> NoReturn:

@@ -239,13 +239,15 @@ class SessionAuthority:
     async def submit(self, actor: Principal, request: Submission):
         self.authorize(actor, request.ref, 'session:submit')
         self._require_admission_open()
-        if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {'text', 'attachments', 'finite'}
+        if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
+                'text', 'attachments', 'finite', 'surface', 'voice_context', 'interrupted'}
                 or not isinstance(request.payload['text'], str)):
             raise RuntimeStoreError('invalid_params')
         from gateway.session_ingress_media import admit_attachments
         from gateway.session_finite import admit_finite
+        from gateway.session_surface import admit_surface
         finite = admit_finite(request.payload)
-        payload = {'text': request.payload['text'], **finite,
+        payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
                    **admit_attachments(request.payload.get('attachments'))}
         from gateway.config import Platform
         source = self.sessions[request.ref.session_id].source

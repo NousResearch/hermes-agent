@@ -22,6 +22,10 @@ export type GatewayEventName =
   | 'background.complete'
   | 'error'
   | 'skin.changed'
+  /** Synthetic, client-side: a reconnect replay could not cover the gap for
+   * `session_id` (epoch changed / ring truncated); the watermark was dropped
+   * and consumers must re-resume the session for a snapshot. */
+  | 'session.replay_gap'
   | (string & {})
 
 export interface GatewayEvent<P = unknown> {
@@ -570,14 +574,27 @@ export class JsonRpcGatewayClient {
           continue
         }
 
-        const response = result.value as { epoch?: unknown; replay_epoch?: unknown }
+        const response = result.value as { epoch?: unknown; replay_epoch?: unknown; truncated?: unknown; snapshot_required?: unknown; latest_seq?: unknown }
         const sessionEpoch = response.replay_epoch
         const epoch = response.epoch
+        const sid = entries[index][0]
+
+        if (response.snapshot_required === true || response.truncated === true) {
+          // The server could not replay our window (epoch changed, ring
+          // truncated, cursor ahead). Keeping the watermark would make the
+          // next reconnect believe nothing was missed; drop it and tell the
+          // consumer to re-resume for a snapshot.
+          this.adoptSessionReplayEpoch(sid, sessionEpoch)
+          this.lastSeenSeq.delete(sid)
+          this.dispatchEvent({ type: 'session.replay_gap', session_id: sid, payload: { replay_epoch: sessionEpoch, latest_seq: response.latest_seq } })
+
+          continue
+        }
 
         if (typeof sessionEpoch === 'string' && sessionEpoch) {
           // Canonical responses also include `epoch`, but it is session-local,
           // not the legacy process identity. Never reset unrelated cursors.
-          if (this.adoptSessionReplayEpoch(entries[index][0], sessionEpoch)) { continue }
+          if (this.adoptSessionReplayEpoch(sid, sessionEpoch)) { continue }
         } else if (typeof epoch === 'string' && epoch && this.replayEpoch && epoch !== this.replayEpoch) {
           // Backend restarted: its seq numbering reset, so our watermarks —
           // and this replay window — are meaningless. Drop them and start

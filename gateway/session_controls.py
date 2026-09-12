@@ -267,14 +267,16 @@ class AuthorityConnection:
     async def submit(self, ref, params):
         if ref.session_id not in self.subscriptions:
             raise RuntimeStoreError('permission_denied')
-        forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite'}
+        forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite',
+                                   'surface', 'voice_context', 'interrupted'}
         if forbidden:
             raise RuntimeStoreError('invalid_params')
         request_id = params.get('submission_id') or params.get('input_id')
         if not isinstance(request_id, str) or not request_id:
             raise RuntimeStoreError('invalid_params')
         from gateway.session_finite import admit_finite
-        payload = {'text': params.get('text'), **admit_finite(params)}
+        from gateway.session_surface import submit_surface_fields
+        payload = {'text': params.get('text'), **admit_finite(params), **submit_surface_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
         receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'))

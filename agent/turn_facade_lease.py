@@ -269,8 +269,16 @@ def admit_durable_turn_lease(
             f"⏳ Still waiting for the other Hermes process on this session ({int(elapsed)}s)..."
         )
 
+    # Delivery turns pass a bounded lease probe (lease_probe_seconds ~2s) so a contended
+    # session is handed back to the queue (requeue_unstarted) instead of blocking a
+    # gateway turn thread for the full LEASE_WAIT_SECONDS (1800s). Ordinary turns keep
+    # the full wait; the attr is only set by the delivery path.
+    wait_seconds = min(
+        LEASE_WAIT_SECONDS,
+        getattr(agent, "_session_turn_lease_wait_seconds", LEASE_WAIT_SECONDS),
+    )
     if not db.acquire_session_turn_lease(
-        session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
+        session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=wait_seconds,
         on_wait=_on_wait, should_abort=lambda: getattr(agent, "_interrupt_requested", False),
     ):
         admission.early_result = _lease_not_acquired_result(agent, session_id, conversation_history)

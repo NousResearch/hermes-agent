@@ -1815,3 +1815,75 @@ async def test_hygiene_unwind_records_cooldown(monkeypatch, tmp_path):
         await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Window-derived turn-hold budget (#102138)
+# ---------------------------------------------------------------------------
+
+class TestHygieneTurnHoldDerivation:
+    """The hygiene turn-hold budget must follow the model's window, not a flat constant."""
+
+    @staticmethod
+    def _hs(**over):
+        felder = dict(
+            model="m", threshold_pct=0.85, compression_enabled=True, hard_msg_limit=5000,
+            timeout_seconds=30.0, total_ceiling_seconds=600.0, max_turn_hold_seconds=10.0,
+            turn_hold_configured=False, turn_hold_tokens_per_second=0.0,
+            failure_cooldown_seconds=300.0, config_context_length=None,
+            provider=None, base_url=None, api_key=None, data={},
+        )
+        felder.update(over)
+        return SimpleNamespace(**felder)
+
+    @staticmethod
+    def _derive(**over):
+        from gateway.run_turn import derive_hygiene_turn_hold_seconds
+        args = dict(
+            context_length=200_000, threshold_pct=0.85, tokens_per_second=2500.0,
+            floor_seconds=10.0, ceiling_seconds=30.0,
+        )
+        args.update(over)
+        return derive_hygiene_turn_hold_seconds(**args)
+
+    def test_hint_disabled_keeps_flat_default(self):
+        """Without a hint (the shipped default) the historical flat budget is untouched."""
+        assert self._derive(tokens_per_second=0.0) == 10.0
+        assert self._derive(tokens_per_second=-1.0) == 10.0
+
+    def test_large_window_saturates_at_the_idle_budget(self):
+        """1M window x 85% / 2500 tok/s ~ 340s clamps to the transport-safe ceiling."""
+        assert self._derive(context_length=1_000_000, ceiling_seconds=30.0) == 30.0
+
+    def test_small_window_lands_between_floor_and_ceiling(self):
+        """32k window ~ 10.9s: the window decides, not the constant."""
+        wert = self._derive(context_length=32_000)
+        assert 10.0 < wert < 30.0
+
+    def test_fast_model_stays_on_the_floor(self):
+        assert self._derive(context_length=4_000, tokens_per_second=100_000.0) == 10.0
+
+    def test_missing_or_zero_window_falls_back_to_floor(self):
+        assert self._derive(context_length=None) == 10.0
+        assert self._derive(context_length=0) == 10.0
+
+    def test_ceiling_never_below_floor(self):
+        """A pathological ceiling must not produce a zero-length hold."""
+        assert self._derive(context_length=1_000_000, ceiling_seconds=0.0) == 10.0
+
+    def test_config_reads_both_keys_and_flags_an_explicit_budget(self):
+        GatewayRunner = importlib.import_module("gateway.run").GatewayRunner
+        hs = self._hs()
+        GatewayRunner._hmwa_hygiene_read_config(hs, {"compression": {
+            "hygiene_max_turn_hold_seconds": 20,
+            "hygiene_max_turn_hold_tokens_per_second": 4000,
+        }})
+        assert hs.max_turn_hold_seconds == 20.0
+        assert hs.turn_hold_configured is True
+        assert hs.turn_hold_tokens_per_second == 4000.0
+
+        hs2 = self._hs()
+        GatewayRunner._hmwa_hygiene_read_config(hs2, {"compression": {"enabled": True}})
+        assert hs2.turn_hold_configured is False
+        assert hs2.turn_hold_tokens_per_second == 0.0
+        assert hs2.max_turn_hold_seconds == 10.0

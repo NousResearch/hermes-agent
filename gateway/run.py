@@ -4074,6 +4074,8 @@ class GatewayRunner(
         timeout_seconds: float
         total_ceiling_seconds: float
         max_turn_hold_seconds: float
+        turn_hold_configured: bool
+        turn_hold_tokens_per_second: float
         failure_cooldown_seconds: float
         config_context_length: Optional[int]
         provider: Optional[str]

@@ -651,4 +651,3 @@ select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
 "gateway/slash_commands.py" = ["ASYNC220"]
 # Legacy blocking spawn sites in platform adapters, pending their own fixes.
 "plugins/platforms/whatsapp/adapter.py" = ["ASYNC220", "ASYNC221"]
-"plugins/platforms/photon/adapter.py" = ["ASYNC220"]

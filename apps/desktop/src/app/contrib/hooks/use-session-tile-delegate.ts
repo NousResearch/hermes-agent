@@ -30,6 +30,7 @@ import { singleFlightSessionResume } from '../../session/hooks/use-prompt-action
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
 import {
   chatMessageArraysEquivalent,
+  overlayConcurrentMessageChanges,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   resolveResumedBusy,
@@ -275,6 +276,7 @@ export function useSessionTileDelegate({
           $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
 
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
+        const resumeRequestBaselineMessages = cached?.messages ?? []
         const refreshTranscript = options?.refreshTranscript === true
         const authoritativeSnapshot = options?.authoritativeSnapshot === true
 
@@ -357,7 +359,7 @@ export function useSessionTileDelegate({
                   omit_messages: !authoritativeSnapshot,
                   ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
                 }),
-              { requiresMessages: authoritativeSnapshot }
+              { requiresMessages: authoritativeSnapshot, scope: owner }
             )
           },
           async () => {
@@ -407,16 +409,34 @@ export function useSessionTileDelegate({
           throw new Error('resume returned no session id')
         }
 
+        const currentBinding =
+          runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
+          $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+
+        // Another resume/rebind won while this request was in flight. Do not
+        // publish the older response into the runtime the tile now owns.
+        if (currentBinding && currentBinding !== existing && currentBinding !== runtimeId) {
+          return currentBinding
+        }
+
         const info = resumed?.info
 
         updateSessionState(
           runtimeId,
           state => {
-            const previousMessages = state.messages.length > 0 ? state.messages : (cached?.messages ?? [])
+            const previousMessages = state.messages.length > 0 ? state.messages : resumeRequestBaselineMessages
 
             const messages = authoritativeSnapshot
               ? resumed.messages.length > 0
-                ? mergeTileTranscript(previousMessages, resumed.messages, state.streamId ?? cached?.streamId)
+                ? overlayConcurrentMessageChanges(
+                    mergeTileTranscript(
+                      resumeRequestBaselineMessages,
+                      resumed.messages,
+                      cached?.streamId
+                    ),
+                    resumeRequestBaselineMessages,
+                    previousMessages
+                  )
                 : previousMessages
               : previousMessages.length > 0
                 ? previousMessages

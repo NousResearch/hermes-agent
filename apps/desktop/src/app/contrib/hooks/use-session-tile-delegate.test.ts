@@ -264,6 +264,69 @@ describe('useSessionTileDelegate resumeTile', () => {
     $sessionTiles.set([])
   })
 
+  it('preserves a newer completed tile turn when an older authoritative snapshot arrives late', async () => {
+    const ownerRoute = { connectionId: 'remote-tile', profile: 'tile-profile', targetProfile: 'backend-tile' }
+
+    const baseline = {
+      busy: false,
+      messages: [
+        { id: 'old-user', parts: [{ type: 'text', text: 'old prompt' }], role: 'user' },
+        { id: 'old-answer', parts: [{ type: 'text', text: 'old answer' }], role: 'assistant' }
+      ],
+      storedSessionId: 'stored-tile'
+    }
+
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-tile', 'runtime-tile']]) }
+    const states = { current: new Map([['runtime-tile', baseline]]) }
+
+    const update = vi.fn((id, updater) => {
+      const next = updater(states.current.get(id))
+      states.current.set(id, next)
+
+      return next
+    })
+
+    let resolveSnapshot!: (value: unknown) => void
+    const snapshot = new Promise(resolve => (resolveSnapshot = resolve))
+
+    vi.mocked(requestGatewayForAgent).mockReset()
+    vi.mocked(requestGatewayForAgent).mockReturnValueOnce(snapshot as never)
+    $sessionTiles.set([{ ownerRoute, runtimeId: 'runtime-tile', storedSessionId: 'stored-tile' }] as never)
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+
+    const refreshing = sessionTileDelegate()!.resumeTile('stored-tile', { authoritativeSnapshot: true })
+    await vi.waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalledTimes(1))
+
+    const completed = {
+      ...baseline,
+      messages: [
+        ...baseline.messages,
+        { id: 'new-user', parts: [{ type: 'text', text: 'new prompt' }], role: 'user' },
+        { id: 'new-answer', parts: [{ type: 'text', text: 'new completed answer' }], role: 'assistant' }
+      ]
+    }
+
+    states.current.set('runtime-tile', completed as never)
+    resolveSnapshot({
+      messages: [
+        { content: 'old prompt', role: 'user', timestamp: 1 },
+        { content: 'old answer', role: 'assistant', timestamp: 2 }
+      ],
+      resumed: 'stored-tile',
+      running: false,
+      session_id: 'runtime-tile'
+    })
+    await refreshing
+
+    expect(states.current.get('runtime-tile')?.messages).toContainEqual(completed.messages[2])
+    expect(states.current.get('runtime-tile')?.messages).toContainEqual(completed.messages[3])
+    $sessionTiles.set([])
+  })
+
   it('serializes an authoritative gap snapshot after an omitted-message resume already in flight', async () => {
     const ownerRoute = { connectionId: 'remote-tile', profile: 'tile-profile', targetProfile: 'backend-tile' }
     const oldMessage = { id: 'old-user', parts: [{ type: 'text', text: 'old prompt' }], role: 'user' }

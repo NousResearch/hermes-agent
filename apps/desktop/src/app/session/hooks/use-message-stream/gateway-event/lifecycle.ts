@@ -11,7 +11,8 @@ import {
   setChangeEventsAvailable
 } from '@/store/live-sync'
 import { markRuntimeGone } from '@/store/runtime-gone'
-import { getSessionOwnerHint, requestSessionResume } from '@/store/session'
+import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
+import type { SessionOwnerScope } from '@/store/session-request-router'
 import {
   $sessionTiles,
   dropSessionState,
@@ -129,29 +130,49 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
       ? deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId
       : null
 
-    const eventMatchesOwner = (owner: { connectionId: string; profile: string } | undefined) =>
-      Boolean(
-        owner &&
-          event.connectionId === owner.connectionId &&
-          (event.profile?.trim() || 'default') === (owner.profile.trim() || 'default')
-      )
+    const eventProfile = event.profile?.trim() || 'default'
+    const eventConnectionId = event.connectionId?.trim() || ''
+
+    const eventMatchesOwner = (owner: SessionOwnerScope) => {
+      if (!owner) {
+        return false
+      }
+
+      if (typeof owner === 'string') {
+        // A profile-only owner is the legacy/local pool route. It is safe only
+        // for an untagged primary event; an explicitly tagged source must have
+        // an exact route so same-named remote profiles remain isolated.
+        return !eventConnectionId && eventProfile === (owner.trim() || 'default')
+      }
+
+      return eventConnectionId === owner.connectionId.trim() && eventProfile === (owner.profile.trim() || 'default')
+    }
+
+    const ownerForStoredSession = (id: string): SessionOwnerScope =>
+      getSessionOwnerHint(id, {
+        connectionId: eventConnectionId,
+        profile: eventProfile
+      }) ?? knownSessionOwner(ownerLookupSessionRows(), id)
 
     if (storedSessionId && runtimeId === deps.activeSessionIdRef.current) {
-      const ownerRoute = getSessionOwnerHint(storedSessionId, {
-        connectionId: event.connectionId || '',
-        profile: event.profile || 'default'
-      })
+      const ownerRoute = ownerForStoredSession(storedSessionId)
 
       if (eventMatchesOwner(ownerRoute)) {
-        requestSessionResume(storedSessionId, ownerRoute, { authoritativeSnapshot: true })
+        requestSessionResume(storedSessionId, ownerRoute && typeof ownerRoute === 'object' ? ownerRoute : undefined, {
+          authoritativeSnapshot: true
+        })
 
         return true
       }
     }
 
-    const tile = $sessionTiles
-      .get()
-      .find(candidate => candidate.runtimeId === runtimeId && eventMatchesOwner(candidate.ownerRoute))
+    const tile = $sessionTiles.get().find(candidate => {
+      if (candidate.runtimeId !== runtimeId) {
+        return false
+      }
+
+      return eventMatchesOwner(candidate.ownerRoute ?? ownerForStoredSession(candidate.storedSessionId))
+    })
 
     if (tile) {
       void sessionTileDelegate()?.resumeTile(tile.storedSessionId, { authoritativeSnapshot: true }).catch(() => undefined)

@@ -6,7 +6,8 @@ import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/
 import {
   $sessionResumeRequest,
   _resetSessionOwnerHintsForTests,
-  setSessionOwnerHint
+  setSessionOwnerHint,
+  setSessions
 } from '@/store/session'
 import {
   $sessionTiles,
@@ -19,7 +20,7 @@ import { renderMessageStream } from './test-harness'
 
 const replayGap = (
   sessionId: string,
-  owner: { connectionId: string; profile: string }
+  owner: { connectionId?: string; profile?: string }
 ): RpcEvent => ({
   ...owner,
   payload: { latest_seq: 41, replay_epoch: 'epoch-next' },
@@ -42,6 +43,7 @@ describe('session.replay_gap recovery', () => {
   beforeEach(() => {
     $sessionResumeRequest.set(null)
     $sessionTiles.set([])
+    setSessions([])
     _resetSessionOwnerHintsForTests()
     setSessionTileDelegate(inertDelegate() as never)
   })
@@ -52,6 +54,7 @@ describe('session.replay_gap recovery', () => {
     clearSessionDraft('stored-tile')
     $sessionResumeRequest.set(null)
     $sessionTiles.set([])
+    setSessions([])
     _resetSessionOwnerHintsForTests()
   })
 
@@ -80,6 +83,23 @@ describe('session.replay_gap recovery', () => {
       sessionId: 'stored-active'
     })
     expect(takeSessionDraft('stored-active').text).toBe('keep typing')
+  })
+
+  it('accepts an untagged primary replay gap for its profile-only local session owner', () => {
+    setSessions([{ id: 'stored-active', profile: 'default' }] as never)
+    const state = createClientSessionState('stored-active')
+
+    const stream = renderMessageStream('runtime-active', {
+      states: new Map([['runtime-active', state]])
+    })
+
+    act(() => stream.handleEvent(replayGap('runtime-active', { profile: 'default' })))
+
+    expect($sessionResumeRequest.get()).toMatchObject({
+      authoritativeSnapshot: true,
+      sessionId: 'stored-active'
+    })
+    expect($sessionResumeRequest.get()?.ownerRoute).toBeUndefined()
   })
 
   it('re-resumes the affected mounted tile for a gateway snapshot while retaining its owner and draft', async () => {

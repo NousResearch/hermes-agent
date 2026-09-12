@@ -1598,7 +1598,7 @@ export function useSessionActions({
                   : { omit_messages: true }),
               ...(sessionProfile ? { profile: sessionProfile } : {})
             }),
-          { requiresMessages: options?.authoritativeSnapshot }
+          { requiresMessages: options?.authoritativeSnapshot, scope: sessionOwner }
         ).then(resumed => {
           resumeRuntimeBaselineMessages =
             sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages

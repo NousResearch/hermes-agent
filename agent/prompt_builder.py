@@ -24,7 +24,7 @@ from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
-    skill_matches_platform, skill_matches_platform_list,
+    skill_matches_platform, skill_matches_platform_list, walk_skills_tree,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write
@@ -1102,7 +1102,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
         manifest[ORG_MIRROR_DIR_NAME + "/" + ORG_ACTIVE_MARKER] = [int(st.st_mtime), int(st.st_size)]
     except OSError:
         pass
-    for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
+    for root, dirs, files in walk_skills_tree(skills_dir_str):
         has_skill_md = "SKILL.md" in files
         if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
             dirs.remove(ORG_MIRROR_DIR_NAME)

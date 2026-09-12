@@ -34,6 +34,47 @@ ORG_PROVENANCE_FILE = ".org-provenance.json"
 ORG_BASELINE_FILE = ".org-baseline.json"  # upstream fingerprint; detects local edits
 
 
+def walk_skills_tree(skills_dir: str):
+    """``os.walk(skills_dir, followlinks=True)`` with symlink-cycle protection.
+
+    Plain followlinks walks a self-referential link (``ln -sf`` against an existing
+    symlink-to-directory dereferences and nests ``foo/foo -> foo``), an A↔B link
+    pair, or a link re-entering the tree from outside — each loop level re-emits
+    the skill into the system prompt index, silently duplicating it hundreds of
+    times. Each directory is tracked by its resolved realpath, so loop-forming
+    links (and second views of an already-scanned dir) are pruned while links to
+    dirs outside the tree still resolve exactly once. Yields the os.walk triples;
+    callers mutate ``dirs`` in place per the os.walk contract.
+    """
+    root_real = os.path.realpath(skills_dir)
+    seen_real: Set[str] = {root_real}
+    for root, dirs, files in os.walk(skills_dir, followlinks=True):
+        current_real = os.path.realpath(root)
+        kept: List[str] = []
+        for name in dirs:
+            full = os.path.join(root, name)
+            try:
+                target_real = os.path.realpath(full)
+            except OSError:
+                kept.append(name)
+                continue
+            # A link to the current dir or any of its ancestors loops no matter
+            # where the walk entered; anything else already visited is either a
+            # cycle or a duplicate view of scanned content.
+            if (target_real == current_real
+                    or current_real.startswith(target_real + os.sep)
+                    or target_real in seen_real):
+                if os.path.islink(full):
+                    logger.warning(
+                        "Skipping symlinked skill directory that loops back into "
+                        "the skills tree: %s -> %s", full, target_real)
+                continue
+            seen_real.add(target_real)
+            kept.append(name)
+        dirs[:] = kept
+        yield root, dirs, files
+
+
 def read_active_org_id(skills_dir: Path) -> Optional[str]:
     """The org id whose mirror may resolve, or None (no org skills load)."""
     marker = skills_dir / ORG_MIRROR_DIR_NAME / ORG_ACTIVE_MARKER
@@ -742,7 +783,7 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     active_org = read_active_org_id(skills_dir)
     org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
     matches: list[str] = []
-    for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
+    for root, dirs, files in walk_skills_tree(skills_dir_str):
         has_skill_md = "SKILL.md" in files
         if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
             dirs.remove(ORG_MIRROR_DIR_NAME)

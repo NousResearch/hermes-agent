@@ -2575,6 +2575,7 @@ export const ru = defineLocale({
       finishedUnread: 'Завершён — не прочитан',
       backgroundRunning: 'Фоновая задача выполняется',
       draftSession: 'Черновик — ещё ничего не отправлено',
+      largeChat: 'Этот чат становится большим — новый чат сохранит ответы быстрыми и дешёвыми.',
       handoffOrigin: platform => `Передано из ${platform}`,
       ownedByProfile: profile => `Профиль: ${profile}`,
       renamed: 'Переименовано',

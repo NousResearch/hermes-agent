@@ -2719,6 +2719,7 @@ export const en: Translations = {
       finishedUnread: 'Finished — unread',
       backgroundRunning: 'Background task running',
       draftSession: 'Draft — nothing sent yet',
+      largeChat: 'This chat is getting big — starting a fresh one keeps replies fast and cheaper.',
       handoffOrigin: platform => `Handed off from ${platform}`,
       ownedByProfile: profile => `Profile: ${profile}`,
       renamed: 'Renamed',

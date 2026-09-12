@@ -1977,6 +1977,7 @@ export const ar = defineLocale({
       waitingForAnswer: 'بانتظار إجابة',
       backgroundRunning: 'تعمل في الخلفية',
       draftSession: 'مسودة — لم تُرسل بعد',
+      largeChat: 'أصبحت هذه المحادثة كبيرة — بدء محادثة جديدة يبقي الردود سريعة وأقل تكلفة.',
       finishedUnread: 'اكتملت وفيها جديد',
       hideTabBar: 'إخفاء شريط التبويبات',
       openInNewTab: 'فتح في تبويب جديد',

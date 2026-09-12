@@ -2217,6 +2217,7 @@ export const zhHant = defineLocale({
       finishedUnread: '已完成 — 未讀',
       backgroundRunning: '背景任務執行中',
       draftSession: '草稿 — 尚未傳送',
+      largeChat: '此對話正在變大 — 新建一個對話能讓回覆保持又快又省。',
       handoffOrigin: platform => `從 ${platform} 轉接`,
       ownedByProfile: profile => `設定檔：${profile}`,
       renamed: '已重新命名',

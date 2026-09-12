@@ -335,9 +335,9 @@ def _fmt_changes_requested(ev, n) -> tuple:
     reviewer = _safe_review_reason(payload.get("reviewer"), 48)
     implementer = _safe_review_reason(payload.get("implementer"), 48)
     reason_text = reason or "reviewer feedback requires changes"
-    provenance = f" — reviewer @{reviewer}" if reviewer else ""
+    provenance = f" — reviewer [{reviewer}]" if reviewer else ""
     if implementer:
-        provenance += f" → implementer @{implementer}"
+        provenance += f" → implementer [{implementer}]"
     msg = f"🛑 {n.board_tag}Kanban {n.task_id} review requested changes/BLOCK: {reason_text}{provenance}"
     return msg, None, reason_text
 
@@ -392,8 +392,10 @@ class _KanbanNotification:
         self.sub_profile = sub.get("notifier_profile") or ""
         self.title = (task.title if task else sub["task_id"])[:120]
         self.board_tag = f"[{self.board_slug}] " if self.board_slug else ""
-        # Attribute the ping to the worker that did the work.
-        tag = f"@{task.assignee} " if task and task.assignee else ""
+        # Attribute the ping to the worker that did the work. Assignees are
+        # Hermes profile ids, not destination-platform identities: adapters
+        # such as Buzz resolve @name as a member mention and reject unknown ids.
+        tag = f"[{task.assignee}] " if task and task.assignee else ""
         self.head = f"{self.board_tag}{tag}Kanban {self.task_id}"
         # The wake self-post path needs the key even when every event was skipped.
         self.sub_key = (sub["task_id"], sub["platform"], sub["chat_id"], sub.get("thread_id") or "")

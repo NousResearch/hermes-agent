@@ -2069,6 +2069,33 @@ def get_systemd_unit_path(system: bool = False) -> Path:
     return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"
 
 
+def _owned_bare_legacy_systemd_service(system: bool = False) -> str | None:
+    """Return the pre-hashed bare service name only when its pinned home is the current custom home."""
+    import hashlib
+
+    if not supports_systemd_services():
+        return None
+    current_home = get_hermes_home().resolve()
+    expected_name = f"{_SERVICE_BASE}-{hashlib.sha256(str(current_home).encode()).hexdigest()[:8]}"
+    current_unit = get_systemd_unit_path(system=system)
+    if (
+        get_service_name() != expected_name
+        or current_unit.exists()
+        or get_systemd_unit_path(system=not system).exists()
+    ):
+        return None
+
+    legacy_unit = current_unit.with_name(f"{_SERVICE_BASE}.service")
+    pinned_home = _hermes_home_pinned_by_unit(legacy_unit)
+    if pinned_home is None:
+        return None
+    try:
+        owned = Path(pinned_home).expanduser().resolve() == current_home
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return _SERVICE_BASE if owned else None
+
+
 class UserSystemdUnavailableError(RuntimeError):
     """``systemctl --user`` cannot reach the user D-Bus session (fresh SSH sessions with linger off,
     so ``/run/user/$UID/bus`` never exists). ``args[0]`` is a user-facing remediation message."""
@@ -6229,6 +6256,28 @@ def _restart_all(system: bool) -> None:
         _service_call(kind, "start", system)
 
 
+def _restart_owned_bare_legacy_systemd_service(system: bool) -> bool:
+    """Restart an ownership-matched pre-hash unit without creating a competing foreground gateway."""
+    service = _owned_bare_legacy_systemd_service(system=system)
+    if service is None:
+        return False
+    if system:
+        _require_root_for_system_service("restart")
+    else:
+        _preflight_user_systemd()
+    try:
+        _run_systemctl(["restart", service], system=system, check=True, timeout=90)
+    except subprocess.CalledProcessError:
+        _print_lines(
+            "",
+            "✗ Legacy gateway service restart failed.",
+            "  The owned service remains managed by systemd; no foreground gateway was started.",
+        )
+        sys.exit(1)
+    print(f"✓ {_service_scope_label(system).capitalize()} legacy service restarted")
+    return True
+
+
 def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
     system = getattr(args, "system", False)
@@ -6241,6 +6290,8 @@ def _cmd_restart(args):
         return
     if restart_all:
         _restart_all(system)
+        return
+    if _restart_owned_bare_legacy_systemd_service(system):
         return
 
     # The Windows restart path handles both registered installs and detached restarts.

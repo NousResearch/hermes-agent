@@ -4806,8 +4806,17 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     api_key = str(creds.get("api_key", "")).strip()
     # Explicit api_key override (fallback_model / custom_providers entry) lets callers
     # authenticate where no built-in credential is registered for this alias.
+    # A ``key_cmd`` credential arrives as a CALLABLE token provider
+    # (``CommandTokenSource``), which the wire clients invoke per request so a
+    # short-lived bearer is always fresh. ``.strip()`` on it raises
+    # AttributeError and takes the whole auxiliary call down (#88667). Pass a
+    # callable through untouched; only strings get normalised.
     if req.explicit_api_key:
-        api_key = req.explicit_api_key.strip() or api_key
+        api_key = (
+            req.explicit_api_key
+            if callable(req.explicit_api_key)
+            else (req.explicit_api_key.strip() or api_key)
+        )
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")

@@ -1291,6 +1291,24 @@ Notes:
 - `--source browse-sh` searches [browse.sh](https://browse.sh)'s catalog of 200+ site-specific browser-automation skills. Identifiers look like `browse-sh/airbnb.com/search-listings-ddgioa`.
 - Passing an `http(s)://…/*.md` URL installs `SKILL.md` plus explicitly referenced files under `references/`, `templates/`, `scripts/`, `assets/`, and `examples/`. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
 
+## `hermes wisdom`
+
+```bash
+hermes wisdom <subcommand>
+```
+
+Team skill sharing over the Nous Gateway (bundled `wisdom` plugin; needs a `hermes login` whose team has Collective Wisdom enabled). See [Collective Wisdom](../user-guide/features/collective-wisdom.md).
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | Browse the team's published skills. |
+| `show <skill-id>` | Versions plus the Gateway's security/professionalism checks. |
+| `status` | Installed Wisdom skills and pending updates. |
+| `install <skill-id> [--version N]` | Install an exact version after a terminal confirmation. |
+| `update [skill-id]` | Update one or every installed skill (confirms each). |
+| `uninstall <skill-id>` | Remove a Wisdom-managed skill. |
+| `share <skill> --description "..."` | Package a local instruction-only skill, upload a private draft, and publish after you approve the package and the Gateway's review. |
+
 ## `hermes bundles`
 
 ```bash

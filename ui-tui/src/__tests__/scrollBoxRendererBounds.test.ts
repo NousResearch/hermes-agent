@@ -1,7 +1,7 @@
 import { PassThrough } from 'stream'
 
 import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@hermes/ink'
-import React, { useLayoutEffect, useRef } from 'react'
+import React, { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import SourceBox from '../../packages/hermes-ink/src/ink/components/Box.js'
@@ -61,8 +61,14 @@ function Harness({
   maxMounted?: number
 }) {
   const scrollRef = useRef<ScrollBoxHandle | null>(null)
+  const [scrollHandle, setScrollHandle] = useState<ScrollBoxHandle | null>(null)
 
-  const virtualHistory = useVirtualHistory(scrollRef, items, columns, {
+  const bindScrollRef = useCallback((next: ScrollBoxHandle | null) => {
+    scrollRef.current = next
+    setScrollHandle(current => (current === next ? current : next))
+  }, [])
+
+  const virtualHistory = useVirtualHistory(scrollHandle, items, columns, {
     coldStartCount: 16,
     estimateHeight: index => itemHeightForColumns(items[index], columns),
     generation,
@@ -77,7 +83,7 @@ function Harness({
 
   return React.createElement(
     ScrollBox,
-    { flexDirection: 'column', height, ref: scrollRef, stickyScroll: true },
+    { flexDirection: 'column', height, ref: bindScrollRef, stickyScroll: true },
     React.createElement(
       Box,
       { flexDirection: 'column', width: '100%' },

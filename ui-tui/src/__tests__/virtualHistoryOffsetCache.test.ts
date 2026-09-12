@@ -1,7 +1,7 @@
 import { PassThrough } from 'stream'
 
 import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@hermes/ink'
-import React, { useLayoutEffect, useRef } from 'react'
+import React, { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { MAX_HISTORY } from '../config/limits.js'
@@ -66,7 +66,8 @@ function Harness({
   generation = 0,
   initialHeights,
   items,
-  maxMounted = 16
+  maxMounted = 16,
+  scrollBoxKey = 'default'
 }: {
   columns?: number
   expose: React.MutableRefObject<Exposed | null>
@@ -75,10 +76,17 @@ function Harness({
   initialHeights?: ReadonlyMap<string, number>
   items: readonly Item[]
   maxMounted?: number
+  scrollBoxKey?: string
 }) {
   const scrollRef = useRef<ScrollBoxHandle | null>(null)
+  const [scrollHandle, setScrollHandle] = useState<ScrollBoxHandle | null>(null)
 
-  const virtualHistory = useVirtualHistory(scrollRef, items, columns, {
+  const bindScrollRef = useCallback((next: ScrollBoxHandle | null) => {
+    scrollRef.current = next
+    setScrollHandle(current => (current === next ? current : next))
+  }, [])
+
+  const virtualHistory = useVirtualHistory(scrollHandle, items, columns, {
     coldStartCount: 16,
     estimateHeight: index => itemHeightForColumns(items[index], columns),
     generation,
@@ -93,7 +101,7 @@ function Harness({
 
   return React.createElement(
     ScrollBox,
-    { flexDirection: 'column', height, ref: scrollRef, stickyScroll: true },
+    { flexDirection: 'column', height, key: scrollBoxKey, ref: bindScrollRef, stickyScroll: true },
     React.createElement(
       Box,
       { flexDirection: 'column', width: '100%' },
@@ -144,6 +152,108 @@ describe('useVirtualHistory offset cache reuse', () => {
     } as ScrollBoxHandle)
 
     expect(short).not.toBe(tall)
+  })
+
+  it('resubscribes when ScrollBox remounts while virtual history stays mounted', async () => {
+    const items = Array.from({ length: 200 }, (_, index) => ({ height: 4, key: `item-${index}` }))
+    const expose = { current: null as Exposed | null }
+    const streams = makeStreams()
+
+    const instance = renderSync(
+      React.createElement(Harness, { expose, items, maxMounted: 40, scrollBoxKey: 'first' }),
+      {
+        patchConsole: false,
+        stderr: streams.stderr as NodeJS.WriteStream,
+        stdin: streams.stdin as NodeJS.ReadStream,
+        stdout: streams.stdout as NodeJS.WriteStream
+      }
+    )
+
+    try {
+      await delay(80)
+
+      const firstScroll = expose.current!.scroll!
+
+      expect(expose.current!.virtualHistory.start).toBeGreaterThan(0)
+
+      instance.rerender(React.createElement(Harness, { expose, items, maxMounted: 40, scrollBoxKey: 'second' }))
+      await delay(80)
+
+      const secondScroll = expose.current!.scroll!
+
+      expect(secondScroll).not.toBe(firstScroll)
+
+      secondScroll.scrollTo(0)
+      await delay(120)
+
+      expect(secondScroll.getScrollTop()).toBe(0)
+      expect(expose.current!.virtualHistory.start).toBe(0)
+      expect(viewportIsMounted(items, expose.current!.virtualHistory, secondScroll)).toBe(true)
+
+      instance.rerender(React.createElement(Harness, { expose, items, maxMounted: 40, scrollBoxKey: 'third' }))
+      await delay(80)
+
+      const thirdScroll = expose.current!.scroll!
+
+      expect(thirdScroll).not.toBe(secondScroll)
+
+      thirdScroll.scrollTo(400)
+      await delay(120)
+
+      expect(thirdScroll.getScrollTop()).toBe(400)
+      expect(viewportIsMounted(items, expose.current!.virtualHistory, thirdScroll)).toBe(true)
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
+  })
+
+  it('uses the remounted ScrollBox for unmount compensation', async () => {
+    const items = Array.from({ length: 20 }, (_, index) => ({ height: 2, key: `item-${index}` }))
+    const initialHeights = new Map(items.map(item => [item.key, item.height]))
+    const expose = { current: null as Exposed | null }
+    const streams = makeStreams()
+
+    const instance = renderSync(
+      React.createElement(Harness, { expose, initialHeights, items, scrollBoxKey: 'first' }),
+      {
+        patchConsole: false,
+        stderr: streams.stderr as NodeJS.WriteStream,
+        stdin: streams.stdin as NodeJS.ReadStream,
+        stdout: streams.stdout as NodeJS.WriteStream
+      }
+    )
+
+    try {
+      await delay(40)
+      const firstScroll = expose.current!.scroll!
+      const firstAdjustScrollTop = vi.spyOn(firstScroll, 'adjustScrollTop')
+
+      instance.rerender(React.createElement(Harness, { expose, initialHeights, items, scrollBoxKey: 'second' }))
+      await delay(40)
+
+      const secondScroll = expose.current!.scroll!
+      const secondAdjustScrollTop = vi.spyOn(secondScroll, 'adjustScrollTop')
+
+      secondScroll.scrollTo(5)
+      await delay(40)
+
+      expect(secondScroll).not.toBe(firstScroll)
+      expect(secondScroll.getScrollTop()).toBe(5)
+      expect(secondScroll.isSticky()).toBe(false)
+
+      const compensatedIndex = expose.current!.virtualHistory.start
+      expect((compensatedIndex + 1) * 2).toBeLessThanOrEqual(5)
+      const ref = expose.current!.virtualHistory.measureRef(items[compensatedIndex]!.key)
+      ref({ yogaNode: { getComputedHeight: () => 5 } })
+      ref(null)
+
+      expect(firstAdjustScrollTop).not.toHaveBeenCalled()
+      expect(secondAdjustScrollTop).toHaveBeenCalledWith(3)
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
   })
 
   it('remounts enough tail rows after the scroll viewport grows', async () => {

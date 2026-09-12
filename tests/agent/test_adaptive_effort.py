@@ -202,6 +202,37 @@ def test_seam_pins_level_across_tool_loop():
     assert isinstance(third, str)
 
 
+def test_seam_pins_level_in_user_message_less_loop():
+    """No user message (scheduled/system-only flows): _turn_signature() is None and
+    the pin must STILL hold. Re-resolving per request as tool results grow is the
+    mid-loop config change the pin exists to prevent (cold prefix writes)."""
+    from agent.chat_completion_helpers import _auto_effort_for_request
+
+    agent = _StubAgent({"enabled": True, "effort": "auto"})
+    system_only = [_msg("system", "be terse")]
+    first = _auto_effort_for_request(agent, system_only)
+    assert first == "low"  # near-empty context, no tools, depth 1
+    grown = system_only + [_msg("assistant", json.dumps([{"callee": "t", "arguments": {}}])),
+                           _msg("tool", "x" * 5000)] * 7
+    second = _auto_effort_for_request(agent, grown)
+    # tool_results=7 >= 6 would re-resolve high; the None-signature pin holds it.
+    assert second == first == "low"
+
+
+def test_none_pin_yields_to_first_real_user_turn():
+    """After a None-signature pin, the first real user message must re-resolve on
+    its own shape (and pin there): None-pin must not leak into user turns."""
+    from agent.chat_completion_helpers import _auto_effort_for_request
+
+    agent = _StubAgent({"enabled": True, "effort": "auto"})
+    assert _auto_effort_for_request(agent, [_msg("system", "x")]) == "low"
+    heavy_user = [_msg("system", "x"), _msg("user", "deep " * 1200)]  # 6000 chars
+    assert _auto_effort_for_request(agent, heavy_user) == "high"
+    grown = heavy_user + [_msg("assistant", json.dumps([{"callee": "t", "arguments": {}}])),
+                          _msg("tool", "y")]
+    assert _auto_effort_for_request(agent, grown) == "high"
+
+
 def test_static_effort_bypasses_resolver():
     from agent.chat_completion_helpers import _auto_effort_for_request
 

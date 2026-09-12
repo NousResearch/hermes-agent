@@ -1261,8 +1261,14 @@ def _auto_effort_for_request(agent, messages: list | None = None) -> str | None:
     if messages is None:
         messages = getattr(agent, "conversation_history", None) or []
     sig = _turn_signature(messages)
-    if sig is not None and getattr(agent, "_adaptive_effort_turn_sig", None) == sig:
-        return agent._adaptive_effort_level
+    pinned_sig = getattr(agent, "_adaptive_effort_turn_sig", None)
+    pinned_level = getattr(agent, "_adaptive_effort_level", None)
+    if pinned_level is not None and pinned_sig == sig:
+        # pinned_sig == sig covers both same-user-turn and the no-user-message
+        # case (both None): system-only/scheduled flows re-resolving per request
+        # as tool results grow is the mid-loop change the pin exists to prevent.
+        # Held until _reset_auto_effort_pin or a real user turn arrives.
+        return pinned_level
     level = resolve_auto_effort(**_auto_effort_signals(messages))
     agent._adaptive_effort_turn_sig = sig
     agent._adaptive_effort_level = level

@@ -5,7 +5,11 @@ from dataclasses import dataclass, field
 from typing import Dict
 
 # Never overridden; read_file=inf prevents infinite persist->read->persist loops.
-PINNED_THRESHOLDS: Dict[str, float] = {"read_file": float("inf")}
+# skill_view loads instructions (including references) the model must read fully.
+PINNED_THRESHOLDS: Dict[str, float] = {
+    "read_file": float("inf"),
+    "skill_view": float("inf"),
+}
 
 # Single source of truth for the defaults; tool_result_storage.py imports these.
 DEFAULT_RESULT_SIZE_CHARS: int = 100_000

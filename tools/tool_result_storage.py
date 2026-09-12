@@ -233,11 +233,16 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
 def enforce_turn_budget(tool_messages: list[dict], env=None,
                         config: BudgetConfig = DEFAULT_BUDGET) -> list[dict]:
     """Layer 3: persist the largest non-persisted results first until the turn's aggregate is
-    under budget. Mutates the list in-place and returns it."""
+    under budget. Unlimited per-tool thresholds are protected: their content counts
+    toward the total, but only eligible results can spill. A protected-only remainder
+    may exceed the budget. Mutates the list in-place and returns it."""
     sizes = [len(msg.get("content", "")) for msg in tool_messages]
     total_size = sum(sizes)
     candidates = [(i, size) for i, size in enumerate(sizes)
-                  if PERSISTED_OUTPUT_TAG not in tool_messages[i].get("content", "")]
+                  if PERSISTED_OUTPUT_TAG not in tool_messages[i].get("content", "")
+                  and config.resolve_threshold(
+                      tool_messages[i].get("name") or tool_messages[i].get("tool_name") or ""
+                  ) != float("inf")]
     if total_size <= config.turn_budget:
         return tool_messages
     for idx, size in sorted(candidates, key=lambda x: x[1], reverse=True):

@@ -1055,7 +1055,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         requestSessionResume(sessionId)
       }
 
-      openSession(sessionId, navigate)
+      openSession(sessionId, navigate, 'focused')
     },
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,

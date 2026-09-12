@@ -545,6 +545,24 @@ export function focusedSessionTabAnchor(): null | string {
   return active && isSessionStripPane(active) ? active : (group.panes.find(isSessionStripPane) ?? null)
 }
 
+/** True when the attention ladder (hovered → focused → workspace) lands on a
+ *  chat zone OTHER than the one holding the main workspace tab — i.e. the user
+ *  is working in a side pane. False for single-pane layouts, for a pointer
+ *  parked on non-chat chrome, and when the ladder falls through to main, so a
+ *  caller can read `false` as "main is still the target". */
+export function focusedChatZoneIsSidePane(): boolean {
+  const tree = $layoutTree.get()
+  const target = tree ? focusedSessionGroup() : null
+
+  if (!tree || !target) {
+    return false
+  }
+
+  const main = findGroupOfPane(tree, 'workspace')
+
+  return main !== null && target.id !== main.id
+}
+
 /** ⌘W: close the FOCUSED tile zone's active tab, unless it's the uncloseable
  *  workspace itself. Any main-strip zone qualifies — a session stack, a lone
  *  Browser/page tile — while side chrome (files / terminal) in a zone of its

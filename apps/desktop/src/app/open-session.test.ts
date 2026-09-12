@@ -27,6 +27,12 @@ vi.mock('./routes', () => ({
   sessionRoute: (id: string) => `/c/${encodeURIComponent(id)}`
 }))
 
+const sidePaneGet = vi.fn(() => false)
+
+vi.mock('@/components/pane-shell/tree/store', () => ({
+  focusedChatZoneIsSidePane: () => sidePaneGet()
+}))
+
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 import { mainChatOccupied, openSession, openSessionIntentFromModifiers } from './open-session'
@@ -92,6 +98,7 @@ describe('openSession', () => {
     workspaceIsPageGet.mockReturnValue(false)
     reuseBlankDraftTile.mockReset()
     setSessionTileWorkspaceScope.mockReset()
+    sidePaneGet.mockReturnValue(false)
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
   })
@@ -128,6 +135,26 @@ describe('openSession', () => {
     openSession('s1', navigate, 'main')
     expect(navigate).toHaveBeenCalledWith('/c/s1')
     expect(focusOpenSession).not.toHaveBeenCalled()
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  it('focused opens a tab in the focused pane when a side pane has the attention', () => {
+    sidePaneGet.mockReturnValue(true)
+    focusOpenSession.mockReturnValue(null)
+
+    openSession('s1', navigate, 'focused')
+
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('focused degrades to the classic in-place resume when main is the target', () => {
+    sidePaneGet.mockReturnValue(false)
+    focusOpenSession.mockReturnValue(null)
+
+    openSession('s1', navigate, 'focused')
+
+    expect(navigate).toHaveBeenCalledWith('/c/s1')
     expect(openSessionTile).not.toHaveBeenCalled()
   })
 

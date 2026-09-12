@@ -67,6 +67,30 @@ describe('focused chat zone drives the tab verbs', () => {
     expect(tree.closeFocusedSessionTab()).toBe(false)
   })
 
+  it('a side chat zone is the target; main is not', async () => {
+    const { tree } = await setup()
+
+    tree.noteActiveTreeGroup('grp-side')
+    expect(tree.focusedChatZoneIsSidePane()).toBe(true)
+
+    tree.noteActiveTreeGroup('grp-main')
+    expect(tree.focusedChatZoneIsSidePane()).toBe(false)
+  })
+
+  it('non-chat focus (files) falls through to main, so it is not a side pane', async () => {
+    const { model, tree } = await setup()
+
+    tree.declareDefaultTree(
+      model.split('row', [
+        model.group(['workspace'], { active: 'workspace', id: 'grp-main' }),
+        model.group(['files'], { active: 'files', id: 'grp-files' })
+      ])
+    )
+    tree.noteActiveTreeGroup('grp-files')
+
+    expect(tree.focusedChatZoneIsSidePane()).toBe(false)
+  })
+
   it('⌘W closes the focused zone active tab and leaves the workspace alone', async () => {
     const { model, tree } = await setup()
 

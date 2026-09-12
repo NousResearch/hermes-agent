@@ -14,6 +14,7 @@
  *   - `window` (⇧⌘-click) — pop into its own window; falls back to `tab` when
  *     the bridge has no session-window support.
  */
+import { focusedChatZoneIsSidePane } from '@/components/pane-shell/tree/store'
 import type { WorkspaceMode } from '@/contrib/types'
 import { $activeSessionId, $selectedStoredSessionId, markSessionRead } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
@@ -28,7 +29,7 @@ import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { $workspaceIsPage, sessionRoute } from './routes'
 
-export type OpenSessionIntent = 'in-place' | 'main' | 'stack' | 'tab' | 'window'
+export type OpenSessionIntent = 'focused' | 'in-place' | 'main' | 'stack' | 'tab' | 'window'
 
 export type OpenSessionNavigate = (to: string, options?: { replace?: boolean }) => void
 
@@ -117,6 +118,15 @@ export function openSession(
     navigate(sessionRoute(storedSessionId))
 
     return
+  }
+
+  // `focused` — a sidebar row click in a multi-pane workspace: land in the chat
+  // zone the user is actually working in (the same hovered → focused → workspace
+  // ladder ⌘T / ⌘1…⌘9 use). When that zone IS main's, or nothing in a side zone
+  // has the attention, this degrades to the classic 'in-place' resume, so
+  // single-pane layouts keep replacing main exactly as before.
+  if (resolved === 'focused') {
+    resolved = focusedChatZoneIsSidePane() ? 'tab' : 'in-place'
   }
 
   // A `stack` open arrives from outside the workspace, so unlike a sidebar

@@ -54,6 +54,33 @@ def test_nudge_when_no_terminal_tool(clear_kanban_env):
     assert "protocol violation" in nudge.lower() or "protocol" in nudge.lower()
 
 
+def test_nudge_puts_terminal_decision_before_coordinator_deliverable_work(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_coordinator")
+
+    nudge = build_kanban_stop_nudge(messages=[])
+
+    assert nudge is not None
+    terminal_instruction = "1. Call `kanban_complete"
+    remaining_work_instruction = "2. If any deliverable remains"
+    assert terminal_instruction in nudge
+    assert "immediately if the work is already satisfied" in nudge
+    assert "including as a coordinator/orchestrator" in nudge
+    assert "`kanban_block(reason=...)` immediately if you are blocked" in nudge
+    assert remaining_work_instruction in nudge
+    assert nudge.index(terminal_instruction) < nudge.index(remaining_work_instruction)
+
+
+def test_nudge_preserves_producer_guidance_for_remaining_deliverables(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_producer")
+
+    nudge = build_kanban_stop_nudge(messages=[])
+
+    assert nudge is not None
+    assert "finish the actual remaining deliverable" in nudge
+    assert "write the required file(s) now" in nudge
+    assert "before calling `kanban_complete`" in nudge
+
+
 def test_no_nudge_after_kanban_complete(clear_kanban_env):
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
     messages = [
@@ -84,7 +111,6 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
 # without a terminal call, the dispatcher's bounded retry (streak of 3)
 # handles it.  See also tests/hermes_cli/test_kanban_core_functionality.py
 # for the dispatcher-side streak tests.
-
 
 
 

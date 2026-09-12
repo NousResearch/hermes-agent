@@ -3614,6 +3614,59 @@ def test_session_resume_deferred_history_acknowledges_and_reuses(monkeypatch):
                 server._sessions.pop(sid, None)
 
 
+def test_desktop_deferred_resume_hydrates_model_tip_without_display_lineage(monkeypatch):
+    hydrated = threading.Event()
+    reads = []
+    tip = {"role": "user", "content": "current model context"}
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target, "message_count": 1_200}
+
+        def resolve_resume_session_id(self, target):
+            return target
+
+        def reopen_session(self, target):
+            assert target == "large-desktop-session"
+
+        def get_messages_as_conversation(self, target, **kwargs):
+            reads.append((target, kwargs))
+            hydrated.set()
+            return [tip]
+
+        def get_resume_conversations(self, _target):
+            raise AssertionError("Desktop must not materialize the REST-owned display lineage")
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+    monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *_args: None)
+
+    try:
+        response = server._methods["session.resume"](
+            "desktop-resume",
+            {"session_id": "large-desktop-session", "source": "desktop",
+             "defer_history": True, "omit_messages": True},
+        )
+        assert "error" not in response, response
+        sid = response["result"]["session_id"]
+        assert hydrated.wait(timeout=1.0)
+        assert server._sessions[sid]["resume_history_ready"].wait(timeout=1.0)
+        assert reads == [("large-desktop-session", {
+            "repair_alternation": True, "include_row_ids": True})]
+        assert server._sessions[sid]["history"] == [tip]
+        assert server._sessions[sid]["display_history_prefix"] == []
+        assert server._sessions[sid]["resume_message_count"] == 1_200
+    finally:
+        for sid, session in list(server._sessions.items()):
+            if session.get("session_key") == "large-desktop-session":
+                lease = session.get("active_session_lease")
+                if lease is not None:
+                    lease.release()
+                server._sessions.pop(sid, None)
+
+
 def test_session_resume_deferred_history_failure_can_retry(monkeypatch):
     first_released = threading.Event()
     build_started = threading.Event()

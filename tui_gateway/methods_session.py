@@ -740,7 +740,12 @@ def _resume_deferred(ctx: _Resume) -> dict:
                   resume_message_count=int(ctx.found.get("message_count") or 0))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
-    _schedule_resume_hydration(sid, ctx.target, ctx.db, close_db=ctx.owns_db)
+    # Desktop already owns the visible transcript through bounded REST pages. Loading the full
+    # compression lineage again here only feeds an unused display prefix and can exhaust the backend.
+    model_history_only = source == "desktop" and ctx.omit_messages
+    _schedule_resume_hydration(
+        sid, ctx.target, ctx.db, close_db=ctx.owns_db,
+        model_history_only=model_history_only)
     ctx.owns_db = False  # the hydration worker now owns (and closes) the profile-scoped handle
     _schedule_session_cap_enforcement()
     return _resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), messages=[],

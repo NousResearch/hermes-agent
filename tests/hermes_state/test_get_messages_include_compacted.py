@@ -14,6 +14,8 @@ job of ``include_inactive`` (audit / debug reads).
 
 import json
 import sqlite3
+import threading
+import tracemalloc
 
 import pytest
 
@@ -150,6 +152,150 @@ class TestDisplayDedupe:
 
         db._execute_write(_do)
 
+    def test_legacy_backfill_streams_large_payloads_across_batches(self, db):
+        """Legacy backfill must finish every keyset batch without retaining the archived payload."""
+        sid = "large-legacy"
+        payload_size = 2_000_000
+        db.create_session(sid, source="desktop")
+        db.append_messages_batch(
+            sid,
+            [{"role": "assistant", "content": f"small-{index}"} for index in range(1_001)],
+            chunk_rows=500,
+        )
+        first_row_id = db._read_one(
+            "SELECT id FROM messages WHERE session_id = ? ORDER BY id LIMIT 1", (sid,))[0]
+        self._copy_tail_as_new_generation(db, sid, [first_row_id])
+        db.append_messages_batch(
+            sid,
+            [
+                {"role": "assistant", "content": chr(65 + index) * payload_size}
+                for index in range(12)
+            ],
+        )
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL, display_identity = NULL WHERE session_id = ?",
+            (sid,),
+        ))
+
+        tracemalloc.start()
+        try:
+            page = db.get_messages(sid, include_compacted=True, latest=True, limit=1)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        assert page[0]["content"] == "L" * payload_size
+        assert peak < payload_size * 5
+        assert db._read_one(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? "
+            "AND (display_order IS NULL OR display_identity IS NULL)",
+            (sid,),
+        )[0] == 0
+        duplicate_orders = db._read_all(
+            "SELECT display_order FROM messages WHERE session_id = ? AND content = ? ORDER BY id",
+            (sid, "small-0"),
+        )
+        assert [row[0] for row in duplicate_orders] == [first_row_id, first_row_id]
+
+    def test_read_only_legacy_latest_page_does_not_retain_transcript_payloads(self, tmp_path):
+        path = tmp_path / "read-only-legacy.db"
+        writer = SessionDB(path)
+        sid = "read-only-legacy"
+        payload_size = 2_000_000
+        writer.create_session(sid, source="desktop")
+        writer.append_messages_batch(
+            sid,
+            [{"role": "assistant", "content": chr(65 + index) * payload_size}
+             for index in range(12)],
+        )
+        writer._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL, display_identity = NULL WHERE session_id = ?",
+            (sid,),
+        ))
+        writer.close()
+
+        reader = SessionDB(path, read_only=True)
+        tracemalloc.start()
+        try:
+            page = reader.get_messages(sid, include_compacted=True, latest=True, limit=1)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+            reader.close()
+
+        assert page[0]["content"] == "L" * payload_size
+        assert peak < payload_size * 5
+
+    def test_read_only_legacy_page_uses_one_snapshot(self, tmp_path):
+        path = tmp_path / "read-only-legacy-snapshot.db"
+        writer = SessionDB(path)
+        sid = "read-only-legacy-snapshot"
+        writer.create_session(sid, source="desktop")
+        writer.append_message(sid, "assistant", "visible-at-scan")
+        writer._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL, display_identity = NULL WHERE session_id = ?",
+            (sid,),
+        ))
+        reader = SessionDB(path, read_only=True)
+        scanned = threading.Event()
+        written = threading.Event()
+        display_identity = reader._display_identity
+
+        def pause_after_scan(key):
+            identity = display_identity(key)
+            scanned.set()
+            assert written.wait(5)
+            return identity
+
+        reader._display_identity = pause_after_scan
+
+        def rewind_selected_row():
+            assert scanned.wait(5)
+            writer._execute_write(lambda conn: conn.execute(
+                "UPDATE messages SET content = ?, active = 0, compacted = 0 WHERE session_id = ?",
+                ("hidden-after-scan", sid),
+            ))
+            written.set()
+
+        mutation = threading.Thread(target=rewind_selected_row)
+        mutation.start()
+        try:
+            page = reader.get_messages(sid, include_compacted=True, latest=True, limit=1)
+        finally:
+            mutation.join(timeout=5)
+            reader.close()
+            writer.close()
+
+        assert not mutation.is_alive()
+        assert [(row["active"], row["content"]) for row in page] == [(1, "visible-at-scan")]
+
+    def test_read_only_legacy_page_preserves_transaction_failure(self, tmp_path):
+        path = tmp_path / "read-only-legacy-error.db"
+        writer = SessionDB(path)
+        sid = "read-only-legacy-error"
+        writer.create_session(sid, source="desktop")
+        writer.append_message(sid, "assistant", "message")
+        writer._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL, display_identity = NULL WHERE session_id = ?",
+            (sid,),
+        ))
+        writer.close()
+        reader = SessionDB(path, read_only=True)
+        connection = reader._conn
+        assert connection is not None
+
+        def fail_after_sqlite_aborts_transaction(key) -> bytes:
+            del key
+            connection.execute("ROLLBACK")
+            raise sqlite3.OperationalError("disk I/O error")
+
+        reader._display_identity = fail_after_sqlite_aborts_transaction
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+                reader.get_messages(sid, include_compacted=True, latest=True, limit=1)
+        finally:
+            reader.close()
+
     def test_display_paging_and_append_work_is_bounded(self, db):
         """Page and identity-lookup work scale with the page, not the transcript: 10x rows
         must not cost 10x SQLite VM steps (the pre-index read deduped the whole session)."""
@@ -270,6 +416,7 @@ class TestDisplayDedupe:
         conn.execute("DROP INDEX IF EXISTS idx_messages_display_page")
         conn.execute("DROP INDEX IF EXISTS idx_messages_display_backfill")
         conn.execute("DROP INDEX IF EXISTS idx_messages_display_identity")
+        conn.execute("DROP INDEX IF EXISTS idx_messages_session_id")
         columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
         for column in ("display_order", "display_identity"):
             if column in columns:

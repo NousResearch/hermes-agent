@@ -2513,10 +2513,14 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
     timer.start()
 
 
-def _load_resume_transcript(db, stored_id: str) -> tuple[list, list, list]:
+def _load_resume_transcript(db, stored_id: str, *, model_history_only: bool = False) -> tuple[list, list, list]:
     """(raw_history, display_history, ancestor_prefix) for a cold resume. The full lineage is materialized
     only while it fits sessions.max_resume_messages (the transcript is REST-paginated), else the tip alone."""
     from hermes_state import SessionResumeTooLargeError
+    if model_history_only:
+        raw_history = db.get_messages_as_conversation(
+            stored_id, repair_alternation=True, include_row_ids=True)
+        return raw_history, [], []
     prefix_fits = True
     guard = getattr(db, "assert_resume_safe", None)
     if callable(guard):
@@ -2535,7 +2539,8 @@ def _load_resume_transcript(db, stored_id: str) -> tuple[list, list, list]:
     return raw_history, raw_history, []
 
 
-def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool = False) -> None:
+def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool = False,
+                               model_history_only: bool = False) -> None:
     """Load a cold resume's transcript off the JSON-RPC response path."""
 
     def _run() -> None:
@@ -2545,7 +2550,8 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
                 return
             _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
             db.reopen_session(stored_id)
-            raw_history, display_history, prefix = _load_resume_transcript(db, stored_id)
+            raw_history, display_history, prefix = _load_resume_transcript(
+                db, stored_id, model_history_only=model_history_only)
             # Display keeps the full transcript; the model-fed history drops a dangling/interrupted
             # tool-call tail so a session killed mid-loop does not replay the unanswered call forever
             # (#29086).
@@ -2553,15 +2559,16 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             if _sessions.get(sid) is not session:
                 return
             with session["history_lock"]:
-                session.update(history=history, display_history_prefix=prefix, resume_hydrating=False,
-                               resume_message_count=len(display_history))
+                session.update(history=history, display_history_prefix=prefix, resume_hydrating=False)
+                if not model_history_only:
+                    session["resume_message_count"] = len(display_history)
             # Deferred resumes answered before the transcript existed; cache the derived todo snapshot now.
             todo_state = _todo_state_from_history(history)
             if todo_state is not None and session.get("todo_state") is None:
                 session["todo_state"] = todo_state
             session["resume_history_ready"].set()
             _emit("session.resume_progress", sid,
-                  {"message_count": len(display_history), "phase": "history", "status": "complete"})
+                  {"message_count": session["resume_message_count"], "phase": "history", "status": "complete"})
             _maybe_schedule_auto_continue(sid, session, stored_id)
             _start_agent_build(sid, session)
         except Exception as exc:

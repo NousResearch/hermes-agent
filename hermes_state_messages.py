@@ -734,21 +734,73 @@ class SessionMessagesMixin:
             missing = conn.execute(missing_sql, (session_id,)).fetchone()
             if missing is None:
                 return True
-            rows = conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) ORDER BY id",
-                (session_id,)).fetchall()
-            first_id: Dict[Tuple[Any, ...], int] = {}
-            keyed_rows = []
-            for row in rows:
-                key = self._display_dedupe_key(row)
-                first_id[key] = min(first_id.get(key, row["id"]), row["id"])
-                keyed_rows.append((row["id"], key))
-            conn.executemany(
-                "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?",
-                [(first_id[key], self._display_identity(key), row_id) for row_id, key in keyed_rows])
+            first_id: Dict[bytes, int] = {}
+            last_id = 0
+            while True:
+                rows = conn.execute(
+                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
+                    "display_kind, display_metadata FROM messages INDEXED BY idx_messages_session_id "
+                    "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
+                    "ORDER BY id LIMIT 1000",
+                    (session_id, last_id))
+                updates = []
+                for row in rows:
+                    last_id = row["id"]
+                    identity = self._display_identity(self._display_dedupe_key(row))
+                    updates.append((first_id.setdefault(identity, last_id), identity, last_id))
+                rows.close()
+                if not updates:
+                    break
+                conn.executemany(
+                    "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
             return True
 
         return bool(self._execute_write(_do))
+
+    def _legacy_display_page(self, session_id: str, *, limit: Optional[int], offset: int,
+                             latest: bool) -> List[Any]:
+        """Project a legacy read-only display page without retaining transcript payloads."""
+        representatives: Dict[bytes, Tuple[int, int]] = {}
+        with self._read_ctx() as conn:
+            conn.execute("BEGIN")
+            try:
+                has_session_index = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+                    ("idx_messages_session_id",),
+                ).fetchone() is not None
+                index_hint = "INDEXED BY idx_messages_session_id" if has_session_index else "NOT INDEXED"
+                rows = conn.execute(
+                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
+                    f"display_kind, display_metadata FROM messages {index_hint} "
+                    "WHERE session_id = ? AND (active = 1 OR compacted = 1) ORDER BY id ASC",
+                    (session_id,))
+                for row in rows:
+                    identity = self._display_identity(self._display_dedupe_key(row))
+                    current = representatives.get(identity)
+                    candidate = (row["active"], row["id"])
+                    if current is None or candidate > current:
+                        representatives[identity] = candidate
+                rows.close()
+
+                identities = list(representatives)
+                if latest:
+                    end = max(0, len(identities) - offset)
+                    start = 0 if limit is None else max(0, end - limit)
+                    identities = identities[start:end]
+                else:
+                    identities = identities[offset:] if limit is None else identities[offset:offset + limit]
+                selected_ids = [representatives[identity][1] for identity in identities]
+                selected = {}
+                for start in range(0, len(selected_ids), 900):
+                    chunk = selected_ids[start:start + 900]
+                    selected.update({row["id"]: row for row in conn.execute(
+                        f"SELECT * FROM messages WHERE session_id = ? "
+                        f"AND (active = 1 OR compacted = 1) AND id IN ({_placeholders(chunk)})",
+                        (session_id, *chunk))})
+                return [selected[row_id] for row_id in selected_ids if row_id in selected]
+            finally:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
 
     def _row_to_message_dict(self, row, *, warn_context: str, summary_flag: bool) -> Dict[str, Any]:
         """``dict(row)`` with content/tool_calls/display_metadata decoded; *summary_flag* keeps
@@ -801,10 +853,10 @@ class SessionMessagesMixin:
                 ORDER BY page.display_order ASC"""
             rows = self._read_all(sql, [session_id, -1 if limit is None else limit, offset, session_id])
         elif include_compacted:
-            # Read-only legacy stores cannot persist display identities; retain the exact old projection.
-            rows = self._dedupe_display_generations(self._read_all(
-                "SELECT * FROM messages WHERE session_id = ?" + active_clause + " ORDER BY id ASC", [session_id]))
-            rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
+            # Read-only legacy stores cannot persist display identities. Retain the exact old projection,
+            # but keep only fixed-width identities and representative row ids while scanning; Desktop's
+            # bounded latest page must not materialize a multi-gigabyte transcript before it can paint.
+            rows = self._legacy_display_page(session_id, limit=limit, offset=offset, latest=latest)
         else:
             sql = (f"SELECT * FROM messages WHERE session_id = ?{active_clause}"
                 f"{' AND id > ?' if after_id is not None else ''} ORDER BY id {'DESC' if latest else 'ASC'}")

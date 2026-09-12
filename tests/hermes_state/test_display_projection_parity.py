@@ -182,12 +182,51 @@ class TestAncestorPrefix:
 
 class TestResumeGuardBoundsWhatResumeLoads:
     def test_guard_counts_the_rows_the_display_read_materializes(self, db):
-        """The guard must not undercount: it bounds an in-memory materialization."""
+        """Compaction copies do not reject a display projection that fits the limit."""
         sid = _compact_in_place(db, "chat", epochs=4)
+        copied_id = db._read_one(
+            "SELECT id FROM messages WHERE session_id = ? AND compacted = 1 ORDER BY id LIMIT 1", (sid,))[0]
+        db._execute_write(lambda conn: db._clone_message_rows(conn, [copied_id]))
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_identity = NULL, display_order = NULL WHERE session_id = ?", (sid,)))
+
+        _, display = db.get_resume_conversations(sid)
+        raw_count = db._read_one(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1)", (sid,))[0]
+
+        assert raw_count > len(display)
+        assert db.get_resume_message_count(sid) == len(display)
+        assert db.assert_resume_safe(sid, max_messages=len(display)) == len(display)
+
+    def test_guard_applies_every_display_cleanup_stage(self, db):
+        sid = "chat"
+        db.create_session(sid, source="desktop")
+        db.append_message(sid, "user", "same", timestamp=1)
+        db.append_message(sid, "user", "same", timestamp=2)
+        db.append_message(sid, "assistant", "kept")
+        db.append_message(
+            sid, "user", "Review the conversation above and update the skill library now.")
+        db.append_message(sid, "assistant", "curator reply")
 
         _, display = db.get_resume_conversations(sid)
 
-        assert db.get_resume_message_count(sid) >= len(display)
+        assert db.get_resume_message_count(sid) == len(display)
+        assert db.assert_resume_safe(sid, max_messages=len(display)) == len(display)
+
+    def test_replay_dedupe_precedes_background_review_filtering(self, db):
+        sid = "chat"
+        db.create_session(sid, source="desktop")
+        db.append_message(sid, "user", "same")
+        db.append_message(
+            sid, "user", "Review the conversation above and update the skill library now.")
+        db.append_message(sid, "user", "same")
+        db.append_message(sid, "assistant", "curator reply")
+
+        _, display = db.get_resume_conversations(sid)
+
+        assert _texts(display) == [("user", "same")]
+        assert db.get_resume_message_count(sid) == len(display)
+        assert db.assert_resume_safe(sid, max_messages=len(display)) == len(display)
 
     def test_guard_rejects_a_lineage_over_the_limit(self, db):
         from hermes_state import SessionResumeTooLargeError

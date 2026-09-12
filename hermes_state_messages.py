@@ -938,15 +938,16 @@ class SessionMessagesMixin:
         return not prefer_current, exact_clone_key
 
     def _rows_to_conversation(self, rows, *, session_id: str, include_ancestors: bool, repair_alternation: bool,
-                              include_row_ids: bool = False,
-                              include_summary_markers: bool = False) -> List[Dict[str, Any]]:
+                              include_row_ids: bool = False, include_summary_markers: bool = False,
+                              max_messages: Optional[int] = None) -> List[Dict[str, Any]]:
         """Decode fetched rows (ordered by id, pre-filtered) into OpenAI format, stable key order. Every dict is
         stamped ``_DB_PERSISTED_MARKER_KEY`` (born durable) so an identity-losing handoff never re-appends the
         transcript on flush. ``_row_id`` is opt-in (gateway reactions); reasoning restored on assistant rows
         only; ``api_content`` VERBATIM (no sanitize/strip) so replay keeps the provider prompt cache byte-stable."""
-        from hermes_state import _strip_background_review_harness, _strip_stale_tool_call_markers
+        from hermes_state import _is_background_review_harness_message, _strip_stale_tool_call_markers
         messages = []
         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
+        skip_harness_reply = False
         for row in rows:
             content = self._decode_content(row["content"])
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
@@ -988,10 +989,19 @@ class SessionMessagesMixin:
                     continue
                 if exact_clone_key is not None:
                     exact_user_clones[exact_clone_key] = msg
+            if _is_background_review_harness_message(msg):
+                skip_harness_reply = True
+                continue
+            if skip_harness_reply:
+                skip_harness_reply = False
+                if msg.get("role") == "assistant":
+                    continue
             messages.append(msg)
+            if max_messages is not None and len(messages) >= max_messages:
+                break
         # Defense-in-depth: strip a background-review harness turn (older builds shared the parent's
         # session_id) plus its curator reply, and bare tool-call marker content ("[memory]") persisted as an answer.
-        messages = _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
+        messages = _strip_stale_tool_call_markers(messages)
         if repair_alternation and messages:
             from agent.agent_runtime_helpers import repair_message_sequence
             repaired = repair_message_sequence(None, messages)
@@ -1034,9 +1044,45 @@ class SessionMessagesMixin:
             return [session_id], "active = 1"
         return self._resume_lineage_ids(session_id), "(active = 1 OR compacted = 1)"
 
+    def _count_resume_display_messages(self, session_ids: List[str], limit: Optional[int] = None) -> int:
+        """Count the bounded display projection a full resume materializes."""
+        placeholders = _placeholders(session_ids)
+        args = "role, content, timestamp, tool_call_id, tool_calls, tool_name, display_kind, display_metadata"
+
+        def identity(*values):
+            keys = ("role", "content", "timestamp", "tool_call_id", "tool_calls", "tool_name",
+                    "display_kind", "display_metadata")
+            return self._display_identity(self._display_dedupe_key(dict(zip(keys, values))))
+
+        with self._read_ctx() as conn:
+            conn.create_function("_hermes_display_identity", 8, identity, deterministic=True)
+            columns = set(self._message_column_names(conn))
+            visible = "(active = 1 OR compacted = 1)"
+            identity_sql = (
+                f"COALESCE(display_identity, _hermes_display_identity({args}))"
+                if "display_identity" in columns else f"_hermes_display_identity({args})")
+            rows = conn.execute(f"""WITH keyed AS (
+                    SELECT session_id, {self._CONVERSATION_ROW_COLUMNS}, {identity_sql} AS projection_identity
+                    FROM messages WHERE session_id IN ({placeholders}) AND {visible}
+                ), ranked AS (
+                    SELECT *, MIN(id) OVER (PARTITION BY projection_identity) AS first_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY projection_identity ORDER BY active DESC, id DESC
+                        ) AS projection_rank
+                    FROM keyed
+                )
+                SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} FROM ranked
+                WHERE projection_rank = 1 ORDER BY first_id""", tuple(session_ids))
+            projected = self._rows_to_conversation(
+                rows, session_id=session_ids[-1], include_ancestors=True, repair_alternation=False,
+                include_row_ids=True, max_messages=limit)
+            return len(projected)
+
     def get_resume_message_count(self, session_id: str, *, tip_only: bool = False) -> int:
-        """Count the rows a resume would materialize (see ``_resume_count_scope``)."""
+        """Count the messages a resume would materialize (see ``_resume_count_scope``)."""
         session_ids, active_clause = self._resume_count_scope(session_id, tip_only)
+        if not tip_only:
+            return self._count_resume_display_messages(session_ids)
         return int(self._read_one(
             f"SELECT COUNT(*) FROM messages WHERE session_id IN ({_placeholders(session_ids)}) AND {active_clause}",
             tuple(session_ids))[0])
@@ -1053,9 +1099,12 @@ class SessionMessagesMixin:
         if max_messages == 0:
             return 0
         session_ids, active_clause = self._resume_count_scope(session_id, tip_only)
-        message_count = int(self._read_one("SELECT COUNT(*) FROM ("
-            f"SELECT 1 FROM messages WHERE session_id IN ({_placeholders(session_ids)}) "
-            f"AND {active_clause} LIMIT ?)", (*session_ids, max_messages + 1))[0])
+        if tip_only:
+            message_count = int(self._read_one("SELECT COUNT(*) FROM ("
+                f"SELECT 1 FROM messages WHERE session_id IN ({_placeholders(session_ids)}) "
+                f"AND {active_clause} LIMIT ?)", (*session_ids, max_messages + 1))[0])
+        else:
+            message_count = self._count_resume_display_messages(session_ids, max_messages + 1)
         if message_count > max_messages:
             raise SessionResumeTooLargeError(
                 message_count, max_messages, scope="in its tip segment" if tip_only else "across its lineage")

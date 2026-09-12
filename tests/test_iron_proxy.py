@@ -814,3 +814,74 @@ def test_bitwarden_importerror_raise_without_fallback(
         )
 
 
+
+# ---------------------------------------------------------------------------
+# Rootless-docker unreachable-bind refusal (#106909)
+# ---------------------------------------------------------------------------
+
+
+def _completed(stdout, returncode=0):
+    proc = MagicMock()
+    proc.stdout = stdout
+    proc.returncode = returncode
+    return proc
+
+
+def test_docker_rootless_true_on_security_option(monkeypatch):
+    """`docker info` SecurityOptions containing name=rootless → True."""
+    monkeypatch.setattr(
+        ip, "_run",
+        lambda *a, **k: _completed('["name=seccomp,profile=builtin","name=rootless","name=cgroupns"]'))
+    assert ip._docker_rootless() is True
+
+
+def test_docker_rootless_false_without_option(monkeypatch):
+    """Rootful daemon output → False."""
+    monkeypatch.setattr(
+        ip, "_run", lambda *a, **k: _completed('["name=seccomp,profile=builtin"]'))
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    assert ip._docker_rootless() is False
+
+
+def test_docker_rootless_fail_open_when_docker_missing(monkeypatch):
+    """No docker binary and no DOCKER_HOST hint → False (old behavior kept)."""
+    import subprocess
+
+    def boom(*a, **k):
+        raise OSError("no docker")
+    monkeypatch.setattr(ip, "_run", boom)
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    assert ip._docker_rootless() is False
+
+
+def test_unreachable_bind_reason_on_rootless_without_bridge(monkeypatch):
+    """Linux + rootless + no host bridge → actionable reason (#106909)."""
+    import platform
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ip, "_detect_docker_bridge_ip", lambda: None)
+    monkeypatch.setattr(ip, "_docker_rootless", lambda: True)
+    reason = ip.rootless_unreachable_bind_reason()
+    assert reason is not None
+    assert "rootless" in reason
+    assert "loopback" in reason
+
+
+def test_unreachable_bind_reason_none_when_bridge_present(monkeypatch):
+    """A host-visible bridge means sandboxes can be served → None."""
+    import platform
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ip, "_detect_docker_bridge_ip", lambda: "172.17.0.1")
+    monkeypatch.setattr(
+        ip, "_docker_rootless", lambda: True,
+        raising=False)
+    assert ip.rootless_unreachable_bind_reason() is None
+
+
+def test_unreachable_bind_reason_none_off_linux(monkeypatch):
+    """Docker Desktop (macOS/Windows) loopback binds stay reachable → None."""
+    import platform
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    assert ip.rootless_unreachable_bind_reason() is None

@@ -506,6 +506,48 @@ def _detect_docker_bridge_ip() -> Optional[str]:
     return str(addr)
 
 
+def _docker_rootless() -> bool:
+    """True when the Docker daemon is rootless.  Primary signal: the ``rootless``
+    member of ``docker info`` SecurityOptions.  Fallback: DOCKER_HOST pointing
+    under the user's runtime dir.  Fail-open (False) when docker is missing or
+    unparseable — an unknown daemon keeps today's behavior."""
+    try:
+        res = _run(["docker", "info", "--format", "{{json .SecurityOptions}}"],
+                   timeout=5, text=True)
+    except (OSError, subprocess.TimeoutExpired):
+        res = None
+    if res is not None and res.returncode == 0:
+        try:
+            options = json.loads(res.stdout or "[]")
+        except ValueError:
+            options = []
+        if any(str(opt).split(",")[0].strip() == "name=rootless" for opt in options):
+            return True
+    host = os.environ.get("DOCKER_HOST", "")
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "")
+    return bool(host and xdg and host.startswith("unix://" + xdg))
+
+
+def rootless_unreachable_bind_reason() -> Optional[str]:
+    """Operator-facing reason when a Linux proxy bind would be unreachable from Docker
+    sandboxes, else None.  Rootless Docker has no host-visible bridge, so the loopback
+    fallback is unreachable from containers on the default slirp4netns driver — writing
+    it and reporting healthy is a fail-open lie (#106909).  Callers (egress setup/start)
+    must refuse with this reason instead."""
+    if platform.system() != "Linux":
+        return None
+    if _detect_docker_bridge_ip() is not None:
+        return None
+    if not _docker_rootless():
+        return None
+    return (
+        "rootless Docker detected with no host-visible bridge: iron-proxy would bind "
+        "loopback, which Docker sandboxes cannot reach (slirp4netns has no route to "
+        "host listeners). Re-run setup once Docker provides a host-visible bridge "
+        "(rootful daemon, or a rootless driver that exposes one)."
+    )
+
+
 def build_proxy_config(
     *, mappings: List[TokenMapping], ca_cert: Path, ca_key: Path, tunnel_port: int = _DEFAULT_TUNNEL_PORT, audit_log: Optional[Path] = None,
     allowed_hosts: Optional[List[str]] = None, upstream_deny_cidrs: Optional[List[str]] = None, http_listen: Optional[List[str]] = None,

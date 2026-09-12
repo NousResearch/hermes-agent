@@ -1331,7 +1331,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         """
         try:
             from hermes_cli.plugin_compat import compat_report
-            compat_report(manifests, force=True)
+            compat_report(manifests)
         except Exception as exc:
             logger.debug("plugin compat report refresh skipped: %s", exc)
 

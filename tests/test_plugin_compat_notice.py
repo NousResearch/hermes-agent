@@ -117,10 +117,32 @@ def test_loader_skips_hitting_plugin_after_date(tmp_path, monkeypatch):
     assert not loaded.enabled and loaded.error and pc.COMPAT_REMOVAL in loaded.error
 
 
-def test_discovery_refreshes_report_file(tmp_path, monkeypatch):
+def test_discovery_reuses_compat_report_when_sources_are_unchanged(tmp_path, monkeypatch):
+    from hermes_cli.plugins import PluginManager
+    monkeypatch.setattr(pc, "load_manifest", lambda: MANIFEST)
+    monkeypatch.setattr(pc, "_write_report_file", lambda report: None)
+    plugin = tmp_path / "plugins" / "oldpaths"; plugin.mkdir(parents=True)
+    (plugin / "__init__.py").write_text("from tools.web_tools import prefers_gateway\n")
+    from hermes_cli.plugins_manifest import PluginManifest
+    real = PluginManifest(name="oldpaths", source="user", path=str(plugin))
+    scans = 0
+    original_scan = pc.scan_plugin
+
+    def counting_scan(*args, **kwargs):
+        nonlocal scans
+        scans += 1
+        return original_scan(*args, **kwargs)
+
+    monkeypatch.setattr(pc, "scan_plugin", counting_scan)
+    mgr = PluginManager(scope_key=str(tmp_path))
+    mgr._refresh_plugin_compat_report([real])
+    mgr._refresh_plugin_compat_report([real])
+    assert scans == 1
+
+
+def test_compat_report_source_change_invalidates_cache_and_clears_file(tmp_path, monkeypatch):
     """The Desktop modal reads the report the `serve` backend's discovery wrote — discovery itself must
     write it (not only the CLI banner / doctor / update paths), and clear it once the plugin is fixed."""
-    from hermes_cli.plugins import PluginManager
     monkeypatch.setattr(pc, "load_manifest", lambda: MANIFEST)
     monkeypatch.setattr(pc, "removal_in_effect", lambda today=None: False)
     monkeypatch.setattr(pc, "report_file_path", lambda: tmp_path / "r.json")
@@ -129,12 +151,11 @@ def test_discovery_refreshes_report_file(tmp_path, monkeypatch):
     (plugin / "__init__.py").write_text("from tools.web_tools import prefers_gateway\ndef register(ctx):\n    pass\n")
     from hermes_cli.plugins_manifest import PluginManifest
     real = PluginManifest(name="oldpaths", version="0.1", description="t", source="user", path=str(plugin))
-    mgr = PluginManager(scope_key=str(tmp_path))
-    mgr._refresh_plugin_compat_report([real])
+    pc.compat_report([real], force=True)
     data = json.loads((tmp_path / "r.json").read_text())
     assert list(data["plugins"]) == ["oldpaths"] and data["in_effect"] is False
     (plugin / "__init__.py").write_text("from tools.tool_backend_helpers import prefers_gateway\ndef register(ctx):\n    pass\n")
-    mgr._refresh_plugin_compat_report([real])
+    pc.compat_report([real])
     assert not (tmp_path / "r.json").exists()
 
 

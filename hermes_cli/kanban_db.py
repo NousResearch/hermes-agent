@@ -473,13 +473,14 @@ def _dir_holds_board(d: Path) -> bool:
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
 ) -> Path:
-    """Shared resolver: ``env_var`` override, else legacy ``<root>/<default_parts>``
-    for the ``default`` board, else ``board_dir(slug)/leaf``."""
-    if env_var:
+    """Resolve an explicit board/context first, else use the environment pin/current board."""
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = _normalize_board_slug(_CURRENT_BOARD_OVERRIDE.get())
+    if slug is None and env_var:
         override = os.environ.get(env_var, "").strip()
         if override:
             return Path(override).expanduser()
-    slug = _normalize_board_slug(board)
     if slug is None:
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
@@ -488,8 +489,7 @@ def _board_path(
 
 
 def kanban_db_path(board: Optional[str] = None) -> Path:
-    """``kanban.db`` path: ``HERMES_KANBAN_DB`` pins it (injected into workers);
-    ``default`` -> ``<root>/kanban.db`` (back-compat), else the board dir."""
+    """Explicit board DB, else the worker pin/current board; ``default`` is legacy-rooted."""
     return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
 
 

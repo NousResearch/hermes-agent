@@ -486,6 +486,8 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
             text = block.get("text", "")
             for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
                 text = text.replace(old, new)
+            # Preserve the canonical documentation host so docs URLs remain valid and resolvable
+            text = text.replace("claude-code.nousresearch.com", "hermes-agent.nousresearch.com")
             block["text"] = _apply_oauth_prose_aliases(text)
     for tool in anthropic_tools or []:
         if "name" in tool:

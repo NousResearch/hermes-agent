@@ -46,7 +46,7 @@ hermes profile create researcher --description "Reads source code and external d
 hermes profile create work --clone
 ```
 
-将当前 profile 的 `config.yaml`、`.env`、`SOUL.md` 和 skills 复制到新 profile。API 密钥、模型和能力相同，但会话和记忆是全新的。编辑 `~/.hermes/profiles/work/.env` 可使用不同的 API 密钥，编辑 `~/.hermes/profiles/work/SOUL.md` 可设置不同的人格。
+将当前 profile 的 `config.yaml`、`.env`、`SOUL.md`、skills 以及精选记忆文件 `memories/MEMORY.md` 和 `memories/USER.md` 复制到新 profile——记忆与 `SOUL.md` 一样被视为 agent 身份的一部分。会话、`state.db`、cron 任务及其他内容均从空白开始。若也想要空白记忆，请不加 `--clone` 创建 profile，或在创建后删除这两个文件；文件不存在时 agent 不会回退读取其他 profile 的记忆。编辑 `~/.hermes/profiles/work/.env` 可使用不同的 API 密钥，编辑 `~/.hermes/profiles/work/SOUL.md` 可设置不同的人格。
 
 ### 克隆全部内容（`--clone-all`）
 

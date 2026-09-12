@@ -50,6 +50,7 @@ key in its row (element-specific keys fall back to the shared one when unset).
 | Success / warn / error | `ui_ok` / `ui_warn` / `ui_error` | — |
 | Status bar text + usage | `status_bar_text`, `status_bar_good/warn/bad/critical` | — |
 | Diff add/remove (line + word) | `diff_added` / `diff_removed` / `diff_added_word` / `diff_removed_word` | built-in |
+| Clarify / approval panels | `clarify_border` / `clarify_title` / `clarify_question` / `clarify_choice` / `clarify_selected` / `clarify_active_other` / `clarify_countdown`, `approval_border` / `approval_title` / `approval_desc` / `approval_cmd` / `approval_choice` / `approval_selected` | derived CLI palette |
 | Code syntax (string/number/keyword/comment) | `syntax_string` / `syntax_number` / `syntax_keyword` / `syntax_comment` | accent/text/border/muted |
 | Completion menu | `completion_menu_bg` / `completion_menu_current_bg` / `…_meta_bg` | — |
 

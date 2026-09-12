@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { normalizeRegistry, REGISTRY_VERSION } from './connection-registry'
-import { resolveDesktopRemoteRoute } from './desktop-remote-route'
+import { backendScopeKey } from './connection-registry'
+import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 
 const tokenA = { encoding: 'plain', value: 'token-a' }
 const tokenB = { encoding: 'plain', value: 'token-b' }
@@ -153,6 +154,46 @@ test('global SSH treats an omitted port as 22 and checks the primary route', () 
   assert.equal(route?.connectionId, 'ssh-primary')
 })
 
+test('v1 settings SSH pool key ignores registry identity tags', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'ssh', remote: { mode: 'ssh', host: 'box.test', user: 'hermes' } },
+    profile: 'worker',
+    registry: registry('ssh-primary', [
+      { id: 'ssh-primary', kind: 'ssh', label: 'SSH primary', host: 'box.test', user: 'hermes', port: 22 }
+    ])
+  })
+
+  assert.ok(route)
+  assert.equal(route.kind, 'ssh')
+  assert.equal(route.connectionId, 'ssh-primary')
+  assert.equal(v1SshTerminalPoolKey(route, 'worker'), '')
+  assert.notEqual(v1SshTerminalPoolKey(route, 'worker'), backendScopeKey(route.connectionId, 'worker'))
+})
+
+test('v1 profile SSH pool key is the profile, not conn:id::profile', () => {
+  const ssh = {
+    mode: 'ssh',
+    host: 'box.test',
+    user: 'hermes',
+    port: 2222,
+    keyPath: '/keys/a',
+    remoteHermesPath: '/srv/hermes',
+    remoteProfile: 'worker'
+  }
+
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local', profiles: { worker: ssh } },
+    profile: 'worker',
+    registry: registry('local', [{ id: 'worker-ssh', kind: 'ssh', label: 'Worker SSH', ...ssh }])
+  })
+
+  assert.ok(route)
+  assert.equal(route.kind, 'ssh')
+  assert.equal(route.connectionId, 'worker-ssh')
+  assert.equal(v1SshTerminalPoolKey(route, 'worker'), 'worker')
+  assert.notEqual(v1SshTerminalPoolKey(route, 'worker'), backendScopeKey(route.connectionId, 'worker'))
+})
+
 test('profile route omits identity when two registry entries match exactly', () => {
   const block = { mode: 'remote', url: 'https://worker.test', authMode: 'token', token: tokenA }
 
@@ -232,6 +273,163 @@ test('URL route fails closed for different token, headers, kind, or Cloud org', 
   }
 })
 
+test('profile remote wins over a registry-backed global SSH route', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: {
+      mode: 'ssh',
+      remote: { mode: 'ssh', host: 'global-box.test', user: 'hermes' },
+      profiles: {
+        worker: { mode: 'remote', url: 'https://worker.test', authMode: 'token', token: tokenA }
+      }
+    },
+    profile: 'worker',
+    registry: registry('global-ssh', [
+      { id: 'global-ssh', kind: 'ssh', label: 'Global SSH', host: 'global-box.test', user: 'hermes' },
+      { id: 'worker-remote', kind: 'remote', label: 'Worker', url: 'https://worker.test', token: tokenA }
+    ])
+  })
+
+  assert.equal(route?.kind, 'remote')
+  assert.equal(route?.source, 'profile')
+  assert.equal(route?.connectionId, 'worker-remote')
+})
+
+test('profile SSH wins over a different registry primary SSH route', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: {
+      mode: 'ssh',
+      remote: { mode: 'ssh', host: 'global-box.test', user: 'hermes' },
+      profiles: {
+        worker: { mode: 'ssh', host: 'worker-box.test', user: 'hermes' }
+      }
+    },
+    profile: 'worker',
+    registry: registry('global-ssh', [
+      { id: 'global-ssh', kind: 'ssh', label: 'Global SSH', host: 'global-box.test', user: 'hermes' },
+      { id: 'worker-ssh', kind: 'ssh', label: 'Worker SSH', host: 'worker-box.test', user: 'hermes' }
+    ])
+  })
+
+  assert.equal(route?.kind, 'ssh')
+  assert.equal(route?.source, 'profile')
+  assert.equal(route?.connectionId, 'worker-ssh')
+})
+
+test('environment remote wins over a registry-backed global SSH route', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: {
+      mode: 'ssh',
+      remote: { mode: 'ssh', host: 'global-box.test', user: 'hermes' }
+    },
+    env: { url: 'https://env.test', token: 'env-token' },
+    registry: registry('global-ssh', [
+      { id: 'global-ssh', kind: 'ssh', label: 'Global SSH', host: 'global-box.test', user: 'hermes' }
+    ])
+  })
+
+  assert.equal(route?.kind, 'remote')
+  assert.equal(route?.source, 'env')
+  assert.equal(route?.connectionId, undefined)
+})
+
+test('local route does not inherit an unrelated registry SSH connection', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local' },
+    registry: registry('local', [
+      { id: 'unused-ssh', kind: 'ssh', label: 'Unused SSH', host: 'box.test', user: 'hermes' }
+    ])
+  })
+
+  assert.equal(route, null)
+})
+
 test('local config without overrides returns null', () => {
   assert.equal(resolveDesktopRemoteRoute({ config: { mode: 'local' }, registry: registry('local', []) }), null)
+})
+
+// --- Registry-primary transport gating (#91564 / #90316) ---
+//
+// "Make primary" on a registered remote gateway only writes connections.json;
+// the v1 config.mode stays 'local'. The route resolver must still expose that
+// remote transport, or startHermes() spawns a loopback `hermes serve` the
+// desktop never uses (duplicated MCP sets, port squat, respawn-on-poll).
+
+test('falls back to a REMOTE registry primary when the v1 mode is local (#91564/#90316)', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local' },
+    profile: null,
+    registry: registry('gw-b', [
+      { id: 'gw-b', kind: 'remote', label: 'Gateway B', url: 'https://gw-b.test', authMode: 'token', token: tokenB }
+    ])
+  })
+
+  assert.equal(route?.kind, 'remote')
+  assert.equal(route?.source, 'registry')
+  assert.equal(route?.connectionId, 'gw-b')
+  assert.equal((route as any)?.url, 'https://gw-b.test')
+  assert.deepEqual((route as any)?.token, tokenB)
+})
+
+test('falls back to a CLOUD registry primary when the v1 mode is local', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local' },
+    profile: null,
+    registry: registry('cloud-1', [
+      {
+        id: 'cloud-1',
+        kind: 'cloud',
+        label: 'Hermes Cloud',
+        url: 'https://agent.hermes.cloud',
+        authMode: 'oauth',
+        org: 'nous'
+      }
+    ])
+  })
+
+  assert.equal(route?.kind, 'cloud')
+  assert.equal(route?.source, 'registry')
+  assert.equal((route as any)?.authMode, 'oauth')
+  assert.equal((route as any)?.org, 'nous')
+})
+
+test('falls back to an SSH registry primary when the v1 mode is local', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local' },
+    profile: null,
+    registry: registry('spark', [
+      { id: 'spark', kind: 'ssh', label: 'Spark', host: 'spark1', user: 'tek', port: 2222, token: tokenA }
+    ])
+  })
+
+  assert.equal(route?.kind, 'ssh')
+  assert.equal(route?.source, 'registry')
+  assert.equal(route?.connectionId, 'spark')
+  assert.equal((route as any)?.ssh?.host, 'spark1')
+  assert.equal((route as any)?.ssh?.port, 2222)
+})
+
+test('a LOCAL registry primary keeps resolving local (null route)', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local' },
+    profile: null,
+    registry: registry('local', [
+      { id: 'gw-b', kind: 'remote', label: 'Gateway B', url: 'https://gw-b.test', authMode: 'token', token: tokenB }
+    ])
+  })
+
+  assert.equal(route, null)
+})
+
+test('the v1 global remote still outranks the registry primary', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'remote', remote: { url: 'https://global.test', authMode: 'token', token: tokenA } },
+    profile: null,
+    registry: registry('gw-b', [
+      { id: 'global', kind: 'remote', label: 'Global', url: 'https://global.test', token: tokenA },
+      { id: 'gw-b', kind: 'remote', label: 'Gateway B', url: 'https://gw-b.test', authMode: 'token', token: tokenB }
+    ])
+  })
+
+  assert.equal(route?.source, 'settings')
+  assert.equal((route as any)?.url, 'https://global.test')
 })

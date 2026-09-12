@@ -236,6 +236,15 @@ describe('AttachmentList', () => {
     )
   })
 
+  it('removes an attachment from the composer chip', async () => {
+    const onRemove = vi.fn()
+
+    await renderWithI18n(<AttachmentList attachments={[makeAttachment('a', 'doc.pdf')]} onRemove={onRemove} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove doc.pdf' }))
+    expect(onRemove).toHaveBeenCalledWith('a')
+  })
+
   it('still routes a non-image attachment to the preview rail', async () => {
     $previewTabs.set([])
 

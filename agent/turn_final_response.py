@@ -12,8 +12,10 @@ import logging
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
+from agent.message_sanitization import _sanitize_surrogates
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
+from agent.turn_truncation import normalize_response_for_agent
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -22,6 +24,46 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
     "_dropped_toolcall_nudge",
 )
+
+_UNDELIVERED_INTERIM_REWRITE_INSTRUCTIONS = (
+    "An assistant message generated while tool calls were running was never delivered "
+    "to the user, and the draft final response below has not been sent either. Write "
+    "the complete, final user-facing reply now: start from the draft and merge in any "
+    "user-facing facts, numbers, instructions, or decisions from the undelivered text "
+    "that the user still needs; skip anything that was only progress narration. If the "
+    "draft already covers everything, repeat the draft verbatim.\n\n"
+    "Never respond about the draft or this check. Do not give a verdict such as 'the "
+    "draft is accurate', 'already shown to the user', or 'no changes needed', and do "
+    "not mention drafts, reviews, or hidden messages. Output only the reply itself."
+)
+
+
+def _rewrite_undelivered_interim(
+    agent: Any, undelivered_interim: str, draft_response: str
+) -> Optional[str]:
+    """Run the reconciliation as a stateless call on the active conversation route."""
+    prompt = (
+        f"{_UNDELIVERED_INTERIM_REWRITE_INSTRUCTIONS}\n\n"
+        f"Undelivered assistant text:\n{undelivered_interim}\n\n"
+        f"Draft final response:\n{draft_response}"
+    )
+    api_kwargs = agent._build_api_kwargs(
+        [{"role": "user", "content": prompt}],
+        tools_for_api=[],
+    )
+    response = agent._interruptible_api_call(api_kwargs)
+    rewritten_message = normalize_response_for_agent(agent, response)
+    if getattr(rewritten_message, "tool_calls", None):
+        logger.warning(
+            "Undelivered interim reconciliation returned tool calls; "
+            "keeping the original closer"
+        )
+        return None
+    content = getattr(rewritten_message, "content", None)
+    if not isinstance(content, str):
+        return None
+    rewritten = agent._strip_think_blocks(content).strip()
+    return rewritten or None
 
 
 @dataclass
@@ -210,6 +252,36 @@ def finish_text_response(
         and any(messages[-1].get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
     ):
         messages.pop()
+
+    from agent.conversation_loop import _final_response_covers_interim_content
+
+    undelivered_interim = getattr(agent, "_undelivered_tool_call_content", None)
+    if (
+        undelivered_interim
+        and not _final_response_covers_interim_content(final_response, undelivered_interim)
+    ):
+        logger.info(
+            "Final response omitted undelivered tool-call content; "
+            "rewriting it off-session"
+        )
+        try:
+            rewritten = _rewrite_undelivered_interim(
+                agent, undelivered_interim, final_response
+            )
+        except Exception:
+            logger.warning(
+                "Undelivered interim reconciliation failed; keeping the original closer",
+                exc_info=True,
+            )
+        else:
+            if rewritten:
+                final_response = rewritten
+                from agent.redact import redact_sensitive_text
+                final_msg["content"] = redact_sensitive_text(
+                    _sanitize_surrogates(rewritten)
+                )
+
+    agent._undelivered_tool_call_content = None
 
     _sg = apply_stop_gates(
         agent, final_msg, final_response=final_response, messages=messages,

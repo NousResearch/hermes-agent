@@ -3411,6 +3411,138 @@ class TestRunConversation:
         assert result["final_response"] == "Done searching"
         mock_print.assert_not_called()
 
+    def test_material_tool_call_content_is_recovered_when_interim_disabled(self, agent):
+        self._setup_agent(agent)
+        agent.platform = "gateway"
+        agent.interim_assistant_callback = None
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        hidden_quote = (
+            "Unit price = $128\n"
+            "4 x $128 = $512\n"
+            "Delivery = $7\n"
+            "Total = $519"
+        )
+        resp1 = _mock_response(
+            content=hidden_quote,
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        resp2 = _mock_response(
+            content="When do you need them by?",
+            finish_reason="stop",
+        )
+        recovered = (
+            "For 4 items:\n"
+            "4 x $128 = $512\n"
+            "Delivery = $7\n"
+            "Total = $519\n\n"
+            "When do you need them by?"
+        )
+        resp3 = _mock_response(content=recovered, finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2, resp3]
+
+        with (
+            patch("model_tools.handle_function_call", return_value="delivery checked"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("how much for 4 items?")
+
+        assert result["final_response"] == recovered
+        assert result["final_response"] != hidden_quote
+        assert result["api_calls"] == 2
+        assert agent.client.chat.completions.create.call_count == 3
+        side_call = agent.client.chat.completions.create.call_args_list[2]
+        side_call_messages = (
+            agent.client.chat.completions.create.call_args_list[2]
+            .kwargs["messages"]
+        )
+        assert len(side_call_messages) == 1
+        assert side_call_messages[0]["role"] == "user"
+        assert hidden_quote in side_call_messages[0]["content"]
+        assert "When do you need them by?" in side_call_messages[0]["content"]
+        assert not side_call.kwargs.get("tools")
+        assert [
+            msg["content"] for msg in result["messages"] if msg.get("role") == "user"
+        ] == ["how much for 4 items?"]
+        assert [
+            msg["content"] for msg in agent._session_messages
+            if msg.get("role") == "user"
+        ] == ["how much for 4 items?"]
+        assert result["messages"][-1]["content"] == recovered
+        assert not any(
+            "Undelivered assistant text:" in (msg.get("content") or "")
+            for msg in result["messages"]
+        )
+        assert agent._undelivered_tool_call_content is None
+
+    @pytest.mark.parametrize(
+        "recovery_outcome",
+        ["covered", "failure", "empty", "tool_calls"],
+    )
+    def test_off_session_rewrite_skips_or_keeps_original_closer(
+        self, agent, recovery_outcome
+    ):
+        self._setup_agent(agent)
+        agent.platform = "gateway"
+        agent.interim_assistant_callback = None
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        hidden_fact = "The confirmed total is $519, including $7 delivery."
+        original_closer = (
+            f"{hidden_fact} When do you need the items by?"
+            if recovery_outcome == "covered"
+            else "When do you need the items by?"
+        )
+        recovery_response = None
+        if recovery_outcome == "failure":
+            recovery_response = RuntimeError("side call failed")
+        elif recovery_outcome == "empty":
+            recovery_response = _mock_response(content="", finish_reason="stop")
+        elif recovery_outcome == "tool_calls":
+            recovery_response = _mock_response(
+                content="I will check again.",
+                finish_reason="tool_calls",
+                tool_calls=[_mock_tool_call(
+                    name="web_search", arguments="{}", call_id="c2"
+                )],
+            )
+        responses = [
+            _mock_response(
+                content=hidden_fact,
+                finish_reason="tool_calls",
+                tool_calls=[tc],
+            ),
+            _mock_response(content=original_closer, finish_reason="stop"),
+        ]
+        if recovery_response is not None:
+            responses.append(recovery_response)
+        agent.client.chat.completions.create.side_effect = responses
+
+        with (
+            patch(
+                "model_tools.handle_function_call",
+                return_value="delivery checked",
+            ) as handle_tool_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("what is the confirmed total?")
+
+        assert result["final_response"] == original_closer
+        assert result["final_response"] != hidden_fact
+        assert result["api_calls"] == 2
+        assert agent.client.chat.completions.create.call_count == (
+            2 if recovery_outcome == "covered" else 3
+        )
+        assert handle_tool_call.call_count == 1
+        assert result["messages"][-1]["content"] == original_closer
+        assert [
+            msg["content"] for msg in result["messages"] if msg.get("role") == "user"
+        ] == ["what is the confirmed total?"]
+        assert agent._undelivered_tool_call_content is None
+
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)
 

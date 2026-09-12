@@ -282,6 +282,136 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.should_halt is True
 
 
+# ── Generic per-tool caps: loop_caps.per_tool (#92476) ─────────────────────
+
+
+def test_per_tool_mapping_parses_and_ignores_legacy_names():
+    cfg = LoopCapConfig.from_mapping(
+        {"max_web_searches": 7, "per_tool": {"todo": 10, "text_to_speech": 0}}
+    )
+    assert cfg.max_web_searches == 7
+    assert cfg.per_tool == {"todo": 10, "text_to_speech": 0}
+
+
+def test_per_tool_unknown_loop_caps_key_warns_instead_of_silence(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="agent.tool_guardrails"):
+        LoopCapConfig.from_mapping({"max_web_searches": 50, "todo": 10})
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "todo" in joined and "per_tool" in joined, (
+        "a dropped cap key must warn — silence looks like a working cap"
+    )
+
+
+def test_per_tool_invalid_cap_warns_and_stays_uncapped(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="agent.tool_guardrails"):
+        cfg = LoopCapConfig.from_mapping(
+            {"per_tool": {"web_search": "ten", "todo": -3, "tts": 4}}
+        )
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "web_search" in joined and "invalid cap" in joined
+    assert "todo" in joined and "invalid cap" in joined
+    # Valid caps still parse; invalid ones degrade to uncapped (0).
+    assert cfg.per_tool["tts"] == 4
+    assert cfg.per_tool["web_search"] == 0
+    assert cfg.per_tool["todo"] == 0
+
+
+def test_per_tool_keys_normalized_case_insensitively(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="agent.tool_guardrails"):
+        cfg = LoopCapConfig.from_mapping({"per_tool": {"TODO": 2}})
+    # Lookup at runtime uses the lowercase tool name.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=False, loop_caps=cfg)
+    )
+    for _ in range(2):
+        assert controller.before_call("todo", {"n": 1}).action == "allow"
+    assert controller.before_call("todo", {"n": 1}).action == "block"
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "normalized to 'todo'" in joined
+
+
+def test_per_tool_mapping_is_read_only():
+    cfg = LoopCapConfig.from_mapping({"per_tool": {"todo": 3}})
+    try:
+        cfg.per_tool["todo"] = 99  # type: ignore[index]
+    except TypeError:
+        return
+    raise AssertionError("per_tool mapping must be immutable")
+
+
+def test_per_tool_cap_blocks_any_named_tool_regardless_of_hard_stop():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(per_tool={"todo": 2}),
+        )
+    )
+    for i in range(2):
+        decision = controller.before_call("todo", {"action": f"write{i}"})
+        assert decision.action == "allow"
+    decision = controller.before_call("todo", {"action": "write3"})
+    assert decision.action == "block"
+    assert decision.code == "loop_tool_cap"
+    assert decision.should_halt is True
+    assert "per_tool" in decision.message
+
+
+def test_per_tool_zero_means_unlimited():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(per_tool={"text_to_speech": 0}),
+        )
+    )
+    for i in range(5):
+        assert controller.before_call("text_to_speech", {"n": i}).action == "allow"
+
+
+def test_per_tool_uncapped_tools_unaffected():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(per_tool={"todo": 1}),
+        )
+    )
+    for i in range(4):
+        assert controller.before_call("read_file", {"path": f"f{i}"}).action == "allow"
+
+
+def test_per_tool_counters_reset_each_turn():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(per_tool={"todo": 1}),
+        )
+    )
+    assert controller.before_call("todo", {}).action == "allow"
+    assert controller.before_call("todo", {}).action == "block"
+    controller.reset_for_turn()
+    assert controller.before_call("todo", {}).action == "allow"
+
+
+def test_legacy_web_search_field_wins_over_per_tool_entry():
+    """Back-compat: the named field takes precedence if a tool appears in both."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(max_web_searches=2, per_tool={"web_search": 99}),
+        )
+    )
+    for i in range(2):
+        assert controller.before_call("web_search", {"query": f"q{i}"}).action == "allow"
+    decision = controller.before_call("web_search", {"query": "q3"})
+    assert decision.action == "block"
+    assert decision.code == "loop_web_search_cap"
+
+
 
 
 

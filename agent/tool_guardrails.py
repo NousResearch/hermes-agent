@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, field, fields
+import logging
+from dataclasses import asdict, dataclass, field
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
+
+logger = logging.getLogger(__name__)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -86,21 +90,106 @@ def _is_non_interactive_platform(platform: str | None) -> bool:
         return False
     return platform.strip().lower() not in _ATTENDED_PLATFORMS
 
+# Keys of LoopCapConfig that carry special meaning in from_mapping; anything
+# else under ``loop_caps`` is a typo and gets a warning instead of silence.
+_KNOWN_LOOP_CAP_KEYS = frozenset({"max_web_searches", "max_subagents", "per_tool"})
+
 
 @dataclass(frozen=True)
 class LoopCapConfig:
-    """Per-turn hard ceilings on web_search calls / subagent spawns; count total calls (not
-    repeats), fire regardless of ``hard_stop_enabled``; ``0`` disables a cap."""
+    """Per-turn caps on runaway-prone tool calls.
+
+    Inspired by Claude Code v2.1.212 (Week 29, July 2026), which added caps on
+    WebSearch calls and subagent spawns to stop runaway search / delegation
+    loops. Here the caps count *within a single agent loop* (one turn): the
+    counters reset in ``reset_for_turn`` at the start of every
+    ``run_conversation``, so a legitimate multi-turn session is never starved,
+    but a single turn that spirals into an unbounded search / delegation loop
+    is stopped.
+
+    Semantics differ from the per-turn loop *detector* above (which keys on
+    repeated identical/failing calls): these caps are a hard ceiling on the
+    total count of a tool within the turn and fire regardless of
+    ``hard_stop_enabled``. A value of ``0`` disables the cap (unlimited).
+
+    ``per_tool`` extends the same hard-ceiling semantics to ANY tool by name
+    (#92476): ``{"todo": 10, "text_to_speech": 3}`` caps those tools per turn.
+    The two legacy named fields keep working unchanged; if a tool appears in
+    both, its legacy field wins.
+    """
 
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
+    per_tool: Mapping[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "LoopCapConfig":
         """Build config from the ``tool_loop_guardrails.loop_caps`` section."""
         if not isinstance(data, Mapping):
             return cls()
-        return cls(**{f.name: _int_at_least(data.get(f.name), f.default, 0) for f in fields(cls)})
+        defaults = cls()
+        unknown = sorted(
+            str(k) for k in data.keys() if str(k) not in _KNOWN_LOOP_CAP_KEYS
+        )
+        if unknown:
+            # A silently-dropped cap looks identical to "no cap configured" —
+            # tell the user their key did nothing (#92476). logger, not
+            # print(): this parser also runs inside long-lived server
+            # processes where stdout is a machine-readable channel.
+            logger.warning(
+                "tool_loop_guardrails.loop_caps: unrecognized key(s) %s — "
+                "expected max_web_searches, max_subagents, or per_tool.",
+                ", ".join(unknown),
+            )
+        raw_per_tool = data.get("per_tool")
+        per_tool: dict[str, int] = {}
+        if isinstance(raw_per_tool, Mapping):
+            for tool_name, raw_cap in raw_per_tool.items():
+                name_str = str(tool_name)
+                normalized = name_str.strip().lower()
+                # Accept plain non-negative ints and numeric strings; anything
+                # else would silently coerce to 0 (=uncapped) inside
+                # _non_negative_int, so surface the misconfiguration instead
+                # (#92476 review).
+                cap = 0
+                ok = False
+                if isinstance(raw_cap, bool):
+                    pass
+                elif isinstance(raw_cap, int):
+                    ok = raw_cap >= 0
+                    cap = raw_cap if ok else 0
+                else:
+                    try:
+                        parsed = int(str(raw_cap))
+                        ok = parsed >= 0
+                        cap = parsed if ok else 0
+                    except (TypeError, ValueError):
+                        ok = False
+                if not ok:
+                    logger.warning(
+                        "tool_loop_guardrails.loop_caps.per_tool[%s]: "
+                        "invalid cap %r ignored — tool runs uncapped. "
+                        "Use a non-negative integer.",
+                        name_str,
+                        raw_cap,
+                    )
+                if normalized != name_str:
+                    logger.warning(
+                        "tool_loop_guardrails.loop_caps.per_tool[%s]: "
+                        "normalized to '%s' (matching is case-insensitive).",
+                        name_str,
+                        normalized,
+                    )
+                per_tool[normalized] = cap
+        return cls(
+            max_web_searches=_int_at_least(
+                data.get("max_web_searches"), defaults.max_web_searches, 0
+            ),
+            max_subagents=_int_at_least(
+                data.get("max_subagents"), defaults.max_subagents, 0
+            ),
+            per_tool=MappingProxyType(per_tool),
+        )
 
 
 @dataclass(frozen=True)
@@ -302,6 +391,7 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        self._turn_per_tool_counts: dict[str, int] = {}
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -466,15 +556,67 @@ class ToolCallGuardrailController:
     ) -> ToolGuardrailDecision | None:
         """Block once a per-turn cap is reached (BEFORE the call, so the (cap+1)-th is refused), else advance
         the counter and return None. delegate_task control actions spawn nothing and keep working after the cap."""
+        caps = self.config.loop_caps
         spec = _LOOP_CAPS.get(tool_name)
-        if spec is None:
+        if spec is None and tool_name not in caps.per_tool:
+            # No table dispatch and no generic per-tool ceiling (#92476):
+            # nothing to enforce for this tool this turn.
             return None
-        cap_field, count_attr, code = spec
-        cap, count = getattr(self.config.loop_caps, cap_field), getattr(self, count_attr)
-        increment = 1 if tool_name == "web_search" else (_subagent_spawn_count(args) if cap else 0)
-        if increment and cap and count >= cap:
-            return self._decide("block", code, tool_name, count, signature, cap=cap)
-        setattr(self, count_attr, count + increment)
+
+        if tool_name == "delegate_task":
+            cap = caps.max_subagents
+            if not cap:
+                return None
+            spawn_count = _subagent_spawn_count(args)
+            if spawn_count == 0:
+                # Control action (list/steer/stop) — spawns nothing. Never
+                # block: once the spawn cap is hit, steering/stopping the
+                # existing children is exactly what should still work.
+                return None
+            if self._turn_subagent_count >= cap:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="loop_subagent_cap",
+                    message=(
+                        f"Blocked delegate_task: this turn has already spawned "
+                        f"{self._turn_subagent_count} subagents (limit {cap}). "
+                        "This looks like a runaway delegation loop. Finish the "
+                        "work with the results you have and answer the user."
+                    ),
+                    tool_name=tool_name,
+                    count=self._turn_subagent_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
+            self._turn_subagent_count += spawn_count
+            return None
+
+        # Generic per-tool ceiling (#92476): the hard-cap semantics above,
+        # extended by name to any tool via loop_caps.per_tool.
+        per_tool_cap = caps.per_tool.get(tool_name)
+        if per_tool_cap is not None:
+            count = self._turn_per_tool_counts.get(tool_name, 0)
+            if per_tool_cap and count >= per_tool_cap:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="loop_tool_cap",
+                    message=(
+                        f"Blocked {tool_name}: this turn has already made "
+                        f"{count} calls (per-turn limit {per_tool_cap} from "
+                        "tool_loop_guardrails.loop_caps.per_tool). This looks "
+                        "like a runaway loop — work with what you have and "
+                        "answer the user."
+                    ),
+                    tool_name=tool_name,
+                    count=count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
+            if per_tool_cap:
+                self._turn_per_tool_counts[tool_name] = count + 1
+            return None
         return None
 
 

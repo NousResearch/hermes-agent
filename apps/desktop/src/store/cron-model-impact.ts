@@ -1,4 +1,4 @@
-import { getApiRequestProfile, setModelAssignment } from '@/hermes'
+import { getApiRequestConnection, getApiRequestProfile, type ProfileScope, setModelAssignment } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { requestCronReview } from '@/store/cron'
 import {
@@ -147,7 +147,7 @@ function publishImpact(impact: CronModelImpact, profile: string, connection: str
 
 export async function setMainModelAssignment(
   request: Omit<ModelAssignmentRequest, 'scope'>,
-  scopeProfile?: null | string,
+  scopeProfile?: ProfileScope,
   options?: { skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
   const { connection, generation } = beginCronModelImpactAssignment()
@@ -188,10 +188,16 @@ export async function setMainModelAssignment(
     throw new Error(result.confirm_message?.trim() || translateNow('cron.modelImpact.saveFailed'))
   }
 
-  // A scoped assignment targets ANOTHER profile's backend: its cron impact
-  // belongs to that profile, and the review action would open the ACTIVE
-  // profile's cron view — skip the warning rather than mis-route it.
-  if (scopeProfile != null) {
+  // Explicit Settings pins can target the active owner too. Only that owner's
+  // impact can offer a review action into the active cron view.
+  if (
+    scopeProfile != null &&
+    !(
+      typeof scopeProfile === 'object' &&
+      scopeProfile.profile === profile &&
+      scopeProfile.connectionId === (getApiRequestConnection() || null)
+    )
+  ) {
     return result
   }
 

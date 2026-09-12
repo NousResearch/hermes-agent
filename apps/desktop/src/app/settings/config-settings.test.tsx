@@ -15,6 +15,7 @@ vi.mock('@/hermes', () => ({
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
+  profileScopeKey: (scope: { connectionId: string; profile: string }) => `${scope.connectionId}::${scope.profile}`,
   setApiRequestProfile: () => {}
 }))
 
@@ -26,7 +27,7 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 // backend connection. This page only reads the "applies to" scope override
 // and the repo-discovery signature, neither of which this test touches.
 vi.mock('@/store/settings-scope', () => ({
-  $settingsRequestProfile: atom<string | undefined>(undefined),
+  $settingsOwner: atom({ connectionId: 'local', profile: 'default' }),
   $settingsScopeOverride: atom<null | string>(null)
 }))
 

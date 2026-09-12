@@ -35,8 +35,9 @@ import { $activeConnectionId } from '@/store/connections'
 import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsOwner, $settingsScopeProfile } from '@/store/settings-scope'
 
+import { invalidateHermesConfig } from '../hooks/use-config-record'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
@@ -135,8 +136,16 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
   const exportConfig = async () => {
+    const owner = $settingsOwner.get()
+
+    if (!owner) {
+      notifyError(new Error(t.settings.config.failedLoad), t.settings.config.failedLoad)
+
+      return
+    }
+
     try {
-      const cfg = await getHermesConfigRecord()
+      const cfg = await getHermesConfigRecord(owner)
       const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -151,20 +160,38 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   }
 
   const resetConfig = async () => {
+    const owner = $settingsOwner.get()
+
+    if (!owner) {
+      notifyError(new Error(t.settings.config.failedLoad), t.settings.config.failedLoad)
+
+      return
+    }
+
     const ok = await confirm({
       confirmLabel: t.settings.resetToDefaults,
       destructive: true,
       title: t.settings.resetConfirm
     })
 
-    if (!ok) {
+    if (!ok || $settingsOwner.get() !== owner) {
       return
     }
 
     try {
-      await saveHermesConfig(await getHermesConfigDefaults())
-      triggerHaptic('success')
-      onConfigSaved?.()
+      const defaults = await getHermesConfigDefaults(owner)
+
+      if ($settingsOwner.get() !== owner) {
+        return
+      }
+
+      await saveHermesConfig(defaults, owner)
+      void invalidateHermesConfig(owner)
+
+      if ($settingsOwner.get() === owner) {
+        triggerHaptic('success')
+        onConfigSaved?.()
+      }
     } catch (err) {
       notifyError(err, t.settings.resetFailed)
     }

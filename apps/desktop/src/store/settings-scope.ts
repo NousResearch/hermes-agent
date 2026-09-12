@@ -1,6 +1,8 @@
 import { atom, computed } from 'nanostores'
 
+import type { LegacyConnectionOwner } from '@/global'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $connection } from '@/store/session'
 
 // ── Shared settings "Applies to" scope ──────────────────────────────────────
 // One selection shared by every config-backed settings page (Model, Workspace,
@@ -14,6 +16,76 @@ export const $settingsScopeOverride = atom<null | string>(null)
 // The profile the settings pages are currently editing (a concrete key).
 export const $settingsScopeProfile = computed([$settingsScopeOverride, $activeGatewayProfile], (override, active) =>
   normalizeProfileKey(override ?? active)
+)
+
+// ponytail: use Electron's resolved identity; never infer a remote owner from a URL.
+// Env/unmatched remotes have a descriptor but deliberately no registry identity.
+const $settingsConnectionId = computed($connection, connection => {
+  if (!connection) {
+    return null
+  }
+
+  if (Object.hasOwn(connection, 'connectionId')) {
+    return typeof connection.connectionId === 'string' && connection.connectionId.trim()
+      ? connection.connectionId
+      : null
+  }
+
+  return connection.mode === 'local' ? 'local' : null
+})
+
+let previousLegacyConnection: LegacyConnectionOwner | null = null
+
+function sameHeaders(left?: Record<string, string>, right?: Record<string, string>): boolean {
+  const leftEntries = Object.entries(left ?? {})
+  const rightEntries = Object.entries(right ?? {})
+
+  return leftEntries.length === rightEntries.length && leftEntries.every(([key, value]) => right?.[key] === value)
+}
+
+const $settingsLegacyConnection = computed($connection, connection => {
+  if (connection?.mode !== 'remote' || Object.hasOwn(connection, 'connectionId') || !connection.baseUrl) {
+    previousLegacyConnection = null
+
+    return null
+  }
+
+  const next: LegacyConnectionOwner = {
+    mode: connection.mode,
+    baseUrl: connection.baseUrl,
+    token: connection.token,
+    authMode: connection.authMode,
+    remoteIdentity: connection.remoteIdentity,
+    remoteKind: connection.remoteKind,
+    headers: connection.headers
+  }
+
+  if (
+    previousLegacyConnection &&
+    previousLegacyConnection.mode === next.mode &&
+    previousLegacyConnection.baseUrl === next.baseUrl &&
+    previousLegacyConnection.token === next.token &&
+    previousLegacyConnection.authMode === next.authMode &&
+    previousLegacyConnection.remoteIdentity === next.remoteIdentity &&
+    previousLegacyConnection.remoteKind === next.remoteKind &&
+    sameHeaders(previousLegacyConnection.headers, next.headers)
+  ) {
+    return previousLegacyConnection
+  }
+
+  previousLegacyConnection = next
+
+  return next
+})
+
+export const $settingsOwner = computed(
+  [$settingsConnectionId, $settingsScopeProfile, $settingsLegacyConnection],
+  (connectionId, profile, legacyConnection) =>
+    connectionId
+      ? { connectionId, profile }
+      : legacyConnection
+        ? { connectionId: null, profile, legacyConnection }
+        : null
 )
 
 // ── Request-scope form (THE value to hand to API helpers) ──────────────────

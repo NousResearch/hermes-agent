@@ -12,6 +12,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { saveMemoryProviderConfig } from '@/hermes'
+import type { ProfileScope } from '@/hermes'
 import { ExternalLink, Loader2, Save, SlidersHorizontal } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -53,7 +54,7 @@ export function ProviderConfigModal({
   onSaved
 }: {
   config: MemoryProviderConfig
-  profile?: null | string
+  profile?: ProfileScope
   provider: string
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -97,8 +98,11 @@ export function ProviderConfigModal({
         <DialogHeader>
           <DialogTitle icon={SlidersHorizontal}>{config.label} — full configuration</DialogTitle>
           <DialogDescription>
-            Every {config.label} option for the <span className="font-medium">{profile ?? activeProfile}</span> profile.
-            Blank fields fall back to the resolved host or built-in default.
+            Every {config.label} option for the{' '}
+            <span className="font-medium">
+              {(typeof profile === 'object' ? profile?.profile : profile) ?? activeProfile}
+            </span>{' '}
+            profile. Blank fields fall back to the resolved host or built-in default.
           </DialogDescription>
           {config.docs_url && (
             <a

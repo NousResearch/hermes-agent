@@ -49,6 +49,60 @@ def test_main_timestamps_each_stderr_line(tmp_path):
     assert lines[2] == "2026-07-15 12:34:56,789 already timestamped"
 
 
+_MALLOC_STACK_LOGGING_WARNING = (
+    "MallocStackLogging: can't turn off malloc stack logging because it was not enabled."
+)
+
+
+def test_benign_malloc_warning_exact_match_contract():
+    accepted = [
+        _MALLOC_STACK_LOGGING_WARNING,
+        f"Python(12345) {_MALLOC_STACK_LOGGING_WARNING}",
+        f"python(67890) {_MALLOC_STACK_LOGGING_WARNING}\r\n",
+    ]
+    for line in accepted:
+        assert stderr_timestamp._is_benign_darwin_malloc_stack_logging_line(
+            line, platform="darwin"
+        )
+        assert not stderr_timestamp._is_benign_darwin_malloc_stack_logging_line(
+            line, platform="linux"
+        )
+
+    rejected = [
+        f"ERROR: {_MALLOC_STACK_LOGGING_WARNING}",
+        f"{_MALLOC_STACK_LOGGING_WARNING} extra context",
+        "MallocStackLogging: malloc stack logging enabled.",
+        f"Python(not-a-pid) {_MALLOC_STACK_LOGGING_WARNING}",
+    ]
+    for line in rejected:
+        assert not stderr_timestamp._is_benign_darwin_malloc_stack_logging_line(
+            line, platform="darwin"
+        )
+
+
+@pytest.mark.macos_only
+def test_main_drops_only_benign_malloc_warning_on_darwin(tmp_path):
+    log_path = tmp_path / "gateway.error.log"
+    code = (
+        "import sys\n"
+        "sys.stderr.write('real failure\\n')\n"
+        f"sys.stderr.write({('Python(12345) ' + _MALLOC_STACK_LOGGING_WARNING + chr(10))!r})\n"
+        f"sys.stderr.write({('ERROR: ' + _MALLOC_STACK_LOGGING_WARNING + chr(10))!r})\n"
+        "sys.stderr.write('another real failure\\n')\n"
+    )
+
+    rc = stderr_timestamp.main(
+        ["--error-log", str(log_path), "--", sys.executable, "-c", code]
+    )
+
+    assert rc == 0
+    body = log_path.read_text(encoding="utf-8")
+    assert f"Python(12345) {_MALLOC_STACK_LOGGING_WARNING}" not in body
+    assert "real failure" in body
+    assert f"ERROR: {_MALLOC_STACK_LOGGING_WARNING}" in body
+    assert "another real failure" in body
+
+
 def test_prepare_upgrades_stale_gateway_argv_under_launchd():
     upgraded = stderr_timestamp._prepare_child_command(
         _STALE_GATEWAY_ARGV, _LAUNCHD_ENV

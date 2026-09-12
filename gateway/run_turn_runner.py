@@ -227,6 +227,9 @@ class TurnRunner:
             cmd_short = cmd_short[:cap - 3] + "..."
         elif len(lines) > 1:
             cmd_short += " ..."
+        if self._ctx.source.platform == Platform.MATRIX:
+            # Every list item needs its own label; headerless fenced blocks are discarded.
+            return f"{emoji} {tool_name}: {lines[0]}", f"{emoji} {tool_name}: {cmd_short}"
         return f"{header}```\n{cmd_full}\n```", f"{header}```\n{cmd_short}\n```"
 
     def _progress_build_message(self, tool_name, preview, args) -> Optional[str]:
@@ -536,7 +539,7 @@ class TurnRunner:
         metadata = ctx._progress_metadata
         # Native task-card fallback shares this sender but has no editable-list state.
         if isinstance(st, self._ProgressEditState) and st.is_matrix:
-            text, metadata = self._matrix_progress_payload(st.progress_lines)
+            text, metadata = self._matrix_progress_payload(st.progress_lines if st.can_edit else [text])
         result = await st.adapter.send(
             chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=metadata,
         )

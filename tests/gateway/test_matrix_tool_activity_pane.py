@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import queue
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.config import Platform, PlatformConfig
 from gateway.matrix_tool_activity import matrix_tool_activity_bodies
 from gateway.platforms.base import SendResult
 from gateway.run_turn_runner import TurnRunner
+from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
 from plugins.platforms.matrix.adapter import MatrixAdapter, _sanitize_matrix_html
 
@@ -206,3 +211,99 @@ async def test_progress_edit_failure_never_falls_back_to_new_message(error):
     assert adapter.send.call_count == 1
     assert state.progress_msg_id == "$root"
     assert state.can_edit
+
+
+def _real_progress_runner(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = MatrixAdapter(PlatformConfig(
+        enabled=True, token="test-token",
+        extra={"homeserver": "https://matrix.example.org", "user_id": "@bot:example.org"},
+    ))
+    events = []
+    typing = asyncio.Event()
+
+    async def send_event(room, event_type, content):
+        events.append(content)
+        return f"$event{len(events)}"
+
+    async def set_typing(*args, **kwargs):
+        typing.set()
+        # Hold the transport here so cancellation deterministically exercises the final drain.
+        await asyncio.Future()
+
+    adapter._client = SimpleNamespace(
+        send_message_event=send_event,
+        set_typing=set_typing,
+    )
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.MATRIX, chat_id="!room:example.org", user_id="@user:example.org"),
+        progress_mode="all", progress_grouping="accumulate", tool_progress_enabled=True,
+        progress_queue=queue.Queue(), _run_still_current=lambda: True,
+        _progress_metadata={"thread_id": "$thread"}, _progress_reply_to="$user",
+    )
+    runner = TurnRunner(SimpleNamespace(_adapter_for_source=lambda source: adapter), ctx)
+    return runner, adapter, events, typing
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["all", "verbose"])
+async def test_terminal_callbacks_survive_real_progress_delivery(monkeypatch, tmp_path, mode):
+    runner, adapter, events, typing = _real_progress_runner(monkeypatch, tmp_path)
+    runner._ctx.progress_mode = mode
+    runner.progress_callback("tool.started", "terminal", args={"command": "echo first"})
+    task = asyncio.create_task(runner.send_progress_messages())
+    try:
+        await asyncio.wait_for(typing.wait(), timeout=5)
+        runner.progress_callback("tool.started", "terminal", args={"command": "echo second\necho hidden"})
+    finally:
+        task.cancel()
+        await asyncio.wait_for(task, timeout=5)
+
+    assert len(events) == 2
+    assert events[0]["m.relates_to"]["event_id"] == "$thread"
+    edit = events[-1]
+    assert edit["m.relates_to"] == {"rel_type": "m.replace", "event_id": "$event1"}
+    assert edit["m.new_content"]["body"] == "🛠 Tool activity (2 updates)"
+    html = edit["m.new_content"]["formatted_body"]
+    assert html.count("<li>") == 2
+    assert "echo first" in html and "echo second" in html
+    assert "echo hidden" not in html and "```" not in html
+    assert edit["formatted_body"] == html
+    assert runner._ctx.stream_consumer_holder == [None]
+
+
+@pytest.mark.asyncio
+async def test_separate_progress_only_renders_each_new_activity(monkeypatch, tmp_path):
+    runner, adapter, events, _ = _real_progress_runner(monkeypatch, tmp_path)
+    runner._ctx.progress_grouping = "separate"
+    state = runner._progress_edit_state(adapter)
+    for label in ("first tool", "second tool"):
+        msg = runner._progress_absorb(state, label)
+        await runner._progress_send_or_edit(state, msg)
+    assert len(events) == 2
+    assert "first tool" in events[0]["formatted_body"]
+    assert "first tool" not in events[1]["formatted_body"]
+    assert "second tool" in events[1]["formatted_body"]
+    assert all(event["body"] == "🛠 Tool activity (1 update)" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_long_progress_remains_deliverable_on_same_root(monkeypatch, tmp_path):
+    runner, adapter, events, _ = _real_progress_runner(monkeypatch, tmp_path)
+    state = runner._progress_edit_state(adapter)
+    msg = runner._progress_absorb(state, "first tool")
+    await runner._progress_send_or_edit(state, msg)
+    for i in range(300):
+        runner._progress_absorb(state, f"tool {i}: " + '😀<&"' * 40)
+    runner._progress_absorb(state, "latest tool")
+    await runner._progress_send_or_edit(state, "latest tool")
+    edit = events[-1]
+    # Matrix edits carry HTML twice; include JSON escaping in the wire budget.
+    assert len(json.dumps(edit).encode("utf-8")) < 60_000
+    assert len(events) == 2
+    assert edit["m.relates_to"]["event_id"] == "$event1"
+    assert edit["m.new_content"]["body"] == "🛠 Tool activity (302 updates)"
+    html = edit["m.new_content"]["formatted_body"]
+    assert "latest tool" in html and "first tool" not in html
+    assert "Showing latest" in html
+    assert "<ol>" in html and "<details>" not in html

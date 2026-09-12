@@ -1374,6 +1374,35 @@ def register(ctx):
     ctx.register_platform_handler("discord", _wire)
 ```
 
+### Handle Telegram inline keyboard button clicks
+
+Plugins that send Telegram messages with inline keyboards can register the click handlers on `PluginContext`. No extra `CallbackQueryHandler` and no monkey-patch of the adapter's PTB `Application` are required. Reconnect rebuilds the same core handler, which looks up the plugin registry at tap time.
+
+```python
+def register(ctx):
+    async def _on_task_button(query, data: str):
+        # data is the raw callback_data (for example "task:done:42")
+        await query.edit_message_text("Done.")
+
+    ctx.register_telegram_callback_handler("task:", _on_task_button)
+```
+
+**Signature:** `ctx.register_telegram_callback_handler(prefix, callback) -> PluginRegistration`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `prefix` | `str` | `callback_data` prefix to claim (for example `"task:"`). Longest prefix wins when several handlers match. |
+| `callback` | async callable | Receives `(query, data)` where `query` is the PTB `CallbackQuery` and `data` is `query.data` |
+
+**Runtime behavior:**
+
+- Built-in prefixes (`ea:`, `cl:`, `gt:`, `mp:`, `cp:`, `sc:`, `update_prompt:`, and model-picker tokens) are reserved and rejected at register time.
+- Dispatch happens inside the existing `_handle_callback_query`, after those built-ins. The adapter authorizes the caller, always answers the query, then invokes the handler inside a defensive try/except.
+- Attach buttons with `adapter.send(..., metadata={"reply_markup": rows})`. `rows` is a list of button-dict rows (`text` plus `callback_data` and/or `url`), or an already-built `InlineKeyboardMarkup`. On a split message the keyboard is attached to the first chunk only.
+- Optional per-send `metadata["disable_link_preview"]` overrides the adapter-level `disable_link_previews` extra. If `reply_markup` is present, the rich-message path is skipped so the keyboard is not dropped.
+
+This is the public way for plugins to participate in Telegram inline-keyboard interactivity.
+
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
 :::

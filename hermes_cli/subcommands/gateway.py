@@ -129,6 +129,19 @@ def build_gateway_parser(
         help="List what would be removed without doing it")
     _flag(gateway_migrate_legacy, "-y", "--yes", dest="yes", help="Skip the confirmation prompt")
 
+    gateway_migrate = gateway_subparsers.add_parser(
+        "migrate", help="Move per-profile gateways onto one multiplexed default gateway (or back)",
+        description="Stop and uninstall each secondary profile's standalone gateway, turn on "
+            "gateway.multiplex_profiles on the default profile and restart its gateway so it serves "
+            "every profile. Runs a preflight first (duplicate bot tokens, port-binding platforms "
+            "without a /p/<profile>/ ingress) and changes nothing when blocked. "
+            "--standalone rolls the recorded migration back.")
+    mode = gateway_migrate.add_mutually_exclusive_group()
+    _flag(mode, "--multiplex", dest="multiplex", help="Migrate to one multiplexed gateway (default)")
+    _flag(mode, "--standalone", dest="standalone", help="Roll back to per-profile gateways from the recorded manifest")
+    _flag(gateway_migrate, "--dry-run", dest="dry_run", help="Print the plan and blockers without changing anything")
+    _flag(gateway_migrate, "-y", "--yes", dest="yes", help="Apply without confirmation")
+
     # enroll: redeem a single-use connector token for the per-gateway secret + per-tenant
     # delivery key, written to .env. See docs/relay-connector-contract.md. EXPERIMENTAL.
     gateway_enroll = gateway_subparsers.add_parser("enroll",

@@ -6342,10 +6342,15 @@ def _cmd_migrate_legacy(args):
     remove_legacy_hermes_units(interactive=not yes, dry_run=dry_run)
 
 
+def _cmd_migrate(args):
+    from hermes_cli.gateway_migrate import cmd_migrate
+    cmd_migrate(args)
+
+
 _GATEWAY_SUBCOMMANDS = {
     None: _cmd_run, "run": _cmd_run, "setup": _cmd_setup, "install": _cmd_install,
     "uninstall": _cmd_uninstall, "start": _cmd_start, "stop": _cmd_stop, "restart": _cmd_restart,
-    "status": _cmd_status, "list": _cmd_list, "migrate-legacy": _cmd_migrate_legacy,
+    "status": _cmd_status, "list": _cmd_list, "migrate-legacy": _cmd_migrate_legacy, "migrate": _cmd_migrate,
 }
 
 

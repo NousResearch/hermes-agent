@@ -383,7 +383,7 @@ def _build_children(
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
-                toolsets=None,  # always inherit the parent's toolsets
+                toolsets=t.get("enabled_toolsets"),  # per-task scoping or inherit parent
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
@@ -410,7 +410,8 @@ def _build_children(
 def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
-    output_schema: Optional[Dict[str, Any]] = None, action: Optional[str] = None, subagent_id: Optional[str] = None,
+    output_schema: Optional[Dict[str, Any]] = None, enabled_toolsets: Optional[List[str]] = None,
+    action: Optional[str] = None, subagent_id: Optional[str] = None,
     message: Optional[str] = None, parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
@@ -468,6 +469,9 @@ def delegate_task(
         return tool_error(str(exc))
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
+    # Single-goal call: inject top-level enabled_toolsets into the task dict
+    if not err and tasks is None and enabled_toolsets is not None and task_list:
+        task_list[0]["enabled_toolsets"] = enabled_toolsets
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if err:
@@ -626,6 +630,12 @@ DELEGATE_TASK_SCHEMA = {
                             "string",
                             "Background THIS child needs: file paths, error messages, constraints. Each child "
                             "sees only its own context — repeat shared background in every task that needs it.",
+                        ),
+                        "enabled_toolsets": _p(
+                            "array", "Optional. Restrict this child\u2019s tools to these toolset or tool names only. "
+                            "Intersected with the parent\u2019s enabled toolsets for safety; blocked tools are "
+                            "always stripped. Omit to inherit the parent\u2019s full set (default).",
+                            items={"type": "string"},
                         ),
                         "output_schema": _p(
                             "object",

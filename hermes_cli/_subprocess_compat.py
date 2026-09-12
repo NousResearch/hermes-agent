@@ -232,13 +232,41 @@ _GIT_CONFIG_OVERRIDES = {
 }
 
 
+def _safe_directory_cache_key(env: "Mapping[str, str]") -> tuple:
+    """Everything that decides which files ``git config --system/--global`` reads, plus the
+    global candidates' mtimes so an edit to ``~/.gitconfig`` is picked up without a restart."""
+    home = env.get("HOME", "")
+    xdg = env.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    candidates = (
+        env.get("GIT_CONFIG_SYSTEM") or "/etc/gitconfig",
+        env.get("GIT_CONFIG_GLOBAL") or os.path.join(home, ".gitconfig"),
+        os.path.join(xdg, "git", "config"),
+    )
+    stamps = []
+    for path in candidates:
+        try:
+            stamps.append(os.stat(path).st_mtime_ns)
+        except OSError:
+            stamps.append(None)
+    return (
+        env.get("GIT_CONFIG_GLOBAL"), env.get("GIT_CONFIG_SYSTEM"), env.get("GIT_CONFIG_NOSYSTEM"),
+        home, env.get("XDG_CONFIG_HOME"), env.get("PATH"), *stamps,
+    )
+
+
+_safe_directory_cache: dict[tuple, list[str]] = {}
+
+
 def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
     """The user's configured ``safe.directory`` values, in git's own effective order.
 
     Read with ``git config -z --get-all`` under *base_env* (the caller's untouched environment) so
     an explicit ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` still points at the file the user means.
     Best-effort: any failure (git missing, malformed config, timeout) yields no entries and leaves
-    the caller exactly as it behaved before.
+    the caller exactly as it behaved before. Memoised per process on the inputs that select the
+    config files (and the global file's mtime): ``noninteractive_git_env()`` runs on every internal
+    git call, including the startup banner probe, and two ``git config`` children per call is
+    ~10 ms against ~0.2 ms for the rest of the function.
 
     ``safe.directory`` is an *ordered* multi-valued setting and an empty value resets every entry
     seen so far, so a user can revoke a system-wide ``safe.directory=*`` and then name only the
@@ -248,6 +276,10 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
     marker, either of which would resurrect a revoked wildcard and widen trust. ``-z`` keeps a
     value containing whitespace or a newline as the single entry git reads it as.
     """
+    cache_key = _safe_directory_cache_key(base_env)
+    cached = _safe_directory_cache.get(cache_key)
+    if cached is not None:
+        return list(cached)
     env = dict(base_env)
     # --get-all itself must not be derailed by ambient injection or an interactive prompt.
     for key in list(env):
@@ -273,6 +305,7 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
         if records and records[-1] == "":
             records.pop()
         values.extend(records)
+    _safe_directory_cache[cache_key] = list(values)
     return values
 
 

@@ -1,6 +1,6 @@
-"""Test the platform-branched PTY bridge import in hermes_cli.web_server.
+"""Test the platform-branched PTY bridge import in hermes_cli.web_server_chat.
 
-The /api/pty WebSocket handler in web_server.py picks its bridge at import
+The /api/pty WebSocket handler picks its bridge at import
 time via ``sys.platform.startswith("win")`` — Windows gets the ConPTY
 backend, POSIX gets the fcntl/termios one.  Both branches must:
 
@@ -21,18 +21,18 @@ import sys
 
 import pytest
 
-from hermes_cli import web_server
+import hermes_cli.web_server_chat as _web_server_chat
 
 
 def test_web_server_exposes_pty_bridge_symbols():
     """The two symbols /api/pty consumes must always exist."""
-    assert hasattr(web_server, "PtyBridge")
-    assert hasattr(web_server, "PtyUnavailableError")
-    assert hasattr(web_server, "_PTY_BRIDGE_AVAILABLE")
+    assert hasattr(_web_server_chat, "PtyBridge")
+    assert hasattr(_web_server_chat, "PtyUnavailableError")
+    assert hasattr(_web_server_chat, "_PTY_BRIDGE_AVAILABLE")
     # PtyUnavailableError is always an exception class — either the real
     # one from the platform bridge, or the local fallback class.
-    assert isinstance(web_server.PtyUnavailableError, type)
-    assert issubclass(web_server.PtyUnavailableError, BaseException)
+    assert isinstance(_web_server_chat.PtyUnavailableError, type)
+    assert issubclass(_web_server_chat.PtyUnavailableError, BaseException)
 
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX-only")
@@ -41,17 +41,20 @@ def test_web_server_uses_posix_pty_bridge_on_posix():
     from hermes_cli.pty_bridge import PtyBridge as PosixBridge
     from hermes_cli.pty_bridge import PtyUnavailableError as PosixErr
 
-    assert web_server.PtyBridge is PosixBridge
-    assert web_server._PTY_BRIDGE_AVAILABLE is True
-    assert web_server.PtyUnavailableError is PosixErr
+    assert _web_server_chat.PtyBridge is PosixBridge
+    assert _web_server_chat._PTY_BRIDGE_AVAILABLE is True
+    assert _web_server_chat.PtyUnavailableError is PosixErr
 
 
 def test_pty_bridge_import_block_is_platform_branched():
     """Source-level guard: a future refactor must not collapse the branch
-    back to a single POSIX import.  Reads web_server.py directly so this
-    fails the same way on every OS — the runtime symbol checks above can
-    pass even when the branch shape is wrong on the current platform."""
-    src = pytest.importorskip("inspect").getsource(web_server)
+    back to a single POSIX import.  Reads the module that owns the import
+    block (``web_server_chat``) directly so this fails the same way on every
+    OS — the runtime symbol checks above can pass even when the branch shape
+    is wrong on the current platform."""
+    from hermes_cli import web_server_chat
+
+    src = pytest.importorskip("inspect").getsource(web_server_chat)
     # The shape we expect (from PR #39913):
     #
     #   if sys.platform.startswith("win"):

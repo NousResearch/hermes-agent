@@ -39,6 +39,68 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            reasoning_config={"enabled": False, "effort": "none"},
+            request_overrides={
+                "temperature": 0.4,
+                "top_p": 0.9,
+                "top_logprobs": 5,
+                "logprobs": True,
+                "reasoning": {"effort": "none"},
+                "include": ["reasoning.encrypted_content", "message.output_text.logprobs"],
+                "prompt_cache_retention": "24h",
+            },
+        )
+
+        assert kw["reasoning"]["effort"] == "low"
+        assert kw["include"] == ["reasoning.encrypted_content"]
+        for unsupported in ("temperature", "top_p", "top_logprobs", "logprobs", "prompt_cache_retention"):
+            assert unsupported not in kw
+
+    @pytest.mark.parametrize("effort", ["none", "minimal"])
+    def test_astra_normalizes_unsupported_low_efforts_after_overrides(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            request_overrides={"reasoning": {"effort": effort}},
+        )
+
+        assert kw["reasoning"]["effort"] == "low"
+
+    @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+    def test_astra_accepts_complete_effort_ladder(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+
+        assert kw["reasoning"]["effort"] == effort
+
+    @pytest.mark.parametrize("base_url", ["https://responses.example.com/v1", "https://evil.api.openai.com/v1"])
+    def test_astra_contract_is_exact_host_only(self, transport, base_url):
+        """Proxies and lookalike subdomains keep the generic Responses contract (effort passes through)."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url=base_url,
+            reasoning_config={"enabled": True, "effort": "none"},
+            request_overrides={"temperature": 0.4},
+        )
+
+        assert kw["reasoning"]["effort"] == "none"
+        assert kw["temperature"] == 0.4
+
     def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
         """``-900k`` large-context picker variants are Hermes-side aliases —
         the Codex backend only knows the base slug, so build_kwargs must
@@ -320,6 +382,88 @@ class TestCodexBuildKwargs:
         assert "function_call" in item_types
         assert "function_call_output" in item_types
         assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    @classmethod
+    def _two_turn_messages(cls):
+        """Two answered turns, each assistant row sealed by its own response, then a fresh user message."""
+        return [
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": "one",
+                "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "sealed-1", "summary": []}],
+            },
+            {"role": "user", "content": "second"},
+            {
+                "role": "assistant",
+                "content": "two",
+                "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "sealed-2", "summary": []}],
+            },
+            {"role": "user", "content": "third"},
+        ]
+
+    def test_azure_foundry_new_turn_replays_only_newest_reasoning(self, transport):
+        """Two sealed prior responses on the wire is the 400 "Conflicting authenticated
+        continuation identities" shape (#105369); one is accepted."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=self._two_turn_messages(),
+            tools=[],
+            provider="azure-foundry",
+            base_url="https://placeholder.openai.azure.com/openai/v1",
+            replay_encrypted_reasoning=True,
+        )
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in reasoning] == ["sealed-2"]
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+        assistant_text = [item for item in kw["input"] if item.get("role") == "assistant"]
+        assert len(assistant_text) == 2
+
+    @pytest.mark.parametrize("base_url", [
+        "https://placeholder.openai.azure.com/openai/v1",
+        "https://placeholder.services.ai.azure.com/api/projects/placeholder/openai/v1",
+    ])
+    def test_azure_host_without_provider_replays_only_newest_reasoning(self, transport, base_url):
+        """Both Azure hosts are detected without ``provider``; the rejection is not gateway-specific."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra", messages=self._two_turn_messages(), tools=[], base_url=base_url,
+            replay_encrypted_reasoning=True,
+        )
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in reasoning] == ["sealed-2"]
+
+    def test_default_responses_new_turn_replays_all_reasoning(self, transport):
+        """Non-Azure Responses endpoints keep cross-turn reasoning replay."""
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=self._two_turn_messages(), tools=[], replay_encrypted_reasoning=True,
+        )
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in reasoning] == ["sealed-1", "sealed-2"]
+
+    def test_azure_foundry_newest_reasoning_pruning_leaves_canonical_messages_untouched(self, transport):
+        messages = self._two_turn_messages()
+        transport.build_kwargs(
+            model="gpt-6-astra", messages=messages, tools=[], provider="azure-foundry",
+            base_url="https://placeholder.openai.azure.com/openai/v1", replay_encrypted_reasoning=True,
+        )
+        assert messages[1]["codex_reasoning_items"][0]["encrypted_content"] == "sealed-1"
+        assert messages[3]["codex_reasoning_items"][0]["encrypted_content"] == "sealed-2"
+
+    def test_newest_reasoning_only_keeps_compaction_checkpoints(self):
+        from agent.transports.codex import _newest_reasoning_only
+
+        checkpoint = {"type": "compaction", "encrypted_content": "ckpt", "summary": []}
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one", "codex_reasoning_items": [checkpoint, self._reasoning_item()]},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "two", "codex_reasoning_items": [self._reasoning_item()]},
+            {"role": "user", "content": "third"},
+        ]
+        pruned = _newest_reasoning_only(messages)
+        assert pruned[1]["codex_reasoning_items"] == [checkpoint]
+        assert pruned[3]["codex_reasoning_items"] == [self._reasoning_item()]
+        assert len(messages[1]["codex_reasoning_items"]) == 2
 
     def test_azure_foundry_post_tool_replay_suppresses_reasoning_items(self, transport):
         """The rejected payload shape drops reasoning, keeps tool continuity."""

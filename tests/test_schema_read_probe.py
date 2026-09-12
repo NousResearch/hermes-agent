@@ -2,7 +2,7 @@
 
 Read-only SessionDB opens skip _reconcile_columns() by design, so dashboard
 read paths heal stale stores via a probe-then-writable-reopen dance in
-``hermes_cli.web_server._open_session_db_at_path``. These tests pin the
+``hermes_cli.web_server_sessions._open_session_db_at_path``. These tests pin the
 probe's contract: it is DERIVED from SCHEMA_SQL (any column added there is
 covered automatically — the previous hand-written probe went stale within
 days) and it must fail at prepare time on a store missing any declared

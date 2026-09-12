@@ -188,9 +188,14 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     tmp_path, monkeypatch
 ):
     import cron.scheduler as scheduler
+    from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
 
     job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    (tmp_path / ".env").write_text(
+        "SERVICE_TOKEN=target-profile-token\n", encoding="utf-8"
+    )
+    register_env_passthrough(["SERVICE_TOKEN"])
     wrapped_commands = []
 
     def wrap(command, *, unit_suffix):
@@ -239,17 +244,20 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     get = Mock(side_effect=lambda _execution_id: next(observed_statuses))
     monkeypatch.setattr(scheduler, "get_execution", get)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "should-not-cross-profile")
+    monkeypatch.setenv("SERVICE_TOKEN", "default-profile-token")
     from agent.secret_scope import set_multiplex_active
 
     set_multiplex_active(True)
     try:
         assert scheduler._launch_external_cron_worker(job) is True
     finally:
+        clear_env_passthrough()
         set_multiplex_active(False)
     assert wrapped_commands[0][1] == "cron-job-1-exec-exec-1"
     assert spawned[0][0][0:2] == ["scope", "--"]
     assert spawned[0][1]["start_new_session"] is True
     assert "ANTHROPIC_API_KEY" not in spawned[0][1]["env"]
+    assert spawned[0][1]["env"]["SERVICE_TOKEN"] == "target-profile-token"
     handoff.assert_called_once_with("exec-1")
     assert get.call_count == 2
     assert payloads[0]["multiplex_active"] is True
@@ -364,6 +372,7 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
     """A nested in-process dispatch inside a worker (e.g. a script running
     ``hermes cron run <other>``) must not queue under the OUTER execution id."""
     import cron.scheduler as scheduler
+    import cron.scheduler_delivery as scheduler_delivery
 
     queued = []
     monkeypatch.setattr(
@@ -374,6 +383,11 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
     )
     monkeypatch.setattr(
         scheduler,
+        "_resolve_delivery_targets",
+        lambda job, for_failure=False: [{"platform": "telegram", "chat_id": "123"}],
+    )
+    monkeypatch.setattr(
+        scheduler_delivery,
         "_resolve_delivery_targets",
         lambda job, for_failure=False: [{"platform": "telegram", "chat_id": "123"}],
     )
@@ -420,7 +434,7 @@ def test_gateway_tool_run_without_adapter_objects_hands_off(monkeypatch):
 
     assert scheduler.run_one_job(job, adapters=None) is True
 
-    created.assert_called_once_with("tool-job", source="direct")
+    created.assert_called_once_with("tool-job", source="direct", scheduled_instant=None)
     assert job["execution_id"] == "exec-tool"
     launch.assert_called_once_with(job)
     run.assert_not_called()
@@ -437,7 +451,7 @@ def test_shared_run_path_creates_execution_before_managed_handoff(monkeypatch):
 
     assert scheduler.run_one_job(job, adapters={"discord": object()}) is True
 
-    created.assert_called_once_with("manual-job", source="direct")
+    created.assert_called_once_with("manual-job", source="direct", scheduled_instant=None)
     assert job["execution_id"] == "exec-new"
     launch.assert_called_once_with(job)
 

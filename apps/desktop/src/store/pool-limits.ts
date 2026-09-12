@@ -26,6 +26,30 @@ export const POOL_LIMITS_DEFAULTS: PoolLimits = {
 
 export const $poolLimits = atom<PoolLimits>({ ...POOL_LIMITS_DEFAULTS })
 
+// Electron IPC rejects with a plain Error in the renderer, so the stable
+// coordinator phrase is the cross-process discriminator. Keep it narrow: other
+// backend failures must retain their existing recovery path.
+const LOCAL_BACKEND_SLOT_TIMEOUT_PREFIX = 'Local backend start for "'
+const LOCAL_BACKEND_SLOT_TIMEOUT_SUFFIX = ' timed out while waiting for a free slot.'
+const LOCAL_BACKEND_SLOT_TIMEOUT_BACKGROUND_SUFFIX = ' (background)'
+
+export function isLocalBackendSlotWaitTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+
+  return (
+    message.includes(LOCAL_BACKEND_SLOT_TIMEOUT_PREFIX) &&
+    message.includes(LOCAL_BACKEND_SLOT_TIMEOUT_SUFFIX) &&
+    !message.endsWith(LOCAL_BACKEND_SLOT_TIMEOUT_BACKGROUND_SUFFIX)
+  )
+}
+
+/** Navigation intent consumed by the shell, which owns React Router. */
+export const $poolLimitsSettingsRequest = atom(0)
+
+export function requestPoolLimitsSettings(): void {
+  $poolLimitsSettingsRequest.set($poolLimitsSettingsRequest.get() + 1)
+}
+
 /** Seed from main's authoritative state once at startup; no-op without the
  *  bridge (web/older builds just keep the defaults for the UI). */
 export async function loadPoolLimits(): Promise<void> {

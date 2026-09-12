@@ -68,6 +68,29 @@ describe('ThemeProvider ← backend skin sync', () => {
     )
     expect(cssVar('--theme-foreground')).toBe('#ff9f0a')
   })
+
+  // The relaunch bug: the persisted pick was a backend skin, and the boot paint
+  // ran before the gateway seeded it. `normalizeSkin` could not resolve the
+  // name, flattened it to the default, and the connect-time seed (apply: false,
+  // by design) never repainted — so the theme "didn't stick" until `/skin`.
+  it('paints a persisted backend skin once the connect-time seed makes it resolvable', () => {
+    window.localStorage.setItem('hermes-desktop-theme-v2', 'bloomberg')
+
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    // Boot: nothing resolves 'bloomberg' yet → default paint...
+    expect(cssVar('--theme-background-seed')).not.toBe('#000000')
+
+    // ...but the pick survives, so the seed alone repaints it.
+    act(() => ingestBackendSkin(bloomberg('#ff9f0a'), { apply: false }))
+
+    expect(cssVar('--theme-background-seed')).toBe('#000000')
+    expect(skinPref.resolve('default')).toBe('bloomberg')
+  })
 })
 
 describe('ThemeProvider highlight preview', () => {

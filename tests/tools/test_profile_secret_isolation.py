@@ -301,11 +301,12 @@ def test_snapshot_refreshes_ownership_added_after_construction(
         environment.cleanup()
 
 
-def test_snapshot_restore_cannot_reintroduce_foreign_value(tmp_path, multiplex_mode):
+@pytest.mark.parametrize("source_name", [_SOURCE_ONLY, "APPTAINERENV_ACME_LOGIN", "SINGULARITYENV_APPTAINERENV_ACME_LOGIN"])
+def test_snapshot_restore_cannot_reintroduce_foreign_value(tmp_path, multiplex_mode, source_name):
     source = tmp_path / "source"
     target = tmp_path / "target"
     snapshot = tmp_path / "snapshot.sh"
-    _write_profile(source, {_SOURCE_ONLY: "alpha"})
+    _write_profile(source, {source_name: "alpha"})
     _write_profile(target, {})
     snapshot.write_text(f"export {_SOURCE_ONLY}=alpha\n", encoding="utf-8")
 
@@ -339,7 +340,7 @@ def test_snapshot_restore_cannot_reintroduce_foreign_value(tmp_path, multiplex_m
 
 
 def test_kanban_spawn_fails_closed_for_missing_profile(monkeypatch, tmp_path):
-    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
 
     class _Task:
         id = "task-missing-profile"
@@ -351,4 +352,4 @@ def test_kanban_spawn_fails_closed_for_missing_profile(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", _missing)
 
     with pytest.raises(RuntimeError, match="unresolved profile"):
-        kb._default_spawn(cast(Any, _Task()), str(tmp_path))
+        kbd._default_spawn(cast(Any, _Task()), str(tmp_path))

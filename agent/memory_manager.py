@@ -331,16 +331,22 @@ class MemoryManager:
 
     def add_provider(self, provider: MemoryProvider) -> None:
         """Register a provider; builtin always accepted, only ONE external allowed."""
+        if provider.name != "builtin" and self._has_external:
+            existing = next((p.name for p in self._providers if p.name != "builtin"), "unknown")
+            logger.warning(
+                "Rejected memory provider '%s' — external provider '%s' is "
+                "already registered. Only one external memory provider is "
+                "allowed at a time. Configure which one via memory.provider "
+                "in config.yaml.", provider.name, existing,
+            )
+            return
+
+        # Load schemas BEFORE mutating any manager state: a provider whose schema
+        # load raises must leave `_providers` / `_has_external` untouched, otherwise
+        # it blocks every later external provider in this process (#9948).
+        schemas = list(provider.get_tool_schemas())
+
         if provider.name != "builtin":
-            if self._has_external:
-                existing = next((p.name for p in self._providers if p.name != "builtin"), "unknown")
-                logger.warning(
-                    "Rejected memory provider '%s' — external provider '%s' is "
-                    "already registered. Only one external memory provider is "
-                    "allowed at a time. Configure which one via memory.provider "
-                    "in config.yaml.", provider.name, existing,
-                )
-                return
             self._has_external = True
             self._external_prefetch_spill_config = get_spill_config()
 
@@ -353,7 +359,7 @@ class MemoryManager:
         # registries. See #40466.
         from toolsets import _HERMES_CORE_TOOLS
 
-        for raw_schema in provider.get_tool_schemas():
+        for raw_schema in schemas:
             schema = normalize_tool_schema(raw_schema)
             if schema is None:
                 continue
@@ -372,7 +378,7 @@ class MemoryManager:
             else:
                 self._tool_to_provider[tool_name] = provider
 
-        logger.info("Memory provider '%s' registered (%d tools)", provider.name, len(provider.get_tool_schemas()))
+        logger.info("Memory provider '%s' registered (%d tools)", provider.name, len(schemas))
 
     @property
     def providers(self) -> List[MemoryProvider]:
@@ -472,27 +478,31 @@ class MemoryManager:
         ), kind="prefetch")
 
     @staticmethod
-    def _provider_sync_accepts_messages(provider: MemoryProvider) -> bool:
-        """Whether ``sync_turn`` accepts a ``messages`` keyword (uninspectable → assume yes)."""
+    def _provider_sync_accepts(provider: MemoryProvider, keyword: str) -> bool:
+        """Whether ``sync_turn`` accepts ``keyword`` (uninspectable → assume yes)."""
         params = _signature_params(provider.sync_turn)
-        return params is None or _has_var_kwargs(params) or "messages" in params
+        return params is None or _has_var_kwargs(params) or keyword in params
 
     def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "",
-                 messages: Optional[List[Dict[str, Any]]] = None) -> None:
+                 messages: Optional[List[Dict[str, Any]]] = None,
+                 turn_author: Optional[Dict[str, Any]] = None) -> None:
         """Sync a completed turn to all providers on the background worker.
 
         Never inline: a provider's ``sync_turn`` may block for minutes, which kept ``run_conversation``
         open after the user saw the response. The single worker also serializes writes (turn N before N+1).
+        ``turn_author`` reaches only providers whose ``sync_turn`` accepts it.
         """
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content:
             return
+        optional_kwargs = {"messages": messages, "turn_author": turn_author}
 
         def _sync(provider: MemoryProvider) -> None:
             kwargs: Dict[str, Any] = {"session_id": session_id}
-            if messages is not None and self._provider_sync_accepts_messages(provider):
-                kwargs["messages"] = messages
+            for keyword, value in optional_kwargs.items():
+                if value is not None and self._provider_sync_accepts(provider, keyword):
+                    kwargs[keyword] = value
             provider.sync_turn(clean_user_content, assistant_content, **kwargs)
 
         self._submit_background(
@@ -595,7 +605,13 @@ class MemoryManager:
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        self._each_provider("on_turn_start failed", lambda p: p.on_turn_start(turn_number, message, **kwargs))
+        def _tick(p: MemoryProvider) -> None:
+            # A provider written before the author kwargs declares (turn_number, message) only; it still gets its tick.
+            params = _signature_params(p.on_turn_start)
+            accepted = kwargs if params is None or _has_var_kwargs(params) else {k: v for k, v in kwargs.items() if k in params}
+            p.on_turn_start(turn_number, message, **accepted)
+
+        self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,

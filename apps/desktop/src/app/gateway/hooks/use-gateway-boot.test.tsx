@@ -174,13 +174,15 @@ class FakeWebSocket {
 }
 
 const primaryConn = {
-  authMode: 'token' as const,
+  authMode: 'token' as 'oauth' | 'token',
   baseUrl: 'https://vps.example.com',
   connectionId: 'primary-vps',
   profile: 'default',
   token: 't',
   wsUrl: 'wss://vps.example.com/api/ws?token=t'
 }
+
+const remotePrimaryConn = { ...primaryConn, mode: 'remote' as const }
 
 const coderConn = {
   authMode: 'token' as const,
@@ -357,6 +359,218 @@ async function advanceBackoff() {
     await vi.advanceTimersByTimeAsync(15_000)
   })
 }
+
+describe('primary failure foreground isolation', () => {
+  it('ignores a boot snapshot superseded by a successful connection', async () => {
+    const snapshot = deferred<Awaited<ReturnType<ReturnType<typeof fakeDesktop>['getBootProgress']>>>()
+    const desktop = fakeDesktop()
+    desktop.getBootProgress.mockReturnValue(snapshot.promise)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    act(() =>
+      snapshot.resolve({
+        error: 'Your remote gateway session has expired.',
+        fakeMode: false,
+        message: 'previous rejection',
+        phase: 'backend.error',
+        progress: 94,
+        retryable: false,
+        running: false,
+        timestamp: Date.now()
+      })
+    )
+    await flushAsync()
+    expect($desktopBoot.get().error).toBeNull()
+    expect($desktopBoot.get().visible).toBe(false)
+  })
+  it('ignores a boot snapshot superseded by a newer progress event', async () => {
+    const snapshot = deferred<Awaited<ReturnType<ReturnType<typeof fakeDesktop>['getBootProgress']>>>()
+    const connection = deferred<typeof primaryConn>()
+    const desktop = fakeDesktop()
+    desktop.getBootProgress.mockReturnValue(snapshot.promise)
+    desktop.getConnection.mockReturnValue(connection.promise)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+
+    const newer = {
+      error: null,
+      fakeMode: false,
+      message: 'Connecting after sign-in',
+      retryable: false,
+      phase: 'backend.remote',
+      progress: 24,
+      running: true,
+      timestamp: Date.now()
+    }
+
+    act(() => desktop.emitBootProgress(newer))
+    act(() => snapshot.resolve({ ...newer, error: 'Your remote gateway session has expired.', running: false }))
+    await flushAsync()
+    expect($desktopBoot.get().error).toBeNull()
+    act(() => connection.resolve(primaryConn))
+    await flushAsync()
+  })
+
+  it.each(['local', 'remote'] as const)(
+    'ordinary %s primary outage leaves the other foreground usable',
+    async primaryMode => {
+      const foregroundId = primaryMode === 'local' ? 'healthy-remote' : 'local'
+
+      const desktop = Object.assign(fakeDesktop(), {
+        getGatewayWsUrlFor: vi.fn(async () => coderConn.wsUrl),
+        getConnectionFor: vi.fn(async () => ({
+          ...coderConn,
+          connectionId: foregroundId,
+          profile: 'default',
+          mode: primaryMode === 'local' ? 'remote' : 'local',
+          remoteKind: primaryMode === 'local' ? 'cloud' : undefined,
+          authMode: primaryMode === 'local' ? 'oauth' : 'token'
+        }))
+      })
+
+      desktop.getConnection.mockResolvedValue({
+        ...primaryConn,
+        connectionId: primaryMode === 'local' ? 'local' : 'primary-vps',
+        mode: primaryMode
+      } as typeof primaryConn)
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+      render(<Harness />)
+      await flushAsync()
+      let opening!: Promise<boolean>
+      act(() => {
+        opening = ensureGatewayForAgent(foregroundId, 'default')
+      })
+      await flushAsync()
+      expect(await opening).toBe(true)
+      desktop.getConnection.mockRejectedValue(new Error('ECONNREFUSED'))
+      act(() => FakeWebSocket.instances[0].drop())
+      await advanceBackoff()
+      expect(isActivePrimary()).toBe(false)
+      expect($gatewayState.get()).toBe('open')
+      await expect(requestGatewayForAgent(foregroundId, 'default', 'ping')).resolves.toEqual({ pong: true })
+      expect($desktopBoot.get().error).toBeNull()
+      expect($desktopBoot.get().visible).toBe(false)
+    }
+  )
+  it.each(['progress', 'reconnect'] as const)(
+    'primary auth via %s follows the foreground, including a latched error',
+    async path => {
+      const error = 'Your remote gateway session has expired.'
+
+      const cloud = {
+        ...primaryConn,
+        mode: 'remote' as const,
+        remoteKind: 'cloud' as const,
+        authMode: 'oauth' as const
+      }
+
+      const desktop = Object.assign(fakeDesktop(), {
+        getRecentLogs: vi.fn(async () => ({ lines: [] })),
+        getConnectionConfig: vi.fn(async () => ({ mode: 'cloud', remoteAuthMode: 'oauth', remoteUrl: cloud.baseUrl })),
+        getConnectionFor: vi.fn(async () => ({
+          ...coderConn,
+          connectionId: 'local',
+          profile: 'default',
+          mode: 'local',
+          baseUrl: 'http://127.0.0.1:9191',
+          wsUrl: 'ws://127.0.0.1:9191/api/ws?token=c'
+        }))
+      })
+
+      desktop.getConnection.mockResolvedValue(cloud as typeof primaryConn)
+
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+      const { BootFailureOverlay } = await import('@/components/boot-failure-overlay')
+
+      const overlay = render(
+        <>
+          <Harness />
+          <BootFailureOverlay />
+        </>
+      )
+
+      await flushAsync()
+      expect($desktopBoot.get().visible).toBe(false)
+
+      const selectLocal = async () => {
+        let opening!: Promise<boolean>
+        act(() => {
+          opening = ensureGatewayForAgent('local', 'default')
+        })
+        await flushAsync()
+        expect(await opening).toBe(true)
+      }
+
+      await selectLocal()
+      const foreground = activeGateway()
+
+      const progress = {
+        error,
+        fakeMode: false,
+        message: error,
+        phase: 'backend.error',
+        progress: 94,
+        retryable: false,
+        running: false,
+        timestamp: Date.now()
+      }
+
+      if (path === 'reconnect') {
+        desktop.getGatewayWsUrl.mockRejectedValue(Object.assign(new Error(error), { needsOauthLogin: true }))
+        act(() => FakeWebSocket.instances[0].drop())
+        await advanceBackoff()
+      } else {
+        act(() => desktop.emitBootProgress(progress))
+        await flushAsync()
+      }
+
+      expect(activeGateway()).toBe(foreground)
+      expect($connection.get()?.connectionId).toBe('local')
+      expect($gatewayState.get()).toBe('open')
+      await expect(requestGatewayForAgent('local', 'default', 'ping')).resolves.toEqual({ pong: true })
+      expect(overlay.queryByRole('heading')).toBeNull()
+      expect($desktopBoot.get().error).toBeNull()
+      expect($desktopBoot.get().visible).toBe(false)
+      expect(notifyError).not.toHaveBeenCalled()
+
+      await act(async () => {
+        await ensureGatewayForProfile('default')
+      })
+      await flushAsync()
+      expect(isActivePrimary()).toBe(true)
+      expect($desktopBoot.get().error).toContain(error)
+      expect(overlay.getByRole('heading', { name: /sign-in required/i })).toBeTruthy()
+      expect(overlay.getByRole('button', { name: /sign in/i })).toBeTruthy()
+
+      // A now-latched foreground error must release boot readiness when leaving,
+      // but returning to its primary must retain the authentication recovery.
+      await selectLocal()
+      expect($desktopBoot.get().error).toBeNull()
+      expect($desktopBoot.get().visible).toBe(false)
+      expect(overlay.queryByRole('heading')).toBeNull()
+      await act(async () => {
+        await ensureGatewayForProfile('default')
+      })
+      expect($desktopBoot.get().error).toContain(error)
+
+      desktop.getGatewayWsUrl.mockImplementation(async conn => conn?.wsUrl ?? primaryConn.wsUrl)
+      act(() => FakeWebSocket.instances[0].drop())
+      await advanceBackoff()
+      expect($gatewayState.get()).toBe('open')
+      expect($desktopBoot.get().error).toBeNull()
+      expect(overlay.queryByRole('heading')).toBeNull()
+      await selectLocal()
+      await act(async () => {
+        await ensureGatewayForProfile('default')
+      })
+      expect($desktopBoot.get().error).toBeNull()
+    }
+  )
+})
 
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
   it('INITIAL boot against a dead VPS: getConnection hangs (waitForHermes) → app sits in the connecting combo, then fails', async () => {
@@ -1624,6 +1838,99 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(desktop.getConnection.mock.calls.length).toBeGreaterThan(1)
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('RETRY CONTRACT: a resolved remote whose first renderer gateway dial fails retries even when main still reports stale non-retryable ready progress', async () => {
+    // Renderer reload against a saved direct remote: Electron has already
+    // reported a successful backend.ready snapshot, so that stale progress
+    // cannot classify the renderer-owned WebSocket dial which follows it.
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(async () => remotePrimaryConn)
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: null,
+      fakeMode: false,
+      message: 'Hermes is ready',
+      phase: 'backend.ready',
+      progress: 100,
+      retryable: false,
+      running: true,
+      timestamp: 1
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    FakeWebSocket.mode = 'fail'
+
+    render(<Harness />)
+    await flushAsync()
+
+    // getConnection resolved the saved REMOTE descriptor; only its first
+    // renderer-owned gateway.connect() failed.
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect($desktopBoot.get().error).toBeNull()
+
+    // The same endpoint becomes reachable before the bounded retry fires.
+    FakeWebSocket.mode = 'open'
+    await advanceBackoff()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(2)
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('RETRY CONTRACT: an invalid remote WebSocket URL is not a dial failure — it stays terminal under the stale ready snapshot', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(async () => ({ ...remotePrimaryConn, wsUrl: 'not a WebSocket URL' }))
+    desktop.getGatewayWsUrl = vi.fn(async () => 'not a WebSocket URL')
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: null,
+      fakeMode: false,
+      message: 'Hermes is ready',
+      phase: 'backend.ready',
+      progress: 100,
+      retryable: false,
+      running: true,
+      timestamp: 1
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    FakeWebSocket.mode = 'fail'
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+    await advanceBackoff()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+  })
+
+  it('RETRY CONTRACT: a post-connect failure stays terminal even when its socket closes before boot catches it — a closed socket after a good dial is not a dial failure', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(async () => remotePrimaryConn)
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: null,
+      fakeMode: false,
+      message: 'Hermes is ready',
+      phase: 'backend.ready',
+      progress: 100,
+      retryable: false,
+      running: true,
+      timestamp: 1
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    const refreshHermesConfig = vi.fn(async () => {
+      FakeWebSocket.instances[0]?.drop()
+      throw new Error('post-connect initialization failed')
+    })
+
+    render(<Harness refreshHermesConfig={refreshHermesConfig} />)
+    await flushAsync()
+
+    expect(refreshHermesConfig).toHaveBeenCalledTimes(1)
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+    await advanceBackoff()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
   })
 
   it('FIX #82679: boot retries are BOUNDED — a persistently dead remote ends in the recovery overlay, not a spinner', async () => {

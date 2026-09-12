@@ -1776,7 +1776,7 @@ def _seed_custom_model_cache(monkeypatch, models, *, age_seconds=10):
 
     fp = models_mod._custom_endpoint_fingerprint("", None, None)
     cache = {
-        f"custom:{_LOCAL_ENDPOINT}": {
+        f"custom:{_LOCAL_ENDPOINT}#{fp}": {
             "fp": fp,
             "at": time.time() - age_seconds,
             "models": list(models),
@@ -2061,7 +2061,7 @@ def test_api_mode_rows_do_not_share_a_cached_catalog(monkeypatch):
     # Only the OpenAI-mode probe (api_mode=None) is on disk.
     fp = models_mod._custom_endpoint_fingerprint("sk-shared", None, None)
     cache = {
-        f"custom:{_SHARED_PROXY_URL}": {
+        f"custom:{_SHARED_PROXY_URL}#{fp}": {
             "fp": fp,
             "at": time.time() - 10,
             "models": list(openai_catalog),
@@ -2220,3 +2220,23 @@ def test_legacy_sentinel_catalog_still_resolves_and_migrates(tmp_path, monkeypat
     assert list(saved["models"]) == _LOCAL_CATALOG
     assert "__discovered_model_catalog__" not in saved["models"]
     assert "__explicit_model_allowlist__" not in saved["models"]
+
+
+def test_same_provider_switch_on_session_only_custom_endpoint_keeps_endpoint(monkeypatch):
+    """#74143: a same-provider ``/model`` on a bare ``custom`` session whose base_url is NOT the
+    trusted config ``model.base_url`` must stay on that endpoint with its key — re-resolving from
+    config fell through to the OpenRouter default and moved the next turn to a host the user never
+    picked."""
+    for var in ("OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "CUSTOM_BASE_URL", "CUSTOM_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("hermes_cli.model_switch.load_config", lambda: {"model": {"provider": "openrouter", "default": "x"}}, raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url, **kw: {"models": ["m-a", "m-b"], "url": base_url + "/models", "base_url": base_url,
+                                          "suggested_base_url": None, "used_fallback": False})
+
+    result = switch_model("m-b", "custom", "m-a", "http://10.0.0.5:8000/v1", "session-secret")
+
+    assert result.success
+    assert result.base_url == "http://10.0.0.5:8000/v1"
+    assert result.api_key == "session-secret"

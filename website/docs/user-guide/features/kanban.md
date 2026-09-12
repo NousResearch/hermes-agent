@@ -341,6 +341,29 @@ parent, missing input, unmet capability) before unblocking, or raise
 `BLOCK_RECURRENCE_LIMIT` if the loop is expected.
 :::
 
+## Enabling tools for a chat profile
+
+The Desktop Kanban plugin displays the board; it does not grant the chat agent
+permission to manage tasks. Enable the `kanban` toolset for the profile and
+platform that should orchestrate work:
+
+```bash
+hermes -p planner tools enable kanban                      # CLI / TUI / Desktop chats
+hermes -p planner tools enable kanban --platform telegram  # a gateway platform
+```
+
+Each platform has its own selection under `platform_toolsets.<platform>` in
+`config.yaml`; the toolset is also a checkbox in `hermes tools` and the dashboard.
+A gateway agent that has it can `kanban_create` from a chat and is auto-subscribed
+to that task's completion/block notifications in the same thread. Start a new chat
+after changing this setting; existing conversations retain their tool schemas and
+prompt cache. `agent.disabled_toolsets` remains authoritative. Legacy top-level
+`toolsets: [kanban]` is honoured as a fallback only when no platform selection was
+saved; `all` alone is not a Kanban opt-in.
+
+Dispatcher-owned workers receive their task lifecycle tools automatically.
+`delegate_task` children do not gain permission to mutate the board.
+
 ## How workers interact with the board
 
 **Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` in the child's env, and that env var flips on a dedicated **kanban toolset** in the model's schema. The same toolset is also available to orchestrator profiles that enable `kanban` in their toolsets config. These tools read and mutate the board directly via the Python `kanban_db` layer, same as the CLI does. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.

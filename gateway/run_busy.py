@@ -19,7 +19,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from gateway.session import SessionSource, _session_key_namespace
 from typing import Any, Dict, Optional, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -665,14 +665,19 @@ class GatewayBusySessionMixin:
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
-        # See #17775.
-        if not self._is_user_authorized(event.source):
+        # See #17775. A primary transport can route a turn into a secondary
+        # profile, so authorize in the stamped transport scope.
+        if not self._is_user_authorized_for_source(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s", event.source.user_id, event.source.user_name,
                 event.source.platform.value if event.source.platform else "unknown", session_key,
             )
             return True  # handled (silently dropped); do not fall through
+        # A steered or queued follow-up never reaches _hm_admit_event, so the budget is charged here.
+        if not self._admit_bot_message_for_source(event.source):
+            return True
+        event._bot_loop_admitted = True
 
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping
@@ -753,7 +758,7 @@ class GatewayBusySessionMixin:
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
         "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
-        "commands", "profile", "update", "version",
+        "commands", "profile", "login", "update", "version",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
@@ -997,8 +1002,15 @@ class GatewayBusySessionMixin:
         platform = source.platform.value
         chat_type = getattr(source, "chat_type", None) or ""
         # Match the exact key or prefix + ":" so a thread id that merely starts with this one
-        # is not matched.
-        prefix = ":".join(["agent:main", platform, chat_type, str(chat_id), str(thread_id)])
+        # is not matched. The namespace follows the source's profile so a named-profile run
+        # under multiplexing still matches its own keys.
+        prefix = ":".join([
+            _session_key_namespace(getattr(source, "profile", None)),
+            platform,
+            chat_type,
+            str(chat_id),
+            str(thread_id),
+        ])
         return [
             key
             for key, agent in self._running_agent_items()
@@ -1204,6 +1216,29 @@ class GatewayBusySessionMixin:
                 )
                 if button_result and getattr(button_result, "success", False):
                     return None  # buttons rendered — no redundant text ack
+                # P5(b): distinguish a connector egress DECLINE from a lane
+                # failure. On a decline the connector refused this destination,
+                # so returning `message` as the direct reply would deliver the
+                # very content it refused, as text, to the same chat. Suppress
+                # the fallback and tear down the registration — no card
+                # rendered, so a later reply must not be captured as an answer
+                # to an invisible prompt.
+                #
+                # Classify the STRUCTURED response (see _approval_send_outcome):
+                # a code-only decline has no marker colon in its rendered text,
+                # and an ambiguous result must not be treated as a definite
+                # refusal.
+                from gateway.relay.egress import declined_send
+
+                _confirm_err = getattr(button_result, "error", None)
+                if declined_send(button_result):
+                    logger.warning(
+                        "slash-confirm DECLINED by the connector's egress "
+                        "guard for %s on %s — suppressing the text fallback: %s",
+                        command, source.platform, _confirm_err,
+                    )
+                    _slash_confirm_mod.clear(session_key)
+                    return None
             except Exception as exc:
                 logger.debug("send_slash_confirm failed for %s on %s: %s", command, source.platform, exc)
         # Text fallback — the prompt message itself is the direct reply.

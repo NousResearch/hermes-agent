@@ -862,11 +862,10 @@ class TestBuildSystemPrompt:
 
 
     def test_memory_guidance_when_memory_tool_loaded(self, agent_with_memory_tool):
-        from agent.prompt_builder import MEMORY_GUIDANCE
-
         agent_with_memory_tool._memory_enabled = True
         prompt = agent_with_memory_tool._build_system_prompt()
-        assert MEMORY_GUIDANCE in prompt
+        assert "Memory is the narrow exception" in prompt
+        assert "(skill_manage)" not in prompt
 
     def test_no_memory_guidance_when_both_builtin_stores_disabled(
         self, agent_with_memory_tool
@@ -895,13 +894,15 @@ class TestBuildSystemPrompt:
         MEMORY.md store that does not exist in this configuration, so the
         profile-specific block is injected instead.
         """
-        from agent.prompt_builder import MEMORY_GUIDANCE, USER_PROFILE_GUIDANCE
+        from agent.prompt_builder import MEMORY_GUIDANCE
 
         agent_with_memory_tool._memory_enabled = False
         agent_with_memory_tool._user_profile_enabled = True
         prompt = agent_with_memory_tool._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
-        assert USER_PROFILE_GUIDANCE in prompt
+        assert "memory tool (target='user')" in prompt
+        assert "never target='memory'" in prompt
+        assert "(skill_manage)" not in prompt
 
 
 
@@ -2903,6 +2904,46 @@ class TestHandleMaxIterations:
             and item.get("call_id") == "call_orphan"
             for item in input_items
         )
+
+    def test_codex_summary_strips_tool_controls_on_every_attempt(self, agent):
+        """Iteration-limit summaries retry once on an empty answer; both attempts share one
+        ``_attempt`` closure, and both must go out without ``tools``, ``tool_choice`` and
+        ``parallel_tool_calls`` — the transport emits the three as one block, and strict
+        Responses backends 400 on ``tool_choice`` without ``tools``.
+        """
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "chatgpt.com"
+        agent.model = "gpt-5.5"
+        agent._cached_system_prompt = "You are helpful."
+        leaked_controls = {"tools", "tool_choice", "parallel_tool_calls"}
+        # Precondition against the real transport: the main-loop request carries all three.
+        assert leaked_controls <= agent._build_api_kwargs([{"role": "user", "content": "do stuff"}]).keys()
+        bodies = []
+
+        def fake_run_codex_stream(kwargs):
+            bodies.append(dict(kwargs))
+            text = "" if len(bodies) == 1 else "Summary"
+            return SimpleNamespace(
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=text)],
+                    )
+                ],
+            )
+
+        with patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream):
+            result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 90)
+
+        assert result == "Summary"
+        assert len(bodies) == 2, f"expected one retry after the empty summary, got {len(bodies)} attempts"
+        for attempt_index, sent in enumerate(bodies):
+            assert not leaked_controls & sent.keys(), f"attempt {attempt_index}: {sorted(leaked_controls & sent.keys())} leaked"
 
     def test_api_sanitizer_matches_responses_call_id_when_id_differs(self, agent):
         messages = [

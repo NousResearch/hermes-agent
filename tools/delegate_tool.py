@@ -198,8 +198,12 @@ def _build_child_agent(
     # as auxiliary.review.
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    workspace_path = _resolve_workspace_hint(parent_agent)
+    # The child's context window is resolved during AIAgent construction. Build
+    # the workspace-free prompt first, then attach context files below once that
+    # authoritative value is available (#108891).
     child_prompt = _build_child_system_prompt(
-        goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
+        goal, context, role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -251,6 +255,15 @@ def _build_child_agent(
                     from hermes_state_registry import release_or_close
                     release_or_close(child_session_db)
             raise
+    if workspace_path:
+        compressor = getattr(child, "context_compressor", None)
+        context_length = getattr(compressor, "context_length", None)
+        if not isinstance(context_length, int) or isinstance(context_length, bool) or context_length <= 0:
+            context_length = None
+        child.ephemeral_system_prompt = _build_child_system_prompt(
+            goal, context, workspace_path=workspace_path, role=effective_role,
+            max_spawn_depth=max_spawn, child_depth=child_depth, context_length=context_length,
+        )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     _apply_child_cache_ttl(child)
     if child_session_db is not None:

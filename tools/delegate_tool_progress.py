@@ -148,7 +148,7 @@ _NESTED_CHILDREN_NOTE = (
 
 def _build_child_system_prompt(
     goal: str, context: Optional[str] = None, *, workspace_path: Optional[str] = None, role: str = "leaf",
-    max_spawn_depth: int = 2, child_depth: int = 1,
+    max_spawn_depth: int = 2, child_depth: int = 1, context_length: Optional[int] = None,
 ) -> str:
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
@@ -171,7 +171,9 @@ def _build_child_system_prompt(
         with _quiet("subagent: workspace context-files load failed", exc_info=True):
             # See #64590.
             from agent.prompt_builder import build_context_files_prompt
-            _ctx_files = build_context_files_prompt(cwd=str(workspace_path), skip_soul=True)
+            _ctx_files = build_context_files_prompt(
+                cwd=str(workspace_path), skip_soul=True, context_length=context_length,
+            )
         if _ctx_files.strip():
             parts.append(_CONTEXT_FILES_INTRO + _ctx_files.strip())
     parts.append(_COMPLETION_INSTRUCTIONS)

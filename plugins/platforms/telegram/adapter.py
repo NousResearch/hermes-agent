@@ -147,6 +147,10 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.telegram.model_picker_display import (
+    configured_region_geo, group_models_by_vendor as group_bedrock_models_by_vendor,
+    model_button_labels as bedrock_model_labels, pack_rows as pack_picker_rows, routing_legend,
+)
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -3776,6 +3780,18 @@ class TelegramAdapter(BasePlatformAdapter):
         """2-per-row layout keeps labels readable on mobile (a 4-button row truncates)."""
         return [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
 
+    @staticmethod
+    def _rows_fitting_labels(buttons: list) -> list:
+        """Like :meth:`_rows_of_two`, but a button whose label is too long for a
+        half-width column gets a full-width row instead of being ellipsized.
+
+        Two columns are what hid the model count behind ``✓ AWS Bedrock (1…``
+        (#94986); the count is the part that tells the user whether a provider is
+        worth opening, so it must survive.
+        """
+        return [[buttons[i] for i in row]
+                for row in pack_picker_rows([str(getattr(b, "text", "")) for b in buttons])]
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "", metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an inline-keyboard Yes/No prompt for the gateway ``/update`` watcher."""
@@ -3974,7 +3990,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return [InlineKeyboardButton("◀ Back", callback_data="mb"), InlineKeyboardButton("✗ Cancel", callback_data="mx")]
 
     def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list) -> tuple:
-        rows = self._rows_of_two(buttons)
+        rows = self._rows_fitting_labels(buttons)
         if page_meta["total_pages"] > 1:
             rows.append(self._picker_nav_row(page_meta["page"], page_meta["total_pages"], nav_prefix))
         rows.append(tail_row)
@@ -4007,35 +4023,97 @@ class TelegramAdapter(BasePlatformAdapter):
         page_buttons, page_meta = self._format_choice_page(buttons, page, self._PROVIDER_PAGE_SIZE)
         return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton("✗ Cancel", callback_data="mx")])
 
-    def _build_model_keyboard(self, models: list, page: int) -> tuple:
+    def _build_model_keyboard(self, models: list, page: int, bedrock: bool = True) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
-        page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
+        # Labels are derived from the WHOLE list so a model's label cannot change as
+        # the user pages; only this page's slice is rendered. IDs stay untouched —
+        # selection is the positional ``mm:<idx>`` callback.
+        labels = bedrock_model_labels(models, bedrock=bedrock)
+        _page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         start = page_meta["start"]
-        buttons: list = []
-        for i, model_id in enumerate(page_models):
-            short = model_id.split("/")[-1] if "/" in model_id else model_id
-            if len(short) > 38:
-                short = short[:35] + "..."
-            buttons.append(InlineKeyboardButton(short, callback_data=f"mm:{start + i}"))
+        buttons = [InlineKeyboardButton(labels[start + i], callback_data=f"mm:{start + i}")
+                   for i in range(len(_page_models))]
         return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
+
+    @staticmethod
+    def _is_bedrock_provider(provider_slug: str) -> bool:
+        """True when *provider_slug* is AWS Bedrock (under any of its aliases).
+
+        The vendor drill-down answers a Bedrock-specific shape — one model
+        advertised under several routing namespaces — so it is gated on the
+        provider rather than on the IDs alone. ``openai-codex`` also ships
+        ``openai.``-prefixed IDs and must keep the original flat flow.
+        """
+        from hermes_cli.models import normalize_provider
+        return normalize_provider(provider_slug) == "bedrock"
+
+    def _build_vendor_keyboard(self, models: list) -> "InlineKeyboardMarkup":
+        """Vendor drill-down keyboard for a Bedrock-shaped model list."""
+        buttons = [InlineKeyboardButton(f"{g['label']} ({len(g['indices'])})", callback_data=f"mvd:{g['vendor']}")
+                   for g in group_bedrock_models_by_vendor(models)]
+        rows = self._rows_of_two(buttons)
+        rows.append(self._picker_back_cancel_row())
+        return InlineKeyboardMarkup(rows)
 
     async def _picker_edit(self, query, text_md: str, keyboard) -> None:
         """Re-render the picker message in place (MarkdownV2) and ack the tap."""
         await query.edit_message_text(text=self.format_message(text_md), parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
         await query.answer()
 
+    def _picker_truncation_hint(self, state: dict, shown: int) -> str:
+        """``N more available`` notice when the provider listing was capped.
+
+        ``*bold*`` and not ``_italic_``: :meth:`format_message` escapes a bare
+        underscore for MarkdownV2, so the italic form reached the user as literal
+        ``\\_98 more available …`` (#94986).
+        """
+        provider = next((p for p in state["providers"] if p["slug"] == state.get("selected_provider", "")), None)
+        total = provider.get("total_models", shown) if provider else shown
+        if total <= shown:
+            return ""
+        return f"\n*{total - shown} more available — type `/model <name>` directly*"
+
+    async def _picker_show_vendors(self, query, state: dict) -> None:
+        """Render the Bedrock vendor drill-down step for the selected provider."""
+        state["selected_vendor"] = ""
+        models = state.get("full_model_list", [])
+        state["model_list"] = models
+        state["model_page"] = 0
+        pname = state.get("selected_provider_name", "")
+        # The per-vendor counts below are counts of the LISTED models, so the
+        # cap has to be visible here too or they read as the whole catalog.
+        hint = self._picker_truncation_hint(state, len(models))
+        await self._picker_edit(
+            query, f"⚙ *Model Configuration*\n\nProvider: *{pname}*\n\nSelect a model vendor:{hint}",
+            self._build_vendor_keyboard(models))
+
     async def _picker_show_models(self, query, state: dict, page: int) -> None:
         """Render the model page for the provider currently selected in ``state``."""
         models = state.get("model_list", [])
         state["model_page"] = page
-        keyboard, page_info = self._build_model_keyboard(models, page)
+        # Bedrock-specific display (namespace stripping, routing legend) is scoped to
+        # Bedrock: elsewhere a ``<vendor>.`` segment is part of the name, not a
+        # namespace the picker already named.
+        is_bedrock = self._is_bedrock_provider(state.get("selected_provider", ""))
+        keyboard, page_info = self._build_model_keyboard(models, page, bedrock=is_bedrock)
         pname = state.get("selected_provider_name", "")
-        provider_slug = state.get("selected_provider", "")
-        provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
-        total = provider.get("total_models", len(models)) if provider else len(models)
-        shown = len(models)
-        extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
-        await self._picker_edit(query, f"⚙ *Model Configuration*\n\nProvider: *{pname}*{page_info}\nSelect a model:{extra}", keyboard)
+        # A bare label means "no routing namespace"; say so once in the body,
+        # where it costs no button width, instead of prefixing every button.
+        legend = routing_legend(models, configured_region_geo()) if is_bedrock else ""
+        legend_line = f"\n*{legend}*" if legend else ""
+        vendor = state.get("selected_vendor", "")
+        if vendor:
+            # Scoped to one vendor: the provider's ``total_models`` counts the whole
+            # catalog, so the truncation hint would be wrong against this sub-list.
+            label = next((g["label"] for g in group_bedrock_models_by_vendor(state.get("full_model_list", []))
+                          if g["vendor"] == vendor), vendor)
+            await self._picker_edit(
+                query, f"⚙ *Model Configuration*\n\nProvider: *{pname}* ▸ *{label}*{page_info}\nSelect a model:{legend_line}",
+                keyboard)
+            return
+        extra = self._picker_truncation_hint(state, len(models))
+        await self._picker_edit(
+            query, f"⚙ *Model Configuration*\n\nProvider: *{pname}*{page_info}\nSelect a model:{legend_line}{extra}", keyboard)
 
     @staticmethod
     def _provider_list_text(current_model: str, provider_label: str, page_info: str) -> str:
@@ -4090,7 +4168,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
 
     async def _handle_model_picker_callback(self, query, data: str, chat_id: str) -> None:
-        """Handle model picker callbacks (mp:/mpg:/mpv:/mm:/mc:/mb/mx/mg:)."""
+        """Handle model picker callbacks (mp:/mpg:/mpv:/mvd:/mm:/mc:/mb/mx/mg:)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
             await query.answer(text="Picker expired — use /model again.")
@@ -4102,9 +4180,31 @@ class TelegramAdapter(BasePlatformAdapter):
             if not provider:
                 await query.answer(text="Provider not found.")
                 return
+            models = provider.get("models", [])
             state["selected_provider"] = provider_slug
             state["selected_provider_name"] = provider.get("name", provider_slug)
-            state["model_list"] = provider.get("models", [])
+            state["full_model_list"] = models
+            state["selected_vendor"] = ""
+            state["model_list"] = models
+            # Bedrock advertises dozens of ``<geo>.<vendor>.<model>`` profiles at once;
+            # a vendor step keeps a flat page of near-identical buttons scannable.
+            # Gated on the provider so no other provider's flow changes, and on a
+            # real choice of vendors so a single-vendor list keeps the two-step flow.
+            if self._is_bedrock_provider(provider_slug) and len(group_bedrock_models_by_vendor(models)) > 1:
+                await self._picker_show_vendors(query, state)
+                return
+            await self._picker_show_models(query, state, 0)
+        elif data.startswith("mvd:"):  # vendor selected: that vendor's models (page 0)
+            vendor = data[4:]
+            full_models = state.get("full_model_list", state.get("model_list", []))
+            group = next((g for g in group_bedrock_models_by_vendor(full_models) if g["vendor"] == vendor), None)
+            if group is None:
+                await query.answer(text="Vendor not found.")
+                return
+            # IDs are copied verbatim, so ``mm:<idx>`` still resolves to the exact
+            # inference-profile ID the provider advertised.
+            state["selected_vendor"] = vendor
+            state["model_list"] = [full_models[i] for i in group["indices"]]
             await self._picker_show_models(query, state, 0)
         elif data.startswith("mg:"):  # model page navigation
             page = await self._parse_page(query, data[3:])
@@ -4157,7 +4257,10 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._picker_edit(
                 query, f"⚙ *Model Configuration*\n\nProvider family: *{_label or group_id}*\n\nSelect a provider:",
                 InlineKeyboardMarkup(rows))
-        elif data == "mb":  # back to provider list (folds groups)
+        elif data == "mb":  # back: to the vendor list when drilled through one, else providers
+            if state.get("selected_vendor"):
+                await self._picker_show_vendors(query, state)
+                return
             await self._picker_show_providers(query, state, int(state.get("provider_page", 0) or 0), get_label)
         elif data == "mx":
             self._model_picker_state.pop(chat_id, None)
@@ -4253,7 +4356,7 @@ class TelegramAdapter(BasePlatformAdapter):
         cb = self._callback_ctx(query)
         # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
         for prefixes, handler in (
-            (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),
+            (("mp:", "mpg:", "mpv:", "mvd:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),
             (("cp:",), self._handle_choice_picker_callback)):
             if data.startswith(prefixes):
                 chat_id = str(query.message.chat_id) if query.message else None

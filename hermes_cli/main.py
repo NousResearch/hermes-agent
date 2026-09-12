@@ -722,6 +722,7 @@ from hermes_cli.main_provider_setup import (
     _build_provider_picker_rows,
     _clear_stale_openai_base_url,
     _is_profile_api_key_provider,
+    _is_profile_oauth_pkce_provider,
     _named_custom_provider_map,
     _prompt_provider_choice,
     _remove_custom_provider,
@@ -2028,6 +2029,12 @@ def select_provider_and_model(args=None):
         _model_flow_named_custom(config, provider_info)
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
+    elif _is_profile_oauth_pkce_provider(selected_provider):
+        from hermes_cli.model_setup_flows import _model_flow_oauth_pkce_provider
+
+        _model_flow_oauth_pkce_provider(
+            config, selected_provider, current_model, args=args
+        )
     elif (
         selected_provider in _GENERIC_API_KEY_PROVIDERS
         or _is_profile_api_key_provider(selected_provider)

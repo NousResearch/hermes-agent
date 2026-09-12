@@ -4922,6 +4922,41 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
     auth_type = pconfig.auth_type
     if auth_type == "api_key":
         return _resolve_api_key_branch(req, pconfig, resolve_api_key_provider_credentials)
+    if auth_type == "oauth_pkce":
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(
+                requested=provider,
+                target_model=req.model or "",
+            )
+        except Exception as exc:
+            logger.debug(
+                "resolve_provider_client: OAuth PKCE provider %s could not resolve: %s",
+                provider,
+                exc,
+            )
+            return None, None
+        api_key = str(runtime.get("api_key") or "").strip()
+        base_url = str(
+            runtime.get("base_url") or pconfig.inference_base_url
+        ).strip().rstrip("/")
+        final_model = _normalize_resolved_model(
+            req.model or _get_aux_model_for_provider(provider) or _read_main_model_for_aux(),
+            provider,
+        )
+        if not api_key or not base_url or not final_model:
+            return None, None
+        oauth_req = replace(
+            req,
+            api_mode=str(runtime.get("api_mode") or "chat_completions").strip(),
+        )
+        client = _create_openai_client(
+            api_key=api_key,
+            base_url=_to_openai_base_url(base_url),
+        )
+        client = _wrap_transport(oauth_req, client, final_model, base_url, api_key)
+        return _route_client(oauth_req, client, final_model)
     if auth_type == "external_process":
         return _resolve_external_process_branch(req, resolve_external_process_provider_credentials(provider))
     if auth_type == "vertex":

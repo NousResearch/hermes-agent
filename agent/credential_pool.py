@@ -1185,7 +1185,13 @@ class CredentialPool(CredentialPoolAdminMixin):
         the pool store, is token authority for those sources; a row with no
         token material at all is refused for the same reason.
         """
-        if self.provider not in ("anthropic", "xai-oauth"):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(self.provider)
+        is_plugin_oauth = bool(
+            profile and profile.auth_type == "oauth_pkce" and profile.oauth is not None
+        )
+        if self.provider not in ("anthropic", "xai-oauth") and not is_plugin_oauth:
             return entry
         is_anthropic = self.provider == "anthropic"
         if is_anthropic and is_borrowed_credential_source(entry.source, self.provider):
@@ -1386,6 +1392,18 @@ class CredentialPool(CredentialPoolAdminMixin):
             if force:
                 self._mark_exhausted(entry, None)
             return None
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(self.provider)
+        is_plugin_oauth = bool(
+            profile and profile.auth_type == "oauth_pkce" and profile.oauth is not None
+        )
+        if is_plugin_oauth:
+            with _auth_store_lock(timeout_seconds=25.0):
+                synced = self._sync_entry_from_pool_store(entry)
+                if synced.access_token != entry.access_token or synced.refresh_token != entry.refresh_token:
+                    return synced
+                return self._refresh_entry_impl(synced, force=force)
         if self.provider not in _SINGLE_USE_REFRESH_PROVIDERS:
             return self._refresh_entry_impl(entry, force=force)
 
@@ -1590,7 +1608,20 @@ class CredentialPool(CredentialPoolAdminMixin):
                 auth_mod.resolve_nous_runtime_credentials(force_refresh=force, stale_access_token=stale_key or None)
                 updated = self._sync_nous_entry_from_auth_store(entry)
             else:
-                return entry
+                from providers import get_provider_profile
+
+                profile = get_provider_profile(self.provider)
+                if profile is None or profile.auth_type != "oauth_pkce" or profile.oauth is None:
+                    return entry
+                refreshed = auth_mod.refresh_provider_oauth_pkce(
+                    self.provider, profile.oauth, entry.refresh_token
+                )
+                updated = replace(
+                    entry,
+                    access_token=refreshed["access_token"],
+                    refresh_token=refreshed.get("refresh_token") or entry.refresh_token,
+                    expires_at_ms=refreshed.get("expires_at_ms"),
+                )
         except _RefreshDone as done:
             return done.result
         except Exception as exc:
@@ -1777,6 +1808,13 @@ class CredentialPool(CredentialPoolAdminMixin):
             return auth_mod._xai_access_token_is_expiring(
                 entry.access_token, auth_mod._xai_proactive_refresh_skew_seconds(entry.access_token),
             )
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(self.provider)
+        if profile is not None and profile.auth_type == "oauth_pkce":
+            if entry.expires_at_ms is None:
+                return False
+            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
         # Nous refresh can require network access and happens when runtime
         # credentials are actually resolved, not on enumeration/selection.
         return False

@@ -21,6 +21,19 @@ def _is_profile_api_key_provider(provider_id: str) -> bool:
         return False
 
 
+def _is_profile_oauth_pkce_provider(provider_id: str) -> bool:
+    """True when a provider profile declares Hermes-managed OAuth PKCE."""
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider_id)
+        return bool(
+            profile and profile.auth_type == "oauth_pkce" and profile.oauth is not None
+        )
+    except Exception:
+        return False
+
+
 _GENERIC_API_KEY_PROVIDERS = frozenset({
     "openai-api", "gemini", "deepseek", "xai", "zai", "kimi-coding-cn",
     "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go",

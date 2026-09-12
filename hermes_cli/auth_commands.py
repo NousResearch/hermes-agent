@@ -27,6 +27,13 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth"}
 
 
+def _provider_supports_oauth(provider: str) -> bool:
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    return provider in _OAUTH_CAPABLE_PROVIDERS or bool(
+        pconfig and pconfig.auth_type == "oauth_pkce" and pconfig.extra.get("oauth")
+    )
+
+
 def _get_custom_provider_entries() -> list[dict]:
     """Return configured provider entries with legacy and canonical pool IDs."""
     try:
@@ -343,7 +350,7 @@ def auth_add_command(args) -> None:
     if requested_type == "api-key":
         requested_type = AUTH_TYPE_API_KEY
     elif not requested_type:
-        oauth_default = provider in _OAUTH_CAPABLE_PROVIDERS and not is_custom
+        oauth_default = _provider_supports_oauth(provider) and not is_custom
         requested_type = AUTH_TYPE_OAUTH if oauth_default else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
@@ -363,6 +370,41 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCre
         return _add_api_key_credential(args, provider, pool)
     if provider == "nous":
         return _add_nous_oauth_credential(args, provider)
+
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig and pconfig.auth_type == "oauth_pkce":
+        oauth = pconfig.extra.get("oauth")
+        if oauth is None:
+            raise SystemExit(f"{provider} OAuth configuration is incomplete.")
+        creds = auth_mod.login_provider_oauth_pkce(
+            provider,
+            oauth,
+            open_browser=not getattr(args, "no_browser", False),
+            timeout_seconds=getattr(args, "timeout", None) or 180.0,
+        )
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            creds["access_token"], f"{provider}-oauth-{len(pool.entries()) + 1}"
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:oauth_pkce",
+            access_token=creds["access_token"],
+            refresh_token=creds.get("refresh_token"),
+            expires_at_ms=creds.get("expires_at_ms"),
+            base_url=pconfig.inference_base_url,
+            extra={
+                "client_id": pconfig.client_id,
+                "scope": creds.get("scope") or pconfig.scope,
+                "token_type": creds.get("token_type"),
+            },
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
 
     spec = _OAUTH_ADD_SPECS.get(provider)
     if spec is None:
@@ -587,6 +629,9 @@ def auth_status_command(args) -> None:
         print(f"  {hint}")
         return
     if not status.get("logged_in"):
+        if status.get("needs_refresh"):
+            print(f"{provider}: access token expired (refresh needed)")
+            return
         reason = status.get("error")
         print(f"{provider}: logged out" + (f" ({reason})" if reason else ""))
         return

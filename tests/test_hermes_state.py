@@ -5273,6 +5273,8 @@ class TestGetMessagesPagination:
             "root",
             [{"role": "user", "content": f"root-{i}"} for i in range(3)],
         )
+        # A real rotation stamps the parent end_reason='compression' (publish_compression_child).
+        db.end_session("root", "compression")
         db.create_session(
             session_id="tip",
             source="compression",
@@ -6124,3 +6126,151 @@ class TestFts5SanitizerCharacterClass:
         # text; keep % intact there (pre-existing contract).
         sanitized = self._sanitize("完成50%")
         assert "%" in sanitized
+
+
+class TestGetMessagesAncestors:
+    """get_messages(include_ancestors=True) spans the compression lineage (#51058)."""
+
+    def test_include_ancestors_returns_lineage_messages(self, db):
+        """After a compression rotation, include_ancestors=True returns the
+        parent's rows plus the child continuation in insertion order."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="early ask")
+        db.append_message("parent", role="assistant", content="early answer")
+        # A real rotation stamps the parent end_reason='compression' (publish_compression_child).
+        db.end_session("parent", "compression")
+
+        db.create_session("child", source="tui", parent_session_id="parent")
+        db.append_message("child", role="user", content="continuation ask")
+        db.append_message("child", role="assistant", content="continuation answer")
+
+        # Without the flag: only the child continuation (legacy behaviour).
+        assert [m["content"] for m in db.get_messages("child")] == [
+            "continuation ask",
+            "continuation answer",
+        ]
+        # With the flag: the full root→tip transcript, insertion order.
+        assert [m["content"] for m in db.get_messages("child", include_ancestors=True)] == [
+            "early ask",
+            "early answer",
+            "continuation ask",
+            "continuation answer",
+        ]
+
+    def test_include_ancestors_explicit_branch_stays_single_session(self, db):
+        """Explicit /branch copies own their copied transcript: the lineage
+        expansion must not pull the parent's rows in (parity with
+        get_messages_as_conversation)."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="before branch")
+        db.create_session(
+            "branch",
+            source="tui",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+        db.append_message("branch", role="user", content="copied turn")
+
+        assert [m["content"] for m in db.get_messages("branch", include_ancestors=True)] == [
+            "copied turn"
+        ]
+
+    def test_include_ancestors_api_fork_stays_single_session(self, db):
+        """An API fork (parent ended 'branched', transcript copied, NO _branched_from
+        marker — what _handle_fork_session produced before the marker fix) must not be
+        mistaken for a compression lineage: ancestor expansion returns the fork's own
+        copied transcript only, never the parent's rows re-prepended (which duplicated
+        every turn and produced the [assistant, user, assistant] order ehz0ah hit)."""
+        db.create_session("source", source="tui")
+        db.append_message("source", role="user", content="question")
+        db.append_message("source", role="assistant", content="answer")
+        db.end_session("source", "branched")
+        # Exactly what the API fork handler does, minus the _branched_from marker.
+        db.create_session("fork", source="api_server", parent_session_id="source")
+        db.replace_messages("fork", db.get_messages("source"))
+
+        assert [m["content"] for m in db.get_messages("fork", include_ancestors=True)] == [
+            "question",
+            "answer",
+        ]
+        conversation = db.get_messages_as_conversation("fork", include_ancestors=True)
+        assert [m["role"] for m in conversation] == ["user", "assistant"]
+        assert [m["content"] for m in conversation] == ["question", "answer"]
+
+    def test_include_ancestors_reset_child_stays_single_session(self, db):
+        """A /reset continuation (_reset_from marker, parent ended 'session_reset') is a
+        fresh conversation, not a compression lineage: ancestor expansion must not cross
+        the reset boundary."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="old conversation")
+        db.end_session("parent", "session_reset")
+        db.create_session(
+            "child",
+            source="tui",
+            parent_session_id="parent",
+            model_config={"_reset_from": "parent"},
+        )
+        db.append_message("child", role="user", content="fresh start")
+
+        assert [m["content"] for m in db.get_messages("child", include_ancestors=True)] == [
+            "fresh start"
+        ]
+        conversation = db.get_messages_as_conversation("child", include_ancestors=True)
+        assert [m["content"] for m in conversation] == ["fresh start"]
+
+    def test_include_ancestors_deep_lineage_verified_chain(self, db):
+        """A multi-hop compression lineage merges root→tip, and a plain (non-compression)
+        grandparent above the root is not crossed: only verified compression hops count."""
+        db.create_session("grandparent", source="tui")
+        db.append_message("grandparent", role="user", content="plain old turn")
+        db.end_session("grandparent", "stopped")
+        db.create_session("root", source="tui", parent_session_id="grandparent")
+        db.append_message("root", role="user", content="root turn")
+        db.end_session("root", "compression")
+        db.create_session("mid", source="tui", parent_session_id="root")
+        db.append_message("mid", role="user", content="mid turn")
+        db.end_session("mid", "compression")
+        db.create_session("tip", source="tui", parent_session_id="mid")
+        db.append_message("tip", role="user", content="tip turn")
+
+        assert db._resume_lineage_ids("tip") == ["root", "mid", "tip"]
+        assert [m["content"] for m in db.get_messages("tip", include_ancestors=True)] == [
+            "root turn",
+            "mid turn",
+            "tip turn",
+        ]
+        conversation = db.get_messages_as_conversation("tip", include_ancestors=True)
+        assert [m["content"] for m in conversation] == ["root turn", "mid turn", "tip turn"]
+
+    def test_include_ancestors_paging_still_applies(self, db):
+        """Paging applies to the merged lineage set, not per-session."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="p1")
+        # A real rotation stamps the parent end_reason='compression' (publish_compression_child).
+        db.end_session("parent", "compression")
+        db.create_session("child", source="tui", parent_session_id="parent")
+        for i in range(2, 6):
+            db.append_message("child", role="user", content=f"c{i}")
+
+        rows = db.get_messages("child", include_ancestors=True, limit=3, offset=0)
+        assert [m["content"] for m in rows] == ["p1", "c2", "c3"]
+        rows = db.get_messages("child", include_ancestors=True, limit=3, offset=3)
+        assert [m["content"] for m in rows] == ["c4", "c5"]
+
+
+class TestGetMessagesAncestorsGuards:
+    """Paging guards for the merged-lineage read (get_messages)."""
+
+    def test_after_id_rejected_with_include_ancestors(self, db):
+        """after_id keyset paging must not silently drop the cursor on a merged
+        lineage read (the multi-segment set is deduped before paging, so the
+        per-row cursor is not meaningful across segments)."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="p1")
+        db.end_session("parent", "compression")
+        db.create_session("child", source="tui", parent_session_id="parent")
+        db.append_message("child", role="user", content="c1")
+        anchor = db.get_messages("child")[0]
+
+        with pytest.raises(ValueError, match="after_id is incompatible with include_ancestors"):
+            db.get_messages("child", include_ancestors=True, after_id=anchor["id"])

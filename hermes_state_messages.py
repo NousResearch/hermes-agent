@@ -773,16 +773,31 @@ class SessionMessagesMixin:
 
     def get_messages(self, session_id: str, include_inactive: bool = False, include_compacted: bool = False,
                      limit: Optional[int] = None, offset: int = 0, latest: bool = False,
-                     after_id: Optional[int] = None) -> List[Dict[str, Any]]:
+                     after_id: Optional[int] = None, include_ancestors: bool = False) -> List[Dict[str, Any]]:
         """Load messages in insertion order (id, never timestamp: clocks regress). ``include_inactive``:
         rewind rows too; ``include_compacted``: compaction-archived display history (not rewind rows).
-        ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging."""
+        ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging.
+        ``include_ancestors``: also load the compression lineage (root → tip, branch sessions exempt),
+        mirroring ``get_messages_as_conversation(include_ancestors=True)`` — after a compression rotation
+        the full transcript spans parent sessions, not just the child continuation (#51058)."""
         if after_id is not None and (latest or offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
         if after_id is not None and include_compacted:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
+        if after_id is not None and include_ancestors:
+            raise ValueError("after_id is incompatible with include_ancestors (merged-lineage reads use offset paging)")
         active_clause = self._active_clause(include_inactive, include_compacted)
-        if include_compacted and not include_inactive and self._ensure_display_order(session_id):
+        # Ancestor expansion uses the resume lineage (explicit /branch copies stay single-session).
+        session_ids = self._resume_lineage_ids(session_id) if include_ancestors else [session_id]
+        if len(session_ids) > 1:
+            # Multi-segment lineage: dedupe-then-page on the merged display set, matching the
+            # canonical multi-segment projection in get_messages_as_conversation(include_ancestors=True).
+            # (display_order is per-segment and not comparable across segments, so the per-segment
+            # display_order paging below does not apply across a lineage.)
+            rows = self._dedupe_display_generations(self._read_all(
+                f"SELECT * FROM messages WHERE session_id IN ({_placeholders(session_ids)})" + active_clause + " ORDER BY id ASC", session_ids))
+            rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
+        elif include_compacted and not include_inactive and self._ensure_display_order(session_id):
             direction = "DESC" if latest else "ASC"
             sql = f"""WITH page AS (
                     SELECT display_order FROM messages
@@ -1024,9 +1039,32 @@ class SessionMessagesMixin:
         return model_history, display_history
 
     def _resume_lineage_ids(self, session_id: str) -> List[str]:
-        """Session ids a display resume materializes: the compression lineage, or the session alone for an
-        explicit ``/branch`` copy. Shared with the resume guard so it counts exactly what a resume loads."""
-        return [session_id] if self._is_explicit_branch_session(session_id) else self._session_lineage_root_to_tip(session_id)
+        """Session ids a display resume materializes: the VERIFIED compression lineage (root → tip; each
+        hop's parent ended ``compression`` and the child is a genuine continuation), or the session alone
+        for anything else — an explicit ``/branch`` copy, an API fork, a reset child, or a plain session.
+        The raw parent walker ``_session_lineage_root_to_tip`` is intentionally NOT used here: it crosses
+        fork/reset boundaries and misclassifies API forks (parent ended ``branched``, no marker) as
+        compression lineages. Shared with the resume guard so it counts exactly what a resume loads."""
+        if not session_id:
+            return [session_id]
+        session = self.get_session(session_id)
+        if not session or self._is_explicit_fork_child_row(session):
+            return [session_id]
+        # _is_compression_child_row is the per-hop gate: the child must not be an explicit
+        # branch/delegate/tool child AND its parent must have ended 'compression'.
+        chain = [session_id]
+        current = session
+        seen = {session_id}
+        while len(chain) < 100:  # defensive bound, same as _session_lineage_root_to_tip
+            if not self._is_compression_child_row(current):
+                break
+            parent = self.get_session(current["parent_session_id"])
+            if not parent or parent["id"] in seen:
+                break
+            seen.add(parent["id"])
+            chain.append(parent["id"])
+            current = parent
+        return list(reversed(chain))
 
     def _resume_count_scope(self, session_id: str, tip_only: bool) -> Tuple[List[str], str]:
         """``tip_only``: the tip's ACTIVE rows (model restore); else the full-lineage DISPLAY set."""

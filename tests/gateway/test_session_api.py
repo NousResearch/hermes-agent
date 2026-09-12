@@ -1,6 +1,7 @@
 """Focused tests for API server session-control endpoints."""
 
 import asyncio
+import json
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -114,6 +115,62 @@ async def test_session_messages_default_to_latest_bounded_page(adapter, session_
         "msg 1",
         "msg 2",
     ]
+
+
+@pytest.mark.asyncio
+async def test_session_messages_returns_compression_ancestors(adapter, session_db):
+    """GET /api/sessions/{id}/messages on a compression continuation returns the
+    root→tip transcript, not just the tip's rows (#51058)."""
+    source_id = session_db.create_session("compress-source", "api_server")
+    session_db.replace_messages(
+        source_id,
+        [
+            {"role": "user", "content": "before compression"},
+            {"role": "assistant", "content": "before answer"},
+        ],
+    )
+    session_db.end_session(source_id, "compression")
+    child_id = session_db.create_session(
+        "compress-tip", "api_server", parent_session_id=source_id
+    )
+    session_db.append_message(child_id, role="user", content="after compression")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{child_id}/messages")
+        assert resp.status == 200
+        payload = await resp.json()
+
+    assert payload["session_id"] == child_id
+    assert [m["content"] for m in payload["data"]] == [
+        "before compression",
+        "before answer",
+        "after compression",
+    ]
+    assert [m["role"] for m in payload["data"]] == ["user", "assistant", "user"]
+
+
+@pytest.mark.asyncio
+async def test_fork_session_writes_branched_from_marker(adapter, session_db):
+    """The API fork must stamp _branched_from like the CLI/TUI branch paths, so the
+    fork is never misclassified as a compression continuation."""
+    source_id = session_db.create_session("fork-source", "api_server")
+    session_db.replace_messages(source_id, [{"role": "user", "content": "hello"}])
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={"id": "fork-child"})
+        assert resp.status == 201
+        payload = await resp.json()
+
+    assert payload["session"]["id"] == "fork-child"
+    fork = session_db.get_session("fork-child")
+    assert fork["parent_session_id"] == source_id
+    assert session_db._is_explicit_branch_session("fork-child")
+    cfg = fork["model_config"]
+    if isinstance(cfg, str):
+        cfg = json.loads(cfg)
+    assert cfg["_branched_from"] == source_id
 
 
 @pytest.mark.asyncio

@@ -579,6 +579,40 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, `run.completed` events |
 
+### Per-session model usage
+
+`GET /api/sessions/{id}?include_usage=true` adds a top-level `model_usage`
+object alongside the unchanged session metadata. Without the flag the response
+and database work remain unchanged. `model_usage.data` contains stored ledger
+rows for this exact session: an empty `task` identifies the main loop; named tasks
+include auxiliary work such as `title_generation` and `background_review`.
+Ancestors, descendants and other profiles are not included. An empty page means
+no recorded rows in that page, not proof that a session consumed no tokens.
+
+Use `usage_limit` (default 100, clamped to 1–500) and `usage_offset` (default 0,
+maximum 1,000,000) to page through the rows. `model_usage.pagination` returns
+`limit`, `offset` and `has_more`. Rows are ordered by task, model and stored route;
+route identifiers are withheld. Pagination is not a snapshot while a run is active.
+
+Each row exposes `model`, `task`, `api_call_count`, `input_tokens`, `output_tokens`,
+`cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `estimated_cost_usd`,
+`recorded_actual_cost_usd`, `actual_cost_usd`, `cost_status`, `first_seen` and
+`last_seen`. Billing endpoints, provider routing and pricing-source details are
+never returned. Separate stored routes can therefore produce rows with the same
+visible model and task; the endpoint does not merge them or recalculate totals.
+
+`recorded_actual_cost_usd` preserves the ledger's numeric accumulator. It can be
+partial, and its zero cannot distinguish missing billing data from a reported
+zero: the current writer stores both as zero. Consequently `actual_cost_usd` is
+`null`; no reliable complete actual-cost provenance exists in this ledger.
+`cost_status` describes the stored pricing status and does not certify billing
+completeness. Estimates remain separate from both fields. These are persisted
+observations, not a claim that all main or auxiliary calls have been accounted for.
+
+The same authentication and profile selection as session metadata apply. An
+unknown session returns 404; an existing session without ledger rows returns an
+empty `data` array. The endpoint does not query a billing service or expose prompts.
+
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 
 ```bash

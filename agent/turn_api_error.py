@@ -308,18 +308,18 @@ def settle_unrecovered_error(
         # ``should_fallback=False`` marks a deterministic failure no other provider can fix (the
         # model's own malformed tool-call JSON, #12770): skip the cascade. Local validation errors
         # carry no classifier verdict and keep their historical fallback.
-        fallback_allowed = classified.should_fallback or is_local_validation_error
-        # Announce the fallback only when a chain exists, else "trying fallback..." lies
-        # before a silent abort.
-        if fallback_allowed and agent._has_pending_fallback():
-            _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
-            agent._buffer_status(f"⚠️ {_label} — trying fallback...")
-        if fallback_allowed and agent._try_activate_fallback():
-            # Direct ``return _verdict("break")`` is load-bearing: the restart handler
-            # re-runs the pre-API preflight against the fallback's context window.
-            active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
-            retry_count = compression_attempts = 0
-            return _verdict("break")
+        if classified.should_fallback or is_local_validation_error:
+            # Announce the fallback only when a chain exists, else "trying fallback..." lies
+            # before a silent abort.
+            if agent._has_pending_fallback():
+                _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
+                agent._buffer_status(f"⚠️ {_label} — trying fallback...")
+            if agent._try_activate_fallback():
+                # Direct ``return _verdict("break")`` is load-bearing: the restart handler
+                # re-runs the pre-API preflight against the fallback's context window.
+                active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+                retry_count = compression_attempts = 0
+                return _verdict("break")
         return _verdict("return", nonretryable_client_error_result(
             agent, api_error, classified, status_code=status_code, api_kwargs=api_kwargs,
             api_messages=api_messages, messages=messages, conversation_history=conversation_history,

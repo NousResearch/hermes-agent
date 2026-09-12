@@ -2972,9 +2972,25 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
         # CLI /branch semantics: end the original as branched, create a child with the transcript.
         await asyncio.to_thread(db.end_session, source_id, "branched")
+
+        source_model_config = source.get("model_config")
+        if isinstance(source_model_config, str):
+            try:
+                source_model_config = json.loads(source_model_config)
+            except (TypeError, ValueError):
+                source_model_config = {}
+        if not isinstance(source_model_config, dict):
+            source_model_config = {}
+
+        fork_model_config = dict(source_model_config)
+        fork_model_config["_branched_from"] = source_id
+
         await asyncio.to_thread(
             db.create_session, fork_id, "api_server", model=source.get("model"),
-            system_prompt=source.get("system_prompt"), parent_session_id=source_id)
+            system_prompt=source.get("system_prompt"),
+            model_config=fork_model_config,
+            parent_session_id=source_id,
+        )
         messages = await asyncio.to_thread(db.get_messages, source_id)
         await asyncio.to_thread(db.replace_messages, fork_id, messages)
         title = body.get("title")

@@ -366,6 +366,48 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
     assert any(m.get("tool_calls") for m in messages)
 
 
+@pytest.mark.asyncio
+async def test_session_fork_persists_stable_branch_provenance(adapter, session_db):
+    """API forks must retain the same durable branch marker as CLI /branch."""
+    import json
+
+    source_id = session_db.create_session(
+        "fork-provenance-source",
+        "api_server",
+        model="test-model",
+        model_config={
+            "max_iterations": 17,
+            "reasoning_config": {"effort": "high"},
+        },
+    )
+    session_db.append_message(source_id, "user", "Explore the first path")
+    session_db.append_message(source_id, "assistant", "Initial answer")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            f"/api/sessions/{source_id}/fork",
+            json={
+                "id": "fork-provenance-child",
+                "title": "Alternative path",
+            },
+        )
+        assert resp.status == 201, await resp.text()
+        payload = await resp.json()
+
+    fork_id = payload["session"]["id"]
+    row = session_db.get_session(fork_id)
+    assert row is not None
+
+    model_config = row.get("model_config") or {}
+    if isinstance(model_config, str):
+        model_config = json.loads(model_config)
+
+    assert model_config.get("_branched_from") == source_id
+    assert model_config["max_iterations"] == 17
+    assert model_config["reasoning_config"] == {"effort": "high"}
+
+
 # ---------------------------------------------------------------------------
 # Session-persisted model threading + provider-auth failure surfacing
 # (salvaged from PR #57947 by @FvanW and PR #59941 by @kaishi00)

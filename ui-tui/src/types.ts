@@ -210,6 +210,8 @@ export interface SessionInfo {
 }
 
 export interface Usage {
+  /** Safe label (email / pool label) of the active pooled credential; omitted when no pool is bound. */
+  account_label?: string
   active_subagents?: number
   /** Rolling mean API latency over the last 10 calls (seconds). */
   avg_latency_s?: number

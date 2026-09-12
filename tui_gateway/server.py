@@ -1954,6 +1954,13 @@ def _get_usage(agent) -> dict:
     with contextlib.suppress(Exception):
         from tools.async_delegation import active_count as _async_active_count
         usage["active_subagents"] = _async_active_count()
+    # Active pooled-credential label (CLI status bar ``account`` field parity). Omitted, not
+    # blanked, when no pool is bound so the TUI segment self-hides; the label is the same safe
+    # email/label ``hermes auth list`` prints — never token material.
+    with contextlib.suppress(Exception):
+        from agent.agent_runtime_helpers import active_credential_label
+        if _label := active_credential_label(agent):
+            usage["account_label"] = _label
     # Dev-only live credits-spent readout, gated on HERMES_DEV_CREDITS so the payload stays clean otherwise.
     if is_truthy_value(os.environ.get("HERMES_DEV_CREDITS")):
         with contextlib.suppress(Exception):

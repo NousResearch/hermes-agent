@@ -453,6 +453,71 @@ class TestStatusBarFieldConfig:
             text = cli_obj._build_status_bar_text(width=120)
         assert "Σ" not in text
 
+    def _cli_with_pool(self, label="alice@example.com"):
+        """Agent bound to a credential pool whose dispatch entry carries ``label``."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        entry = SimpleNamespace(id="abc123", label=label, runtime_api_key="sk-live")
+        cli_obj.agent.api_key = "sk-live"
+        cli_obj.agent._credential_pool_entry_id = "abc123"
+        cli_obj.agent._credential_pool = SimpleNamespace(
+            entries=lambda: [entry],
+            current=lambda: entry,
+            entry_id_for_api_key=lambda hint=None: "abc123",
+        )
+        return cli_obj
+
+    def test_account_when_explicitly_requested(self):
+        cli_obj = self._cli_with_pool()
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "account"]}}}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "@ alice@example.com" in text
+        # Sits right after the model so the pair reads "what, on whose account".
+        assert text.index("claude-sonnet-4-20250514") < text.index("@ alice@example.com")
+
+    def test_account_hidden_by_default(self):
+        """Like total_tokens: a bound pool alone never widens the default bar."""
+        cli_obj = self._cli_with_pool()
+        with patch.object(cli_mod, "CLI_CONFIG", {}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "alice@example.com" not in text
+        assert "@ " not in text
+
+    def test_account_hidden_when_no_pool_bound(self):
+        """Single env-var key: the field is requested but there is no label to show."""
+        text = self._cli_with_fields(["model", "account"])
+        assert "@ " not in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_account_label_truncates_long_labels(self):
+        cli_obj = self._cli_with_pool(label="a-very-long-service-account-name@corp.example.com")
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "account"]}}}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "@ a-very-long-service-account-n..." in text
+        assert "corp.example.com" not in text
+
+    def test_account_follows_dispatch_entry_not_pool_cursor(self):
+        """Mid-session failover: the entry bound at dispatch wins over pool.current()."""
+        cli_obj = self._cli_with_pool()
+        other = SimpleNamespace(id="zzz999", label="bob@example.com", runtime_api_key="sk-other")
+        mine = cli_obj.agent._credential_pool.entries()[0]
+        cli_obj.agent._credential_pool = SimpleNamespace(
+            entries=lambda: [mine, other],
+            current=lambda: other,
+            entry_id_for_api_key=lambda hint=None: "zzz999",
+        )
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "account"]}}}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "@ alice@example.com" in text
+        assert "bob@example.com" not in text
+
     def test_narrow_terminal_drops_context_detail(self):
         """Narrow terminal (<76) ignores context_detail even if configured."""
         text = self._cli_with_fields(["model", "context_detail", "duration"], width=60)

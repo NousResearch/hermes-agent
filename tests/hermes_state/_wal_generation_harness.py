@@ -158,10 +158,21 @@ _GATEWAY_CHILD = textwrap.dedent(
                 emit(event="closed", error=repr(exc))
             del db
             gc.collect()
-        elif cmd == "break-setconfig":
-            # A setconfig call that raises (in the field: an already-invalid handle) via an op SQLite rejects.
+        elif cmd in ("break-setconfig", "interrupt-setconfig", "exit-setconfig"):
             import sqlite3
-            sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE = -1
+
+            if cmd == "break-setconfig":
+                # Force a real native setconfig call to reject its operation.
+                sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE = -1
+            else:
+                interruption = KeyboardInterrupt if cmd == "interrupt-setconfig" else SystemExit
+
+                def interrupted_setconfig(self, *args, _error=interruption):
+                    raise _error(73)  # preserve SystemExit's requested status too
+
+                # Override the Python TrackedConnection subclass, preserving the real
+                # connection object and its still-enabled native close checkpoint.
+                type(db._conn).setconfig = interrupted_setconfig
             emit(event="broken", what=cmd)
         elif cmd in ("break-capture", "break-copy-memory", "break-copy-interrupt"):
             import hermes_state

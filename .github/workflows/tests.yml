@@ -158,7 +158,7 @@ jobs:
           HERMES_TEST_FILE_RETRIES: "0"
         run: |
           scripts/run_tests.sh tests/hermes_state/test_deleted_wal_generation_guard.py \
-            -k setconfig_failure -m 'linux_only and not integration' \
+            -k setconfig_failure -m 'not macos_only and not windows_only and not integration' \
             -j 1 --file-timeout 120 --junitxml="$RUNNER_TEMP/wal-setconfig.xml"
           .venv/bin/python - "$RUNNER_TEMP/wal-setconfig.xml" <<'PY'
           import sqlite3

@@ -20,7 +20,7 @@ import hermes_state_dbfile
 import hermes_state_readpool
 import hermes_state_wal
 from hermes_state import (
-    DeletedWalGenerationError, SessionDB, StateDbReplacedError, _close_time_checkpoint_configurable,
+    DeletedWalGenerationError, SessionDB, StateDbCorruptError, StateDbReplacedError, _close_time_checkpoint_configurable,
     classify_persistence_error, refuse_deleted_wal_generation,
 )
 from hermes_state_dbfile import _pread_db_header, iter_deleted_sqlite_sidecar_holders
@@ -437,11 +437,17 @@ def test_renamed_wal_generation_survives_close_and_clean_process_exit(tmp_path):
 # close() errors, and a normal interpreter exit, whether or not the capture succeeded.
 
 
-def _assert_new_generation_survives_setconfig_failure(tmp_path, *, rename_sidecars, capture_failure):
+def _assert_new_generation_survives_setconfig_failure(
+    tmp_path, *, rename_sidecars, capture_failure, setconfig_failure, operation,
+):
     with gateway_writer(tmp_path) as gw:
         path = gw.path
         gw.next_event("ready")
-        commands = ["break-setconfig"]
+        commands = [{
+            "error": "break-setconfig",
+            "interrupt": "interrupt-setconfig",
+            "exit": "exit-setconfig",
+        }[setconfig_failure]]
         if capture_failure is not None:
             commands.append({
                 "error": "break-capture",
@@ -454,8 +460,10 @@ def _assert_new_generation_survives_setconfig_failure(tmp_path, *, rename_sideca
         lose_sidecars(path, rename=rename_sidecars)
         expected = write_second_generation(path, n_rows=400)
 
-        gw.send("release")
-        if capture_failure == "interrupt":
+        gw.send(operation)
+        if setconfig_failure == "exit":
+            assert gw.wait_exit(timeout=20) == 73, gw.stderr_text()
+        elif setconfig_failure == "interrupt" or capture_failure == "interrupt":
             # Cancellation must still propagate; protecting the handle must not swallow it.
             assert gw.wait_exit(timeout=20) != 0
             assert "KeyboardInterrupt" in gw.stderr_text()
@@ -470,22 +478,73 @@ def _assert_new_generation_survives_setconfig_failure(tmp_path, *, rename_sideca
         assert message_count(path) == expected, "normal exit rolled back the newer rows"
 
 
+_SETCONFIG_FAILURE_CASES = [
+    pytest.param(None, "error", "release", id="captured"),
+    pytest.param("error", "error", "release", id="capture-failed"),
+    pytest.param("memory", "error", "release", id="capture-memory-error"),
+    pytest.param("interrupt", "error", "release", id="capture-interrupted"),
+    pytest.param(None, "interrupt", "release", id="setconfig-interrupted-release"),
+    pytest.param(None, "exit", "release", id="setconfig-exited-release"),
+    pytest.param(None, "interrupt", "write", id="setconfig-interrupted-halt"),
+    pytest.param(None, "exit", "write", id="setconfig-exited-halt"),
+]
+
+
 @pytest.mark.linux_only
 @pytest.mark.skipif(not _close_time_checkpoint_configurable(),
                     reason="no setconfig: the retirement tests above cover this runtime")
-@pytest.mark.parametrize("capture_failure", [None, "error", "memory", "interrupt"],
-                         ids=["captured", "capture-failed", "capture-memory-error", "capture-interrupted"])
-def test_setconfig_failure_retires_unclosed_through_release_and_exit(tmp_path, capture_failure):
-    _assert_new_generation_survives_setconfig_failure(tmp_path, rename_sidecars=False, capture_failure=capture_failure)
+@pytest.mark.parametrize("capture_failure,setconfig_failure,operation", _SETCONFIG_FAILURE_CASES)
+def test_setconfig_failure_retires_unclosed_through_release_and_exit(
+    tmp_path, capture_failure, setconfig_failure, operation,
+):
+    _assert_new_generation_survives_setconfig_failure(
+        tmp_path, rename_sidecars=False, capture_failure=capture_failure,
+        setconfig_failure=setconfig_failure, operation=operation,
+    )
 
 
 @pytest.mark.macos_only
 @pytest.mark.skipif(not _close_time_checkpoint_configurable(),
                     reason="no setconfig: the retirement tests above cover this runtime")
-@pytest.mark.parametrize("capture_failure", [None, "error", "memory", "interrupt"],
-                         ids=["captured", "capture-failed", "capture-memory-error", "capture-interrupted"])
-def test_setconfig_failure_retires_renamed_generation_unclosed_through_release_and_exit(tmp_path, capture_failure):
-    _assert_new_generation_survives_setconfig_failure(tmp_path, rename_sidecars=True, capture_failure=capture_failure)
+@pytest.mark.parametrize("capture_failure,setconfig_failure,operation", _SETCONFIG_FAILURE_CASES)
+def test_setconfig_failure_retires_renamed_generation_unclosed_through_release_and_exit(
+    tmp_path, capture_failure, setconfig_failure, operation,
+):
+    _assert_new_generation_survives_setconfig_failure(
+        tmp_path, rename_sidecars=True, capture_failure=capture_failure,
+        setconfig_failure=setconfig_failure, operation=operation,
+    )
+
+
+@pytest.mark.skipif(not _close_time_checkpoint_configurable(), reason="needs native setconfig")
+def test_setconfig_failure_does_not_report_retention_for_structural_quarantine(tmp_path, force_wal, monkeypatch, caplog):
+    db = make_db(tmp_path / "state.db", "s", "seed")
+    real_conn = db._conn
+
+    class MalformedWriter:
+        def execute(self, *args, **kwargs):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        def __getattr__(self, name):
+            return getattr(real_conn, name)
+
+    monkeypatch.setattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", -1)
+    try:
+        db._conn = MalformedWriter()
+        with caplog.at_level("ERROR", logger="hermes_state"):
+            with pytest.raises(StateDbCorruptError):
+                db.create_session("corrupt-write", "cli")
+        db._conn = real_conn
+        db.close()
+        assert not db._db_wal_generation_lost and not db._connection_pinned
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            real_conn.execute("SELECT 1")
+        assert "Could not disable SQLite's close-time checkpoint" in caplog.text
+        assert "ordinary close may" in caplog.text
+        assert "retaining it unclosed" not in caplog.text.lower()
+    finally:
+        db._conn = None
+        real_conn.close()
 
 
 @pytest.mark.skipif(

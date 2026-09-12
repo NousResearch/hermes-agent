@@ -1148,44 +1148,47 @@ class SessionDB(
         raise err from exc
 
     def _disable_close_time_checkpoint(self) -> bool:
-        """Best-effort SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE (Python 3.12+): sqlite3's
-        close() otherwise runs the internal last-connection checkpoint that wrote
-        the incident's pages under wrong page numbers (see StateDbCorruptError and
-        the generation-loss halts).
-        Where this returns False (no setconfig before 3.12, or a setconfig call
-        that raised) a lost-generation handle is retired unclosed instead (see
-        close()): closing its last descriptor could both run that checkpoint and
-        discard committed data present only in an unlinked WAL."""
-        flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+        """Confirm checkpoint suppression, or pin a known lost generation when possible.
+
+        Pin before a failed/interrupted attempt leaves this helper, including on
+        the first write halt. Other quarantine states keep their caller's close
+        policy; merely having a fallback does not mean it was used.
+        """
         conn = self._conn
-        setconfig = getattr(conn, "setconfig", None)
-        if flag is None or setconfig is None:
-            # Same predicate as _close_time_checkpoint_configurable() plus the per-instance
-            # getattr; close() then retires the handle unclosed with the capability __init__ bound.
-            return False
+        disabled = False
         try:
+            flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+            setconfig = getattr(conn, "setconfig", None)
+            if flag is None or setconfig is None:
+                return False
             setconfig(flag, True)
+            disabled = True
+            return True
         except Exception:
-            # close() falls back to retiring the handle unclosed; only without a bound retention
-            # capability (non-CPython) can SQLite still checkpoint, so say which case this is.
             logger.error(
-                "Could not disable SQLite's close-time checkpoint on the quarantined handle for %s; %s",
-                self.db_path,
-                "retaining it unclosed instead." if self._retire_connection is not None
-                else "closing it may checkpoint retired frames over the newer generation.",
+                "Could not disable SQLite's close-time checkpoint on the quarantined handle for %s; "
+                "an ordinary close may still checkpoint its WAL.", self.db_path,
                 exc_info=True,
             )
             return False
-        return True
+        finally:
+            # BaseException (KeyboardInterrupt/SystemExit) must propagate, but only
+            # after the exact lost-generation connection is protected from finalization.
+            if (not disabled and conn is not None and self._db_wal_generation_lost
+                    and self._retire_connection is not None):
+                self._pin_connection(conn)
 
     def _pin_connection(self, conn) -> None:
         """Retain the exact quarantined connection past GC and interpreter teardown (once per handle).
 
-        Takes the connection as a parameter: callers are lock-held close paths, and the
-        writer-conn thread-safety audit flags self._conn in functions outside `with self._lock`."""
-        if not self._connection_pinned:
+        The generation lock also serializes pins from interrupted halt paths. Pass the
+        exact connection observed by the caller rather than reading self._conn again."""
+        with self._retired_capture_lock:
+            if self._connection_pinned:
+                return
             self._retire_connection(conn)
             self._connection_pinned = True
+        logger.warning("Pinned the lost-generation connection for %s through interpreter shutdown.", self.db_path)
 
     def _settle_lost_generation_locked(self) -> bool:
         """Capture the retired generation; return whether the handle must be retired unclosed.
@@ -1217,11 +1220,6 @@ class SessionDB(
             "writers before reopening and inspect the capture before deciding its disposition.",
             self.db_path, artifact,
         )
-        if retire_without_close:
-            logger.warning(
-                "Retaining the quarantined connection for %s unclosed: SQLite's close-time "
-                "checkpoint could not be switched off on it.", self.db_path,
-            )
         return retire_without_close
 
     def _raise_if_db_corrupt(self) -> None:

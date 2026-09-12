@@ -616,9 +616,9 @@ def _maybe_cache_local_context_length(model: str, base_url: str, length: int) ->
         save_context_length(model, base_url, length)
 
 
-def _probe_local_context_length(model: str, base_url: str, api_key: str, provider: str) -> Optional[int]:
+def _probe_local_context_length(model: str, base_url: str, api_key: str, provider: str, api_mode: Optional[str] = None) -> Optional[int]:
     """Live local probe; persists a positive result unless the provider opts out of the disk cache."""
-    local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
+    local_ctx = _query_local_context_length(model, base_url, api_key=api_key, api_mode=api_mode)
     if not (local_ctx and local_ctx > 0):
         return None
     if not _skip_persistent_context_cache(base_url, provider):
@@ -626,11 +626,11 @@ def _probe_local_context_length(model: str, base_url: str, api_key: str, provide
     return local_ctx
 
 
-def _reconcile_local_cached_context_length(model: str, base_url: str, cached: int, api_key: str = "") -> int:
+def _reconcile_local_cached_context_length(model: str, base_url: str, cached: int, api_key: str = "", api_mode: Optional[str] = None) -> int:
     """*cached* unless a live local probe reports a different limit (operators restart
     vLLM/Ollama with a new --max-model-len / num_ctx under the same id). A failed
     probe keeps the disk entry; sub-minimum live windows invalidate but are not persisted."""
-    live_ctx = _query_local_context_length(model, base_url, api_key=api_key)
+    live_ctx = _query_local_context_length(model, base_url, api_key=api_key, api_mode=api_mode)
     if not (live_ctx and live_ctx > 0 and live_ctx != cached):
         return cached
     if live_ctx < MINIMUM_CONTEXT_LENGTH:
@@ -685,8 +685,16 @@ def _localhost_to_ipv4(url: str) -> str:
     return re.sub(r"^(https?://)localhost(?=[:/]|$)", r"\g<1>127.0.0.1", url, count=1)
 
 
-def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
-    """Probe known endpoints: "ollama", "lm-studio", "vllm", "llamacpp", or None (TTL-cached)."""
+def detect_local_server_type(base_url: str, api_key: str = "", *, api_mode: Optional[str] = None) -> Optional[str]:
+    """Probe known endpoints: "ollama", "lm-studio", "vllm", "llamacpp", or None (TTL-cached).
+
+    ``api_mode``: when the caller's config *explicitly* set ``api_mode: chat_completions``
+    (see hermes-agent#25629), the user has opted into plain OpenAI-compatible behavior — the
+    endpoint may be an intermediary (LiteLLM, a router) that doesn't expose any of the
+    native-fingerprint routes below and would otherwise 404 the whole waterfall on every turn.
+    Skip the probe entirely rather than let it degrade to None the slow way."""
+    if api_mode == "chat_completions":
+        return None
     import httpx
     # IPv4-resolve BEFORE deriving server/LM Studio URLs and the cache lookup, so localhost and 127.0.0.1 share a cache entry.
     normalized = _localhost_to_ipv4(_normalize_base_url(base_url))
@@ -1258,19 +1266,22 @@ def _ollama_show(server_url: str, api_key: str, bare_model: str, timeout: float 
         return None
 
 
-def _is_ollama_server(base_url: str, api_key: str) -> bool:
+def _is_ollama_server(base_url: str, api_key: str, api_mode: Optional[str] = None) -> bool:
     try:
         # Forward the API key: a remote API-keyed endpoint answers the probe waterfall with 401s without it,
         # and an unauthorized probe can never produce a positive verdict (#89863).
-        return detect_local_server_type(base_url, api_key=api_key) == "ollama"
+        return detect_local_server_type(base_url, api_key=api_key, api_mode=api_mode) == "ollama"
     except Exception:
         return False
 
 
-def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Optional[int]:
-    """Ollama ``/api/show`` context (Modelfile num_ctx, else GGUF max); the value to send as ``num_ctx``."""
+def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "", api_mode: Optional[str] = None) -> Optional[int]:
+    """Ollama ``/api/show`` context (Modelfile num_ctx, else GGUF max); the value to send as ``num_ctx``.
+
+    ``api_mode``: forwarded to :func:`_is_ollama_server` — an explicit ``chat_completions``
+    config skips the native-server fingerprint (hermes-agent#25629) and this returns None."""
     bare_model, server_url = _strip_provider_prefix(model), _server_root(base_url)
-    if not _is_ollama_server(base_url, api_key):
+    if not _is_ollama_server(base_url, api_key, api_mode=api_mode):
         return None
     _disk_key = f"{server_url}|{bare_model}"
     disk_hit = _local_probe_disk_get("ollama_num_ctx", _disk_key)
@@ -1382,9 +1393,9 @@ def _model_name_suggests_stale_32k_underreport(model: str) -> bool:
     return _model_name_suggests_kimi(model) or _model_name_suggests_minimax(model)
 
 
-def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+def _query_local_context_length(model: str, base_url: str, api_key: str = "", api_mode: Optional[str] = None) -> Optional[int]:
     """Local-server context probe, short-TTL cached (see _LOCAL_CTX_PROBE_CACHE)."""
-    return _memo_local_probe((_strip_provider_prefix(model), base_url.rstrip("/")), lambda: _query_local_context_length_uncached(model, base_url, api_key=api_key))
+    return _memo_local_probe((_strip_provider_prefix(model), base_url.rstrip("/")), lambda: _query_local_context_length_uncached(model, base_url, api_key=api_key, api_mode=api_mode))
 
 
 def _positive_int(value: Any) -> Optional[int]:
@@ -1441,8 +1452,13 @@ def _openai_models_list_context(client, server_url: str, model: str) -> Optional
     return None
 
 
-def _query_local_context_length_uncached(model: str, base_url: str, api_key: str = "") -> Optional[int]:
-    """Query a local server for the model's context length."""
+def _query_local_context_length_uncached(model: str, base_url: str, api_key: str = "", api_mode: Optional[str] = None) -> Optional[int]:
+    """Query a local server for the model's context length.
+
+    ``api_mode``: forwarded to :func:`detect_local_server_type` so an explicit
+    ``chat_completions`` config (hermes-agent#25629) skips the native-fingerprint waterfall;
+    the generic ``/v1/models`` probes further below still run since they're plain
+    OpenAI-compatible routes, not Ollama/llama.cpp/vLLM-specific ones."""
     import httpx
     model = _strip_provider_prefix(model)
     server_url = _server_root(base_url)
@@ -1450,7 +1466,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
     if _endpoint_blackholed(server_url):
         return None
     try:
-        server_type = detect_local_server_type(base_url, api_key=api_key)
+        server_type = detect_local_server_type(base_url, api_key=api_key, api_mode=api_mode)
     except Exception:
         server_type = None
     def _ollama_ctx(client) -> Optional[int]:
@@ -1705,7 +1721,7 @@ def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = 
     return None, ""
 
 
-def _validate_cached_context_length(model: str, base_url: str, cached: int, is_bedrock_context: bool, *, api_key: str = "") -> Optional[int]:
+def _validate_cached_context_length(model: str, base_url: str, cached: int, is_bedrock_context: bool, *, api_key: str = "", api_mode: Optional[str] = None) -> Optional[int]:
     """Step 1 of get_model_context_length: accept, repair, or drop a persisted entry. Returns the
     value to use, or None to fall through to live resolution. Order matters: a value must be
     rejected as bogus before any provider-specific handling."""
@@ -1746,7 +1762,7 @@ def _validate_cached_context_length(model: str, base_url: str, cached: int, is_b
     # GGUF training max first which can be larger and would create a false-safe window for compression
     # (#63122). Non-local endpoints preserve the existing GGUF-first behavior.
     if is_local_endpoint(base_url):
-        return _reconcile_local_cached_context_length(model, base_url, cached, api_key=api_key)
+        return _reconcile_local_cached_context_length(model, base_url, cached, api_key=api_key, api_mode=api_mode)
     return cached
 
 
@@ -1775,14 +1791,14 @@ def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
     return ctx
 
 
-def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: str, provider: str) -> int:
+def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: str, provider: str, api_mode: Optional[str] = None) -> int:
     """Steps 2-3 for a truly custom endpoint: /models, local probes, Ollama /api/show, catalog, default."""
     context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
     if context_length is not None:
         return context_length
     # Local endpoints: the num_ctx-aware probe first — _query_ollama_api_show is GGUF-first, which
     # can be larger and create a false-safe compression window.
-    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if is_local_endpoint(base_url) else None
+    local_ctx = _probe_local_context_length(model, base_url, api_key, provider, api_mode=api_mode) if is_local_endpoint(base_url) else None
     if local_ctx:
         return local_ctx
     # 2b. Ollama native /api/show (GGUF-first for non-local). Non-Ollama servers 404/405 quickly.
@@ -1855,7 +1871,7 @@ def _config_override_context_length(model: str, base_url: str, provider: str, cu
     return None
 
 
-def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: str, provider: str, effective_provider: str) -> Optional[int]:
+def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: str, provider: str, effective_provider: str, api_mode: Optional[str] = None) -> Optional[int]:
     """Step 5: provider-specific sources, tried in order; None when all miss."""
     # 5a. Copilot live /models — account-specific models (claude-opus-4.6-1m) absent from
     # models.dev, and the provider-enforced limit for the rest.
@@ -1885,8 +1901,11 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
         if ctx is not None:
             return ctx
     # 5e. Ollama native /api/show for any base_url that is not a known non-Ollama provider (there
-    # the POST always 404s and cost ~300ms on the first turn).
-    if base_url:
+    # the POST always 404s and cost ~300ms on the first turn). Skipped outright when api_mode was
+    # explicitly configured as chat_completions (hermes-agent#25629): a plain OpenAI-compatible
+    # intermediary (LiteLLM, a router) in front of Ollama may not forward /api/show at all, and the
+    # 404 round-trip is pure overhead the user opted out of by naming the wire protocol explicitly.
+    if base_url and api_mode != "chat_completions":
         inferred = _infer_provider_from_url(base_url)
         ctx = _query_ollama_api_show(model, base_url, api_key=api_key) if inferred is None or "ollama" in inferred else None
         if ctx is not None:
@@ -1914,14 +1933,19 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
 
 def get_model_context_length(
     model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None,
-    provider: str = "", custom_providers: list | None = None,
+    provider: str = "", custom_providers: list | None = None, api_mode: str | None = None,
 ) -> int:
     """Context length for a model. Resolution order: 0 config override / MoA aggregator /
     model_overrides / custom_providers / endpoint-scoped; 1 persistent cache (Nous, LM
     Studio, Codex OAuth bypass it) and Bedrock; 2-3 custom endpoints (/models, local
     probe, Ollama); 4 Anthropic /v1/models (API keys only); 5 provider-aware (Copilot,
     Nous, Codex OAuth, GMI, Ollama, OpenRouter live, models.dev); 6 OpenRouter for
-    unknown providers; 7 local server; 8 hardcoded defaults; 9 256K fallback."""
+    unknown providers; 7 local server; 8 hardcoded defaults; 9 256K fallback.
+
+    ``api_mode``: the *explicitly configured* wire protocol (None unless the user's config sets
+    ``model.api_mode`` literally). When it is ``"chat_completions"``, every Ollama/llama.cpp/vLLM
+    native-route probe in steps 1-7 is skipped (hermes-agent#25629) — the user opted into plain
+    OpenAI-compatible behavior, and those routes may not exist on whatever sits at base_url."""
     # 0. Explicit config override — user knows best
     if isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
@@ -1963,7 +1987,7 @@ def get_model_context_length(
     )
     # 1. Persistent cache (LM Studio / Codex OAuth excluded — see _skip_persistent_context_cache).
     cached = get_cached_context_length(model, base_url) if base_url and not _skip_persistent_context_cache(base_url, provider) else None
-    validated = _validate_cached_context_length(model, base_url, cached, is_bedrock_context, api_key=api_key) if cached is not None else None
+    validated = _validate_cached_context_length(model, base_url, cached, is_bedrock_context, api_key=api_key, api_mode=api_mode) if cached is not None else None
     if validated is not None:
         return validated
     # 1b. AWS Bedrock. Must run BEFORE the custom-endpoint step: bedrock-runtime.* is not in
@@ -1980,7 +2004,7 @@ def get_model_context_length(
     # 2. Live /models for truly custom endpoints. Known providers skip this: their /models may
     # report a provider-imposed limit (Copilot: 128k) rather than the window.
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
-        return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
+        return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider, api_mode=api_mode)
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (base_url and base_url_hostname(base_url) == "api.anthropic.com"):
         ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)
@@ -1991,7 +2015,7 @@ def get_model_context_length(
     effective_provider = provider
     if base_url and (not effective_provider or effective_provider in {"openrouter", "custom"}):
         effective_provider = _infer_provider_from_url(base_url) or effective_provider
-    ctx = _resolve_provider_aware_context_length(model, base_url, api_key, provider, effective_provider)
+    ctx = _resolve_provider_aware_context_length(model, base_url, api_key, provider, effective_provider, api_mode=api_mode)
     if ctx is not None:
         return ctx
     # 6. OpenRouter metadata, provider-unaware fallback — only when the provider is unknown (OR
@@ -2006,7 +2030,7 @@ def get_model_context_length(
                 return or_ctx
     # 7. Local server before hardcoded defaults — ``Hermes-3-Llama-3.1-70B`` matches ``llama``
     # (131072) even when vLLM runs at a lower ``--max-model-len``.
-    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if base_url and is_local_endpoint(base_url) else None
+    local_ctx = _probe_local_context_length(model, base_url, api_key, provider, api_mode=api_mode) if base_url and is_local_endpoint(base_url) else None
     if local_ctx:
         return local_ctx
     # 8. Hardcoded defaults: `key in model` only — the reverse would let "claude-sonnet-4" match "claude-sonnet-4-6" and return 1M.
@@ -2018,12 +2042,13 @@ def get_model_context_length(
     return DEFAULT_FALLBACK_CONTEXT
 
 
-async def get_model_context_length_async(model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "", custom_providers: list | None = None) -> int:
+async def get_model_context_length_async(model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "", custom_providers: list | None = None, api_mode: str | None = None) -> int:
     """get_model_context_length on a worker thread (its blocking HTTP would stall the event loop)."""
     import asyncio
     return await asyncio.to_thread(
         get_model_context_length, model, base_url=base_url, api_key=api_key,
-        config_context_length=config_context_length, provider=provider, custom_providers=custom_providers)
+        config_context_length=config_context_length, provider=provider, custom_providers=custom_providers,
+        api_mode=api_mode)
 
 
 # CJK/Hangul/Kana codepoints (~1 token each), counted in one C-level regex pass: Hangul

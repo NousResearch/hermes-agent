@@ -1806,7 +1806,7 @@ def _compressor_max_tokens(agent):
     return None
 
 
-def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
+def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db, api_mode=None):
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
@@ -1817,10 +1817,13 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         # gpt-5.5 autoraise above) only configures the built-in ContextCompressor and never reaches the
         # plugin, so the autoraise notice would announce a change that does not apply. (#44439)
         from agent.model_metadata import get_model_context_length
+        # api_mode here is the raw, explicitly-configured value (None unless model.api_mode is set
+        # in config.yaml) — see the comment on _configure_ollama_num_ctx for why agent.api_mode
+        # (the resolved ladder value, "chat_completions" by default for most setups) would be wrong.
         _plugin_ctx_len = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
             config_context_length=_effective_context_length, provider=agent.provider,
-            custom_providers=_custom_providers,
+            custom_providers=_custom_providers, api_mode=api_mode,
         )
         # Per-model overrides BEFORE the initial update_model() so the first threshold
         # resolution already sees them.
@@ -1977,9 +1980,17 @@ def _inject_context_engine_tools(agent):
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
 
 
-def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
+def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length, api_mode=None):
     # Ollama defaults num_ctx to 2048, so detect the max window and send num_ctx per request.
     # model.ollama_num_ctx overrides; model.context_length caps the detected value (VRAM).
+    #
+    # ``api_mode`` here is the *raw, explicitly configured* value from config.yaml (None unless
+    # the user actually set model.api_mode) — NOT agent.api_mode, which defaults to
+    # "chat_completions" for the overwhelming majority of custom/direct-Ollama setups too and
+    # would silently disable this detection for everyone. Only a user who explicitly opted into
+    # chat_completions (hermes-agent#25629 — typically to route through a proxy like LiteLLM that
+    # works around Ollama's stream+tools hang, and that doesn't expose Ollama-native routes) skips
+    # the probe below.
     agent._ollama_num_ctx: int | None = None
     _override = _model_cfg.get("ollama_num_ctx") if isinstance(_model_cfg, dict) else None
     if _override is not None:
@@ -1987,11 +1998,14 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
             agent._ollama_num_ctx = int(_override)
         except (TypeError, ValueError):
             _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _override)
-    if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
+    if (
+        agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url)
+        and api_mode != "chat_completions"
+    ):
         try:
             # api_key may be a callable (Entra token provider); detection needs a string.
             _key = agent.api_key if isinstance(agent.api_key, str) else ""
-            _detected = query_ollama_num_ctx(agent.model, agent.base_url, api_key=_key or "")
+            _detected = query_ollama_num_ctx(agent.model, agent.base_url, api_key=_key or "", api_mode=api_mode)
             if _detected and _detected > 0:
                 agent._ollama_num_ctx = _detected
         except Exception as exc:
@@ -2297,12 +2311,12 @@ def init_agent(
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(
         agent, _agent_cfg, base_url
     )
-    _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db)
+    _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db, api_mode=api_mode)
     _enforce_minimum_context(agent)
     _warn_nonagentic_hermes_model(agent)
     _inject_context_engine_tools(agent)
     _init_usage_state(agent)
-    _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
+    _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length, api_mode=api_mode)
     _emit_compression_summary(agent, cs)
     _snapshot_primary_runtime(agent)
 

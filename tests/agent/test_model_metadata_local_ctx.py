@@ -1067,3 +1067,83 @@ class TestReconcileSelfHealsPoisonedCache:
         mock_save.assert_called_once_with(
             "deepseek-v4-flash", "http://127.0.0.1:8080/v1", 1048576
         )
+
+
+class TestDetectLocalServerTypeExplicitChatCompletions:
+    """hermes-agent#25629: an explicit ``api_mode: chat_completions`` opts out of the
+    Ollama/LM-Studio/llama.cpp/vLLM native-route fingerprint waterfall entirely. Without this,
+    an intermediary that doesn't expose those routes (e.g. a LiteLLM proxy fronting Ollama to
+    dodge Ollama's stream+tools hang) 404s every leg of the waterfall on every turn before
+    Hermes ever attempts the actual chat completion."""
+
+    def test_skips_probe_entirely_when_api_mode_is_chat_completions(self):
+        from agent.model_metadata import detect_local_server_type
+
+        with patch("httpx.Client") as mock_client_cls:
+            result = detect_local_server_type(
+                "http://127.0.0.1:4000/v1", api_mode="chat_completions"
+            )
+
+        assert result is None
+        mock_client_cls.assert_not_called()
+
+    @staticmethod
+    def _ollama_only_client():
+        """A client that answers the "ollama" waterfall leg (/api/tags with a "models" body)
+        200 and everything else (lm-studio's /api/v1/models, llama.cpp's /props) 404 — mimics a
+        real Ollama server so the waterfall lands on "ollama" rather than the first, more
+        permissive lm-studio check."""
+        def get(url, *a, **k):
+            resp = MagicMock()
+            if url.endswith("/api/tags"):
+                resp.status_code = 200
+                resp.json.return_value = {"models": []}
+            else:
+                resp.status_code = 404
+            return resp
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.side_effect = get
+        return client_mock
+
+    def test_still_probes_when_api_mode_is_unset(self):
+        """Regression guard: omitting api_mode (the default for existing callers/tests) must
+        preserve the pre-existing waterfall behavior."""
+        from agent.model_metadata import detect_local_server_type
+
+        client_mock = self._ollama_only_client()
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://127.0.0.1:4001/v1")
+
+        assert result == "ollama"
+        assert client_mock.get.called
+
+    def test_still_probes_when_api_mode_is_something_else(self):
+        """Only the literal "chat_completions" value opts out — an unrelated api_mode
+        (e.g. anthropic_messages routed through a local proxy) must not be silently caught by
+        the same gate."""
+        from agent.model_metadata import detect_local_server_type
+
+        client_mock = self._ollama_only_client()
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type(
+                "http://127.0.0.1:4002/v1", api_mode="anthropic_messages"
+            )
+
+        assert result == "ollama"
+        assert client_mock.get.called
+
+    def test_query_ollama_num_ctx_short_circuits_via_api_mode(self):
+        """query_ollama_num_ctx (used by agent_init._configure_ollama_num_ctx on every agent
+        init for a local endpoint) must not touch the network when api_mode is explicitly
+        chat_completions — this is the exact code path hermes-agent#25629 reported hanging."""
+        from agent.model_metadata import query_ollama_num_ctx
+
+        with patch("httpx.Client") as mock_client_cls:
+            result = query_ollama_num_ctx(
+                "llama3.1:8b", "http://127.0.0.1:4003/v1", api_mode="chat_completions"
+            )
+
+        assert result is None
+        mock_client_cls.assert_not_called()

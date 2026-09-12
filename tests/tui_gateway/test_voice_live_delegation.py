@@ -12,6 +12,7 @@ matter and are pinned here:
   HUD note it sits beside.
 """
 
+import base64
 import json
 import threading
 import types
@@ -78,6 +79,78 @@ class TestSessionCreation:
         assert session["input"][0]["role"] == "user"
         assert captured["body"]["transport"] == {"type": "webrtc", "sdp": "v=0 offer"}
         assert "sk-test" not in json.dumps(result)
+
+    def test_codex_model_uses_subscription_oauth_call(self, monkeypatch):
+        """The Codex-only model uses the ChatGPT subscription endpoint and account
+        header while preserving the renderer's existing normalized answer shape."""
+        captured = {}
+
+        class _Headers(dict):
+            def get(self, key, default=None):
+                return super().get(key, default)
+
+        class _Resp:
+            headers = _Headers({"Location": "/backend-api/codex/realtime/calls/rtc_live_123"})
+
+            def read(self):
+                return b"v=0 answer\r\n"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(req, timeout=0):
+            captured["url"] = req.full_url
+            captured["headers"] = {key.lower(): value for key, value in req.header_items()}
+            captured["body"] = json.loads(req.data)
+            return _Resp()
+
+        claims = {"https://api.openai.com/auth": {"chatgpt_account_id": "acct-test"}}
+        payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+        token = f"header.{payload}.signature"
+        monkeypatch.setattr(voice_live.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(
+            voice_live, "_live_section",
+            lambda voice=None: {"model": "gpt-live-1-codex", "voice": "cove"})
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_codex_runtime_credentials",
+            lambda: {"api_key": token})
+
+        result = voice_live.create_webrtc_session("v=0 offer")
+
+        assert captured["url"] == voice_live.CODEX_LIVE_CALL_URL
+        assert captured["headers"]["authorization"] == f"Bearer {token}"
+        assert captured["headers"]["chatgpt-account-id"] == "acct-test"
+        assert captured["headers"]["originator"] == "hermes-agent"
+        assert captured["headers"]["openai-alpha"] == "quicksilver=v2"
+        assert captured["headers"]["session-id"]
+        assert captured["headers"]["thread-id"]
+        assert captured["headers"]["x-session-id"]
+        assert captured["body"]["sdp"] == "v=0 offer"
+        assert captured["body"]["session"]["model"] == "gpt-live-1-codex"
+        assert captured["body"]["session"]["delegation"] == {"type": "client"}
+        assert result == {
+            "session": {"id": "rtc_live_123"},
+            "transport": {"type": "webrtc", "sdp": "v=0 answer\r\n"},
+        }
+        assert token not in json.dumps(result)
+
+    def test_codex_model_requires_subscription_login_before_network(self, monkeypatch):
+        monkeypatch.setattr(
+            voice_live, "_live_section", lambda voice=None: {"model": "gpt-live-1-codex"})
+        monkeypatch.setattr(
+            voice_live, "_resolve_codex_subscription_credentials", lambda: ("", ""))
+        monkeypatch.setattr(
+            voice_live.urllib.request, "urlopen",
+            lambda *a, **k: pytest.fail("must not call the vendor"))
+
+        with pytest.raises(ValueError, match="hermes auth add openai-codex"):
+            voice_live.create_webrtc_session("v=0 offer")
+        status = voice_live.resolve_gpt_live_status()
+        assert status["available"] is False
+        assert "openai-codex" in status["reason"]
 
     def test_missing_key_refuses_before_any_network(self, monkeypatch):
         monkeypatch.setattr(voice_live, "_resolve_credentials", lambda live: ("", voice_live.DEFAULT_LIVE_BASE_URL))

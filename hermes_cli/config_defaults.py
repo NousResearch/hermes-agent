@@ -1120,10 +1120,11 @@ DEFAULT_CONFIG = {
         #   chained  — STT → Hermes turn → TTS (the stt.* / tts.* providers below)
         #   gpt-live — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
         #              DELEGATES every real request to Hermes (any model / provider you have
-        #              selected); needs an OpenAI API key. $0.05/min voice layer billing.
+        #              selected); gpt-live-1 needs an OpenAI API key, while
+        #              gpt-live-1-codex uses the existing ChatGPT/Codex subscription login.
         "voice_chat_mode": "chained",
         "gpt_live": {
-            "model": "gpt-live-1",
+            "model": "gpt-live-1",  # or gpt-live-1-codex for ChatGPT subscription OAuth
             "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
             # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
             "instructions": "",

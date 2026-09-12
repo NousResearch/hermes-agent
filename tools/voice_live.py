@@ -1,23 +1,23 @@
 """GPT-Live voice chat mode: the full-duplex voice frontend that delegates to Hermes.
 
 ``voice.voice_chat_mode: gpt-live`` replaces the chained STT → turn → TTS loop with ONE
-full-duplex voice model (OpenAI ``gpt-live-1``) that owns the microphone and the speaker and
-delegates every real request to Hermes as its *client-delegation* backend. Hermes stays the
-agent: whatever model/provider the session has selected answers, with the full toolset.
+full-duplex voice model that owns the microphone and the speaker and delegates every real request
+to Hermes as its *client-delegation* backend. Hermes stays the agent: whatever model/provider the
+session has selected answers, with the full toolset.
 
 Division of labour (the Live API has no tools of its own in client mode):
 
 * the desktop renderer holds the WebRTC media session (mic in, speech out) and the data channel;
 * this module resolves WHICH credentials/voice/persona to use and performs the one server-side
-  step the API requires — exchanging the browser's SDP offer for an answer with the project key
-  (``POST /v1/live/sessions``), so the key never reaches the client;
+  step the API requires — exchanging the browser's SDP offer for an answer using either an OpenAI
+  API key (``gpt-live-1``) or the existing ChatGPT/Codex OAuth login
+  (``gpt-live-1-codex``), so credentials never reach the client;
 * the renderer turns each ``session.delegation.created`` into a normal ``prompt.submit`` on the
   active session (surface ``voice-live``) and streams the reply back as
   ``session.commentary.append`` — Hermes' answer is what the voice speaks.
 
-Vendor contract: https://developers.openai.com/api/docs/guides/live (+ live-delegation,
-voice-webrtc). Billing is $0.05/min of session time on the OpenAI key, separate from the
-Hermes turn.
+Public API contract: https://developers.openai.com/api/docs/guides/live (+ live-delegation,
+voice-webrtc). Public API billing is separate from the delegated Hermes turn.
 """
 
 from __future__ import annotations
@@ -26,7 +26,9 @@ import json
 import logging
 import urllib.error
 import urllib.request
+import uuid
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,11 @@ CHAINED_MODE = "chained"
 DEFAULT_LIVE_MODEL = "gpt-live-1"
 DEFAULT_LIVE_VOICE = "marin"
 DEFAULT_LIVE_BASE_URL = "https://api.openai.com/v1"
+CODEX_LIVE_MODEL = "gpt-live-1-codex"
+CODEX_LIVE_CALL_URL = (
+    "https://chatgpt.com/backend-api/codex/realtime/calls"
+    "?intent=quicksilver&architecture=avas"
+)
 # Voices the vendor lists for gpt-live-1 (live-conversations guide) plus the realtime defaults it
 # accepts; free text stays allowed for custom voices.
 GPT_LIVE_VOICES = (
@@ -123,6 +130,106 @@ def _resolve_credentials(live: Dict[str, Any]) -> tuple[str, str]:
     return api_key, base_url
 
 
+def _resolve_codex_subscription_credentials() -> tuple[str, str]:
+    """Return ``(access_token, chatgpt_account_id)`` for the user's existing
+    ``openai-codex`` login. Refresh and profile/pool fallback stay owned by the
+    canonical Codex auth resolver; this module never reads ``auth.json`` itself.
+    """
+    try:
+        from hermes_cli.auth import resolve_codex_runtime_credentials
+
+        resolved = resolve_codex_runtime_credentials()
+        access_token = str(resolved.get("api_key") or "").strip()
+        headers = _codex_identity_headers(access_token)
+        account_id = str(headers.get("ChatGPT-Account-ID") or "").strip()
+        return access_token, account_id
+    except Exception as exc:
+        logger.debug("Could not resolve OpenAI Codex OAuth for GPT-Live: %s", exc)
+        return "", ""
+
+
+def _codex_identity_headers(access_token: str) -> Dict[str, str]:
+    from agent.codex_headers import codex_cloudflare_headers
+
+    return codex_cloudflare_headers(access_token, base_url=CODEX_LIVE_CALL_URL)
+
+
+def _configured_model(live: Dict[str, Any]) -> str:
+    return str(live.get("model") or DEFAULT_LIVE_MODEL).strip()
+
+
+def _uses_codex_subscription(live: Dict[str, Any]) -> bool:
+    return _configured_model(live).lower() == CODEX_LIVE_MODEL
+
+
+def _redact_vendor_detail(detail: str, *secrets: str) -> str:
+    redacted = detail
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "[redacted]")
+    return redacted
+
+
+def _codex_call_id(headers: Any) -> str:
+    """Best-effort public call id for the existing renderer response shape."""
+    session_id = str(headers.get("openai-session-id") or "").strip()
+    location = str(headers.get("Location") or "").strip()
+    if location:
+        for part in reversed([part for part in urlparse(location).path.split("/") if part]):
+            if part.startswith("rtc_") or (len(part) == 36 and part.count("-") == 4):
+                return part
+    return session_id
+
+
+def _create_codex_webrtc_session(
+    sdp_offer: str, history: Optional[list], live: Dict[str, Any]
+) -> Dict[str, Any]:
+    access_token, account_id = _resolve_codex_subscription_credentials()
+    if not access_token or not account_id:
+        raise ValueError(
+            "GPT-Live Codex needs a ChatGPT subscription login "
+            "(run `hermes auth add openai-codex`)"
+        )
+
+    request_id = str(uuid.uuid4())
+    body = json.dumps({
+        "sdp": sdp_offer,
+        "session": build_session_config(history, live=live),
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        CODEX_LIVE_CALL_URL,
+        data=body,
+        method="POST",
+        headers={
+            **_codex_identity_headers(access_token),
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "OpenAI-Alpha": "quicksilver=v2",
+            "chatgpt-account-id": account_id,
+            "session-id": str(uuid.uuid4()),
+            "thread-id": str(uuid.uuid4()),
+            "x-session-id": request_id,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            answer = resp.read().decode("utf-8")
+            if not answer.strip():
+                raise RuntimeError("GPT-Live session creation returned an empty SDP answer")
+            call_id = _codex_call_id(resp.headers)
+            return {
+                "session": {"id": call_id} if call_id else {},
+                "transport": {"type": "webrtc", "sdp": answer},
+            }
+    except urllib.error.HTTPError as exc:
+        detail = _redact_vendor_detail(
+            exc.read().decode("utf-8", "replace")[:600], access_token, account_id)
+        logger.warning("GPT-Live Codex session creation failed: %s %s", exc.code, detail)
+        raise RuntimeError(
+            f"GPT-Live Codex session creation failed ({exc.code}): {detail}"
+        ) from exc
+
+
 def live_instructions(live: Optional[Dict[str, Any]] = None) -> str:
     extra = str((live if live is not None else _live_section()).get("instructions") or "").strip()
     return f"{LIVE_PERSONA}\n\n{extra}" if extra else LIVE_PERSONA
@@ -134,20 +241,33 @@ def resolve_gpt_live_status() -> Dict[str, Any]:
     voice = _voice_section()
     mode = voice_chat_mode(voice)
     live = _live_section(voice)
-    api_key, _base = _resolve_credentials(live)
+    if _uses_codex_subscription(live):
+        access_token, account_id = _resolve_codex_subscription_credentials()
+        available = bool(access_token and account_id)
+        reason = None if available else (
+            "no ChatGPT subscription login (run `hermes auth add openai-codex`)"
+        )
+    else:
+        api_key, _base = _resolve_credentials(live)
+        available = bool(api_key)
+        reason = None if available else (
+            "no OpenAI API key (set OPENAI_API_KEY or voice.gpt_live.api_key)"
+        )
     return {
         "mode": mode,
-        "available": bool(api_key),
-        "reason": None if api_key else "no OpenAI API key (set OPENAI_API_KEY or voice.gpt_live.api_key)",
-        "model": str(live.get("model") or DEFAULT_LIVE_MODEL),
+        "available": available,
+        "reason": reason,
+        "model": _configured_model(live),
         "voice": str(live.get("voice") or DEFAULT_LIVE_VOICE),
     }
 
 
-def build_session_config(history: Optional[list] = None) -> Dict[str, Any]:
+def build_session_config(
+    history: Optional[list] = None, *, live: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """The ``session`` object for ``POST /v1/live/sessions`` (client delegation, WebRTC — the
     transport negotiates the audio format, so none is set)."""
-    live = _live_section()
+    live = live if live is not None else _live_section()
     config: Dict[str, Any] = {
         "model": str(live.get("model") or DEFAULT_LIVE_MODEL),
         "instructions": live_instructions(live),
@@ -167,11 +287,13 @@ def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> Dic
     status/detail) for a rejected request.
     """
     live = _live_section()
+    if _uses_codex_subscription(live):
+        return _create_codex_webrtc_session(sdp_offer, history, live)
     api_key, base_url = _resolve_credentials(live)
     if not api_key:
         raise ValueError("GPT-Live needs an OpenAI API key (OPENAI_API_KEY or voice.gpt_live.api_key)")
     body = json.dumps({
-        "session": build_session_config(history),
+        "session": build_session_config(history, live=live),
         "transport": {"type": "webrtc", "sdp": sdp_offer},
     }).encode("utf-8")
     req = urllib.request.Request(

@@ -4122,6 +4122,7 @@ _PLUGIN_COMPAT_LAZY = {
     'set_workspace_path': ('hermes_cli.kanban_db_workspace', 'set_workspace_path'),
     'unseen_events_for_sub': ('hermes_cli.kanban_db_notify', 'unseen_events_for_sub'),
     'worker_log_rotation_config': ('hermes_cli.kanban_db_dispatch', 'worker_log_rotation_config'),
+    '_worker_tree_signal': ('hermes_cli.kanban_db_dispatch', '_worker_tree_signal'),
 }
 
 

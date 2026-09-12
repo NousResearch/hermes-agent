@@ -256,11 +256,44 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _worker_tree_signal(pid: int, sig: int) -> None:
+    """Signal a worker's process group when ownership is provable.
+
+    Workers start a new session, so their process-group id is their original
+    PID. If the leader has already exited, ``getpgid`` raises but the group
+    remains addressable by that known PID. Never target the dispatcher's own
+    group; Windows keeps the per-PID behavior.
+    """
+    posix_group_kill = (
+        os.name != "nt"
+        and hasattr(os, "killpg")
+        and hasattr(os, "getpgid")
+        and hasattr(os, "getpgrp")
+    )
+    pid = int(pid)
+    if posix_group_kill:
+        try:
+            pgid = os.getpgid(pid)
+            if pgid == pid and pgid != os.getpgrp():
+                os.killpg(pgid, sig)
+                return
+        except ProcessLookupError:
+            if pid != os.getpgrp():
+                try:
+                    os.killpg(pid, sig)
+                    return
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+        except (PermissionError, OSError):
+            pass
+    os.kill(pid, sig)
+
+
 def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
-    """``signal_fn`` test hook, else ``os.kill`` when the platform has one."""
+    """``signal_fn`` test hook, else the owned worker-tree signaler."""
     if signal_fn is not None:
         return signal_fn
-    return os.kill if hasattr(os, "kill") else None
+    return _worker_tree_signal if hasattr(os, "kill") else None
 
 
 def _poll_worker_exit(pid: int) -> bool:

@@ -448,10 +448,13 @@ atexit.register(shutdown_all_kernels)
 
 
 def _sweep_idle_kernels() -> None:
-    """Pop+teardown every idle-expired, unattached kernel. Shared by ``_acquire_kernel``
-    (sweeps on every new-kernel lookup) and ``_reap_idle_kernels_forever`` (sweeps on a
-    timer), because a session that never calls execute_code again after its last cell
-    left its kernel process running forever — nothing else touches the registry."""
+    """Pop+teardown every idle-expired, unattached kernel.
+
+    Called only by ``_reap_idle_kernels_forever`` (timer). ``_acquire_kernel`` applies the
+    same rule inline because it already holds ``_REGISTRY.lock`` and that lock is a plain
+    ``threading.Lock``, so delegating here would deadlock; the duplication is deliberate.
+    The timer exists because a session that never calls execute_code again after its last
+    cell left its kernel process running forever — nothing else touches the registry."""
     _, idle_timeout = _lifecycle_limits()
     with _REGISTRY.lock:
         now = time.monotonic()

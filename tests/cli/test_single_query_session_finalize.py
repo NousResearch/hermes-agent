@@ -1,3 +1,4 @@
+import signal
 from types import SimpleNamespace
 
 import pytest
@@ -131,6 +132,70 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
         "summary",
         ("finalize", "single-query-session"),
     ]
+
+
+def test_kanban_signal_handler_ignores_base_exception_from_stream_flush(monkeypatch):
+    """A second interrupt during shutdown must not escape before ``os._exit``."""
+
+    import cli as cli_mod
+
+    installed_handlers = {}
+    flush_calls = []
+
+    class ExitCalled(BaseException):
+        pass
+
+    class InterruptingStream:
+        def __init__(self, name):
+            self.name = name
+
+        def flush(self):
+            flush_calls.append(self.name)
+            raise KeyboardInterrupt()
+
+    class _Console:
+        def print(self, *_args, **_kwargs):
+            pass
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.console = _Console()
+            self.session_id = "kanban-session"
+            self.agent = None
+
+        def _claim_active_session(self, _surface, *, stderr=False):
+            return True
+
+        def _show_security_advisories(self):
+            pass
+
+        def chat(self, _query, images=None):
+            installed_handlers[signal.SIGTERM](signal.SIGTERM, None)
+            raise AssertionError("signal handler returned instead of exiting")
+
+    def capture_handler(signum, handler):
+        installed_handlers[signum] = handler
+
+    def fake_exit(code):
+        assert code == 0
+        assert flush_calls == ["stdout", "stderr"]
+        raise ExitCalled()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-regression")
+    monkeypatch.setenv("HERMES_SIGTERM_GRACE", "0")
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_mod, "_finalize_single_query", lambda _cli: None)
+    monkeypatch.setattr(cli_mod, "_arm_exit_watchdog_on_shutdown_signal", lambda: None)
+    monkeypatch.setattr(signal, "signal", capture_handler)
+    monkeypatch.setattr(signal, "alarm", lambda _seconds: None, raising=False)
+    monkeypatch.setattr(cli_mod.logging, "shutdown", lambda: None)
+    monkeypatch.setattr(cli_mod.sys, "stdout", InterruptingStream("stdout"))
+    monkeypatch.setattr(cli_mod.sys, "stderr", InterruptingStream("stderr"))
+    monkeypatch.setattr(cli_mod.os, "_exit", fake_exit)
+
+    with pytest.raises(ExitCalled):
+        cli_mod.main(query="hello", quiet=False, toolsets="terminal")
 
 
 def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatch):

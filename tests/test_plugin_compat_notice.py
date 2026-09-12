@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,6 +57,36 @@ def test_compat_report_only_external_plugins_with_hits(tmp_path, monkeypatch):
     bundled = tmp_path / "bundled"; bundled.mkdir(); (bundled / "__init__.py").write_text("from tools.web_tools import prefers_gateway\n")
     report = pc.compat_report([_manifest("good", good), _manifest("bad", bad), _manifest("ours", bundled, "bundled")], force=True)
     assert list(report) == ["bad"] and report["bad"][0].old == "tools.web_tools.prefers_gateway"
+
+
+def test_compat_report_reuses_unchanged_scan_and_invalidates_for_source_change(tmp_path, monkeypatch):
+    monkeypatch.setattr(pc, "load_manifest", lambda: MANIFEST)
+    monkeypatch.setattr(pc, "_write_report_file", lambda r: None)
+    plugin = tmp_path / "plugin"; plugin.mkdir()
+    source = plugin / "__init__.py"
+    old_source = "from tools.web_tools import prefers_gateway\n"
+    fixed_source = "from tools.web_tools import web_search     \n"
+    assert len(old_source) == len(fixed_source)
+    source.write_text(old_source)
+    manifest = _manifest("plugin", plugin)
+    real_scan_plugin = pc.scan_plugin
+    scans = 0
+
+    def counting_scan_plugin(*args, **kwargs):
+        nonlocal scans
+        scans += 1
+        return real_scan_plugin(*args, **kwargs)
+
+    monkeypatch.setattr(pc, "scan_plugin", counting_scan_plugin)
+    first = pc.compat_report([manifest])
+    second = pc.compat_report([manifest])
+    assert first == second and scans == 1
+
+    original_mtime_ns = source.stat().st_mtime_ns
+    source.write_text(fixed_source)
+    os.utime(source, ns=(original_mtime_ns, original_mtime_ns))
+    assert pc.compat_report([manifest]) == {}
+    assert scans == 2
 
 
 def test_disable_only_after_the_date_and_not_when_allowed(tmp_path, monkeypatch):
@@ -130,11 +161,27 @@ def test_discovery_refreshes_report_file(tmp_path, monkeypatch):
     from hermes_cli.plugins_manifest import PluginManifest
     real = PluginManifest(name="oldpaths", version="0.1", description="t", source="user", path=str(plugin))
     mgr = PluginManager(scope_key=str(tmp_path))
+    real_scan_plugin = pc.scan_plugin
+    scans = 0
+
+    def counting_scan_plugin(*args, **kwargs):
+        nonlocal scans
+        scans += 1
+        return real_scan_plugin(*args, **kwargs)
+
+    monkeypatch.setattr(pc, "scan_plugin", counting_scan_plugin)
     mgr._refresh_plugin_compat_report([real])
     data = json.loads((tmp_path / "r.json").read_text())
     assert list(data["plugins"]) == ["oldpaths"] and data["in_effect"] is False
+    mgr._refresh_plugin_compat_report([real])
+    assert scans == 1
+    (tmp_path / "r.json").unlink()
+    mgr._refresh_plugin_compat_report([real])
+    assert (tmp_path / "r.json").exists()
+    assert scans == 1
     (plugin / "__init__.py").write_text("from tools.tool_backend_helpers import prefers_gateway\ndef register(ctx):\n    pass\n")
     mgr._refresh_plugin_compat_report([real])
+    assert scans == 2
     assert not (tmp_path / "r.json").exists()
 
 

@@ -116,6 +116,37 @@ class TestFormatSessionInfo:
         assert "config" in info
         assert "131K" not in info
 
+    def test_banner_reports_resolved_fallback_model_not_configured(self, runner, tmp_path):
+        """The banner must show the model actually being served, not the configured primary."""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: gpt-5.6-sol\n  provider: openai-codex\n",
+            "gpt-5.6-sol",
+            {
+                "provider": "opencode-zen",
+                "base_url": "https://opencode.ai/zen/v1",
+                "api_key": "k",
+                "model": "deepseek-v4-flash-free",
+            },
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "deepseek-v4-flash-free" in info
+        assert "opencode-zen" in info
+        assert "gpt-5.6-sol" not in info
+
+    def test_banner_keeps_configured_model_when_no_resolved_override(self, runner, tmp_path):
+        """The configured model remains the fallback when runtime has no model override."""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: gpt-5.6-sol\n  provider: openai-codex\n",
+            "gpt-5.6-sol",
+            {"provider": "openai-codex", "base_url": "", "api_key": "k"},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "gpt-5.6-sol" in info
+
 
 class TestResetNoticeSessionInfo:
     """#59003: the auto-reset banner must report the serving profile's config,

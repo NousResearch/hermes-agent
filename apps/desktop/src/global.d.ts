@@ -374,7 +374,7 @@ declare global {
         wait: (
           id: string,
           timeoutMs?: number
-        ) => Promise<{ code: null | string; error: null | string; state: null | string }>
+        ) => Promise<{ code: null | string; error: null | string; state: null | string; iss: null | string }>
         cancel: (id: string) => Promise<boolean>
       }
       openPreviewInBrowser?: (url: string) => Promise<void>

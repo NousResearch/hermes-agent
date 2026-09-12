@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import asyncio
 import concurrent.futures
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -33,6 +34,15 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _vision_affinity_scope(session_key: str) -> str:
+    """Opaque, stable OpenCode routing scope for pre-turn auxiliary calls.
+
+    Hashed on purpose: a session key embeds platform user/chat ids and this value travels to the
+    provider as a routing token. Only per-conversation consistency matters, not legibility.
+    """
+    return "img-" + hashlib.sha256(str(session_key or "").encode("utf-8")).hexdigest()[:24]
 
 
 class GatewayInboundMixin:
@@ -1397,9 +1407,25 @@ class GatewayInboundMixin:
             logger.debug("vision enrichment: session runtime resolution failed", exc_info=True)
 
         from agent.auxiliary_client import scoped_runtime_main
+        from agent.portal_tags import (
+            get_affinity_scope, get_conversation_context, reset_conversation_context,
+            set_conversation_context,
+        )
 
-        with scoped_runtime_main(vision_runtime):
-            return await self._enrich_message_with_vision(message_text, image_paths)
+        # Pre-analysis runs BEFORE the turn binds its conversation scope (agent/turn_facade.py), and
+        # an OpenCode target (opencode-go/zen) 400s without a non-empty ``x-opencode-session``
+        # ("MissingSessionID") — every image would degrade to the "couldn't quite see it" hint. Bind an
+        # opaque scope derived from this conversation's session key so the aux call routes like the turn
+        # it belongs to. Only when nothing is bound already: this path must not clobber a live scope.
+        scope_token = None
+        if not (get_affinity_scope() or get_conversation_context()):
+            scope_token = set_conversation_context(_vision_affinity_scope(session_key))
+        try:
+            with scoped_runtime_main(vision_runtime):
+                return await self._enrich_message_with_vision(message_text, image_paths)
+        finally:
+            if scope_token is not None:
+                reset_conversation_context(scope_token)
 
     async def _echo_stt_transcripts(
         self, adapter, source: SessionSource, transcripts: List[str], *, metadata=None, log_context: str = "Transcript"

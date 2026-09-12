@@ -2711,6 +2711,23 @@ def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Option
         error="Interrupted by gateway shutdown before terminal completion.")
 
 
+def _delivery_phase_interrupted(d: _RunDelivery) -> bool:
+    """Whether the save/compose/deliver phase ended in an ownership-lost interruption that must
+    overwrite the run outcome with ``_OWNERSHIP_LOST_INTERRUPTED`` (#105861).
+
+    True ONLY when the claim was lost *during* the side effect — ``_save_compose_deliver`` raised
+    ``_FireClaimLostDuringSideEffect`` (``side_effect_ownership_lost``), so delivery did not
+    complete under a held claim. A claim that merely reads as lost *after* a completed delivery is
+    deliberately NOT an interruption here: the heartbeat's sampled ``fence.lost()`` flips
+    permanently on a single transient missed tick (disk latency, a concurrent jobs.json rewrite, a
+    brief spawn spike), and honoring it post-delivery overwrote an already-delivered success with
+    ``_OWNERSHIP_LOST_INTERRUPTED`` — poisoning job history and firing false watchdog alerts while
+    the message had in fact been sent. The authoritative post-delivery ownership check is the
+    owner-fenced ``mark_job_run`` in ``_finish_completed_run``: it records a genuine loss atomically
+    at mark time, and records the real success when the claim is (still) held."""
+    return d.side_effect_ownership_lost
+
+
 def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_id: str) -> bool:
     """mark_job_run (owner-fenced) + execution ledger row for a run that reached delivery."""
     job = d.job
@@ -2905,7 +2922,10 @@ def _run_one_job_body(
             # Every path must tear down deferred agent(s) so they never leak subprocesses/clients.
             _teardown_deferred()
 
-        if d.side_effect_ownership_lost or _fire_claim_ownership_lost():
+        # Only a claim lost *during* delivery interrupts the run; a claim that reads as lost after a
+        # completed delivery is left to _finish_completed_run's owner-fenced mark_job_run, so a
+        # transient heartbeat blip no longer overwrites a delivered success with an error (#105861).
+        if _delivery_phase_interrupted(d):
             _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
             return True
 

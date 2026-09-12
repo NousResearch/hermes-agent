@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
 import { setActiveProfile } from '@/store/profile'
-import { saveThreadScrollPosition } from '@/store/thread-scroll'
+import { getThreadScrollPosition, saveThreadScrollPosition, threadScrollStorageKey } from '@/store/thread-scroll'
 
 import { stubThreadEnvironment, stubThreadViewportSize } from '../test-utils'
 
@@ -79,10 +79,11 @@ function sessionMessages(key: string, turns = 1): ThreadMessage[] {
 
 interface ScrollHarnessProps {
   messages: ThreadMessage[]
+  profile?: string
   sessionKey: string | null
 }
 
-function ScrollHarness({ messages, sessionKey }: ScrollHarnessProps) {
+function ScrollHarness({ messages, profile, sessionKey }: ScrollHarnessProps) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     isRunning: false,
     messages,
@@ -91,7 +92,7 @@ function ScrollHarness({ messages, sessionKey }: ScrollHarnessProps) {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread sessionKey={sessionKey} />
+      <Thread profile={profile} sessionKey={sessionKey} />
     </AssistantRuntimeProvider>
   )
 }
@@ -168,5 +169,66 @@ describe('list session-scroll restore', () => {
     // jsdom has no native scroll anchoring; the browser probe checks the
     // resulting reader position. Here the abandoned target must not return.
     expect(vp.scrollTop).not.toBe(2000 - CLIENT_H - 800)
+  })
+
+  // A background/keep-alive tile can be owned by a DIFFERENT profile than the
+  // window's ambient active one (multi-profile Bot mode: several tabs, each
+  // bound to its own bot/profile, mounted at once). Without `profile` threaded
+  // through, every mounted instance read/wrote the ambient `$activeProfile`
+  // bucket regardless of which profile it actually belonged to, so a
+  // background tile's remembered position lived under the WRONG profile's key
+  // (or polluted it) and could never be found again.
+  describe('per-tile profile scoping (background tile owned by a non-ambient profile)', () => {
+    it('restores from the tile’s OWN profile bucket, not the ambient active one', async () => {
+      setActiveProfile('default')
+      // A position saved for a DIFFERENT profile than the window's ambient one.
+      saveThreadScrollPosition('x', { fromBottom: 800, kind: 'offset' }, threadScrollStorageKey('other'))
+
+      const { container } = render(<ScrollHarness messages={sessionMessages('x')} profile="other" sessionKey="x" />)
+
+      await settleScroll()
+
+      expect(viewportEl(container).scrollTop).toBe(SCROLL_H - 800 - CLIENT_H)
+    })
+
+    it('does not leak a background tile’s remembered position into the ambient profile’s view of the same session key', async () => {
+      setActiveProfile('default')
+      saveThreadScrollPosition('x', { fromBottom: 800, kind: 'offset' }, threadScrollStorageKey('other'))
+
+      // No `profile` prop: the primary view, which correctly follows the
+      // ambient active profile ('default') — it must NOT see 'other's position.
+      const { container } = render(<ScrollHarness messages={sessionMessages('x')} sessionKey="x" />)
+
+      await settleScroll()
+
+      expect(viewportEl(container).scrollTop).toBe(SCROLL_H - CLIENT_H)
+    })
+
+    it('persists a background tile’s position under its OWN profile, not the ambient one', async () => {
+      setActiveProfile('default')
+
+      const { container, rerender } = render(
+        <ScrollHarness messages={sessionMessages('y')} profile="other" sessionKey="y" />
+      )
+      const vp = viewportEl(container)
+
+      await settleScroll()
+
+      // Scroll away from the bottom so the cleanup below has a real offset to
+      // record (a live state at the bottom records nothing new here).
+      act(() => {
+        vp.scrollTop = SCROLL_H - CLIENT_H - 400
+        vp.dispatchEvent(new Event('scroll'))
+      })
+      await settleScroll()
+
+      // Switching sessionKey commits the outgoing instance's cleanup, which
+      // records its live state under ITS OWN (profile-scoped) storage key.
+      rerender(<ScrollHarness messages={sessionMessages('z')} profile="other" sessionKey="z" />)
+      await settleScroll()
+
+      expect(getThreadScrollPosition('y', threadScrollStorageKey('other'))).toEqual({ fromBottom: 400, kind: 'offset' })
+      expect(getThreadScrollPosition('y', threadScrollStorageKey('default'))).toBeUndefined()
+    })
   })
 })

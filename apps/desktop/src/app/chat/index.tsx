@@ -699,6 +699,7 @@ const ChatViewContent = memo(function ChatViewContent({
             onCancel={haltRun}
             onDismissError={onDismissError}
             onRestoreToMessage={onRestoreToMessage}
+            profile={modelOptionsProfile || activeGatewayProfile}
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />

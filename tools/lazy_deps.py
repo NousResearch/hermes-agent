@@ -61,7 +61,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # mistralai: 2.4.6 was a malicious quarantined release — never pin below 2.4.7.
     # Voxtral STT + TTS share the SDK.
     "tts.mistral": ("mistralai==2.4.8",),
-    "tts.edge": ("edge-tts==7.2.7",),
+    "tts.edge": ("edge-tts==7.2.8",),
     "tts.elevenlabs": ("elevenlabs==1.59.0",),
 
     # ─── Speech-to-text providers ──────────────────────────────────────────

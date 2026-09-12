@@ -191,7 +191,7 @@ parallel-web = ["parallel-web==0.4.2"]
 fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
 # ElevenLabs / OpenAI / MiniMax instead).
-edge-tts = ["edge-tts==7.2.7"]
+edge-tts = ["edge-tts==7.2.8"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]

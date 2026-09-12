@@ -2992,10 +2992,15 @@ class GatewayTurnMixin:
         """Give the stream consumer task 5s to flush, then cancel it."""
         try:
             await asyncio.wait_for(stream_task, timeout=5.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except asyncio.TimeoutError:
             stream_task.cancel()
             with suppress(asyncio.CancelledError):
                 await stream_task
+        except asyncio.CancelledError:
+            # A cancelled child is settled; cancellation of this turn must still
+            # reach its caller rather than resume final delivery or a queued turn.
+            if asyncio.current_task().cancelling():
+                raise
 
     async def _run_agent_track_agent(self, turn_ctx: TurnContext) -> None:
         """Track this agent as running for the session (interrupt support) once it is created — only
@@ -3599,40 +3604,46 @@ class GatewayTurnMixin:
             if task:
                 task.cancel()
 
-        if stream_task:
-            # No stream consumer was created: nothing to flush, cancel instead of waiting out 5s.
-            if not (stream_consumer_holder and stream_consumer_holder[0] is not None):
-                stream_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await stream_task
-            else:
-                await self._await_stream_task(stream_task)
+        try:
+            try:
+                if stream_task:
+                    # No stream consumer was created: nothing to flush, cancel instead of waiting out 5s.
+                    if not (stream_consumer_holder and stream_consumer_holder[0] is not None):
+                        stream_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await stream_task
+                    else:
+                        await self._await_stream_task(stream_task)
+            finally:
+                # Abort + bounded wait for streaming TTS: covers paths where normal finalisation was skipped.
+                _stts_finally = turn_ctx.streaming_tts_consumer_holder[0]
+                # See #60671. Text-flush cancellation must not skip TTS cleanup.
+                if _stts_finally is not None and not _stts_finally.done:
+                    _stts_finally.abort("cleanup")
+                    with suppress(Exception):
+                        await _stts_finally.wait_complete(timeout=2.0)
+        finally:
+            tracking_task.cancel()
+            if session_key:
+                # Release the slot only if this run's generation still owns it (/stop or /new may have
+                # installed its own state).
+                self._release_running_agent_state(session_key, run_generation=turn_ctx.run_generation)
+            if self._draining:
+                self._update_runtime_status("draining")
 
-        # Abort + bounded wait for streaming TTS: covers paths where normal finalisation was skipped.
-        _stts_finally = turn_ctx.streaming_tts_consumer_holder[0]
-        # See #60671.
-        if _stts_finally is not None and not _stts_finally.done:
-            _stts_finally.abort("cleanup")
-            with suppress(Exception):
-                await _stts_finally.wait_complete(timeout=2.0)
-
-        tracking_task.cancel()
-        if session_key:
-            # Release the slot only if this run's generation still owns it (/stop or /new may have
-            # installed its own state).
-            self._release_running_agent_state(session_key, run_generation=turn_ctx.run_generation)
-        if self._draining:
-            self._update_runtime_status("draining")
-
-        for task in (progress_task, log_task, interrupt_monitor, tracking_task, _notify_task):
-            if task:
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    # A background task that died of a real error must not abort the cleanup path.
-                    logger.debug("background turn task failed during cleanup", exc_info=True)
+            for task in (progress_task, log_task, interrupt_monitor, tracking_task, _notify_task):
+                if task:
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        # A background task that died of a real error must not abort the cleanup path.
+                        logger.debug("background turn task failed during cleanup", exc_info=True)
+            # Child-task cancellation is expected above, but must not consume a
+            # new cancellation of this turn while one of those children settles.
+            if asyncio.current_task().cancelling():
+                raise asyncio.CancelledError
 
     async def _run_agent_edit_streamed_message(
         self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc,
@@ -3935,6 +3946,11 @@ class GatewayTurnMixin:
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
+        except asyncio.CancelledError:
+            # The worker may still be unwinding: no normal finish signal is
+            # guaranteed for its text consumer, so do not wait out the flush budget.
+            stream_task.cancel()
+            raise
         finally:
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,

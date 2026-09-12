@@ -6,6 +6,8 @@ Extracted from ``hermes_cli.web_server``; app state and helpers are late-bound t
 """
 
 import concurrent.futures
+import hashlib
+import hmac
 import importlib
 import logging
 import re
@@ -102,12 +104,47 @@ async def _status_active_sessions() -> int:
 
 @router.get("/api/ssh/ownership")
 async def get_ssh_ownership(request: Request):
-    from hermes_cli.web_server import _SSH_OWNER_NONCE
-    _require_token(request)
-    if not _SSH_OWNER_NONCE:
+    """Ownership of this backend, in two forms.
+
+    Without ``challenge``: the token-gated form, returning the nonce, runtime
+    integrity and pid so an already-authenticated desktop can read its own record.
+
+    With ``challenge``: the protocol-2 HMAC form. The desktop proves the backend
+    holds the session token WITHOUT the backend ever disclosing it, and the proof
+    commits to the pid — so a recycled pid cannot inherit a prior proof. This form
+    is exempt from the token gate in ``web_server.auth_middleware`` (the proof is
+    the authentication); the nonce is deliberately NOT echoed back here.
+
+    Read through the module at call time: ``web_server`` owns this state, and
+    tests monkeypatch it there.
+    """
+    from hermes_cli import web_server
+
+    nonce = web_server._SSH_OWNER_NONCE
+    if not nonce:
         raise HTTPException(status_code=404, detail="SSH ownership is not active")
-    return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1,
-            "runtimeIntact": _ssh_runtime_intact()}
+    challenge = request.query_params.get("challenge")
+    if challenge is None:
+        _require_token(request)
+    elif not re.fullmatch(r"[0-9a-f]{64}", challenge):
+        raise HTTPException(status_code=400, detail="Invalid SSH ownership challenge")
+
+    pid = os.getpid()
+    protocol_version = 2
+    response = {"ok": True, "protocolVersion": protocol_version}
+    if challenge is not None:
+        canonical = f"{challenge}:{nonce}:{pid}:{protocol_version}"
+        proof_key = hmac.new(
+            web_server._SESSION_TOKEN.encode(),
+            web_server._SSH_OWNERSHIP_PROOF_LABEL,
+            hashlib.sha256,
+        ).digest()
+        response["proof"] = hmac.new(proof_key, canonical.encode(), hashlib.sha256).hexdigest()
+    else:
+        response["sshOwnerNonce"] = nonce
+        response["runtimeIntact"] = _ssh_runtime_intact()
+        response["pid"] = pid
+    return response
 
 
 @router.get("/api/health")

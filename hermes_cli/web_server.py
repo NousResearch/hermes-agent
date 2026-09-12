@@ -9,6 +9,7 @@ Usage: ``python -m hermes_cli.main web [--port 8080]``.
 from contextlib import asynccontextmanager
 
 import asyncio
+import atexit
 from collections import deque
 import hmac
 import logging
@@ -313,6 +314,7 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
 _SSH_RUNTIME_PURELIB: Optional[Tuple[str, int, int]] = None
 _SSH_RUNTIME_MARKER: Optional[str] = None
+_SSH_OWNERSHIP_PROOF_LABEL = b"hermes-ssh-ownership-v2"
 
 
 def _apply_ssh_session_token(token: str) -> None:
@@ -321,11 +323,54 @@ def _apply_ssh_session_token(token: str) -> None:
         _SESSION_TOKEN = token
 
 
+def _remove_ssh_runtime_marker() -> None:
+    if _SSH_RUNTIME_MARKER is None:
+        return
+    try:
+        os.unlink(_SSH_RUNTIME_MARKER)
+    except OSError:
+        pass
+
+
+def _sweep_stale_ssh_runtime_markers(purelib: str, keep: Optional[str] = None) -> None:
+    prefix = ".hermes-ssh-runtime-"
+    keep_name = os.path.basename(keep) if keep else None
+    try:
+        names = os.listdir(purelib)
+    except OSError:
+        return
+    for name in names:
+        if name == keep_name or not name.startswith(prefix):
+            continue
+        suffix = name[len(prefix) :]
+        if not re.fullmatch(r"[0-9a-f]{16}", suffix):
+            continue
+        path = os.path.join(purelib, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                recorded = fh.readline().strip()
+            pid = int(recorded.split("=", 1)[1])
+            os.kill(pid, 0)
+            continue
+        except ProcessLookupError:
+            pass
+        except (PermissionError, ValueError, IndexError, OSError):
+            continue
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
     global _SSH_OWNER_NONCE, _SSH_RUNTIME_PURELIB, _SSH_RUNTIME_MARKER
-    _SSH_OWNER_NONCE = nonce
+    _remove_ssh_runtime_marker()
+    _SSH_OWNER_NONCE = None
     _SSH_RUNTIME_PURELIB = None
     _SSH_RUNTIME_MARKER = None
+    if nonce and not re.fullmatch(r"[0-9a-f]{16}", nonce):
+        return
+    _SSH_OWNER_NONCE = nonce
     if nonce:
         try:
             purelib = sysconfig.get_paths()["purelib"]
@@ -340,6 +385,7 @@ def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
             with open(marker, "w", encoding="utf-8") as fh:
                 fh.write(f"pid={os.getpid()}\n")
             _SSH_RUNTIME_MARKER = marker
+            _sweep_stale_ssh_runtime_markers(purelib, keep=marker)
         except OSError:
             pass  # read-only site-packages — fall back to the stat snapshot
         try:
@@ -353,9 +399,10 @@ def _ssh_runtime_intact() -> bool:
     if _SSH_RUNTIME_MARKER is not None:
         return os.path.isfile(_SSH_RUNTIME_MARKER)
     # Fallback (read-only site-packages): directory identity snapshot — weaker
-    # (inode reuse) but catches cross-device moves and version-bump paths.
+    # (inode reuse) but catches cross-device moves and version-bump paths. If
+    # neither identity tier initialized, ownership must fail closed.
     if _SSH_RUNTIME_PURELIB is None:
-        return True
+        return False
     purelib, device, inode = _SSH_RUNTIME_PURELIB
     try:
         st = os.stat(purelib)
@@ -363,6 +410,8 @@ def _ssh_runtime_intact() -> bool:
         return False
     return (st.st_dev, st.st_ino) == (device, inode)
 
+
+atexit.register(_remove_ssh_runtime_marker)
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws): always enabled. A module
 # constant (not an inlined True) so the WS endpoints and SPA token injection
@@ -648,6 +697,16 @@ async def auth_middleware(request: Request, call_next):
         and path.startswith("/api/")
         and path not in _PUBLIC_API_PATHS
         and not path.startswith("/api/mcp/oauth/callback/")
+        # SSH ownership challenge: the HMAC proof IS the authentication, so the
+        # caller cannot be required to already hold the token it is proving. Kept
+        # here rather than in _PUBLIC_API_PATHS because that allowlist is
+        # unconditional; this exemption is live only while ownership is active and
+        # only for the challenge form — the token-returning form still gates.
+        and not (
+            _SSH_OWNER_NONCE is not None
+            and path == "/api/ssh/ownership"
+            and "challenge" in request.query_params
+        )
         and not _has_valid_session_token(request)
         and not _has_valid_query_token(request, path)
     ):

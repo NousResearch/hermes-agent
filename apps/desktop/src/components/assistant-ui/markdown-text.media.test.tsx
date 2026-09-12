@@ -79,3 +79,74 @@ describe('MarkdownImage media routing', () => {
     expect(container.querySelector('audio')).toBeNull()
   })
 })
+
+// Regression: MEDIA paths containing spaces (macOS iCloud "Mobile Documents",
+// Chinese directory names like "6 开发项目") used to be truncated at the first
+// space by the MEDIA tag matcher. renderMediaTags now emits a single
+// `[Image: name](#media:%2F…%20…)` link whose href survives remark and resolves
+// back to the full path, so the attachment still renders inline.
+describe('MEDIA links with spaces in the path', () => {
+  afterEach(cleanup)
+
+  const SPACED_PATH = '/Users/me/Library/Mobile Documents/6 开发项目/dashboard/evidence/20260814-backtest-progress.png'
+  const SPACED_DATA_URL = 'data:image/png;base64,c3BhY2VkLXBhdGgtaW1hZ2U='
+
+  const api = vi.fn(async ({ path }: { path: string }) => {
+    if (path.startsWith('/api/fs/read-data-url?')) {
+      return { dataUrl: SPACED_DATA_URL }
+    }
+
+    throw new Error(`unexpected path ${path}`)
+  })
+
+  let originalDesktop: typeof window.hermesDesktop
+
+  beforeEach(() => {
+    api.mockClear()
+    originalDesktop = window.hermesDesktop
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api }
+    })
+    $connection.set({ mode: 'remote', profile: 'remote-work' } as never)
+  })
+
+  afterEach(() => {
+    $connection.set(null)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: originalDesktop
+    })
+  })
+
+  it('resolves the #media: href (percent-encoded spaced path) to the inline image', async () => {
+    render(
+      <MarkdownTextContent
+        isRunning={false}
+        text={`[Image: 20260814-backtest-progress.png](#media:${encodeURIComponent(SPACED_PATH)})`}
+      />
+    )
+
+    const image = await screen.findByRole('img', { name: '20260814-backtest-progress.png' })
+    expect(image.getAttribute('src')).toBe(SPACED_DATA_URL)
+    expect(api).toHaveBeenCalledWith({
+      path: `/api/fs/read-data-url?path=${encodeURIComponent(SPACED_PATH)}`,
+      profile: 'remote-work'
+    })
+  })
+
+  it('does not leave truncated path fragments as plain text', async () => {
+    // This is the exact markdown renderMediaTags emits for a spaced MEDIA path;
+    // the trailing path fragments used to leak into the bubble as "Open …" text.
+    render(
+      <MarkdownTextContent
+        isRunning={false}
+        text={`[Image: 20260814-backtest-progress.png](#media:${encodeURIComponent(SPACED_PATH)})`}
+      />
+    )
+
+    await waitFor(() => expect(screen.queryByRole('img')).not.toBeNull())
+    expect(screen.queryByText(/Mobile Documents/)).toBeNull()
+    expect(screen.queryByText(/Open Mobile/)).toBeNull()
+  })
+})

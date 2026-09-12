@@ -162,3 +162,61 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
 # (landed via #28754 / #28781).  The original PR shipped a duplicate test
 # here; dropped during salvage to avoid two assertions of the same contract.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# initial_status="blocked" must be sticky from birth
+# ---------------------------------------------------------------------------
+#
+# ``create_task(initial_status="blocked")`` is the documented way to park a
+# task for human-ops review ("parks the task directly in the blocked column
+# for human-ops review", commit fb96208892).  Before this fix it wrote only a
+# ``created`` event, so ``recompute_ready`` classified the row as
+# auto-recoverable (the "direct DB manipulation" path preserved by #28712)
+# and promoted AND spawned it on the next dispatcher tick — the human gate
+# the initial status exists to enforce never engaged.
+#
+# Contract: a task created directly in ``blocked`` behaves identically to one
+# blocked via ``block_task`` — sticky across ticks, releasable only by an
+# explicit ``unblock_task``.
+
+
+def test_initial_status_blocked_survives_recompute_ready(kanban_home: Path) -> None:
+    """A task created with initial_status="blocked" must not be auto-promoted.
+
+    Red on base: ``recompute_ready`` promotes the fresh blocked row on the
+    first tick because no ``blocked``/``unblocked`` event exists yet.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="human-ops gate", initial_status="blocked")
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        for _ in range(5):
+            promoted = kb.recompute_ready(conn)
+            assert promoted == 0, (
+                "task created in blocked must not auto-promote — "
+                "the human-ops gate was bypassed"
+            )
+            assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_initial_status_blocked_is_released_by_unblock_task(kanban_home: Path) -> None:
+    """unblock_task is the only exit from an initial_status="blocked" park.
+
+    Pins the release path of the human-ops gate: after an explicit unblock
+    the task resumes its normal lifecycle (ready), like any other
+    sticky-blocked task.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="human-ops gate", initial_status="blocked")
+
+        assert kb.unblock_task(conn, tid) is True
+        assert kb.get_task(conn, tid).status == "ready"
+
+        # The release is durable: subsequent ticks keep it schedulable.
+        conn.execute(
+            "UPDATE tasks SET status = 'todo' WHERE id = ?", (tid,)
+        )
+        conn.commit()
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, tid).status == "ready"

@@ -227,6 +227,25 @@ def test_codex_cooldown_clear_never_touches_root_when_profile_owns_rows(profile_
     assert root_file.read_bytes() == before
 
 
+def test_root_write_through_is_visible_to_the_next_fallback_read(profile_env):
+    """``_save_auth_store(target_path=root)`` must invalidate the mtime memo: a same-tick
+    read-after-write (coarse-mtime filesystems) would otherwise keep serving the stale root."""
+    import os
+    from hermes_cli.auth import _save_auth_store, read_credential_pool
+
+    root_file = profile_env["global"] / "auth.json"
+    _write(root_file, _make_auth_store(pool={"openai-codex": [{"id": "glob", "access_token": "old"}]}))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={"openai-codex": []}))
+    assert read_credential_pool("openai-codex")[0]["access_token"] == "old"  # primes the memo
+    stat = root_file.stat()
+
+    _save_auth_store(_make_auth_store(pool={"openai-codex": [{"id": "glob", "access_token": "new"}]}),
+                     target_path=root_file)
+    os.utime(root_file, ns=(stat.st_atime_ns, stat.st_mtime_ns))  # simulate a same-tick write
+
+    assert read_credential_pool("openai-codex")[0]["access_token"] == "new"
+
+
 # ---------------------------------------------------------------------------
 # Classic mode — no fallback path should ever trigger
 # ---------------------------------------------------------------------------

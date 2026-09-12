@@ -45,12 +45,14 @@ HAS_CRONITER: Optional[bool] = None
 def _ensure_croniter() -> bool:
     """Import croniter on first use; honor a pre-set HAS_CRONITER override."""
     global croniter, HAS_CRONITER
-    if HAS_CRONITER is None:
+    if HAS_CRONITER is None or not callable(croniter):
         try:
             from croniter import croniter as _croniter
+
             croniter = _croniter
             HAS_CRONITER = True
         except ImportError:
+            croniter = None
             HAS_CRONITER = False
     return bool(HAS_CRONITER)
 

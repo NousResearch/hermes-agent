@@ -211,6 +211,10 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
         providers = build_models_payload(
             ctx, probe_custom_providers=force_refresh,
             probe_current_custom_provider=not force_refresh,
+            # Keep providers whose pool is entirely in cooldown visible: limits are
+            # per-model for many providers, so another model may work (#103829) —
+            # same contract as the gateway picker (#66584) and aux pickers (#66624).
+            for_picker=True,
         )["providers"]
     except Exception:
         providers = []

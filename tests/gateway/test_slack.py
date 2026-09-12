@@ -2283,6 +2283,145 @@ class TestMessageRouting:
         assert msg_event.message_id == "1234567890.000001"
 
 
+class TestHiddenThreadParentUpdates:
+    @staticmethod
+    def _event(*, current=None, previous=None):
+        parent = {
+            "type": "message",
+            "user": "U_USER",
+            "text": "old thread parent",
+            "ts": "1234567890.000001",
+            "reply_count": 2,
+            "latest_reply": "1234567899.000002",
+            "replies": [
+                {"user": "U_USER", "ts": "1234567899.000001"},
+                {"user": "U_USER", "ts": "1234567899.000002"},
+            ],
+        }
+        if current:
+            parent.update(current)
+        prior = {
+            "type": "message",
+            "user": "U_USER",
+            "text": "old thread parent",
+            "ts": "1234567890.000001",
+            "reply_count": 1,
+            "latest_reply": "1234567899.000001",
+            "replies": [{"user": "U_USER", "ts": "1234567899.000001"}],
+        }
+        if previous is not None:
+            prior = previous
+        return {
+            "type": "message",
+            "subtype": "message_changed",
+            "hidden": True,
+            "channel": "D123",
+            "channel_type": "im",
+            "team": "T123",
+            "ts": "1234567899.000003",
+            "event_ts": "1234567899.000003",
+            "message": parent,
+            "previous_message": prior,
+        }
+
+    @pytest.mark.asyncio
+    async def test_cold_restart_parent_update_cannot_route_store_or_interrupt(
+        self, adapter
+    ):
+        """A metadata-only parent update must stop before any gateway side effect."""
+        adapter._processed_message_ts.clear()
+        event = self._event(
+            current={
+                "text": "Following up on the thread: please post the test results here."
+            }
+        )
+        event["previous_message"]["text"] = event["message"]["text"]
+
+        session_store = MagicMock()
+        active_agent = MagicMock()
+        busy_ack = AsyncMock()
+
+        async def gateway_boundary(message_event):
+            session_store.append_message("active-slack-thread", "user", message_event.text)
+            active_agent.interrupt(message_event.text)
+            await busy_ack()
+
+        adapter.handle_message = AsyncMock(side_effect=gateway_boundary)
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_not_awaited()
+        session_store.append_message.assert_not_called()
+        active_agent.interrupt.assert_not_called()
+        busy_ack.assert_not_awaited()
+        assert adapter._processed_message_ts == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "case, allowed",
+        [("text", True), ("mention", True), ("visible-envelope", True),
+         ("non-parent", True), ("missing", False), ("malformed", False),
+         ("empty", False), ("partial", False), ("explicit-edit", True),
+         ("old-edit", False), ("outer-ts-edit", True), ("empty-fields", False)]
+        + [(f"{field}-{change}", True)
+           for field in ("blocks", "attachments", "files")
+           for change in ("add", "remove", "edit")],
+    )
+    async def test_hidden_parent_visible_edits_and_ambiguous_snapshots(
+        self, adapter, case, allowed
+    ):
+        event = self._event()
+        current, previous = event["message"], event["previous_message"]
+        if case == "text":
+            current["text"] = "edited parent"
+        elif case == "mention":
+            adapter.config.extra["require_mention"] = True
+            event.update(channel="C123", channel_type="channel")
+            current["text"] = "<@U_BOT> old thread parent"
+        elif case == "visible-envelope":
+            event["hidden"] = False
+        elif case == "non-parent":
+            for snapshot in (current, previous):
+                for field in ("reply_count", "latest_reply", "replies"):
+                    snapshot.pop(field)
+        elif case == "missing":
+            event.pop("previous_message")
+        elif case in ("malformed", "empty", "partial"):
+            event["previous_message"] = {
+                "malformed": "bad", "empty": {}, "partial": {"ts": current["ts"]}
+            }[case]
+        elif case in ("explicit-edit", "old-edit", "outer-ts-edit"):
+            event["previous_message"] = None
+            current["edited"] = {
+                "ts": current["ts"] if case == "old-edit" else event["event_ts"]
+            }
+            if case == "outer-ts-edit":
+                event.pop("event_ts")
+        elif case == "empty-fields":
+            current.update(blocks=[], attachments=None, files=[])
+            previous.update(blocks=None, attachments=[], files={})
+        else:
+            field, change = case.split("-")
+            values = {
+                "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "visible"}}],
+                "attachments": [{"text": "visible"}],
+                "files": [{"id": "F_TEST", "name": "visible.txt"}],
+            }
+            if change in ("add", "edit"):
+                current[field] = values[field]
+            if change in ("remove", "edit"):
+                previous[field] = [{"text": "previous visible payload"}]
+
+        assert not adapter._processed_message_ts
+        await adapter._handle_slack_message(event)
+        if allowed:
+            adapter.handle_message.assert_awaited_once()
+            assert adapter.handle_message.await_args.args[0].message_id == current["ts"]
+        else:
+            adapter.handle_message.assert_not_awaited()
+            assert not adapter._processed_message_ts
+
+
 # ---------------------------------------------------------------------------
 # TestSendTyping — assistant.threads.setStatus
 # ---------------------------------------------------------------------------

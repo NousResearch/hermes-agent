@@ -3911,6 +3911,10 @@ class SlackAdapter(BasePlatformAdapter):
         updated_message = event.get("message")
         if not isinstance(updated_message, dict):
             return None
+        from .adapter_events import _is_hidden_thread_parent_metadata_update
+
+        if _is_hidden_thread_parent_metadata_update(event, updated_message):
+            return None
         original_message_ts = str(updated_message.get("ts") or "")
         if original_message_ts and original_message_ts in self._processed_message_ts:
             return None

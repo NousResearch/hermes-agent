@@ -1789,6 +1789,11 @@ DEFAULT_CONFIG = {
         # (sys.executable): max isolation, project deps/relative paths won't work. Env scrubbing
         # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.
         "mode": "project",
+        # Off by default. true exposes every discovery-time readOnlyHint=true MCP tool;
+        # a list narrows that set to exact raw server names or registry tool names.
+        "expose_mcp_tools": False,
+        # Separate per-cell sub-budget within the overall tool-call cap.
+        "max_mcp_tool_calls": 10,
         # Session kernels are always on locally (`kernel_mode` is ignored) and remotely
         # (tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
         # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state

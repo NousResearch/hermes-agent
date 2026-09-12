@@ -45,9 +45,17 @@ def _normalize_server_trust(value: Any) -> str:
 
 
 def _annotation_read_only_hint(mcp_tool: Any) -> bool:
-    """True only when annotations (SDK object or cache dict) carry ``readOnlyHint is True``; unknown = write-capable."""
+    """True only when annotations carry an exact read-only hint.
+
+    MCP SDK 2.x exposes model attributes in snake_case while cached JSON keeps
+    the protocol's camelCase spelling. Missing, malformed, and truthy non-bool
+    values all remain write-capable.
+    """
     annotations = getattr(mcp_tool, "annotations", None)
-    hint = annotations.get("readOnlyHint") if isinstance(annotations, dict) else getattr(annotations, "readOnlyHint", None)
+    if isinstance(annotations, dict):
+        hint = annotations.get("readOnlyHint", annotations.get("read_only_hint"))
+    else:
+        hint = mcp_field(annotations, "read_only_hint", "readOnlyHint")
     return hint is True
 
 
@@ -61,16 +69,20 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: List[Any]
         hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
 
 
-def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
-    """Remember the exact raw MCP server that registered *tool_name*."""
+def _track_mcp_tool_server(
+    tool_name: str, server_name: str, *, read_only: bool = False
+) -> None:
+    """Remember exact MCP provenance and read-only status for *tool_name*."""
     with _core._lock:
         _core._mcp_tool_server_names[tool_name] = server_name
+        _core._mcp_tool_read_only[tool_name] = read_only is True
 
 
 def _forget_mcp_tool_server(tool_name: str) -> None:
     """Forget MCP server provenance for a deregistered tool."""
     with _core._lock:
         _core._mcp_tool_server_names.pop(tool_name, None)
+        _core._mcp_tool_read_only.pop(tool_name, None)
 
 
 def _server_key_for_task(server) -> object:
@@ -229,6 +241,7 @@ class _Candidate:
     origin: str
     schema: dict
     handler: Callable
+    read_only: bool = False
 
     @property
     def is_utility(self) -> bool:
@@ -247,7 +260,10 @@ def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[
         _schema._scan_mcp_description(name, t.name, t.description or "")
         schema = _schema._convert_mcp_schema(name, t)
         handler = _handlers._make_tool_handler(name, t.name, tool_timeout)
-        out.append(_Candidate(schema["name"], f"tool {t.name!r}", schema, handler))
+        out.append(_Candidate(
+            schema["name"], f"tool {t.name!r}", schema, handler,
+            read_only=_annotation_read_only_hint(t),
+        ))
     return out
 
 
@@ -331,11 +347,16 @@ def _register_candidates(name: str, candidates: List[_Candidate], *, check_fn: C
                 logger.warning("MCP server '%s': %s (→ '%s') collides with built-in tool in toolset '%s' — skipping to "
                                "preserve built-in", name, c.origin, c.registry_name, existing_toolset)
             continue
+        # A refresh can replace this server's existing handler. Clear the old
+        # classification before replacement so readOnlyHint true→false fails
+        # closed even if the registry rejects the new candidate.
+        if existing_toolset == toolset_name:
+            _forget_mcp_tool_server(c.registry_name)
         registry.register(
             name=c.registry_name, toolset=toolset_name, schema=c.schema, handler=c.handler, check_fn=check_fn,
             is_async=False, description=c.schema.get("description") or "", scope=scope_value)
         if registry.get_toolset_for_tool(c.registry_name) == toolset_name:
-            _track_mcp_tool_server(c.registry_name, name)
+            _track_mcp_tool_server(c.registry_name, name, read_only=c.read_only)
             if scope_value is not None:
                 with _core._lock:
                     _core._server_tool_scopes.setdefault(key, set()).add(scope_value)

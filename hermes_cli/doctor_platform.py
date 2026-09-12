@@ -129,11 +129,18 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
         else:
             check_info(f"{name}: rollback journal mode ({size}{', not exposed' if vulnerable else ''})")
     if unapplied:
-        check_info("To apply journal_mode=DELETE: stop every process holding the database — "
-                   "`hermes gateway stop --all` (every profile's gateway) AND `hermes dashboard --stop` "
-                   "(dashboard and `hermes serve`, a separate lifecycle) — then run a one-time offline "
-                   "`PRAGMA journal_mode=DELETE` on the file. The dashboard is a database holder too "
-                   "(#100896): converting while it is up leaves the setting unapplied.")
+        check_info("To apply journal_mode=DELETE every process holding the database must be stopped "
+                   "first, then run a one-time offline `PRAGMA journal_mode=DELETE` on the file. "
+                   "`hermes gateway stop --all` (every profile's gateway) and `hermes dashboard --stop` "
+                   "(dashboard and `hermes serve`, a separate lifecycle) cover manually started ones; "
+                   "the dashboard is a database holder too (#100896). They are NOT enough on their own: "
+                   "`--stop` signals PIDs rather than stopping their owner, so a supervised dashboard "
+                   "comes back (systemd `hermes-dashboard.service`, or the container's s6 `dashboard` "
+                   "service), and a Desktop-owned backend is deliberately excluded from that path "
+                   "(`HERMES_DESKTOP_CHILD_PID`). Stop those through their owner — `systemctl --user "
+                   "stop hermes-dashboard`, `s6-svc -d /run/service/dashboard`, or quit Hermes Desktop "
+                   "— and confirm nothing still holds the file before converting; a live holder leaves "
+                   "the setting unapplied.")
     if exposed:
         check_info(f"To clear the exposure: {_wal_reset_repair_hint()}")
 

@@ -487,6 +487,12 @@ class TestConfiguredDeleteNeverApplied:
         # dashboard still holds the file, leaving the conversion unapplied (review finding).
         assert "gateway stop --all" in out
         assert "dashboard --stop" in out
+        # ...and that those two are NOT presented as sufficient: `--stop` signals PIDs, so a
+        # supervised dashboard respawns and a Desktop-owned backend is excluded outright
+        # (dashboard_procs._kill_stale_dashboard_processes passes _exclude_pids_from_env()).
+        assert "systemctl --user stop hermes-dashboard" in out
+        assert "s6-svc" in out
+        assert "HERMES_DESKTOP_CHILD_PID" in out
 
     def test_rollback_on_disk_with_delete_configured_is_quiet(self, tmp_path, capsys, monkeypatch):
         """The setting DID apply — this is the healthy state and must not nag."""

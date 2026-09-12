@@ -53,6 +53,16 @@ def _model_usage(db, session_id):
     return [dict(r) for r in rows]
 
 
+def _daily_usage(db, session_id):
+    with db._lock:
+        rows = db._conn.execute(
+            "SELECT day, input_tokens, api_call_count FROM session_daily_usage"
+            " WHERE session_id = ? ORDER BY day",
+            (session_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # =========================================================================
 # Ordering
 # =========================================================================
@@ -114,6 +124,31 @@ class TestOrdering:
 
 
 class TestCoalescing:
+    def test_queue_preserves_activity_day_across_delayed_midnight_flush(self, db, monkeypatch):
+        import hermes_state_usage
+
+        class AliveWriter:
+            @staticmethod
+            def is_alive():
+                return True
+
+        db.create_session("s-midnight", "test")
+        db._token_writer_thread = AliveWriter()
+        try:
+            monkeypatch.setattr(hermes_state_usage.time, "time", lambda: 1767311940.0)
+            db.queue_token_counts("s-midnight", input_tokens=10, api_call_count=1)
+            monkeypatch.setattr(hermes_state_usage.time, "time", lambda: 1767312060.0)
+            db.queue_token_counts("s-midnight", input_tokens=20, api_call_count=1)
+        finally:
+            db._token_writer_thread = None
+        monkeypatch.setattr(hermes_state_usage.time, "time", lambda: 1767398460.0)
+        assert db.flush_token_counts()
+
+        assert _daily_usage(db, "s-midnight") == [
+            {"day": "2026-01-01", "input_tokens": 10, "api_call_count": 1},
+            {"day": "2026-01-02", "input_tokens": 20, "api_call_count": 1},
+        ]
+
     def test_backlog_coalesces_and_sums_match(self, db):
         """When a backlog forms, same-route deltas merge into fewer applies
         while totals stay exact."""
@@ -536,7 +571,9 @@ class TestCoalesceFieldContract:
             set(db._TOKEN_DELTA_SUM_FIELDS)
             | set(db._TOKEN_DELTA_COST_FIELDS)
             | set(db._TOKEN_DELTA_ROUTE_FIELDS)
-            | {"absolute"}  # control flag: absolute deltas never merge
+            # ``absolute`` disables merging; ``usage_day`` is explicit
+            # coalescing-key metadata.
+            | {"absolute", "usage_day"}
         )
 
         unclassified = params - classified

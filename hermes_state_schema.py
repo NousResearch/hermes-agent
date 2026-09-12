@@ -1017,6 +1017,28 @@ class SessionSchemaMixin:
         if current_version < 25:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
+        if current_version < 31:
+            # Historical aggregates have no activity-day grain. Preserve them on the only
+            # day known for certain; all future calls are recorded on their actual UTC day.
+            cursor.execute("""INSERT OR IGNORE INTO session_daily_usage (
+                       session_id, day, api_call_count, input_tokens, output_tokens,
+                       cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                       estimated_cost_usd, actual_cost_usd
+                   )
+                   SELECT id, date(started_at, 'unixepoch'), COALESCE(api_call_count, 0),
+                          COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
+                          COALESCE(cache_read_tokens, 0), COALESCE(cache_write_tokens, 0),
+                          COALESCE(reasoning_tokens, 0), COALESCE(estimated_cost_usd, 0),
+                          COALESCE(actual_cost_usd, 0)
+                   FROM sessions
+                   WHERE COALESCE(api_call_count, 0) != 0
+                      OR COALESCE(input_tokens, 0) != 0
+                      OR COALESCE(output_tokens, 0) != 0
+                      OR COALESCE(cache_read_tokens, 0) != 0
+                      OR COALESCE(cache_write_tokens, 0) != 0
+                      OR COALESCE(reasoning_tokens, 0) != 0
+                      OR COALESCE(estimated_cost_usd, 0) != 0
+                      OR COALESCE(actual_cost_usd, 0) != 0""")
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:
             # v29: cron sessions leave the trigram substring index (they stay in the word index);

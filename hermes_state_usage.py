@@ -17,6 +17,10 @@ logger = logging.getLogger("hermes_state")
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
 
 
+def _utc_usage_day() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time()))
+
+
 def _token_update_sql(delta: bool) -> str:
     """``UPDATE sessions`` for one usage report: *delta* adds to the stored counters (CLI
     per-call path), otherwise sets them (gateway cumulative path). Cost/route columns
@@ -70,6 +74,21 @@ _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
                    cost_source = COALESCE(excluded.cost_source, cost_source),
                    last_seen = excluded.last_seen"""
 
+_DAILY_USAGE_UPSERT_SQL = """INSERT INTO session_daily_usage (
+                   session_id, day, api_call_count, input_tokens, output_tokens,
+                   cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                   estimated_cost_usd, actual_cost_usd
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, day) DO UPDATE SET
+                   api_call_count = api_call_count + excluded.api_call_count,
+                   input_tokens = input_tokens + excluded.input_tokens,
+                   output_tokens = output_tokens + excluded.output_tokens,
+                   cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+                   cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+                   reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
+                   estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
+                   actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd"""
+
 
 # Kwargs forwarded verbatim from update_token_counts / record_auxiliary_usage into
 # _record_model_usage (the per-route attribution row).
@@ -109,6 +128,7 @@ class SessionUsageMixin:
         """Enqueue a token/cost delta for the background writer (same kwargs as
         :meth:`update_token_counts`). After close() stopped the writer, falls back to the
         synchronous path and may raise."""
+        kwargs["usage_day"] = _utc_usage_day()
         with self._token_queue_cond:
             thread = self._token_writer_thread
             writer_alive = thread is not None and thread.is_alive()
@@ -218,7 +238,11 @@ class SessionUsageMixin:
         for session_id, kwargs in batch:
             key = None
             if not kwargs.get("absolute"):
-                key = (session_id, *(kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS))
+                key = (
+                    session_id,
+                    kwargs.get("usage_day"),
+                    *(kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS),
+                )
             if groups and key is not None and groups[-1][0] == key:
                 merged = groups[-1][2]
                 for f in self._TOKEN_DELTA_SUM_FIELDS:
@@ -278,10 +302,12 @@ class SessionUsageMixin:
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
+        usage_day: Optional[str]=None,
     ) -> None:
         """Update token counters and backfill model if unset. *absolute*=False increments
         (per-API-call deltas, CLI path); *absolute*=True sets directly (gateway path,
         where the cached agent holds cumulative totals)."""
+        usage_day = usage_day or _utc_usage_day()
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         # Ensure the row exists: under concurrent load create_session() may have failed on
         # locking, and the UPDATE would silently affect 0 rows.
@@ -310,7 +336,10 @@ class SessionUsageMixin:
 
         def _do(conn):
             row = conn.execute(
-                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?", (session_id,),
+                """SELECT model, billing_provider, api_call_count, input_tokens, output_tokens,
+                          cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                          estimated_cost_usd, actual_cost_usd
+                   FROM sessions WHERE id = ?""", (session_id,),
             ).fetchone()
             existing = dict(row) if row is not None else {}
             # create_session records the requested route before any API call. If that fails
@@ -327,6 +356,33 @@ class SessionUsageMixin:
                        billing_base_url = ?, billing_mode = ?
                        WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
             conn.execute(sql, params)
+            daily_values = {
+                "api_call_count": api_call_count,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
+                "reasoning_tokens": reasoning_tokens,
+                "estimated_cost_usd": float(estimated_cost_usd or 0.0),
+                "actual_cost_usd": (
+                    existing.get("actual_cost_usd") or 0.0
+                    if absolute and actual_cost_usd is None
+                    else float(actual_cost_usd or 0.0)
+                ),
+            }
+            if absolute:
+                daily_values = {
+                    key: value - (existing.get(key) or 0)
+                    for key, value in daily_values.items()
+                }
+            if any(daily_values.values()):
+                conn.execute(
+                    _DAILY_USAGE_UPSERT_SQL,
+                    (session_id, usage_day, *(daily_values[key] for key in (
+                        "api_call_count", "input_tokens", "output_tokens", "cache_read_tokens",
+                        "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
+                    ))),
+                )
             if record_model_usage:
                 self._record_model_usage(conn, session_id, **usage)
         self._execute_write(_do)

@@ -83,7 +83,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     try:
         cutoff = time.time() - (days * 86400)
         daily = _rows(db, """
-            SELECT date(started_at, 'unixepoch') as day,
+            SELECT day,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,
@@ -92,7 +92,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
                    COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
                    COUNT(*) as sessions,
                    SUM(COALESCE(api_call_count, 0)) as api_calls
-            FROM sessions WHERE started_at > ?
+            FROM session_daily_usage WHERE day >= date(?, 'unixepoch')
             GROUP BY day ORDER BY day
         """, cutoff)
 
@@ -121,9 +121,9 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(reasoning_tokens) as total_reasoning,
                    COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
-                   COUNT(*) as total_sessions,
+                   COUNT(DISTINCT session_id) as total_sessions,
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
-            FROM sessions WHERE started_at > ?
+            FROM session_daily_usage WHERE day >= date(?, 'unixepoch')
         """, cutoff)[0]
         usage = InsightsEngine(db).get_usage_breakdown(days=days)
 

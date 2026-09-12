@@ -1269,6 +1269,83 @@ class TestMatrixDeviceIdConfig:
 class TestMatrixSyncLoop:
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["result", "exception"])
+    @pytest.mark.parametrize("code", ["M_UNKNOWN_TOKEN", "M_MISSING_TOKEN", "M_UNAUTHORIZED"])
+    async def test_message_only_auth_errors_stop_without_cursor_reset(self, kind, code):
+        adapter = _make_adapter()
+        calls = []
+
+        async def sync(**kwargs):
+            calls.append(kwargs["since"])
+            if len(calls) > 1:
+                adapter._closing = True
+                return {"next_batch": "unexpected-retry"}
+            message = f"sync failed ({code}): credentials rejected"
+            if kind == "exception":
+                raise RuntimeError(message)
+            return types.SimpleNamespace(message=message)
+
+        client = types.SimpleNamespace(
+            sync=AsyncMock(side_effect=sync), handle_sync=MagicMock(return_value=[]),
+            sync_store=types.SimpleNamespace(
+                get_next_batch=AsyncMock(return_value="stored"), put_next_batch=AsyncMock()))
+        adapter._client = client
+        with patch("plugins.platforms.matrix.adapter.asyncio.sleep", AsyncMock()) as sleep:
+            await adapter._sync_loop()
+        assert calls == ["stored"]
+        client.sync_store.put_next_batch.assert_not_awaited()
+        client.handle_sync.assert_not_called()
+        sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cursor_recovery_reconciles_rooms_from_real_sdk_snapshot(self):
+        pytest.importorskip("mautrix.client", reason="Requires optional Matrix dependencies")
+        from mautrix.client import Client
+        from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
+        from mautrix.errors import MForbidden
+        from plugins.platforms.matrix.adapter import _CryptoStateStore
+
+        adapter = _make_adapter()
+        departed, kept, new = "!departed:example.org", "!kept:example.org", "!new:example.org"
+        adapter._joined_rooms.update([departed, kept])
+        adapter._dm_rooms.update({departed: True, kept: True})
+        adapter._room_identities[departed] = MagicMock()
+        adapter._room_identity_cached_at[departed] = time.monotonic()
+        state = MemoryStateStore()
+        store = MemorySyncStore(next_batch="rejected")
+        client = Client(mxid="@bot:example.org", base_url="https://example.org",
+                        state_store=state, sync_store=store)
+        adapter._client = client
+        crypto_store = _CryptoStateStore(state, adapter._joined_rooms)
+        cursors = []
+
+        async def request(method, path, **kwargs):
+            cursor = kwargs["query_params"].get("since")
+            cursors.append(cursor)
+            if len(cursors) == 1:
+                raise MForbidden(403, "Access Denied")
+            if cursor is None:
+                # A fresh snapshot need not include rooms left since the rejected cursor.
+                return {"next_batch": "fresh", "rooms": {"join": {kept: {}, new: {}}}}
+            adapter._closing = True
+            return {"next_batch": "incremental", "rooms": {"join": {new: {}}}}
+
+        try:
+            with patch.object(client.api, "request", AsyncMock(side_effect=request)), \
+                 patch.object(client, "get_account_data", AsyncMock(side_effect=RuntimeError("unavailable"))), \
+                 patch("plugins.platforms.matrix.adapter.asyncio.sleep", AsyncMock()):
+                await adapter._sync_loop()
+            assert cursors == ["rejected", None, "fresh"]
+            assert await store.get_next_batch() == "incremental"
+            # The later incremental response must preserve the unchanged kept room.
+            assert set(await crypto_store.find_shared_rooms("@alice:example.org")) == {kept, new}
+            assert adapter._dm_rooms == {kept: True}
+            assert departed not in adapter._room_identities
+            assert departed not in adapter._room_identity_cached_at
+        finally:
+            await client.api.session.close()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("message", ["NOT_M_FORBIDDEN", "M_FORBIDDEN_EXTRA"])
     async def test_forbidden_text_requires_errcode_boundaries(self, message):
         adapter = _make_adapter()
@@ -1348,7 +1425,7 @@ class TestMatrixSyncLoop:
         client.add_event_handler(EventType.ALL, client._update_state, wait_sync=True)
         event = {"sender": user, "event_id": "$leave", "origin_server_ts": 1,
                  "type": "m.room.member", "state_key": user, "content": {"membership": "leave"}}
-        payload = {"rooms": {"leave": {room: {"timeline": {"events": [event,
+        payload = {"rooms": {"join": {"!kept:example.org": {}}, "leave": {room: {"timeline": {"events": [event,
             {"sender": user, "event_id": "$old", "origin_server_ts": 1,
              "type": "m.room.message", "content": {"msgtype": "m.text", "body": "old"}},
             {"sender": user, "event_id": "$encrypted", "origin_server_ts": 1,

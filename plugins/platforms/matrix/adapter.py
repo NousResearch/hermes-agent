@@ -1297,7 +1297,6 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             sync_data = await client.sync(timeout=10000, full_state=True)
             if isinstance(sync_data, dict):
-                self._joined_rooms.clear()
                 await self._absorb_sync(client, sync_data, initial=True)
             else:
                 logger.warning("Matrix: initial sync returned unexpected type %s", type(sync_data).__name__)
@@ -1855,8 +1854,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 return str(value).upper()
             message = getattr(error, "message", None)
             text = message if isinstance(message, str) else str(error)
-            match = re.search(r"\bM_FORBIDDEN\b", text, re.IGNORECASE)
-            return "M_FORBIDDEN" if match else ""
+            match = re.search(
+                r"\b(M_FORBIDDEN|M_UNKNOWN_TOKEN|M_MISSING_TOKEN|M_UNAUTHORIZED)\b",
+                text, re.IGNORECASE,
+            )
+            return match.group(1).upper() if match else ""
 
         def _is_permanent_sync_auth_error(error: Any) -> bool:
             if isinstance(error, dict):
@@ -1928,7 +1930,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     return
 
                 if isinstance(sync_data, dict):
-                    next_batch = await self._absorb_sync(client, sync_data) or next_batch
+                    next_batch = await self._absorb_sync(client, sync_data, initial=not next_batch) or next_batch
                     await asyncio.sleep(0)  # let fresh invite joins start before the next sync
             except asyncio.CancelledError:
                 return
@@ -1956,13 +1958,19 @@ class MatrixAdapter(BasePlatformAdapter):
         to-device key shares queued while offline."""
         self._last_sync_ts = time.time()
         rooms_join = sync_data.get("rooms", {}).get("join", {})
+        rooms_leave = set(sync_data.get("rooms", {}).get("leave", {}))
+        if initial:
+            # A sync without since is a fresh snapshot, including after cursor
+            # recovery. Departed rooms may be absent rather than listed in leave.
+            rooms_leave.update(self._joined_rooms.difference(rooms_join))
+            rooms_leave.update(self._dm_rooms.keys() - rooms_join.keys())
+            self._joined_rooms.clear()  # preserve the crypto store's shared set
         if rooms_join or initial:
             self._joined_rooms.update(rooms_join.keys())
             self._invalidate_room_identities()
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
         if nb:
             await client.sync_store.put_next_batch(nb)
-        rooms_leave = sync_data.get("rooms", {}).get("leave", {})
         self._joined_rooms.difference_update(rooms_leave)
         if initial:
             logger.info("Matrix: initial sync complete, joined %d rooms", len(self._joined_rooms))

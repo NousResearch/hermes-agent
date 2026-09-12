@@ -1313,7 +1313,10 @@ def create_task(
             # allow_nested: graph builders compose create_task under one outer
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
-                task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
+                task_status, tenant = initial_task_state(
+                    conn, parents, initial_status, triage, tenant,
+                    creator_task_id=creator_task_id,
+                )
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
                 if project_obj is not None and workspace_kind == "worktree":
@@ -1582,8 +1585,12 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(f"linking {parent_id} -> {child_id} would create a cycle")
         _link(conn, parent_id, child_id)
-        # If child was ready but parent is not yet done, demote child to todo.
-        if _task_status(conn, parent_id) != "done":
+        # If child was ready but parent is not yet done, demote child to todo
+        # — unless the parent is only the child's creator (provenance, #106994).
+        if (
+            _task_status(conn, parent_id) != "done"
+            and _creator_task_id_from_created_event(conn, child_id) != parent_id
+        ):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'", (child_id,),
             )
@@ -2030,12 +2037,7 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?", (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if _parents_satisfied(conn, task_id):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
@@ -2068,15 +2070,36 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
 
 # --- Claim / complete / block ---
 
+def _creator_task_id_from_created_event(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[str]:
+    """Provenance creator from the ``created`` event; None when missing/unparseable."""
+    event = _latest_event(conn, task_id, "created")
+    if event is None:
+        return None
+    creator = _json_dict(_row_get(event, "payload")).get("creator_task_id")
+    if isinstance(creator, str):
+        creator = creator.strip()
+        if creator:
+            return creator
+    return None
+
+
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return whether every direct parent is terminal for dependency gating."""
+    """Return whether every direct parent is terminal for dependency gating.
+
+    A parent that is also this task's ``creator_task_id`` is provenance only
+    and does not block readiness (#106994). Missing/unparseable creator
+    payload keeps the old gate (fail-open).
+    """
+    creator = _creator_task_id_from_created_event(conn, task_id)
     return conn.execute(
-        # Check if this task has children that still need the workspace. If any child is not yet
-        # done/archived, defer cleanup so the child can read handoff artifacts from the workspace (#33774).
         "SELECT 1 FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
         "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
+        "AND p.status NOT IN ('done', 'archived') "
+        "AND (? IS NULL OR l.parent_id != ?) "
+        "LIMIT 1", (task_id, creator, creator),
     ).fetchone() is None
 
 

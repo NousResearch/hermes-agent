@@ -129,6 +129,17 @@ function readFileDisplayTarget(args: Record<string, unknown>, result: Record<str
   return [fileEditBasename(path), lineLabel].filter(Boolean).join(' ')
 }
 
+/** Linked skill file. Empty / missing / SKILL.md is an instruction load. */
+export function skillViewResourcePath(args: Record<string, unknown>): string {
+  const filePath = firstStringField(args, ['file_path'])
+
+  if (!filePath || fileEditBasename(filePath).toLowerCase() === 'skill.md') {
+    return ''
+  }
+
+  return filePath
+}
+
 // The real command, preferring the actual argument over the backend's
 // display preview. `context` is a *summarized* preview ("sleep 70 + 2
 // commands") the gateway sends on tool.start before real args arrive — fine
@@ -200,6 +211,7 @@ const TOOL_META: Record<ToolTitleKey, ToolMetaSpec> = {
     icon: 'search',
     tone: 'agent'
   },
+  skill_view: { icon: 'files', tone: 'agent' },
   terminal: {
     icon: 'terminal',
     tone: 'terminal'
@@ -1363,6 +1375,32 @@ function dynamicTitle(
     return target
       ? titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, target))
       : fallback
+  }
+
+  if (part.toolName === 'skill_view') {
+    const name = firstStringField(args, ['name'])
+    const resourcePath = skillViewResourcePath(args)
+    const failed =
+      part.isError || result.success === false || result.ok === false || Boolean(firstStringField(result, ['error']))
+
+    if (failed && part.result !== undefined) {
+      return name ? { title: name } : fallback
+    }
+
+    if (resourcePath) {
+      const action = verb(translateNow('assistant.tool.actions.reading'), translateNow('assistant.tool.actions.read'))
+      const target = name ? `${fileEditBasename(resourcePath)} (${name})` : fileEditBasename(resourcePath)
+
+      return titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, target))
+    }
+
+    if (!name) {
+      return fallback
+    }
+
+    const action = verb(translateNow('assistant.tool.actions.loading'), translateNow('assistant.tool.actions.loaded'))
+
+    return titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, name))
   }
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {

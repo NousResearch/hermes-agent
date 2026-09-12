@@ -3367,7 +3367,9 @@ export const ja = defineLocale({
         ran: '実行完了',
         running: '実行中',
         ranCode: 'コード実行完了',
-        runningCode: 'スクリプト作成中'
+        runningCode: 'スクリプト作成中',
+        loaded: '読み込み完了',
+        loading: '読み込み中'
       },
       prefixes: {
         browser: 'ブラウザー',
@@ -3427,6 +3429,7 @@ export const ja = defineLocale({
           pending: 'セッション履歴を検索中',
           pendingAction: '検索中'
         },
+        skill_view: { done: 'スキルを読み込みました', pending: 'スキルを読み込み中', pendingAction: '読み込み中' },
         terminal: { done: 'コマンドを実行しました', pending: 'コマンドを実行中', pendingAction: '実行中' },
         todo: { done: 'Todo を更新しました', pending: 'Todo を更新中', pendingAction: '更新中' },
         vision_analyze: { done: '画像を分析しました', pending: '画像を分析中', pendingAction: '分析中' },

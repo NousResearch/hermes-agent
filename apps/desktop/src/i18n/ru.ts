@@ -3674,7 +3674,9 @@ export const ru = defineLocale({
         ran: 'Выполнено',
         running: 'Выполняется',
         ranCode: 'Код выполнен',
-        runningCode: 'Скриптинг'
+        runningCode: 'Скриптинг',
+        loaded: 'Загружено',
+        loading: 'Загружаю'
       },
       prefixes: {
         browser: 'Браузер',
@@ -3726,6 +3728,7 @@ export const ru = defineLocale({
           pending: 'Ищу в истории сеансов',
           pendingAction: 'Ищу'
         },
+        skill_view: { done: 'Навык загружен', pending: 'Загружаю навык', pendingAction: 'Загружаю' },
         terminal: { done: 'Команда выполнена', pending: 'Выполняю команду', pendingAction: 'Выполняю' },
         todo: { done: 'Todo обновлены', pending: 'Обновляю todo', pendingAction: 'Обновляю' },
         vision_analyze: {

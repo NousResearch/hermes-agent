@@ -2899,7 +2899,9 @@ export const ar = defineLocale({
         ran: 'تم التشغيل',
         running: 'جار التشغيل',
         ranCode: 'تم تشغيل الكود',
-        runningCode: 'جار البرمجة'
+        runningCode: 'جار البرمجة',
+        loaded: 'تم التحميل',
+        loading: 'جار التحميل'
       },
       prefixes: {
         browser: 'المتصفح',
@@ -2998,6 +3000,11 @@ export const ar = defineLocale({
           done: 'تم البحث في سجل الجلسة',
           pending: 'جار البحث في سجل الجلسة',
           pendingAction: 'جار البحث'
+        },
+        skill_view: {
+          done: 'تم تحميل المهارة',
+          pending: 'جار تحميل المهارة',
+          pendingAction: 'جار التحميل'
         },
         terminal: {
           done: 'تم تشغيل الأمر',

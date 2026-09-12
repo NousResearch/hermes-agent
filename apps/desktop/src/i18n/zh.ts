@@ -4069,7 +4069,9 @@ export const zh = defineLocale({
         ran: '已运行',
         running: '正在运行',
         ranCode: '已运行代码',
-        runningCode: '正在编写脚本'
+        runningCode: '正在编写脚本',
+        loaded: '已加载',
+        loading: '正在加载'
       },
       prefixes: {
         browser: '浏览器',
@@ -4101,6 +4103,7 @@ export const zh = defineLocale({
         read_file: { done: '已读取文件', pending: '正在读取文件', pendingAction: '正在读取' },
         search_files: { done: '已搜索文件', pending: '正在搜索文件', pendingAction: '正在搜索' },
         session_search_recall: { done: '已搜索会话历史', pending: '正在搜索会话历史', pendingAction: '正在搜索' },
+        skill_view: { done: '已加载技能', pending: '正在加载技能', pendingAction: '正在加载' },
         terminal: { done: '已运行命令', pending: '正在运行命令', pendingAction: '正在运行' },
         todo: { done: '已更新待办', pending: '正在更新待办', pendingAction: '正在更新' },
         vision_analyze: { done: '已分析图片', pending: '正在分析图片', pendingAction: '正在分析' },

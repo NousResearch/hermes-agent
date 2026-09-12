@@ -454,6 +454,71 @@ describe('countDiffLineStats', () => {
   })
 })
 
+describe('buildToolView skill_view titles', () => {
+  it('names a pending instruction load instead of the generic tool label', () => {
+    const view = buildToolView(
+      part({ args: { name: 'example-skill' }, result: undefined, toolName: 'skill_view' }),
+      ''
+    )
+
+    expect(view.title).toContain('example-skill')
+    expect(view.title).toMatch(/load/i)
+    expect(view.title).not.toMatch(/skill view/i)
+  })
+
+  it('names a completed instruction load', () => {
+    const view = buildToolView(
+      part({ args: { name: 'example-skill' }, result: { content: '---\nname: example-skill' }, toolName: 'skill_view' }),
+      ''
+    )
+
+    expect(view.title).toContain('example-skill')
+    expect(view.title).toMatch(/loaded/i)
+  })
+
+  it('distinguishes a linked resource read from an instruction load', () => {
+    const instruction = buildToolView(
+      part({ args: { name: 'example-skill' }, result: undefined, toolName: 'skill_view' }),
+      ''
+    )
+    const resource = buildToolView(
+      part({
+        args: { file_path: 'references/example.md', name: 'example-skill' },
+        result: undefined,
+        toolName: 'skill_view'
+      }),
+      ''
+    )
+
+    expect(instruction.title).toContain('example-skill')
+    expect(resource.title).toMatch(/example\.md/)
+    expect(resource.title).not.toBe(instruction.title)
+    expect(`${resource.title} ${resource.subtitle}`).toContain('example-skill')
+  })
+
+  it('does not claim a successful load when the skill_view call failed', () => {
+    const view = buildToolView(
+      part({
+        args: { name: 'example-skill' },
+        isError: true,
+        result: { error: 'skill not found' },
+        toolName: 'skill_view'
+      }),
+      ''
+    )
+
+    expect(view.status).toBe('error')
+    expect(view.title).not.toMatch(/loaded/i)
+  })
+
+  it('does not invent a skill name when name is missing', () => {
+    const view = buildToolView(part({ args: {}, result: undefined, toolName: 'skill_view' }), '')
+
+    expect(view.title).not.toMatch(/example-skill/)
+    expect(view.title.toLowerCase()).toMatch(/skill/)
+  })
+})
+
 describe('buildToolView memory status', () => {
   const memory = (overrides: Partial<Parameters<typeof part>[0]> = {}) =>
     buildToolView(part({ toolName: 'memory', ...overrides }), '')

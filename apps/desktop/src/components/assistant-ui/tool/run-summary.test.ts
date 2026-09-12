@@ -57,4 +57,39 @@ describe('summarizeToolRun', () => {
   it('reads a run the turn left unresolved as finished', () => {
     expect(settled([read('a.ts'), tool('search_files', { query: 'toolRuns' })])).toBe('Explored 2 files')
   })
+
+  it('names skill_view calls instead of counting anonymous tools', () => {
+    expect(settled([tool('skill_view', { name: 'example-skill' }, { content: '' })])).toContain('example-skill')
+    expect(settled([tool('skill_view', { name: 'example-skill' }, { content: '' })])).not.toMatch(/Used \d+ tools/)
+  })
+
+  it('keeps skill names when a run also explored files', () => {
+    const summary = settled([
+      read('wiring.tsx'),
+      tool('skill_view', { name: 'example-skill' }, { content: '' }),
+      tool('skill_view', { file_path: 'references/example.md', name: 'example-skill' }, { content: '' })
+    ])
+
+    expect(summary).toContain('example-skill')
+    expect(summary).not.toMatch(/used \d+ tools/i)
+  })
+})
+
+describe('summaryArgIdentity', () => {
+  it('changes when a skill name or resource path arrives', async () => {
+    const { summaryArgIdentity } = await import('./run-summary')
+
+    expect(summaryArgIdentity({})).not.toBe(summaryArgIdentity({ name: 'example-skill' }))
+    expect(summaryArgIdentity({ name: 'example-skill' })).not.toBe(
+      summaryArgIdentity({ file_path: 'references/example.md', name: 'example-skill' })
+    )
+  })
+
+  it('ignores unrelated streaming payload fields', async () => {
+    const { summaryArgIdentity } = await import('./run-summary')
+
+    expect(summaryArgIdentity({ blob: 'x'.repeat(10_000), name: 'example-skill' })).toBe(
+      summaryArgIdentity({ blob: 'y'.repeat(10_000), name: 'example-skill' })
+    )
+  })
 })

@@ -1,7 +1,8 @@
+import { translateNow } from '@/i18n'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { firstStringField } from '@/lib/text'
 
-import { fileEditBasename, isFileEditTool, parseMaybeObject } from './fallback-model'
+import { fileEditBasename, isFileEditTool, parseMaybeObject, skillViewResourcePath } from './fallback-model'
 
 /**
  * The little a summary needs from a tool call, stated structurally so both
@@ -19,18 +20,19 @@ export function isToolCallPart<T extends { type: string }>(part: T): part is Ext
   return part.type === 'tool-call'
 }
 
-type RunCategory = 'delegate' | 'edit' | 'explore' | 'other' | 'run'
+type RunCategory = 'delegate' | 'edit' | 'explore' | 'other' | 'run' | 'skill'
 
 // Clause order is fixed so the same run always reads the same way, whichever
 // category happens to be live.
-const CATEGORY_ORDER: readonly RunCategory[] = ['edit', 'explore', 'run', 'delegate', 'other']
+const CATEGORY_ORDER: readonly RunCategory[] = ['edit', 'explore', 'run', 'delegate', 'skill', 'other']
 
 const CATEGORY_COPY: Record<RunCategory, { noun: [string, string]; past: string; present: string }> = {
   delegate: { noun: ['task', 'tasks'], past: 'Delegated', present: 'Delegating' },
   edit: { noun: ['file', 'files'], past: 'Edited', present: 'Editing' },
   explore: { noun: ['file', 'files'], past: 'Explored', present: 'Exploring' },
   other: { noun: ['tool', 'tools'], past: 'Used', present: 'Using' },
-  run: { noun: ['command', 'commands'], past: 'Ran', present: 'Running' }
+  run: { noun: ['command', 'commands'], past: 'Ran', present: 'Running' },
+  skill: { noun: ['skill', 'skills'], past: 'Loaded', present: 'Loading' }
 }
 
 const EXPLORE_TOOLS = new Set([
@@ -56,6 +58,10 @@ function toolCategory(toolName: string): RunCategory {
     return 'delegate'
   }
 
+  if (toolName === 'skill_view') {
+    return 'skill'
+  }
+
   if (EXPLORE_TOOLS.has(toolName) || toolName.startsWith('browser_')) {
     return 'explore'
   }
@@ -73,12 +79,36 @@ function isPending(tool: ToolCallLike): boolean {
  * described in the same words from the moment the model drafts it.
  */
 export function toolPresentVerb(toolName: string): string {
+  if (toolCategory(toolName) === 'skill') {
+    return translateNow('assistant.tool.actions.loading')
+  }
+
   return CATEGORY_COPY[toolCategory(toolName)].present
+}
+
+/** Cheap identity of the args a run summary names — not the full payload. */
+export function summaryArgIdentity(args: unknown): string {
+  const parsed = parseMaybeObject(args)
+
+  return `${firstStringField(parsed, ['name'])}\0${firstStringField(parsed, ['file_path'])}`
 }
 
 /** The thing a tool acted on, as the header should name it. */
 function toolTarget(tool: ToolCallLike): string {
   const args = parseMaybeObject(tool.args)
+
+  if (toolCategory(tool.toolName) === 'skill') {
+    const name = firstStringField(args, ['name'])
+    const resourcePath = skillViewResourcePath(args)
+
+    if (resourcePath) {
+      const base = fileEditBasename(resourcePath)
+
+      return name ? `${base} (${name})` : base
+    }
+
+    return name
+  }
 
   if (toolCategory(tool.toolName) === 'run') {
     return summarizeShellCommand(firstStringField(args, ['command', 'code']))
@@ -89,6 +119,32 @@ function toolTarget(tool: ToolCallLike): string {
   return path ? fileEditBasename(path) : firstStringField(args, ['query', 'url'])
 }
 
+function skillClause(tools: ToolCallLike[], live: boolean): string {
+  const parts = tools.flatMap(tool => {
+    const target = toolTarget(tool)
+
+    if (!target) {
+      return []
+    }
+
+    const resource = Boolean(skillViewResourcePath(parseMaybeObject(tool.args)))
+    const verb = live
+      ? translateNow(resource ? 'assistant.tool.actions.reading' : 'assistant.tool.actions.loading')
+      : translateNow(resource ? 'assistant.tool.actions.read' : 'assistant.tool.actions.loaded')
+
+    return [`${verb} ${target}`]
+  })
+
+  if (parts.length === 0) {
+    const copy = CATEGORY_COPY.other
+    const verb = live ? copy.present : copy.past
+
+    return `${verb} ${tools.length} ${copy.noun[tools.length === 1 ? 0 : 1]}`
+  }
+
+  return parts.map((text, index) => (index === 0 ? text : lowerFirst(text))).join(', ')
+}
+
 /**
  * One clause per category. A category holding a single thing says what it was
  * ("Edited wiring.tsx"); anything else counts ("explored 3 files"). A settled
@@ -96,6 +152,10 @@ function toolTarget(tool: ToolCallLike): string {
  * command line only earns its space while it's the thing you're waiting on.
  */
 function clause(category: RunCategory, tools: ToolCallLike[], live: boolean): string {
+  if (category === 'skill') {
+    return skillClause(tools, live)
+  }
+
   const copy = CATEGORY_COPY[category]
   const verb = live ? copy.present : copy.past
   const target = tools.length === 1 ? toolTarget(tools[0]) : ''

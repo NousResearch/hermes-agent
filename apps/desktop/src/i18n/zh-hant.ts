@@ -3252,7 +3252,9 @@ export const zhHant = defineLocale({
         ran: '已執行',
         running: '正在執行',
         ranCode: '已執行程式碼',
-        runningCode: '正在撰寫腳本'
+        runningCode: '正在撰寫腳本',
+        loaded: '已載入',
+        loading: '正在載入'
       },
       prefixes: {
         browser: '瀏覽器',
@@ -3288,6 +3290,7 @@ export const zhHant = defineLocale({
           pending: '正在搜尋工作階段歷史',
           pendingAction: '正在搜尋'
         },
+        skill_view: { done: '已載入技能', pending: '正在載入技能', pendingAction: '正在載入' },
         terminal: { done: '已執行指令', pending: '正在執行指令', pendingAction: '正在執行' },
         todo: { done: '已更新待辦', pending: '正在更新待辦', pendingAction: '正在更新' },
         vision_analyze: { done: '已分析圖片', pending: '正在分析圖片', pendingAction: '正在分析' },

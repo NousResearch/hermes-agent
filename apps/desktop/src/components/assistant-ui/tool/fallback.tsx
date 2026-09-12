@@ -74,7 +74,7 @@ import {
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
-import { isToolCallPart, summarizeToolRun } from './run-summary'
+import { isToolCallPart, summarizeToolRun, summaryArgIdentity } from './run-summary'
 import { ToolRunTicker } from './run-ticker'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
@@ -800,7 +800,7 @@ export function splitRunItems(toolNames: readonly string[]): RunItem[] {
  */
 // The one grey line that stands in for a run of tool calls — "Explored 3
 // files, ran 5 commands". Live, it narrates in the present tense above the
-// ticker and offers no toggle, since there is nothing settled to unfold yet.
+// ticker; the user can still expand the group.
 function ToolRunHeader({
   completedAt,
   live,
@@ -869,7 +869,7 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
     const signature = timelineTools
       .map(
         tool =>
-          `${tool.toolCallId}:${tool.result === undefined ? 0 : 1}:${tool.timestamp ?? ''}:${tool.completedAt ?? ''}`
+          `${tool.toolCallId}:${tool.result === undefined ? 0 : 1}:${tool.timestamp ?? ''}:${tool.completedAt ?? ''}:${summaryArgIdentity(tool.args)}`
       )
       .concat(String(live))
       .join('|')
@@ -920,9 +920,10 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
  * index is what made an earlier attempt at this reshuffle the moment a turn
  * settled. `lib/tool-run-continuity.test.ts` locks that agreement down.
  *
- * Live, the run is a summary plus the one-line ticker. Settled, the summary is
- * the whole of it until the user opens it. `ToolEmbedContext` is false so each
- * row still owns its own chrome (timer / copy / approval) when shown.
+ * Live, the run is a summary plus the one-line ticker unless the user expands
+ * it. Settled, the summary is the whole of it until the user opens it.
+ * `ToolEmbedContext` is false so each row still owns its own chrome
+ * (timer / copy / approval) when shown.
  */
 const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
   children,
@@ -956,7 +957,7 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   // settles and the row can be reached through the summary instead.
   const blocked = Boolean(approval) && pendingApprovalTool
   const unfurled = blocked || rowOpen
-  const expanded = live ? unfurled : (persistedOpen ?? false)
+  const expanded = unfurled || (persistedOpen ?? false)
 
   return (
     <div
@@ -968,12 +969,12 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
       <ToolRunHeader
         completedAt={completedAt}
         live={live}
-        onToggle={live ? undefined : () => setToolDisclosureOpen(disclosureId, !expanded)}
+        onToggle={() => setToolDisclosureOpen(disclosureId, !expanded)}
         open={expanded}
         startedAt={startedAt}
         summary={summary}
       />
-      {live && !unfurled && <ToolRunTicker>{children}</ToolRunTicker>}
+      {live && !expanded && <ToolRunTicker>{children}</ToolRunTicker>}
       {expanded && <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)">{children}</div>}
     </div>
   )

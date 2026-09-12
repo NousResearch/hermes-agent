@@ -15,12 +15,10 @@ import { formatTimelineRange } from '../thread/timestamp'
 // Timeline timestamps render only when `display.timestamps` is enabled.
 $displayTimestamps.set(true)
 
-// A run of tool calls collapses to a one-line summary once it has settled, but
-// a run with anything still pending always renders its rows. That rule is what
-// keeps the "approval must never be buried" bug fixed: an inline ApprovalBar
-// only ever exists on a pending tool, and a pending tool's run is never behind
-// a chevron. These cover both halves — the collapse itself, and the approval
-// staying in the visual flow.
+// A run of tool calls collapses to a one-line summary once it has settled.
+// Live grouped runs keep a disclosure so the user can expand the ticker into
+// full rows; an inline approval still forces the group open so it cannot sit
+// behind a collapsed chevron.
 
 const createdAt = new Date('2026-06-03T00:00:00.000Z')
 
@@ -49,8 +47,73 @@ stubThreadEnvironment()
 stubThreadViewportSize()
 vi.stubGlobal('ResizeObserver', TestResizeObserver)
 
+// Same toolCallIds as the live grouped pending message, after the turn settled.
+function groupedCompletedMessage(): ThreadMessage {
+  return {
+    id: 'assistant-group-1',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'read-1',
+        toolName: 'read_file',
+        args: { path: '/etc/hosts' },
+        argsText: JSON.stringify({ path: '/etc/hosts' }),
+        result: { content: '127.0.0.1 localhost' }
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'term-1',
+        toolName: 'terminal',
+        args: { command: 'rm -rf /tmp/x' },
+        argsText: JSON.stringify({ command: 'rm -rf /tmp/x' }),
+        result: { exit_code: 0, stdout: 'ok' }
+      }
+    ],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as unknown as ThreadMessage
+}
+
+function skillViewRunMessage({
+  live,
+  skills
+}: {
+  live?: boolean
+  skills: Array<{ args?: Record<string, unknown>; id: string; result?: unknown }>
+}): ThreadMessage {
+  return {
+    id: 'assistant-skill-run',
+    role: 'assistant',
+    content: skills.map(skill => ({
+      type: 'tool-call' as const,
+      toolCallId: skill.id,
+      toolName: 'skill_view',
+      args: skill.args ?? {},
+      argsText: JSON.stringify(skill.args ?? {}),
+      ...(skill.result !== undefined ? { result: skill.result } : {})
+    })),
+    status: live ? { type: 'running' } : { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as unknown as ThreadMessage
+}
+
 // A running assistant message with two tools: a completed read_file plus a
-// pending terminal (no result), rendered as a flat two-row list.
+// pending terminal (no result), rendered as a live grouped run.
 function groupedPendingMessage(): ThreadMessage {
   return {
     id: 'assistant-group-1',
@@ -478,14 +541,128 @@ describe('live tool run', () => {
     })
   })
 
-  it('cannot be collapsed while a tool is still running', async () => {
+  it('exposes a disclosure on a live grouped run so the ticker can be expanded', async () => {
     const { container } = render(<GroupHarness message={groupedPendingMessage()} />)
 
-    await waitFor(() => {
-      expect(container.querySelector('[data-tool-summary]')).not.toBeNull()
+    const toggle = await waitFor(() => {
+      const button = container.querySelector('[data-tool-summary] button[aria-expanded]')
+
+      expect(button).not.toBeNull()
+
+      return button as HTMLButtonElement
     })
 
-    expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).toBeNull()
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      expect(container.querySelector('[data-tool-ticker]')).toBeNull()
+      expect(container.querySelectorAll('[data-tool-row]').length).toBeGreaterThan(0)
+    })
+  })
+
+  it('keeps a live expand open after the same run settles', async () => {
+    const { container, rerender } = render(<GroupHarness message={groupedPendingMessage()} />)
+
+    const toggle = await waitFor(() => {
+      const button = container.querySelector('[data-tool-summary] button[aria-expanded]')
+
+      expect(button).not.toBeNull()
+
+      return button as HTMLButtonElement
+    })
+
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    })
+
+    rerender(<GroupHarness message={groupedCompletedMessage()} />)
+
+    await waitFor(() => {
+      const settled = container.querySelector('[data-tool-summary] button[aria-expanded]')
+
+      expect(settled).not.toBeNull()
+      expect(settled?.getAttribute('aria-expanded')).toBe('true')
+      expect(container.querySelectorAll('[data-tool-row]').length).toBeGreaterThan(0)
+    })
+  })
+
+  it('still surfaces an inline approval if the live group is collapsed', async () => {
+    setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'dangerous command', sessionId: 'sess-1' })
+
+    const { container } = render(<GroupHarness message={groupedPendingMessage()} />)
+
+    const toggle = await waitFor(() => {
+      const button = container.querySelector('[data-tool-summary] button[aria-expanded]')
+
+      expect(button).not.toBeNull()
+
+      return button as HTMLButtonElement
+    })
+
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      const bar = container.querySelector('[data-slot="tool-approval-inline"]')
+
+      expect(bar).not.toBeNull()
+      expect(bar?.closest('[hidden]')).toBeNull()
+    })
+  })
+
+  it('names skills in a grouped skill_view run instead of counting anonymous tools', async () => {
+    render(
+      <GroupHarness
+        message={skillViewRunMessage({
+          skills: [
+            { args: { name: 'example-skill' }, id: 'skill-1', result: { content: 'instructions' } },
+            {
+              args: { file_path: 'references/example.md', name: 'example-skill' },
+              id: 'skill-2',
+              result: { content: 'notes' }
+            }
+          ]
+        })}
+      />
+    )
+
+    const summary = await screen.findByText(/example-skill/)
+
+    expect(summary.textContent).not.toMatch(/^(Used|Using) \d+ tools$/)
+  })
+
+  it('picks up a skill name when args arrive on the same live tool call', async () => {
+    const { rerender } = render(
+      <GroupHarness
+        message={skillViewRunMessage({
+          live: true,
+          skills: [
+            { args: {}, id: 'skill-live-1' },
+            { args: {}, id: 'skill-live-2' }
+          ]
+        })}
+      />
+    )
+
+    await screen.findByText('Using 2 tools')
+
+    rerender(
+      <GroupHarness
+        message={skillViewRunMessage({
+          live: true,
+          skills: [
+            { args: { name: 'example-skill' }, id: 'skill-live-1' },
+            { args: { name: 'other-skill' }, id: 'skill-live-2' }
+          ]
+        })}
+      />
+    )
+
+    expect((await screen.findAllByText(/example-skill/)).length).toBeGreaterThan(0)
   })
 
   // Liveness used to also require an unresolved call, which is false for the
@@ -497,7 +674,7 @@ describe('live tool run', () => {
 
     expect(await screen.findByText('Running 2 commands')).toBeTruthy()
     expect(container.querySelector('[data-tool-ticker]')).not.toBeNull()
-    expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).toBeNull()
+    expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).not.toBeNull()
   })
 
   // The ticker is a one-line window, so a row opened inside it had its output
@@ -524,8 +701,7 @@ describe('live tool run', () => {
 })
 
 // A run whose calls never resolved used to read as live forever, which stranded
-// it in the present tense and — because a live run withholds its toggle — left
-// it permanently expanded with no way to collapse it.
+// it in the present tense with no way to collapse it.
 describe('tool run left unresolved', () => {
   it('settles with the turn rather than narrating work that stopped', async () => {
     const { container } = render(<GroupHarness message={abandonedRunMessage()} />)

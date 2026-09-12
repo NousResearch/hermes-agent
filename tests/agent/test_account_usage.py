@@ -227,3 +227,106 @@ def test_redeem_missing_credentials_reports_unavailable(monkeypatch):
 
     assert result.status == "unavailable"
     assert "hermes auth" in result.message
+
+
+def test_ollama_usage_windows_from_usage_api(monkeypatch):
+    payload = {
+        "activity": {
+            "cost": "1.25000",
+            "period": {"type": "last_4_weeks"},
+            "models": [],
+        },
+        "limits": {
+            "session": {"usage": 0.08, "models": [{"name": "glm-5.3", "request_count": 99}]},
+            "weekly": {
+                "usage": 0.04,
+                "models": [
+                    {"name": "glm-5.3", "request_count": 649},
+                    {"name": "glm-5.3-flash", "request_count": 628},
+                ],
+            },
+        },
+    }
+    calls = []
+
+    def fake_runtime(**kwargs):
+        return {"api_key": "k-ollama", "base_url": "https://ollama.com/v1"}
+
+    monkeypatch.setattr(account_usage, "resolve_runtime_provider", fake_runtime)
+    monkeypatch.setattr(
+        account_usage.httpx, "Client", lambda **kw: _FakeClient(calls, payload)
+    )
+    snapshot = account_usage.fetch_account_usage("ollama-cloud")
+    assert snapshot is not None and snapshot.provider == "ollama-cloud"
+    assert calls and calls[0]["url"] == "https://ollama.com/api/usage"
+    labels = [w.label for w in snapshot.windows]
+    assert labels == ["Session (rolling)", "Weekly"]
+    assert snapshot.windows[0].used_percent == pytest.approx(8.0)
+    assert snapshot.windows[1].used_percent == pytest.approx(4.0)
+    assert "glm-5.3 x99" in (snapshot.windows[0].detail or "")
+    assert any("PAYG activity" in d and "$1.25" in d for d in snapshot.details)
+
+
+def test_ollama_usage_missing_windows_yields_empty_snapshot(monkeypatch):
+    calls = []
+
+    def fake_runtime(**kwargs):
+        return {"api_key": "k-ollama", "base_url": "https://ollama.com"}
+
+    monkeypatch.setattr(account_usage, "resolve_runtime_provider", fake_runtime)
+    monkeypatch.setattr(
+        account_usage.httpx, "Client", lambda **kw: _FakeClient(calls, {})
+    )
+    snapshot = account_usage.fetch_account_usage("ollama-cloud")
+    assert snapshot is not None
+    assert snapshot.windows == () and snapshot.details == ()
+    assert not snapshot.available
+
+
+def test_ollama_usage_non_numeric_cost_is_ignored(monkeypatch):
+    calls = []
+
+    def fake_runtime(**kwargs):
+        return {"api_key": "k-ollama", "base_url": "https://ollama.com/v1"}
+
+    monkeypatch.setattr(account_usage, "resolve_runtime_provider", fake_runtime)
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda **kw: _FakeClient(calls, {"limits": {"session": {"usage": 0.5}}, "activity": {"cost": None}}),
+    )
+    snapshot = account_usage.fetch_account_usage("ollama-cloud")
+    assert snapshot is not None
+    assert snapshot.details == ()
+
+
+def test_ollama_session_reset_lands_on_5h_grid():
+    """The derived session reset is strictly in the future, at most one 5h block away,
+    and congruent with the measured 01/06/11/16/21:00 UTC grid."""
+    from datetime import datetime, timezone
+
+    from agent.account_usage import _OLLAMA_SESSION_EPOCH, _OLLAMA_SESSION_PERIOD, _ollama_next_session_reset
+
+    now = datetime(2026, 9, 5, 20, 30, tzinfo=timezone.utc)
+    reset = _ollama_next_session_reset(now)
+    delta = reset.timestamp() - now.timestamp()
+    assert 0 < delta <= _OLLAMA_SESSION_PERIOD
+    offset = (reset.timestamp() - _OLLAMA_SESSION_EPOCH) % _OLLAMA_SESSION_PERIOD
+    assert offset == 0  # exactly on the fixed grid
+
+
+def test_ollama_window_carries_reset_and_detail():
+    """A session window from the usage API renders with both the reset hint and model counts."""
+    import agent.account_usage as au
+
+    snapshot = au._snapshot(
+        "ollama-cloud",
+        "usage_api",
+        (au.AccountUsageWindow(label="Session (rolling)", used_percent=30.0,
+                               reset_at=au._ollama_next_session_reset(), detail="glm-5.3 x391"),),
+        (),
+    )
+    lines = au.render_account_usage_lines(snapshot)
+    session_line = next(l for l in lines if l.startswith("Session"))
+    assert "resets" in session_line
+    assert "glm-5.3 x391" in session_line  # detail renders alongside reset, not dropped

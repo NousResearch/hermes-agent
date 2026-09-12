@@ -781,6 +781,9 @@ export const en: Translations = {
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
       themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
+      themeSearchPlaceholder: 'Search your themes or the VS Code Marketplace…',
+      noThemesMatch: query => `No installed themes match "${query}".`,
+      marketplaceHeading: 'From the VS Code Marketplace',
       installTitle: 'Install from VS Code',
       installDesc:
         'Paste a Marketplace extension id (e.g. dracula-theme.theme-dracula) to convert its color theme into a desktop palette.',

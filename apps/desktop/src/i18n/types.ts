@@ -657,6 +657,9 @@ export interface Translations {
       themeTitle: string
       themeDesc: string
       themeProfileNote: (profile: string) => string
+      themeSearchPlaceholder: string
+      noThemesMatch: (query: string) => string
+      marketplaceHeading: string
       installTitle: string
       installDesc: string
       installPlaceholder: string

@@ -609,3 +609,47 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+# ---------------------------------------------------------------------------
+# Verified discharge after an out-of-band restart
+# ---------------------------------------------------------------------------
+
+
+def test_pending_needed_false_when_fleet_covers_marker_sha(monkeypatch):
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="abc123")
+    monkeypatch.setattr(
+        update_cmd_fleet, "_live_fleet_covers_receipt", lambda sha: sha == "abc123"
+    )
+    assert update_cmd._pending_fleet_restart_needed() is False
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_pending_needed_true_when_fleet_stale(monkeypatch):
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="abc123")
+    monkeypatch.setattr(update_cmd_fleet, "_live_fleet_covers_receipt", lambda sha: False)
+    assert update_cmd._pending_fleet_restart_needed() is True
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_pending_needed_true_when_cover_probe_fails(monkeypatch):
+    def boom(sha):
+        raise RuntimeError("probe down")
+
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="abc123")
+    monkeypatch.setattr(update_cmd_fleet, "_live_fleet_covers_receipt", boom)
+    assert update_cmd._pending_fleet_restart_needed() is True
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_pending_needed_true_when_marker_has_no_sha(monkeypatch):
+    def fail_if_probed(sha):
+        raise AssertionError("must not probe without expected_sha")
+
+    monkeypatch.setattr(update_cmd_fleet, "_live_fleet_covers_receipt", fail_if_probed)
+    update_cmd._write_fleet_restart_pending_marker()
+    assert update_cmd._pending_fleet_restart_needed() is True
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    update_cmd._clear_fleet_restart_pending_marker()

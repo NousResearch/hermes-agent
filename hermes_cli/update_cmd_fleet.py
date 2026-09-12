@@ -67,6 +67,43 @@ def _clear_fleet_restart_pending_marker() -> None:
     _m()._clear_marker_file(_fleet_restart_pending_marker_path(), label="fleet-restart-pending")
 
 
+def _read_pending_marker_expected_sha() -> str | None:
+    """``expected_sha`` from the pending marker, or None when absent/unreadable."""
+    try:
+        text = _fleet_restart_pending_marker_path().read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "expected_sha" and value.strip():
+            return value.strip()
+    return None
+
+
+def _discharge_fleet_restart_marker_if_covered() -> bool:
+    """Clear the marker when the live fleet provably serves its expected SHA.
+
+    A restart outside the update flow (``hermes gateway restart``, systemd, or a
+    manual relaunch) already fulfills the pull→restart obligation once every
+    recorded runtime reports ``current`` at the expected SHA — keeping the marker
+    past that point is a false stale warning. Anything unverifiable (missing SHA,
+    probe failure, partial fleet) keeps the marker: fail closed. Never raises.
+    """
+    try:
+        if not _fleet_restart_pending_marker_path().is_file():
+            return False
+        expected_sha = _read_pending_marker_expected_sha()
+        if not expected_sha:
+            return False
+        if not _live_fleet_covers_receipt(expected_sha):
+            return False
+    except Exception as exc:
+        logger.debug("Fleet-restart discharge probe failed: %s", exc)
+        return False
+    _clear_fleet_restart_pending_marker()
+    return True
+
+
 def _current_checkout_sha() -> str | None:
     """Current on-disk checkout HEAD, or None if it cannot be resolved."""
     from hermes_cli.update_cmd import _capture_head_sha, _m
@@ -191,7 +228,10 @@ def _pending_fleet_restart_needed() -> bool:
     # than latest.json. An older receipt cannot discharge that unknown obligation.
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
-            return True
+            if not _discharge_fleet_restart_marker_if_covered():
+                return True
+            # Discharged: the fleet provably serves the expected SHA. Fall through
+            # to the receipt check in case it reports a different skew.
     if not _receipt_reports_stale_runtime():
         return False
     return not _live_fleet_covers_receipt(_current_checkout_sha())
@@ -344,14 +384,61 @@ def _run_pending_fleet_restart() -> bool:
         return False
 
 
-def _apply_pending_fleet_restart_catchup() -> None:
+def _defer_fleet_restart_after_update(*, update_complete: bool, resume_incomplete: bool = False) -> None:
+    """Record a deliberately deferred fleet restart and return/exit on outcome.
+
+    ``hermes update --no-gateway-restart`` (cron running inside the gateway's
+    own cgroup) updated code and dependencies but must not restart the fleet:
+    the SIGUSR1 drain + systemd restart would kill the updater itself. The
+    ``fleet_restart_pending`` marker written before the pull is KEPT so the
+    next normal update (or ``hermes gateway restart``) catches up.
+
+    Outcome contract (same success/partial meaning as the normal path):
+    a STALE fleet caused only by this deliberate deferral is expected and
+    does NOT make the update partial — exit 0, receipt "success". The receipt
+    is "partial" (and the process exits 1, marker kept) when the update
+    itself did not complete (``update_complete`` False) or the Windows
+    pause/resume reconciliation reported incomplete.
+
+    The live interpreter still serves pre-update code here, so callers must
+    also skip stale-module purge/reload work: mutating this process's
+    sys.modules graph mid-flight risks breaking the serving gateway.
+    """
+    print()
+    print("→ Gateway restart skipped (--no-gateway-restart).")
+    print("  Code and dependencies are updated; gateways still serve pre-update code.")
+    print("  Restart them separately: `hermes gateway restart` or a daily-restart cron.")
+    print("  (fleet restart deferred — marker kept for catch-up)")
+    with suppress(Exception):
+        from hermes_cli.update_receipt import record_skip
+        record_skip("gateway_restart", "--no-gateway-restart: deferred, marker kept")
+    partial = (not update_complete) or resume_incomplete
+    with suppress(Exception):
+        from hermes_cli.update_receipt import finalize_update_receipt
+        finalize_update_receipt("partial" if partial else "success")
+    if partial:
+        sys.exit(1)
+
+
+def _apply_pending_fleet_restart_catchup(*, respect_no_gateway_restart: bool = False, no_gateway_restart: bool = False) -> None:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
     No-op when nothing is pending; exits 1 on incomplete catch-up so automation
     does not treat the fleet as healthy.
+
+    When called from a cron's ``--no-gateway-restart`` flow (both flags true),
+    the pending restart is deferred instead of executed: running it here would
+    kill the cron's own gateway mid-flight. The marker is kept for a later
+    out-of-cron update.
     """
     from hermes_cli.update_cmd import _run_pending_fleet_restart
     if not _pending_fleet_restart_needed():
+        return
+    if respect_no_gateway_restart and no_gateway_restart:
+        print()
+        _warn_pending_fleet_restart()
+        print("  (fleet restart deferred — --no-gateway-restart; marker kept)")
+        print("  Restart separately: `hermes gateway restart` or next non-cron update.")
         return
     print()
     _warn_pending_fleet_restart()

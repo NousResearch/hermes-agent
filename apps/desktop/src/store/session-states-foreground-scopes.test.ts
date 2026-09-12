@@ -140,7 +140,7 @@ describe('foregroundSessionScopes: owner hold across the create → foreground g
     recordSessionEventScope({ connectionId: 'internal', profile: 'Internal', session_id: 'runtime-native' })
 
     expect($sessionTiles.get()).toEqual([])
-    expect(foregroundSessionScopes()).toEqual(new Set(['conn:internal::internal']))
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:internal::Internal']))
 
     release()
     expect(foregroundSessionScopes()).toEqual(new Set())

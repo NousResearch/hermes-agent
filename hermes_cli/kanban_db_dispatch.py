@@ -1487,6 +1487,34 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _block_blocker_auth_task(conn: sqlite3.Connection, task_id: str) -> None:
+    """Transition a ``blocker_auth``-guarded ready task to ``blocked`` /
+    ``needs_input`` (t_dd8a811d), with a comment naming the matched
+    substring. Called at most once per ready-cycle: after this the task is
+    no longer in the ready lane, so ``check_respawn_guard`` never sees it
+    again until a human ``kanban_unblock``. Best-effort: a race where the
+    row already left ``ready``/``running`` (a concurrent dispatcher, or the
+    reclaim phase already blocked it) is silently ignored — ``block_task``
+    itself is a no-op then (rowcount check).
+    """
+    row = conn.execute(
+        "SELECT last_failure_error FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    err = (row["last_failure_error"] if row else None) or ""
+    match = _RESPAWN_BLOCKER_RE.search(err)
+    matched_text = match.group(0) if match else "auth/quota error"
+    reason = f"respawn guard: blocker_auth ({matched_text!r} in last_failure_error)"
+    if not _kb.block_task(conn, task_id, reason=reason, kind="needs_input"):
+        return
+    _kb.add_comment(
+        conn, task_id, "dispatcher",
+        f"Auto-blocked: dispatcher respawn guard detected a quota/auth "
+        f"pattern ({matched_text!r}) in the last failure and will never "
+        f"retry it automatically. Resolve the credential/quota issue, then "
+        f"kanban_unblock to resume.\n\nlast_failure_error: {err[:500]}",
+    )
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1535,6 +1563,14 @@ def _dispatch_lane_task(
         if not dry_run:
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+            # blocker_auth has no TTL and no "auth restored" signal to expire
+            # on (unlike rate_limit_cooldown, which self-clears): left in
+            # 'ready' it silently re-triggers this guard every tick forever
+            # (t_dd8a811d / t_2b487430 repro). Surface it once, on the FIRST
+            # hit, as a normal needs_input block so a human sees it in the
+            # blocked lane instead of a task that looks alive but never spawns.
+            if guard_reason == "blocker_auth":
+                _block_blocker_auth_task(conn, task_id)
         return False
 
     def _count_spawn(name: str) -> None:

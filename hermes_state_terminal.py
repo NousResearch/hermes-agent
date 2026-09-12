@@ -70,4 +70,6 @@ def terminal_worker_receipt(db, *, execution_id, session_id, generation, sequenc
             raise RuntimeStoreError('stale_generation')
         if receipt['payload_digest'] != payload_digest:
             raise RuntimeStoreError('admission_conflict')
+        if receipt['result_json'] is None:
+            raise RuntimeStoreError('stale_generation')
         return json.loads(receipt['result_json'])

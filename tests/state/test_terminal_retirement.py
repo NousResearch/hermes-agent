@@ -88,3 +88,32 @@ def test_nonterminal_obligations_prevent_any_retirement(tmp_path):
             assert db.get_session(status) is not None
             with db._read_ctx() as c:
                 assert not c.execute("SELECT 1 FROM state_meta WHERE key LIKE 'gateway.retired_session.v1.%'").fetchall()
+
+
+def test_deletion_tombstone_keeps_only_the_closing_worker_result(tmp_path):
+    """Full worker results (history reads) must not outlive the user's delete;
+    only the closing receipt stays replayable, earlier digests still detect conflicts."""
+    import hermes_state_mutation_retirement as retirement
+    from hermes_state_terminal import terminal_worker_receipt
+    with SessionDB(tmp_path / 'state.db') as db:
+        db.create_session('gone', source='api_server')
+        db.append_message('gone', 'user', 'SECRET_HISTORY_LINE')
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        rt.register_worker_execution(db, epoch=epoch, execution_id='worker', session_id='gone',
+            generation=0, kind='compute', adoption_secret='proof')
+        history = rt.mutate_worker_execution(db, epoch=epoch, execution_id='worker', session_id='gone',
+            generation=0, sequence=1, operation='compression.history', payload={
+                'target': 'gone', 'include_ancestors': False, 'include_inactive': False,
+                'repair_alternation': False, 'include_row_ids': False, 'include_compacted': False})
+        assert 'SECRET_HISTORY_LINE' in str(history)
+        closing = rt.mutate_worker_execution(db, epoch=epoch, execution_id='worker', session_id='gone',
+            generation=0, sequence=2, operation='execution.finish', payload={})
+        db._execute_write(lambda c: retirement.retire_terminal_receipts(c, ['gone']))
+        with db._read_ctx() as c:
+            tombstones = ''.join(v for (v,) in c.execute("SELECT value FROM state_meta WHERE key LIKE 'gateway.terminal_worker.v1.%'"))
+        assert 'SECRET_HISTORY_LINE' not in tombstones
+        digest = lambda op, payload: rt.admission_fingerprint(canonical_target='gone', payload={'operation': op, 'payload': payload})
+        args = dict(execution_id='worker', session_id='gone', generation=0, adoption_secret='proof')
+        assert terminal_worker_receipt(db, sequence=2, payload_digest=digest('execution.finish', {}), **args) == closing
+        with pytest.raises(rt.RuntimeStoreError, match='admission_conflict'):
+            terminal_worker_receipt(db, sequence=1, payload_digest=digest('execution.finish', {}), **args)

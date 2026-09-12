@@ -1522,6 +1522,9 @@ DEFAULT_CONFIG = {
         "require_mention": True,  # require @mention to respond in rooms
         "free_response_rooms": "",  # comma-separated room IDs answered without mention
         "allowed_rooms": "",  # if set, ONLY respond in these room IDs (whitelist)
+        # Action gates default to deny in the policy reader. Leave keys absent so
+        # only explicit YAML overrides profile-scoped legacy environment settings.
+        "tools": {},
     },
     # Approvals for dangerous commands.
     # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | off (= --yolo)

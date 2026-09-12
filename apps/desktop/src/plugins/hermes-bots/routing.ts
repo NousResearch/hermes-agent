@@ -229,6 +229,8 @@ export async function requestForBot<T = unknown>(
 /** A rejection duck-typed across realms: an Error-like whose fields are only
  *  conventionally typed, so every read stays `unknown` until it is checked. */
 export interface RpcErrorLike {
+  code?: unknown
+  data?: unknown
   message?: unknown
   name?: unknown
   stack?: unknown
@@ -262,6 +264,18 @@ function asRpcError(value: unknown, fallback: string): unknown {
     const text = hasStringMessage && String(message).trim() ? String(message) : fallback
     const error = new Error(text)
     error.cause = value
+    // Keep the JSON-RPC contract when normalizing a plain/IPC rejection:
+    // session resolution branches on code (4007 = create), and room failure
+    // reporting reads data.reason. Copy only those fields, never an unsafe name.
+    const code = (value as RpcErrorLike).code
+
+    if (typeof code === 'number' && Number.isFinite(code)) {
+      Object.assign(error, { code })
+    }
+
+    if (Object.prototype.hasOwnProperty.call(value, 'data')) {
+      Object.assign(error, { data: (value as RpcErrorLike).data })
+    }
 
     return error
   }

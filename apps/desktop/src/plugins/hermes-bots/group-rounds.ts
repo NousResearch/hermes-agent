@@ -53,7 +53,9 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     // Cross-connection members are also addressable by their @name-device
     // handle (the roster's disambiguated form) — same-named agents on two
     // machines resolve to the right one.
-    const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+    // Normalize legacy/raw `handle: 'default'` through the same helper used
+    // by the prompt: the displayed @hermes alias must remain addressable.
+    const handle = String(botHandle(member.name, member) || '').trim()
 
     const forms = new Set([
       member.name.toLowerCase(),
@@ -186,13 +188,22 @@ interface GroupChatTurnPromptInput {
   deltaLines: string[]
   groupName: string
   members: GroupMember[]
+  thread?: string
+  threadLines?: string[]
   viewer: GroupMember
 }
 
 /** The full per-turn payload for one member: participation rules + the room
  *  delta. Rules travel in the turn payload (not SOUL) so every existing bot
  *  can join a group chat without a profile migration. */
-export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLines }: GroupChatTurnPromptInput) {
+export function buildGroupChatTurnPrompt({
+  groupName,
+  members,
+  viewer,
+  deltaLines,
+  thread,
+  threadLines = deltaLines
+}: GroupChatTurnPromptInput) {
   const viewerKey = groupMemberKey(viewer)
   const peers = members.filter(m => groupMemberKey(m) !== viewerKey)
 
@@ -206,14 +217,20 @@ export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLine
 
   return [
     `[Group chat: "${groupName}"] You are @${botHandle(viewer.name, viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
+    ...(thread ? [`[Current thread: ${thread}]`] : []),
+    'The current thread is a separate conversation within this room. Prior session messages may belong to other threads. Only the current thread transcript below establishes what has been answered in this thread. Do not treat a similar request or your answer in another thread as an answer here.',
     '',
-    'New messages in the room since your last turn (oldest first):',
+    'Current thread transcript:',
+    ...threadLines.map(line => `  ${line}`),
+    '',
+    'New messages in the current thread since your last turn (oldest first):',
     ...deltaLines.map(line => `  ${line}`),
     '',
     'Rules for this room:',
     '- Reply with ONE conversational message ONLY if you have something new worth adding: build on what was just said, claim or hand off work, answer a question aimed at you, or report a real result. Keep chatter short (1-3 sentences) — but when you are delivering a result, an answer the user asked for, or substantive work, give it at full quality and length; never thin out real content to fit the room.',
+    "- A new user message is a renewed request, even when it repeats an earlier request. Answer direct requests again; do not pass merely because you answered similar text before or another thread already completed it. Follow the current thread's user request and progress, not another thread's outcome.",
     '- If you have nothing new to add, reply with exactly "(pass)". Passing is good — it lets the conversation settle.',
-    '- Mention a teammate as @name to pull them in; mention @user only for a judgment call or a result the user needs. Do not repeat points already made.',
+    '- Mention a teammate as @name to pull them in; mention @user only for a judgment call or a result the user needs. Do not repeat points already made in this thread unless the user asks again.',
     '- Never reveal content from your private 1:1 chats. Your reply text goes to the room verbatim — no preamble, no meta-commentary.'
   ].join('\n')
 }
@@ -616,8 +633,13 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
 
         const prompt = buildGroupChatTurnPrompt({
           groupName: group,
+          thread,
           members,
           viewer: member,
+          threadLines: room.log
+            .filter((e: GroupMessage) => groupThreadOf(e) === thread)
+            .slice(-GROUP_CHAT_HISTORY_LIMIT)
+            .map((e: GroupMessage) => formatGroupChatLine(e, member.name)),
           deltaLines: delta
             .slice(-GROUP_CHAT_HISTORY_LIMIT)
             .map((e: GroupMessage) => formatGroupChatLine(e, member.name))
@@ -789,8 +811,13 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
 
               const prompt = buildGroupChatTurnPrompt({
                 groupName: group,
+                thread,
                 members,
                 viewer: member,
+                threadLines: room.log
+                  .filter((e: GroupMessage) => groupThreadOf(e) === thread)
+                  .slice(-GROUP_CHAT_HISTORY_LIMIT)
+                  .map((e: GroupMessage) => formatGroupChatLine(e, member.name)),
                 // The continuation prompt centers on what the member missed:
                 // everything since its watermark, which includes the reply
                 // that cites it.

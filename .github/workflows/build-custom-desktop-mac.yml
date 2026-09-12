@@ -27,6 +27,9 @@ jobs:
       - name: Verify desktop source classification
         working-directory: apps/desktop
         run: npx vitest run --project ui src/lib/session-source.test.ts
+      - name: Verify group chat regression fixes
+        working-directory: apps/desktop
+        run: npx vitest run src/plugins/hermes-bots
       - name: Typecheck desktop
         working-directory: apps/desktop
         run: npm run typecheck

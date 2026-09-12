@@ -7,7 +7,7 @@ import pytest
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_contract import Principal, SessionRef, Submission
 from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, list_session_admissions
 
 ACTOR = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
 REF = SessionRef('owned', 's')
@@ -58,3 +58,37 @@ async def test_cancel_queued_settles_native_waiter_and_publishes_terminal_comple
         await authority.cancel_queued(ACTOR, REF, receipt.admission_id)
         assert len([f for f in frames if f['params']['type'] == 'message.complete']) == 1
 
+
+@pytest.mark.asyncio
+async def test_cancelling_the_head_of_a_paused_fifo_resumes_its_successor(tmp_path, monkeypatch):
+    from gateway.config import Platform
+    from gateway import session_api_turn, session_finite
+
+    db, authority = _authority(tmp_path, monkeypatch, platform=Platform.API_SERVER)
+    executed = []
+
+    def check_api_turn(authority, ref, payload):
+        if payload['text'] == 'blocked':
+            raise RuntimeStoreError('permission_denied')
+    monkeypatch.setattr(session_api_turn, 'check_api_turn', check_api_turn)
+
+    async def execute(authority, ref, row):
+        executed.append(row['payload']['text'])
+        return 'done'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+
+    with db:
+        head = await _submit(authority, 'blocked')
+        await _submit(authority, 'follower')
+        # The drain pauses on the head's preclaim refusal and its task ends.
+        await asyncio.wait_for(authority.sessions['s'].task, 5)
+        assert executed == []
+
+        await authority.cancel_queued(ACTOR, REF, head.admission_id)
+        task = authority.sessions['s'].task
+        assert task is not None and not task.done(), 'cancelling the blocking head must reschedule the drain'
+        await asyncio.wait_for(task, 5)
+        assert executed == ['follower']
+        statuses = {r['request_id']: (r['status'], r['outcome'])
+                    for r in list_session_admissions(db, session_id='s', pending_only=False)}
+        assert statuses == {'blocked': ('terminal', 'cancelled'), 'follower': ('terminal', 'completed')}

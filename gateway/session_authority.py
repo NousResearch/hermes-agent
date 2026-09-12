@@ -300,6 +300,9 @@ class SessionAuthority:
         waiter = self.waiters.pop(admission_id, None)
         if waiter is not None and not waiter.done():
             waiter.set_result(None)
+        # A paused drain (preclaim refusal on this head) ended its task; the successors
+        # need a fresh drain that revalidates them on their own merits.
+        self._schedule(ref)
         return self._receipt(row)
 
     async def resolve_unknown(self, actor, ref, admission_id, generation):

@@ -1117,6 +1117,52 @@ If you run the dashboard as a systemd service, `~/.hermes/.env` is picked up aut
 The dashboard reads and writes your `.env` (API keys, secrets) and can run agent commands. The **username/password** setup shown here is for a trusted network — never expose a password-protected dashboard directly to the open internet. Put it behind a VPN. [Tailscale](https://tailscale.com/) is the clean option: bind to the machine's tailscale IP (`--host <tailscale-ip>`) and use `http://<tailscale-ip>:9119` as the Remote URL. Only devices on your tailnet can reach it. To reach a backend over the public internet, use the **OAuth (Nous Portal)** provider instead.
 :::
 
+### Hardening the bind for LAN-only access
+
+The `hermes dashboard --host 0.0.0.0` bind exposes the dashboard on **all** host interfaces. Without a firewall rule, any network the host can reach can reach the dashboard. Restrict it to your LAN:
+
+```bash
+# Find your LAN interface and subnet (replace IFACE, LAN_SUBNET):
+ip -4 route get <LAN-CLIENT-IP>  # shows the interface and src IP used for that client
+# OR: ip -4 addr show scope global | grep -v '127.0.0.1'
+```
+
+```bash
+# UFW: remove any existing broad allow for this port first, then add LAN-scoped rule
+sudo ufw status numbered | grep 'PORT/tcp'
+# If a broad "ALLOW Anywhere" rule exists for this port, note its number and delete it:
+# sudo ufw delete <RULE_NUMBER>
+
+# Add LAN-only allow (replace IFACE, LAN_SUBNET, PORT):
+sudo ufw allow in on IFACE to any port PORT proto tcp from LAN_SUBNET comment 'Hermes Remote Backend (LAN only)'
+
+# Verify effective policy:
+sudo ufw status verbose
+# Default incoming policy should be "deny" (or "reject"); the new rule should be the only ALLOW for PORT/tcp
+
+# Verify from a host on a DIFFERENT subnet (should time out / connection refused):
+curl -s -o /dev/null -w "%{http_code}
+" --max-time 5 --noproxy '*' http://SERVER_LAN_IP:PORT/api/status
+# Expected: 000 (or curl exit code 28/7)
+```
+
+```bash
+# iptables (temporary — rules disappear on reboot unless persisted via your distro's mechanism):
+# 1. Accept from LAN on the specific interface
+sudo iptables -I INPUT -i IFACE -p tcp -s LAN_SUBNET --dport PORT -j ACCEPT
+# 2. Allow localhost (loopback) explicitly so local verification still works
+sudo iptables -I INPUT -i lo -p tcp --dport PORT -j ACCEPT
+# 3. Drop everything else for this port on all other interfaces
+sudo iptables -A INPUT -p tcp --dport PORT -j DROP
+
+# Verify:
+sudo iptables -L INPUT -n -v --line-numbers | grep 'dpt:PORT'
+# Expected order: ACCEPT lo → ACCEPT IFACE/LAN_SUBNET → DROP (all other)
+```
+
+> **Note:** iptables rules above are not persistent across reboot. On Debian/Ubuntu use `netfilter-persistent save` or `iptables-save > /etc/iptables/rules.v4`; on RHEL/Fedora use `iptables-save > /etc/sysconfig/iptables` or firewalld equivalents.
+
+
 ### In Hermes Desktop
 
 **Settings → Gateways → Remote gateway:**
@@ -1142,6 +1188,35 @@ Instead of the in-app setting, you can point the desktop at a backend with an en
 - **No "Sign in" button — it asks for a session token instead** — the username/password provider isn't active (`/api/status` won't list `"basic"`). Make sure the username and a password (or password hash) are set and the dashboard process loaded them.
 - **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value; otherwise the signing key is regenerated per boot.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) instead of a reachable address, or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
+
+### End-to-end verification
+
+After setup, confirm everything works. Replace `PORT=9119` (or your chosen port) and run each check; every command must exit 0.
+
+```bash
+PORT=9119
+
+# 1. Port listening on non-loopback (wildcard or specific LAN address):
+ss -tlnp | awk -v p=":$PORT" '$4 ~ p && $4 !~ /^127\.0\.0\.1/ {found=1} END{exit !found}'
+# Exit 0 = listening on a non-loopback address
+
+# 2. Auth gate engaged on /api/status (public endpoint):
+curl -s --noproxy '*' --max-time 5 "http://127.0.0.1:$PORT/api/status" | jq -e '.auth_required == true and (.auth_providers | index("basic"))'
+# Exit 0 = auth_required true, "basic" in auth_providers
+
+# 3. Unauthenticated request to a protected endpoint is rejected (401):
+curl -s -o /dev/null -w "%{http_code}
+" --noproxy '*' --max-time 5 "http://127.0.0.1:$PORT/api/profiles" | grep -q '^401$'
+# Exit 0 = 401 returned (middleware intercepts before routing)
+
+# 4. Firewall rule present and effective (UFW):
+sudo ufw status numbered | awk -v p=":$PORT" '$0 ~ p && /ALLOW/ && /LAN_SUBNET/ {found=1} END{exit !found}'
+# Exit 0 = a LAN-scoped ALLOW rule exists for this port
+# Also verify no broad "ALLOW Anywhere" rule remains for this port:
+! sudo ufw status numbered | awk -v p=":$PORT" '$0 ~ p && /ALLOW/ && /Anywhere/ {found=1} END{exit found}'
+# Exit 0 = no broad allow rule for this port
+```
+
 
 ## CORS
 

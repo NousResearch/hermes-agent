@@ -310,3 +310,32 @@ def _org_mirror_write_guard(name: str, skill_path: Path, action: str) -> Optiona
     except Exception:
         logger.debug("org mirror guard lookup failed for %s", name, exc_info=True)
     return None
+
+
+def _external_dir_write_guard(name: str, skill_path: Path, action: str) -> Optional[Dict[str, Any]]:
+    """Foreground + background guard for ``skills.external_dirs``.
+
+    Those roots are externally owned (team mounts, ``~/.agents/skills``). By
+    default they are read-only to ``skill_manage`` — including foreground
+    turns — so a hallucinated patch cannot corrupt a shared git checkout
+    (#108032). Opt in with ``skills.external_dirs_allow_mutations: true``.
+    """
+    if action not in {"edit", "patch", "delete", "write_file", "remove_file"}:
+        return None
+    try:
+        from agent.skill_utils import is_external_dir_skill_path, is_external_dirs_writes_allowed
+        if is_external_dirs_writes_allowed():
+            return None
+        if is_external_dir_skill_path(skill_path):
+            from hermes_constants import display_hermes_home
+            hint_dir = f"{display_hermes_home()}/skills/"
+            return _refusal(
+                f"Skill '{name}' lives in skills.external_dirs, which are read-only to "
+                f"skill_manage by default (external_dirs_allow_mutations is off). "
+                f"Refusing {action}. To iterate on it, copy it locally first "
+                f"(e.g. copy the directory into {hint_dir}) and edit the copy, or set "
+                f"skills.external_dirs_allow_mutations: true in config.yaml to allow "
+                f"in-place external edits.")
+    except Exception:
+        logger.debug("external dir guard lookup failed for %s", name, exc_info=True)
+    return None

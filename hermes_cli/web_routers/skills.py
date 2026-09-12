@@ -354,17 +354,32 @@ async def get_skills(profile: Optional[str] = None):
             skills = _find_all_skills(skip_disabled=True)
             usage = load_usage()
             # Set-based provenance (same classification as skill_usage.provenance,
-            # without a per-skill manifest read): hub > bundled > agent, where
-            # "agent" covers agent-authored AND local hand-made skills — the ones
-            # the user may edit/delete from the UI.
+            # without a per-skill manifest read): hub > bundled > external > agent,
+            # where "agent" covers agent-authored AND local hand-made skills — the
+            # ones the user may edit/delete from the UI. "external" is the distinct
+            # shared-mount provenance (#108032).
             bundled_names = _read_bundled_manifest_names()
             hub_names = _read_hub_installed_names()
+            try:
+                from tools.skill_usage import _find_external_skill_dir
+                from agent.skill_utils import is_external_dir_skill_path
+                from tools.skill_manager_tool import _find_skill as _locate_skill
+
+                def _is_external(name: str) -> bool:
+                    if _find_external_skill_dir(name) is not None:
+                        return True
+                    found = _locate_skill(name)
+                    return found is not None and is_external_dir_skill_path(found["path"])
+            except Exception:
+                def _is_external(name: str) -> bool:  # type: ignore[no-redef]
+                    return False
         for s in skills:
             s["enabled"] = s["name"] not in disabled
             s["usage"] = activity_count(usage.get(s["name"], {}))
             s["provenance"] = (
                 "hub" if s["name"] in hub_names
                 else "bundled" if s["name"] in bundled_names
+                else "external" if _is_external(s["name"])
                 else "agent")
         return skills
 

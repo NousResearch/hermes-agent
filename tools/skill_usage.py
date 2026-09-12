@@ -666,8 +666,29 @@ def curated_report() -> List[Dict[str, Any]]:
 
 
 def provenance(skill_name: str) -> str:
-    """'hub' | 'bundled' | 'agent' (the latter also covers local manually-authored skills)."""
-    return "hub" if is_hub_installed(skill_name) else "bundled" if is_bundled(skill_name) else "agent"
+    """'hub' | 'bundled' | 'external' | 'agent'.
+
+    ``external`` is the distinct provenance for skills that live under
+    ``skills.external_dirs`` (shared/team mounts). They are not agent-learned
+    sediment and must not render as ``learned`` or count toward the starmap
+    (#108032).
+    """
+    if is_hub_installed(skill_name):
+        return "hub"
+    if is_bundled(skill_name):
+        return "bundled"
+    # External dirs are the narrow check: project skills are a separate tier
+    # with their own precedence and trust gate, not the shared external mounts.
+    try:
+        from agent.skill_utils import is_external_dir_skill_path
+        if _find_external_skill_dir(skill_name) is not None:
+            return "external"
+        local_dir = _find_skill_dir(skill_name)
+        if local_dir is not None and is_external_dir_skill_path(local_dir):
+            return "external"
+    except Exception:
+        pass
+    return "agent"
 
 
 def usage_report() -> List[Dict[str, Any]]:

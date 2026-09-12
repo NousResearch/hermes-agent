@@ -85,6 +85,16 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
         for skill_md in root.rglob("SKILL.md") if root.exists() else ():
             if _SKIP_PARTS.intersection(skill_md.parts):
                 continue
+            # External mounts are shared standards, not learned sediment —
+            # exclude them from the starmap/journey growth visualization
+            # (#108032). Check before reading so a large external checkout does
+            # not pay parse cost.
+            try:
+                from agent.skill_utils import is_external_dir_skill_path
+                if is_external_dir_skill_path(skill_md):
+                    continue
+            except Exception:
+                pass
             try:
                 text = skill_md.read_text(encoding="utf-8")[:4000]
             except OSError:

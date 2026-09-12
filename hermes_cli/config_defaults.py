@@ -1337,6 +1337,10 @@ DEFAULT_CONFIG = {
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Foreground skill_manage edits to skills.external_dirs are refused by
+        # default; set true to allow in-place mutations of those externally
+        # owned roots (#108032).
+        "external_dirs_allow_mutations": False,
         # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
         # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to
         # HERMES_HOME, scanned alongside the local dir.

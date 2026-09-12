@@ -267,6 +267,7 @@ export const ja = defineLocale({
     handoffLead: '続きは次の場所で:',
     links: {
       github: 'GitHub Issues',
+      external: 'External',
       portal: 'Nous Portal サポート',
       discord: 'Discord'
     }
@@ -1456,7 +1457,8 @@ export const ja = defineLocale({
     provenance: {
       agent: '学習済み',
       bundled: '組み込み',
-      hub: 'ハブ'
+      hub: 'ハブ',
+      external: 'External'
     },
     emptyNoneFound: noun => `${noun} が見つかりません`,
     emptyNothingMatches: query => `「${query}」に一致するものはありません。`,

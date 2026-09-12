@@ -1421,7 +1421,7 @@ export interface Translations {
     bulkUpdated: (count: number) => string
     bulkNoChange: string
     usageCount: (count: number | string) => string
-    provenance: Record<'agent' | 'bundled' | 'hub', string>
+    provenance: Record<'agent' | 'bundled' | 'hub' | 'external', string>
     emptyNoneFound: (noun: string) => string
     emptyNothingMatches: (query: string) => string
     emptyNoneAvailable: (noun: string) => string

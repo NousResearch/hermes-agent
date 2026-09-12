@@ -137,6 +137,11 @@ function skillSubtitle(skill: SkillInfo): React.ReactNode {
           hub
         </Badge>
       )}
+      {provenance === 'external' && (
+        <Badge className="shrink-0 normal-case" variant="muted">
+          external
+        </Badge>
+      )}
     </>
   )
 }
@@ -1193,8 +1198,8 @@ function SkillDetail({
   skill: SkillInfo
 }) {
   const { t } = useI18n()
-  // Only learned/local skills are the user's to rewrite or archive — bundled
-  // and hub skills are managed by their sources.
+  // Only learned/local skills are the user's to rewrite or archive — bundled,
+  // hub and external (shared mount) skills are managed by their sources.
   const editable = skill.provenance === 'agent'
 
   // The FULL skill — frontmatter metadata + complete SKILL.md body — for any

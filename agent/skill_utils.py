@@ -618,6 +618,41 @@ def is_external_skill_path(path) -> bool:
     return any(candidate.is_relative_to(_resolve_for_skill_ownership(root)) for root in roots)
 
 
+def is_external_dir_skill_path(path) -> bool:
+    """True when ``path`` lives under ``skills.external_dirs`` (not project).
+
+    Narrower than :func:`is_external_skill_path` which also covers trusted
+    project dirs. Used for the foreground write guard and ``external``
+    provenance: only external_dirs are the user-declared shared roots that
+    must default to read-only (#108032).
+    """
+    if path is None:
+        return False
+    candidate = _resolve_for_skill_ownership(path)
+    for root in get_external_skills_dirs():
+        try:
+            if candidate.is_relative_to(_resolve_for_skill_ownership(root)):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def is_external_dirs_writes_allowed() -> bool:
+    """True when ``skills.external_dirs_allow_mutations`` opts into foreground edits."""
+    cfg = _skills_cfg()
+    if not isinstance(cfg, dict):
+        return False
+    # Canonical key per #108032; also honour the shorter alias.
+    for key in ("external_dirs_allow_mutations", "allow_external_edits", "allow_external_mutations"):
+        val = cfg.get(key)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str) and val.strip().lower() in ("true", "1", "yes", "on"):
+            return True
+    return False
+
+
 def _hermes_metadata(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
     """``metadata.hermes`` mapping from frontmatter, or ``{}`` when malformed."""
     metadata = frontmatter.get("metadata")

@@ -258,6 +258,7 @@ export const zhHant = defineLocale({
     handoffLead: '在以下位置繼續討論:',
     links: {
       github: 'GitHub Issues',
+      external: 'External',
       portal: 'Nous Portal 支援',
       discord: 'Discord'
     }
@@ -1399,7 +1400,8 @@ export const zhHant = defineLocale({
     provenance: {
       agent: '已學習',
       bundled: '內建',
-      hub: '技能中心'
+      hub: '技能中心',
+      external: 'External'
     },
     emptyNoneFound: noun => `找不到${noun}`,
     emptyNothingMatches: query => `沒有符合「${query}」的內容。`,

@@ -4035,6 +4035,21 @@ class TelegramAdapter(BasePlatformAdapter):
                    for i in range(len(_page_models))]
         return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
 
+    @staticmethod
+    def _is_bedrock_provider(provider_slug: str) -> bool:
+        """True when *provider_slug* is AWS Bedrock (under any of its aliases).
+
+        The vendor drill-down answers a Bedrock-specific shape — one model
+        advertised under several routing namespaces — so it is gated on the
+        provider rather than on the IDs alone. ``openai-codex`` also ships
+        ``openai.``-prefixed IDs and must keep the original flat flow.
+        """
+        try:
+            from hermes_cli.models import normalize_provider
+            return normalize_provider(provider_slug) == "bedrock"
+        except Exception:
+            return str(provider_slug or "").lower() == "bedrock"
+
     def _build_vendor_keyboard(self, models: list) -> "InlineKeyboardMarkup":
         """Vendor drill-down keyboard for a Bedrock-shaped model list."""
         buttons = [InlineKeyboardButton(f"{g['label']} ({len(g['indices'])})", callback_data=f"mvd:{g['vendor']}")
@@ -4171,9 +4186,10 @@ class TelegramAdapter(BasePlatformAdapter):
             state["selected_vendor"] = ""
             state["model_list"] = models
             # Bedrock advertises dozens of ``<geo>.<vendor>.<model>`` profiles at once;
-            # a vendor step keeps a flat page of near-identical buttons scannable. Other
-            # providers (and single-vendor lists) keep the original two-step flow.
-            if len(group_bedrock_models_by_vendor(models)) > 1:
+            # a vendor step keeps a flat page of near-identical buttons scannable.
+            # Gated on the provider so no other provider's flow changes, and on a
+            # real choice of vendors so a single-vendor list keeps the two-step flow.
+            if self._is_bedrock_provider(provider_slug) and len(group_bedrock_models_by_vendor(models)) > 1:
                 await self._picker_show_vendors(query, state)
                 return
             await self._picker_show_models(query, state, 0)

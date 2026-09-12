@@ -48,6 +48,12 @@ VENDOR_ALIASES = {"moonshot": "moonshotai"}
 # Telegram truncates long button text; keep labels inside the usable width.
 _MAX_LABEL = 38
 
+# Vendor bucket for Bedrock-shaped IDs whose vendor segment we do not know, and
+# for IDs that are not Bedrock-shaped at all. Never a key of VENDOR_LABELS, so a
+# real vendor can never land in it by accident.
+OTHER_VENDOR = "other"
+OTHER_VENDOR_LABEL = "Other"
+
 # Two columns of a mobile inline keyboard show roughly this much before the
 # label is ellipsized — past it a button gets a full-width row of its own so a
 # trailing model count stays readable (#94986).
@@ -84,6 +90,51 @@ def _display_short(vendor: str, short: str) -> str:
     return short.removeprefix("claude-") if vendor == "anthropic" else short
 
 
+def _clamp(label: str, tail_len: int = 0, limit: int = _MAX_LABEL) -> str:
+    """Fit *label* in *limit* characters, keeping both ends.
+
+    Bedrock's long IDs differ in their TAIL (``…-preview-20260101-v1:0`` vs
+    ``…-20260202-v1:0``), so a head-only clamp deletes exactly the part that
+    tells two buttons apart and re-creates the collision these labels exist to
+    remove. Eliding the middle keeps the head, which says what the model is, and
+    the tail, which says which variant it is. *tail_len* forces a wider tail when
+    the caller knows the discriminating text sits further left.
+    """
+    if len(label) <= limit:
+        return label
+    keep = limit - 1  # one character for the ellipsis
+    tail = min(keep, max(tail_len, keep // 2))
+    return f"{label[:keep - tail]}…{label[len(label) - tail:]}"
+
+
+def _clamp_distinct(labels: List[str], limit: int = _MAX_LABEL) -> List[str]:
+    """Clamp *labels* to *limit*, keeping already-distinct entries distinct.
+
+    Clamping is the last step before a button is rendered, so it is where an
+    otherwise-correct label set can still collapse into identical buttons. For
+    each colliding group the tail is widened until it covers the first character
+    where the members differ, which is the minimum the user needs to tell them
+    apart. Order is preserved: callbacks are positional.
+    """
+    clamped = [_clamp(label, limit=limit) for label in labels]
+    groups: Dict[str, List[int]] = {}
+    for i, label in enumerate(clamped):
+        groups.setdefault(label, []).append(i)
+
+    for idx in groups.values():
+        if len(idx) < 2:
+            continue
+        originals = [labels[i] for i in idx]
+        if len(set(originals)) < len(originals):
+            continue  # genuinely identical input: no truncation can separate them
+        # First position where the group's members stop agreeing.
+        shortest = min(len(o) for o in originals)
+        diff_at = next((p for p in range(shortest) if len({o[p] for o in originals}) > 1), shortest)
+        for i in idx:
+            clamped[i] = _clamp(labels[i], tail_len=len(labels[i]) - diff_at, limit=limit)
+    return clamped
+
+
 def _geo_prefix(geo: str) -> str:
     # ``G`` keeps the global/regional distinction without eating a whole button.
     return "G" if geo == "global" else geo
@@ -117,10 +168,10 @@ def model_button_labels(models: List[str]) -> List[str]:
             label = f"{_geo_prefix(geo)}: {label}"
         if not label:  # never emit blank text: Telegram rejects the whole message
             label = model_id
-        if len(label) > _MAX_LABEL:
-            label = label[: _MAX_LABEL - 3] + "..."
         labels.append(label)
-    return labels
+    # Clamped last, and collision-aware: the width limit is itself a way to turn
+    # two distinct labels into one indistinguishable button.
+    return _clamp_distinct(labels)
 
 
 def routing_legend(models: List[str], region_geo: str = "") -> str:
@@ -163,16 +214,32 @@ def group_models_by_vendor(models: List[str]) -> List[Dict[str, Any]]:
     ``indices`` are positions in *models*, so a caller scopes a sub-list without
     ever rewriting an ID. Empty when the list carries no Bedrock-shaped IDs —
     the signal not to insert the drill-down step at all.
+
+    When at least one known vendor IS present the result **partitions** the whole
+    list: everything else lands in one trailing ``Other`` group. ``indices`` is
+    the only route from a vendor button to a model, so an ID left out of every
+    group becomes unselectable — which is what would happen to an unreleased
+    Bedrock vendor, or to a plain ID sitting beside namespaced ones.
     """
     groups: Dict[str, List[int]] = {}
+    unknown: List[int] = []
     for i, model_id in enumerate(models):
         _geo, vendor, _short = split_bedrock_id(model_id)
         if vendor:
             groups.setdefault(canonical_vendor(vendor), []).append(i)
-    return [
+        else:
+            unknown.append(i)
+    if not groups:
+        # No known vendor: this is not a Bedrock-shaped catalog, so it gets no
+        # drill-down rather than a single pointless ``Other`` button.
+        return []
+    out = [
         {"vendor": vendor, "label": VENDOR_LABELS[vendor], "indices": indices}
         for vendor, indices in sorted(groups.items())
     ]
+    if unknown:
+        out.append({"vendor": OTHER_VENDOR, "label": OTHER_VENDOR_LABEL, "indices": unknown})
+    return out
 
 
 def pack_rows(labels: List[str], budget: int = TWO_COLUMN_BUDGET) -> List[List[int]]:

@@ -1136,6 +1136,35 @@ describe('createSlashHandler', () => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('title: demo title')
     })
   })
+
+  it('invokes recoverGateway on /recover', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/recover')).toBe(true)
+    expect(ctx.session.recoverGateway).toHaveBeenCalled()
+  })
+
+  it('notifies when recoverGateway is unavailable on /recover', () => {
+    const ctx = buildCtx()
+    delete (ctx.session as { recoverGateway?: unknown }).recoverGateway
+
+    expect(createSlashHandler(ctx)('/recover')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('session recovery is not supported in this context')
+  })
+
+  it('routes config.set error to guardedErr on /details failure', async () => {
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.reject(new Error('write failed: read-only filesystem')))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/details expanded')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('write failed'))
+    })
+  })
 })
 
 const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({
@@ -1183,6 +1212,7 @@ const buildSession = () => ({
   guardBusySessionSwitch: vi.fn(() => false),
   newLiveSession: vi.fn(),
   newSession: vi.fn(),
+  recoverGateway: vi.fn(),
   resetVisibleHistory: vi.fn(),
   resumeById: vi.fn(),
   setSessionStartedAt: vi.fn()

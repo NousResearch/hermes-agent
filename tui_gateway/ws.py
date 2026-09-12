@@ -9,6 +9,7 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import os
 import socket
 import threading
 import time
@@ -403,3 +404,17 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d",
             peer, disconnect_reason, messages, parse_errors, dispatch_crashes, send_failures, reaped_sessions, detached_sessions,
         )
+        if dispatch_crashes > 0 or send_failures > 0 or "failed" in disconnect_reason:
+            try:
+                crash_log = getattr(server, "_CRASH_LOG", None)
+                if crash_log:
+                    os.makedirs(os.path.dirname(crash_log), exist_ok=True)
+                    with open(crash_log, "a", encoding="utf-8") as f:
+                        f.write(
+                            f"\n=== ws abnormal disconnect · {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+                            f"peer={peer} reason={disconnect_reason} crashes={dispatch_crashes} "
+                            f"send_failures={send_failures} reaped={reaped_sessions} detached={detached_sessions}\n"
+                        )
+            except Exception:
+                pass
+

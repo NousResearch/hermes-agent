@@ -940,9 +940,9 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      recoverSidRef.current = null
+      recoverSidRef.current = plan.sid ?? recoverSidRef.current
       turnController.pushActivity('gateway exited · /logs to inspect', 'error')
-      sys('error: gateway exited')
+      sys('error: gateway exited (recovery limit reached — use /recover to retry)')
     }
 
     gw.on('event', handler)
@@ -986,6 +986,12 @@ export function useMainApp(gw: GatewayClient) {
           guardBusySessionSwitch: session.guardBusySessionSwitch,
           newLiveSession: session.newLiveSession,
           newSession: session.newSession,
+          recoverGateway: () => {
+            recoveryAtRef.current = []
+            turnController.pushActivity('gateway recovery requested', 'warn')
+            patchUiState({ status: 'recovering session…' })
+            gw.start()
+          },
           resetVisibleHistory: session.resetVisibleHistory,
           resumeById: session.resumeById,
           setSessionStartedAt

@@ -158,6 +158,7 @@ _FAST_WORDS = {"fast": "fast", "on": "fast", "normal": "normal", "off": "normal"
                "auto": "auto", "cold": "cold"}
 
 
+@_cfgset_guarded
 def _set_fast(rid, params, key, value, session):
     raw = _word(value)
     agent = session.get("agent") if session else None
@@ -202,12 +203,14 @@ def _set_fast(rid, params, key, value, session):
     return _kv(rid, key, nv)
 
 
+@_cfgset_guarded
 def _set_busy(rid, params, key, value, session):
     if _word(value) in {"", "status"}:
         return _kv(rid, key, _load_busy_input_mode())
     return _set_word(rid, params, key, value, session)
 
 
+@_cfgset_guarded
 def _set_verbose(rid, params, key, value, session):
     cycle = ["off", "new", "all", "verbose"]
     if value and value != "cycle":
@@ -225,6 +228,7 @@ def _set_verbose(rid, params, key, value, session):
     return _kv(rid, key, nv)
 
 
+@_cfgset_guarded
 def _set_focus(rid, params, key, value, session):
     # /focus: enabling stashes the configured tool_progress mode and pins it "off"; disabling restores.
     from hermes_cli.focus_view import FOCUS_TOOL_PROGRESS_MODE, normalize_tool_progress_mode, resolve_focus_arg
@@ -252,6 +256,7 @@ def _set_focus(rid, params, key, value, session):
     return _kv(rid, key, "on" if target else "off", tool_progress=effective)
 
 
+@_cfgset_guarded
 def _set_approval_mode(rid, params, key, value, session):
     return _set_word(rid, params, "approvals.mode", value, session)  # legacy alias reports the real key
 
@@ -350,6 +355,7 @@ def _word_setters() -> dict:
                                   lambda w: _write_config_key("voice.voice_chat_mode", w))}
 
 
+@_cfgset_guarded
 def _set_word(rid, params, key, value, session):
     norm, allowed, err, apply = _word_setters()[key]
     raw = norm(value)
@@ -359,6 +365,7 @@ def _set_word(rid, params, key, value, session):
     return _kv(rid, key, raw)
 
 
+@_cfgset_guarded
 def _set_details_section(rid, params, key, value, session):
     # `details_mode.<section>` -> `display.sections.<section>`; empty clears the override (frontend
     # then applies built-in section defaults before the global details_mode).
@@ -393,6 +400,7 @@ def _toggle_setters() -> dict:
                   lambda: "all" if _display_mouse_tracking(_display_cfg()) == "off" else "off", lambda v: v)}
 
 
+@_cfgset_guarded
 def _set_toggle(rid, params, key, value, session):
     norm, cfg_key, aliases, flipped, report = _toggle_setters()[key]
     raw = norm(value)
@@ -403,6 +411,7 @@ def _set_toggle(rid, params, key, value, session):
     return _kv(rid, key, report(nv))
 
 
+@_cfgset_guarded
 def _set_cwd(rid, params, key, value, session):
     raw = str(value or "").strip()
     if not raw:
@@ -446,6 +455,7 @@ def _set_skin(rid, params, key, value, session):
     return _kv(rid, key, value)
 
 
+@_cfgset_guarded
 def _set_display_toggle(rid, params, key, value, session):
     on = _BOOL_WORDS.get(str(value).strip().lower())
     if on is None:

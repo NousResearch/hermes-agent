@@ -292,7 +292,20 @@ export function LocalModelsSettings() {
   }
 
   const rJob = runningRuntimeInstall(jobs)
-  const lastError = jobs.find(j => j.status === 'error')
+
+  // The latest error that is still current: an error superseded by a
+  // newer SUCCESSFUL job of the same kind (retry install after a
+  // transient verify failure, redownload after a broken file) is stale
+  // history — rendering it next to the green 'up to date' row reads as
+  // a live failure and never heals (#102616). A newer running job
+  // settles the question either way, so it does not clear the error yet.
+  const lastError = jobs.find(
+    j =>
+      j.status === 'error' &&
+      !jobs.some(
+        o => o.kind === j.kind && o.status === 'done' && (o.started_at ?? 0) > (j.started_at ?? 0)
+      )
+  )
 
   const sortedCatalog = [...catalog].sort((a, b) => fitRank(a) - fitRank(b))
 

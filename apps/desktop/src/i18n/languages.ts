@@ -36,6 +36,12 @@ export const LOCALE_OPTIONS = [
     configValue: 'ar'
   },
   {
+    id: 'cs',
+    name: 'Čeština',
+    englishName: 'Czech',
+    configValue: 'cs'
+  },
+  {
     id: 'ru',
     name: 'Русский',
     englishName: 'Russian',
@@ -86,6 +92,10 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   ar_eg: 'ar',
   arabic: 'ar',
   العربية: 'ar',
+  cs: 'cs',
+  'cs-cz': 'cs',
+  cs_cz: 'cs',
+  czech: 'cs',
   ru: 'ru',
   'ru-ru': 'ru',
   ru_ru: 'ru',

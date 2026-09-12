@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.sdk_transform_bypass import bypass_sdk_request_transform
 from agent.usage_anchor import set_usage_anchor
 
 logger = logging.getLogger(__name__)
@@ -828,42 +829,6 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
     return sanitized
 
 
-# Bulk request fields carrying the conversation payload; the rest is scalar config the SDK transform handles fast.
-_SDK_TRANSFORM_BYPASS_FIELDS = ("input", "tools")
-
-
-def _is_plain_json_data(value: Any) -> bool:
-    """True when ``value`` is purely JSON wire types; pydantic models / generators must keep the typed SDK path."""
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return True
-    if isinstance(value, dict):
-        return all(isinstance(key, str) and _is_plain_json_data(item) for key, item in value.items())
-    if isinstance(value, list):
-        return all(_is_plain_json_data(item) for item in value)
-    return False
-
-
-def _bypass_sdk_request_transform(stream_kwargs: dict) -> dict:
-    """Route bulk payload fields around the SDK's ``maybe_transform``.
-
-    ``responses.create`` re-walks the whole body against the ResponseCreateParams union with the GIL held —
-    multi-MB conversations can wedge for hours, pre-network, where no watchdog socket kill helps. The SDK
-    merges ``extra_body`` AFTER the transform, so moving wire-format bulk fields there yields a byte-identical
-    request without the walk. HERMES_CODEX_SDK_TRANSFORM=1 disables."""
-    if os.environ.get("HERMES_CODEX_SDK_TRANSFORM", "").strip().lower() in {"1", "true", "yes", "on"}:
-        return stream_kwargs
-    moved = {f: stream_kwargs[f] for f in _SDK_TRANSFORM_BYPASS_FIELDS
-             if isinstance(stream_kwargs.get(f), (dict, list)) and _is_plain_json_data(stream_kwargs[f])}
-    if not moved:
-        return stream_kwargs
-    bypassed = {key: value for key, value in stream_kwargs.items() if key not in moved}
-    extra_body = bypassed.get("extra_body")
-    merged = dict(extra_body) if isinstance(extra_body, dict) else {}
-    # An explicit caller-provided extra_body entry keeps precedence (SDK post-transform merge).
-    bypassed["extra_body"] = {**merged, **{f: v for f, v in moved.items() if f not in merged}}
-    return bypassed
-
-
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
     import httpx as _httpx
@@ -929,7 +894,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
-        return active_client.responses.create(**_bypass_sdk_request_transform(stream_kwargs))
+        return active_client.responses.create(**bypass_sdk_request_transform(stream_kwargs))
 
     def _log_failure(exc: BaseException) -> None:
         request_body_bytes, exception_chain = _codex_request_failure_details(exc)

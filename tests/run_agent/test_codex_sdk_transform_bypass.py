@@ -18,9 +18,9 @@ sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
-from agent.codex_runtime import (
-    _bypass_sdk_request_transform,
+from agent.sdk_transform_bypass import (
     _is_plain_json_data,
+    bypass_sdk_request_transform as _bypass_sdk_request_transform,
 )
 
 

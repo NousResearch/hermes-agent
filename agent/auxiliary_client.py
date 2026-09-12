@@ -1475,9 +1475,10 @@ class _CodexCompletionsAdapter:
         guard = _CodexStreamGuard(self._client, total_timeout)
         try:
             guard.start()
-            from agent.codex_runtime import _bypass_sdk_request_transform, _consume_codex_event_stream
+            from agent.codex_runtime import _consume_codex_event_stream
+            from agent.sdk_transform_bypass import bypass_sdk_request_transform
             # Keep bulk wire payload out of the SDK's GIL-holding request transform.
-            stream_kwargs = _bypass_sdk_request_transform({**resp_kwargs, "stream": True})
+            stream_kwargs = bypass_sdk_request_transform({**resp_kwargs, "stream": True})
             event_stream = self._client.responses.create(**stream_kwargs)
             guard.adopt_stream(event_stream)
             # The timer may fire while responses.create() is blocked; if the cancelled attempt

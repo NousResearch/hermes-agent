@@ -254,7 +254,7 @@ import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
-import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
+import { createLocalBackendLifecycle } from './local-backend-lifecycle'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
@@ -292,7 +292,7 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
-import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
+import { createParentStartMarkerResolver } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,

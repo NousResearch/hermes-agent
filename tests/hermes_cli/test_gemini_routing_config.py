@@ -61,6 +61,22 @@ def test_gemini_routing_is_disabled_by_default_without_changing_delegation_model
     assert delegation["provider"] == ""
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("review_provider", "arbitrary-provider"),
+        ("review_model", "arbitrary-model"),
+    ],
+)
+def test_review_identity_must_match_canonical_sol_reviewer(field, value):
+    review = deepcopy(EXPECTED_GEMINI_ROUTING_DEFAULTS["review"])
+    review[field] = value
+
+    errors = _error_messages(_routing_config(review=review))
+
+    assert any(f"review.{field}" in message for message in errors)
+
+
 def test_enabling_without_profile_scope_stays_inactive(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
@@ -174,10 +190,23 @@ def test_gemini_routing_accepts_profile_relative_receipt_path():
     [
         ["--dangerously-skip-permissions"],
         ["--dangerously-skip-permissions=true"],
+        ["--print"],
+        ["--print=false"],
         ["--add-dir=/tmp/escape"],
         ["--continue"],
         ["--continue=recent"],
         ["--conversation=other"],
+        ["--model=other"],
+        ["--effort=high"],
+        ["--mode=agent"],
+        ["--sandbox=false"],
+        ["--no-sandbox"],
+        ["--output-format=text"],
+        ["--print-timeout=999s"],
+        ["--json-schema=other.json"],
+        ["--disable-slash-commands=false"],
+        ["--no-disable-slash-commands"],
+        None,
     ],
 )
 def test_gemini_routing_refuses_dangerous_permission_bypass_extra_args(extra_args):
@@ -196,6 +225,23 @@ def test_enabled_review_requires_pinned_workspace_identity():
     errors = _error_messages(_routing_config(review=review))
 
     assert any("review.alert_workspace_id" in message for message in errors)
+
+
+@pytest.mark.parametrize(
+    "alert_target",
+    ["email:operator@example.com", "slack:", "slack:C:extra", "slack: C0A12345678"],
+)
+def test_enabled_review_requires_one_exact_slack_alert_target(alert_target):
+    review = {
+        **EXPECTED_GEMINI_ROUTING_DEFAULTS["review"],
+        "enabled": True,
+        "alert_target": alert_target,
+        "alert_workspace_id": "T0A12345678",
+    }
+
+    errors = _error_messages(_routing_config(review=review))
+
+    assert any("review.alert_target" in message for message in errors)
 
 
 @pytest.mark.parametrize("receipt_db", ["/tmp/other-profile.sqlite3", "../escape.sqlite3"])

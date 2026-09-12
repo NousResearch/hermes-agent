@@ -162,7 +162,9 @@ class AntigravityDelegateChild:
             self.store.complete_attempt(
                 self.receipt_id,
                 worker_status=terminal_status,
-                response_text=result.response,
+                response_text=result.response or result.output_excerpt,
+                response_sha256=result.output_sha256,
+                response_bytes=result.output_bytes,
                 process_exit_code=result.exit_code,
                 duration_ms=result.duration_ms,
                 conversation_id=result.conversation_id,

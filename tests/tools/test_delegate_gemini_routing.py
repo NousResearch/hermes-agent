@@ -62,6 +62,17 @@ def routing_config(**overrides):
         "max_output_bytes": 131072,
         "fallback_to_delegation_model": True,
         "receipt_db": "routing/gemini-routing.sqlite3",
+        "retention": {"raw_days": 30, "aggregate_days": 180},
+        "review": {
+            "enabled": False,
+            "timezone": "America/Los_Angeles",
+            "sample_size": 5,
+            "not_before_local": "00:15",
+            "review_provider": "openai-codex",
+            "review_model": "gpt-5.6-sol",
+            "alert_target": "slack:C0AEMP1AG0H",
+            "alert_workspace_id": "",
+        },
     }
     gemini.update(overrides)
     return {
@@ -149,6 +160,86 @@ def test_disabled_config_preserves_existing_sol_child_path():
         "fallback_used",
     } & stops[0].keys()
     build_sol.assert_called_once()
+    build_gemini.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"command": ""},
+        {"model": False},
+        {"effort": None},
+        {"timeout_seconds": 0},
+        {"max_input_bytes": 0},
+        {"max_output_bytes": 0},
+        {"fallback_to_delegation_model": 0},
+        {"receipt_db": ""},
+        {"extra_args": None},
+        {"extra_args": ["--add-dir=/tmp"]},
+        {"extra_args": ["--model=other"]},
+        {"extra_args": ["--effort=high"]},
+        {"extra_args": ["--mode=agent"]},
+        {"extra_args": ["--sandbox=false"]},
+        {"extra_args": ["--no-sandbox"]},
+        {"extra_args": ["--print"]},
+        {"extra_args": ["--output-format=text"]},
+        {"extra_args": ["--print-timeout=999s"]},
+        {"extra_args": ["--json-schema=other.json"]},
+        {"extra_args": ["--disable-slash-commands=false"]},
+        {"retention": None},
+        {"review": None},
+    ],
+)
+def test_malformed_enabled_routing_config_fails_closed_to_sol(overrides):
+    sol = fake_child()
+    gemini = fake_child("gemini answer")
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config(**overrides)),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=sol),
+        patch("tools.delegate_tool._build_antigravity_delegate_child", return_value=gemini) as build_gemini,
+    ):
+        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+
+    assert result["results"][0]["summary"] == "sol answer"
+    assert result["results"][0]["worker_route"] == "sol"
+    build_gemini.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "alert_target",
+    ["email:operator@example.com", "slack:", "slack:C:extra", "slack: C0A12345678"],
+)
+def test_enabled_review_with_invalid_slack_alert_target_fails_closed_to_sol(alert_target):
+    config = routing_config()
+    review = config["gemini_routing"]["review"]
+    review["enabled"] = True
+    review["alert_target"] = alert_target
+    review["alert_workspace_id"] = "T0A12345678"
+    sol = fake_child()
+    gemini = fake_child("gemini answer")
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value=config),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=sol),
+        patch("tools.delegate_tool._build_antigravity_delegate_child", return_value=gemini) as build_gemini,
+    ):
+        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+
+    assert result["results"][0]["summary"] == "sol answer"
+    assert result["results"][0]["worker_route"] == "sol"
     build_gemini.assert_not_called()
 
 
@@ -870,6 +961,51 @@ def test_adapter_records_failure_then_runs_prebuilt_sol_fallback(tmp_path: Path)
         b"fallback answer"
     ).hexdigest()
     assert row["terminal_error_code"] is None
+
+
+def test_adapter_bounds_persisted_fallback_response_but_hashes_complete_value(tmp_path: Path):
+    complete_response = "🔥" * 50_000
+    adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=False)))
+    assert adapter.fallback_child is not None
+    adapter.fallback_child.run_conversation.return_value["final_response"] = complete_response
+
+    result = adapter.run_conversation("summarize", task_id="child-task")
+
+    assert result["final_response"] == complete_response
+    row = adapter.store.get_attempt(adapter.receipt_id)
+    assert row["terminal_response_text"] != complete_response
+    assert len(row["terminal_response_text"].encode("utf-8")) <= 32_768
+    assert row["terminal_response_sha256"] == hashlib.sha256(
+        complete_response.encode("utf-8")
+    ).hexdigest()
+    assert row["terminal_response_bytes"] == len(complete_response.encode("utf-8"))
+
+
+def test_adapter_persists_complete_oversized_gemini_output_digest(tmp_path: Path):
+    complete_output = "🔥" * 50_000
+    encoded = complete_output.encode("utf-8")
+    oversized = AntigravityResult(
+        status="failed",
+        response=None,
+        conversation_id=None,
+        usage={},
+        raw_envelope=None,
+        exit_code=0,
+        duration_ms=1,
+        error_code="output_too_large",
+        error_message="Antigravity output exceeds byte limit",
+        output_excerpt=encoded[:32_768].decode("utf-8", errors="ignore"),
+        output_sha256=hashlib.sha256(encoded).hexdigest(),
+        output_bytes=len(encoded),
+    )
+    adapter = make_adapter(tmp_path, FakeWorker(oversized))
+
+    adapter.run_conversation("summarize", task_id="child-task")
+
+    row = adapter.store.get_attempt(adapter.receipt_id)
+    assert row["response_text"] == oversized.output_excerpt
+    assert row["response_sha256"] == hashlib.sha256(encoded).hexdigest()
+    assert row["response_bytes"] == len(encoded)
 
 
 def test_sol_fallback_reports_and_records_post_run_runtime_identity(tmp_path: Path):

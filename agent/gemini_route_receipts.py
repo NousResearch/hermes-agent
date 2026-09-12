@@ -23,6 +23,8 @@ from hermes_state import apply_wal_with_fallback
 UTC = timezone.utc
 DEFAULT_TIMEZONE = "America/Los_Angeles"
 _JOURNAL_BUSY_RETRY_DELAYS = (0.01, 0.05, 0.1)
+_RESPONSE_EXCERPT_MAX_BYTES = 32_768
+_ERROR_EXCERPT_MAX_BYTES = 2_048
 _TERMINAL_ATTEMPT_STATUSES = frozenset(
     {"completed", "failed", "timeout", "cancelled", "malformed", "denied", "oversized"}
 )
@@ -48,8 +50,83 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _bounded_text_evidence(
+    value: str | None, *, max_bytes: int
+) -> tuple[str | None, str | None, int | None]:
+    if value is None:
+        return None, None, None
+    encoded = value.encode("utf-8")
+    excerpt = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return excerpt, hashlib.sha256(encoded).hexdigest(), len(encoded)
+
+
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _bounded_envelope_json(envelope: Mapping[str, Any] | None) -> str | None:
+    if envelope is None:
+        return None
+    sanitized = dict(envelope)
+    sanitized.pop("response", None)
+    raw = _canonical_json(sanitized)
+    encoded = raw.encode("utf-8")
+    if len(encoded) <= _RESPONSE_EXCERPT_MAX_BYTES:
+        return raw
+    status = sanitized.get("status")
+    return _canonical_json(
+        {
+            "truncated": True,
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+            "bytes": len(encoded),
+            "status": status if isinstance(status, str) and len(status) <= 64 else None,
+        }
+    )
+
+
+def _migrate_text_evidence(
+    value: Any,
+    existing_sha256: Any,
+    existing_bytes: Any,
+    *,
+    max_bytes: int,
+) -> tuple[str | None, str | None, int | None]:
+    if value is None:
+        return None, None, None
+    text = value if isinstance(value, str) else str(value)
+    excerpt, observed_sha256, observed_bytes = _bounded_text_evidence(
+        text, max_bytes=max_bytes
+    )
+    if (
+        isinstance(existing_sha256, str)
+        and len(existing_sha256) == 64
+        and all(char in "0123456789abcdef" for char in existing_sha256)
+        and type(existing_bytes) is int
+        and existing_bytes >= (observed_bytes or 0)
+    ):
+        return excerpt, existing_sha256, existing_bytes
+    return excerpt, observed_sha256, observed_bytes
+
+
+def _migrate_envelope_json(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else str(value)
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        parsed = None
+    if isinstance(parsed, Mapping):
+        return _bounded_envelope_json(parsed)
+    encoded = text.encode("utf-8")
+    return _canonical_json(
+        {
+            "truncated": True,
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+            "bytes": len(encoded),
+            "status": None,
+        }
+    )
 
 
 def resolve_profile_receipt_path(hermes_home: Path, configured_path: str | Path) -> Path:
@@ -215,6 +292,7 @@ class GeminiReceiptStore:
                 prompt_sha256 TEXT NOT NULL,
                 response_text TEXT,
                 response_sha256 TEXT,
+                response_bytes INTEGER,
                 worker_status TEXT NOT NULL,
                 process_exit_code INTEGER,
                 duration_ms INTEGER NOT NULL,
@@ -231,14 +309,22 @@ class GeminiReceiptStore:
                 terminal_worker_status TEXT,
                 terminal_response_text TEXT,
                 terminal_response_sha256 TEXT,
+                terminal_response_bytes INTEGER,
                 terminal_error_code TEXT,
                 error_code TEXT,
                 error_message TEXT,
+                error_message_sha256 TEXT,
+                error_message_bytes INTEGER,
                 created_at_utc TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_gemini_attempts_day
             ON gemini_attempts(routing_day, route_decision, receipt_id);
+
+            CREATE TABLE IF NOT EXISTS gemini_schema_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at_utc TEXT NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS daily_review_batches (
                 batch_id TEXT PRIMARY KEY,
@@ -338,13 +424,105 @@ class GeminiReceiptStore:
             "terminal_response_sha256": (
                 "ALTER TABLE gemini_attempts ADD COLUMN terminal_response_sha256 TEXT"
             ),
+            "terminal_response_bytes": (
+                "ALTER TABLE gemini_attempts ADD COLUMN terminal_response_bytes INTEGER"
+            ),
             "terminal_error_code": (
                 "ALTER TABLE gemini_attempts ADD COLUMN terminal_error_code TEXT"
+            ),
+            "response_bytes": "ALTER TABLE gemini_attempts ADD COLUMN response_bytes INTEGER",
+            "error_message_sha256": (
+                "ALTER TABLE gemini_attempts ADD COLUMN error_message_sha256 TEXT"
+            ),
+            "error_message_bytes": (
+                "ALTER TABLE gemini_attempts ADD COLUMN error_message_bytes INTEGER"
             ),
         }
         for column, statement in attempt_migrations.items():
             if column not in attempt_columns:
                 conn.execute(statement)
+
+        if "fallback_used" in attempt_columns:
+            conn.execute(
+                """UPDATE gemini_attempts
+                   SET terminal_worker_route=NULL,
+                       terminal_provider=NULL,
+                       terminal_model=NULL,
+                       terminal_worker_status=NULL,
+                       terminal_response_text=NULL,
+                       terminal_response_sha256=NULL,
+                       terminal_response_bytes=NULL,
+                       terminal_error_code=NULL
+                   WHERE fallback_used=1 AND terminal_worker_route='gemini'"""
+            )
+
+        evidence_columns = attempt_columns | set(attempt_migrations)
+        evidence_required = {
+            "response_text",
+            "response_sha256",
+            "response_bytes",
+            "error_message",
+            "error_message_sha256",
+            "error_message_bytes",
+            "raw_envelope_json",
+            "terminal_response_text",
+            "terminal_response_sha256",
+            "terminal_response_bytes",
+        }
+        migration_name = "bound_attempt_evidence_v1"
+        migration_applied = conn.execute(
+            "SELECT 1 FROM gemini_schema_migrations WHERE name=?",
+            (migration_name,),
+        ).fetchone()
+        if migration_applied is None and evidence_required <= evidence_columns:
+            rows = conn.execute(
+                """SELECT receipt_id,
+                          response_text, response_sha256, response_bytes,
+                          error_message, error_message_sha256, error_message_bytes,
+                          raw_envelope_json,
+                          terminal_response_text, terminal_response_sha256,
+                          terminal_response_bytes
+                   FROM gemini_attempts"""
+            ).fetchall()
+            for row in rows:
+                response = _migrate_text_evidence(
+                    row["response_text"],
+                    row["response_sha256"],
+                    row["response_bytes"],
+                    max_bytes=_RESPONSE_EXCERPT_MAX_BYTES,
+                )
+                error = _migrate_text_evidence(
+                    row["error_message"],
+                    row["error_message_sha256"],
+                    row["error_message_bytes"],
+                    max_bytes=_ERROR_EXCERPT_MAX_BYTES,
+                )
+                terminal = _migrate_text_evidence(
+                    row["terminal_response_text"],
+                    row["terminal_response_sha256"],
+                    row["terminal_response_bytes"],
+                    max_bytes=_RESPONSE_EXCERPT_MAX_BYTES,
+                )
+                conn.execute(
+                    """UPDATE gemini_attempts
+                       SET response_text=?, response_sha256=?, response_bytes=?,
+                           error_message=?, error_message_sha256=?, error_message_bytes=?,
+                           raw_envelope_json=?,
+                           terminal_response_text=?, terminal_response_sha256=?,
+                           terminal_response_bytes=?
+                       WHERE receipt_id=?""",
+                    (
+                        *response,
+                        *error,
+                        _migrate_envelope_json(row["raw_envelope_json"]),
+                        *terminal,
+                        row["receipt_id"],
+                    ),
+                )
+            conn.execute(
+                "INSERT INTO gemini_schema_migrations (name, applied_at_utc) VALUES (?, ?)",
+                (migration_name, _iso()),
+            )
 
     def prepare_attempt(
         self,
@@ -437,43 +615,86 @@ class GeminiReceiptStore:
         fallback_used: bool = False,
         error_code: str | None = None,
         error_message: str | None = None,
+        response_sha256: str | None = None,
+        response_bytes: int | None = None,
         completed_at: datetime | None = None,
     ) -> None:
         if worker_status not in _TERMINAL_ATTEMPT_STATUSES:
             raise ValueError(f"worker_status is not terminal: {worker_status}")
+        response_excerpt, computed_response_sha256, computed_response_bytes = _bounded_text_evidence(
+            response_text, max_bytes=_RESPONSE_EXCERPT_MAX_BYTES
+        )
+        if (response_sha256 is None) != (response_bytes is None):
+            raise ValueError("response_sha256 and response_bytes must be provided together")
+        if response_sha256 is None:
+            response_sha256 = computed_response_sha256
+            response_bytes = computed_response_bytes
+        else:
+            if len(response_sha256) != 64 or any(
+                char not in "0123456789abcdef" for char in response_sha256
+            ):
+                raise ValueError("response_sha256 must be lowercase SHA-256 hex")
+            if type(response_bytes) is not int:
+                raise ValueError("response_bytes must be an integer")
+            if response_bytes < len((response_excerpt or "").encode("utf-8")):
+                raise ValueError("response_bytes cannot be smaller than the persisted excerpt")
+        error_excerpt, error_sha256, error_bytes = _bounded_text_evidence(
+            error_message, max_bytes=_ERROR_EXCERPT_MAX_BYTES
+        )
         with self._transaction() as conn:
             current = conn.execute(
-                "SELECT worker_status FROM gemini_attempts WHERE receipt_id=?", (receipt_id,)
+                """SELECT worker_status, requested_provider, requested_model
+                   FROM gemini_attempts WHERE receipt_id=?""",
+                (receipt_id,),
             ).fetchone()
             if current is None:
                 raise KeyError(receipt_id)
             if current["worker_status"] in _TERMINAL_ATTEMPT_STATUSES:
                 raise ValueError("attempt is already terminal")
+            terminal_route = None if fallback_used else "gemini"
+            terminal_provider = None if fallback_used else current["requested_provider"]
+            terminal_model = None if fallback_used else current["requested_model"]
+            terminal_status = None if fallback_used else worker_status
+            terminal_response = None if fallback_used else response_excerpt
+            terminal_response_sha256 = None if fallback_used else response_sha256
+            terminal_response_bytes = None if fallback_used else response_bytes
+            terminal_error_code = None if fallback_used else error_code
             cursor = conn.execute(
                 """
                 UPDATE gemini_attempts SET
-                    completed_at_utc=?, response_text=?, response_sha256=?,
+                    completed_at_utc=?, response_text=?, response_sha256=?, response_bytes=?,
                     worker_status=?, process_exit_code=?, duration_ms=?, conversation_id=?,
                     usage_json=?, raw_envelope_json=?, fallback_used=?,
-                    terminal_worker_route='gemini', terminal_provider=requested_provider,
-                    terminal_model=requested_model, terminal_worker_status=?,
-                    error_code=?, error_message=?
+                    terminal_worker_route=?, terminal_provider=?, terminal_model=?,
+                    terminal_worker_status=?, terminal_response_text=?,
+                    terminal_response_sha256=?, terminal_response_bytes=?, terminal_error_code=?,
+                    error_code=?, error_message=?, error_message_sha256=?, error_message_bytes=?
                 WHERE receipt_id=?
                 """,
                 (
                     _iso(completed_at),
-                    response_text,
-                    _sha256(response_text) if response_text is not None else None,
+                    response_excerpt,
+                    response_sha256,
+                    response_bytes,
                     worker_status,
                     process_exit_code,
                     max(0, int(duration_ms)),
                     conversation_id,
                     _canonical_json(dict(usage)) if usage is not None else None,
-                    _canonical_json(dict(raw_envelope)) if raw_envelope is not None else None,
+                    _bounded_envelope_json(raw_envelope),
                     int(bool(fallback_used)),
-                    worker_status,
+                    terminal_route,
+                    terminal_provider,
+                    terminal_model,
+                    terminal_status,
+                    terminal_response,
+                    terminal_response_sha256,
+                    terminal_response_bytes,
+                    terminal_error_code,
                     error_code,
-                    error_message,
+                    error_excerpt,
+                    error_sha256,
+                    error_bytes,
                     receipt_id,
                 ),
             )
@@ -496,26 +717,27 @@ class GeminiReceiptStore:
             raise ValueError(f"fallback worker_status is not terminal: {worker_status}")
         if worker_route != "sol" or not provider or not model:
             raise ValueError("fallback route, provider, and model must identify Sol")
-        response_sha256 = (
-            _sha256(response_text) if isinstance(response_text, str) else None
+        response_excerpt, response_sha256, response_bytes = _bounded_text_evidence(
+            response_text, max_bytes=_RESPONSE_EXCERPT_MAX_BYTES
         )
         with self._transaction() as conn:
             cursor = conn.execute(
                 """UPDATE gemini_attempts
                    SET terminal_worker_route=?, terminal_provider=?, terminal_model=?,
                        terminal_worker_status=?, terminal_response_text=?,
-                       terminal_response_sha256=?, terminal_error_code=?
+                       terminal_response_sha256=?, terminal_response_bytes=?, terminal_error_code=?
                    WHERE receipt_id=? AND fallback_used=1
                       AND completed_at_utc IS NOT NULL
-                      AND terminal_worker_route='gemini'
+                      AND terminal_worker_route IS NULL
                 """,
                 (
                     worker_route,
                     provider,
                     model,
                     worker_status,
-                    response_text,
+                    response_excerpt,
                     response_sha256,
+                    response_bytes,
                     error_code,
                     receipt_id,
                 ),

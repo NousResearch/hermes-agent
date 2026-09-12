@@ -8,6 +8,7 @@ normalized goal/context through stdin.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 import os
@@ -21,26 +22,15 @@ import threading
 import time
 from typing import Any, Callable, IO, Mapping
 
+from agent.gemini_routing_contract import validate_antigravity_extra_args
+
 
 DEFAULT_MODEL = "gemini-3.8-flash-low"
 DEFAULT_TIMEOUT_SECONDS = 120.0
 DEFAULT_MAX_INPUT_BYTES = 262_144
 DEFAULT_MAX_OUTPUT_BYTES = 131_072
 _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
-_CONTROLLED_ARG_PREFIXES = (
-    "--dangerously-skip-permissions",
-    "--add-dir",
-    "--continue",
-    "--conversation",
-    "--model",
-    "--effort",
-    "--mode",
-    "--sandbox",
-    "--disable-slash-commands",
-    "--output-format",
-    "--print-timeout",
-    "--json-schema",
-)
+_EXTRA_ARGS_UNSET = object()
 _UNSUPPORTED_SCHEMA_KEYWORDS = frozenset(
     {
         "$ref",
@@ -110,6 +100,9 @@ class AntigravityResult:
     duration_ms: int
     error_code: str | None
     error_message: str | None
+    output_excerpt: str | None = None
+    output_sha256: str | None = None
+    output_bytes: int | None = None
 
 
 class _BoundedPipeReader:
@@ -119,6 +112,8 @@ class _BoundedPipeReader:
         self._pipe = pipe
         self._limit = limit
         self._data = bytearray()
+        self._digest = hashlib.sha256()
+        self.total_bytes = 0
         self.too_large = False
         self._thread = threading.Thread(target=self._read, daemon=True)
 
@@ -140,6 +135,8 @@ class _BoundedPipeReader:
                 chunk = self._pipe.read(65_536)
                 if not chunk:
                     return
+                self._digest.update(chunk)
+                self.total_bytes += len(chunk)
                 remaining = self._limit + 1 - len(self._data)
                 if remaining > 0:
                     self._data.extend(chunk[:remaining])
@@ -151,6 +148,10 @@ class _BoundedPipeReader:
     @property
     def data(self) -> bytes:
         return bytes(self._data[: self._limit])
+
+    @property
+    def sha256(self) -> str:
+        return self._digest.hexdigest()
 
 
 class AntigravityWorker:
@@ -165,7 +166,7 @@ class AntigravityWorker:
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_input_bytes: int = DEFAULT_MAX_INPUT_BYTES,
         max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
-        extra_args: list[str] | None = None,
+        extra_args: object = _EXTRA_ARGS_UNSET,
     ) -> None:
         if timeout_seconds <= 0 or not math.isfinite(timeout_seconds):
             raise ValueError("timeout_seconds must be finite and positive")
@@ -178,12 +179,11 @@ class AntigravityWorker:
         self._command = os.fspath(command)
         self._model = model
         self._effort = effort
-        self._extra_args = list(extra_args or [])
-        if any(
-            any(arg == prefix or arg.startswith(prefix + "=") for prefix in _CONTROLLED_ARG_PREFIXES)
-            for arg in self._extra_args
-        ):
-            raise ValueError("extra_args cannot override the sandbox contract")
+        self._extra_args = (
+            []
+            if extra_args is _EXTRA_ARGS_UNSET
+            else validate_antigravity_extra_args(extra_args)
+        )
         self._timeout_seconds = float(timeout_seconds)
         self._max_input_bytes = int(max_input_bytes)
         self._max_output_bytes = int(max_output_bytes)
@@ -371,11 +371,15 @@ class AntigravityWorker:
                     started, "timeout", "Antigravity run exceeded its deadline", process.returncode
                 )
             if stdout_reader.too_large or stderr_reader.too_large:
+                oversized_reader = stdout_reader if stdout_reader.too_large else stderr_reader
                 return self._failure(
                     started,
                     "output_too_large",
                     "Antigravity output exceeds byte limit",
                     process.returncode,
+                    output_excerpt=oversized_reader.data.decode("utf-8", errors="ignore"),
+                    output_sha256=oversized_reader.sha256,
+                    output_bytes=oversized_reader.total_bytes,
                 )
             if process.returncode != 0:
                 return self._failure(
@@ -598,6 +602,10 @@ class AntigravityWorker:
         message: str,
         exit_code: int | None = None,
         envelope: dict[str, Any] | None = None,
+        *,
+        output_excerpt: str | None = None,
+        output_sha256: str | None = None,
+        output_bytes: int | None = None,
     ) -> AntigravityResult:
         return AntigravityResult(
             status="failed",
@@ -609,6 +617,9 @@ class AntigravityWorker:
             duration_ms=cls._duration_ms(started),
             error_code=code,
             error_message=message,
+            output_excerpt=output_excerpt,
+            output_sha256=output_sha256,
+            output_bytes=output_bytes,
         )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -195,12 +196,19 @@ def test_invalid_child_results_fail_closed(
 
 
 def test_output_limit_is_enforced(fake_agy: Path):
+    complete_output = (
+        json.dumps({"status": "SUCCESS", "response": "x" * 4096}) + "\n"
+    ).encode("utf-8")
     result = make_worker(fake_agy, max_output_bytes=512).run(
         goal="OVERSIZE", context="", output_schema=None
     )
     assert result.status == "failed"
     assert result.error_code == "output_too_large"
     assert result.response is None
+    assert result.output_excerpt is not None
+    assert len(result.output_excerpt.encode("utf-8")) <= 512
+    assert result.output_sha256 == hashlib.sha256(complete_output).hexdigest()
+    assert result.output_bytes == len(complete_output)
 
 
 def test_input_limit_prevents_spawn(fake_agy: Path):
@@ -340,10 +348,14 @@ def test_unsupported_json_schema_fails_closed_before_spawn(fake_agy: Path):
 def test_dangerous_or_contract_overriding_extra_args_are_rejected(fake_agy: Path):
     for arg in (
         "--dangerously-skip-permissions",
+        "--print",
+        "--print=false",
         "--mode",
         "--sandbox=false",
+        "--no-sandbox",
         "--output-format=text",
         "--disable-slash-commands=false",
+        "--no-disable-slash-commands",
         "--json-schema=elsewhere.json",
         "--add-dir=/tmp/escape",
         "--continue",
@@ -351,3 +363,9 @@ def test_dangerous_or_contract_overriding_extra_args_are_rejected(fake_agy: Path
     ):
         with pytest.raises(ValueError):
             make_worker(fake_agy, extra_args=[arg])
+
+
+@pytest.mark.parametrize("extra_args", [None, False, "", 0, {}, ()])
+def test_explicit_non_list_extra_args_are_rejected(fake_agy: Path, extra_args):
+    with pytest.raises(ValueError, match="extra_args"):
+        make_worker(fake_agy, extra_args=extra_args)

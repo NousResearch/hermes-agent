@@ -14,6 +14,26 @@ ENABLED_CONFIG = {
     "profiles": ["default"],
     "default_route": "gemini",
     "default_data_classification": "standard",
+    "command": "agy",
+    "model": "gemini-3.8-flash-low",
+    "effort": "low",
+    "timeout_seconds": 120,
+    "max_input_bytes": 262_144,
+    "max_output_bytes": 131_072,
+    "extra_args": [],
+    "fallback_to_delegation_model": True,
+    "receipt_db": "routing/gemini-routing.sqlite3",
+    "retention": {"raw_days": 30, "aggregate_days": 180},
+    "review": {
+        "enabled": False,
+        "timezone": "America/Los_Angeles",
+        "sample_size": 5,
+        "not_before_local": "00:15",
+        "review_provider": "openai-codex",
+        "review_model": "gpt-5.6-sol",
+        "alert_target": "slack:C0AEMP1AG0H",
+        "alert_workspace_id": "",
+    },
 }
 
 
@@ -147,6 +167,10 @@ def test_task_defaults_come_from_policy_config():
         {**ENABLED_CONFIG, "default_data_classification": "restriced"},
         {**ENABLED_CONFIG, "default_route": []},
         {**ENABLED_CONFIG, "default_data_classification": {}},
+        {**ENABLED_CONFIG, "extra_args": None},
+        {**ENABLED_CONFIG, "extra_args": False},
+        {**ENABLED_CONFIG, "extra_args": ["--print"]},
+        {**ENABLED_CONFIG, "extra_args": ["--no-sandbox"]},
     ],
     ids=[
         "non-boolean-enabled",
@@ -155,6 +179,10 @@ def test_task_defaults_come_from_policy_config():
         "unknown-default-classification",
         "non-string-default-route",
         "non-string-default-classification",
+        "null-extra-args",
+        "false-extra-args",
+        "print-extra-arg",
+        "negated-sandbox-extra-arg",
     ],
 )
 def test_malformed_security_config_fails_closed_to_sol(config):

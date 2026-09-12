@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -312,6 +313,11 @@ def test_fallback_outcome_records_after_every_terminal_gemini_failure(
         duration_ms=1,
         fallback_used=True,
     )
+    pending_fallback = store.get_attempt(receipt_id)
+    assert pending_fallback["terminal_worker_route"] is None
+    assert pending_fallback["terminal_provider"] is None
+    assert pending_fallback["terminal_model"] is None
+    assert pending_fallback["terminal_worker_status"] is None
 
     store.record_fallback_outcome(
         receipt_id,
@@ -364,6 +370,129 @@ def test_fallback_outcome_cannot_be_rewritten(tmp_path: Path):
     assert row is not None
     assert row["terminal_provider"] == "openai-codex"
     assert row["terminal_response_text"] == "authoritative"
+
+
+def test_schema_upgrade_clears_legacy_provisional_gemini_terminal_truth(tmp_path: Path):
+    store = make_store(tmp_path)
+    receipt_id = prepare(store)
+    store.mark_process_started(receipt_id)
+    store.complete_attempt(
+        receipt_id,
+        worker_status="failed",
+        duration_ms=1,
+        fallback_used=True,
+    )
+    with sqlite3.connect(store.path) as conn:
+        conn.execute(
+            """UPDATE gemini_attempts
+               SET terminal_worker_route='gemini',
+                   terminal_provider=requested_provider,
+                   terminal_model=requested_model,
+                   terminal_worker_status='failed'
+               WHERE receipt_id=?""",
+            (receipt_id,),
+        )
+
+    upgraded = GeminiReceiptStore(store.path).get_attempt(receipt_id)
+
+    assert upgraded["terminal_worker_route"] is None
+    assert upgraded["terminal_provider"] is None
+    assert upgraded["terminal_model"] is None
+    assert upgraded["terminal_worker_status"] is None
+
+
+def test_schema_upgrade_bounds_and_sanitizes_legacy_attempt_evidence(tmp_path: Path):
+    store = make_store(tmp_path)
+    receipt_id = prepare(store)
+    complete_response = "🔥" * 25_000
+    complete_error = "private-error-" * 10_000
+    raw_envelope = json.dumps({"status": "SUCCESS", "response": complete_response})
+    with sqlite3.connect(store.path) as conn:
+        conn.execute(
+            """UPDATE gemini_attempts
+               SET response_text=?, response_sha256=NULL, response_bytes=NULL,
+                   error_message=?, error_message_sha256=NULL, error_message_bytes=NULL,
+                   raw_envelope_json=?, terminal_response_text=?,
+                   terminal_response_sha256=NULL, terminal_response_bytes=NULL
+               WHERE receipt_id=?""",
+            (
+                complete_response,
+                complete_error,
+                raw_envelope,
+                complete_response,
+                receipt_id,
+            ),
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS gemini_schema_migrations (
+                   name TEXT PRIMARY KEY,
+                   applied_at_utc TEXT NOT NULL
+               )"""
+        )
+        conn.execute(
+            "DELETE FROM gemini_schema_migrations WHERE name='bound_attempt_evidence_v1'"
+        )
+
+    upgraded = GeminiReceiptStore(store.path).get_attempt(receipt_id)
+
+    assert len(upgraded["response_text"].encode("utf-8")) <= 32_768
+    assert upgraded["response_sha256"] == hashlib.sha256(
+        complete_response.encode("utf-8")
+    ).hexdigest()
+    assert upgraded["response_bytes"] == len(complete_response.encode("utf-8"))
+    assert len(upgraded["error_message"].encode("utf-8")) <= 2_048
+    assert upgraded["error_message_sha256"] == hashlib.sha256(
+        complete_error.encode("utf-8")
+    ).hexdigest()
+    assert upgraded["error_message_bytes"] == len(complete_error.encode("utf-8"))
+    assert len(upgraded["terminal_response_text"].encode("utf-8")) <= 32_768
+    assert upgraded["terminal_response_sha256"] == hashlib.sha256(
+        complete_response.encode("utf-8")
+    ).hexdigest()
+    assert upgraded["terminal_response_bytes"] == len(complete_response.encode("utf-8"))
+    bounded_envelope = json.loads(upgraded["raw_envelope_json"])
+    assert "response" not in bounded_envelope
+    assert len(upgraded["raw_envelope_json"].encode("utf-8")) <= 32_768
+
+
+def test_attempt_evidence_is_bounded_with_complete_hashes_and_byte_counts(tmp_path: Path):
+    store = make_store(tmp_path)
+    receipt_id = prepare(store)
+    store.mark_process_started(receipt_id)
+    complete_response = "🔥" * 50_000
+    complete_error = "private-error-" * 20_000
+
+    store.complete_attempt(
+        receipt_id,
+        worker_status="failed",
+        duration_ms=1,
+        response_text=complete_response,
+        error_code="worker_failed",
+        error_message=complete_error,
+        raw_envelope={
+            "status": "ERROR",
+            "response": complete_response,
+            "diagnostic": "x" * 100_000,
+        },
+    )
+
+    row = store.get_attempt(receipt_id)
+    assert row["response_text"] != complete_response
+    assert len(row["response_text"].encode("utf-8")) <= 32_768
+    assert row["response_sha256"] == hashlib.sha256(
+        complete_response.encode("utf-8")
+    ).hexdigest()
+    assert row["response_bytes"] == len(complete_response.encode("utf-8"))
+    assert row["error_message"] != complete_error
+    assert len(row["error_message"].encode("utf-8")) <= 2_048
+    assert row["error_message_sha256"] == hashlib.sha256(
+        complete_error.encode("utf-8")
+    ).hexdigest()
+    assert row["error_message_bytes"] == len(complete_error.encode("utf-8"))
+    persisted_envelope = row["raw_envelope_json"]
+    assert len(persisted_envelope.encode("utf-8")) <= 32_768
+    assert complete_response not in persisted_envelope
+    assert json.loads(persisted_envelope)["truncated"] is True
 
 
 def test_duplicate_receipt_id_is_rejected_and_terminal_row_cannot_be_rewritten(tmp_path: Path):

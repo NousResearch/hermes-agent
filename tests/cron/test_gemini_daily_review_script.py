@@ -207,29 +207,21 @@ def test_configured_review_retry_binds_sender_to_persisted_channel(
         ("review_model", "arbitrary-model"),
     ],
 )
-def test_configured_reviewer_identity_mismatch_terminalizes_batch(
+def test_configured_reviewer_identity_mismatch_is_rejected_before_batch(
     tmp_path: Path, field: str, value: str
 ):
     db = tmp_path / "routing.sqlite3"
-    _seed_previous_day(db)
     config = _config(db)
     config["delegation"]["gemini_routing"]["review"][field] = value
-    alerts: list[str] = []
+    with pytest.raises(ValueError, match=field):
+        run_configured_review(
+            config=config,
+            now=datetime(2026, 9, 11, 16, tzinfo=timezone.utc),
+            reviewer_factory=lambda: pytest.fail("mismatched reviewer must not be constructed"),
+            alert_sender=lambda _message: pytest.fail("mismatched sender must not be constructed"),
+        )
 
-    result = run_configured_review(
-        config=config,
-        now=datetime(2026, 9, 11, 16, tzinfo=timezone.utc),
-        reviewer_factory=lambda: pytest.fail("mismatched reviewer must not be constructed"),
-        alert_sender=lambda message: alerts.append(message)
-        or {"success": True, "chat_id": "C0A12345678", "message_id": "1.5"},
-    )
-
-    assert result["status"] == "pipeline_failed"
-    assert result["reviewed_count"] == 0
-    assert len(alerts) == 1
-    batch = GeminiReceiptStore(db).get_review_batch("2026-09-10")
-    assert batch is not None
-    assert batch["pipeline_error"] == "reviewer_identity_mismatch"
+    assert not db.exists()
 
 
 def test_disabled_runtime_does_not_construct_reviewer_or_sender(tmp_path: Path):
@@ -248,14 +240,48 @@ def test_disabled_runtime_does_not_construct_reviewer_or_sender(tmp_path: Path):
     [
         lambda config: config["delegation"]["gemini_routing"].update(enabled="false"),
         lambda config: config["delegation"]["gemini_routing"].update(profiles="default"),
+        lambda config: config["delegation"]["gemini_routing"].update(profiles=[""]),
+        lambda config: config["delegation"]["gemini_routing"].update(command=""),
+        lambda config: config["delegation"]["gemini_routing"].update(extra_args=None),
+        lambda config: config["delegation"]["gemini_routing"].update(receipt_db=""),
+        lambda config: config["delegation"]["gemini_routing"].update(retention=None),
+        lambda config: config["delegation"]["gemini_routing"].update(
+            retention={"raw_days": 0, "aggregate_days": 180}
+        ),
+        lambda config: config["delegation"]["gemini_routing"].update(review=None),
+        lambda config: config["delegation"]["gemini_routing"].update(review={}),
         lambda config: config["delegation"]["gemini_routing"]["review"].update(enabled="false"),
+        lambda config: config["delegation"]["gemini_routing"]["review"].update(
+            alert_workspace_id=""
+        ),
     ],
-    ids=["truthy-routing-enabled", "string-profiles", "truthy-review-enabled"],
+    ids=[
+        "truthy-routing-enabled",
+        "string-profiles",
+        "empty-profile",
+        "empty-command",
+        "null-extra-args",
+        "empty-receipt-db",
+        "null-retention",
+        "nonpositive-retention",
+        "null-review",
+        "empty-review",
+        "truthy-review-enabled",
+        "empty-alert-workspace",
+    ],
 )
-def test_runtime_fails_closed_on_malformed_security_config(tmp_path: Path, mutate):
+def test_runtime_fails_closed_on_malformed_security_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutate
+):
     config = _config(tmp_path / "routing.sqlite3")
     mutate(config)
     calls: list[str] = []
+
+    def fail_store(*_args, **_kwargs):
+        calls.append("store")
+        pytest.fail("invalid contract must not construct the receipt store")
+
+    monkeypatch.setattr(daily_review_runtime, "GeminiReceiptStore", fail_store)
 
     with pytest.raises(ValueError, match="must be"):
         run_configured_review(
@@ -268,6 +294,28 @@ def test_runtime_fails_closed_on_malformed_security_config(tmp_path: Path, mutat
 
 
 @pytest.mark.parametrize(
+    "field",
+    ["sample_size", "timezone", "not_before_local", "review_provider", "review_model"],
+)
+def test_runtime_uses_defaults_only_when_daily_review_keys_are_absent(
+    tmp_path: Path, field: str
+):
+    db = tmp_path / "routing.sqlite3"
+    config = _config(db)
+    config["delegation"]["gemini_routing"]["review"].pop(field, None)
+
+    result = run_configured_review(
+        config=config,
+        now=datetime(2026, 9, 11, 7, 14, tzinfo=timezone.utc),
+        reviewer_factory=lambda: pytest.fail("not-before tick must not construct reviewer"),
+        alert_sender=lambda _message: pytest.fail("not-before tick must not construct sender"),
+    )
+
+    assert result == {"status": "not_before"}
+    assert not db.exists()
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("sample_size", 4),
@@ -276,6 +324,18 @@ def test_runtime_fails_closed_on_malformed_security_config(tmp_path: Path, mutat
         ("timezone", None),
         ("timezone", False),
         ("timezone", 0),
+        ("not_before_local", ""),
+        ("not_before_local", None),
+        ("not_before_local", False),
+        ("not_before_local", 0),
+        ("review_provider", ""),
+        ("review_provider", None),
+        ("review_provider", False),
+        ("review_provider", 0),
+        ("review_model", ""),
+        ("review_model", None),
+        ("review_model", False),
+        ("review_model", 0),
     ],
 )
 def test_runtime_rejects_noncanonical_daily_review_contract(
@@ -310,9 +370,15 @@ def test_configured_review_stays_idle_before_local_not_before(tmp_path: Path):
     assert not (tmp_path / "routing.sqlite3").exists()
 
 
-def test_alert_target_must_be_one_exact_slack_channel(tmp_path: Path):
+@pytest.mark.parametrize(
+    "alert_target",
+    ["all", "slack:", "slack:C:extra", "slack: C0A12345678", " slack:C0A12345678"],
+)
+def test_alert_target_must_be_one_exact_slack_channel(
+    tmp_path: Path, alert_target: str
+):
     config = _config(tmp_path / "routing.sqlite3")
-    config["delegation"]["gemini_routing"]["review"]["alert_target"] = "all"
+    config["delegation"]["gemini_routing"]["review"]["alert_target"] = alert_target
     with pytest.raises(ValueError, match="exact slack"):
         run_configured_review(
             config=config,

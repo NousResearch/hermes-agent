@@ -19,7 +19,9 @@ from agent.gemini_daily_review import (
     DailyReviewRunner,
     SolReviewer,
 )
+from agent.delegation_route_policy import enabled_routing_config_error
 from agent.gemini_route_receipts import GeminiReceiptStore, resolve_profile_receipt_path
+from agent.gemini_routing_contract import parse_exact_slack_target
 from hermes_constants import get_hermes_home
 
 
@@ -44,16 +46,6 @@ def _hard_deadline(seconds: float):
         signal.signal(signal.SIGALRM, previous_handler)
         if previous_timer != (0.0, 0.0):
             signal.setitimer(signal.ITIMER_REAL, *previous_timer)
-
-
-def _parse_slack_target(value: Any) -> str:
-    target = str(value or "").strip()
-    if not target.startswith("slack:"):
-        raise ValueError("review.alert_target must be an exact slack:<channel-id> target")
-    channel_id = target.split(":", 1)[1]
-    if not channel_id or ":" in channel_id:
-        raise ValueError("review.alert_target must identify one Slack channel")
-    return channel_id
 
 
 def _make_default_reviewer_factory(review: Mapping[str, Any]) -> Callable[[], SolReviewer]:
@@ -245,20 +237,50 @@ def run_configured_review(
         raise ValueError("delegation.gemini_routing.enabled must be a boolean")
     if routing_enabled is False:
         return {"status": "disabled"}
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    defaults = DEFAULT_CONFIG["delegation"]["gemini_routing"]
+    normalized_routing = {**defaults, **routing}
+    for field in ("retention", "review"):
+        if field not in routing:
+            continue
+        configured_section = routing[field]
+        if not isinstance(configured_section, Mapping) or not configured_section:
+            raise ValueError(
+                f"delegation.gemini_routing.{field} must be a non-empty object"
+            )
+        normalized_routing[field] = {**defaults[field], **configured_section}
+    normalized_review = normalized_routing["review"]
+    if isinstance(normalized_review, Mapping) and normalized_review.get("enabled") is True:
+        parse_exact_slack_target(normalized_review.get("alert_target"))
+        configured_receipt_db = normalized_routing.get("receipt_db")
+        if not isinstance(configured_receipt_db, str) or not configured_receipt_db.strip():
+            raise ValueError(
+                "delegation.gemini_routing.receipt_db must be a non-empty string"
+            )
+        resolve_profile_receipt_path(get_hermes_home(), configured_receipt_db)
+    config_error = enabled_routing_config_error(normalized_routing)
+    if config_error is not None:
+        raise ValueError(f"delegation.gemini_routing must be valid: {config_error}")
+    routing = normalized_routing
     if active_profile is None:
         from hermes_cli.profiles import get_active_profile_name
 
         active_profile = get_active_profile_name() or "default"
     profiles = routing.get("profiles")
     if not isinstance(profiles, list) or not all(
-        isinstance(profile, str) for profile in profiles
+        isinstance(profile, str) and profile.strip() for profile in profiles
     ):
-        raise ValueError("delegation.gemini_routing.profiles must be a list of strings")
+        raise ValueError(
+            "delegation.gemini_routing.profiles must be a list of non-empty strings"
+        )
     if active_profile not in profiles:
         return {"status": "disabled"}
-    review = routing.get("review")
-    if not isinstance(review, Mapping):
+    if "review" not in routing:
         return {"status": "disabled"}
+    review = routing["review"]
+    if not isinstance(review, Mapping) or not review:
+        raise ValueError("delegation.gemini_routing.review must be a non-empty object")
     review_enabled = review.get("enabled", False)
     if type(review_enabled) is not bool:
         raise ValueError("delegation.gemini_routing.review.enabled must be a boolean")
@@ -273,24 +295,46 @@ def run_configured_review(
         raise ValueError("review.sample_size must be exactly 5")
     clock = now or datetime.now(ZoneInfo(timezone_name))
     local_clock = clock.astimezone(ZoneInfo(timezone_name))
-    not_before = str(review.get("not_before_local") or "00:15")
-    try:
-        not_before_hour, not_before_minute = (int(part) for part in not_before.split(":"))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("review.not_before_local must use HH:MM") from exc
+    not_before = review.get("not_before_local", "00:15")
+    if not isinstance(not_before, str) or not re.fullmatch(
+        r"(?:[01]\d|2[0-3]):[0-5]\d", not_before
+    ):
+        raise ValueError("review.not_before_local must use HH:MM")
+    not_before_hour, not_before_minute = (int(part) for part in not_before.split(":"))
+
+    configured_provider = review.get("review_provider", SOL_REVIEWER_PROVIDER)
+    if configured_provider != SOL_REVIEWER_PROVIDER:
+        raise ValueError(f"review.review_provider must be {SOL_REVIEWER_PROVIDER}")
+    configured_model = review.get("review_model", SOL_REVIEWER_MODEL)
+    if configured_model != SOL_REVIEWER_MODEL:
+        raise ValueError(f"review.review_model must be {SOL_REVIEWER_MODEL}")
+    receipt_db = routing.get("receipt_db", "state/gemini-routing.sqlite3")
+    if not isinstance(receipt_db, str) or not receipt_db.strip():
+        raise ValueError("delegation.gemini_routing.receipt_db must be a non-empty string")
+    retention = routing.get("retention", {"raw_days": 30, "aggregate_days": 180})
+    if not isinstance(retention, Mapping):
+        raise ValueError("delegation.gemini_routing.retention must be an object")
+    retention_days: dict[str, int] = {}
+    for field, default in (("raw_days", 30), ("aggregate_days", 180)):
+        value = retention.get(field, default)
+        if type(value) is not int or value <= 0:
+            raise ValueError(
+                f"delegation.gemini_routing.retention.{field} must be a positive integer"
+            )
+        retention_days[field] = value
+    configured_workspace_id = review.get("alert_workspace_id")
+    if not isinstance(configured_workspace_id, str) or not configured_workspace_id.strip():
+        raise ValueError("review.alert_workspace_id must be a non-empty Slack workspace ID")
+    alert_channel_id = parse_exact_slack_target(review.get("alert_target"))
+    receipt_path = resolve_profile_receipt_path(get_hermes_home(), receipt_db)
     if (local_clock.hour, local_clock.minute) < (not_before_hour, not_before_minute):
         return {"status": "not_before"}
     local_date = local_clock.date()
     target_day = local_date.fromordinal(local_date.toordinal() - 1)
-    alert_channel_id = _parse_slack_target(review.get("alert_target"))
-    receipt_path = resolve_profile_receipt_path(
-        get_hermes_home(),
-        str(routing.get("receipt_db") or "state/gemini-routing.sqlite3"),
-    )
     store = GeminiReceiptStore(receipt_path)
     existing_batch = store.get_review_batch(target_day.isoformat())
     delivery_channel_id = alert_channel_id
-    delivery_workspace_id = str(review.get("alert_workspace_id") or "")
+    delivery_workspace_id = configured_workspace_id
     if (
         existing_batch is not None
         and existing_batch.get("status") in {"failed", "pipeline_failed"}
@@ -302,14 +346,6 @@ def run_configured_review(
         if isinstance(existing_batch.get("slack_workspace_id"), str):
             delivery_workspace_id = str(existing_batch["slack_workspace_id"])
 
-    configured_provider = str(review.get("review_provider") or SOL_REVIEWER_PROVIDER)
-    configured_model = str(review.get("review_model") or SOL_REVIEWER_MODEL)
-    identity_error = (
-        None
-        if configured_provider == SOL_REVIEWER_PROVIDER
-        and configured_model == SOL_REVIEWER_MODEL
-        else "reviewer_identity_mismatch"
-    )
     factory = reviewer_factory or _make_default_reviewer_factory(review)
     sender = alert_sender or _make_default_slack_sender(
         delivery_channel_id,
@@ -329,15 +365,12 @@ def run_configured_review(
     with _hard_deadline(150.0):
         result = runner.run(
             target_day=target_day,
-            pipeline_preflight_error=identity_error,
+            pipeline_preflight_error=None,
         )
 
-    retention = routing.get("retention")
-    if not isinstance(retention, Mapping):
-        retention = {}
     store.apply_retention(
         now=clock,
-        raw_days=int(retention.get("raw_days", 30)),
-        aggregate_days=int(retention.get("aggregate_days", 180)),
+        raw_days=retention_days["raw_days"],
+        aggregate_days=retention_days["aggregate_days"],
     )
     return result

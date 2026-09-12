@@ -430,6 +430,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             agent.tools = get_tool_definitions(
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None), quiet_mode=True,
+                skip_tool_search_assembly=True,  # direct wire tools[] for ACP (#101289)
             )
             agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools or []}
             inject_memory_provider_tools(agent)

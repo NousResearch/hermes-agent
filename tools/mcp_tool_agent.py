@@ -107,7 +107,10 @@ def refresh_agent_mcp_tools(
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
     snapshot_generation = registry._generation
-    new_defs = list(get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or [])
+    # ACP sessions keep MCP tools directly visible (#101289): same skip as the build snapshot.
+    skip_assembly = getattr(agent, "platform", None) == "acp"
+    new_defs = list(get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled,
+                                         quiet_mode=quiet_mode, skip_tool_search_assembly=skip_assembly) or [])
     new_names = {_def_name(t) for t in new_defs}
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)

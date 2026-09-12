@@ -1057,9 +1057,12 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     except Exception:
         agent._tool_snapshot_generation = 0
     import model_tools
+    # ACP editors consume the wire tools[] directly (#101289): skip the
+    # tool_search bridge so discovered MCP tools stay directly visible.
+    skip_assembly = getattr(agent, "platform", None) == "acp"
     agent.tools = model_tools.get_tool_definitions(
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-        quiet_mode=agent.quiet_mode,
+        quiet_mode=agent.quiet_mode, skip_tool_search_assembly=skip_assembly,
     )
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()

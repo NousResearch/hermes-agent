@@ -690,6 +690,7 @@ class TestRegisterSessionMcpServers:
             enabled_toolsets=["hermes-acp", "mcp-srv"],
             disabled_toolsets=None,
             quiet_mode=True,
+            skip_tool_search_assembly=True,
         )
         assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
         assert state.agent.tools is fake_tools

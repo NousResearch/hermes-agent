@@ -11,6 +11,7 @@ the delegation call and the summary result, never the child's intermediate
 tool calls or reasoning.
 """
 
+import json
 import logging
 import time
 import weakref
@@ -48,7 +49,8 @@ from tools.delegate_tool_registry import (  # noqa: F401
 )
 from tools.delegate_tool_tasks import _coerce_task_schemas, _normalize_task_list
 from tools.delegate_tool_toolsets import (  # noqa: F401
-    DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
+    DELEGATE_BLOCKED_TOOLS, _apply_exact_tool_policy, _expand_parent_toolsets, _resolve_child_toolsets,
+    _strip_blocked_tools,
 )
 from tools.delegate_tool_results import (  # noqa: F401
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
@@ -78,6 +80,50 @@ _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 1200s stuck on same tool → stale
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
     return True
+
+
+def _validate_spawn_admission(parent_agent, requested_children: int = 0) -> int:
+    """Shared parent/plugin tree admission; returns the effective child batch cap."""
+    if is_spawn_paused():
+        raise ValueError(
+            "Delegation spawning is paused. Clear the pause via the TUI (`p` in /agents) "
+            "or the delegation.pause RPC before retrying.")
+    if getattr(parent_agent, "_delegate_spawn_allowed", True) is False:
+        raise ValueError("This worker may use delegate_task controls but its profile/depth does not permit spawning.")
+    depth = int(getattr(parent_agent, "_delegate_depth", 0) or 0)
+    max_spawn = _get_max_spawn_depth()
+    parent_profile_spawn = getattr(parent_agent, "_delegate_profile_max_spawn_depth", None)
+    if isinstance(parent_profile_spawn, int):
+        if parent_profile_spawn <= 0:
+            raise ValueError("This worker profile does not permit spawning descendants.")
+        max_spawn = min(max_spawn, depth + parent_profile_spawn)
+    if depth >= max_spawn:
+        raise ValueError(
+            f"Delegation depth limit reached (depth={depth}, max_spawn_depth={max_spawn}). Raise "
+            "delegation.max_spawn_depth in config.yaml if deeper nesting is required.")
+
+    max_children = _get_max_concurrent_children()
+    parent_profile_concurrency = getattr(parent_agent, "_delegate_profile_max_concurrent_children", None)
+    if isinstance(parent_profile_concurrency, int):
+        if parent_profile_concurrency <= 0:
+            raise ValueError("This worker profile does not permit spawning children.")
+        max_children = min(max_children, parent_profile_concurrency)
+    if requested_children > max_children:
+        raise ValueError(
+            f"Requested {requested_children} children exceeds this worker's concurrency limit {max_children}.")
+    if requested_children:
+        from agent.subagent_lifecycle import _owner_session_id_of, _persistent_store
+        store = _persistent_store(parent_agent)
+        owner = _owner_session_id_of(parent_agent)
+        if store is not None and owner:
+            store.recover_expired_runs(owner)
+            active = store.active_run_count(owner)
+            global_cap = _get_max_concurrent_children()
+            if active + requested_children > global_cap:
+                raise ValueError(
+                    f"Durable worker concurrency limit would be exceeded: {active} active + "
+                    f"{requested_children} requested > {global_cap}. Wait for a worker to finish before retrying.")
+    return max_children
 
 
 def _open_child_session_db(parent_agent) -> Any:
@@ -170,6 +216,20 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    override_fallback_model: Optional[List[Dict[str, Any]]] = None,
+    override_reasoning_config: Optional[Dict[str, Any]] = None,
+    override_supports_tools: Optional[bool] = None,
+    requested_profile: Optional[str] = None,
+    profile_instructions: Optional[str] = None,
+    profile_tool_policy: Any = None,
+    profile_workspace_context: Any = None,
+    profile_route_receipt: Optional[Dict[str, Any]] = None,
+    profile_execution_limits: Any = None,
+    request_blocked_tools: Optional[List[str]] = None,
+    frozen_system_prompt: Optional[str] = None,
+    retained_child_depth: Optional[int] = None,
+    retained_parent_worker_id: Optional[str] = None,
+    worker_interface_contract: Optional[Dict[str, Any]] = None,
     # Configuration block that owns the selected provider/model route. Internal
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
@@ -184,9 +244,19 @@ def _build_child_agent(
     from agent.delegation_context import delegated_child_context
     # Role is depth-derived: a child may delegate iff the kill switch is on and
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
-    child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
+    child_depth = (
+        retained_child_depth
+        if isinstance(retained_child_depth, int) and retained_child_depth > 0
+        else getattr(parent_agent, "_delegate_depth", 0) + 1
+    )
     max_spawn = _get_max_spawn_depth()
-    effective_role = "orchestrator" if _get_orchestrator_enabled() and child_depth < max_spawn else "leaf"
+    profile_spawn_depth = getattr(profile_execution_limits, "max_spawn_depth", None)
+    profile_can_spawn = profile_spawn_depth is None or profile_spawn_depth > 0
+    effective_role = (
+        "orchestrator"
+        if _get_orchestrator_enabled() and child_depth < max_spawn and profile_can_spawn
+        else "leaf"
+    )
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
@@ -197,11 +267,38 @@ def _build_child_agent(
     # global. Only fallback policy follows the owner of a per-call route such
     # as auxiliary.review.
     delegation_cfg = _load_config()
-    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
-    child_prompt = _build_child_system_prompt(
-        goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
-        max_spawn_depth=max_spawn, child_depth=child_depth,
+    profile_allowed_toolsets = getattr(profile_tool_policy, "allowed_toolsets", None)
+    requested_toolsets = toolsets if toolsets is not None else (
+        list(profile_allowed_toolsets) if profile_allowed_toolsets is not None else None)
+    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, requested_toolsets, effective_role)
+    if override_supports_tools is False and child_toolsets:
+        raise ValueError(
+            f"Delegation profile '{requested_profile}' pins a model that does not support tool calling, "
+            f"but the child would run with toolsets {sorted(child_toolsets)}")
+    if profile_instructions and frozen_system_prompt is None:
+        context = f"{context}\n\nWorker profile instructions:\n{profile_instructions}" if context else (
+            f"Worker profile instructions:\n{profile_instructions}")
+    child_prompt = frozen_system_prompt
+    if child_prompt is None:
+        child_prompt = _build_child_system_prompt(
+            goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
+            max_spawn_depth=max_spawn, child_depth=child_depth,
+        )
+    context_mode = getattr(profile_workspace_context, "mode", None)
+    inherit_context = profile_workspace_context is not None and context_mode == "inherit"
+    requested_context = getattr(profile_workspace_context, "include_context_files", None)
+    requested_memory = getattr(profile_workspace_context, "include_memory", None)
+    parent_allows_context = not bool(getattr(parent_agent, "skip_context_files", False))
+    parent_allows_memory = not bool(getattr(parent_agent, "skip_memory", False))
+    include_context_files = context_mode != "none" and parent_allows_context and (
+        requested_context is True or (requested_context is None and inherit_context)
     )
+    include_memory = context_mode != "none" and parent_allows_memory and (
+        requested_memory is True or (requested_memory is None and inherit_context)
+    )
+    if frozen_system_prompt is not None:
+        include_context_files = False
+        include_memory = False
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")
@@ -219,7 +316,8 @@ def _build_child_agent(
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
         override_acp_command=override_acp_command,
         override_acp_args=override_acp_args,
-        routing_cfg=routing_cfg,
+        routing_cfg=routing_cfg, override_fallback_model=override_fallback_model,
+        override_reasoning_config=override_reasoning_config,
     )
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
@@ -235,12 +333,15 @@ def _build_child_agent(
                 **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
-                skip_context_files=True, skip_memory=True, clarify_callback=None,
+                # Legacy delegates remain isolated. Profiles may inherit a parent-enabled startup source,
+                # but can never elevate above the parent or reload it after this frozen prompt is built.
+                skip_context_files=not include_context_files, skip_memory=not include_memory, clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                     if child_progress_cb else None
                 ),
                 session_db=child_session_db, parent_session_id=parent_sid, request_overrides=request_overrides,
+                worker_interface_contract=worker_interface_contract,
                 tool_progress_callback=child_progress_cb,
                 iteration_budget=None,  # fresh budget per subagent
             )
@@ -251,6 +352,17 @@ def _build_child_agent(
                     from hermes_state_registry import release_or_close
                     release_or_close(child_session_db)
             raise
+    parent_exact_tools = getattr(
+        parent_agent, "_worker_effective_tool_names",
+        getattr(parent_agent, "_executable_tool_names", getattr(parent_agent, "valid_tool_names", None)),
+    )
+    _apply_exact_tool_policy(
+        child,
+        profile_tool_policy,
+        request_toolsets=toolsets,
+        request_blocked_tools=request_blocked_tools,
+        ancestor_allowed_tools=parent_exact_tools,
+    )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     _apply_child_cache_ttl(child)
     if child_session_db is not None:
@@ -261,6 +373,43 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    child._worker_profile = requested_profile
+    child._worker_route_receipt = dict(profile_route_receipt or {})
+    child._delegate_profile_max_spawn_depth = profile_spawn_depth
+    child._delegate_profile_max_concurrent_children = getattr(
+        profile_execution_limits, "max_concurrent_children", None)
+    child._worker_timeout_seconds = getattr(profile_execution_limits, "timeout_seconds", None)
+    child._worker_max_followups = getattr(profile_execution_limits, "max_followups", None)
+    child._worker_max_tool_calls = getattr(profile_execution_limits, "max_tool_calls", None)
+    child._delegate_spawn_allowed = effective_role == "orchestrator"
+    parent_worker_id = (
+        retained_parent_worker_id
+        if retained_parent_worker_id is not None
+        else getattr(parent_agent, "_worker_id", None)
+    )
+    child._delegate_parent_worker_id = (
+        parent_worker_id if isinstance(parent_worker_id, str) and parent_worker_id else None
+    )
+    child._delegate_outbound_messages = []
+
+    def _parent_message_sink(content: str) -> Dict[str, Any]:
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("Message must be nonempty text")
+        from agent.subagent_lifecycle import queue_worker_parent_message
+        durable = queue_worker_parent_message(child, content)
+        item = ({
+            "message_id": durable["message_id"],
+            "status": durable["status"],
+            "content": content,
+        } if durable is not None else {
+            "message_id": "message-" + _uuid.uuid4().hex,
+            "status": "DELIVERED_ON_COMPLETION",
+            "content": content,
+        })
+        child._delegate_outbound_messages.append(item)
+        return item
+
+    child._delegate_parent_message_sink = _parent_message_sink
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
@@ -290,6 +439,15 @@ def _build_child_agent(
             child_role=effective_role, child_goal=goal,
         )
     return child
+
+
+def _stable_worker_identity(child: Any) -> Optional[tuple[str, str]]:
+    """Return only durable scalar worker identity, never proxy metadata."""
+    worker_id = getattr(child, "_worker_id", None)
+    run_id = getattr(child, "_worker_run_id", None)
+    if isinstance(worker_id, str) and worker_id and isinstance(run_id, str) and run_id:
+        return worker_id, run_id
+    return None
 
 def _run_single_child(
     task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
@@ -329,7 +487,14 @@ def _run_single_child(
         run.seed_workspace()
         result, failure_entry, _child_close_deferred = run.await_child()
         if failure_entry is not None:
+            from agent.subagent_lifecycle import SubagentLifecycleService
+            worker_identity = _stable_worker_identity(child)
+            if worker_identity:
+                failure_entry["worker_id"], failure_entry["run_id"] = worker_identity
+            SubagentLifecycleService.complete_adopted_child(child, failure_entry)
             return failure_entry
+
+        child._worker_last_history = list(result.get("messages") or [])
 
         schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
         _merge_late_steer(result, _subagent_id, child)
@@ -343,39 +508,117 @@ def _run_single_child(
         run.append_sibling_write_reminder(entry)
         run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
-        return run.attach_worktree(entry)
+        entry = run.attach_worktree(entry)
+        worker_identity = _stable_worker_identity(child)
+        if worker_identity:
+            entry["worker_id"], entry["run_id"] = worker_identity
+        outbound = list(getattr(child, "_delegate_outbound_messages", None) or [])
+        if outbound:
+            entry["messages_to_parent"] = outbound
+        from agent.subagent_lifecycle import SubagentLifecycleService
+        SubagentLifecycleService.complete_adopted_child(child, entry)
+        return entry
     except Exception as exc:
         # Close steer acceptance before any completion callback (see _merge_late_steer).
         _late_pending_steer = run.close_steering()
         logging.exception(f"[subagent-{task_index}] failed")
         # Entry status "error" (contract), progress event status "failed" (UI vocabulary).
-        return run.finish_failed(
+        entry = run.finish_failed(
             _fabricated_entry(task_index, "error", str(exc), child, run.elapsed()), _late_pending_steer,
             preview=str(exc), summary=str(exc), status="failed",
         )
+        worker_identity = _stable_worker_identity(child)
+        if worker_identity:
+            entry["worker_id"], entry["run_id"] = worker_identity
+        outbound = list(getattr(child, "_delegate_outbound_messages", None) or [])
+        if outbound:
+            entry["messages_to_parent"] = outbound
+        from agent.subagent_lifecycle import SubagentLifecycleService
+        SubagentLifecycleService.complete_adopted_child(child, entry)
+        return entry
     finally:
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
+
+
+def _profile_task_overrides(creds: Dict[str, Any]) -> Dict[str, Any]:
+    overrides = {
+        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
+        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
+        "override_request_overrides": creds.get("request_overrides"),
+        "override_acp_command": creds.get("command"), "override_acp_args": creds.get("args"),
+    }
+    if creds.get("requested_profile"):
+        overrides.update({
+            "override_fallback_model": creds.get("fallback_model"),
+            "override_reasoning_config": creds.get("reasoning_config"),
+            "override_supports_tools": creds.get("supports_tools"),
+            "requested_profile": creds.get("requested_profile"),
+            "profile_instructions": creds.get("profile_instructions"),
+            "profile_tool_policy": creds.get("tool_policy"),
+            "profile_workspace_context": creds.get("workspace_context"),
+            "profile_route_receipt": {
+                key: creds.get(key) for key in (
+                    "requested_profile", "requested_provider", "requested_model",
+                    "requested_reasoning_effort", "resolved_provider", "resolved_model",
+                    "resolved_reasoning_effort", "route_provenance", "normalization_events",
+                    "transmitted_model", "provider_reported_model",
+                )
+            },
+            "profile_execution_limits": creds.get("execution_limits"),
+        })
+    return overrides
+
+
+def _resolve_task_credentials(
+    task_list: List[Dict[str, Any]], creds: Dict[str, Any], routing_cfg: Dict[str, Any], parent_agent,
+    *, top_profile: Optional[str] = None, top_provider: Optional[str] = None,
+    top_model: Optional[str] = None, top_reasoning_effort: Optional[str] = None,
+) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """Resolve every task route before building any child, preventing partial batch launch."""
+    from agent.delegation_model_routing import select_profile_name
+    from tools.delegate_tool_config import _resolve_profile_credentials
+    resolved: List[Dict[str, Any]] = []
+    for task in task_list:
+        name = select_profile_name(task.get("profile") or task.get("model_profile"), top_profile, routing_cfg)
+        provider = task.get("provider", top_provider)
+        model = task.get("model", top_model)
+        effort = task.get("reasoning_effort", top_reasoning_effort)
+        if not name:
+            if provider or model or effort:
+                return [], "Per-task provider/model/reasoning_effort overrides require a delegation profile."
+            resolved.append(creds)
+            continue
+        try:
+            task_creds = _resolve_profile_credentials(
+                name, routing_cfg, parent_agent,
+                requested_provider=provider, requested_model=model, requested_reasoning_effort=effort,
+            )
+            from agent.delegation_model_routing import parse_profiles
+            task_creds["profile_instructions"] = parse_profiles(routing_cfg)[name].instructions
+            resolved.append(task_creds)
+        except ValueError as exc:
+            return [], str(exc)
+    return resolved, None
 
 
 def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
-    live_deleg_id: Optional[str], live_writers: list,
+    live_deleg_id: Optional[str], live_writers: list, task_creds: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
     children = []
+    from agent.subagent_lifecycle import SubagentLifecycleService
+    lifecycle = SubagentLifecycleService(lambda: parent_agent)
     for i, t in enumerate(task_list):
+        task_route = task_creds[i] if task_creds and i < len(task_creds) else creds
+        overrides = _profile_task_overrides(task_route)
+        overrides["routing_cfg"] = routing_cfg
+        profile_max = task_route.get("max_iterations") if task_route.get("requested_profile") else None
+        task_max_iterations = min(max_iterations, profile_max) if isinstance(profile_max, int) else max_iterations
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -384,8 +627,19 @@ def _build_children(
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                model=task_route["model"], max_iterations=task_max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+            )
+        except ValueError as exc:
+            return [], str(exc)
+        try:
+            lifecycle.adopt_delegate_child(
+                child,
+                goal=t["goal"],
+                context=_child_context,
+                profile=task_route.get("requested_profile"),
+                creds=task_route,
+                cfg=routing_cfg,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -412,6 +666,10 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, action: Optional[str] = None, subagent_id: Optional[str] = None,
     message: Optional[str] = None, parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
+    profile: Optional[str] = None, model_profile: Optional[str] = None,
+    provider: Optional[str] = None, model: Optional[str] = None, reasoning_effort: Optional[str] = None,
+    worker_id: Optional[str] = None, run_id: Optional[str] = None, timeout_seconds: Optional[float] = None,
+    reconciliation_disposition: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -421,31 +679,76 @@ def delegate_task(
         return tool_error("delegate_task requires a parent agent context.")
 
     normalized_action = (action or "").strip().lower()
+    if normalized_action == "discover":
+        from agent.delegation_model_routing import discover_workers
+        catalog = discover_workers(_load_config(), parent_agent)
+        if profile:
+            selected = next((item for item in catalog["profiles"] if item["name"] == profile), None)
+            if selected is None:
+                return tool_error(f"Unknown delegation profile '{profile}'.")
+            catalog = {**catalog, "profiles": [selected]}
+        else:
+            catalog = {
+                **catalog,
+                "profiles": [
+                    {
+                        key: item.get(key) for key in (
+                            "name", "description", "provider", "model", "reasoning_effort",
+                            "supported_reasoning_efforts", "supports_tools", "availability",
+                            "freshness", "provenance",
+                        )
+                    }
+                    for item in catalog["profiles"]
+                ],
+            }
+        return json.dumps({"success": True, **catalog}, ensure_ascii=False)
+    if normalized_action in {
+        "status", "inspect", "completions", "message", "wait", "interrupt", "cancel", "reconcile", "resume", "ack",
+    }:
+        from agent.subagent_lifecycle import SubagentLifecycleError, SubagentLifecycleService
+        if normalized_action == "message" and not worker_id:
+            worker_id = getattr(parent_agent, "_delegate_parent_worker_id", None)
+            if not worker_id:
+                sink = getattr(parent_agent, "_delegate_parent_message_sink", None)
+                if callable(sink):
+                    try:
+                        queued = sink(message or "")
+                    except ValueError as exc:
+                        return tool_error(str(exc))
+                    return json.dumps({
+                        "success": True,
+                        "message_id": queued["message_id"],
+                        "status": queued["status"],
+                    }, ensure_ascii=False)
+                return tool_error("action='message' requires worker_id when no parent worker is available.")
+        try:
+            payload = SubagentLifecycleService(lambda: parent_agent).control(
+                normalized_action,
+                worker_id=worker_id,
+                run_id=run_id,
+                message=message,
+                timeout_seconds=timeout_seconds,
+                reconciliation_disposition=reconciliation_disposition,
+            )
+        except (SubagentLifecycleError, PermissionError, ValueError) as exc:
+            return tool_error(str(exc))
+        return json.dumps({"success": True, **payload}, ensure_ascii=False)
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
     if normalized_action and normalized_action != "spawn":
-        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
-
-    # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
-    if is_spawn_paused():
         return tool_error(
-            "Delegation spawning is paused. Clear the pause via the TUI "
-            "(`p` in /agents) or the `delegation.pause` RPC before retrying."
-        )
+            f"Unknown action '{action}'. Use spawn, discover, status, inspect, completions, message, wait, interrupt, cancel, "
+            "reconcile, resume, ack, list, steer, or stop.")
 
     top_role = _normalize_role(role)
     # background applies to single tasks AND batches: a batch is ONE async unit
     # that joins on every child and re-enters as a single consolidated message.
     background = is_truthy_value(background, default=False) if background is not None else False
 
-    depth = getattr(parent_agent, "_delegate_depth", 0)
-    max_spawn = _get_max_spawn_depth()
-    if depth >= max_spawn:
-        return tool_error(
-            f"Delegation depth limit reached (depth={depth}, max_spawn_depth={max_spawn}). Raise "
-            f"delegation.max_spawn_depth in config.yaml if deeper nesting is required (no hard ceiling, but each level "
-            f"multiplies API cost)."
-        )
+    try:
+        max_children = _validate_spawn_admission(parent_agent)
+    except ValueError as exc:
+        return tool_error(str(exc))
 
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
@@ -460,18 +763,58 @@ def delegate_task(
     # a per-call routing owner shaped like the delegation config section. Keep
     # the route and its fallback policy together through child construction.
     routing_cfg = credentials_cfg if credentials_cfg is not None else cfg
-    try:
-        creds = _resolve_delegation_credentials(routing_cfg, parent_agent)
-    except ValueError as exc:
-        # Explicit-pin preflight failures (e.g. pinned delegation.command missing from PATH) refuse the
-        # spawn loudly (#80450).
-        return tool_error(str(exc))
-    max_children = _get_max_concurrent_children()
+    selected_profile = str(profile or model_profile or "").strip() or None
+    if profile and model_profile and str(profile).strip() != str(model_profile).strip():
+        return tool_error("profile and legacy model_profile disagree; provide only one worker profile.")
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if err:
         return tool_error(err)
+    # A batch may select its profile per item without a top-level/default
+    # profile.  Resolve those item routes first instead of rejecting or
+    # initializing an unrelated inherited runtime.
+    item_profile_only = not selected_profile and bool(task_list) and all(
+        str(task.get("profile") or task.get("model_profile") or "").strip()
+        for task in task_list
+    )
+    creds = None
+    if not item_profile_only:
+        try:
+            route_overrides = (provider, model, reasoning_effort)
+            if selected_profile is None and all(value is None for value in route_overrides):
+                creds = _resolve_delegation_credentials(routing_cfg, parent_agent)
+            elif all(value is None for value in route_overrides):
+                creds = _resolve_delegation_credentials(routing_cfg, parent_agent, selected_profile)
+            else:
+                creds = _resolve_delegation_credentials(
+                    routing_cfg, parent_agent, selected_profile,
+                    requested_provider=provider, requested_model=model,
+                    requested_reasoning_effort=reasoning_effort,
+                )
+        except ValueError as exc:
+            # Explicit-pin preflight failures refuse the entire batch before
+            # any child is built.
+            return tool_error(str(exc))
+    task_creds, err = _resolve_task_credentials(
+        task_list,
+        creds,
+        routing_cfg,
+        parent_agent,
+        top_profile=selected_profile,
+        top_provider=provider,
+        top_model=model,
+        top_reasoning_effort=reasoning_effort,
+    )
+    if err:
+        return tool_error(err)
+    if creds is None:
+        creds = task_creds[0]
+
+    try:
+        _validate_spawn_admission(parent_agent, len(task_list))
+    except ValueError as exc:
+        return tool_error(str(exc))
 
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
@@ -485,7 +828,7 @@ def delegate_task(
 
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers,
+        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_creds=task_creds,
     )
     if err:
         return tool_error(err)
@@ -543,8 +886,9 @@ _DESCRIPTION_HEAD = (
     "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
     "- A single tool call -> call the tool directly\n"
     "- Tasks needing user interaction -> subagents cannot ask questions\n"
-    "- Durable work that must survive this session -> cronjob or terminal(background=True, notify=True); /stop, /new, "
-    "or process exit discards running subagents.\n\n"
+    "- Long-running scheduled or shell work -> cronjob or terminal(background=True, notify=True). Worker profiles "
+    "persist ids, messages, history, and terminal receipts when the parent session has durable state; restart "
+    "interrupts an expired run and requires an explicit resume.\n\n"
     "RULES:\n"
     "- Children know nothing of this conversation: pass everything needed via 'context', including any required "
     "output language, tone, or style (e.g. \"respond in Chinese\").\n"
@@ -627,6 +971,22 @@ DELEGATE_TASK_SCHEMA = {
                             "Background THIS child needs: file paths, error messages, constraints. Each child "
                             "sees only its own context — repeat shared background in every task that needs it.",
                         ),
+                        "profile": _p(
+                            "string",
+                            "Configured worker profile name. Use action='discover' to inspect the stable catalog.",
+                        ),
+                        "provider": _p(
+                            "string",
+                            "Optional provider override; accepted only with routing_mode=dynamic and an enabled route.",
+                        ),
+                        "model": _p(
+                            "string",
+                            "Optional model override; accepted only with routing_mode=dynamic and an enabled route.",
+                        ),
+                        "reasoning_effort": _p(
+                            "string",
+                            "Optional effort override; accepted only with routing_mode=dynamic and an enabled route.",
+                        ),
                         "output_schema": _p(
                             "object",
                             "Optional JSON Schema this child's final answer must validate against (told to the "
@@ -646,19 +1006,55 @@ DELEGATE_TASK_SCHEMA = {
                 },
                 "description": "(rebuilt at get_definitions() time)",
             },
+            "profile": _p(
+                "string",
+                "Profile for every spawned task unless that task sets its own profile; with action='discover', "
+                "returns that profile's full policy and instructions.",
+            ),
+            "provider": _p(
+                "string",
+                "Optional batch route override, accepted only by a dynamic profile and its enabled routes.",
+            ),
+            "model": _p(
+                "string",
+                "Optional batch model override, accepted only by a dynamic profile and its enabled routes.",
+            ),
+            "reasoning_effort": _p(
+                "string",
+                "Optional batch effort override, accepted only by a dynamic profile and its enabled routes.",
+            ),
             # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
             # delegations always run in the background. Unadvertised; do not re-add.
             "action": _p(
                 "string",
-                "Default 'spawn'. Live control of running children: "
+                "Default 'spawn'. 'discover' returns configured worker profiles. Durable worker actions are "
+                "'status', 'inspect' (explicit visible conversation plus receipt metadata), 'completions', "
+                "'message', 'wait', 'interrupt' (one run), 'cancel' (worker tree), 'reconcile', 'resume', and 'ack'. "
+                "Legacy live controls are "
                 "'list' = ids/goals/status/transcripts; 'steer' = queue "
                 "course-correction text into one child (subagent_id + "
                 "message) without stopping it; 'stop' = end one child "
                 "early (subagent_id; partial result still returns). "
                 "Control actions return immediately; goal/tasks are ignored unless spawning.",
-                enum=["spawn", "list", "steer", "stop"],
+                enum=[
+                    "spawn", "discover", "status", "inspect", "completions", "message", "wait",
+                    "interrupt", "cancel", "reconcile", "resume", "ack", "list", "steer", "stop",
+                ],
             ),
             "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
+            "worker_id": _p(
+                "string",
+                "Stable worker target. action='inspect' returns its retained user/assistant/tool conversation "
+                "without hidden reasoning or system prompts.",
+            ),
+            "run_id": _p("string", "Optional exact run target for inspect/wait/cancel/resume/ack."),
+            "reconciliation_disposition": _p(
+                "string",
+                "For action='reconcile': explicit decision about the prior uncertain effect. This records evidence "
+                "and never replays the tool.",
+                enum=["confirmed_applied", "confirmed_not_applied", "accepted_unknown_no_replay"],
+            ),
+            "timeout_seconds": _p("number", "For action='wait', block for at most 60 seconds; omit for a snapshot."),
             "message": _p(
                 "string",
                 "For action='steer': the course correction, appended to "
@@ -699,6 +1095,10 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        worker_id=args.get("worker_id"), run_id=args.get("run_id"), timeout_seconds=args.get("timeout_seconds"),
+        reconciliation_disposition=args.get("reconciliation_disposition"),
+        profile=args.get("profile"), provider=args.get("provider"), model=args.get("model"),
+        reasoning_effort=args.get("reasoning_effort"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

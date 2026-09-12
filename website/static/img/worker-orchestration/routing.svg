@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 760" role="img" aria-labelledby="title desc"><title id="title">Choosing a route does not grant more access</title><desc id="desc">Routing selects a model. Permission checks decide what that worker may do.</desc>
+<defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#94a3b8"/></marker></defs><style>text{font-family:Arial,Helvetica,sans-serif} .title{font-size:28px;font-weight:700;fill:#f8fafc}.label{font-size:19px;font-weight:600;fill:#f8fafc}.body{font-size:16px;fill:#cbd5e1}.note{font-size:14px;fill:#94a3b8}</style>
+<rect width="1100" height="760" fill="#0f172a"/><rect width="1100" height="760" fill="url(#grid)"/>
+<text x="35" y="48" class="title">Choosing a route does not grant more access</text>
+<text x="35" y="78" class="body">Routing selects a model. Permission checks decide what that worker may do.</text>
+<rect x="35" y="115" width="490" height="130" rx="12" fill="#0f172a"/><rect x="35" y="115" width="490" height="130" rx="12" fill="#22d3ee" fill-opacity="0.09" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="53" y="146" class="label">DEFAULT: PROFILE ONLY</text>
+<text x="53" y="172" class="body">Parent picks a named worker profile.</text>
+<text x="53" y="196" class="body">Profile supplies provider, model and effort.</text>
+<text x="53" y="220" class="body">Example: “Use my checker.”</text>
+<rect x="575" y="115" width="490" height="130" rx="12" fill="#0f172a"/><rect x="575" y="115" width="490" height="130" rx="12" fill="#fbbf24" fill-opacity="0.09" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="593" y="146" class="label">OPTIONAL: DYNAMIC ROUTING</text>
+<text x="593" y="172" class="body">Parent may select from your enabled routes.</text>
+<text x="593" y="196" class="body">A profile can narrow that menu further.</text>
+<text x="593" y="220" class="body">Example: “Use checker with allowed model B.”</text>
+<path d="M280 245 L400 295" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M820 245 L700 295" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="195" y="295" width="710" height="110" rx="12" fill="#0f172a"/><rect x="195" y="295" width="710" height="110" rx="12" fill="#34d399" fill-opacity="0.09" stroke="#34d399" stroke-width="1.5"/>
+<text x="213" y="326" class="label">VALIDATE THE WHOLE BATCH</text>
+<text x="213" y="352" class="body">Check profile, enabled route, supported effort and known availability.</text>
+<text x="213" y="376" class="body">Invalid selection → visible error before any worker is launched.</text>
+<path d="M550 405 L550 450" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="195" y="450" width="710" height="120" rx="12" fill="#0f172a"/><rect x="195" y="450" width="710" height="120" rx="12" fill="#fb7185" fill-opacity="0.09" stroke="#fb7185" stroke-width="1.5"/>
+<text x="213" y="481" class="label">APPLY THE NARROWEST PERMISSIONS</text>
+<text x="213" y="507" class="body">User policy ∩ parent authority ∩ profile limits ∩ backend capability</text>
+<text x="213" y="531" class="body">Applies to native tools, MCP tools and tools called through code.</text>
+<text x="213" y="555" class="body">No filesystem promise without an enforcing backend.</text>
+<path d="M550 570 L550 615" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="195" y="615" width="710" height="105" rx="12" fill="#0f172a"/><rect x="195" y="615" width="710" height="105" rx="12" fill="#fb923c" fill-opacity="0.09" stroke="#fb923c" stroke-width="1.5"/>
+<text x="213" y="646" class="label">LAUNCH AND RECORD WHAT HAPPENED</text>
+<text x="213" y="672" class="body">Requested profile/route → resolved settings → transmitted request</text>
+<text x="213" y="696" class="body">Provider-reported model is evidence, not independent verification.</text>
+</svg>

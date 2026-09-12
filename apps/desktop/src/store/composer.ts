@@ -1,7 +1,10 @@
 import { atom } from 'nanostores'
 
+import { activeConnectionScopeSuffix } from '@/lib/connection-scoped'
 import { deriveDraftTitle } from '@/lib/draft-title'
 import { triggerHaptic } from '@/lib/haptics'
+import { $activeGatewayProfile, $newChatProfile, normalizeProfileKey } from '@/store/profile'
+import { $sessions, rememberedSessionProfile } from '@/store/session'
 
 export interface ComposerAttachment {
   id: string
@@ -172,7 +175,20 @@ export const mainComposerScope = createComposerAttachmentScope($composerAttachme
 // Per-thread draft stash for the decoupled composer. Session lifecycle never
 // touches this — only ChatBar's scope swap reads/writes it. Text mirrors to
 // localStorage; attachments are memory-only (blobs, upload state).
-export const SESSION_DRAFTS_STORAGE_KEY = 'hermes:composer-drafts:v3'
+//
+// v4 declares the PROFILE scope in each entry's own key. v3 keyed on the
+// session id alone, so one flat map served every profile in the renderer and
+// the unsent `__new__` bucket was global: a draft (text AND its staged image
+// attachments) stashed under one profile could be restored into a composer
+// belonging to another, and submitted there. Same failure family as the
+// remembered session id (#67603/#67709) and the connection scope (#77318) —
+// persisted state must declare its scope in its own key.
+export const SESSION_DRAFTS_STORAGE_KEY = 'hermes:composer-drafts:v4'
+
+/** v3's flat, profile-less map. Discarded, never migrated: ownership of a bare
+ *  session key is unknowable once several profiles have written to it, and
+ *  guessing an owner is precisely the cross-profile bleed v4 exists to stop. */
+const LEGACY_SESSION_DRAFTS_STORAGE_KEY = 'hermes:composer-drafts:v3'
 
 const NEW_SESSION_DRAFT_KEY = '__new__'
 const MAX_PERSISTED_DRAFTS = 50
@@ -183,14 +199,50 @@ export interface SessionDraft {
   text: string
 }
 
-const draftKey = (scope: string | null | undefined) => scope?.trim() || NEW_SESSION_DRAFT_KEY
+/**
+ * The profile a draft belongs to.
+ *
+ * Prefer the owning profile recorded on the session row, so a draft stays
+ * keyed to ITS profile even while a different one is live (background profiles
+ * keep streaming during a live swap). An unsent `__new__` draft has no session
+ * to own it, so it belongs to whichever profile the composer is currently
+ * pointed at: the new-chat picker's target when set, else the live gateway's.
+ */
+function draftProfile(scope: string | null | undefined): string {
+  const active = normalizeProfileKey($newChatProfile.get() ?? $activeGatewayProfile.get())
+
+  return scope?.trim()
+    ? normalizeProfileKey(rememberedSessionProfile($sessions.get(), scope, $activeGatewayProfile.get()))
+    : active
+}
+
+/**
+ * Storage identity for one draft: profile, then connection, then thread.
+ *
+ * The connection suffix rides along for the same reason `profileNavigationKey`
+ * carries it — the same profile NAME on a different gateway is a different
+ * backend with its own sessions, and windows on different gateways share this
+ * localStorage area.
+ */
+const draftKey = (scope: string | null | undefined): string =>
+  `${encodeURIComponent(draftProfile(scope))}${activeConnectionScopeSuffix()}:${scope?.trim() || NEW_SESSION_DRAFT_KEY}`
 
 const cloneDraft = (draft: SessionDraft): SessionDraft => ({
   attachments: draft.attachments.map(attachment => ({ ...attachment })),
   text: draft.text
 })
 
+function discardLegacyDraftTexts(): void {
+  try {
+    window.localStorage.removeItem(LEGACY_SESSION_DRAFTS_STORAGE_KEY)
+  } catch {
+    // Best-effort only — quota/private-mode must never break typing.
+  }
+}
+
 function loadPersistedDraftTexts(): [string, SessionDraft][] {
+  discardLegacyDraftTexts()
+
   try {
     const raw = window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY)
 

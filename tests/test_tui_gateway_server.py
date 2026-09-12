@@ -7885,6 +7885,70 @@ def test_ensure_session_db_row_defaults_desktop_to_no_workspace(monkeypatch, tmp
     ]
 
 
+def test_ensure_session_db_row_schedules_git_meta_for_explicit_desktop_workspace(monkeypatch, tmp_path):
+    """A newly persisted desktop workspace claims and publishes one guarded Git probe."""
+    created = []
+    cwd_updates = []
+    probes = []
+    events = []
+
+    class _FakeDB:
+        def __init__(self):
+            self.row = None
+            self.fail_create = False
+
+        def get_session(self, key):
+            return self.row if self.row and self.row["key"] == key else None
+
+        def create_session(
+            self, key, source=None, model=None, model_config=None, parent_session_id=None,
+            cwd=None, profile_name=None,
+        ):
+            if self.fail_create:
+                raise RuntimeError("lazy persistence failed")
+            events.append("create")
+            created.append({"key": key, "source": source, "cwd": cwd})
+            self.row = {"key": key, "source": source, "cwd": cwd}
+
+        def update_session_cwd(self, key, cwd):
+            events.append("claim")
+            cwd_updates.append((key, cwd))
+            return 7
+
+    db = _FakeDB()
+    session = {
+        "session_key": "k1",
+        "source": "desktop",
+        "cwd": str(tmp_path),
+        "explicit_cwd": True,
+    }
+
+    def record_probe(scheduled_session, cwd, generation):
+        events.append("schedule")
+        probes.append((scheduled_session, cwd, generation))
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_persist_session_git_meta", record_probe)
+
+    assert server._ensure_session_db_row(session) is True
+    assert created == [{"key": "k1", "source": "desktop", "cwd": str(tmp_path)}]
+    assert cwd_updates == [("k1", str(tmp_path))]
+    assert probes == [(session, str(tmp_path), 7)]
+    assert events == ["create", "claim", "schedule"]
+
+    assert server._ensure_session_db_row(session) is True
+    assert len(created) == 2  # Preserve the existing idempotent row upsert.
+    assert cwd_updates == [("k1", str(tmp_path))]
+    assert probes == [(session, str(tmp_path), 7)]
+
+    db.row = None
+    db.fail_create = True
+    assert server._ensure_session_db_row(session) is True
+    assert cwd_updates == [("k1", str(tmp_path))]
+    assert probes == [(session, str(tmp_path), 7)]
+
+
 def test_ensure_session_db_row_persists_session_model_override(monkeypatch):
     """The session's composer pick (model + effort + fast) must own the DB row.
 

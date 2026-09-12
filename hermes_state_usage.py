@@ -6,6 +6,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import logging
+import math
 import threading
 import time
 import weakref
@@ -354,6 +355,14 @@ class SessionUsageMixin:
         sess = dict(row) if (row is not None and not task) else {}
         counts = [v or 0 for v in (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens)]
         now = time.time()
+        latest = conn.execute(
+            "SELECT MAX(last_seen) FROM session_model_usage WHERE session_id = ?", (session_id,),
+        ).fetchone()[0]
+        if latest is not None and now <= float(latest):
+            # Wall clocks can tie or move backwards. Keep the persisted order strict so
+            # an existing route updated by A -> B -> A is newest again without relying
+            # on its stable rowid.
+            now = math.nextafter(float(latest), math.inf)
         conn.execute(_MODEL_USAGE_UPSERT_SQL, (
             session_id, model or sess.get("model") or "unknown",
             billing_provider or sess.get("billing_provider") or "",

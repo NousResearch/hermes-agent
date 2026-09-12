@@ -250,6 +250,12 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
 
 @router.post("/api/gateway/start")
 async def start_gateway(profile: Optional[str] = None):
+    from hermes_cli.web_server_gateway import multiplexed_profile_refusal
+    # The spawned `hermes -p X gateway start` would refuse with exit 78 into an action log nobody reads;
+    # surface the same refusal here so the UI can point at the multiplexer instead of showing "started".
+    refusal = await asyncio.to_thread(multiplexed_profile_refusal, profile, "start")
+    if refusal:
+        raise HTTPException(status_code=409, detail=refusal)
     with http_failure("Failed to spawn gateway start", 500, "Failed to start gateway"):
         proc = _spawn_hermes_action(_gateway_subcommand(profile, "start"), "gateway-start")
     return {"ok": True, "pid": proc.pid, "name": "gateway-start"}
@@ -257,6 +263,12 @@ async def start_gateway(profile: Optional[str] = None):
 
 @router.post("/api/gateway/stop")
 async def stop_gateway(profile: Optional[str] = None):
+    from hermes_cli.web_server_gateway import multiplexed_profile_refusal
+    # A served profile has no gateway of its own to stop: the child prints "No gateway running for this
+    # profile" (exit 0) while the multiplexer keeps serving it and the UI flips to "stopped".
+    refusal = await asyncio.to_thread(multiplexed_profile_refusal, profile, "stop")
+    if refusal:
+        raise HTTPException(status_code=409, detail=refusal)
     with http_failure("Failed to spawn gateway stop", 500, "Failed to stop gateway"):
         proc = _spawn_hermes_action(_gateway_subcommand(profile, "stop"), "gateway-stop")
     return {"ok": True, "pid": proc.pid, "name": "gateway-stop"}

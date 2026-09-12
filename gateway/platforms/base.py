@@ -334,8 +334,16 @@ def resolve_proxy_url(
     target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None) -> str | None:
     """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then HTTPS_PROXY /
     HTTP_PROXY / ALL_PROXY (any case), then the macOS system proxy — the latter two only when
-    ``gateway.trust_env`` is true. None when nothing is found or NO_PROXY matches a target."""
-    value = (os.environ.get(platform_env_var) or "").strip() if platform_env_var else ""
+    ``gateway.trust_env`` is true. None when nothing is found or NO_PROXY matches a target.
+
+    *platform_env_var* is a per-adapter, per-profile-configurable setting (each proxy URL can
+    embed credentials, e.g. ``http://user:pass@host``) so it is read scope-aware: under a
+    secondary multiplex profile it comes from that profile's own ``.env``, not the shared
+    process env another profile's ``TELEGRAM_PROXY``/``DISCORD_PROXY``/etc. may hold. The
+    generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw process-env read —
+    those are OS/system-level network settings, not a per-profile Hermes concept."""
+    from gateway.platforms._shared import get_scoped_secret as _get_scoped_proxy_var
+    value = (_get_scoped_proxy_var(platform_env_var, "") or "").strip() if platform_env_var else ""
     if not value:
         if not gateway_trust_env():  # only the explicit per-platform var is honored
             return None
@@ -734,6 +742,8 @@ _CACHE_DIR_IMPORT_DEFAULTS = {
     "VIDEO_CACHE_DIR": VIDEO_CACHE_DIR, "DOCUMENT_CACHE_DIR": DOCUMENT_CACHE_DIR,
     "SCREENSHOT_CACHE_DIR": SCREENSHOT_CACHE_DIR}
 
+# Launch-time homes: fine for the static ALLOW roots below (per-profile cache roots are
+# enumerated at check time), never for the credential DENY side — see _credential_home_roots.
 _HERMES_HOME = get_hermes_home()
 _HERMES_ROOT = get_default_hermes_root()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
@@ -795,11 +805,24 @@ def _profile_cache_roots() -> List[Path]:
     profile path is allowlisted *before* the ``/root`` system denylist is consulted (which otherwise wins
     when HERMES_HOME is symlinked under a denied prefix and $HOME is not that prefix). See issue #31733.
     """
+    return [p / "cache" / subdir for p in _profile_dirs() for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
+
+
+def _profile_dirs() -> List[Path]:
+    """Every ``<root>/profiles/<name>`` directory, read at check time."""
     try:
-        profile_dirs = [p for p in (_HERMES_ROOT / "profiles").iterdir() if p.is_dir()]
+        return [p for p in (_HERMES_ROOT / "profiles").iterdir() if p.is_dir()]
     except OSError:
         return []
-    return [p / "cache" / subdir for p in profile_dirs for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
+
+
+def _credential_home_roots() -> List[Path]:
+    """Every Hermes home whose credential stores the denylist must cover: the ACTIVE home
+    (the per-turn HERMES_HOME override under ``gateway.multiplex_profiles``), the shared root
+    and every ``<root>/profiles/*``. Enumerated at check time like ``_profile_cache_roots`` on
+    the allow side — a denylist frozen at import covers only the launch profile, so a
+    ``MEDIA:<root>/profiles/<other>/.env`` emitted in any profile's turn would upload it."""
+    return list(dict.fromkeys((get_hermes_home(), _HERMES_ROOT, *_profile_dirs())))
 
 
 def _kanban_root() -> Path:
@@ -829,8 +852,9 @@ def _kanban_attachment_roots() -> List[Path]:
 
 def _media_delivery_allowed_roots() -> List[Path]:
     """Return roots from which model-emitted local media may be delivered."""
+    from gateway.media_policy import media_delivery_allow_dirs
     operator_roots = (
-        root for chunk in os.environ.get(MEDIA_DELIVERY_ALLOW_DIRS_ENV, "").split(os.pathsep)
+        root for chunk in media_delivery_allow_dirs().split(os.pathsep)
         for raw_root in chunk.split(",")
         if (root := Path(os.path.expanduser(raw_root.strip()))).is_absolute())
     return [*map(Path, MEDIA_DELIVERY_SAFE_ROOTS), *_profile_cache_roots(),
@@ -839,10 +863,10 @@ def _media_delivery_allowed_roots() -> List[Path]:
 
 def _media_delivery_recency_seconds() -> float:
     """Recency window (seconds) for trusting fresh files; 0 = pure-allowlist mode."""
-    raw = os.environ.get(MEDIA_DELIVERY_TRUST_RECENT_ENV, "1").strip().lower()
-    if raw in ("0", "false", "no", "off", ""):
+    from gateway.media_policy import media_delivery_trust_recent, media_delivery_trust_recent_seconds
+    if not media_delivery_trust_recent():
         return 0.0
-    custom = os.environ.get(MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV, "").strip()
+    custom = media_delivery_trust_recent_seconds().strip()
     default = float(_MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS)
     return _or_default(lambda: max(0.0, float(custom)) if custom else default, default)
 
@@ -858,7 +882,7 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
-            *(r / rel for r in (_HERMES_HOME, _HERMES_ROOT) for rel in _ROOT_CREDENTIAL_PATHS),
+            *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
             *_kanban_board_db_paths()]
 
 
@@ -1110,7 +1134,8 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
         if resolved_root is not None and _path_is_within(resolved, resolved_root):
             return str(resolved)
     # Non-strict (default): anything not denylisted (/etc, /proc, ~/.ssh, Hermes-root secrets).
-    if os.environ.get(MEDIA_DELIVERY_STRICT_ENV, "0").strip().lower() not in _TRUTHY:
+    from gateway.media_policy import media_delivery_strict
+    if not media_delivery_strict():
         return None if _path_under_denied_prefix(resolved) else str(resolved)
     # Strict: recency trust for fresh files (pandoc -o /tmp/x.pdf); denylist still applies.
     window = _media_delivery_recency_seconds()
@@ -1809,6 +1834,11 @@ class BasePlatformAdapter(ABC):
     # answer, and an acknowledgement would silently abandon the task (#57056). Read generically via
     # ``getattr(adapter, "interactive_resume", True)`` — no per-platform branching at the call site.
     interactive_resume: bool = True
+    # Port-binding adapter that answers ``/p/<profile>/...`` for every served profile on the default
+    # listener under ``gateway.multiplex_profiles``. Declared per adapter (not in a central list) so
+    # ``hermes gateway migrate`` can tell "URL changes" from "this profile would be skipped" as new
+    # HTTP-inbound adapters gain the prefix.
+    serves_profile_prefix: bool = False
     # Back-reference to the running ``GatewayRunner`` (set by gateway/run.py); ``build_source``
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]
@@ -1854,6 +1884,9 @@ class BasePlatformAdapter(ABC):
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Owning multiplex profile (None on primary); see _session_key_profile.
         self._owner_profile: Optional[str] = None
+        # Set by the runner on a secondary's port-binding adapter: serve via the default profile's
+        # shared listener (/p/<profile>/...) instead of binding a port (gateway/platforms/shared_ingress.py).
+        self._shared_listener_profile: Optional[str] = None
         # Registered by GatewayRunner (see set_authorization_check).
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``voice.auto_tts`` default plus per-chat /voice on|tts / off.
@@ -2567,11 +2600,14 @@ class BasePlatformAdapter(ABC):
 
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send ``(url, alt)`` images (``http(s)://`` or ``file://``) one by one (GIFs via
         ``send_animation``, local files via ``send_image_file``); override to bundle natively
-        (Signal)."""
+        (Signal). Returns success when at least one image was delivered — the outcome
+        the turn-level delivery tracker records; every override must return the same
+        aggregate, or a media-only turn on that platform reports FAILURE (#106153)."""
         from urllib.parse import unquote as _unquote
+        delivered = False
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
@@ -2588,8 +2624,15 @@ class BasePlatformAdapter(ABC):
                     chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                else:
+                    delivered = True
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+        if not images:
+            return SendResult(success=False, error="no images to send")
+        return SendResult(
+            success=delivered,
+            error=None if delivered else "all images failed to send")
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
@@ -3654,7 +3697,9 @@ class BasePlatformAdapter(ABC):
             source = event.source
             # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
             # of the chain, not the event that opened it (see ``MessageEvent.ledger_message_id``).
-            _ledger_id = event.ledger_message_id if event.ledger_message_id is not None else getattr(event, "message_id", "")
+            _ledger_id = getattr(event, "ledger_message_id", None)
+            if _ledger_id is None:
+                _ledger_id = getattr(event, "message_id", "")
             obligation_id = compute_obligation_id(
                 session_key, str(_ledger_id or ""), text_content)
             await asyncio.to_thread(
@@ -3701,11 +3746,12 @@ class BasePlatformAdapter(ABC):
 
     async def _deliver_media_attachments(
         self, event: MessageEvent, media_files: list, local_files: list, *,
-        force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any]) -> None:
+        force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any],
+        record_delivery: Callable) -> None:
         """Deliver MEDIA-tag files and detected local files by type: images batched via
         ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA
         tags only, never bare local files), video → send_video, else send_document. Every failure is
-        reported."""
+        reported. Each send feeds ``record_delivery`` so media-only turns report SUCCESS."""
         from urllib.parse import quote as _quote
 
         def _as_image(path: str) -> bool:
@@ -3714,10 +3760,11 @@ class BasePlatformAdapter(ABC):
         _image_paths += [p for p in local_files if _as_image(p)]
         if _image_paths:
             await self._send_image_batch(
-                event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay)
+                event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
+                record_delivery)
         chat_id = event.source.chat_id
 
-        async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> None:
+        async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
             """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
             do."""
             ext = Path(path).suffix.lower()
@@ -3733,6 +3780,7 @@ class BasePlatformAdapter(ABC):
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
                 await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
+            return result
         queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
         if queue:
             logger.info("[%s] Delivering %d non-image MEDIA attachment(s)", self.name, len(queue))
@@ -3741,31 +3789,40 @@ class BasePlatformAdapter(ABC):
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
-                await _send_one(path, is_voice=is_voice, media_tag=media_tag)
+                record_delivery(await _send_one(path, is_voice=is_voice, media_tag=media_tag))
             except Exception as err:
+                record_delivery(SendResult(success=False, error=str(err)))
                 if media_tag:
                     logger.warning("[%s] Error sending media: %s", self.name, err)
                 else:
                     logger.error("[%s] Error sending local file %s: %s", self.name, path, err)
 
     async def _send_image_batch(
-        self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float) -> None:
-        """Batch-send images; a failure is logged (never raised) so other attachments still go."""
+        self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float,
+        record_delivery: Callable) -> None:
+        """Batch-send images; a failure is logged (never raised) so other attachments still go.
+        The batch result feeds ``record_delivery`` so media-only turns report their real
+        outcome instead of FAILURE."""
         try:
-            await self.send_multiple_images(
+            result = await self.send_multiple_images(
                 chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+            record_delivery(SendResult(success=False, error=str(batch_err)))
+            return
+        record_delivery(result)
 
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
         reply_to: Optional[str], is_ephemeral_response: bool = False,
-    ) -> "SendResult":
+    ) -> "tuple[SendResult, BasePlatformAdapter]":
         """The delivery-ledger bracket every final text goes through, on the CURRENT transport
         (a reconnect may have replaced this adapter): record the obligation before the send,
         send with retry, finalize from the result — so a refused final (flood control, a dead
         transport) leaves a ledger row the boot sweep / runtime redelivery can act on. ``event``
-        supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``)."""
+        supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``).
+        Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
+        (an ephemeral delete must go to the same transport)."""
         delivery_adapter = self._final_delivery_adapter(event.source)
         logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
                     len(text_content), event.source.chat_id)
@@ -3775,19 +3832,18 @@ class BasePlatformAdapter(ABC):
             chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
-        return result
+        return result, delivery_adapter
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
         is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
         """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
-        result = await self.send_final_ledgered(
+        result, delivery_adapter = await self.send_final_ledgered(
             event, session_key, text_content, metadata,
             reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
         record_delivery(result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
-            self._final_delivery_adapter(event.source)._schedule_ephemeral_delete(
-                event.source.chat_id, result.message_id, ephemeral_ttl)
+            delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
 
     async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:
         """Tell the user a turn failed rather than leaving radio silence (last resort:
@@ -3806,18 +3862,20 @@ class BasePlatformAdapter(ABC):
         return _thread_metadata
 
     async def _deliver_attachments(self, event: MessageEvent, extracted: "_ExtractedResponse",
-                                   metadata: Dict[str, Any], *, anything_sent: bool) -> None:
+                                   metadata: Dict[str, Any], *, anything_sent: bool,
+                                   record_delivery: Callable) -> None:
         """Send extracted image URLs, MEDIA files and bare local files (human-paced),
-        then fail loudly if a non-empty response produced nothing deliverable."""
+        then fail loudly if a non-empty response produced nothing deliverable. Attachment
+        results feed ``record_delivery`` so the turn outcome reflects them."""
         human_delay = self._get_human_delay()
         images, media_files, local_files = extracted.images, extracted.media_files, extracted.local_files
         if images:
             logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-            await self._send_image_batch(event, images, metadata, human_delay)
+            await self._send_image_batch(event, images, metadata, human_delay, record_delivery)
         await self._deliver_media_attachments(
             event, media_files, local_files,
             force_document_attachments=extracted.force_document_attachments,
-            human_delay=human_delay, metadata=metadata)
+            human_delay=human_delay, metadata=metadata, record_delivery=record_delivery)
         if not (anything_sent or images or local_files or media_files) and extracted.pre_extract.strip():
             logger.error("[%s] response_delivery_dropped: non-empty response "
                          "(%d chars) produced no delivered message or attachment "
@@ -3975,7 +4033,8 @@ class BasePlatformAdapter(ABC):
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)
                 await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,
-                    anything_sent=delivery_attempted or _tts_caption_delivered)
+                    anything_sent=delivery_attempted or _tts_caption_delivered,
+                    record_delivery=_record_delivery)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
@@ -4110,11 +4169,15 @@ class BasePlatformAdapter(ABC):
             chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
             guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
             message_id=_opt(message_id))
-        profile, profile_route_rejected = None, False  # profile from configured routes, if any
+        # Profile from configured routes, else the owning profile of a dedicated secondary bot (so no
+        # later ``source.profile``-less fallback can re-route the message through the default bot's routes).
+        owner_profile = getattr(self, "_owner_profile", None)
+        profile, profile_route_rejected = owner_profile, False
         if self.gateway_runner is not None:
             from gateway.profile_routing import ProfileRouteRejected
             try:
-                profile = self.gateway_runner._profile_name_for_source(SessionSource(**fields))
+                profile = self.gateway_runner._profile_name_for_source(
+                    SessionSource(**fields), adapter_profile=owner_profile) or owner_profile
             except ProfileRouteRejected:
                 profile_route_rejected = True
             except Exception:

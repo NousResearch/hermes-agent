@@ -589,13 +589,17 @@ class EmailAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _allow_all_senders() -> bool:
-        """True when the operator opted into any sender (EMAIL_ or GATEWAY_ALLOW_ALL_USERS)."""
-        return (_get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY or os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY)
+        """True when the operator opted into any sender (EMAIL_ or GATEWAY_ALLOW_ALL_USERS).
+
+        Both names go through the scoped reader: under multiplex ``os.environ`` is the DEFAULT
+        profile's opt-in, and borrowing it opened every secondary mailbox to any sender."""
+        return any(_get_secret(name, "").strip().lower() in _TRUTHY
+                   for name in ("EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"))
 
     @staticmethod
     def _allowlist_in_effect() -> bool:
         """True when EMAIL_/GATEWAY_ALLOWED_USERS gates access (without one the gateway default-denies, so the spoofable From: grants nothing)."""
-        return bool(_get_secret("EMAIL_ALLOWED_USERS", "").strip() or os.getenv("GATEWAY_ALLOWED_USERS", "").strip())
+        return any(_get_secret(name, "").strip() for name in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS"))
 
     def _sender_accepted(self, sender_addr: str, msg_data: Dict[str, Any]) -> bool:
         """Pre-dispatch sender gate: self, automated, allowlist, From: authentication."""
@@ -717,10 +721,10 @@ class EmailAdapter(BasePlatformAdapter):
         return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to)
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
-                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """One email per batch: local files attached, URL images linked in the body (no remote download); base-class fallback on failure."""
         if not images:
-            return
+            return SendResult(success=False, error="no images to send")
         from urllib.parse import unquote as _unquote
         body_parts, local_paths = [], []
         for image_url, alt_text in images:
@@ -733,12 +737,13 @@ class EmailAdapter(BasePlatformAdapter):
             else:
                 logger.warning("[Email] Skipping missing image: %s", local_path)
         if not local_paths and not body_parts:
-            return
+            return SendResult(success=False, error="no valid images in batch")
         try:
-            await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
+            message_id = await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
+        return SendResult(success=True, message_id=message_id)
 
     def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:
         """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""

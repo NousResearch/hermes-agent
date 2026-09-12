@@ -419,6 +419,19 @@ class SessionTranscriptMixin:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
 
+    def transcript_tail_role(self, session_id: str) -> Optional[str]:
+        """Role of the newest live conversation row on the route ``load_transcript`` reads (``None``
+        when empty, no DB, or the read fails — the boundary write would fail the same way)."""
+        session_id = self._compression_tip_for_session_id(self._follow_reroutes(session_id))
+        db = self._db_for_session_id(session_id)
+        if not db:
+            return None
+        try:
+            return db.latest_conversation_role(session_id)
+        except Exception:
+            logger.debug("transcript tail lookup failed for %s", session_id, exc_info=True)
+            return None
+
     def rewrite_transcript(
         self, session_id: str, messages: List[Dict[str, Any]], active_only: bool = False,
         reject_active_turn_lease: bool = False) -> bool:

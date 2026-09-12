@@ -43,6 +43,10 @@ _EDIT_FALLBACK_MODEL = "grok-imagine-image-quality"
 # Live catalog cache ``(models, fetched_monotonic)``: ``/image-generation-models`` is the source of
 # truth (new models need no code change); ``_MODELS`` is the offline fallback + curated text.
 _LIVE_CACHE: Optional[Tuple[Dict[str, Dict[str, Any]], float]] = None
+# Under a multiplexed profile override the catalog is keyed by (base_url, key fingerprint): the
+# endpoint is credential-scoped, so one slot would hand profile A's models (or its cached auth
+# failure) to profile B. The unscoped slot above stays for the single-profile path and its tests.
+_LIVE_CACHE_BY_CREDENTIAL: Dict[Tuple[str, Optional[str]], Tuple[Dict[str, Dict[str, Any]], float]] = {}
 _LIVE_CACHE_TTL = 300.0
 _LIVE_TIMEOUT = 10.0
 
@@ -63,9 +67,10 @@ def _base_url(creds: Dict[str, Any]) -> str:
     return str(creds.get("base_url") or "https://api.x.ai/v1").strip().rstrip("/")
 
 
-def _fetch_live_models() -> Dict[str, Dict[str, Any]]:
+def _fetch_live_models(creds: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
     """``{model_id: {"input_modalities", "aliases"}}`` from the live endpoint; raises on failure."""
-    creds = resolve_xai_http_credentials()
+    if creds is None:
+        creds = resolve_xai_http_credentials()
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         raise RuntimeError("no xAI credentials")
@@ -88,15 +93,36 @@ def _fetch_live_models() -> Dict[str, Dict[str, Any]]:
 def _live_models() -> Dict[str, Dict[str, Any]]:
     """Cached live catalog (``{}`` when unreachable)."""
     global _LIVE_CACHE
-    if _LIVE_CACHE is not None and time.monotonic() - _LIVE_CACHE[1] < _LIVE_CACHE_TTL:
+    from hermes_constants import get_hermes_home_override
+
+    if get_hermes_home_override() is None:
+        if _LIVE_CACHE is not None and time.monotonic() - _LIVE_CACHE[1] < _LIVE_CACHE_TTL:
+            return _LIVE_CACHE[0]
+        _LIVE_CACHE = (_fetch_live_models_or_empty(None), time.monotonic())
         return _LIVE_CACHE[0]
+
+    from agent.credential_persistence import fingerprint_secret_value
+
     try:
-        live = _fetch_live_models()
+        creds = resolve_xai_http_credentials()
+    except Exception as exc:  # noqa: BLE001 - unresolvable credentials → static fallback
+        logger.debug("xAI live image model catalog unavailable: %s", exc)
+        creds = {}
+    key = (_base_url(creds), fingerprint_secret_value(creds.get("api_key")))
+    cached = _LIVE_CACHE_BY_CREDENTIAL.get(key)
+    if cached is not None and time.monotonic() - cached[1] < _LIVE_CACHE_TTL:
+        return cached[0]
+    live = _fetch_live_models_or_empty(creds)
+    _LIVE_CACHE_BY_CREDENTIAL[key] = (live, time.monotonic())
+    return live
+
+
+def _fetch_live_models_or_empty(creds: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    try:
+        return _fetch_live_models() if creds is None else _fetch_live_models(creds)
     except Exception as exc:  # noqa: BLE001 - offline/unauth → static fallback
         logger.debug("xAI live image model catalog unavailable: %s", exc)
-        live = {}
-    _LIVE_CACHE = (live, time.monotonic())
-    return live
+        return {}
 
 
 def _catalog() -> Dict[str, Dict[str, Any]]:

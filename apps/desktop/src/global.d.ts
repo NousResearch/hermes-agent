@@ -1,6 +1,7 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
@@ -107,6 +108,35 @@ declare global {
         control: (payload: PetOverlayControl) => void
         onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
+      }
+      // Intro reveal: the full-screen first-run brand sequence. The main
+      // renderer owns the phase; the overlay window (`?win=intro`) owns
+      // the animation clock and plays sound locally.
+      introReveal?: {
+        open: (payload?: { hideMain?: boolean }) => Promise<{ ok: boolean }>
+        close: (payload?: { showMain?: boolean }) => Promise<{ ok: boolean }>
+        skip: () => void
+        /** The surface painted its first frame — reveal the OS window now. */
+        ready: () => void
+        onSkip: (callback: () => void) => () => void
+        onClosed: (callback: () => void) => () => void
+      }
+      // In-chat onboarding assembly: grow the main window outward by per-edge
+      // pixel deltas so the chat pane keeps its exact screen rect while the
+      // app assembles around it.
+      chatOnboarding?: {
+        grow: (request: {
+          bottom: number
+          left: number
+          /** Floor for the resulting CSS-pixel viewport width, for layouts that
+           *  need one (a docked sidebar). Clamped to the display. */
+          minWidth?: number
+          right: number
+          top: number
+        }) => void
+        /** The film has revealed the app. Animate the visible window down to
+         *  the solo-chat size as the guided chat starts. */
+        soloBoot?: () => void
       }
       // HUD mode: the chrome-free floating chat. A FULL app renderer with its
       // own gateway (like an instance window), sized and skinned as a floating
@@ -322,6 +352,13 @@ declare global {
       /** Launch flag: the app was started with --local, enabling the
        *  local-models GUI surfaces. Absent/false = every local surface hides. */
       localModelsEnabled?: boolean
+      /** Launch flag: the Nous free tier is on for this launch
+       *  (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only fact the
+       *  main process also stamps onto every backend it spawns. */
+      guestOnboardingEnabled?: boolean
+      /** Launch flag: skip the first-run film (HERMES_SKIP_INTRO=1 or
+       *  --skip-intro) so a fresh HERMES_HOME lands on the guided chat. */
+      skipIntro?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       setDisableF12?: (blocked: boolean) => void
@@ -378,11 +415,8 @@ declare global {
       desktopPluginsRoot?: () => Promise<string>
       /** LOCAL `<HERMES_HOME>/logs` (profile-aware) — error card "Open Logs". */
       logsRoot?: () => Promise<string>
-      // Local AGENT-plugin root (<HERMES_HOME>/plugins), same Electron-local
-      // resolution. The disk door also scans it for `<name>/desktop/plugin.js`
-      // so one agent-plugin package can ship a desktop UI half. Optional:
-      // older Electron shells predate it — the scanner then skips this root.
-      agentPluginsRoot?: () => Promise<string>
+      /** Re-copy unified packages' desktop halves into the app-level root; returns touched paths. */
+      reconcileDesktopPlugins?: () => Promise<string[]>
       // Rename a file/folder in place (new base name, same parent dir).
       renamePath?: (path: string, newName: string) => Promise<{ path: string }>
       // Write a small UTF-8 text file (hardened path, parent must exist).
@@ -520,11 +554,14 @@ declare global {
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
+      /** Host facts for the guided first run. Optional: an older preload (a
+       *  mid-upgrade managed install) simply doesn't answer. */
+      getMachineProfile?: () => Promise<DesktopMachineProfile>
       /** Restart the app in place — loads the swapped bundle when bundleSwapPending. */
       relaunchApp?: () => Promise<void>
       getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
-        check: () => Promise<DesktopUpdateStatus>
+        check: (opts?: { force?: boolean }) => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
@@ -605,6 +642,26 @@ export interface DesktopVersionInfo {
   /** True when the bundle on disk is newer than the running process — a plain
    *  app restart (no rebuild, no installer) is enough to load it. */
   bundleSwapPending?: boolean
+}
+
+export interface DesktopMachineProfile {
+  /** Days since the OS created this user account; null when unknowable. */
+  ageDays: null | number
+  arch: string
+  /** The OS display language (`app.getLocale()`, e.g. "ja", "pt-BR"); '' when
+   *  unknowable. A first-run DEFAULT for the UI language, never a lock — the
+   *  user's saved `display.language` always wins, and the picker still rules. */
+  locale: string
+  /** Hardware's self-reported model (`NVIDIA_DGX_Spark`); '' when unavailable. */
+  model: string
+  /** An NVIDIA GPU is present, by PCI vendor id. */
+  nvidia: boolean
+  platform: string
+  release: string
+  /** OS login name ('' when unknowable) — a first-name SUGGESTION for the
+   *  guided chat, never a default. The renderer blocklists handles that are
+   *  not a name before offering it. */
+  username: string
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
@@ -1236,23 +1293,11 @@ export interface HermesApiRequest {
   // through the owning connection, not the local profile pool. Omit / '' to
   // keep the legacy profile-routed path; explicit 'local' forces this device.
   connectionId?: string | null
-}
-
-export interface HermesNotification {
-  title?: string
-  body?: string
-  silent?: boolean
-  kind?: string
-  sessionId?: string
-  /** Dedupe discriminator for session-less notifications (e.g. plugin id). */
-  tag?: string
-  /** Absolute icon path for Electron `Notification`. */
-  icon?: string
-  /** Resolved hash-router path opened on body click (plugin / deeplink-compatible). */
-  activate?: string
-  /** Renderer handle for onActivate / onAction callbacks. */
-  notifyId?: string
-  actions?: { id: string; text: string; activate?: string }[]
+  // Passive background read that must never cold-start a pooled backend (#103375).
+  // When true and the target profile has no warm pool entry, the main process
+  // fails fast without spawning a child or consuming a pool slot, so background
+  // tile reconciles cannot starve interactive opens.
+  passive?: boolean
 }
 
 export interface HermesPreviewTarget {

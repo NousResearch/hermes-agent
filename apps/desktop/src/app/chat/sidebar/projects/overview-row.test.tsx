@@ -17,7 +17,8 @@ vi.mock('@/i18n', () => ({
         projects: {
           enter: (label: string) => `Enter ${label}`,
           reorder: (label: string) => `Reorder ${label}`,
-          toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`
+          toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
+          autoDiscovered: 'Auto-discovered'
         }
       }
     }
@@ -91,5 +92,27 @@ describe('ProjectOverviewRow', () => {
     const { container } = render(<ProjectOverviewRow project={project} />)
 
     expect(container.querySelector('[data-sessions-project="p1"]')).toBeTruthy()
+  })
+
+  it('explicit projects keep the folder-library glyph and a plain accessible name', () => {
+    const explicit = { id: 'p1', label: 'Explicit' } as unknown as SidebarProjectTree
+
+    const { container } = render(<ProjectOverviewRow project={explicit} />)
+
+    expect(container.querySelector('.codicon-folder-library')).toBeTruthy()
+    expect(container.querySelector('.codicon-repo')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Enter Explicit' })).toBeTruthy()
+  })
+
+  it('auto-discovered repos get the repo glyph, an "Auto-discovered" tooltip, and an accessible name that says so', () => {
+    const auto = { id: '/Users/dev/my-repo', label: 'my-repo', isAuto: true } as unknown as SidebarProjectTree
+
+    const { container } = render(<ProjectOverviewRow project={auto} />)
+
+    expect(container.querySelector('.codicon-repo')).toBeTruthy()
+    expect(container.querySelector('.codicon-folder-library')).toBeNull()
+
+    const link = screen.getByRole('button', { name: 'Enter my-repo (Auto-discovered)' })
+    expect(tipTrigger(link)).toBeTruthy()
   })
 })

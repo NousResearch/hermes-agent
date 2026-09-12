@@ -202,13 +202,9 @@ def _enable_multiplex(default_home):
 
 
 class TestMultiplexPortBindingGuard:
-    """Enabling a port-binding channel on a secondary multiplexed profile
-    must be rejected BEFORE anything is persisted.
-
-    The gateway fail-fasts with ``MultiplexConfigError`` when a secondary
-    profile enables a port-binding platform under
-    ``gateway.multiplex_profiles`` — but the dashboard used to persist that
-    exact config, so the next gateway start died for EVERY profile (#62791).
+    """Enabling api_server/webhook on a secondary multiplexed profile is rejected BEFORE anything
+    is persisted: the default profile's listener already mirrors them at ``/p/<profile>/`` (#62791).
+    Every other inbound-port platform is allowed — the gateway serves it on the shared listener.
     """
 
     @pytest.fixture(autouse=True)
@@ -217,21 +213,25 @@ class TestMultiplexPortBindingGuard:
         # multiplex flag under test comes from the default profile's config.
         monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
 
-    def test_rejects_every_port_binding_platform_on_secondary(
+    def test_rejects_only_mirrored_listeners_on_secondary(
         self, client, isolated_profiles
     ):
-        from gateway.config import PORT_BINDING_PLATFORM_VALUES
+        from gateway.config import PORT_BINDING_PLATFORM_VALUES, SHARED_LISTENER_MIRROR_PLATFORMS
 
         _enable_multiplex(isolated_profiles["default"])
-        assert PORT_BINDING_PLATFORM_VALUES  # guard set must not be empty
-        for platform_id in sorted(PORT_BINDING_PLATFORM_VALUES):
+        assert SHARED_LISTENER_MIRROR_PLATFORMS  # guard set must not be empty
+        catalog = {p["id"] for p in client.get("/api/messaging/platforms").json()["platforms"]}
+        for platform_id in sorted(PORT_BINDING_PLATFORM_VALUES & catalog):
             resp = client.put(
                 f"/api/messaging/platforms/{platform_id}",
                 params={"profile": "worker_alpha"},
                 json={"enabled": True},
             )
-            assert resp.status_code == 409, platform_id
-            assert "default profile" in resp.json()["detail"]
+            if platform_id in SHARED_LISTENER_MIRROR_PLATFORMS:
+                assert resp.status_code == 409, platform_id
+                assert "default profile" in resp.json()["detail"]
+            else:  # served at /p/worker_alpha/<path> on the shared listener
+                assert resp.status_code == 200, (platform_id, resp.text)
 
 
 

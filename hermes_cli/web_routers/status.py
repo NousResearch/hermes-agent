@@ -18,7 +18,9 @@ from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
-from gateway.status import derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents, resolve_gateway_liveness
+from gateway.status import (
+    derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
+    profile_platforms_from_multiplexer, resolve_gateway_liveness)
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
@@ -250,6 +252,11 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     runtime = local_runtime
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
+    if liveness.runtime is not None and profile_dir is not None:
+        # Served by the multiplexer: its record is this profile's runtime, with the profile's own
+        # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape.
+        runtime = {**liveness.runtime,
+                   "platforms": profile_platforms_from_multiplexer(liveness.runtime, profile_dir.name)}
 
     gateway_state = None
     gateway_platforms: dict = {}
@@ -655,6 +662,9 @@ def _get_portal_status_sync():
         "logged_in": bool(auth.get("logged_in")), "portal_url": auth.get("portal_base_url"),
         "inference_url": auth.get("inference_base_url"),
         "provider": str((model_cfg or {}).get("provider") or ""),
+        # Free tier: a token exists, so logged_in stays true for callers that only ask "is there a
+        # credential"; surfaces that render an account must branch on free_tier first.
+        "free_tier": bool(auth.get("free_tier")), "account_tier": auth.get("account_tier"),
         "subscription_url": "https://portal.nousresearch.com/manage-subscription",
         "features": features}
 

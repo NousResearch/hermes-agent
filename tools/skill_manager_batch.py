@@ -141,7 +141,14 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
             acts = ", ".join(op["action"] for op in operations)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
             return {"action": "batch", "operations": operations}, gist
-        staged = _smt._run_write_gate(_staging)
+
+        def _preflight():
+            for i, op in enumerate(operations):
+                if err := _smt._preflight_staged_skill_write(op["action"], names[i], op):
+                    return err
+            return None
+
+        staged = _smt._run_write_gate(_staging, _preflight)
         if staged is not None:
             return staged
     snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))

@@ -88,6 +88,19 @@ VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')  # filesystem-safe, URL-fr
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}  # for write_file/remove_file
 _FRONTMATTER_END_RE = re.compile(r'\n---\s*\n')
 _NAME_RULE = "Use lowercase letters, numbers, hyphens, dots, and underscores."
+_PATCH_OLD_STRING_ERROR = (
+    "old_string is required for 'patch' and must be the EXACT text currently in the file. "
+    "Read the target file first (read_file on the skill's SKILL.md, or the file named by "
+    "file_path) and copy the snippet verbatim, then retry 'patch'. Do NOT fall back to "
+    "action='write_file' — that rewrites the entire file and destroys unrelated content."
+)
+_PATCH_NEW_STRING_ERROR = (
+    "new_string is required for 'patch'. Use an empty string to delete matched text."
+)
+_PATCH_INPUT_SHAPE_ERROR = (
+    "Pass EITHER content (full SKILL.md rewrite) OR "
+    "old_string/new_string (targeted replacement), not both."
+)
 
 
 def _display_create_dir() -> str:
@@ -151,9 +164,10 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     desc = str(parsed["description"])
     if len(desc) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."
-    if new_skill and len(desc.strip().strip("'\"")) > SKILL_PROMPT_DESC_LIMIT:
+    budgeted_desc = desc.strip().strip("'\"")
+    if new_skill and len(budgeted_desc) > SKILL_PROMPT_DESC_LIMIT:
         return (
-            f"Description is {len(desc.strip())} chars — new skills must fit the "
+            f"Description is {len(budgeted_desc)} chars — new skills must fit the "
             f"{SKILL_PROMPT_DESC_LIMIT}-char system-prompt budget (one sentence, trigger first, "
             f"ends with a period). The skill index truncates longer descriptions to "
             f"{SKILL_PROMPT_DESC_LIMIT - 3} chars + '...', destroying the routing signal. "
@@ -169,6 +183,17 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
             f"{label} content is {len(content):,} characters (limit: {MAX_SKILL_CONTENT_CHARS:,}). "
             f"Consider splitting into a smaller SKILL.md with supporting files in references/ "
             f"or templates/.")
+    return None
+
+
+def _validate_file_bytes(file_content: str) -> Optional[str]:
+    """Validate a supporting file's encoded size against its per-file limit."""
+    content_bytes = len(file_content.encode("utf-8"))
+    if content_bytes > MAX_SKILL_FILE_BYTES:
+        return (
+            f"File content is {content_bytes:,} bytes (limit: {MAX_SKILL_FILE_BYTES:,} "
+            f"bytes / 1 MiB). Consider splitting into smaller files."
+        )
     return None
 
 
@@ -435,13 +460,9 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
     if not old_string:
         # A bare "required" error is a dead end: the model retries blindly and often
         # escapes to action='write_file', clobbering the whole file.
-        return _err(
-            "old_string is required for 'patch' and must be the EXACT text currently in the file. "
-            "Read the target file first (read_file on the skill's SKILL.md, or the file named by "
-            "file_path) and copy the snippet verbatim, then retry 'patch'. Do NOT fall back to "
-            "action='write_file' — that rewrites the entire file and destroys unrelated content.")
+        return _err(_PATCH_OLD_STRING_ERROR)
     if new_string is None:
-        return _err("new_string is required for 'patch'. Use an empty string to delete matched text.")
+        return _err(_PATCH_NEW_STRING_ERROR)
     # No old_string == new_string guard here: fuzzy_find_and_replace rejects that with a
     # richer error (file_preview) this layer cannot produce.
     skill_dir, guard = _locate_for_write(name, "patch")
@@ -530,9 +551,8 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
         return _err(err)
     if not file_content and file_content != "":
         return _err("file_content is required.")
-    if (content_bytes := len(file_content.encode("utf-8"))) > MAX_SKILL_FILE_BYTES:
-        return _err(f"File content is {content_bytes:,} bytes (limit: {MAX_SKILL_FILE_BYTES:,} "
-                    f"bytes / 1 MiB). Consider splitting into smaller files.")
+    if err := _validate_file_bytes(file_content):
+        return _err(err)
     if err := _validate_content_size(file_content, label=file_path):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "write_file", " Create it first with action='create'.")
@@ -578,10 +598,11 @@ _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False)
 
 
-def _run_write_gate(build_staging):
+def _run_write_gate(build_staging, preflight=None):
     """Shared write gate: None to proceed, else a JSON tool result (blocked/staged).
     ``build_staging(wa) -> (payload, gist)`` runs only when staging. Fails open if
-    write_approval cannot be imported."""
+    write_approval cannot be imported. ``preflight`` validates payload-only state
+    immediately before staging and returns an error string or ``None``."""
     try:
         from tools import write_approval as wa
     except Exception:
@@ -591,6 +612,8 @@ def _run_write_gate(build_staging):
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
+    if preflight is not None and (err := preflight()):
+        return tool_error(err, success=False)
     payload, gist = build_staging(wa)
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
@@ -607,7 +630,10 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         gist_kw = {k: payload_kwargs.get(k) or ""
                    for k in ("content", "file_path", "old_string", "new_string")}
         return payload, wa.skill_gist(action, name, **gist_kw)
-    return _run_write_gate(_staging)
+    return _run_write_gate(
+        _staging,
+        lambda: _preflight_staged_skill_write(action, name, payload_kwargs),
+    )
 
 
 _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",
@@ -670,8 +696,7 @@ def _act_patch(a):
     """Two shapes: old_string/new_string = targeted replacement (validated in _patch_skill so the
     tool and the helper give the same guidance); content alone = full rewrite (the old 'edit')."""
     if a["content"] and (a["old_string"] or a["new_string"] is not None):
-        return tool_error("Pass EITHER content (full SKILL.md rewrite) OR "
-                          "old_string/new_string (targeted replacement), not both.", success=False)
+        return tool_error(_PATCH_INPUT_SHAPE_ERROR, success=False)
     if a["content"]:
         return _edit_skill(a["name"], a["content"])
     return _patch_skill(a["name"], a["old_string"], a["new_string"], a["file_path"], a["replace_all"])
@@ -697,6 +722,57 @@ _REQUIRED_ARGS = {
         ("file_path", _MISSING, "file_path is required for 'write_file'. Example: 'references/api-guide.md'"),
         ("file_content", _IS_NONE, "file_content is required for 'write_file'.")],
     "remove_file": [("file_path", _MISSING, "file_path is required for 'remove_file'.")]}
+
+
+def _preflight_staged_skill_write(
+    action: str, name: str, payload: Dict[str, Any]
+) -> Optional[str]:
+    """Validate payload-intrinsic state before a write enters the approval queue.
+
+    Disk-dependent checks remain replay-time checks because the skill tree can
+    change between staging and approval. Reuse the action validators in their
+    normal order so staged and direct writes report the same payload errors.
+    """
+    for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
+        if missing(payload.get(arg)):
+            return message
+
+    content = payload.get("content")
+    file_path = payload.get("file_path")
+    file_content = payload.get("file_content")
+
+    if action in {"create", "edit"}:
+        if action == "create":
+            if err := _validate_name(name) or _validate_category(payload.get("category")):
+                return err
+        return (
+            _validate_frontmatter(content, new_skill=(action == "create"))
+            or _validate_content_size(content)
+        )
+
+    if action == "patch":
+        if content and (payload.get("old_string") or payload.get("new_string") is not None):
+            return _PATCH_INPUT_SHAPE_ERROR
+        if content:
+            return _validate_frontmatter(content) or _validate_content_size(content)
+        if not payload.get("old_string"):
+            return _PATCH_OLD_STRING_ERROR
+        if payload.get("new_string") is None:
+            return _PATCH_NEW_STRING_ERROR
+        return _validate_file_path(file_path) if file_path else None
+
+    if action == "write_file":
+        return (
+            _validate_file_path(file_path)
+            or _validate_file_bytes(file_content)
+            or _validate_content_size(file_content, label=file_path)
+        )
+
+    if action == "remove_file":
+        return _validate_file_path(file_path)
+
+    # delete has no payload-only state beyond its name; existence is a disk check.
+    return None
 
 
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,

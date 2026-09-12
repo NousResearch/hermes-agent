@@ -517,6 +517,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._approval_state: Dict[int, str] = {}  # message_id → session_key
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: Dict[str, str] = {}  # clarify_id → session_key
+        self._clarify_batch_state: Dict[str, dict] = {}  # batch_id → session + clarify ids
         # "important" (default): only final responses, approvals and slash confirmations notify;
         # "all": every message notifies (display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
@@ -3859,6 +3860,86 @@ class TelegramAdapter(BasePlatformAdapter):
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
 
+    async def send_clarify_batch(
+        self, chat_id: str, questions: list, clarify_ids: list[str], batch_id: str, session_key: str,
+        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """Render all batch questions at once; batch controls collect input, never approve an action."""
+        if len(questions) != len(clarify_ids):
+            return SendResult(success=False, error="Clarify batch question/id mismatch")
+        total = len(questions)
+        self._clarify_batch_state[batch_id] = {
+            "session_key": session_key, "clarify_ids": list(clarify_ids), "total": total,
+            "chat_id": str(chat_id), "cards": {},
+            "initiator_user_id": (metadata or {}).get("_clarify_initiator_user_id"),
+            "initiator_thread_id": (metadata or {}).get("_clarify_initiator_thread_id"),
+        }
+        last_result = SendResult(success=True)
+        for index, (spec, clarify_id) in enumerate(zip(questions, clarify_ids), start=1):
+            question, choices = str(spec.get("question") or ""), spec.get("choices") or None
+            def build(question=question, choices=choices, clarify_id=clarify_id, index=index):
+                text = f"❓ <b>{index}/{total}</b> {_html.escape(question)}"
+                rows = []
+                if choices:
+                    text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
+                    rows.extend([[InlineKeyboardButton(str(i + 1), callback_data=f"cl:{clarify_id}:{i}")] for i in range(len(choices))])
+                    rows.append([InlineKeyboardButton("✏️ Andere Antwort", callback_data=f"cl:{clarify_id}:other")])
+                else:
+                    text += "\n\n<i>Antworte mit Text oder nutze Überspringen.</i>"
+                rows.extend([[InlineKeyboardButton("⏭ Überspringen", callback_data=f"cl:{clarify_id}:skip")],
+                             [InlineKeyboardButton("📊 Fortschritt", callback_data=f"clb:{batch_id}:status"), InlineKeyboardButton("✅ Abschließen", callback_data=f"clb:{batch_id}:continue")]])
+                def remember_batch_card(msg, clarify_id=clarify_id, text=text):
+                    self._clarify_state[clarify_id] = session_key
+                    # Bound text prevents an unrelated follow-up from being consumed by an
+                    # open-text card in the same displayed batch.
+                    try:
+                        from tools.clarify_gateway import bind_text_reply_to
+                        bound = bind_text_reply_to(
+                            clarify_id, getattr(msg, "message_id", None), chat_id=chat_id,
+                            user_id=(metadata or {}).get("_clarify_initiator_user_id"),
+                            thread_id=(metadata or {}).get("_clarify_initiator_thread_id"),
+                        )
+                        if bound:
+                            self._clarify_batch_state.get(batch_id, {}).get("cards", {})[clarify_id] = {
+                                "message_id": str(getattr(msg, "message_id", "")), "text": text,
+                            }
+                    except Exception:
+                        logger.debug("Telegram clarify batch card binding failed", exc_info=True)
+                return text, InlineKeyboardMarkup(rows), remember_batch_card
+            last_result = await self._send_prompt("send_clarify_batch", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
+            if not last_result.success:
+                self._clarify_batch_state.pop(batch_id, None)
+                return last_result
+        return last_result
+
+    def clear_clarify_batch(self, batch_id: str) -> None:
+        """Forget terminal batch UI state after the runner has collected its result."""
+        self._clarify_batch_state.pop(batch_id, None)
+
+    async def invalidate_clarify_batch_for_session(self, session_key: str) -> None:
+        """Disable visible cards after unbound prose releases a batch.
+
+        Terminal state is owned by clarify_gateway; Telegram edits are best
+        effort so stale cards do not imply that their buttons still work.
+        """
+        if not self._bot:
+            return
+        for batch_id, batch in list(self._clarify_batch_state.items()):
+            if batch.get("session_key") != session_key:
+                continue
+            for card in batch.get("cards", {}).values():
+                message_id = card.get("message_id")
+                if not message_id:
+                    continue
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=int(batch["chat_id"]), message_id=int(message_id),
+                        text=f"{card.get('text', '')}\n\n<i>Abgebrochen – neue Nachricht erkannt.</i>",
+                        parse_mode=ParseMode.HTML, reply_markup=None,
+                    )
+                except Exception:
+                    logger.debug("Telegram clarify card invalidation failed", exc_info=True)
+            self._clarify_batch_state.pop(batch_id, None)
+
     @staticmethod
     def _provider_get_label():
         try:
@@ -4262,7 +4343,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
         for prefix, handler in (
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
-            ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
+            ("sc:", self._handle_slash_confirm_callback), ("clb:", self._handle_clarify_batch_callback),
+            ("cl:", self._handle_clarify_callback),
             ("update_prompt:", self._handle_update_prompt_callback)):
             if data.startswith(prefix):
                 await handler(query, data, cb)
@@ -4380,7 +4462,30 @@ class TelegramAdapter(BasePlatformAdapter):
             "This prompt has already been resolved.", pop=False)
         if not session_key:
             return
+        try:
+            from tools.clarify_gateway import _entries as _clarify_entries
+            _bound_entry = _clarify_entries.get(clarify_id)
+            if (_bound_entry is not None and _bound_entry.text_reply_user_id
+                    and str(getattr(query.from_user, "id", "")) != _bound_entry.text_reply_user_id):
+                await query.answer(text="⛔ Du darfst diese Frage nicht beantworten.")
+                return
+        except Exception:
+            logger.debug("[%s] clarify callback binding check failed", self.name, exc_info=True)
         user_display = getattr(query.from_user, "first_name", "User")
+        if choice_token == "skip":
+            self._clarify_state.pop(clarify_id, None)
+            try:
+                from tools.clarify_gateway import resolve_gateway_clarify
+                resolved = resolve_gateway_clarify(clarify_id, "")
+            except Exception as exc:
+                logger.error("[%s] clarify skip failed: %s", self.name, exc)
+                resolved = False
+            if resolved:
+                await query.answer(text="Übersprungen")
+                await self._edit_html_quiet(query, f"❓ {_html.escape(query.message.text or '')}\n\n<i>Übersprungen</i>")
+            else:
+                await self._notify_clarify_expired(query, user_display)
+            return
         if choice_token == "other":
             # Flip to text-capture: the gateway's text-intercept resolves the clarify with the next message.
             # Do NOT pop _clarify_state yet — still needed if the entry gets cleared by something else.
@@ -4432,6 +4537,43 @@ class TelegramAdapter(BasePlatformAdapter):
             # Entry evicted / gateway restarted between ask and tap.
             await self._notify_clarify_expired(query, user_display)
             logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)
+
+    async def _handle_clarify_batch_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
+        """``clb:<batch_id>:status|continue`` controls collection, never an approval."""
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            return
+        batch = self._clarify_batch_state.get(parts[1])
+        if not batch:
+            await query.answer(text="Diese Fragen sind nicht mehr aktiv.")
+            return
+        if not await self._callback_authorized(query, cb, "⛔ Du darfst diese Fragen nicht beantworten."):
+            return
+        if (batch.get("initiator_user_id")
+                and str(getattr(query.from_user, "id", "")) != str(batch["initiator_user_id"])):
+            await query.answer(text="⛔ Du darfst diese Fragen nicht beantworten.")
+            return
+        try:
+            from tools import clarify_gateway as clarify_mod
+            with clarify_mod._lock:
+                entries = [clarify_mod._entries.get(cid) for cid in batch["clarify_ids"]]
+                answered = sum(bool(entry and entry.event.is_set()) for entry in entries)
+        except Exception:
+            answered = 0
+        if parts[2] == "status":
+            await query.answer(text=f"Fortschritt: {answered}/{batch['total']} beantwortet")
+            return
+        if parts[2] != "continue":
+            return
+        try:
+            for clarify_id in batch["clarify_ids"]:
+                clarify_mod.resolve_gateway_clarify(clarify_id, "")
+        except Exception as exc:
+            logger.error("[%s] clarify batch continue failed: %s", self.name, exc)
+            await query.answer(text="Abschließen fehlgeschlagen")
+            return
+        self._clarify_batch_state.pop(parts[1], None)
+        await query.answer(text=f"Abgeschlossen: {answered}/{batch['total']} beantwortet")
 
     async def _handle_update_prompt_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """``update_prompt:<y|n>`` — forward the answer to the update process."""

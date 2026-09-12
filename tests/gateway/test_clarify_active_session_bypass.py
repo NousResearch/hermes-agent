@@ -139,3 +139,127 @@ async def test_active_session_bypass_uses_profile_namespaced_key_under_multiplex
     assert adapter._pending_messages == {}
 
 
+@pytest.mark.asyncio
+async def test_gateway_batch_text_reply_skips_button_resolved_card_and_answers_next_question():
+    """The real gateway intercept must target the next unresolved batch card."""
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    cm.register("q1", "telegram:batch", "First?", ["one", "two"])
+    second = cm.register("q2", "telegram:batch", "Second?", ["red", "blue"])
+    assert cm.resolve_gateway_clarify("q1", "one") is True
+
+    runner = object.__new__(GatewayRunner)
+    runner._pending_event_audio_paths = lambda event: []
+    runner._adapter_for_source = lambda source: None
+
+    async def prepare_reply(event):
+        return "2"
+
+    runner._prepare_clarify_reply_text = prepare_reply
+    event = _event("2")
+    result = await runner._hm_clarify_reply(event, event.source, "telegram:batch")
+
+    assert result == ""
+    assert second.event.is_set()
+    assert second.response == "blue"
+
+
+@pytest.mark.asyncio
+async def test_late_reply_to_another_card_does_not_cancel_current_batch():
+    """A direct reply to batch A must not release batch B just because its id differs."""
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    screenshot = cm.register(
+        "screenshot", "telegram:batch", "Send screenshot?", None,
+        require_text_reply_binding=True,
+    )
+    assert cm.bind_text_reply_to("screenshot", "prompt-42") is True
+
+    runner = object.__new__(GatewayRunner)
+    runner._pending_event_audio_paths = lambda event: []
+    runner._adapter_for_source = lambda source: None
+
+    event = _event("und?")
+    event.reply_to_message_id = "some-other-message"
+    result = await runner._hm_clarify_reply(event, event.source, "telegram:batch")
+
+    assert result is None
+    assert not screenshot.event.is_set()
+    assert screenshot.response is None
+
+
+@pytest.mark.asyncio
+async def test_unbound_batch_followup_releases_wait_and_visibly_invalidates_cards():
+    """Bare prose releases the batch and calls the adapter's stale-card hook."""
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    screenshot = cm.register("screenshot", "telegram:batch", "Send screenshot?", None,
+                             require_text_reply_binding=True)
+    assert cm.bind_text_reply_to("screenshot", "prompt-42") is True
+    adapter = MagicMock()
+    adapter.invalidate_clarify_batch_for_session = AsyncMock()
+    runner = object.__new__(GatewayRunner)
+    runner._pending_event_audio_paths = lambda event: []
+    runner._adapter_for_source = lambda source: adapter
+    event = _event("new unrelated follow-up")
+
+    assert await runner._hm_clarify_reply(event, event.source, "telegram:batch") is None
+    assert screenshot.event.is_set() and screenshot.response == ""
+    adapter.invalidate_clarify_batch_for_session.assert_awaited_once_with("telegram:batch")
+
+
+@pytest.mark.asyncio
+async def test_missing_delivery_id_and_cross_user_reply_cannot_change_batch_state():
+    """No id and a reply from another user both fail closed without cancellation."""
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    card = cm.register("card", "telegram:batch", "Text?", None, require_text_reply_binding=True)
+    runner = object.__new__(GatewayRunner)
+    runner._pending_event_audio_paths = lambda event: []
+    runner._adapter_for_source = lambda source: None
+    missing_id = _event("answer")
+    assert await runner._hm_clarify_reply(missing_id, missing_id.source, "telegram:batch") is None
+    assert not card.event.is_set()
+
+    assert cm.bind_text_reply_to("card", "prompt-42", chat_id="12345", user_id="user1")
+    other_user = _event("answer")
+    other_user.source.user_id = "user2"
+    other_user.reply_to_message_id = "prompt-42"
+    assert await runner._hm_clarify_reply(other_user, other_user.source, "telegram:batch") is None
+    assert not card.event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_bound_reply_to_open_batch_card_is_consumed_as_its_answer():
+    """The explicit Telegram reply anchor still permits the intended screenshot answer."""
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    screenshot = cm.register(
+        "screenshot", "telegram:batch", "Send screenshot?", None,
+        require_text_reply_binding=True,
+    )
+    assert cm.bind_text_reply_to("screenshot", "prompt-42") is True
+
+    runner = object.__new__(GatewayRunner)
+    runner._pending_event_audio_paths = lambda event: []
+    runner._adapter_for_source = lambda source: None
+
+    event = _event("here is the screenshot")
+    event.reply_to_message_id = "prompt-42"
+    result = await runner._hm_clarify_reply(event, event.source, "telegram:batch")
+
+    assert result == ""
+    assert screenshot.event.is_set()
+    assert screenshot.response == "here is the screenshot"
+
+

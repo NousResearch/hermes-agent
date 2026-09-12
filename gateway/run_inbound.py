@@ -8,6 +8,7 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 from __future__ import annotations
 
 import logging
+import inspect
 from typing import TYPE_CHECKING
 import asyncio
 import concurrent.futures
@@ -344,6 +345,43 @@ class GatewayInboundMixin:
         # they can retry; on timeout the agent unblocks with an empty response.
         if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
             return None
+        if _pending_clarify.awaiting_text and _pending_clarify.requires_text_reply_binding:
+            _reply_to = str(getattr(event, "reply_to_message_id", "") or "")
+            _expected_reply_to = _pending_clarify.text_reply_to_message_id
+            _event_source = getattr(event, "source", None)
+            _same_bound_context = (
+                (not _pending_clarify.text_reply_chat_id or str(getattr(_event_source, "chat_id", "")) == _pending_clarify.text_reply_chat_id)
+                and (not _pending_clarify.text_reply_user_id or str(getattr(_event_source, "user_id", "")) == _pending_clarify.text_reply_user_id)
+                and (not _pending_clarify.text_reply_thread_id or str(getattr(_event_source, "thread_id", "")) == _pending_clarify.text_reply_thread_id)
+            )
+            if not _expected_reply_to:
+                # Ambiguous delivery has no safe correlation id: it may neither
+                # consume prose nor cancel a still-visible batch.
+                return None
+            if _reply_to and (_reply_to != _expected_reply_to or not _same_bound_context):
+                # An explicit reply to another card (including a late batch-A
+                # reply) is not an unbound follow-up for this batch.
+                return None
+            if not _reply_to:
+                # A batch can contain multiple open-text cards. Do not let ordinary
+                # active-session prose silently answer whichever one happens to be next.
+                # Release all batch cards before it falls through, so the follow-up cannot
+                # sit hidden behind an unlimited clarify timeout.
+                _clarify_mod.cancel_bound_batch_for_session(_quick_key)
+                _clarify_adapter = getattr(self, "_adapter_for_source", lambda _source: None)(source)
+                _invalidate = getattr(_clarify_adapter, "invalidate_clarify_batch_for_session", None)
+                if callable(_invalidate):
+                    try:
+                        _invalidation = _invalidate(_quick_key)
+                        if inspect.isawaitable(_invalidation):
+                            await _invalidation
+                    except Exception:
+                        logger.debug("Failed to visibly invalidate cancelled clarify batch", exc_info=True)
+                logger.info(
+                    "Gateway cancelled reply-bound clarify batch for unbound text follow-up "
+                    "(session=%s, id=%s)", _quick_key, _pending_clarify.clarify_id,
+                )
+                return None
         _text_outcome = _clarify_mod.attempt_text_response_for_session(_quick_key, _raw_clarify_reply)
         if _text_outcome == _clarify_mod.TEXT_RESOLVED:
             logger.info(

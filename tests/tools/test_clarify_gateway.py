@@ -52,6 +52,29 @@ class TestClarifyPrimitive:
         assert cm.resolve_gateway_clarify("id-race", "") is False
         assert entry.response == "A"
 
+    def test_concurrent_bound_batch_cancel_preserves_first_answer(self):
+        """The cancel path and a button tap have one terminal-state winner."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("id-bound-race", "sk-bound-race", "Pick", ["A"],
+                            require_text_reply_binding=True)
+        barrier = threading.Barrier(2)
+
+        def answer():
+            barrier.wait()
+            cm.resolve_gateway_clarify("id-bound-race", "A")
+
+        thread = threading.Thread(target=answer)
+        thread.start()
+        barrier.wait()
+        cm.cancel_bound_batch_for_session("sk-bound-race")
+        thread.join(timeout=5)
+        assert entry.event.is_set()
+        # Either terminal transition may linearize first, but no later cancel
+        # may overwrite a selected answer.
+        if entry.response == "A":
+            assert cm.cancel_bound_batch_for_session("sk-bound-race") == 0
+
     def test_open_ended_auto_awaits_text(self):
         """Clarify with no choices is in text-capture mode immediately."""
         from tools import clarify_gateway as cm

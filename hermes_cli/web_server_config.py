@@ -16,6 +16,10 @@ from hermes_cli.config import (
     resolve_cron_model_drift_defaults,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
+from hermes_cli.model_assignment import (
+    apply_main_model_assignment as _apply_main_model_assignment,
+    persist_custom_endpoint_secret,
+)
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -442,46 +446,6 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     return prov_in, model_in
 
 
-def _apply_main_model_assignment(
-    model_cfg: "Any", provider: str, model: str, base_url: str = "", api_key: str = ""
-) -> dict:
-    """Apply a main-slot model assignment to a ``model`` config dict in place.
-
-    Sets ``provider``/``default``, then reconciles endpoint fields. ``base_url`` and the
-    endpoint key share one lifecycle: an explicit value is always persisted; an existing
-    value is cleared ONLY when switching to a *different* provider (it belonged to the old
-    endpoint); a same-provider re-pick preserves it — re-picking a model used to wipe a
-    user's custom host (e.g. a Xiaomi MiMo Token Plan URL) and break their keys. The
-    runtime resolver reads ``model.base_url`` from config and only honors it when the
-    configured provider matches, so preserving it here is what lets the override route.
-    A stale secret may live under the legacy ``api`` alias with no ``api_key``, so the
-    switch-clears-the-key path triggers on either field. ``context_length`` is always
-    dropped (the new model may have a different window).
-
-    Returns the same dict (a fresh dict if the input wasn't one).
-    """
-    if not isinstance(model_cfg, dict):
-        model_cfg = {}
-    prev_provider = str(model_cfg.get("provider") or "").strip().lower()
-    new_provider = provider.strip().lower()
-    switched = new_provider != prev_provider
-    model_cfg["provider"] = provider
-    model_cfg["default"] = model
-    if base_url.strip():
-        model_cfg["base_url"] = base_url.strip()
-    elif model_cfg.get("base_url") and switched:
-        model_cfg["base_url"] = ""
-    if api_key.strip():
-        model_cfg["api_key"] = api_key.strip()
-        model_cfg.pop("api", None)
-    elif (model_cfg.get("api_key") or model_cfg.get("api")) and switched:
-        clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
-    if switched:
-        clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
-    model_cfg.pop("context_length", None)
-    return model_cfg
-
-
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten a dict-form ``model`` to its string form (the schema is built from
     DEFAULT_CONFIG where ``model`` is a string) and surface ``model_context_length``
@@ -592,14 +556,14 @@ def _apply_nous_gateway_defaults(cfg: dict) -> list:
         return []
 
 
-def _register_custom_endpoint(base_url: str, api_key: str, model: str) -> None:
+def _register_custom_endpoint(base_url: str, api_key: str, model: str, *, key_env: str = "") -> None:
     """Register a named ``custom_providers`` entry for a custom/local endpoint (mirrors the
     ``hermes model`` custom flow) so the picker gets a proper ready row instead of a "needs
     setup" dead-end. Dedups by base_url; never blocks the already-persisted assignment."""
     try:
         from hermes_cli.main_provider_setup import _auto_provider_name, _save_custom_provider
 
-        _save_custom_provider(base_url, api_key, model, name=_auto_provider_name(base_url))
+        _save_custom_provider(base_url, api_key, model, name=_auto_provider_name(base_url), key_env=key_env)
     except Exception:
         _log.debug("custom_providers registration skipped", exc_info=True)
 
@@ -656,15 +620,28 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     provider_entry = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
     if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
         base_url = str(provider_entry.get("base_url") or "").strip()
-    model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider, model, base_url, api_key)
-    _resolve_assignment_credentials(model_cfg, provider, provider_entry)
+    assignment_key_env = persist_custom_endpoint_secret(
+        provider, base_url, api_key
+    )
+    if assignment_key_env:
+        api_key = ""
+    model_cfg = _apply_main_model_assignment(
+        cfg.get("model", {}),
+        provider,
+        model,
+        base_url,
+        api_key,
+        assignment_key_env,
+    )
+    if not assignment_key_env and not api_key:
+        _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg
 
     new_provider = provider.strip().lower()
     gateway_tools = _apply_nous_gateway_defaults(cfg) if new_provider == "nous" else []
     save_config(cfg)
     if new_provider in {"custom", "local"} and base_url:
-        _register_custom_endpoint(base_url, api_key, model)
+        _register_custom_endpoint(base_url, api_key, model, key_env=assignment_key_env)
 
     return {
         "ok": True,

@@ -13,6 +13,8 @@ from typing import Any, Dict, Optional
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches
 
+from hermes_cli.runtime_provider_custom import _resolve_declared_key_env
+
 
 def _rp():
     import hermes_cli.runtime_provider as origin
@@ -134,6 +136,16 @@ def _resolve_openrouter_runtime(
     )
     base_url = ((explicit_base_url or "").strip() or env_custom_base_url or (cfg_base_url.strip() if use_config_base_url else "")
                 or env_openrouter_base_url or OPENROUTER_BASE_URL).rstrip("/")
+    uses_model_endpoint = bool(
+        requested_norm == "custom"
+        and use_config_base_url
+        and base_url == (cfg_base_url or "").strip().rstrip("/")
+    )
+    cfg_key_env, has_declared_key = (
+        _resolve_declared_key_env(model_cfg, explicit_api_key)
+        if uses_model_endpoint
+        else ("", False)
+    )
     # Choose API key based on whether the resolved base_url targets OpenRouter. When hitting OpenRouter,
     # prefer OPENROUTER_API_KEY (issue #289). When hitting a custom endpoint (e.g. Z.ai, local LLM), prefer
     # OPENAI_API_KEY so the OpenRouter key doesn't leak to an unrelated provider (issues #420, #560).
@@ -147,7 +159,8 @@ def _resolve_openrouter_runtime(
     if is_openrouter_context:
         candidates = [explicit_api_key, rp._getenv("OPENROUTER_API_KEY"), rp._getenv("OPENAI_API_KEY")]
     else:
-        candidates = [explicit_api_key, (cfg_api_key if use_config_base_url else ""),
+        candidates = [explicit_api_key, cfg_key_env,
+                      (cfg_api_key if uses_model_endpoint and not has_declared_key else ""),
                       *rp._host_gated_env_key_candidates(base_url, ollama=True)]
     api_key = next((str(c or "").strip() for c in candidates if rp.has_usable_secret(c)), "")
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
@@ -156,7 +169,7 @@ def _resolve_openrouter_runtime(
     if requested_norm != "custom":
         return rp._runtime("openrouter", cfg_api_mode or rp._detect_api_mode_for_url(base_url) or "chat_completions", base_url,
                            api_key, source=source)
-    if base_url:
+    if base_url and not has_declared_key:
         pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", cfg_api_mode, provider_name=None)
         if pool_result:
             return pool_result

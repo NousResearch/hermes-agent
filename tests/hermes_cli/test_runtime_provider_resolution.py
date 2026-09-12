@@ -594,6 +594,60 @@ def test_custom_endpoint_explicit_custom_prefers_config_key(monkeypatch):
     assert resolved["api_key"] == "sk-vllm-key"
 
 
+def test_custom_endpoint_uses_model_key_env(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://my-vllm-server.example.com/v1",
+            "key_env": "MY_VLLM_KEY",
+        },
+    )
+    monkeypatch.setenv("MY_VLLM_KEY", "sk-vllm-env")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-wrong-key")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["api_key"] == "sk-vllm-env"
+
+
+def test_custom_endpoint_missing_declared_key_env_fails_closed(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://api.deepseek.com/v1",
+            "key_env": "TENANT_B_API_KEY",
+        },
+    )
+    monkeypatch.delenv("TENANT_B_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-wrong-tenant")
+
+    with pytest.raises(rp.AuthError, match="TENANT_B_API_KEY"):
+        rp.resolve_runtime_provider(requested="custom")
+
+
+def test_named_custom_missing_declared_key_env_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda _name: {
+            "name": "tenant-b",
+            "base_url": "https://api.deepseek.com/v1",
+            "key_env": "TENANT_B_API_KEY",
+        },
+    )
+    monkeypatch.delenv("TENANT_B_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-wrong-tenant")
+
+    with pytest.raises(rp.AuthError, match="TENANT_B_API_KEY"):
+        rp._resolve_named_custom_runtime(requested_provider="tenant-b")
+
+
 def test_bare_custom_uses_loopback_model_base_url_when_provider_not_custom(monkeypatch):
     """Regression for #14676: /model can select Custom while YAML still lists another provider."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")

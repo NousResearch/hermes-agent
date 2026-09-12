@@ -11,6 +11,7 @@ runtime resolver then makes of it.
 
 import os
 
+import pytest
 import yaml
 
 import hermes_cli.runtime_provider as rp
@@ -94,7 +95,7 @@ def test_saved_config_resolves_the_bearer_token_not_a_placeholder(monkeypatch):
 
 
 def test_resolution_fails_closed_when_the_token_is_absent(monkeypatch):
-    """No token in the environment must not silently resolve to a placeholder key."""
+    """A declared Bedrock key_env with no value must refuse, not placeholder-auth."""
     _home, cfg = _run_wizard(monkeypatch)
 
     monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
@@ -102,6 +103,6 @@ def test_resolution_fails_closed_when_the_token_is_absent(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(rp, "load_config", lambda: cfg)
 
-    resolved = rp.resolve_runtime_provider(requested=cfg["model"]["provider"])
-
-    assert resolved["api_key"] != TOKEN
+    with pytest.raises(rp.AuthError) as excinfo:
+        rp.resolve_runtime_provider(requested=cfg["model"]["provider"])
+    assert excinfo.value.code == "declared_key_env_unresolved"

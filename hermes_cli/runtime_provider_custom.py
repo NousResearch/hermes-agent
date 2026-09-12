@@ -379,6 +379,26 @@ def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model:
         result["request_overrides"] = {**(result.get("request_overrides") or {}), **request_overrides}
 
 
+def _resolve_declared_key_env(
+    entry: Dict[str, Any], explicit_api_key: Optional[str]
+) -> tuple[str, bool]:
+    """Resolve an authoritative custom-endpoint key binding."""
+    rp = _rp()
+    env_var = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+    if not env_var:
+        return "", False
+    if rp.has_usable_secret((explicit_api_key or "").strip()):
+        return "", True
+    value = rp._getenv(env_var, "").strip()
+    if not rp.has_usable_secret(value):
+        raise rp.AuthError(
+            f"Custom endpoint declares key_env {env_var!r}, but it has no usable value",
+            provider="custom",
+            code="declared_key_env_unresolved",
+        )
+    return value, True
+
+
 def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optional[str]) -> Dict[str, Any]:
     """Managed llama.cpp runtime: the supervised (or detected external) server, or a typed error.
     No server => say so and stop; falling through to the generic custom path would surface "local
@@ -475,10 +495,15 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
-    pool_result = rp._try_resolve_from_custom_pool(
-        base_url, "custom", custom_provider.get("api_mode"),
-        provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+    bound_key, has_declared_key = _resolve_declared_key_env(
+        custom_provider, explicit_api_key
     )
+    pool_result = None
+    if not has_declared_key:
+        pool_result = rp._try_resolve_from_custom_pool(
+            base_url, "custom", custom_provider.get("api_mode"),
+            provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+        )
     if pool_result:
         # The pool doesn't know the custom_providers fields — propagate them here too.
         _apply_custom_provider_extras(custom_provider, target_model, pool_result)
@@ -486,8 +511,12 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     explicit_key = (explicit_api_key or "").strip()
     candidates = [
         explicit_key,
-        _clean(custom_provider.get("api_key", "")),
-        rp._getenv(_clean(custom_provider.get("key_env", "")), "").strip(),
+        bound_key,
+        (
+            _clean(custom_provider.get("api_key", ""))
+            if not has_declared_key
+            else ""
+        ),
         *rp._host_gated_env_key_candidates(base_url, ollama=False),
     ]
     api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")

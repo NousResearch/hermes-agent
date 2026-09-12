@@ -906,6 +906,23 @@ def _safe_callback(callback, label: str, *args, **kwargs) -> None:
         logging.debug("%s callback error: %s", label, callback_error)
 
 
+# Bound for the argument preview carried into the gateway heartbeat. Long commands/args are the
+# point of the field, but a status line is not a log: past this it stops being scannable.
+_CURRENT_TOOL_DETAIL_MAX = 120
+
+
+def _current_tool_detail(function_name: str, display_args: dict) -> str | None:
+    """Short, redacted argument preview for the running tool, or ``None`` when there is nothing to show.
+
+    ``display_args`` is the already-redacted dict, so this never puts a secret into a status line.
+    """
+    try:
+        return _build_tool_preview(function_name, display_args, _CURRENT_TOOL_DETAIL_MAX) or None
+    except Exception as preview_error:
+        logging.debug("Tool detail preview error: %s", preview_error)
+        return None
+
+
 def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -> None:
     """Run user-visible and checkpoint preflight on final tool arguments."""
     function_name, function_args, effective_task_id, tool_call_id = ref.name, ref.args, ref.task_id, ref.call_id
@@ -919,6 +936,8 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
             print(f"  📞 {prefix}: {function_name}({list(function_args.keys())}) - {_preview(json.dumps(display_args, ensure_ascii=False), agent.log_prefix_chars)}")
 
     agent._current_tool = function_name
+    agent._current_tool_started = time.time()
+    agent._current_tool_detail = _current_tool_detail(function_name, display_args)
     agent._touch_activity(f"executing tool: {function_name}")
     _set_worker_activity_callback(agent)
 
@@ -1005,6 +1024,8 @@ def _commit_tool_result(
             logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
     agent._current_tool = None
+    agent._current_tool_started = None
+    agent._current_tool_detail = None
     _status_suffix = " (error)" if is_error else ""
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
@@ -1430,6 +1451,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     timeout_s = _resolve_concurrent_tool_timeout()
     batch = _ConcurrentBatch(agent, messages, effective_task_id, parsed_calls, timeout_s)
     agent._current_tool = tool_names_str
+    agent._current_tool_started = time.time()
+    agent._current_tool_detail = None
     agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
 
     spinner = _start_quiet_tool_spinner(agent, "", {}, label=f"⚡ running {num_tools} tools concurrently")

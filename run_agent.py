@@ -848,6 +848,8 @@ class AIAgent(
                 "current_tool": self._current_tool, "api_call_count": self._api_call_count,
                 "max_iterations": self.max_iterations, "budget_used": self.iteration_budget.used,
                 "budget_max": self.iteration_budget.max_total,
+                "current_tool_detail": getattr(self, "_current_tool_detail", None),
+                "current_tool_started_at": getattr(self, "_current_tool_started", None),
             },
         )
 

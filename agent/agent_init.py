@@ -561,6 +561,10 @@ _TURN_STATE: Dict[str, Any] = {
     "_last_activity_provenance": ActivityProvenance.UNKNOWN,
     "_session_activity_last_persist_mono": 0.0,  # rate-limits durable SessionDB stamps
     "_current_tool": None,
+    # What the running tool is doing (short redacted arg preview) and since when, for the gateway
+    # heartbeat's "what is it doing right now" line. Both cleared when the tool completes.
+    "_current_tool_detail": None,
+    "_current_tool_started": None,
     "_api_call_count": 0,
     # Opt-out for the between-turns MCP refresh; set on forks that need byte-identical tools[].
     "_skip_mcp_refresh": False,

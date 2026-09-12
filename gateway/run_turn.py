@@ -16,7 +16,7 @@ import queue
 import threading
 import time
 from agent.i18n import t
-from agent.session_activity import format_iteration_progress
+from agent.session_activity import format_current_step, format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
@@ -3835,9 +3835,9 @@ class GatewayTurnMixin:
                     _parts = []
                     if _want_iteration_detail:
                         _parts.append(format_iteration_progress(_a["api_call_count"], _a["max_iterations"]))
-                    _action = _a.get("current_tool") or _a.get("last_activity_desc")
+                    _action = format_current_step(_a)
                     if _action:
-                        _parts.append(str(_action))
+                        _parts.append(_action)
                     if _parts:
                         _status_detail = " — " + ", ".join(_parts)
             _heartbeat_text = (

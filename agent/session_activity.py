@@ -12,6 +12,10 @@ from typing import Any, Mapping, Optional
 
 ACTIVITY_DESCRIPTION_MAX = 120
 
+# Below this a step timer is noise, not information: short tool calls are done before the next
+# heartbeat lands anyway, so the heartbeat stays terse instead of stamping every fast call.
+_STEP_TIMER_MIN_SECONDS = 5.0
+
 # Durable SessionDB heartbeat cadence. Contract: MUST stay >= 30s — the SessionDB write path is contended and
 # this observation-only projection never justifies extra write pressure. A code constant on purpose (no config
 # can make it a high-frequency writer); matches the kanban auto-heartbeat. force_persist (terminal stamps) is the only bypass.
@@ -59,6 +63,54 @@ def format_iteration_progress(api_call_count: Any, max_iterations: Any) -> str:
     if cap >= sys.maxsize:
         return f"iteration {api_call_count}"
     return f"iteration {api_call_count}/{cap}"
+
+
+def format_step_duration(seconds: Any) -> str:
+    """``45s`` / ``2m 10s`` / ``1h 03m`` — compact duration for a single step timer."""
+    try:
+        total = int(max(0.0, float(seconds)))
+    except (TypeError, ValueError):
+        return ""
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def format_current_step(activity: Mapping[str, Any], *, now: Optional[float] = None) -> str:
+    """One line of "what is it doing right now" for the gateway long-running heartbeat.
+
+    The running tool with its short argument preview and how long that step has taken, else the last
+    activity description with how long ago it was stamped. Returns "" when nothing is worth showing,
+    so a caller keeps its own terse fallback. The bare tool name is deliberately not returned on its
+    own: it is what made the heartbeat uninformative (#102806 follow-up).
+    """
+    clock = float(now if now is not None else time.time())
+    tool = activity.get("current_tool")
+    if tool:
+        detail = str(activity.get("current_tool_detail") or "").strip()
+        text = f"{tool}: {detail}" if detail else str(tool)
+        try:
+            started = activity.get("current_tool_started_at")
+            step_secs = clock - float(started) if started is not None else None
+        except (TypeError, ValueError):
+            step_secs = None
+        if step_secs is not None and step_secs >= _STEP_TIMER_MIN_SECONDS:
+            text += f" ({format_step_duration(step_secs)})"
+        return text
+    desc = str(activity.get("last_activity_desc") or "").strip()
+    if not desc or desc == "initializing":
+        return ""
+    try:
+        idle_secs = float(activity.get("seconds_since_activity"))
+    except (TypeError, ValueError):
+        idle_secs = None
+    if idle_secs is not None and idle_secs >= _STEP_TIMER_MIN_SECONDS:
+        return f"{desc} ({format_step_duration(idle_secs)} ago)"
+    return desc
 
 
 def reset_session_activity_persist_window(agent: Any) -> None:

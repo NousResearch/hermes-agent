@@ -181,6 +181,36 @@ class TestSyncTurnTruncation:
         assert len(sent[1]["content"]) <= mem0_plugin._SYNC_MSG_MAX_CHARS and sent[1]["content"].endswith(".")
         assert provider._consecutive_failures == 0
 
+    def test_the_boundary_kept_is_the_last_one_in_the_window_whatever_its_script(self):
+        """A mixed-script turn must not be cut back to an early CJK stop.
+
+        The trim exists to keep as much of the turn as the embedder can take; picking the
+        first separator KIND that qualifies instead of the last boundary threw away most of
+        the allowed window whenever two kinds appeared — an early ``。`` (or ``.``, which
+        outranks ``!``/``?``) beat a boundary 240 characters later, so the facts stated in
+        the rest of the message never reached extraction.
+        """
+        cap = mem0_plugin._SYNC_MSG_MAX_CHARS
+        early, late = cap // 2, cap - 9
+
+        for early_sep, late_sep in (("。", "."), (".", "!"), ("？", "?"), ("！", ".")):
+            text = "a" * early + early_sep + "b" * (late - early - 1) + late_sep + "c" * cap
+            assert text[late] == late_sep and len(text) > cap  # both boundaries inside the window
+            kept = mem0_plugin._truncate_for_sync(text)
+            assert kept == text[:late + 1], f"{early_sep!r} before {late_sep!r} cut back to {len(kept)} chars"
+            assert kept.endswith(late_sep)
+
+    def test_a_boundary_only_in_the_first_third_still_falls_back_to_a_hard_cut(self):
+        """Unsegmented input keeps the whole window rather than a sliver of a sentence."""
+        cap = mem0_plugin._SYNC_MSG_MAX_CHARS
+        text = "a" * 10 + "." + "b" * (cap * 2)
+        assert mem0_plugin._truncate_for_sync(text) == text[:cap]
+
+    def test_a_message_inside_the_cap_is_never_touched(self):
+        cap = mem0_plugin._SYNC_MSG_MAX_CHARS
+        text = "Fine. Nothing to trim here! Really?"
+        assert len(text) <= cap and mem0_plugin._truncate_for_sync(text) == text
+
     def test_sync_max_chars_config_raises_cap(self, monkeypatch, tmp_path):
         """8k-token embedders should not be stuck at the 512-token default (#106235)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

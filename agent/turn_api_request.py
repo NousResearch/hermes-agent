@@ -47,6 +47,9 @@ def _fire_pre_api_request_hook(
     api_call_count: Any, api_request_id: Any, api_start_time: Any, effective_task_id: Any,
     turn_id: Any,
 ) -> None:
+    # Persistence-disabled forks share their parent's session ID and are not real sessions.
+    if getattr(agent, "_persist_disabled", False):
+        return
     from agent.conversation_loop import _system_prompt_for_hooks
 
     try:

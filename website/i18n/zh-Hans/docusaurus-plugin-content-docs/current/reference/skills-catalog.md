@@ -139,7 +139,7 @@ Hermes 在执行 `hermes update` 时也会同步内置技能，但同步清单�
 ## social-media
 
 | 技能 | 描述 | 路径 |
-|-------|-------------|------|
+|------|------|------|
 | [`xurl`](/user-guide/skills/bundled/social-media/social-media-xurl) | 通过 xurl CLI 操作 X/Twitter：发帖、搜索、私信、媒体、v2 API。 | `social-media/xurl` |
 
 ## software-development

@@ -256,6 +256,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**reddit-reading**](/docs/user-guide/skills/optional/social-media/social-media-reddit-reading) | Read Reddit: subreddits, search, threads, users. No browser. |
+| [**social-har-api-connectivity**](/docs/user-guide/skills/optional/social-media/social-media-social-har-api-connectivity) | Capture a social login session via CDP (authorized only). |
 
 ## software-development
 

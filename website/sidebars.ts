@@ -587,7 +587,7 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
-                  label: 'smart-home',
+label: 'smart-home',
                   key: 'skills-optional-smart-home',
                   collapsed: true,
                   items: [
@@ -601,6 +601,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/social-media/social-media-reddit-reading',
+                    'user-guide/skills/optional/social-media/social-media-social-har-api-connectivity',
                   ],
                 },
                 {

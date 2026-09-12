@@ -1,7 +1,9 @@
 import { Button, Codicon, Textarea, Tip } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
+import { canonicalFilesFailure } from './canonical-files-client'
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
+import { CanonicalGroupFiles } from './canonical-group-files'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
@@ -11,7 +13,10 @@ import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoomMember
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
-interface RoomState { room: { room_id?: string; name: string; members?: CanonicalRoomMember[] }; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
+interface RoomState {
+  room: { room_id?: string; name: string; members?: CanonicalRoomMember[]; authority_gateway_id?: string; authority_epoch?: number }
+  driver_status?: { pending_actions?: CanonicalPendingAction[] }
+}
 
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
@@ -29,6 +34,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const [events, setEvents] = useState<RoomEvent[]>([])
   const [error, setError] = useState('')
   const [readError, setReadError] = useState('')
+  const [filesAccessDenied, setFilesAccessDenied] = useState(false)
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [restored, setRestored] = useState(false)
@@ -60,25 +66,37 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   const refresh = async () => {
     const version = ++revision.current
-    const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId })
-    const log: RoomEvent[] = []
-    let cursor = 0
 
-    for (;;) {
-      const page = await canonicalGroupRequest<{ events: RoomEvent[]; has_more?: boolean; next_seq?: number }>(binding, 'groups.log', { room_id: binding.roomId, since_seq: cursor, limit: 100 })
-      log.push(...page.events)
+    try {
+      const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId })
+      const log: RoomEvent[] = []
+      let cursor = 0
 
-      if (!page.has_more) {break}
-      const next = page.events.at(-1)?.seq
+      for (;;) {
+        const page = await canonicalGroupRequest<{ events: RoomEvent[]; has_more?: boolean; next_seq?: number }>(binding, 'groups.log', { room_id: binding.roomId, since_seq: cursor, limit: 100 })
+        log.push(...page.events)
 
-      if (!next || next <= cursor) {throw new Error(labels.invalidLogCursor)}
-      cursor = next
-    }
+        if (!page.has_more) {break}
+        const next = page.events.at(-1)?.seq
 
-    if (alive.current && version === revision.current) {
-      setState(snapshot)
-      setEvents(log)
-      setReadError('')
+        if (!next || next <= cursor) {throw new Error(labels.invalidLogCursor)}
+        cursor = next
+      }
+
+      if (alive.current && version === revision.current) {
+        setState(snapshot)
+        setEvents(log)
+        setReadError('')
+        setFilesAccessDenied(false)
+      }
+    } catch (e) {
+      const failure = canonicalFilesFailure(e)
+
+      if (alive.current && version === revision.current && (failure === 'access' || failure === 'scope')) {
+        setFilesAccessDenied(true)
+      }
+
+      throw e
     }
   }
 
@@ -142,6 +160,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         <Button aria-label={labels.back} onClick={onBack} size="icon-sm" type="button" variant="ghost"><Codicon name="arrow-left" /></Button>
       </Tip>}
       <h2 className="min-w-0 flex-1 wrap-anywhere text-sm font-medium">{state?.room.name || labels.loadingGroup}</h2>
+      {visible && <CanonicalGroupFiles accessDenied={filesAccessDenied} authority={state?.room.authority_gateway_id && state.room.authority_epoch
+        ? { gatewayId: state.room.authority_gateway_id, epoch: state.room.authority_epoch } : undefined}
+        binding={binding} latestFileSeq={events.reduce((latest, event) => event.payload.attachments?.length ? Math.max(latest, event.seq) : latest, 0)}
+        name={state?.room.name || binding.roomId} />}
       <Tip label={labels.stop}>
         <Button aria-label={labels.stop} disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))}
           size="icon-sm" type="button" variant="ghost"><Codicon name="debug-stop" /></Button>

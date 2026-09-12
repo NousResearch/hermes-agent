@@ -2633,6 +2633,14 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         base_url = env_url or pconfig.inference_base_url
         if resolve_base_url is not None:
             base_url = resolve_base_url(token, pconfig.inference_base_url, env_url)
+        elif not base_url:
+            try:
+                from providers import get_provider_profile
+                _prof = get_provider_profile(provider)
+            except Exception:
+                _prof = None
+            if _prof is not None:
+                base_url = _prof.resolve_base_url(token, pconfig.inference_base_url, env_url) or base_url
         seed.upsert(f"env:{env_var}", _env_payload(env_var=env_var, token=token, base_url=base_url))
     return seed.result
 

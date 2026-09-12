@@ -1401,7 +1401,7 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     from providers import get_provider_profile
 
     profile = get_provider_profile(normalized)
-    if not (profile and profile.auth_type == "api_key" and profile.base_url):
+    if not (profile and profile.auth_type == "api_key"):
         return None
     api_key, base_url = _api_key_credentials(normalized)
     live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None
@@ -1664,14 +1664,18 @@ def cached_provider_model_ids(
 
     if not force_refresh and _cache_entry_valid(entry, fp, allow_empty=is_ollama):
         age = now - entry["at"]
-        if age < ttl_seconds:
-            return list(entry["models"])
-        # Empty native catalogs are authoritative only for the short native TTL — never served
-        # through the stale window. Non-empty stale rows are served immediately (SWR) so picker
-        # opens never block on serial /v1/models round-trips.
-        if entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+        models = list(entry["models"])
+        # Workers AI models/search used to cache Cloudflare's internal UUID
+        # ``id`` instead of ``@cf/...`` slugs — treat that as a miss.
+        if normalized == "workers-ai" and any(
+            isinstance(m, str) and m.count("-") == 4 and len(m) == 36 for m in models
+        ):
+            pass
+        elif age < ttl_seconds:
+            return models
+        elif entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
             _spawn_swr_refresh(normalized)
-            return list(entry["models"])
+            return models
 
     live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:

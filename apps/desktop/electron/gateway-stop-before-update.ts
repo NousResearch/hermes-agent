@@ -34,7 +34,11 @@ export interface StopGatewayBeforeUpdateDeps {
   spy?: (command: string, args: string[]) => void
 }
 
-export const GATEWAY_STOP_TIMEOUT_MS = 20_000
+// Windows gateway stop may spend the full 30-second bounded drain before it
+// reaches Scheduled Task shutdown and force-stops remaining gateway trees.
+// Keep Desktop's synchronous wrapper above that ceiling; cutting the child off
+// early leaves gateway-owned Kanban workers alive with hermes.exe mapped.
+export const GATEWAY_STOP_TIMEOUT_MS = 45_000
 
 /**
  * Best-effort stop of all-profile messaging gateways via the CLI.

@@ -454,3 +454,38 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_guardrail_halt_final_response_is_self_contained_for_messaging_users():
+    """Regression for #105404: the halt text is the user's answer on Telegram
+    and similar surfaces where tool results are never rendered, so it must
+    explain the blocker itself instead of referring to the last tool result."""
+    agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
+    same_args = {"query": "same"}
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps(same_args), f"c{i}")],
+        )
+        for i in range(1, 10)
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+    agent._disable_streaming = True
+
+    with (
+        patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("search repeatedly")
+
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    halt_text = result["final_response"]
+    # No reference to evidence the messaging user cannot open.
+    assert "last tool result" not in halt_text
+    # The safe per-code reason is rendered, not just the guardrail code and count.
+    assert "arguments" in halt_text
+    # Raw tool payload never reaches the user-visible answer.
+    assert "boom" not in halt_text

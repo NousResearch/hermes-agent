@@ -483,6 +483,45 @@ def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     return json.dumps({"error": decision.message, "guardrail": decision.to_metadata()}, ensure_ascii=False)
 
 
+# User-facing reasons for guardrail halts surfaced as the final turn response. Messaging
+# surfaces (Telegram, gateway) never render tool results, so the halt text must explain the
+# blocker without pointing at evidence the user cannot see. Keyed by decision code, so only
+# these fixed strings can reach the user — raw arguments, payloads, and provider output
+# cannot leak through.
+_HALT_USER_REASONS: dict[str, str] = {
+    "repeated_exact_failure_block": (
+        "the same call with unchanged arguments kept failing, so the arguments "
+        "themselves must change before it can succeed"
+    ),
+    "idempotent_no_progress_block": (
+        "the same read-only call kept returning the same result, so repeating "
+        "it cannot make progress"
+    ),
+    "same_tool_failure_halt": (
+        "the operation repeatedly failed to make progress as asked"
+    ),
+    "identical_call_streak_halt": (
+        "the identical call kept returning the identical result, so repeating "
+        "it cannot make progress"
+    ),
+    "loop_web_search_cap": "the per-turn web search limit was reached",
+    "loop_subagent_cap": "the per-turn subagent limit was reached",
+}
+
+
+def toolguard_halt_user_reason(decision: ToolGuardrailDecision) -> str:
+    """Self-contained, user-safe reason a guardrail stopped the loop.
+
+    Never references tool output or raw call arguments: surfaces without a tool
+    feed would leave the user with an unexplained stop, and failure details may
+    carry secrets.
+    """
+    return (
+        _HALT_USER_REASONS.get(decision.code)
+        or "it made no progress after repeated attempts"
+    )
+
+
 def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> str:
     """Append runtime guidance to the current tool result content."""
     if decision.action not in {"warn", "halt"} or not decision.message:

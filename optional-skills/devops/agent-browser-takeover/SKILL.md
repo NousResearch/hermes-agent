@@ -30,6 +30,8 @@ This is a mirror of an existing Xvfb framebuffer. It is not a second browser and
 
 From-scratch walkthrough: `references/fresh-vps.md`.
 Hermes agent bootstrap: `references/hermes-agent-install.md`.
+Fake lab topology: `references/topology.md`.
+Why these binds: `references/why.md`.
 Optional peer SOCKS egress: `references/peer-egress.md`.
 
 ## When to Use
@@ -67,6 +69,8 @@ When the user asks you to set this up:
 5. `"$SKILL_DIR/scripts/verify.sh"` must pass before you hand out `http://$BIND_IP:6080/vnc.html`.
 
 Do not apt-get merely because the skill loaded. Full procedure: `references/hermes-agent-install.md`.
+
+Reviewers without WireGuard: `cd templates/lab && docker compose up --build`, then http://127.0.0.1:6080/vnc.html (host loopback only). Fake mesh numbers live in `references/topology.md` (`10.13.37.1` VPS, `10.13.37.4` peer). Copy `templates/lab.env.example` → `~/.hermes/takeover/env` and replace those addresses.
 
 ## Hard rules
 

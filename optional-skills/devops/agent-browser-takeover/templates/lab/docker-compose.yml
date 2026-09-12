@@ -1,0 +1,16 @@
+# Local lab pod — Hermes reviewers, no WireGuard required
+#
+#   cd templates/lab
+#   docker compose up --build
+#   open http://127.0.0.1:6080/vnc.html
+#
+# Host publish is loopback only. That is the trust boundary.
+services:
+  takeover-lab:
+    build: .
+    ports:
+      - "127.0.0.1:6080:6080"
+    environment:
+      DISPLAY: ":98"
+    shm_size: "1gb"
+    restart: unless-stopped

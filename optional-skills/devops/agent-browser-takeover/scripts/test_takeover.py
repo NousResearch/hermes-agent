@@ -84,7 +84,7 @@ class TakeoverKitTests(unittest.TestCase):
         self.assertNotIn("apt-get", out)
 
     def test_shell_syntax(self):
-        for script in (LAUNCHER, INSTALL, ROOT / "scripts" / "verify.sh"):
+        for script in (LAUNCHER, INSTALL, ROOT / "scripts" / "verify.sh", ROOT / "templates" / "lab" / "entrypoint.sh"):
             r = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, msg=f"{script}: {r.stderr}")
 
@@ -97,8 +97,16 @@ class TakeoverKitTests(unittest.TestCase):
         self.assertTrue((ROOT / "references" / "fresh-vps.md").exists())
         self.assertTrue((ROOT / "references" / "peer-egress.md").exists())
         self.assertTrue((ROOT / "references" / "hermes-agent-install.md").exists())
+        self.assertTrue((ROOT / "references" / "topology.md").exists())
+        self.assertTrue((ROOT / "references" / "why.md").exists())
         self.assertTrue((ROOT / "scripts" / "camoufox_server.py").exists())
         self.assertTrue((ROOT / "templates" / "env.example").exists())
+        compose = (ROOT / "templates" / "lab" / "docker-compose.yml").read_text()
+        self.assertIn("127.0.0.1:6080:6080", compose)
+        self.assertNotIn("0.0.0.0:6080", compose)
+        topo = (ROOT / "references" / "topology.md").read_text()
+        self.assertIn("10.13.37.1", topo)
+        self.assertIn("10.13.37.4", topo)
 
     def test_no_leaked_host_data(self):
         hits = []

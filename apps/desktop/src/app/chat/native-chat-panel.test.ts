@@ -1,14 +1,25 @@
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const requestGatewayForAgent = vi.fn()
-const retainGatewayForAgent = vi.fn()
-const setSessionOwnerHint = vi.fn()
-const bindCreatedSession = vi.fn()
-const sessionTileDelegate = vi.fn()
+const {
+  bindCreatedSession,
+  requestGatewayForAgent,
+  retainGatewayForAgent,
+  sessionTileDelegate,
+  setSessionOwnerHint
+} = vi.hoisted(() => ({
+  bindCreatedSession: vi.fn(),
+  requestGatewayForAgent: vi.fn(),
+  retainGatewayForAgent: vi.fn(),
+  sessionTileDelegate: vi.fn(),
+  setSessionOwnerHint: vi.fn()
+}))
 
 vi.mock('@/store/gateway', () => ({ requestGatewayForAgent, retainGatewayForAgent }))
-vi.mock('@/store/session', () => ({ setSessionOwnerHint }))
+vi.mock('@/store/session', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/store/session')>()),
+  setSessionOwnerHint
+}))
 vi.mock('@/store/session-states', () => ({
   $sessionStates: atom({}),
   $sessionTileDelegateRevision: atom(1),

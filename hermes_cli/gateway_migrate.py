@@ -406,8 +406,8 @@ def build_migration_plan() -> MigrationPlan:
     for check in _PREFLIGHT_CHECKS:
         check(plan, configs)
     plan.notices.append(
-        "Profiles created after the migration are served after `hermes gateway restart` "
-        "(the multiplexer snapshots the profile set at startup)."
+        "Profiles created after the migration are served by the running multiplexer as soon as "
+        "they exist (it rescans profiles/ on create/delete and every 30s)."
     )
     return plan
 

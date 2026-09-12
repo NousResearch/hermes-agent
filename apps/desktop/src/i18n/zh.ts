@@ -2203,6 +2203,8 @@ export const zh = defineLocale({
     restartToApply: '此更改将在网关重启后生效。',
     setupSaved: name => `${name} 设置已保存`,
     restartToReconnect: '新凭据将在网关重启后生效。',
+    appliedLive: '已应用到正在运行的网关。',
+    connectingLive: '正在运行的网关正在使用新凭据连接。',
     keyCleared: key => `${key} 已清除`,
     setupUpdated: name => `${name} 设置已更新。`,
     failedUpdate: name => `更新 ${name} 失败`,

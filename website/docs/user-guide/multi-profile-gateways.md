@@ -430,9 +430,18 @@ down for any profile a running multiplexer or its own gateway already serves). A
 multiplexer started as `hermes -p <name> gateway run` always ticks its own
 profile's cron store as well.
 
-One caveat: the served set is a **start-time snapshot**. A profile created while
-the multiplexer is running is not picked up until `hermes gateway restart`
-(profiles deleted at runtime are dropped from cron ticking automatically).
+The served set is **live**. A profile created while the multiplexer is running
+(`hermes profile create`, the dashboard, Desktop or the TUI) is served at once:
+the creator pings the multiplexer over its control socket, and the multiplexer
+also rescans `profiles/` every 30 seconds as a safety net. The new profile's
+adapters are built the moment its `config.yaml`/`.env` carries a bot token
+(creators usually create first, then add the token), `served_profiles` in the
+default profile's `gateway_state.json` is updated, and `hermes -p <name> gateway
+status` reports it as served — no restart, and the other profiles' adapters and
+in-flight turns are untouched. Deleting a profile stops and unroutes its
+adapters the same way. The one-credential-one-poller rule still applies: a
+hot-added profile that reuses another profile's token is parked with a
+`duplicate_credential` error, never started as a second poller.
 
 ### Routing shared-bot chats to profiles (`profile_routes`)
 
@@ -827,10 +836,10 @@ prefixed URL; nothing else about the key changes.
 
 ### Profiles created after the migration
 
-The multiplexer snapshots the profile set at startup. `hermes profile create`
-prints the reminder when a live multiplexer is detected: run
-`hermes gateway restart` (from the default profile) and the new profile is
-served.
+A profile created while the multiplexer runs is served without a restart (see
+above). `hermes profile create` confirms this when the live multiplexer picked the
+profile up; it prints the `hermes gateway restart` reminder only when it could not
+reach the multiplexer (for example, a gateway started from an older build).
 
 ### Rollback
 

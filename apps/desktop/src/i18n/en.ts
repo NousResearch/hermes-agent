@@ -2037,6 +2037,8 @@ export const en: Translations = {
     restartToApply: 'This change takes effect after a gateway restart.',
     setupSaved: name => `${name} setup saved`,
     restartToReconnect: 'New credentials take effect after a gateway restart.',
+    appliedLive: 'Applied to the running gateway.',
+    connectingLive: 'The running gateway is connecting with the new credentials.',
     keyCleared: key => `${key} cleared`,
     setupUpdated: name => `${name} setup was updated.`,
     failedUpdate: name => `Failed to update ${name}`,

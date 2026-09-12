@@ -2280,18 +2280,35 @@ def _commented_sections_for_save(normalized: Dict[str, Any]) -> Optional[str]:
 
 def save_config(
     config: Dict[str, Any], *, strip_defaults: bool = True,
-    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False):
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False,
+    proof=None, session_id: str = "local"):
     """Save configuration to ~/.hermes/config.yaml.
+
+    Ordinary configuration remains writable. Any policy-class leaf whose value changes
+    is authorized here, below every full-document caller, before bytes are written.
+
     Schema defaults are not written unless the user explicitly set them (the path exists in the
     raw config before normalisation), so config.yaml is never contaminated with defaults that
     would hide future default changes. ``merge_existing`` deep-merges the on-disk raw config
-    under *config* so partial callers cannot drop sections they omitted."""
+    under *config* so partial callers cannot drop sections they omitted.
+    """
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")
             return
 
         config = _strip_managed_keys_for_save(config)
+        from hermes_cli.policy_mutation import (
+            PolicyMutationBroker, policy_changed_keys, require_policy_proof_for_payload,
+        )
+        existing_for_policy = read_raw_config()
+        changed_policy_keys = policy_changed_keys(existing_for_policy, config)
+        if changed_policy_keys:
+            if proof is None:
+                PolicyMutationBroker()
+            require_policy_proof_for_payload(
+                config, proof, session_id=session_id, before=existing_for_policy, consume=False
+            )
 
         ensure_hermes_home()
         config_path = get_config_path()
@@ -2316,6 +2333,7 @@ def save_config(
 
         atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
         _secure_file(config_path)
+        _LOAD_CONFIG_CACHE.pop(str(config_path), None)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 

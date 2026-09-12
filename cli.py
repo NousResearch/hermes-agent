@@ -2393,11 +2393,14 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
     return list(dict.fromkeys(p for p in parts if p))
 
 
-def save_config_value(key_path: str, value: any) -> bool:
+def save_config_value(key_path: str, value: any, *, proof=None, session_id: str = "local") -> bool:
     """Persist dot-separated ``key_path`` = value into HERMES_HOME/config.yaml; True on success.
 
-    Never the repo's cli-config.yaml: no config reader loads it, so the value would vanish.
+    Policy keys require a one-shot operator proof; ordinary keys retain the existing targeted
+    atomic writer path. Never the repo's cli-config.yaml: no config reader loads it.
     """
+    from hermes_cli.policy_mutation import require_policy_proof
+    require_policy_proof(key_path, "set", proof, session_id=session_id)
     config_path = get_hermes_home() / 'config.yaml'
 
     try:

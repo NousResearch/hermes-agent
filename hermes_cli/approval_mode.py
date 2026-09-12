@@ -53,6 +53,12 @@ def run_approval_mode_command(requested_mode: Optional[str], *, proof=None, sess
         detail = output.getvalue().strip() or "Approval mode is managed and cannot be changed."
         return ApprovalModeResult(False, current, False, detail)
     except Exception as exc:
+        from hermes_cli.policy_mutation import PolicyMutationDenied
+        if isinstance(exc, PolicyMutationDenied):
+            return ApprovalModeResult(
+                False, current, False,
+                "Persistent approval changes require operator confirmation; use the gateway /approvals confirm surface.",
+            )
         return ApprovalModeResult(False, current, False, f"Failed to save approval mode: {exc}")
 
     effective = _effective_mode()

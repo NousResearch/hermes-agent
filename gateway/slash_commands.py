@@ -903,7 +903,9 @@ class GatewaySlashCommandsMixin(
                 # The operator-input settlement point is the shared slash-confirm surface. Admin
                 # authorization above only admits the request; it never mints mutation authority.
                 from hermes_cli.policy_mutation import _operator_settlement_scope
-                with _operator_settlement_scope():
+                confirmation_id = getattr(_on_confirm, "_policy_confirmation_id", None) or "gateway-confirm"
+                broker.record_settlement(pending.request_id, confirmation_id)
+                with _operator_settlement_scope(pending.request_id, confirmation_id):
                     proof = broker.operator_confirm(pending.request_id)
                 return run_approval_mode_command(
                     requested, proof=proof, session_id=pending.session_id,

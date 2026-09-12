@@ -1204,6 +1204,11 @@ class GatewayBusySessionMixin:
 
         # Register FIRST so a fast button click cannot race the send_slash_confirm return.
         _slash_confirm_mod.register(session_key, confirm_id, command, handler)
+        if command == "approvals":
+            try:
+                handler._policy_confirmation_id = confirm_id
+            except Exception:
+                pass
 
         adapter = self._adapter_for_source(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))

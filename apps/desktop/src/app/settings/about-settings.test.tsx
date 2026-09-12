@@ -113,7 +113,7 @@ describe('AboutSettings', (): void => {
   it('shows the fixed package channel with no selector', (): void => {
     $desktopVersion.set({ ...$desktopVersion.get()!, channel: 'canary' })
     render(<AboutSettings />)
-    expect(screen.getByText(`${en.updates.version('1.2.3')} · canary`)).toBeTruthy()
+    expect(screen.getByText(`${en.updates.version('1.2.3')} · ${en.updates.channels.canary}`)).toBeTruthy()
     expect(screen.queryByRole('combobox')).toBeNull()
   })
 

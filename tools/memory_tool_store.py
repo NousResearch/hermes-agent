@@ -55,9 +55,14 @@ def _read_failed_error(path: Path) -> Dict[str, Any]:
 
 
 def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int], bool]:
-    """``(index, ambiguous)`` for entries containing *old_text*. Exact-duplicate
+    """``(index, ambiguous)`` for entries matching *old_text*. A whole-entry
+    EXACT match (``old_text == entry``) takes absolute priority — substring
+    matches are only considered when no entry equals *old_text*, so a short
+    entry stays addressable even when its full text is contained inside a
+    longer sibling entry (remove('test') vs '...tests pass...'). Exact-duplicate
     matches are safe (first wins); distinct matches → ``(None, True)``."""
-    matches = [i for i, e in enumerate(entries) if old_text in e]
+    exact = [i for i, e in enumerate(entries) if e == old_text]
+    matches = exact if exact else [i for i, e in enumerate(entries) if old_text in e]
     if len({entries[i] for i in matches}) > 1:
         return None, True
     return (matches[0] if matches else None), False

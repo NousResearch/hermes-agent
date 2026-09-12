@@ -184,6 +184,28 @@ class TestMemoryStoreRemove:
         assert store.remove("memory", "  ")["success"] is False
 
 
+class TestExactWholeEntryMatchPriority:
+    """A short entry whose full text is contained inside a longer sibling entry
+    must stay addressable: old_text that equals an entry wins outright, and
+    substring matches only apply when no entry equals old_text. Without this,
+    remove('test') against entries ['test', '...tests pass...'] reported
+    ambiguity and the entry could never be addressed."""
+
+    def test_remove_exact_entry_beats_substring_collision(self, store):
+        store.add("memory", "test")
+        store.add("memory", "echo-reply tests pass via local twins and are false positives")
+        result = store.remove("memory", "test")
+        assert result["success"] is True
+        assert store.memory_entries == ["echo-reply tests pass via local twins and are false positives"]
+
+    def test_batch_remove_exact_entry_beats_substring_collision(self, store):
+        store.add("memory", "test")
+        store.add("memory", "echo-reply tests pass via local twins and are false positives")
+        result = store.apply_batch("memory", [{"action": "remove", "old_text": "test"}])
+        assert result["success"] is True
+        assert store.memory_entries == ["echo-reply tests pass via local twins and are false positives"]
+
+
 class TestMemoryConsolidationGracefulDegrade:
     """Fix #3 for #42405: a failed at-capacity consolidation must never loop the
     turn to budget exhaustion — after a per-turn cap of failures, memory ops

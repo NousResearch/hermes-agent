@@ -239,6 +239,125 @@ def _pareto_score(raw: Any) -> float | None:
     return score if score is not None and 0.0 <= score <= 1.0 else None
 
 
+_EXPLICIT_OLLAMA_LOCAL = frozenset({"ollama", "ollama-local"})
+_OLLAMA_CLOUD_PROVIDERS = frozenset({"ollama-cloud"})
+
+
+def _provider_slug(params: dict[str, Any]) -> str:
+    """Best-effort provider id from kwargs or a registered profile (empty if unknown)."""
+    name = str(params.get("provider_name") or params.get("provider") or "").strip().lower()
+    if name:
+        return name
+    profile = params.get("provider_profile")
+    if profile is None:
+        return ""
+    for attr in ("name", "id", "provider"):
+        value = getattr(profile, attr, None)
+        if value:
+            return str(value).strip().lower()
+    return ""
+
+
+def _is_ollama_cloud_host(base_url: Any) -> bool:
+    try:
+        host = (urlparse(str(base_url or "").strip()).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "ollama.com" or host.endswith(".ollama.com")
+
+
+def _is_ollama_local_endpoint(params: dict[str, Any]) -> bool:
+    """True only when the target is clearly local Ollama. Ambiguous → False (keep wire tools)."""
+    provider = _provider_slug(params)
+    base_url = params.get("base_url")
+    if provider in _OLLAMA_CLOUD_PROVIDERS or _is_ollama_cloud_host(base_url):
+        return False
+    if provider in _EXPLICIT_OLLAMA_LOCAL or provider == "custom:ollama" or provider.endswith("-ollama"):
+        return True
+    if not base_url:
+        return False
+    try:
+        from agent.model_metadata import is_local_endpoint
+        if not is_local_endpoint(str(base_url)):
+            return False
+    except Exception:
+        return False
+    try:
+        return urlparse(str(base_url).strip()).port == 11434
+    except Exception:
+        return False
+
+
+def _inject_text_tool_bridge(messages: list, tools: list[dict[str, Any]], tool_choice: Any = None) -> list:
+    """Append ACP tool-bridge text to the first system/developer message (or prepend a system turn)."""
+    from agent.acp_openai_bridge import render_tool_bridge_sections
+
+    sections = render_tool_bridge_sections(tools, tool_choice)
+    if not sections:
+        return messages
+    bridge = "\n\n".join(sections)
+    out = list(messages)
+    for i, msg in enumerate(out):
+        if not isinstance(msg, dict) or msg.get("role") not in {"system", "developer"}:
+            continue
+        copied = dict(msg)
+        content = copied.get("content")
+        if isinstance(content, str):
+            copied["content"] = f"{content}\n\n{bridge}" if content.strip() else bridge
+        elif isinstance(content, list):
+            copied["content"] = [*content, {"type": "text", "text": bridge}]
+        elif content is None:
+            copied["content"] = bridge
+        else:
+            copied["content"] = f"{content}\n\n{bridge}"
+        out[i] = copied
+        return out
+    return [{"role": "system", "content": bridge}, *out]
+
+
+def _maybe_ollama_text_tools(
+    messages: list, tools: list[dict[str, Any]] | None, params: dict[str, Any],
+) -> tuple[list, list[dict[str, Any]] | None, bool]:
+    """For local Ollama, drop structured ``tools`` and carry schemas in prompt text instead."""
+    if not tools or not _is_ollama_local_endpoint(params):
+        return messages, tools, False
+    tool_choice = params.get("tool_choice")
+    overrides = params.get("request_overrides")
+    if tool_choice is None and isinstance(overrides, dict):
+        tool_choice = overrides.get("tool_choice")
+    return _inject_text_tool_bridge(messages, tools, tool_choice), None, True
+
+
+def _drop_wire_tools(api_kwargs: dict[str, Any]) -> dict[str, Any]:
+    api_kwargs.pop("tools", None)
+    api_kwargs.pop("tool_choice", None)
+    extra = api_kwargs.get("extra_body")
+    if isinstance(extra, dict):
+        extra.pop("tools", None)
+        extra.pop("tool_choice", None)
+    return api_kwargs
+
+
+def _promote_text_tool_calls(content: Any) -> tuple[list[ToolCall] | None, Any]:
+    """Promote well-formed ``<tool_call>`` XML in assistant content into structured ToolCalls."""
+    if not isinstance(content, str) or not content.strip() or "<tool_call>" not in content:
+        return None, content
+    from agent.acp_openai_bridge import extract_tool_calls_from_text
+
+    calls, cleaned = extract_tool_calls_from_text(content, allow_bare_json=False)
+    if not calls:
+        return None, content
+    promoted = [
+        ToolCall(
+            id=getattr(call, "id", None),
+            name=call.function.name,
+            arguments=call.function.arguments if isinstance(call.function.arguments, str) else "{}",
+        )
+        for call in calls
+    ]
+    return promoted, cleaned or None
+
+
 def _swap_developer_role(sanitized: list, model_lower: str) -> list:
     """GPT-5/Codex models take a ``developer`` role instead of ``system``."""
     if (
@@ -367,9 +486,11 @@ class ChatCompletionsTransport(ProviderTransport):
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
         sanitized = self.convert_messages(messages, model=model)
+        sanitized, tools, ollama_text_tools = _maybe_ollama_text_tools(sanitized, tools, params)
         _profile = params.get("provider_profile")
         if _profile:
-            return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
+            api_kwargs = self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
+            return _drop_wire_tools(api_kwargs) if ollama_text_tools else api_kwargs
 
         sanitized = _swap_developer_role(sanitized, params.get("model_lower", (model or "").lower()))
         api_kwargs = _base_kwargs(model, sanitized, tools, params)
@@ -439,10 +560,11 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs["extra_body"] = extra_body
         if params.get("request_overrides"):
             api_kwargs.update(params["request_overrides"])
-        return _finish_kwargs(
+        api_kwargs = _finish_kwargs(
             api_kwargs, sanitized, params,
             supports_prompt_cache_key=bool(params.get("supports_prompt_cache_key")) or _is_openai_api_base_url(base_url),
         )
+        return _drop_wire_tools(api_kwargs) if ollama_text_tools else api_kwargs
 
     def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):
         """Build API kwargs from a ProviderProfile — every quirk comes from the profile object."""
@@ -521,6 +643,13 @@ class ChatCompletionsTransport(ProviderTransport):
         # OpenAI structured refusal (``message.refusal`` set, ``content`` empty); without
         # promotion the loop retries a deterministic refusal as an empty response.
         content = getattr(msg, "content", None)
+        # Ollama /v1 and some plain-text emitters leave native <tool_call> XML in content
+        # instead of structured tool_calls. Promote only when structured calls are absent.
+        if not tool_calls:
+            promoted, content = _promote_text_tool_calls(content)
+            if promoted:
+                tool_calls = promoted
+                finish_reason = "tool_calls"
         refusal = _attr_or_model_extra(msg, "refusal")
         if isinstance(refusal, str) and refusal.strip():
             provider_data["refusal"] = refusal

@@ -2,13 +2,14 @@ import { Button } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
+import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction } from './canonical-groups'
 
-interface RoomEvent { seq: number; kind: string; payload: { text?: string; content?: string }; actor?: { member_id?: string } }
+type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
 interface RoomState { room: { name: string }; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
 
@@ -145,7 +146,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     {error && <div role="alert">{error}</div>}
     {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
     <div className="min-h-0 flex-1 overflow-auto" role="log">
-      {events.map(event => <div className="whitespace-pre-wrap py-2" key={event.seq}>{event.actor?.member_id && <strong>{event.actor.member_id}: </strong>}{event.payload.text || event.payload.content || event.kind}</div>)}
+      <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} />
     </div>
     {(state?.driver_status?.pending_actions || []).map(action => <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
       <span>{action.member_id}</span>

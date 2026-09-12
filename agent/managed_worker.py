@@ -155,6 +155,15 @@ def outbox_dir(home, execution_id):
     return Path(home) / 'worker-outboxes' / execution_id.replace(':', '-')
 
 
+def retire_agent(agent):
+    """A settled admission is a turn boundary, not the end of the session: the owner's
+    in-process agent keeps its background processes, sandbox and browser between turns
+    (release_clients), so the worker must too. Only memory extraction is turn-final work."""
+    messages = getattr(agent, '_session_messages', None)
+    agent.shutdown_memory_provider(messages if isinstance(messages, list) else None)
+    agent.release_clients()
+
+
 def execute(frame, channel):
     # The owner RPC below imports gateway/config modules (hermes_cli.config, providers,
     # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
@@ -168,6 +177,10 @@ def execute(frame, channel):
     store = RuntimeSessionStore(rpc, scope, outbox_dir(frame['home'], scope['execution_id']))
     from gateway.session_kanban import bind_worker_context
     bind_worker_context(frame)
+    # Background processes a previous admission of this session started outlive that worker
+    # (F24); adopt them so process_manage in this turn can poll and kill them.
+    from tools.process_registry import process_registry
+    process_registry.recover_from_checkpoint()
     # Store construction binds the delegation ledger before tool discovery.
     from gateway.session_policy import restore_policy, policy_scope
     policy = restore_policy(frame['policy'])
@@ -207,8 +220,7 @@ def execute(frame, channel):
                     raise ValueError('managed_attachment_unavailable')
                 frame = {**frame, 'text': content}
             result = run_worker_turns(agent, frame, history)
-            agent._end_session_on_close = False
-            agent.close()
+            retire_agent(agent)
             agent = None
             store.flush_token_counts()
             if result.get('final_response') is None and (result.get('interrupted') or result.get('failed')):
@@ -222,8 +234,7 @@ def execute(frame, channel):
     finally:
         unregister_gateway_notify(frame['route'])
         if agent is not None:
-            agent._end_session_on_close = False
-            agent.close()
+            retire_agent(agent)
         store.close()
 
 

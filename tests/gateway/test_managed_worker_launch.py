@@ -39,7 +39,7 @@ class Model(BaseHTTPRequestHandler):
             self.server.requests.append(body)
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                 'id': 'managed-tool', 'type': 'function', 'function': {'name': 'terminal',
-                'arguments': json.dumps({'command': self.server.command, 'timeout': 10})}}]}
+                'arguments': json.dumps({'command': self.server.command, 'timeout': 10, **self.server.tool_args})}}]}
         choice = {'index': 0, 'message': message, 'finish_reason': 'tool_calls' if message.get('tool_calls') else 'stop'}
         frame = {'id': 'managed-model', 'model': 'managed-model', 'choices': [choice],
                  'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}}
@@ -63,7 +63,7 @@ class Model(BaseHTTPRequestHandler):
 
 
 @pytest.mark.linux_only
-@pytest.mark.parametrize('worker_action', ['detach', 'kill', 'controls', 'stop', 'history'])
+@pytest.mark.parametrize('worker_action', ['detach', 'kill', 'controls', 'stop', 'history', 'background'])
 def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path, worker_action):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -76,6 +76,12 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
     target.mkdir()
     (target / 'owned.txt').write_text('owned')
     peer.command = 'rm -rf ' + str(target) if peer.control_mode else 'printf MANAGED_TOOL_EFFECT'
+    peer.tool_args = {}
+    gate = tmp_path / 'background-exit'
+    if worker_action == 'background':
+        # A session-owned background process is a turn-boundary survivor, not turn litter (F24).
+        peer.command = f'printf MANAGED_TOOL_EFFECT; while [ ! -e {gate} ]; do sleep .1; done'
+        peer.tool_args = {'background': True}
     peer.blocked, peer.release = threading.Event(), threading.Event()
     thread = threading.Thread(target=peer.serve_forever, daemon=True)
     thread.start()
@@ -189,6 +195,18 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         assert sum(role == 'assistant' and 'MANAGED_TOOL_DONE' in (content or '') for role, content in rows) == 1, rows
         if peer.control_mode:
             assert any(role == 'tool' and 'Beta' in content for role, content in rows), rows
+        elif worker_action == 'background':
+            started = json.loads(next(content for role, content in rows if role == 'tool'))
+            assert started['output'] == 'Background process started', started
+            background = psutil.Process(started['pid'])
+            assert background.is_running() and background.status() != psutil.STATUS_ZOMBIE, started
+            assert not psutil.pid_exists(pid), 'worker interpreter still alive after settlement'
+            # The next admission's worker adopts it from the profile checkpoint (process_manage).
+            assert started['pid'] in [e['pid'] for e in json.loads((home / 'processes.json').read_text())]
+            gate.touch()
+            async with asyncio.timeout(10):
+                while psutil.pid_exists(background.pid) and psutil.Process(background.pid).status() != psutil.STATUS_ZOMBIE:
+                    await asyncio.sleep(.05)
         else:
             assert any(role == 'tool' and 'MANAGED_TOOL_EFFECT' in content for role, content in rows), rows
         assert query('SELECT status FROM worker_executions WHERE session_id=?', (sid,)) == [('terminal',)]
@@ -225,6 +243,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         with daemon(root, home, env, barrier=False) as (owner, desc):
             asyncio.run(exercise(desc, owner))
     finally:
+        gate.touch()
         peer.release.set()
         peer.shutdown()
         peer.server_close()

@@ -915,6 +915,7 @@ export function StarMap({
     <div className="relative min-h-0 flex-1 overflow-hidden" ref={wrapRef}>
       <canvas
         className="block touch-none select-none text-foreground"
+        data-hermes-context-menu-trigger=""
         onContextMenu={onContextMenu}
         onDoubleClick={resetView}
         onMouseDown={onMouseDown}

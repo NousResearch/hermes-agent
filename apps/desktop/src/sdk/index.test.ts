@@ -5,65 +5,37 @@ import { host } from '@/sdk'
 import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
-// The warm path must route through the guarded prewarm resolver, not dial the
-// gateway directly: gateway.ts's openSecondaryCount and pool-limits' cap atom
-// are the two signals prewarmProfileBackend consults, so mocking them lets the
-// tests observe the guard's decision through the ONLY side effect that matters
-// — whether openGatewayForProfile was dialed.
+// The warm path must route through the guarded prewarm resolver (hover dwell,
+// per-profile throttle), not dial the gateway directly: mocking the store's
+// dialers lets the tests observe the ONLY side effect that matters — whether
+// openGatewayForProfile was dialed.
 const warmMocks = vi.hoisted(() => ({
   openGatewayForAgent: vi.fn(async (_connectionId: null | string, _profile: string) => undefined),
-  openGatewayForProfile: vi.fn(async (_profile: string) => undefined),
-  openSecondaryCount: vi.fn(() => 0)
+  openGatewayForProfile: vi.fn(async (_profile: string) => undefined)
 }))
 
 vi.mock('@/store/gateway', async importOriginal => ({
   ...((await importOriginal()) as Record<string, unknown>),
   openGatewayForAgent: warmMocks.openGatewayForAgent,
-  openGatewayForProfile: warmMocks.openGatewayForProfile,
-  openSecondaryCount: warmMocks.openSecondaryCount
+  openGatewayForProfile: warmMocks.openGatewayForProfile
 }))
 
-vi.mock('@/store/pool-limits', async () => {
-  const { atom } = await import('nanostores')
-
-  return { $poolLimits: atom({ idleMs: 600_000, maxBackends: 3 }) }
-})
-
-describe('host.warmProfile pool-saturation contract', () => {
+describe('host.warmProfile routing contract', () => {
   beforeEach(() => {
     warmMocks.openGatewayForProfile.mockClear()
-    warmMocks.openSecondaryCount.mockReturnValue(0)
+    warmMocks.openGatewayForAgent.mockClear()
   })
 
-  it('dials through the guarded path when a pool slot is free', () => {
-    warmMocks.openSecondaryCount.mockReturnValue(2)
-
+  it('dials the profile through the guarded prewarm path', () => {
     host.warmProfile('warm-free-slot')
 
     expect(warmMocks.openGatewayForProfile).toHaveBeenCalledWith('warm-free-slot')
   })
 
-  it('skips the speculative spawn when every pool slot is occupied', () => {
-    warmMocks.openSecondaryCount.mockReturnValue(3)
-
-    host.warmProfile('warm-saturated')
+  it('ignores an empty profile name', () => {
+    host.warmProfile('   ')
 
     expect(warmMocks.openGatewayForProfile).not.toHaveBeenCalled()
-  })
-
-  it('warmAgent (multi-source rows) honours the same saturation guard', () => {
-    warmMocks.openGatewayForAgent.mockClear()
-    warmMocks.openSecondaryCount.mockReturnValue(3)
-
-    host.warmAgent('conn-vps', 'warm-agent-saturated')
-
-    expect(warmMocks.openGatewayForAgent).not.toHaveBeenCalled()
-
-    warmMocks.openSecondaryCount.mockReturnValue(2)
-
-    host.warmAgent('conn-vps', 'warm-agent-free')
-
-    expect(warmMocks.openGatewayForAgent).toHaveBeenCalledWith('conn-vps', 'warm-agent-free')
   })
 })
 

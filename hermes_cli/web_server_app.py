@@ -17,7 +17,7 @@ async def standalone_lifespan(app: "FastAPI"):
     from hermes_cli.web_server import (
         _eager_reconcile_own_session_db, _warm_gateway_module,
         _start_desktop_cron_ticker, _dashboard_selftest_loop,
-        _auto_archive_ticker_loop, _terminate_desktop_managed_gateway, _wisdom_checker_loop,
+        _auto_archive_ticker_loop, _terminate_desktop_managed_gateway,
     )
     from hermes_cli.web_server_chat import PTY_REGISTRY
 
@@ -109,7 +109,6 @@ async def standalone_lifespan(app: "FastAPI"):
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
     # Live auto-archive timer, independent of list requests.
     auto_archive_task = asyncio.create_task(_auto_archive_ticker_loop())
-    wisdom_checker_task = asyncio.create_task(_wisdom_checker_loop())
 
     # Managed local runtime (local_runtime.enabled): bring llama-server back so a
     # restart doesn't strand a llamacpp main model. Off-thread and best-effort;
@@ -141,7 +140,6 @@ async def standalone_lifespan(app: "FastAPI"):
         pty_reaper_task.cancel()
         selftest_task.cancel()
         auto_archive_task.cancel()
-        wisdom_checker_task.cancel()
         await PTY_REGISTRY.close_all()
         # Stop the managed llama-server with its parent (an orphan pins VRAM).
         try:

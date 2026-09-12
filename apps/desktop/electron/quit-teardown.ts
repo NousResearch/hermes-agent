@@ -16,13 +16,12 @@ export interface QuitTeardownCoordinator {
 
 export interface BackendQuitActivity {
   connectionPending: boolean
-  poolPending: boolean
   processAttached: boolean
   shutdownPending: boolean
 }
 
 export function backendQuitNeedsWait(activity: BackendQuitActivity): boolean {
-  return activity.shutdownPending || activity.processAttached || activity.connectionPending || activity.poolPending
+  return activity.shutdownPending || activity.processAttached || activity.connectionPending
 }
 
 function runTask(task: QuitTeardownTask): Promise<unknown> {

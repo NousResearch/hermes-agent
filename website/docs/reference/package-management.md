@@ -459,6 +459,7 @@ remain under uv and npm's own retry policies.
 
 ## Diagnostics
 
+- **Slow Python dependency builds:** PM's streamed uv commands enable verbose output. Bundle and build logs show package activity and build-backend stdout/stderr while the build runs, not only after failure.
 - **Missing or outdated tool:** read `hermes pm doctor`, then use an explicit PM install on a writable installation.
 - **New environment requires restart:** restart the affected Hermes process. Do not add a second site-packages tree to its live imports.
 - **Dependency conflict:** read `hermes pm status`. Correct the plugin requirements before retrying admission.

@@ -215,6 +215,59 @@ def test_group_only_build_excludes_application_dependencies(locked_project, tmp_
                 cwd=tmp_path, env=env) == "1.0"
 
 
+@pytest.mark.parametrize("operation", ["sync", "requirements"])
+def test_build_backend_output_is_streamed_before_build_finishes(installable_project, tmp_path, operation):
+    import io
+    from pm.environment import PythonEnvironment
+
+    source, uv, env = installable_project
+    release = tmp_path / "release-build"
+    stdout_marker = "construction-root: backend stdout"
+    stderr_marker = "construction-root: backend stderr"
+    backend = source / "local_backend.py"
+    backend.write_text(backend.read_text() + f'''
+import sys
+import time
+
+original_build = build_wheel
+
+def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    print({stdout_marker!r}, flush=True)
+    print({stderr_marker!r}, file=sys.stderr, flush=True)
+    release = Path({str(release)!r})
+    deadline = time.monotonic() + 10
+    while not release.exists() and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert release.exists(), "backend output was hidden until build exit"
+    return original_build(wheel_directory, config_settings, metadata_directory)
+
+build_editable = build_wheel
+''', encoding="utf-8")
+
+    class AcknowledgingLog(io.StringIO):
+        def write(self, text):
+            written = super().write(text)
+            if stdout_marker in self.getvalue() and stderr_marker in self.getvalue():
+                release.touch()
+            return written
+
+    output = AcknowledgingLog()
+    environment = PythonEnvironment(
+        uv=uv, python=Path(sys.executable), destination=tmp_path / "built",
+        cache=tmp_path / "build-cache", offline=True, output=output,
+        env=dict(env, UV_NO_INDEX="1", UV_FIND_LINKS=str(tmp_path / "wheels")),
+    )
+    environment.create()
+    if operation == "sync":
+        environment.sync(source, timeout=30)
+    else:
+        environment.install_requirements([source.as_uri()])
+    environment.check()
+    assert release.is_file(), "both backend streams must arrive during the build"
+    assert _run([str(environment.executable), "-I", "-c", "import root_app; print(root_app.VALUE)"],
+                cwd=tmp_path, env=env) == "installed from the explicit source"
+
+
 def test_child_output_is_live_and_keeps_explicit_index_credentials(tmp_path):
     import io
     from pm.environment import PythonEnvironment

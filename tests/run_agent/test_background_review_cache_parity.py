@@ -169,6 +169,32 @@ def test_review_fork_inherits_parent_cached_system_prompt():
     )
 
 
+def test_routed_primary_fork_does_not_copy_fallback_prompt_or_parity_kwargs():
+    """A primary identity that differs from the live fallback is a cold routed fork."""
+    import run_agent
+    from agent import background_review as br
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    captured = {}
+    recorder = _make_recorder_class(captured)
+    primary_runtime = {
+        "provider": "openai", "model": "gpt-primary", "api_key": "sk-primary",
+        "base_url": "https://primary.invalid/v1", "api_mode": "chat_completions",
+        "request_overrides": {}, "routed": True,
+    }
+    with patch.object(run_agent, "AIAgent", recorder), \
+         patch.object(br, "_resolve_review_runtime", return_value=primary_runtime):
+        fork, runtime, routed = br.build_cache_parity_fork(agent, {}, max_iterations=1)
+
+    assert routed is True
+    assert runtime is primary_runtime
+    assert fork._cached_system_prompt is None
+    assert "reasoning_config" not in captured["init_kwargs"]
+    assert "prefill_messages" not in captured["init_kwargs"]
+    assert "providers_allowed" not in captured["init_kwargs"]
+    assert agent._cached_system_prompt.startswith("PARENT-SYSTEM-PROMPT-BYTES")
+
+
 def test_review_fork_inherits_parent_ephemeral_system_prompt():
     """The fork must send the parent's complete effective system prompt.
 

@@ -278,10 +278,14 @@ class CLIChatTurnMixin:
             _prepend_note_to_message, set_approval_callback, set_secret_capture_callback,
             set_sudo_password_callback,
         )
+        from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
         # terminal_tool callbacks are thread-local: run()'s registration is invisible here.
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
         set_secret_capture_callback(self._secret_capture_callback)
+        set_unlock_prompt_callback(self._vault_unlock_callback)
+        set_save_login_prompt_callback(self._vault_save_login_callback)
+        set_code_prompt_callback(self._vault_code_callback)
         # Bind the approval session key so ``is_current_session_yolo_enabled()`` resolves
         # against the same key ``/yolo`` toggles under (``enable_session_yolo(self.session_id)``).
         try:
@@ -341,6 +345,9 @@ class CLIChatTurnMixin:
                 set_sudo_password_callback(None)
                 set_approval_callback(None)
                 set_secret_capture_callback(None)
+                set_unlock_prompt_callback(None)
+                set_save_login_prompt_callback(None)
+                set_code_prompt_callback(None)
             except Exception:
                 pass
             # Unbind the per-turn key; ``_session_yolo`` state itself persists across turns.

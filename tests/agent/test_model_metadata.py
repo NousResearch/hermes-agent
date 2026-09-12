@@ -358,6 +358,8 @@ class TestDefaultContextLengths:
             "deepseek-v4-flash": 1_000_000,
             "deepseek-chat": 1_000_000,
             "deepseek-reasoner": 1_000_000,
+            # Version-less canonical Flash id (2026-09 Flash refresh).
+            "deepseek-flash": 1_000_000,
         }
         for key, value in expected_keys.items():
             assert key in DEFAULT_CONTEXT_LENGTHS, f"{key} missing"
@@ -379,6 +381,8 @@ class TestDefaultContextLengths:
                 ("deepseek/deepseek-v4-flash", 1_000_000),
                 ("deepseek-chat", 1_000_000),
                 ("deepseek-reasoner", 1_000_000),
+                ("deepseek-flash", 1_000_000),
+                ("deepseek/deepseek-flash", 1_000_000),
             ]
             for model_id, expected_ctx in cases:
                 actual = get_model_context_length(model_id)
@@ -1088,13 +1092,14 @@ class TestGetModelContextLength:
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {}
 
-        # GLM-5-TEE matches the "glm" entry in DEFAULT_CONTEXT_LENGTHS
+        # GLM-5-TEE resolves through DEFAULT_CONTEXT_LENGTHS (longest matching GLM key), not the generic default.
         result = get_model_context_length(
             "zai-org/GLM-5-TEE",
             base_url="https://llm.chutes.ai/v1",
             api_key="test-key",
         )
-        assert result == 202752  # "glm" entry in DEFAULT_CONTEXT_LENGTHS
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        assert result == _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "zai-org/glm-5-tee")[1]
 
 
 
@@ -1715,6 +1720,13 @@ class TestGenericPreCatalogStaleGuard:
         assert not _stale_pre_catalog_cache_entry("grok-4.20", 2_000_000)
         # Sibling qwen slugs with legitimately small windows are untouched.
         assert not _stale_pre_catalog_cache_entry("qwen3-coder", 131_072)
+        # DeepSeek V4 / V4.1 Flash: 1M. Pre-entry builds persisted the 128K
+        # ``deepseek`` catch-all; a leftover must drop, a 1M value must not.
+        assert _stale_pre_catalog_cache_entry("deepseek-flash", 128_000)
+        assert _stale_pre_catalog_cache_entry("deepseek/deepseek-flash", 128_000)
+        assert _stale_pre_catalog_cache_entry("deepseek-v4-pro", 128_000)
+        assert not _stale_pre_catalog_cache_entry("deepseek-flash", 1_000_000)
+        assert not _stale_pre_catalog_cache_entry("deepseek", 128_000)
 
     def test_unknown_models_never_dropped(self):
         from agent.model_metadata import _stale_pre_catalog_cache_entry
@@ -1929,3 +1941,34 @@ class TestFallbackWarning:
             if r.levelno == logging.WARNING and "falling back" in r.getMessage()
         ]
         assert len(fallback_warnings) == 0
+
+
+# =========================================================================
+# get_model_context_length — OpenRouter routing-variant suffixes
+# =========================================================================
+
+class TestOpenRouterRoutingVariantContextLength:
+    """`:nitro`/`:floor`/`:exacto`/`:online` are request-time routing modifiers, not catalog
+    models: /models lists only the base id and the variant runs the same model, so a variant
+    must resolve to whatever its base resolves to instead of a generic family default (#97820).
+    `:free`/`:batch` are real SKUs with their own windows and must NOT be stripped."""
+
+    _CATALOG = {
+        "x-ai/grok-4.6": {"context_length": 2_000_000},
+        "thinkingmachines/inkling": {"context_length": 1_000_000},
+        "thinkingmachines/inkling:free": {"context_length": 64_000},
+    }
+
+    @pytest.mark.parametrize("suffix", ["nitro", "floor", "exacto", "online"])
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_variant_matches_base_but_real_sku_keeps_own_window(
+        self, mock_fetch, mock_models_dev, mock_cache, suffix
+    ):
+        mock_fetch.return_value = self._CATALOG
+        base_ctx = get_model_context_length("x-ai/grok-4.6", provider="openrouter")
+        variant_ctx = get_model_context_length(f"x-ai/grok-4.6:{suffix}", provider="openrouter")
+        assert variant_ctx == base_ctx == 2_000_000
+        assert variant_ctx != DEFAULT_CONTEXT_LENGTHS.get("grok")
+        assert get_model_context_length("thinkingmachines/inkling:free", provider="openrouter") == 64_000

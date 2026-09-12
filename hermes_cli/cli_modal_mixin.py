@@ -852,6 +852,78 @@ class CLIModalMixin:
         self._approval_state = None
         self._invalidate()
 
+    def _vault_unlock_callback(self, backend_name: str, display_name: str) -> str:
+        """Masked master-password prompt for an external password manager (agent thread).
+        Reuses the sudo panel state so rendering, Enter/ESC handling and interrupt cleanup are shared."""
+        from cli import _DIM, _RST, _cprint
+
+        response_queue = queue.Queue()
+        self._capture_modal_input_snapshot()
+        self._sudo_state = {"response_queue": response_queue, "vault_backend": display_name}
+        self._sudo_deadline = _time.monotonic() + 120
+        self._ring_bell(prompt=True, context=f"unlock {display_name}")
+        self._paint_now()
+
+        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        self._sudo_state = None
+        self._sudo_deadline = 0
+        self._restore_modal_input_snapshot()
+        self._paint_now()
+        if result is _TIMED_OUT or not result:
+            _cprint(f"\n{_DIM}  ⏭ {display_name} stays locked{_RST}")
+            return ""
+        _cprint(f"\n{_DIM}  ✓ Unlocking {display_name} for this session{_RST}")
+        return result
+
+    def _vault_save_login_callback(self, origin: str, site: str):
+        """Two-step "save this login" prompt (identifier shown, password masked) on the sudo panel; the
+        answer goes to the vault store, never to the model. None = declined."""
+        from cli import _DIM, _RST, _cprint
+
+        answer: dict = {}
+        for step in ("identifier", "password"):
+            response_queue = queue.Queue()
+            self._capture_modal_input_snapshot()
+            self._sudo_state = {"response_queue": response_queue, "vault_save": {"site": site, "origin": origin,
+                                                                                  "step": step}}
+            self._sudo_deadline = _time.monotonic() + 180
+            if step == "identifier":
+                self._ring_bell(prompt=True, context=f"save login for {site}")
+            self._paint_now()
+            result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+            self._sudo_state = None
+            self._sudo_deadline = 0
+            self._restore_modal_input_snapshot()
+            self._paint_now()
+            if result is _TIMED_OUT or not result:
+                _cprint(f"\n{_DIM}  ⏭ Not saving a login for {site}{_RST}")
+                return None
+            answer[step] = result
+        _cprint(f"\n{_DIM}  ✓ Login for {site} saved to your vault{_RST}")
+        return answer
+
+    def _vault_code_callback(self, site: str, hint: str) -> str:
+        """One-time-code prompt (shown as typed; a 6-digit code is not a secret worth masking and users
+        need to see typos) on the sudo panel. "" = declined/timed out."""
+        from cli import _DIM, _RST, _cprint
+
+        response_queue = queue.Queue()
+        self._capture_modal_input_snapshot()
+        self._sudo_state = {"response_queue": response_queue, "vault_code": {"site": site, "hint": hint}}
+        self._sudo_deadline = _time.monotonic() + 180
+        self._ring_bell(prompt=True, context=f"verification code for {site}")
+        self._paint_now()
+        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        self._sudo_state = None
+        self._sudo_deadline = 0
+        self._restore_modal_input_snapshot()
+        self._paint_now()
+        if result is _TIMED_OUT or not result:
+            _cprint(f"\n{_DIM}  ⏭ No code entered for {site}{_RST}")
+            return ""
+        _cprint(f"\n{_DIM}  ✓ Code entered into {site}{_RST}")
+        return result
+
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
         self._capture_modal_input_snapshot()
         try:

@@ -39,6 +39,15 @@ logger = logging.getLogger(__name__)
 
 # Crash-recovery checkpoint (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
+_CHECKPOINT_PATH_AT_IMPORT = CHECKPOINT_PATH
+
+
+def _checkpoint_path() -> Path:
+    """Active profile's checkpoint file at call time: the patched ``CHECKPOINT_PATH`` when a test
+    changed it, else live profile-scoped HERMES_HOME — the multiplexed gateway serves every
+    profile from one process, so the import-time constant would pin every profile's process
+    checkpoint to the launch home."""
+    return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
 
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
@@ -207,7 +216,10 @@ def _systemd_run_user_scope_available() -> bool:
     """True if ``systemd-run --user --scope`` can create a cgroup.
     ``shutil.which`` alone is insufficient: system services and containers may lack
     the user D-Bus bus even with the binary on PATH (every spawn would fail with
-    ``Failed to connect to user bus``), so a cheap ``/bin/true`` probe is run and cached."""
+    ``Failed to connect to user bus``), so a cheap probe is run and cached.
+
+    Use ``/bin/sh -c 'exit 0'``: NixOS provides ``/bin/sh`` but not ``/bin/true``
+    (#105365), regardless of the gateway service's PATH."""
     global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
     verdict = _systemd_scope_cached()
     if verdict is not None:
@@ -228,7 +240,7 @@ def _systemd_run_user_scope_available() -> bool:
                     # Unique unit avoids collisions; the timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
                     result = subprocess.run(
-                        _systemd_scope_argv(binary, probe_unit, "/bin/true"),
+                        _systemd_scope_argv(binary, probe_unit, "/bin/sh", "-c", "exit 0"),
                         capture_output=True,
                         timeout=3,
                         env=systemd_user_bus_env(),

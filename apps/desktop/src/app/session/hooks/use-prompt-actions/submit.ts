@@ -45,6 +45,7 @@ import {
   inlineErrorMessage,
   isProviderSetupError,
   isSessionBusyError,
+  isSessionNotOwnedError,
   isTargetSessionBusy,
   releaseSubmitInFlight,
   SessionRecoveryAborted,
@@ -764,6 +765,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // rather than at Hermes. The gateway turns this into a per-turn hint
           // to read the window underneath and work in it.
           ...($hudMode.get() && { surface: 'hud' }),
+          // A GPT-Live delegation: the text is a voice transcript and the reply
+          // will be spoken by the voice model. Wins over HUD for this turn.
+          ...(options?.surface && { surface: options.surface }),
+          ...(options?.surface && options.voiceContext && { voice_context: options.voiceContext }),
           // A queue drain is a "run after" message, never a live-turn
           // correction. The flag tells the gateway's busy path to hold it for
           // the next turn untouched — without it, losing the settle race
@@ -855,6 +860,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         const message = inlineErrorMessage(err, copy.promptFailed)
         const occurredAt = Date.now() / 1000
+        // Another surface owns the session (#106217): a deterministic gateway
+        // refusal, so the error card drops Retry and offers a new session.
+        const notOwned = isSessionNotOwnedError(err)
 
         updateSessionState(
           sessionId,
@@ -867,6 +875,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 role: 'assistant',
                 parts: [],
                 error: message || copy.promptFailed,
+                ...(notOwned && { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }),
                 branchGroupId: state.pendingBranchGroup ?? undefined,
                 completedAt: occurredAt,
                 timestamp: occurredAt

@@ -524,7 +524,7 @@ def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(
     monkeypatch.setattr(auth_mod, "persist_nous_credentials", lambda state: None)
 
     try:
-        _web_server_oauth._nous_poller(session_id)
+        _web_server_oauth._nous_plain_poller(session_id)
         assert captured_state["scope"] == auth_mod.DEFAULT_NOUS_SCOPE
         assert _web_server_oauth._oauth_sessions[session_id]["status"] == "approved"
     finally:

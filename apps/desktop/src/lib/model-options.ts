@@ -1,6 +1,37 @@
 import { getGlobalModelOptions, type HermesGateway, type ModelOptionsResponse } from '@/hermes'
 import type { ModelOptionProvider } from '@/types/hermes'
 
+type CatalogProviderIdentity = Pick<ModelOptionProvider, 'aliases' | 'name' | 'slug'>
+
+/** True when `currentProvider` is this catalog row — slug, display name, or
+ *  a custom-provider alias (`custom:<key>` vs the bare config key, #87035). */
+export function catalogProviderMatches(provider: CatalogProviderIdentity, currentProvider: string): boolean {
+  if (!currentProvider) {
+    return false
+  }
+
+  return (
+    provider.slug === currentProvider ||
+    provider.name === currentProvider ||
+    (provider.aliases?.includes(currentProvider) ?? false)
+  )
+}
+
+function findCatalogProvider(
+  providers: ModelOptionProvider[] | undefined,
+  provider: string
+): ModelOptionProvider | undefined {
+  if (!providers?.length || !provider) {
+    return undefined
+  }
+
+  return providers.find(row => catalogProviderMatches(row, provider))
+}
+
+function catalogHasModel(providers: ModelOptionProvider[] | undefined, model: string): boolean {
+  return Boolean(model) && (providers?.some(provider => (provider.models ?? []).includes(model)) ?? false)
+}
+
 /**
  * True only when a persisted **manual** composer pick has been removed from the
  * catalog (its provider still ships models, but no longer this one) — so a new
@@ -17,7 +48,7 @@ export function manualPickRemoved(
     return false
   }
 
-  const row = providers.find(p => p.slug === provider || p.name === provider)
+  const row = findCatalogProvider(providers, provider)
 
   if (!row) {
     return false
@@ -36,14 +67,21 @@ export function manualPickRemoved(
 
 const MOA_PROVIDER_SLUG = 'moa'
 
-/** True when `model` appears in any provider's live list. Used after Refresh
- *  Models so a group/catalog swap can tell "still offered" from "gone". */
-export function selectionInCatalog(providers: ModelOptionProvider[] | undefined, model: string): boolean {
-  if (!providers?.length || !model) {
+/** True when THIS provider still lists `model`. Identity is the (provider,
+ *  model) pair: the same id on OpenRouter does not count as the custom /
+ *  first-party pick still being offered. */
+export function selectionInCatalog(
+  providers: ModelOptionProvider[] | undefined,
+  model: string,
+  provider?: string
+): boolean {
+  if (!providers?.length || !model || !provider) {
     return false
   }
 
-  return providers.some(provider => (provider.models ?? []).includes(model))
+  const row = findCatalogProvider(providers, provider)
+
+  return Boolean(row && (row.models ?? []).includes(model))
 }
 
 /** First real (non-MoA) catalog row that still has models. */
@@ -70,14 +108,20 @@ export function firstSelectableCatalogModel(
 }
 
 /**
- * After Refresh Models replaces the catalog: keep the current pick when it is
- * still listed; otherwise switch to the first available model in the new
- * catalog. Returns null when the catalog is empty/unloaded so we never wipe
- * a selection on a failed or still-hydrating refresh.
+ * After Refresh Models replaces the catalog: keep the current **pair** when
+ * that provider still lists the model. Never rewrite the provider just because
+ * another catalog row (OpenRouter, …) exposes the same model id.
+ *
+ * Conservative like `manualPickRemoved` when the current provider is absent or
+ * unconfigured (empty models) — except a fully gone model (group / credential
+ * swap that dropped the id everywhere) still falls back to the first
+ * selectable row. Returns null when the catalog is empty/unloaded so we never
+ * wipe a selection on a failed or still-hydrating refresh.
  */
 export function reconcileSelectionAfterCatalogRefresh(
   currentModel: string,
-  providers: ModelOptionProvider[] | undefined
+  providers: ModelOptionProvider[] | undefined,
+  currentProvider?: string
 ): { model: string; provider: string } | null {
   const next = firstSelectableCatalogModel(providers)
 
@@ -85,7 +129,40 @@ export function reconcileSelectionAfterCatalogRefresh(
     return null
   }
 
-  if (selectionInCatalog(providers, currentModel)) {
+  if (!currentModel) {
+    return next
+  }
+
+  if (currentProvider) {
+    if (selectionInCatalog(providers, currentModel, currentProvider)) {
+      return null
+    }
+
+    const row = findCatalogProvider(providers, currentProvider)
+
+    // Present but empty: re-auth / unconfigured, not "model dropped".
+    if (row && (row.models ?? []).length === 0) {
+      return null
+    }
+
+    // This provider still ships models and dropped this one — fall back.
+    if (row) {
+      return next
+    }
+
+    // Provider missing from the refreshed catalog. Another provider listing
+    // the same id is NOT a reason to switch (the OpenRouter collision).
+    if (catalogHasModel(providers, currentModel)) {
+      return null
+    }
+
+    return next
+  }
+
+  // No provider on the current pair: keep when the id is still offered
+  // anywhere, otherwise fall back. Callers that know the provider must pass it
+  // so a shared id cannot retarget the pick.
+  if (catalogHasModel(providers, currentModel)) {
     return null
   }
 

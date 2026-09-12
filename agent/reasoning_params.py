@@ -15,6 +15,11 @@ from utils import base_url_host_matches
 _OPENROUTER_REASONING_PREFIXES = (
     "deepseek/", "anthropic/", "openai/", "x-ai/", "google/gemini-2", "google/gemma-4",
     "qwen/qwen3", "tencent/hy", "xiaomi/",
+    # Keep NVIDIA fail-closed per model: generic NVIDIA routes have rejected
+    # OpenRouter reasoning controls, while the #75386 reporter verified this
+    # exact Nemotron reasoning model accepts {"enabled": false}. Prefix form
+    # also covers OpenRouter's ``:free`` routing suffix.
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
 )
 
 # Probe results cache per (model, base_url). Definitive values cache permanently; an

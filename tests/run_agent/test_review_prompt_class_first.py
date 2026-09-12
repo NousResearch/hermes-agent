@@ -1,6 +1,16 @@
-"""Behavior contracts for the background skill-review prompts."""
+"""Behavior contracts for the operative background skill-review prompts."""
 
-from run_agent import AIAgent
+from types import SimpleNamespace
+
+from agent.background_review import spawn_background_review_thread
+
+
+def _assembled_prompt(*, review_memory: bool) -> str:
+    """Exercise the prompt-selection path used by the background review thread."""
+    _target, prompt = spawn_background_review_thread(
+        SimpleNamespace(), [], review_memory=review_memory, review_skills=True, task_cfg={},
+    )
+    return prompt
 
 
 # ---------------------------------------------------------------------------
@@ -31,10 +41,13 @@ def _assert_selective_skill_policy(prompt: str, label: str) -> None:
         "generic advice",
     ):
         assert rejected in lower, f"{label}: must reject {rejected}"
+    assert "standing user preferences" not in lower, (
+        f"{label}: must not route global preferences into selectively loaded skills"
+    )
 
 
 def test_skill_review_prompt_requires_selective_creation():
-    _assert_selective_skill_policy(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+    _assert_selective_skill_policy(_assembled_prompt(review_memory=False), "skill-only review")
 
 
 
@@ -57,14 +70,14 @@ def test_skill_review_prompt_requires_selective_creation():
 
 def test_combined_review_prompt_has_memory_section():
     """Memory half must still cover user facts and preferences."""
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
+    prompt = _assembled_prompt(review_memory=True)
     assert "**Memory**" in prompt
     assert "memory tool" in prompt
 
 
 def test_combined_review_prompt_requires_selective_creation():
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    _assert_selective_skill_policy(prompt, "_COMBINED_REVIEW_PROMPT")
+    prompt = _assembled_prompt(review_memory=True)
+    _assert_selective_skill_policy(prompt, "combined review")
     assert "memory action does not require skill action" in prompt.lower()
 
 
@@ -129,11 +142,11 @@ def _assert_unresolved_failure_guidance(prompt: str, label: str) -> None:
 
 
 def test_skill_review_prompt_rejects_unresolved_failures():
-    _assert_unresolved_failure_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+    _assert_unresolved_failure_guidance(_assembled_prompt(review_memory=False), "skill-only review")
 
 
 def test_combined_review_prompt_rejects_unresolved_failures():
-    _assert_unresolved_failure_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+    _assert_unresolved_failure_guidance(_assembled_prompt(review_memory=True), "combined review")
 
 
 def _assert_read_before_write_guidance(prompt: str, label: str) -> None:
@@ -167,11 +180,11 @@ def _assert_read_before_write_guidance(prompt: str, label: str) -> None:
 
 
 def test_skill_review_prompt_teaches_read_before_write():
-    _assert_read_before_write_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+    _assert_read_before_write_guidance(_assembled_prompt(review_memory=False), "skill-only review")
 
 
 def test_combined_review_prompt_teaches_read_before_write():
-    _assert_read_before_write_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+    _assert_read_before_write_guidance(_assembled_prompt(review_memory=True), "combined review")
 
 
 
@@ -196,11 +209,11 @@ def _assert_lesson_layer_guidance(prompt: str, label: str) -> None:
 
 
 def test_skill_review_prompt_teaches_lesson_layer():
-    _assert_lesson_layer_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+    _assert_lesson_layer_guidance(_assembled_prompt(review_memory=False), "skill-only review")
 
 
 def test_combined_review_prompt_teaches_lesson_layer():
-    _assert_lesson_layer_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+    _assert_lesson_layer_guidance(_assembled_prompt(review_memory=True), "combined review")
 
 
 def test_curator_prompt_consolidates_by_distilling():

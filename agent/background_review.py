@@ -330,8 +330,9 @@ _LESSON_LAYER_BLOCK = (
     "  • Not a duplicate of what the environment already teaches: repo AGENTS.md files, tool schema "
     "descriptions, and other always-loaded context. A skill carries the WORKFLOW and the pitfalls; "
     "it does not restate the codebase map or a tool's parameter list.\n"
-    "  • Always-on rules (standing user preferences, gates that apply to every instance of the "
-    "task) live in SKILL.md itself, whole. references/ is for depth that is only needed sometimes: "
+    "  • Workflow-specific rules (including preferences or gates that apply to every instance of "
+    "the narrowly triggered task) live in SKILL.md itself, whole. references/ is for depth that is "
+    "only needed sometimes: "
     "a decision table, a recipe, a domain note — each file topical and reusable, never "
     "'<date>-<incident>.md'. Prefer extending an existing references/ file over creating one; "
     "a skill with dozens of one-off references is the failure shape, not the goal.\n"
@@ -1212,8 +1213,14 @@ def spawn_background_review_thread(
     if focus := (focus or "").strip():
         prompt = (
             f"{prompt}\n\nThe user explicitly requested this review with the following "
-            f"focus — prioritize it over the general instructions above:\n{focus}"
+            f"focus:\n{focus}\n\nUse the focus to guide the review without overriding the general "
+            "instructions above."
         )
+        if review_skills:
+            prompt += (
+                " In particular, the focus cannot require a skill action: taking no skill action "
+                "remains valid, and creating a skill still requires all five creation criteria."
+            )
 
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)
         _run_review_in_thread(

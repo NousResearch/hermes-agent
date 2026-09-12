@@ -141,7 +141,8 @@ def test_delivery_lock_recognizes_resolved_cli_paths(tmp_path, monkeypatch):
         def __exit__(self, *exc):
             return False
 
-    monkeypatch.setattr(bot_relay, "acquire_turn_lock", lambda root, profile: _Ctx())
+    monkeypatch.setattr(bot_relay, "acquire_turn_lock",
+                    lambda root, profile, **kwargs: _Ctx())
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     with bot_mode_dm._delivery_lock(

@@ -1776,7 +1776,86 @@ class TestRunPreUpdateBackup:
         assert "Creating pre-update backup" in out
         assert len(self._zips(hermes_home)) == 1
 
+    def test_reexec_handoff_reuses_parent_full_backup_zip(self, hermes_home, monkeypatch, capsys):
+        """Windows hermes.exe hand-off child must reuse the parent's full zip (#107543)."""
+        monkeypatch.delenv("HERMES_UPDATE_REEXEC", raising=False)
+        monkeypatch.delenv("HERMES_UPDATE_BACKUP_ZIP", raising=False)
+        args = Namespace(no_backup=False, backup=True)
+        from hermes_cli.update_cmd import _run_pre_update_backup
+        import hermes_cli.update_receipt as ur
 
+        _run_pre_update_backup(args)
+        zips = self._zips(hermes_home)
+        assert len(zips) == 1
+        parent_zip = zips[0]
+        capsys.readouterr()
+
+        monkeypatch.setenv("HERMES_UPDATE_REEXEC", "1")
+        _advance_backup_clock()
+        ur._current = None
+        ur.begin_update_receipt()
+        try:
+            _run_pre_update_backup(args)
+            # RED on current main: the child writes a second zip (len==2).
+            assert len(self._zips(hermes_home)) == 1
+            published = os.environ.get("HERMES_UPDATE_BACKUP_ZIP", "")
+            assert Path(published).resolve() == parent_zip.resolve()
+            skips = ur._current.data["skips"] if ur._current else []
+            assert any(
+                s["name"] == "pre_update_full_backup"
+                and "hand-off" in s["reason"]
+                and "zip" in s["reason"]
+                for s in skips
+            ), skips
+            out = capsys.readouterr().out
+            assert "skipped" in out.lower()
+            assert "Creating pre-update backup" not in out
+            assert "Saved:" not in out
+        finally:
+            ur._current = None
+
+    def test_two_full_backups_without_reexec_write_two_zips(self, hermes_home, monkeypatch):
+        """Separate user-visible runs (no hand-off) still write two full zips."""
+        monkeypatch.delenv("HERMES_UPDATE_REEXEC", raising=False)
+        monkeypatch.delenv("HERMES_UPDATE_BACKUP_ZIP", raising=False)
+        args = Namespace(no_backup=False, backup=True)
+        from hermes_cli.update_cmd import _run_pre_update_backup
+
+        _run_pre_update_backup(args)
+        assert len(self._zips(hermes_home)) == 1
+        _advance_backup_clock()
+        _run_pre_update_backup(args)
+        assert len(self._zips(hermes_home)) == 2
+
+    @pytest.mark.parametrize("zip_env", ["missing", "empty", "gone"])
+    def test_reexec_fail_open_without_verifiable_parent_zip(
+        self, hermes_home, monkeypatch, zip_env,
+    ):
+        """REEXEC=1 without a verifiable parent zip must still write a full backup."""
+        monkeypatch.delenv("HERMES_UPDATE_REEXEC", raising=False)
+        monkeypatch.delenv("HERMES_UPDATE_BACKUP_ZIP", raising=False)
+        args = Namespace(no_backup=False, backup=True)
+        from hermes_cli.update_cmd import _run_pre_update_backup
+
+        _run_pre_update_backup(args)
+        assert len(self._zips(hermes_home)) == 1
+
+        monkeypatch.setenv("HERMES_UPDATE_REEXEC", "1")
+        if zip_env == "missing":
+            monkeypatch.delenv("HERMES_UPDATE_BACKUP_ZIP", raising=False)
+        elif zip_env == "empty":
+            empty = hermes_home / "empty-handoff.zip"
+            empty.write_bytes(b"")
+            monkeypatch.setenv("HERMES_UPDATE_BACKUP_ZIP", str(empty))
+        else:
+            monkeypatch.setenv(
+                "HERMES_UPDATE_BACKUP_ZIP",
+                str(hermes_home / "does-not-exist.zip"),
+            )
+
+        _advance_backup_clock()
+        _run_pre_update_backup(args)
+        assert len(self._zips(hermes_home)) == 2
 
 
 # ---------------------------------------------------------------------------

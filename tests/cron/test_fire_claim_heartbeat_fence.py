@@ -1,14 +1,10 @@
 """Fire-claim heartbeat must not treat a busy per-job fire fence as ownership loss.
 
-The fence is held across delivery (a Telegram send with retries can run 30–60s).
-The heartbeat runs on a background thread. Before this fix it acquired that same
-fence, timed out at 30s (_JOBS_LOCK_TIMEOUT_SECONDS), and returned False — which
-the heartbeat loop treated as a verified takeover and interrupted a run that had
-already finished and delivered.
-
-These tests fail on unpatched main: the first returns False (or blocks ~30s) while
-the fence is held; the second stamps a successful slow delivery as interrupted.
+The fence is held across delivery. Heartbeat tries it with timeout 0: busy returns
+None (no write) instead of blocking 30s and returning False. False remains verified
+takeover only.
 """
+import contextlib
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -22,8 +18,8 @@ def temp_home(tmp_path, monkeypatch):
     yield tmp_path
 
 
-def test_heartbeat_succeeds_immediately_while_fire_fence_held(temp_home):
-    """Root cause: heartbeat must refresh the claim without waiting on the fire fence."""
+def test_heartbeat_is_unverified_not_loss_while_fire_fence_held(temp_home):
+    """Busy fence → None immediately, no write; wrong owner still False after release."""
     from cron.jobs import (
         claim_job_for_fire,
         create_job,
@@ -38,10 +34,10 @@ def test_heartbeat_succeeds_immediately_while_fire_fence_held(temp_home):
     claimed = get_job(job_id)
     assert claimed is not None
     owner = claimed["fire_claim"]["by"]
+    original_at = claimed["fire_claim"]["at"]
 
     fence_entered = threading.Event()
     release = threading.Event()
-    result = {}
 
     def _hold():
         with fire_claim_fence(job_id, expected_owner=owner) as owns:
@@ -54,14 +50,58 @@ def test_heartbeat_succeeds_immediately_while_fire_fence_held(temp_home):
     assert fence_entered.wait(timeout=5)
 
     start = time.monotonic()
-    result["ok"] = heartbeat_fire_claim(job_id, expected_owner=owner)
-    result["waited"] = time.monotonic() - start
+    result = heartbeat_fire_claim(job_id, expected_owner=owner)
+    waited = time.monotonic() - start
+    still = get_job(job_id)
     release.set()
     holder.join(timeout=5)
 
-    assert result["ok"] is True, "heartbeat treated a busy fence as ownership loss"
-    assert result["waited"] < 2.0, f"heartbeat blocked on the fire fence ({result['waited']:.2f}s)"
+    assert result is None, "busy fence must be unverified, not ownership loss"
+    assert waited < 2.0, f"heartbeat blocked on the fire fence ({waited:.2f}s)"
+    assert still is not None and still["fire_claim"]["at"] == original_at
+    assert heartbeat_fire_claim(job_id, expected_owner=owner) is True
     assert heartbeat_fire_claim(job_id, expected_owner="other-owner") is False
+
+
+def test_heartbeat_does_not_restore_replaced_owner_while_fence_held(temp_home):
+    """Takeover persisted + fence held: heartbeat of the old owner must not rewrite the claim."""
+    from cron.jobs import (
+        claim_job_for_fire,
+        create_job,
+        fire_claim_fence,
+        get_job,
+        heartbeat_fire_claim,
+        load_jobs,
+        save_jobs,
+    )
+
+    job = create_job(prompt="x", schedule="every 5m", name="no-clobber")
+    job_id = job["id"]
+    assert claim_job_for_fire(job_id) is True
+    owner_a = get_job(job_id)["fire_claim"]["by"]
+    records = load_jobs()
+    records[0]["fire_claim"] = {"at": records[0]["fire_claim"]["at"], "by": "replacement-owner"}
+    save_jobs(records)
+
+    fence_entered = threading.Event()
+    release = threading.Event()
+
+    def _hold():
+        with fire_claim_fence(job_id, expected_owner="replacement-owner") as owns:
+            assert owns is True
+            fence_entered.set()
+            release.wait(timeout=10)
+
+    holder = threading.Thread(target=_hold, daemon=True)
+    holder.start()
+    assert fence_entered.wait(timeout=5)
+    result = heartbeat_fire_claim(job_id, expected_owner=owner_a)
+    persisted = get_job(job_id)["fire_claim"]["by"]
+    release.set()
+    holder.join(timeout=5)
+
+    assert result is None
+    assert persisted == "replacement-owner"
 
 
 def _claimed_job(tmp_path, name):
@@ -84,8 +124,14 @@ def _patch_run_scaffold(monkeypatch, scheduler, *, run_job):
     monkeypatch.setattr(scheduler, "run_job", run_job)
 
 
+def _enter_secrets(stack):
+    stack.enter_context(patch("agent.secret_scope.set_secret_scope", return_value=None))
+    stack.enter_context(patch("agent.secret_scope.build_profile_secret_scope", return_value=None))
+    stack.enter_context(patch("agent.secret_scope.reset_secret_scope"))
+
+
 def test_slow_delivery_holding_fence_is_not_recorded_as_ownership_loss(tmp_path, monkeypatch):
-    """A delivery that outlives the fence wait must still be recorded successful."""
+    """A delivery that outlives a heartbeat beat must still be recorded successful."""
     import cron.scheduler as scheduler
 
     jobs, profile_home, claimed = _claimed_job(tmp_path, "slow-delivery")
@@ -95,48 +141,39 @@ def test_slow_delivery_holding_fence_is_not_recorded_as_ownership_loss(tmp_path,
     monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 30.0)
 
     delivered = threading.Event()
-    body_saw_loss: list[bool] = []
 
     def _slow_delivery(*_args, **_kwargs):
         delivered.set()
         time.sleep(0.5)
         return None
 
-    real_body = scheduler._run_one_job_body
-
-    def _observed_body(job, **kwargs):
-        result = real_body(job, **kwargs)
-        lost = kwargs.get("fire_claim_lost")
-        body_saw_loss.append(bool(lost is not None and lost.is_set()))
-        return result
-
     _patch_run_scaffold(
         monkeypatch, scheduler,
         run_job=lambda *_a, **_kw: (True, "output", "response", None))
-    monkeypatch.setattr(scheduler, "_run_one_job_body", _observed_body)
     monkeypatch.setattr(scheduler, "save_job_output", lambda *_a: "output.md")
     monkeypatch.setattr(scheduler, "_deliver_result", _slow_delivery)
-    mark_run = MagicMock(return_value=True)
-    monkeypatch.setattr(scheduler, "mark_job_run", mark_run)
-    monkeypatch.setattr(scheduler, "finish_execution", MagicMock())
 
-    with jobs.use_cron_store(profile_home), \
-         patch("agent.secret_scope.set_secret_scope", return_value=None), \
-         patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
-         patch("agent.secret_scope.reset_secret_scope"):
+    with jobs.use_cron_store(profile_home), contextlib.ExitStack() as stack:
+        _enter_secrets(stack)
         assert scheduler.run_one_job(claimed) is True
+        persisted = jobs.get_job(claimed["id"])
 
     assert delivered.is_set(), "delivery never ran"
-    assert body_saw_loss == [False], "a fire fence timeout was treated as ownership loss"
-    args, _kwargs = mark_run.call_args
-    assert args[1] is True, "the run was not recorded as successful"
-    assert args[2] is None, f"run was stamped with an error: {args[2]!r}"
+    assert persisted is not None
+    assert persisted.get("last_status") == "ok", (
+        f"slow delivery stamped {persisted.get('last_status')!r} "
+        f"error={persisted.get('last_error')!r}")
+    assert persisted.get("last_error") is None
 
 
 def test_fence_held_elsewhere_skips_side_effects_without_ownership_lost_stamp(
     tmp_path, monkeypatch,
 ):
-    """Side effect that cannot acquire the fence is skipped; not an ownership loss."""
+    """Side effect that cannot acquire the fence is skipped; not an ownership loss.
+
+    Uses real mark_job_run (not a True-stub) so fence-busy on the terminal write is
+    not misclassified as owner mismatch.
+    """
     import cron.jobs as jobs
     import cron.scheduler as scheduler
 
@@ -148,6 +185,7 @@ def test_fence_held_elsewhere_skips_side_effects_without_ownership_lost_stamp(
         claimed = jobs.get_job(job["id"])
         assert isinstance(claimed, dict)
         owner = claimed["fire_claim"]["by"]
+        original_claim = dict(claimed["fire_claim"])
 
         monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.05)
         monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 60.0)
@@ -171,28 +209,57 @@ def test_fence_held_elsewhere_skips_side_effects_without_ownership_lost_stamp(
 
         save_output = MagicMock(return_value="output.md")
         deliver = MagicMock(return_value=None)
-        mark_run = MagicMock(return_value=True)
-        finish = MagicMock()
         _patch_run_scaffold(monkeypatch, scheduler, run_job=_start_holder_then_finish)
         monkeypatch.setattr(scheduler, "save_job_output", save_output)
         monkeypatch.setattr(scheduler, "_deliver_result", deliver)
-        monkeypatch.setattr(scheduler, "mark_job_run", mark_run)
-        monkeypatch.setattr(scheduler, "finish_execution", finish)
 
         try:
-            with patch("agent.secret_scope.set_secret_scope", return_value=None), \
-                 patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
-                 patch("agent.secret_scope.reset_secret_scope"):
+            with contextlib.ExitStack() as stack:
+                _enter_secrets(stack)
                 assert scheduler.run_one_job(claimed) is True
         finally:
             release_holder.set()
             holder.join(timeout=5)
 
+        persisted = jobs.get_job(job["id"])
+
     save_output.assert_not_called()
     deliver.assert_not_called()
-    finish.assert_called_once()
-    _args, fkwargs = finish.call_args
-    error_text = str(fkwargs.get("error") or "")
-    assert "fence" in error_text.lower(), f"honest cause not recorded: {error_text!r}"
-    interrupted = "Interrupted by shutdown" in error_text
-    assert not interrupted, f"busy fence stamped as shutdown interrupt: {error_text!r}"
+    assert persisted is not None
+    assert persisted.get("last_status") == "error"
+    assert "fence" in str(persisted.get("last_error") or "").lower()
+    assert "ownership lost" not in str(persisted.get("last_error") or "").lower()
+    assert persisted.get("fire_claim", {}).get("by") == original_claim["by"]
+
+
+def test_delivery_fence_busy_after_output_is_not_recorded_success(tmp_path, monkeypatch):
+    """Output fence True, delivery fence None: re-raise busy; do not book success."""
+    import cron.scheduler as scheduler
+
+    jobs, profile_home, claimed = _claimed_job(tmp_path, "delivery-busy")
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def _seq_fence(job_id, *, expected_owner):
+        calls["n"] += 1
+        yield True if calls["n"] == 1 else None
+
+    monkeypatch.setattr(scheduler, "fire_claim_fence", _seq_fence)
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 60.0)
+    _patch_run_scaffold(
+        monkeypatch, scheduler,
+        run_job=lambda *_a, **_kw: (True, "output", "response", None))
+    monkeypatch.setattr(scheduler, "save_job_output", lambda *_a: "output.md")
+    deliver = MagicMock(return_value=None)
+    monkeypatch.setattr(scheduler, "_deliver_result", deliver)
+
+    with jobs.use_cron_store(profile_home), contextlib.ExitStack() as stack:
+        _enter_secrets(stack)
+        assert scheduler.run_one_job(claimed) is True
+        persisted = jobs.get_job(claimed["id"])
+
+    deliver.assert_not_called()
+    assert persisted is not None
+    assert persisted.get("last_status") == "error"
+    assert "fence" in str(persisted.get("last_error") or "").lower()
+    assert "ownership lost" not in str(persisted.get("last_error") or "").lower()

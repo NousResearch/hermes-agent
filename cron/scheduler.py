@@ -2377,30 +2377,41 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         _finish_unstarted("Fire claim ownership lost before execution started.")
         return True
 
+    if owns_fire_claim is None:
+        logger.warning(
+            "Job '%s': fire claim could not be confirmed before execution (fire fence busy)",
+            job_id)
+        _finish_unstarted("Fire claim ownership could not be validated before execution started.")
+        return True
+
     def _heartbeat_loop() -> None:
         last_confirmed = time.monotonic()
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
-                if heartbeat_fire_claim(job_id, expected_owner=owner) is False:
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire claim ownership lost; interrupting stale run",
-                        job_id)
-                    return
-                last_confirmed = time.monotonic()
+                renewed = heartbeat_fire_claim(job_id, expected_owner=owner)
             except Exception:
                 logger.debug("Job '%s': fire_claim heartbeat failed", job_id, exc_info=True)
-                if (
-                    time.monotonic() - last_confirmed
-                    >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
-                ):
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire_claim could not be renewed within %.1fs; "
-                        "interrupting uncertain run",
-                        job_id,
-                        _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS)
-                    return
+                renewed = None
+            if renewed is True:
+                last_confirmed = time.monotonic()
+                continue
+            if renewed is False:
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire claim ownership lost; interrupting stale run",
+                    job_id)
+                return
+            if (
+                time.monotonic() - last_confirmed
+                >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
+            ):
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire_claim could not be renewed within %.1fs "
+                    "(fire fence busy); interrupting uncertain run",
+                    job_id,
+                    _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS)
+                return
 
     heartbeat_thread = _start_heartbeat_thread(
         _heartbeat_loop, "cron-fire-claim-heartbeat",
@@ -2702,7 +2713,7 @@ def _save_compose_deliver(
                 for_failure=not d.success,
             )
     except Exception as de:
-        if isinstance(de, _FireClaimLostDuringSideEffect):
+        if isinstance(de, (_FireClaimLostDuringSideEffect, _FireFenceBusyDuringSideEffect)):
             raise
         d.delivery_error = str(de)
         logger.error("Delivery failed for job %s: %s", job["id"], de)
@@ -2743,11 +2754,23 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     if d.blocked_config:
         mark_kwargs["status"] = "blocked_config"
     marked = mark_job_run(job["id"], d.success, d.error, **mark_kwargs)
-    if fire_owner is not None and not marked:
+    if fire_owner is not None and marked is False:
         finish_execution(
             execution_id, success=False,
             error="Fire claim ownership lost before terminal completion.")
         return True
+    if marked is None:
+        from cron.jobs import update_job
+        try:
+            update_job(job["id"], {
+                "last_status": mark_kwargs.get("status") or (
+                    "error" if not d.success else "ok"),
+                "last_error": None if d.success else d.error,
+            })
+        except Exception:
+            logger.debug(
+                "Job '%s': could not persist last_status after fire-fence contention",
+                job["id"], exc_info=True)
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=d.delivery_error,
         delivery_queued=job.get("last_delivery_queued"),

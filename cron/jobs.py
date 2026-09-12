@@ -290,17 +290,23 @@ def _jobs_lock():
 
 
 @contextlib.contextmanager
-def _fire_job_lock(job_id: str):
+def _fire_job_lock(job_id: str, timeout: Optional[float] = None):
     """Serialize one job's owner mutations and external side effects. Unlike the global jobs lock
     this may be held across network delivery; scoped to one profile + job so unrelated jobs keep
-    progressing. Fails closed when cross-process locking is unavailable."""
+    progressing. Fails closed when cross-process locking is unavailable.
+
+    ``timeout`` defaults to ``_JOBS_LOCK_TIMEOUT_SECONDS``. Pass ``0`` for a non-blocking try
+    (heartbeat): wait neither on a live delivery nor on a takeover.
+    """
+    wait = _JOBS_LOCK_TIMEOUT_SECONDS if timeout is None else timeout
     cron_dir = _current_cron_store().cron_dir
     lock_key = f"{cron_dir.resolve()}::{job_id}"
     with _fire_fence_locks_guard:
         local_lock = _fire_fence_locks.setdefault(lock_key, threading.RLock())
 
-    if not local_lock.acquire(timeout=_JOBS_LOCK_TIMEOUT_SECONDS):
-        logger.error("Timed out waiting for local fire fence %s; failing closed", lock_key)
+    if not local_lock.acquire(timeout=wait):
+        log = logger.debug if wait == 0 else logger.error
+        log("Timed out waiting for local fire fence %s; failing closed", lock_key)
         yield False
         return
 
@@ -320,11 +326,12 @@ def _fire_job_lock(job_id: str):
         try:
             lock_fd = open(lock_path, "a+", encoding="utf-8")
             lock_fd.seek(0)
-            result = _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS)
+            result = _acquire_flock(lock_fd, wait)
             if result is None:  # pragma: no cover - supported platforms provide one backend
                 logger.error("No cross-process lock backend for cron fire fence")
             elif not result:
-                logger.error("Timed out waiting for fire fence %s; failing closed", lock_path)
+                log = logger.debug if wait == 0 else logger.error
+                log("Timed out waiting for fire fence %s; failing closed", lock_path)
             acquired = bool(result)
         except (OSError, IOError) as exc:
             logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
@@ -2304,14 +2311,17 @@ def mark_job_run(
     status: Optional[str] = None,
     *,
     expected_fire_owner: Optional[str] = None,
-) -> bool:
+) -> Optional[bool]:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
 
     ``delivery_error`` is separate from the agent error: agent succeeded but delivery failed records
     ``last_status = "delivery_failed"`` (never "ok") while ``failure_streak`` is left alone. An
-    explicit ``status`` (e.g. "blocked_config") overrides the derived value. False when the fence
-    can't be taken, the job is missing, or ``expected_fire_owner`` no longer holds the fire claim.
+    explicit ``status`` (e.g. "blocked_config") overrides the derived value.
+
+    Returns ``True`` when the outcome was persisted, ``False`` when the job is missing or
+    ``expected_fire_owner`` no longer holds the claim (verified loss), and ``None`` when the
+    fire fence could not be acquired (indeterminate — not an owner mismatch).
     """
     def apply(jobs, _i, job):
         if expected_fire_owner is not None:
@@ -2334,7 +2344,11 @@ def mark_job_run(
             return False
         return found
 
-    return _under_fire_fence(job_id, locked)
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            logger.debug("mark_job_run: fire fence busy for %s; outcome not persisted", job_id)
+            return None
+        return locked()
 
 
 def _write_oneshot_diagnostic(job: Dict[str, Any], text: str, what: str) -> bool:
@@ -2604,21 +2618,25 @@ def claim_job_for_fire(
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 
 
-def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> Optional[bool]:
     """Refresh an active ``fire_claim`` without extending another owner's lease.
 
-    Uses ``_with_job`` (the global jobs-store lock) rather than ``_under_fire_fence``.
-    The per-job fire fence is held across long side effects (delivery, teardown) by
-    the worker thread; the heartbeat runs on a background thread and must not wait
-    on that fence. A fence-wait timeout here was reported as ownership loss on runs
-    that had already finished and delivered.
-
-    ``False`` is only a verified loss (claim gone, or a replacement owner holds it).
+    Tries the per-job fire fence without waiting (timeout 0): a live delivery or a
+    takeover holds that fence, and blocking on it for 30s was reported as ownership
+    loss on runs that had already finished and delivered. ``None`` means the fence
+    was busy — no write, ownership unverified. ``False`` is only a verified loss
+    (claim gone, or a replacement owner holds it). A successful refresh still holds
+    the fence so it cannot clobber a concurrent takeover.
     """
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _with_job(job_id, apply, False)
+    with _fire_job_lock(job_id, timeout=0.0) as acquired:
+        if not acquired:
+            logger.debug(
+                "Job '%s': fire fence busy; fire_claim ownership unverified", job_id)
+            return None
+        return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

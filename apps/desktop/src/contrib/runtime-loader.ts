@@ -184,6 +184,8 @@ export async function loadRuntimePlugin(
       plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
       loaded.set(plugin.id, disposers)
       publishPlugin({ ...record, status: 'loaded' })
+      const source = options.file ?? origin
+      console.info(`[plugins] activated "${plugin.id}" (${record.kind}) from ${source}`)
     }
 
     publishPlugin({ ...record, status: 'disabled' }, { activate, deactivate: () => unloadRuntimePlugin(plugin.id) })

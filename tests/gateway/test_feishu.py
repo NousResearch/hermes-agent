@@ -2142,6 +2142,27 @@ class TestFeishuNormalizeText(unittest.TestCase):
         self.assertEqual(_normalize_feishu_text("@_all notice", None), "@all notice")
 
 
+class TestStripLeadingAtAll(unittest.TestCase):
+    """A leading @all/@_all (@everyone) trigger must not hide a trailing slash command."""
+
+    def test_strips_leading_at_all_exposing_slash_command(self):
+        from plugins.platforms.feishu.adapter import _strip_leading_at_all
+
+        self.assertEqual(_strip_leading_at_all("@all /new"), "/new")
+        self.assertEqual(_strip_leading_at_all("@_all /sethome"), "/sethome")
+        self.assertEqual(_strip_leading_at_all("@all\n/reset"), "/reset")
+
+    def test_keeps_mid_message_and_non_all_mentions(self):
+        from plugins.platforms.feishu.adapter import _strip_leading_at_all
+
+        # Mid-message @all is content, not a routing trigger.
+        self.assertEqual(_strip_leading_at_all("ping @all please"), "ping @all please")
+        # A leading non-@all mention is untouched (mention gating handles it).
+        self.assertEqual(_strip_leading_at_all("@Alice /new"), "@Alice /new")
+        # Word boundary: "@allhands" is not the @everyone token.
+        self.assertEqual(_strip_leading_at_all("@allhands on deck"), "@allhands on deck")
+
+
 class TestFeishuPostMentionParsing(unittest.TestCase):
     def test_post_at_tag_renders_via_mentions_map(self):
         """Post <at>.user_id is a placeholder ('@_user_N'); the real display
@@ -2384,6 +2405,68 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         event = adapter._dispatch_inbound_event.call_args.args[0]
         self.assertNotIn("[Mentioned:", event.text)
         self.assertTrue(event.text.startswith("/model"))
+
+    def test_bare_at_all_message_reaches_the_agent(self):
+        """A message that is nothing but @everyone (Feishu's "@_all") is a real turn.
+
+        The @_all marker is what got the message past mention gating, so stripping it must
+        not leave an empty body that the post-strip guard throws away.
+        """
+        from gateway.platforms.event import MessageType
+
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_all"}),
+            message_type="text",
+            message_id="m4",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m4",
+            )
+        )
+        self.assertTrue(adapter._dispatch_inbound_event.called)
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.message_type, MessageType.TEXT)
+        self.assertIn("@all", event.text)
+
+    def test_bare_bot_mention_message_is_still_dropped(self):
+        """A bodyless "@Bot" ping stays dropped — the @everyone exemption is not a blanket one."""
+        adapter = self._build_adapter()
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_user_1"}),
+            message_type="text",
+            message_id="m5",
+            mentions=[bot_mention],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m5",
+            )
+        )
+        self.assertFalse(adapter._dispatch_inbound_event.called)
 
 
 class TestFeishuFetchMessageText(unittest.TestCase):

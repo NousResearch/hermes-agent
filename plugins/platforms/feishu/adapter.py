@@ -1634,6 +1634,60 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    # Bounded retry for preview-cleanup deletes. The stream consumer's
+    # edit-fallback path probes delete_message via getattr to terminate the
+    # old streaming preview before the fallback message goes out; without an
+    # implementation the probe silently no-ops and the user sees two replies.
+    # Feishu flood control can transiently reject the delete, so retry a
+    # bounded number of times with backoff (mirrors the consumer-side
+    # retry_on_false contract from #71047).
+    _DELETE_MESSAGE_ATTEMPTS = 3
+    _DELETE_MESSAGE_BACKOFF_BASE = 0.5
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Feishu message (best-effort, with retry).
+
+        Used by the stream consumer's edit-fallback cleanup to terminate the
+        old streaming preview before a fallback continuation message is sent.
+        Feishu's flood control can transiently reject the delete; retrying a
+        bounded number of times with backoff keeps the preview from lingering
+        as a duplicate reply.
+        """
+        if not self._client or not message_id:
+            return False
+        try:
+            from lark_oapi.api.im.v1 import DeleteMessageRequest
+        except ImportError:
+            logger.warning("[Feishu] DeleteMessageRequest unavailable; cannot delete %s", message_id)
+            return False
+        for attempt in range(self._DELETE_MESSAGE_ATTEMPTS):
+            try:
+                request = (
+                    DeleteMessageRequest.builder()
+                    .message_id(message_id)
+                    .build()
+                )
+                response = await self._run_blocking(
+                    self._client.im.v1.message.delete, request
+                )
+                if self._response_succeeded(response):
+                    return True
+                code = getattr(response, "code", "unknown")
+                msg = getattr(response, "msg", "")
+                logger.info(
+                    "[Feishu] delete_message %s attempt %d/%d rejected: code=%s msg=%s",
+                    message_id, attempt + 1, self._DELETE_MESSAGE_ATTEMPTS, code, msg,
+                )
+            except Exception as exc:
+                logger.info(
+                    "[Feishu] delete_message %s attempt %d/%d raised: %s",
+                    message_id, attempt + 1, self._DELETE_MESSAGE_ATTEMPTS, exc,
+                )
+            if attempt < self._DELETE_MESSAGE_ATTEMPTS - 1:
+                await asyncio.sleep(self._DELETE_MESSAGE_BACKOFF_BASE * (attempt + 1))
+        logger.warning("[Feishu] delete_message %s failed after %d attempts", message_id, self._DELETE_MESSAGE_ATTEMPTS)
+        return False
+
     # Template attrs for the shared _format_exec_approval core. The card
     # header carries the title, so the text core starts at the code fence.
     _EA_HEADER = ""
@@ -3791,7 +3845,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 last_error = exc
                 if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
                     raise
-                if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                
                     raise
                 wait_seconds = 2 ** attempt
                 logger.warning(

@@ -25,6 +25,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from tools.environments.base_output import _MslStreamStripper, strip_malloc_stack_logging
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -1060,6 +1061,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # A split multibyte UTF-8 char would become U+FFFD with stateless decoding; the
         # incremental decoder holds the partial sequence until the rest arrives.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        # MSL never reaches the session buffer: this loop bypasses
+        # ``BaseEnvironment.execute()`` entirely (same reasoning as the drain-loop
+        # stripper in ``tools/environments/base_output.py``).
+        msl = _MslStreamStripper()
 
         # Incremental decoder: raw pipe reads can split a multibyte UTF-8 character across two read1()
         # chunks. A stateless per-chunk ``bytes.decode(errors="replace")`` turns both halves into U+FFFD
@@ -1116,22 +1121,27 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 if chunk is None:
                     break  # true EOF — all writers closed
                 if chunk:
-                    _append_chunk(chunk)
+                    _append_chunk(msl.feed(chunk))
                 idle_after_exit = 0
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
-                lambda: session.process.wait(timeout=5), lambda: session.process.returncode)
+                lambda: session.process.wait(timeout=5), lambda: session.process.returncode, msl=msl)
 
-    def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
+    def _finish_reader(self, session, decoder, append, label, wait, exit_code, msl=None) -> None:
         """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
         one U+FFFD instead of vanishing), reap the child (no zombies), record the exit."""
         with suppress(Exception):
             tail = decoder.decode(b"", final=True)
             if tail:
-                append(tail)
+                append(msl.feed(tail) if msl is not None else tail)
+        if msl is not None:
+            with suppress(Exception):
+                carried = msl.flush()
+                if carried:
+                    append(carried)
         try:
             wait()
         except Exception as e:
@@ -1234,6 +1244,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # PTY reads can split a multibyte UTF-8 character across chunks just like pipe reads — hold partial
         # sequences until the rest arrives. (Ported from openclaw/openclaw#112325.)
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        # MSL never reaches the session buffer: this loop bypasses
+        # ``BaseEnvironment.execute()`` entirely (same reasoning as the
+        # drain-loop stripper in ``tools/environments/base_output.py``).
+        msl = _MslStreamStripper()
         try:
             while pty.isalive():
                 try:
@@ -1242,14 +1256,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
                         # ptyprocess returns bytes; pywinpty returns str
                         text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
                         if text:
-                            self._ingest_output(session, text)
+                            self._ingest_output(session, msl.feed(text))
                 except Exception:  # EOFError included
                     break
         except Exception as e:
             logger.debug("PTY stdout reader ended: %s", e)
         self._finish_reader(
             session, decoder, lambda t: self._ingest_output(session, t), "PTY",
-            pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)
+            pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1, msl=msl)
 
     def _ingest_output(self, session: ProcessSession, text: str) -> None:
         """Buffer a freshly-read chunk, then scan watch patterns and stream it live."""
@@ -1564,7 +1578,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     with suppress(BlockingIOError, OSError, ValueError):
                         chunk = stdout.read()
                         if chunk:
-                            session.append_output(chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace"))
+                            text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
+                            # One-shot drain — no carry state needed, plain strip is enough.
+                            session.append_output(strip_malloc_stack_logging(text))
                 finally:
                     with suppress(Exception):
                         fcntl.fcntl(fd, fcntl.F_SETFL, flags)

@@ -2896,3 +2896,63 @@ def test_model_not_found_notice_absent_when_fallback_chain_configured(monkeypatc
     text = _format_async(evt)
     assert text.count("SUBAGENT MODEL REJECTED") == 1
     assert "No fallback chain is configured" not in text
+
+
+# 2026-08-31: ``_reader_loop`` and ``_pty_reader_loop`` own private
+# ``_MslStreamStripper`` instances so MSL never reaches the session buffer
+# (both bypass ``BaseEnvironment.execute()`` entirely). ``_finish_reader``
+# flushes the decoder tail and the stripper carry at EOF.
+class TestReaderLoopStripsMsl:
+    def test_finish_reader_feeds_decoder_tail_through_msl(self):
+        from tools.process_registry import _MslStreamStripper
+        from tools.environments.base_output import strip_malloc_stack_logging
+
+        sentinel = "TAIL-OK"
+        appended: list[str] = []
+
+        def append(text: str) -> None:
+            appended.append(text)
+
+        # Minimal codec stand-in: a decoder that yields an MSL line on final=True.
+        class _Dec:
+            def decode(self, _bytes, final: bool = False):
+                return "libmalloc(1) MallocStackLogging: lite mode\n" if final else ""
+
+
+# 2026-08-31: ``_reader_loop`` and ``_pty_reader_loop`` own private
+# ``_MslStreamStripper`` instances so MSL never reaches the session buffer
+# (both bypass ``BaseEnvironment.execute()`` entirely). ``_finish_reader``
+# flushes the decoder tail and the stripper carry at EOF.
+class TestReaderLoopStripsMsl:
+    def test_finish_reader_flushes_decoder_tail_and_carry_through_stripper(self):
+        # Stand in for ``_ingest_output`` — collect whatever would have been
+        # appended to the session buffer. ``_finish_reader`` calls this with
+        # ``msl.feed(tail)`` for the decoder tail and with ``msl.flush()`` for
+        # the stripper carry; assert both paths strip MSL and preserve real
+        # payload.
+        from tools.process_registry import ProcessRegistry
+        from tools.environments.base_output import _MslStreamStripper
+
+        reg = ProcessRegistry()
+        # Build a session directly via the registry internals is heavy; just
+        # exercise ``_finish_reader``'s contract through the stripper — which
+        # is the part that actually differs from the foreground path.
+        collected: list[str] = []
+        decoder_tail = "libmalloc(1) MallocStackLogging: lite mode\n"
+        msl = _MslStreamStripper()
+        # Carry a partial BEL-glued MSL line: the previous feed saw BEL but
+        # no newline yet. The next feed completes the line; the regex wipes
+        # it and emits the leading OSC escape preserved.
+        msl.feed("shell-startup\x07MallocStackLogging: lite mode")
+        # Mirror the _finish_reader contract: feed tail through stripper, then
+        # flush any held carry.
+        cleaned_tail = msl.feed(decoder_tail)
+        if cleaned_tail:
+            collected.append(cleaned_tail)
+        flushed = msl.flush()
+        if flushed:
+            collected.append(flushed)
+        joined = "".join(collected)
+        assert "MallocStackLogging" not in joined
+        assert "\x07" in joined  # BEL anchor preserved (lookbehind, not consumed)
+        assert "shell-startup" in joined

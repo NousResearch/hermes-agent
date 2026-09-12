@@ -591,6 +591,7 @@ class GatewayInboundMixin:
                 if running_agent.redirect(
                     self._steer_text_with_origin((event.text or "").strip(), event)
                 ):
+                    self._attach_cron_delivery_handoff_on_redirect(running_agent, event, _quick_key)
                     logger.debug("PRIORITY redirect for session %s", _quick_key)
                     return
             except Exception as exc:

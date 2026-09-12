@@ -291,6 +291,15 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
         checkpoint_parts += ["Visible response before the interruption:", visible]
     checkpoint = "\n\n".join(checkpoint_parts)
     correction = f"[Context from the interrupted assistant response]\n{checkpoint}\n\n{text}"
+    try:
+        from gateway.cron_delivery_handoff import (
+            drain_agent_delivery_references, format_delivery_reference_block,
+        )
+        reference_block = format_delivery_reference_block(drain_agent_delivery_references(agent))
+        if reference_block:
+            correction = f"{reference_block}\n\n{correction}"
+    except Exception:
+        logger.debug("cron delivery reference context drain failed", exc_info=True)
 
     # The live tail is normally user or tool, so an assistant placeholder + correction
     # keeps strict alternation; if the tail is already assistant, the checkpoint is folded

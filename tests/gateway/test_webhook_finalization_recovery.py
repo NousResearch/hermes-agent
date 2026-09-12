@@ -16,7 +16,7 @@ from tests.gateway.fixtures.webhook_route_authority import mount_authority
 
 
 @asynccontextmanager
-async def settled_before_finalizer():
+async def settled_before_finalizer(*, compress=False):
     config = PlatformConfig(enabled=True, extra={
         "secret": "owned-secret",
         "routes": {"fixture": {"prompt": "{text}", "deliver": "log"}},
@@ -37,10 +37,30 @@ async def settled_before_finalizer():
         assert response.status == 202, await response.text()
         runner = adapter._message_handler.__self__
         authority = runner.session_authority
-        row = authority.db._read_one("SELECT * FROM session_admissions")
+        row = dict(authority.db._read_one("SELECT * FROM session_admissions"))
         claimed = claim_session_input(
             authority.db, epoch=authority.epoch, session_id=row["target_session_id"]
         )
+        if compress:
+            logical = row["target_session_id"]
+            entry = runner.session_store.lookup_by_session_id(logical)
+            physical = logical + "-compressed"
+            authority.db.publish_compression_child(
+                parent_session_id=logical,
+                child_session_id=physical,
+                source="webhook",
+                messages=[{"role": "user", "content": "retained summary"}],
+                require_compression_lease=False,
+            )
+            assert runner.session_store.advance_compression_session(
+                entry.session_key, logical, physical
+            ) is not None
+            # The logical webhook still owns terminal settlement/finalization
+            # after its physical transcript rotates.
+            authority.db._write_sql(
+                "UPDATE sessions SET ended_at=NULL WHERE id=?", (logical,)
+            )
+            row["physical_session_id"] = physical
         settle_session_input(
             authority.db,
             epoch=authority.epoch,
@@ -85,6 +105,56 @@ async def test_restart_finalizes_settled_webhook_without_provider_retry(monkeypa
         assert saved["end_reason"] == "webhook_complete"
         assert scheduled == []
         assert len(authority.db._read_all("SELECT * FROM session_admissions")) == 1
+
+
+@pytest.mark.asyncio
+async def test_restart_reauthorizes_compressed_route_but_finalizes_logical_webhook():
+    async with settled_before_finalizer(compress=True) as (
+        _client, _body, _headers, runner, authority, row
+    ):
+        from gateway.platforms.webhook_ingress import recover_webhook_finalizations
+        from gateway.session_authority import initialize_session_authority
+
+        logical = row["target_session_id"]
+        physical = row["physical_session_id"]
+        entry = runner.session_store.lookup_by_session_id(physical)
+        unrelated = physical + "-branch"
+        authority.db.create_session(
+            unrelated,
+            source="webhook",
+            parent_session_id=physical,
+            model_config={"_branched_from": physical},
+        )
+        unrelated_before = authority.db.get_session(unrelated)
+
+        restarted = await initialize_session_authority(
+            runner,
+            profile_id=authority.profile_id,
+            instance_id="replacement-owner",
+            db=authority.db,
+        )
+        scheduled = []
+        restarted._schedule = scheduled.append
+        sent = []
+
+        async def forbid_send(*args, **kwargs):
+            sent.append((args, kwargs))
+
+        adapter = runner._adapter_for_source(entry.origin)
+        adapter.send = forbid_send
+
+        results = await recover_webhook_finalizations(restarted)
+
+        assert results == {logical: "finalized"}
+        assert authority.db.get_session(logical)["end_reason"] == "webhook_complete"
+        assert authority.db.get_session(physical)["ended_at"] is None
+        assert authority.db.get_session(unrelated) == unrelated_before
+        assert scheduled == []
+        assert sent == []
+        admissions = authority.db._read_all("SELECT * FROM session_admissions")
+        assert len(admissions) == 1
+        assert admissions[0]["target_session_id"] == logical
+        assert admissions[0]["status"] == "terminal"
 
 
 @pytest.mark.asyncio

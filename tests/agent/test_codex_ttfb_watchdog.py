@@ -78,6 +78,48 @@ def _shorten_implicit_idle_watchdog(monkeypatch, helpers, timeout=2.0):
     monkeypatch.setattr(helpers, "_resolve_nonstream_watchdogs", resolve)
 
 
+def test_named_databricks_profile_raises_responses_event_idle_timeout(tmp_path, monkeypatch):
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(
+        tmp_path, monkeypatch, provider="custom",
+        base_url="https://workspace.example/ai-gateway/mlflow/v1",
+    )
+    setattr(agent, "requested_provider", "custom:databricks")
+    monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+
+    responses = h._resolve_nonstream_watchdogs(
+        agent, {"model": "system.ai.gpt-5-6-sol", "input": "small"},
+    )
+    setattr(agent, "api_mode", "chat_completions")
+    chat = h._resolve_nonstream_watchdogs(
+        agent, {"model": "system.ai.glm-5-3", "messages": []},
+    )
+
+    assert responses.idle_enabled is True
+    assert responses.idle_timeout == 120.0
+    assert responses.stale_timeout >= responses.idle_timeout
+    assert chat.idle_enabled is False
+    assert chat.idle_timeout == 12.0
+
+
+def test_switched_named_databricks_identity_keeps_responses_idle_timeout(tmp_path, monkeypatch):
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(
+        tmp_path, monkeypatch, provider="custom:databricks",
+        base_url="https://workspace.example/ai-gateway/mlflow/v1",
+    )
+    setattr(agent, "requested_provider", "custom:databricks")
+    monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+
+    watchdogs = h._resolve_nonstream_watchdogs(
+        agent, {"model": "system.ai.gpt-5-6-sol", "input": "small"},
+    )
+
+    assert watchdogs.idle_timeout == 120.0
+
+
 def _install_codex_event_stream(agent, monkeypatch, event_factory, closes):
     client = SimpleNamespace(
         responses=SimpleNamespace(create=lambda **_kwargs: event_factory())

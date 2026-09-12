@@ -447,6 +447,12 @@ def _resolve_child_runtime(
     pinned provider is actually honoured."""
     effective_model = model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
+    parent_requested_provider = getattr(parent_agent, "requested_provider", "")
+    effective_requested_provider = override_provider or (
+        parent_requested_provider
+        if isinstance(parent_requested_provider, str) and parent_requested_provider.strip()
+        else effective_provider
+    )
     effective_base_url = override_base_url or _inherit_parent_base_url(parent_agent, parent_agent.base_url)
     # api_mode: each provider has its own wire, so a different provider re-derives (None) instead of inheriting (404s
     # otherwise). Nous Portal is dual-wire within one provider (anthropic/* → Messages, else chat_completions), so
@@ -489,7 +495,8 @@ def _resolve_child_runtime(
     # via delegate_task, which pre-validates the command in _resolve_delegation_credentials.
     if override_acp_command:
         # Forced ACP transport requires provider copilot-acp for run_agent to init the client.
-        effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
+        effective_provider = effective_requested_provider = "copilot-acp"
+        effective_api_mode = "chat_completions"
 
     # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
     # YAML ``false`` must disable thinking, not coerce to "" and inherit.
@@ -508,7 +515,7 @@ def _resolve_child_runtime(
 
     kwargs: Dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
-        "provider": effective_provider,
+        "provider": effective_provider, "requested_provider": effective_requested_provider,
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,

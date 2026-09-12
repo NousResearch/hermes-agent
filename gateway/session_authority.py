@@ -392,6 +392,11 @@ class SessionAuthority:
                             if service is None:
                                 raise RuntimeStoreError('permission_denied')
                             await asyncio.to_thread(service.check_admission, ref, first)
+                        # Cancellation may advance the FIFO while the source owner is awaited;
+                        # the successor must earn its own reauthorization, not inherit this one.
+                        current = get_session_admission(self.db, admission_id=first['admission_id'])
+                        if current is None or current['status'] != 'queued':
+                            continue
                     if 'local_automation_v1' in first['payload']:
                         from gateway.session_automation import check_local_automation
                         check_local_automation(self, ref, first)

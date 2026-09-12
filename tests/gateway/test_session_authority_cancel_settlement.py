@@ -92,3 +92,43 @@ async def test_cancelling_the_head_of_a_paused_fifo_resumes_its_successor(tmp_pa
         statuses = {r['request_id']: (r['status'], r['outcome'])
                     for r in list_session_admissions(db, session_id='s', pending_only=False)}
         assert statuses == {'blocked': ('terminal', 'cancelled'), 'follower': ('terminal', 'completed')}
+
+
+@pytest.mark.asyncio
+async def test_hosted_head_cancelled_during_preclaim_does_not_let_successor_skip_its_check(tmp_path, monkeypatch):
+    import threading
+    from gateway import session_finite, session_hosted_transport, session_local_recovery
+    from gateway.config import Platform
+
+    db, authority = _authority(tmp_path, monkeypatch, platform=Platform.LOCAL)
+    monkeypatch.setattr(session_local_recovery, 'restore_local_session', lambda authority, sid: None)
+    validated, executed = [], []
+    head_checking, release_head = threading.Event(), threading.Event()
+
+    def check_remote_hosted_admission(authority, ref, row):
+        validated.append(row['request_id'])
+        if row['request_id'] == 'hosted:A':
+            head_checking.set()
+            release_head.wait(5)
+            return True
+        # B's own reauthorization is revoked; it must be asked, never inherit A's verdict.
+        raise RuntimeStoreError('permission_denied')
+    monkeypatch.setattr(session_hosted_transport, 'check_remote_hosted_admission', check_remote_hosted_admission)
+
+    async def execute(authority, ref, row):
+        executed.append(row['request_id'])
+        return 'done'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+
+    with db:
+        head = await _submit(authority, 'hosted:A')
+        await _submit(authority, 'hosted:B')
+        await asyncio.get_running_loop().run_in_executor(None, head_checking.wait, 5)
+        await authority.cancel_queued(ACTOR, REF, head.admission_id)
+        release_head.set()
+        await asyncio.wait_for(authority.sessions['s'].task, 5)
+
+    assert executed == [], 'the successor reached execution without its own hosted validation'
+    assert validated == ['hosted:A', 'hosted:B']
+    statuses = {r['request_id']: r['status'] for r in list_session_admissions(db, session_id='s', pending_only=False)}
+    assert statuses == {'hosted:A': 'terminal', 'hosted:B': 'queued'}

@@ -4,6 +4,13 @@ Same catalog/tiers as the ``openai`` plugin (``gpt-image-2`` low/medium/high), r
 through the Codex Responses API ``image_generation`` tool, so no ``OPENAI_API_KEY`` is
 needed. Output is PNG; source images travel as Responses ``input_image`` parts.
 
+The Codex chat model hosting the ``image_generation`` tool call defaults to
+following the active chat model (when Codex-served), with ``gpt-5.5`` as the
+last-resort fallback. Override it per-profile with
+``image_gen.openai-codex.host_model`` in ``config.yaml``, or per-process with
+``OPENAI_CODEX_CHAT_MODEL``; neither changes the underlying ``gpt-image-2``
+image model or its quality tier.
+
 Do NOT reintroduce an "account capability" classifier keyed on ``Tool choice
 'image_generation' not found in 'tools' parameter``: that 400 is a request-shape
 rejection for every account, fixed by omitting tool_choice (``_build_responses_payload``);
@@ -22,8 +29,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_b64_image, success_response
 from plugins.image_gen._common import (
     GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
-    StaticImageGenProvider, collect_source_images, error_factory, prompt_required_error,
-    resolve_static_model, size_for)
+    StaticImageGenProvider, collect_source_images, error_factory, load_image_gen_config,
+    prompt_required_error, resolve_static_model, size_for)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +46,21 @@ logger = logging.getLogger(__name__)
 _MAX_ERROR_BODY_CHARS = 500
 
 # Hosts the ``image_generation`` tool call; ``API_MODEL`` does the image work.
+# Last-resort fallback only — :func:`_resolve_host_model` prefers an explicit
+# override, then the active chat model when it is Codex-served, so a per-account
+# model removal (e.g. ``gpt-5.5`` on 2026-09-07, issue #105398) cannot brick the
+# lane while chat itself has already moved on.
 _CODEX_CHAT_MODEL = "gpt-5.5"
+# Outage retarget without editing config.yaml (mirrors the env → config →
+# default order :func:`_resolve_model` already uses for the image tier).
+_CODEX_HOST_MODEL_ENV_VAR = "OPENAI_CODEX_CHAT_MODEL"
+# Chat providers routed through the Codex backend (chatgpt.com/backend-api/codex).
+_CODEX_CHAT_PROVIDERS = frozenset({"codex", "openai-codex", "chatgpt"})
+# Model-id prefixes served by the Codex backend — heuristic for auto-routed chat
+# (explicit non-Codex providers never follow); unrecognized ids fall back to
+# _CODEX_CHAT_MODEL rather than sending an unservable id. ponytail: prefix list,
+# extend if Codex starts serving a non-gpt/o-series family.
+_CODEX_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4", "codex")
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation and image editing "
@@ -77,6 +98,57 @@ def _summarize_error_body(body: str) -> str:
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return resolve_static_model(
         GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
+
+
+def _active_codex_chat_model() -> str:
+    """Active chat model id when it is Codex-served, else ``""``.
+
+    An explicitly Codex-routed chat model is trusted verbatim (chat works, so the
+    account serves it); an explicitly non-Codex route never follows (a Claude id
+    would 404 on the Codex backend); auto/unset routes follow on a Codex id
+    prefix. Anything unrecognized falls back to :data:`_CODEX_CHAT_MODEL`."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception as exc:  # noqa: BLE001 - config is best-effort
+        logger.debug("Could not load chat model for Codex host resolution: %s", exc)
+        return ""
+    model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
+    if not isinstance(model_cfg, dict):
+        return ""
+    raw_default = model_cfg.get("default")
+    if isinstance(raw_default, dict):
+        chat_model = str(raw_default.get("model") or raw_default.get("default") or "").strip()
+        chat_provider = str(raw_default.get("provider") or "").strip()
+    else:
+        chat_model = str(raw_default or "").strip()
+        chat_provider = str(model_cfg.get("provider") or "").strip()
+    if not chat_model:
+        return ""
+    provider_slug = chat_provider.strip().lower()
+    if provider_slug in _CODEX_CHAT_PROVIDERS:
+        return chat_model
+    if provider_slug and provider_slug != "auto":
+        return ""
+    return chat_model if chat_model.lower().startswith(_CODEX_MODEL_PREFIXES) else ""
+
+
+def _resolve_host_model(explicit: Optional[str] = None) -> str:
+    """Codex Responses host model: explicit → env → scoped config → active Codex
+    chat model → :data:`_CODEX_CHAT_MODEL`. The id is intentionally unconstrained
+    (no catalog): host availability is per-account, so operators must be able to
+    retarget to any live model without a release."""
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    env_override = os.environ.get(_CODEX_HOST_MODEL_ENV_VAR, "")
+    if isinstance(env_override, str) and env_override.strip():
+        return env_override.strip()
+    scoped = load_image_gen_config("openai-codex")
+    candidate = scoped.get("host_model") if isinstance(scoped, dict) else None
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return _active_codex_chat_model() or _CODEX_CHAT_MODEL
 
 
 def _read_codex_access_token() -> Optional[str]:
@@ -174,14 +246,15 @@ def _normalize_input_images(
 
 
 def _build_responses_payload(
-    *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
+    *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None,
+    host_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Responses body for an image_generation call. No ``tool_choice``: Codex rejects every shape
     for forcing the hosted tool (looks it up as a *function* name), so the host model decides,
     nudged by ``instructions``."""
     content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}, *(input_images or [])]
     return {
-        "model": _CODEX_CHAT_MODEL,
+        "model": _resolve_host_model(explicit=host_model),
         "store": False,
         "instructions": _CODEX_INSTRUCTIONS,
         "input": [{"type": "message", "role": "user", "content": content}],

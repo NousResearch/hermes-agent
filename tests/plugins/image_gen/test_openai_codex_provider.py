@@ -451,6 +451,94 @@ class TestRequestShape:
         assert len(message) < len(body)
 
 
+# ── Host model resolution (#105398) ────────────────────────────────────────
+
+
+def _write_config(home, text: str) -> None:
+    home.joinpath("config.yaml").write_text(text, encoding="utf-8")
+
+
+class TestHostModel:
+    """#105398: the Responses host model must track the account, not pin gpt-5.5."""
+
+    def test_follows_active_chat_model_by_default(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENAI_CODEX_CHAT_MODEL", raising=False)
+        _write_config(tmp_path, "model:\n  default: gpt-5.6-luna\n  provider: openai-codex\n")
+        payload = codex_plugin._build_responses_payload(
+            prompt="a cat", size="1024x1024", quality="medium")
+        assert payload["model"] == "gpt-5.6-luna"
+
+    def test_explicit_host_model_overrides_chat_model(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENAI_CODEX_CHAT_MODEL", raising=False)
+        _write_config(tmp_path, (
+            "model:\n  default: gpt-5.6-luna\n  provider: openai-codex\n"
+            "image_gen:\n  openai-codex:\n    host_model: gpt-5.4\n"))
+        payload = codex_plugin._build_responses_payload(
+            prompt="a cat", size="1024x1024", quality="medium")
+        assert payload["model"] == "gpt-5.4"
+
+    def test_falls_back_when_no_chat_model_or_config(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENAI_CODEX_CHAT_MODEL", raising=False)
+        payload = codex_plugin._build_responses_payload(
+            prompt="a cat", size="1024x1024", quality="medium")
+        assert payload["model"] == "gpt-5.5"
+
+    def test_env_override_wins_over_config_and_chat(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_CODEX_CHAT_MODEL", "gpt-5.6-sol")
+        _write_config(tmp_path, (
+            "model:\n  default: gpt-5.6-luna\n  provider: openai-codex\n"
+            "image_gen:\n  openai-codex:\n    host_model: gpt-5.4\n"))
+        payload = codex_plugin._build_responses_payload(
+            prompt="a cat", size="1024x1024", quality="medium")
+        assert payload["model"] == "gpt-5.6-sol"
+
+    def test_blank_env_falls_through_to_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_CODEX_CHAT_MODEL", "   ")
+        _write_config(tmp_path, "image_gen:\n  openai-codex:\n    host_model: gpt-5.4\n")
+        payload = codex_plugin._build_responses_payload(
+            prompt="a cat", size="1024x1024", quality="medium")
+        assert payload["model"] == "gpt-5.4"
+
+    def test_non_codex_chat_model_falls_back(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENAI_CODEX_CHAT_MODEL", raising=False)
+        _write_config(tmp_path, "model:\n  default: anthropic/claude-sonnet-4\n  provider: anthropic\n")
+        payload = codex_plugin._build_responses_payload(
+            prompt="a cat", size="1024x1024", quality="medium")
+        # A Claude id is not served by the Codex backend — never send it as host.
+        assert payload["model"] == "gpt-5.5"
+
+    def test_generate_posts_resolved_host_model(self, provider, monkeypatch, tmp_path):
+        """Mock-transport drive: the wire body carries the resolved host model."""
+        import httpx
+
+        monkeypatch.delenv("OPENAI_CODEX_CHAT_MODEL", raising=False)
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        _write_config(tmp_path, "model:\n  default: gpt-5.6-luna\n  provider: openai-codex\n")
+
+        seen = {}
+        sse = (
+            'data: {"type": "response.output_item.done", '
+            '"item": {"type": "image_generation_call", "result": "%s"}}\n\n' % _b64_png())
+
+        def _handler(request):
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, text=sse, request=request)
+
+        real_client = httpx.Client
+        monkeypatch.setattr(
+            httpx, "Client",
+            lambda *args, **kwargs: real_client(
+                transport=httpx.MockTransport(_handler),
+                headers=kwargs.get("headers"),
+                timeout=kwargs.get("timeout")),
+        )
+
+        result = provider.generate("a cat")
+        assert result["success"] is True
+        assert seen["model"] == "gpt-5.6-luna"
+        assert seen["tools"][0]["model"] == "gpt-image-2"
+
+
 # ── Plugin entry point ──────────────────────────────────────────────────────
 
 

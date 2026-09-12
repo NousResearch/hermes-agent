@@ -251,6 +251,17 @@ image tool is reachable at all has also been reported to vary between
 accounts. If you need image generation to work deterministically, configure
 the **OpenAI** (API key), **FAL**, or **xAI** backend instead.
 
+The chat model hosting the image tool call follows your active chat model
+(when Codex-served, `gpt-5.5` fallback). If your account lost the followed
+model, pin a live one per-profile (or per-process with
+`OPENAI_CODEX_CHAT_MODEL`):
+
+```yaml
+image_gen:
+  openai-codex:
+    host_model: gpt-5.6-luna
+```
+
 :::
 
 The active model's editing capability is surfaced in the tool description at

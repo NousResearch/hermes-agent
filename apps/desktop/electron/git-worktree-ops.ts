@@ -462,6 +462,23 @@ async function switchBranch(repoPath, branch, gitBin) {
     throw new Error('Branch name is required.')
   }
 
+  // Plain document workspaces are not Git repositories, but the sidebar renders
+  // them with a fallback `main` lane (a display label, not a real branch).
+  // `git switch` has nothing to run there, so it would fail and block "New
+  // session" from that project. Preflight git-repo status and no-op instead,
+  // so non-repo projects stay first-class. (Same probe as ensureGitRepo.)
+  let insideWorkTree = false
+
+  try {
+    insideWorkTree = (await runGit(gitBin, ['rev-parse', '--is-inside-work-tree'], resolved)).trim() === 'true'
+  } catch {
+    insideWorkTree = false
+  }
+
+  if (!insideWorkTree) {
+    return { branch: target, skipped: true }
+  }
+
   await runGit(gitBin, ['switch', target], resolved)
 
   return { branch: target }

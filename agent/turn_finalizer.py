@@ -13,6 +13,7 @@ from typing import Any, Callable, List, Optional, Tuple
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.context_compressor import _DB_PERSISTED_MARKER
+from agent.interrupt_control import _ic_take_correction_note
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
@@ -585,6 +586,9 @@ def finalize_turn(
     _leftover_steer = agent._drain_pending_steer()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
+        # Its per-turn note/label died with this turn: consume so they cannot leak into a
+        # later correction (the recycled message is a fresh next-turn submit, no sidecar).
+        _ic_take_correction_note(agent, "_pending_steer")
     agent._response_was_previewed = False
     if interrupted and agent._interrupt_message:
         result["interrupt_message"] = agent._interrupt_message

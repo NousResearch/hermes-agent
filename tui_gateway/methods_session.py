@@ -2015,11 +2015,19 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "interrupted"})
 
 
-def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status: str) -> dict:
+def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status: str,
+                      turn_note: str = "", turn_mode: str = "") -> dict:
     """``agent.<verb>(text)``; on acceptance record it on the live turn (mid-turn resume rebuilds the bubble)
-    and purge queued self-copies so post-turn drain cannot re-fire the old prompt."""
+    and purge queued self-copies so post-turn drain cannot re-fire the old prompt. The optional per-turn
+    note/mode ride the correction: the model reads the note from the delivered row's api_content sidecar,
+    the client badges its display_metadata."""
+    _extra: dict = {}
+    if turn_note:
+        _extra["note"] = turn_note
+    if turn_mode:
+        _extra["mode"] = turn_mode
     try:
-        accepted = getattr(session["agent"], verb)(text)
+        accepted = getattr(session["agent"], verb)(text, **_extra)
     except Exception as exc:
         return _err(rid, 5000, f"{verb} failed: {exc}")
     if accepted:
@@ -2036,7 +2044,8 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
 
 def _correction_method(name: str, verb: str, accepted_status: str, supported, unsupported: str):
     """steer/redirect RPC: ``params.text`` (4002, checked before the session) into a live session;
-    ``supported(agent)`` gates 4010."""
+    ``supported(agent)`` gates 4010. ``params.note``/``params.mode`` (same sanitize+cap contract as
+    ``prompt.submit``: per-turn model note + display-only label) ride the correction."""
     @method(name)
     def _(rid, params: dict) -> dict:
         if not (text := (params.get("text") or "").strip()):
@@ -2044,16 +2053,19 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         session, err = _sess_nowait(params, rid)
         if err:
             return err
+        turn_note, turn_mode = parse_turn_note(params)
         agent = session.get("agent")
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.
         if verb == "redirect" and agent is None and session.get("running"):
-            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+            _enqueue_prompt(session, text, current_transport() or _stdio_transport,
+                            turn_note=turn_note, turn_mode=turn_mode)
             session["last_active"] = time.time()
             return _ok(rid, {"status": "queued", "text": text})
         if not supported(agent):
             return _err(rid, 4010, unsupported)
-        return _apply_correction(rid, session, verb, text, accepted_status)
+        return _apply_correction(rid, session, verb, text, accepted_status,
+                                 turn_note=turn_note, turn_mode=turn_mode)
 
 
 # Inject text into the next tool result without interrupting (AIAgent.steer(): no new user turn, no role

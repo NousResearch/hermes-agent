@@ -122,6 +122,9 @@ export function useBackgroundQueueDrain({
           const accepted = await Promise.resolve(
             submitTextRef.current(liveEntry.text, {
               attachments: liveEntry.attachments,
+              // Frozen composer-mode frame (sealed at enqueue) — see runDrain.
+              ...(liveEntry.mode ? { mode: liveEntry.mode } : {}),
+              ...(liveEntry.note ? { note: liveEntry.note } : {}),
               fromQueue: true,
               sessionId: runtimeSessionId,
               storedSessionId: sessionKey

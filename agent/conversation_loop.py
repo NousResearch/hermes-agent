@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
+from agent.interrupt_control import _ic_take_correction_note
 from agent.message_metadata import append_message
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
@@ -308,7 +309,15 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
             placeholder["api_content"] = _INTERRUPTED_PLACEHOLDER
         append_message(messages, placeholder)
     # Transcript shows the user's own words; the provider replays the scaffolded form.
-    append_message(messages, {"role": "user", "content": text, "api_content": correction})
+    # A per-turn model note (composer mode framing) rides the same sidecar: content keeps the
+    # user's words, api_content replays note + scaffold, and the label stays display-only.
+    note, mode = _ic_take_correction_note(agent, "_pending_redirect")
+    if note:
+        correction = f"{note}\n\n{correction}"
+    redirect_row: Dict[str, Any] = {"role": "user", "content": text, "api_content": correction}
+    if mode:
+        redirect_row["display_metadata"] = {"mode": mode}
+    append_message(messages, redirect_row)
 
     # Stateful scrubber for <memory-context> spans split across stream deltas (#5719).  sanitize_context()
     # alone can't survive chunk boundaries because the block regex needs both tags in one string.

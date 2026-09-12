@@ -11,6 +11,7 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useCallback, useMemo, useRef } from 'react'
 
+import { runComposerMiddleware } from '@/app/chat/composer/contrib'
 import type { ClientSessionState } from '@/app/types'
 import { useI18n } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
@@ -395,13 +396,27 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   )
 
   const steerPrompt = useCallback(
-    async (rawText: string): Promise<boolean> => {
+    async (rawText: string): Promise<boolean | 'canceled'> => {
       const text = rawText.trim()
       const sessionId = runtimeIdRef.current
 
       if (!text || !sessionId) {
         return false
       }
+
+      // The composer middleware runs BEFORE the optimistic append: a cancel
+      // ('canceled') must leave no bubble behind — nothing was sent — while a
+      // rejection (false) discards the row further down. Same 'canceled' ≠
+      // false split as the main composer's redirect path.
+      const draft = await runComposerMiddleware({ text })
+
+      if (!draft) {
+        return 'canceled'
+      }
+
+      const framedText = draft.text
+      const note = draft.note
+      const mode = draft.mode
 
       const messageId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -419,7 +434,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         appendMidTurnUserMessage(state, {
           id: messageId,
           role: 'user' as const,
-          parts: [textPart(text)]
+          parts: [textPart(framedText)]
         })
       )
 
@@ -442,7 +457,12 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestSessionGateway<{ status?: string }>('session.redirect', { session_id: liveId, text }),
+          liveId => requestSessionGateway<{ status?: string }>('session.redirect', {
+            session_id: liveId,
+            text: framedText,
+            ...(note ? { note } : {}),
+            ...(mode ? { mode } : {})
+          }),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime

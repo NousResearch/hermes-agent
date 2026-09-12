@@ -3,9 +3,10 @@ import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEf
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
+import { registry } from '@/contrib/registry'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
-import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
+import { $queuedPromptsBySession, clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
 import { $gateway } from '@/store/gateway'
 import {
   clearAllPrompts,
@@ -15,8 +16,10 @@ import {
   setSudoRequest
 } from '@/store/prompts'
 
+import { COMPOSER_AREAS, type ComposerDraft, type ComposerMiddleware } from '../contrib'
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
+import type { ChatBarProps } from '../types'
 
 import { useComposerSubmit } from './use-composer-submit'
 
@@ -54,12 +57,12 @@ function renderSubmitHook({
   editor.textContent = text
   const editorRef = { current: editor }
   const onCancel = vi.fn()
-  const onSteer = vi.fn(async () => true)
+  const onSteer = vi.fn<NonNullable<ChatBarProps['onSteer']>>(async () => true)
   const onSteerHidden = vi.fn(async () => true)
   const onSubmit = vi.fn(async () => true)
   const loadIntoComposer = vi.fn()
   const stashAt = vi.fn()
-  const queueCurrentDraft = vi.fn(() => true)
+  const queueCurrentDraft = vi.fn(async () => true)
   let updatePaneVisible: Dispatch<SetStateAction<boolean>> | undefined
 
   const clearDraft = vi.fn(() => {
@@ -128,6 +131,7 @@ function renderSubmitHook({
   return {
     clearDraft,
     hook,
+    loadIntoComposer,
     onCancel,
     onSteer,
     onSteerHidden,
@@ -631,5 +635,76 @@ describe('useComposerSubmit with a blocking prompt parked on the session', () =>
 
     // The approval card is still the turn's owner; only its own buttons answer it.
     expect(hasBlockingPromptRequest('runtime-session')).toBe(true)
+  })
+})
+
+// The composer frame survives the steer path: 'canceled' is the middleware
+// consuming the send (restore the draft, enqueue NOTHING), while a rejection
+// keeps its old "queue the words" meaning.
+describe('steerDraft composer-frame semantics', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $queuedPromptsBySession.set({})
+  })
+
+  it('restores the draft and queues nothing when the middleware cancels', async () => {
+    window.localStorage.clear()
+    $queuedPromptsBySession.set({})
+    const { hook, loadIntoComposer, onSteer } = renderSubmitHook({ busy: true, text: 'ship it' })
+    onSteer.mockResolvedValue('canceled')
+
+    await act(async () => {
+      hook.result.current.steerDraft()
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('ship it', []))
+    expect(getQueuedPrompts('stored-session')).toEqual([])
+  })
+
+  it('queues the words when the steer is rejected', async () => {
+    window.localStorage.clear()
+    $queuedPromptsBySession.set({})
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'ship it' })
+    onSteer.mockResolvedValue(false)
+
+    await act(async () => {
+      hook.result.current.steerDraft()
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(entry => entry.text)).toEqual(['ship it']))
+  })
+
+  it('seals the composer-mode frame when a rejected steer re-queues the words', async () => {
+    const disposed = registry.register({
+      id: 'test-steer-fallback-seal',
+      area: COMPOSER_AREAS.middleware,
+      data: {
+        handler: (draft: ComposerDraft) => ({ ...draft, mode: 'debug', note: 'DEBUG-NOTE' })
+      } satisfies ComposerMiddleware
+    })
+
+    try {
+      $queuedPromptsBySession.set({})
+      const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'frame me' })
+      onSteer.mockResolvedValue(false)
+
+      await act(async () => {
+        hook.result.current.steerDraft()
+        await Promise.resolve()
+      })
+
+      await waitFor(() => {
+        expect(getQueuedPrompts('stored-session')[0]).toMatchObject({
+          text: 'frame me',
+          mode: 'debug',
+          note: 'DEBUG-NOTE'
+        })
+      })
+    } finally {
+      disposed()
+    }
   })
 })

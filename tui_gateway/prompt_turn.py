@@ -432,7 +432,8 @@ class _TurnRun:
     receipt_attempted: bool = False
 
 
-def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
+def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str],
+                        turn_note: str = ""):
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
     Scopes fill field by field so a failure midway still leaves every bound token for the
@@ -505,7 +506,10 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     if take_speech_interrupted():
         run_message = _prepend_note(run_message, SPEECH_INTERRUPTED_NOTE)
     run_message = _prepend_note(run_message, _pending_reaction_notes(session))
-    return prompt, _prepend_note(run_message, _hud_surface_note(session)), cols, streamer
+    run_message = _prepend_note(run_message, _hud_surface_note(session))
+    # Per-turn mode note (composer mode framing, client-authored): model-only, exactly like the
+    # notes above — the user's own text and the durable transcript stay untouched.
+    return prompt, _prepend_note(run_message, turn_note), cols, streamer
 
 
 def _invoke_agent(
@@ -544,7 +548,7 @@ def _invoke_agent(
         run_params = {}
     if "task_id" in run_params:
         run_kwargs["task_id"] = session["session_key"]
-    if display_kind and "persist_user_display_kind" in run_params:
+    if (display_kind or display_metadata) and "persist_user_display_kind" in run_params:
         run_kwargs["persist_user_display_kind"] = display_kind
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
@@ -793,11 +797,15 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None, turn_note: str = "", turn_mode: str = "") -> bool:
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
         return False
     images, agent = admitted
+    if turn_mode:
+        # Display-only label from the sending client (composer mode). It never reaches the
+        # wire: build_api_messages pops display_metadata from every outbound copy.
+        display_metadata = {**(display_metadata or {}), "mode": turn_mode}
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()
@@ -825,7 +833,7 @@ def _run_prompt_submit(
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
         goal_followup = None
         try:
-            prepared = _prepare_turn_input(sid, session, st, text, images)
+            prepared = _prepare_turn_input(sid, session, st, text, images, turn_note=turn_note)
             if prepared is None:
                 if st.terminal_callback is not None and not st.receipt_attempted:
                     st.receipt_attempted = True
@@ -834,6 +842,12 @@ def _run_prompt_submit(
                     st.receipt_committed = True
                 return
             prompt, run_message, cols, streamer = prepared
+            # Sandwich ask (primacy+recency): the SAME note also TRAILS the sent
+            # bytes — the one-shot slot is appended by _merge_gateway_notes while
+            # the prepend above leads them. Ask-only; plan/debug keep their single
+            # leading copy.
+            if turn_note and turn_note.lstrip().startswith("[mode:ask]"):
+                agent._gateway_turn_context_notes = turn_note
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
                 display_metadata, turn_author)

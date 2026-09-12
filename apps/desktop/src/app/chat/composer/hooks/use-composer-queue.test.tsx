@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registry } from '@/contrib/registry'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
@@ -13,6 +14,7 @@ import {
 import { setSessionsLoading } from '@/store/session'
 
 import type { QueueEditState } from '../composer-utils'
+import { COMPOSER_AREAS, type ComposerDraft, type ComposerMiddleware } from '../contrib'
 import type { ChatBarProps } from '../types'
 
 import { useComposerQueue } from './use-composer-queue'
@@ -25,7 +27,9 @@ import { useComposerQueue } from './use-composer-queue'
 
 const SESSION_KEY = 'stored-session-queue-hook'
 
-function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onSteer?: ChatBarProps['onSteer'] } = {}) {
+function renderQueueHook(
+  overrides: { busy?: boolean; draftText?: string; onCancel?: () => void; onSteer?: ChatBarProps['onSteer'] } = {}
+) {
   const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
   const onCancel = overrides.onCancel ?? vi.fn()
   const onSteer = overrides.onSteer
@@ -38,7 +42,7 @@ function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onS
         attachments: [],
         busy,
         clearDraft: () => undefined,
-        draftRef: { current: '' },
+        draftRef: { current: overrides.draftText ?? '' },
         focusInput: () => undefined,
         loadIntoComposer: () => undefined,
         onCancel,
@@ -287,5 +291,98 @@ describe('useComposerQueue park integration', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+  })
+})
+
+// 'canceled' (the composer middleware declined the send) is a TRUTHY string:
+// a truthiness test would consume the queued entry while delivering nothing.
+// Only a delivered redirect (`true`) may remove it — the settle drain owns the
+// rest, so the user's words are never lost.
+describe('steer-now honors a canceled composer frame', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+    setSessionsLoading(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+    setSessionsLoading(true)
+  })
+
+  it('keeps the entry queued when the middleware cancels', async () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'ship it' })!
+    const onSteer = vi.fn<NonNullable<ChatBarProps['onSteer']>>(async () => 'canceled' as const)
+    const { hook } = renderQueueHook({ busy: true, onSteer })
+
+    let consumed = true
+
+    await act(async () => {
+      consumed = await hook.result.current.steerQueuedNow(entry.id)
+    })
+
+    expect(consumed).toBe(false)
+    expect(getQueuedPrompts(SESSION_KEY).map(item => item.id)).toEqual([entry.id])
+  })
+
+  it('consumes the entry only on a delivered redirect', async () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'ship it' })!
+    const onSteer = vi.fn<NonNullable<ChatBarProps['onSteer']>>(async () => true)
+    const { hook } = renderQueueHook({ busy: true, onSteer })
+
+    await act(async () => {
+      await hook.result.current.steerQueuedNow(entry.id)
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
+  })
+
+  it('seals the frame into the entry at enqueue (chain runs once)', async () => {
+    const disposed = registry.register({
+      id: 'test-queued-frame-seal',
+      area: COMPOSER_AREAS.middleware,
+      data: {
+        handler: (draft: ComposerDraft) => ({ ...draft, mode: 'debug', note: 'DEBUG-NOTE' })
+      } satisfies ComposerMiddleware
+    })
+
+    try {
+      const { hook } = renderQueueHook({ busy: true, draftText: 'framed while queued' })
+
+      await act(async () => {
+        await hook.result.current.queueCurrentDraft()
+      })
+
+      expect(getQueuedPrompts(SESSION_KEY)[0]).toMatchObject({
+        text: 'framed while queued',
+        mode: 'debug',
+        note: 'DEBUG-NOTE'
+      })
+    } finally {
+      disposed()
+    }
+  })
+
+  it('drains with the frame sealed at enqueue time, not the live one', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: 'frozen ask',
+      mode: 'ask',
+      note: 'ASK-NOTE'
+    })
+
+    const { onSubmit } = renderQueueHook({ busy: false })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      'frozen ask',
+      expect.objectContaining({ fromQueue: true, mode: 'ask', note: 'ASK-NOTE' })
+    )
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
   })
 })

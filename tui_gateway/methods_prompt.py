@@ -471,7 +471,8 @@ def _persist_session_row_for_submit(rid, session):
     return error
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author=None):
+def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author=None,
+                           turn_note="", turn_mode=""):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -501,8 +502,29 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author,
+        turn_note=turn_note, turn_mode=turn_mode)
 
+
+# Bounds for the optional per-turn model note (`prompt.submit`/`session.redirect` `note`) and
+# its display-only `mode` label. A note is advisory text, never user content: oversized notes
+# are truncated here rather than refused, and the label is an opaque short tag.
+_TURN_NOTE_MAX_CHARS = 8192
+_TURN_MODE_MAX_CHARS = 32
+
+
+def parse_turn_note(params: dict) -> "tuple[str, str]":
+    """``(note, mode)`` from RPC params — the shared contract for ``prompt.submit`` and the
+    steer/redirect RPCs: the note is sanitized + capped, the mode is an opaque display-only
+    label truncated to a badge-sized token. Empty strings mean "none"."""
+    from hermes_cli.input_sanitize import sanitize_user_prompt_text
+    raw_note = params.get("note")
+    note = sanitize_user_prompt_text(raw_note).strip() if isinstance(raw_note, str) else ""
+    if note and len(note) > _TURN_NOTE_MAX_CHARS:
+        note = note[:_TURN_NOTE_MAX_CHARS]
+    raw_mode = params.get("mode")
+    mode = raw_mode.strip()[:_TURN_MODE_MAX_CHARS] if isinstance(raw_mode, str) else ""
+    return note, mode
 
 _TRUNCATION_PARAMS = (
     "truncate_before_user_ordinal", "truncate_before_row_id", "truncate_before_message_id")
@@ -550,6 +572,12 @@ def _(rid, params: dict) -> dict:
     # Off-screen sends (widget intents) type the row so no client renders a bubble;
     # whitelisted to "hidden" — this RPC must not mint kinds.
     display_kind = "hidden" if params.get("display_kind") == "hidden" else None
+    # Client-authored PER-TURN model note (composer modes): an instruction that must reach the
+    # model without being typed into the user's own row. Sanitized + capped (parse_turn_note);
+    # delivered one-shot through the per-turn api_content sidecar, so `content` stays the
+    # user's words. `mode` is an OPAQUE display-only label (never sent to the wire) kept on the
+    # row's display_metadata so a client can badge the message it sent — display-only, never policy.
+    turn_note, turn_mode = parse_turn_note(params)
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
     if params.get("interrupted"):
@@ -615,7 +643,8 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
+            turn_note=turn_note, turn_mode=turn_mode)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -631,7 +660,8 @@ def _(rid, params: dict) -> dict:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind)
+            rid, sid, session, text, display_kind=display_kind,
+            turn_note=turn_note, turn_mode=turn_mode)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
@@ -654,7 +684,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author,
+            turn_note, turn_mode),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

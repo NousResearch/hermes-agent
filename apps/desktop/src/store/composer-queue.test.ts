@@ -69,6 +69,27 @@ describe('composer queue store', () => {
     expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['draft two'])
   })
 
+  it('seals the composer-mode frame on the entry and keeps it across edits', () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: 'freeze me',
+      mode: 'plan',
+      note: 'PLAN-NOTE'
+    })
+
+    expect(entry).toMatchObject({ mode: 'plan', note: 'PLAN-NOTE' })
+    expect(getQueuedPrompts(SESSION_KEY)[0]).toMatchObject({ mode: 'plan', note: 'PLAN-NOTE' })
+
+    // Rewriting the text must not drop the sealed frame: the entry still
+    // drains with the mode it was queued with.
+    expect(updateQueuedPrompt(SESSION_KEY, entry!.id, { text: 'edited' })).toBe(true)
+    expect(getQueuedPrompts(SESSION_KEY)[0]).toMatchObject({
+      text: 'edited',
+      mode: 'plan',
+      note: 'PLAN-NOTE'
+    })
+  })
+
   it('promotes a queued entry to the front', () => {
     const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
     const second = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'second' })

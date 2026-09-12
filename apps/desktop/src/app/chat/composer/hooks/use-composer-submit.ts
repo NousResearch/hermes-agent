@@ -12,6 +12,7 @@ import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
+import { sealQueuedFrame } from '../queue-frame'
 import { pathifyRefs } from '../path-refs'
 import { composerPlainText } from '../rich-editor'
 import { useComposerScope, useComposerSurfaceId } from '../scope'
@@ -36,7 +37,7 @@ interface UseComposerSubmitArgs {
   onSteer: ChatBarProps['onSteer']
   onSteerHidden: ChatBarProps['onSteerHidden']
   onSubmit: ChatBarProps['onSubmit']
-  queueCurrentDraft: () => boolean
+  queueCurrentDraft: () => Promise<boolean>
   queueEdit: QueueEditState | null
   queuedPrompts: QueuedPromptEntry[]
   sessionId: string | null | undefined
@@ -273,7 +274,7 @@ export function useComposerSubmit({
         // queue the whole payload for the next turn. Same for a turn parked on
         // an approval/sudo/secret prompt: a steer can't reach the model while
         // the tool batch is blocked, so the message runs as the next turn.
-        queueCurrentDraft()
+        void queueCurrentDraft()
       } else {
         // Stop button (the only way to reach here while busy with an empty
         // composer — empty Enter is short-circuited in the keydown handler).
@@ -310,8 +311,25 @@ export function useComposerSubmit({
     clearDraft()
 
     void Promise.resolve(onSteer(text)).then(accepted => {
-      if (!accepted && activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+      if (accepted === 'canceled') {
+        // The composer middleware consumed this steer — a cancel, not a
+        // rejection. Put the words back in the composer instead of queueing
+        // raw text the middleware just declined: nothing is lost and no
+        // unframed copy rides the queue behind the live turn.
+        loadIntoComposer(text, [])
+        focusInput()
+
+        return
+      }
+
+      if (accepted !== true && activeQueueSessionKey) {
+        // A rejected steer re-queues the words — seal the frame on THIS path
+        // too, or the drained send arrives without the mode the user had.
+        const queueKey = activeQueueSessionKey
+
+        void sealQueuedFrame(text, []).then(frame => {
+          enqueueQueuedPrompt(queueKey, { text, attachments: [], ...frame })
+        })
       }
     })
   }
@@ -321,7 +339,7 @@ export function useComposerSubmit({
       return
     }
 
-    queueCurrentDraft()
+    void queueCurrentDraft()
     focusInput()
   }
 

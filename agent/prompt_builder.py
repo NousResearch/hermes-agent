@@ -519,13 +519,21 @@ def format_steer_marker(steer_text: str) -> str:
 STEER_DISPLAY_KIND = "steer"
 
 
-def steer_user_row(steer_text: str) -> Dict[str, Any]:
+def steer_user_row(steer_text: str, note: str = "", mode: str = "") -> Dict[str, Any]:
     """The standalone ``role:user`` row a mid-turn /steer is delivered as (after the newest tool
     result). Its own row — never smeared onto the already-persisted tool row, which append-only
     persistence would leave divergent from the live request — and typed so the alternation repair
-    never merges the next real prompt into it and history renderers can label it."""
-    return {"role": "user", "content": format_steer_marker(steer_text).lstrip(),
-            "display_kind": STEER_DISPLAY_KIND}
+    never merges the next real prompt into it and history renderers can label it. An optional
+    per-turn model ``note`` (composer mode framing) rides ``api_content`` — the exact bytes the
+    provider sees — so the user's own ``content`` stays untouched; the opaque ``mode`` label lands
+    on display_metadata (display-only, popped from every outbound copy)."""
+    content = format_steer_marker(steer_text).lstrip()
+    row: Dict[str, Any] = {"role": "user", "content": content, "display_kind": STEER_DISPLAY_KIND}
+    if note:
+        row["api_content"] = f"{note}\n\n{content}"
+    if mode:
+        row["display_metadata"] = {"mode": mode}
+    return row
 
 
 STEER_CHANNEL_NOTE = (

@@ -25,6 +25,7 @@ import { notify } from '@/store/notifications'
 import { $sessionsLoading } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
+import { sealQueuedFrame } from '../queue-frame'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -181,14 +182,19 @@ export function useComposerQueue({
     return true
   }
 
-  const queueCurrentDraft = useCallback(() => {
+  const queueCurrentDraft = useCallback(async (): Promise<boolean> => {
     const text = draftRef.current
 
     if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
+    // Seal the composer-mode frame HERE, at enqueue (see sealQueuedFrame):
+    // every enqueue path must capture it so the drain hands the mode the user
+    // queued WITH back to the submit options.
+    const frame = await sealQueuedFrame(text, attachments)
+
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments, ...frame })) {
       return false
     }
 
@@ -223,6 +229,10 @@ export function useComposerQueue({
             attachments: entry.attachments,
             ...(entry.displayText ? { displayText: entry.displayText } : {}),
             ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
+            // The frame sealed at enqueue travels back with the drain — the
+            // drain's mode is the queue-time mode, never the live one.
+            ...(entry.mode ? { mode: entry.mode } : {}),
+            ...(entry.note ? { note: entry.note } : {}),
             fromQueue: true,
             sessionId: drainRuntimeSessionId,
             storedSessionId: drainQueueSessionKey
@@ -310,12 +320,21 @@ export function useComposerQueue({
 
       triggerHaptic('submit')
 
-      const accepted = await Promise.resolve(onSteer(entry.text))
+      const accepted = await Promise.resolve(
+        entry.mode || entry.note
+          ? onSteer(entry.text, {
+              ...(entry.mode ? { mode: entry.mode } : {}),
+              ...(entry.note ? { note: entry.note } : {})
+            })
+          : onSteer(entry.text)
+      )
 
-      // Rejected (turn already settling, gateway said no): leave the entry
-      // queued exactly where it was — the settle drain picks it up, so the
-      // words are never lost. Only a delivered redirect consumes the entry.
-      if (!accepted) {
+      // Rejected (turn already settling, gateway said no) OR canceled by the
+      // composer middleware: leave the entry queued exactly where it was — the
+      // settle drain picks it up, so the words are never lost. Only a DELIVERED
+      // redirect (`true`) consumes the entry: 'canceled' is a truthy string, so
+      // a truthiness test would silently drop the queued words.
+      if (accepted !== true) {
         return false
       }
 

@@ -39,6 +39,28 @@ existing topical sibling, registered in the table — no `if method == ...` chai
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` carries skin data |
 | Plugin compat notice | — | `plugins.compat_report` (see `plugins/AGENTS.md`) |
 
+## Per-turn composer-mode frame (`note` / `mode`)
+
+`prompt.submit` and the `session.steer` / `session.redirect` RPCs accept an
+OPTIONAL pair parsed by `parse_turn_note`: `note` (sanitized + capped, model
+instructions for THIS send) and `mode` (opaque, display-only label). The note is
+prepended to the run message at turn assembly (`_prepare_turn_input`) and to the
+delivered correction's `api_content`, so the persisted/displayed `content` stays
+the user's own words; `mode` rides `display_metadata` (popped from every
+outbound copy — never on the wire). A queued arrival keeps its frame in its OWN
+envelope (never merged into a plain slot), and the compute-host turn frame
+carries the same keys. Corrections carry the frame in the agent's pending
+slot (`_pending_steer*` / `_pending_redirect*`) and consume it one-shot at the
+delivery site.
+
+ASK-mode notes are SANDWICHED for primacy+recency: besides the leading copy from
+`_prepare_turn_input`, the same note is parked in the one-shot slot
+(`agent._gateway_turn_context_notes`) gated on the `[mode:ask]` head, so
+`_merge_gateway_notes` appends it too — `api_content = note + text + note`.
+Ask-only: plan/debug keep their single leading copy. Session auto-titles prefer
+`agent._persist_user_message_override` (str or multimodal list) over the live
+message content, so API-only scaffolding never leaks into a session title.
+
 ## Shared subagent snapshots
 
 `subagent.list({session_id})` returns `{subagents, delegations}` for the calling

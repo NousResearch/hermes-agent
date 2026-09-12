@@ -40,9 +40,24 @@ export const COMPOSER_AREAS = {
   atCompletions: 'composer.atCompletions'
 } as const
 
-export interface ComposerDraft {
+/** Per-turn composer-mode frame: the model note + the display-only mode label.
+ *  Carried by `ComposerDraft` and handed to the gateway, which delivers the
+ *  note through the per-turn api_content sidecar (never mixed into the user's
+ *  `content`) and stores the label as the row's display_metadata. */
+export interface ComposerModeFrame {
+  /** Framing instructions for the model on this specific send. */
+  note?: string
+  /** Opaque composer-mode label (display-only; the transcript may badge it). */
+  mode?: string
+}
+
+export interface ComposerDraft extends ComposerModeFrame {
   text: string
   attachments?: ComposerAttachment[]
+  /** True when this draft is the drain of a queued entry. The chain must hand
+   *  `note`/`mode` back UNTOUCHED in that case: the queue sealed the frame at
+   *  enqueue time, and re-deriving would stamp the send with the live mode. */
+  fromQueue?: boolean
 }
 
 /** Payload of a `composer.middleware` data contribution. */

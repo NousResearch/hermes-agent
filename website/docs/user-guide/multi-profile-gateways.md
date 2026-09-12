@@ -130,9 +130,15 @@ loop. `hermes -p coder gateway stop` refuses the same way (exit 78) when coder h
 gateway of its own — there is nothing to stop but the multiplexer, which
 `hermes gateway stop` on the default profile takes down for every served profile.
 The dashboard and Desktop app follow the CLI: for a served profile the "Start" and
-"Stop" gateway actions answer `409` with the same explanation, and "Restart"
-restarts the multiplexer (the process that actually serves the profile) instead of
-spawning a `-p coder gateway restart` that could only fail.
+"Stop" gateway actions answer `409` with the same explanation (rendered as an inline
+notice on the System page), and "Restart" restarts the multiplexer (the process that
+actually serves the profile) instead of spawning a `-p coder gateway restart` that
+could only fail. Because that restart reconnects every bot on the device, both apps
+first ask *"Restart the shared gateway? All bots on this device reconnect: default,
+coder, research"* (the list is the running gateway's `served_profiles`) and report
+*"Shared gateway restarted (3 bots)"* when it completes. A standalone profile keeps
+the plain restart. `/api/status?profile=coder` carries the same list as
+`gateway_shared_with` (null for a standalone gateway).
 "Served" is read from the running gateway's own record (`served_profiles` in the
 default home's `gateway_state.json`), so it stays correct when the multiplexer was
 enabled only through `GATEWAY_MULTIPLEX_PROFILES` in the default profile's
@@ -253,8 +259,13 @@ Inbound callback URLs on the shared listener:
 ```
 
 `hermes gateway status` and `hermes status` on the default profile list the same
-URLs per served profile, and the dashboard's Channels page shows them as each
-platform's `ingress_url` when viewing that profile. A per-profile
+URLs per served profile, and the dashboard's Channels page and the Desktop
+Messaging page show them as each platform's `ingress_url` when viewing that
+profile. The default's own `api_server` and `webhook` are reported the same way
+for a served profile — as **connected** with `ingress_url`
+`http://127.0.0.1:8642/p/coder/v1` (respectively `.../p/coder/webhooks/<route>`) —
+since the profile has no adapter of its own for them; it is the default's listener
+answering under the `/p/coder/` prefix. A per-profile
 `SMS_WEBHOOK_PORT`, `LINE_PORT`, `TEAMS_PORT`, … in a secondary's `.env` is
 ignored under the multiplexer (nothing binds); it applies again the moment that
 profile runs its own standalone gateway.

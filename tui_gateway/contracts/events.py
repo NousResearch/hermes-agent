@@ -210,6 +210,7 @@ class StatusUpdatePayload(Payload):
 
     kind: str
     text: str
+    timestamp: float | None = None  # Application epoch seconds; older emitters omit it.
 
 
 event("status.update", StatusUpdatePayload, doc="Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, …).")

@@ -1076,6 +1076,10 @@ hermes sessions <subcommand>
 | `prune` | 删除旧会话。 |
 | `stats` | 显示会话存储统计信息。 |
 | `rename <session-id> <title>` | 设置或更改会话标题。 |
+| `repair-chains` | 检测孤立的压缩片段（旧版本将续写写成独立的根会话），配合 `--apply` 将它们重新链接到每组最老的根会话下。交互式清单 + 自动快照；仅标题相同的弱信号组默认不勾选。参见 [Sessions → 修复孤立的压缩链](../user-guide/sessions.md#repair-orphaned-compression-chains)。 |
+| `retitle-missing` | 批量重新生成缺失或截断的会话标题（根会话通过标题生成模型生成，空链段继承祖先标题）。交互式清单 + 自动快照；用户手动命名的行永不触碰。参见 [Sessions → 重新生成缺失的会话标题](../user-guide/sessions.md#retitle-missing-session-titles)。 |
+| `merge-chains` | 将 fork 压缩链合并回单个就地会话，与现代就地压缩方式一致。将链段消息移到头会话，合并 token/费用计数与用量行；自动快照。参见 [Sessions → 合并 fork 压缩链](../user-guide/sessions.md#merge-fork-compression-chains)。 |
+| `restore-db` | 从 `.pre-*` 快照恢复 `state.db`（维护命令会自动创建快照）。停止持有数据库的进程，在覆盖前后均校验快照完整性；所选快照的校验不可跳过。被停止的进程不会自动重启——会打印它们的重启命令。参见 [Sessions → 恢复会话数据库](../user-guide/sessions.md#restore-the-session-database)。 |
 
 ## `hermes insights`
 

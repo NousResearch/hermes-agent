@@ -373,9 +373,18 @@ class TestHermesHomeHardline:
             "sqlite3 -cmd 'DELETE FROM messages' $HERMES_HOME/state.db",
             "sqlite3 -cmd 'UPDATE messages SET content = 0' $HERMES_HOME/state.db",
             "sqlite3 $HERMES_HOME/state.db '.restore /tmp/replacement.db'",
+            "sqlite3 $HERMES_HOME/state.db < /tmp/mutate.sql",
+            "cat /tmp/mutate.sql | sqlite3 $HERMES_HOME/state.db",
+            "sqlite3 -init /tmp/mutate.sql $HERMES_HOME/state.db",
+            "sqlite3 -vfs unix-dotfile $HERMES_HOME/state.db",
             "rm -rf ${HERMES_HOME:?}/state.db",
             "rm ${HERMES_HOME%/}/state.db",
+            "rm.exe $HERMES_HOME/state.db",
+            "busybox rm $HERMES_HOME/state.db",
+            "xargs rm $HERMES_HOME/state.db",
+            "find $HERMES_HOME -exec rm {} \\;",
             'printf x >&"$HERMES_HOME/state.db"',
+            'printf x 3<>"$HERMES_HOME/state.db" >&3',
             "cp -at$HERMES_HOME /tmp/replacement",
             "mv -vt$HERMES_HOME /tmp/replacement",
             "install -Dt$HERMES_HOME /tmp/replacement",
@@ -399,6 +408,8 @@ class TestHermesHomeHardline:
             "truncate -s0 /tmp/state.db",
             'git commit -m "do not rm $HERMES_HOME/state.db"',
             "sqlite3 $HERMES_HOME/state.db 'select count(*) from messages'",
+            "sqlite3 $HERMES_HOME/state.db \"select 'a;b'\"",
+            "sqlite3 $HERMES_HOME/state.db '/* read */ select 1; -- more\nselect 2'",
         ):
             assert detect_hardline_command(command) == (False, None), command
 

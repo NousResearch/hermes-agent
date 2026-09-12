@@ -1204,7 +1204,10 @@ _HERMES_OPTIONS_WITH_ARG = {
     },
     "truncate": {"-o", "--io-blocks", "-r", "--reference", "-s", "--size"},
     "shred": {"-n", "--iterations", "-s", "--size", "--random-source"},
-    "sqlite3": {"-cmd", "-init", "-newline", "-nullvalue", "-separator"},
+    "sqlite3": {
+        "-cmd", "-init", "-lookaside", "-maxsize", "-mmap", "-newline",
+        "-nullvalue", "-pagecache", "-separator", "-vfs",
+    },
 }
 def _is_hermes_managed_path(word: str) -> bool:
     path = word.lower().replace("\\", "/").rstrip("/")
@@ -1260,7 +1263,7 @@ def _has_hermes_redirect(command: str) -> bool:
     for kind, index, _, quote in _scan_shell(command, subst="uq"):
         if kind != "char" or quote is not None or command[index] != ">":
             continue
-        if index and command[index - 1] in "<>":
+        if index and command[index - 1] == ">":
             continue
         target_start = index + 1
         descriptor_form = target_start < len(command) and command[target_start] == "&"
@@ -1282,11 +1285,14 @@ def _detect_hermes_home_destruction(command: str) -> bool:
     if _has_hermes_redirect(command):
         return True
     for word_start, _, word in _iter_shell_command_word_spans(command):
-        name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+        name = _hermes_destructive_executable_name(word)
+        segment = _shell_command_segment(command, word_start)
+        if name in _HERMES_COMMAND_DISPATCHERS and _dispatcher_targets_hermes(segment):
+            return True
         if name not in _HERMES_DESTRUCTIVE_NAMES:
             continue
         try:
-            argv = shlex.split(_shell_command_segment(command, word_start), posix=True)
+            argv = shlex.split(segment, posix=True)
         except ValueError:
             continue
         operands, option_values = _command_operands(argv, name)
@@ -1305,23 +1311,90 @@ def _detect_hermes_home_destruction(command: str) -> bool:
             if (any(_is_hermes_managed_path(arg) for arg in targets)
                     or (len(operands) >= 2 and _is_hermes_managed_path(operands[-1]))):
                 return True
-        elif name == "sqlite3" and operands and _is_hermes_managed_path(operands[0]):
-            sql = operands[1:] + option_values.get("-cmd", [])
-            if sql and not all(_sqlite_payload_is_read_only(payload) for payload in sql):
+        elif name == "sqlite3" and any(_is_hermes_managed_path(arg) for arg in operands):
+            database_index = next(index for index, arg in enumerate(operands) if _is_hermes_managed_path(arg))
+            sql = operands[database_index + 1:] + option_values.get("-cmd", [])
+            if (option_values.get("-init")
+                    or not sql
+                    or not all(_sqlite_payload_is_read_only(payload) for payload in sql)):
                 return True
     return False
 
 
-_SQLITE_READ_ONLY_PREFIXES = ("select", "explain", "values")
+def _hermes_destructive_executable_name(word: str) -> str:
+    name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+_HERMES_COMMAND_DISPATCHERS = frozenset({"busybox", "find", "xargs"})
+
+
+def _dispatcher_targets_hermes(segment: str) -> bool:
+    """Detect managed paths passed to destructive applets/dispatcher payloads."""
+    try:
+        argv = shlex.split(segment, posix=True)
+    except ValueError:
+        return False
+    if not argv or _hermes_destructive_executable_name(argv[0]) not in _HERMES_COMMAND_DISPATCHERS:
+        return False
+    has_destructive_payload = any(
+        _hermes_destructive_executable_name(arg) in _HERMES_DESTRUCTIVE_NAMES
+        for arg in argv[1:]
+    )
+    return has_destructive_payload and any(_is_hermes_managed_path(arg) for arg in argv[1:])
+
+
+_SQLITE_READ_ONLY_PREFIXES = frozenset({"select", "explain", "values"})
 _SQLITE_READ_ONLY_DOT_COMMANDS = (".databases", ".dump", ".indexes", ".schema", ".show", ".tables")
 
 
 def _sqlite_payload_is_read_only(payload: str) -> bool:
     """Accept only SQLite payloads whose statements are structurally read-only."""
-    statements = [statement.strip().lower() for statement in re.split(r"[;\n]+", payload) if statement.strip()]
+    statements, current = [], []
+    quote, line_comment, block_comment, index = None, False, False, 0
+    while index < len(payload):
+        char = payload[index]
+        following = payload[index + 1] if index + 1 < len(payload) else ""
+        if line_comment:
+            if char == "\n":
+                line_comment = False
+                current.append(" ")
+        elif block_comment:
+            if char == "*" and following == "/":
+                block_comment = False
+                index += 1
+        elif quote:
+            current.append(char)
+            if char == quote:
+                if following == quote:
+                    current.append(following)
+                    index += 1
+                else:
+                    quote = None
+        elif char in "'\"":
+            quote = char
+            current.append(char)
+        elif char == "-" and following == "-":
+            line_comment = True
+            index += 1
+        elif char == "/" and following == "*":
+            block_comment = True
+            index += 1
+        elif char == ";":
+            if "".join(current).strip():
+                statements.append("".join(current).strip().lower())
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    if "".join(current).strip():
+        statements.append("".join(current).strip().lower())
+    if quote or block_comment:
+        return False
     return bool(statements) and all(
-        statement.startswith(_SQLITE_READ_ONLY_PREFIXES)
-        or statement.split(None, 1)[0] in _SQLITE_READ_ONLY_DOT_COMMANDS
+        ((match := re.match(r"([a-z]+|\.[a-z]+)\b", statement)) is not None
+         and (match.group(1) in _SQLITE_READ_ONLY_PREFIXES
+              or match.group(1) in _SQLITE_READ_ONLY_DOT_COMMANDS))
         for statement in statements
     )
 

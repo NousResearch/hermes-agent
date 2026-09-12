@@ -282,6 +282,21 @@ def test_get_or_create_stores_observation_flags_with_the_entry_and_eviction_drop
     assert session.honcho_session_id not in mgr._session_observation
 
 
+def test_cap_enforcement_drops_observation_flags_a_post_eviction_flush_stored():
+    """A flush that rebuilds an evicted session's SDK session stores its flags again; the next cap pass
+    must prune that orphan like every other per-session entry, or the dict grows one entry per evicted-then-
+    flushed session."""
+    mgr = _manager()
+    live = _session(key="live")
+    mgr._cache = {"live": live}
+    mgr._session_observation = {live.honcho_session_id: {"ai_observe_others": True}, "hs-gone": {"ai_observe_others": False}}
+
+    with mgr._cache_lock:
+        mgr._enforce_cache_caps_locked()
+
+    assert set(mgr._session_observation) == {live.honcho_session_id}
+
+
 def test_flush_does_not_resurrect_an_evicted_session():
     mgr = _manager()
     session = _session(key="gone")

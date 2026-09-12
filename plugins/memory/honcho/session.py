@@ -287,6 +287,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                 break
             if session_id not in live_ids:
                 del self._sessions_cache[session_id]
+        for session_id in [sid for sid in self._session_observation if sid not in live_ids]:
+            del self._session_observation[session_id]
         live_peers = {p for s in self._cache.values() for p in (s.user_peer_id, s.assistant_peer_id)}
         for peer_id in list(self._peers_cache):
             if len(self._peers_cache) <= _PEERS_CACHE_MAX_SIZE:

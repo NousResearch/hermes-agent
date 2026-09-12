@@ -122,7 +122,7 @@ def test_session_context_omits_planning_only_summary() -> None:
 def test_format_first_turn_omits_contaminated_summary() -> None:
     from plugins.memory.honcho import HonchoMemoryProvider
 
-    plugin = HonchoMemoryProvider.__new__(HonchoMemoryProvider)
+    plugin = HonchoMemoryProvider()
     out = plugin._format_first_turn_context(
         {
             "summary": PLANNING_ONLY,

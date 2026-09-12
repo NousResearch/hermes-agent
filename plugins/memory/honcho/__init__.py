@@ -18,6 +18,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
+from agent.coding_context import INTERACTIVE_CODING_PLATFORMS as _LOCAL_PLATFORMS
 from agent.memory_provider import MemoryProvider, is_trivial_prompt
 from agent.turn_author import a2a_key
 from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path, spawn_context_thread
@@ -82,7 +83,6 @@ _PROMPT_HEADERS = {
     ),
 }
 
-_LOCAL_PLATFORMS = frozenset({"cli", "tui", "desktop", ""})
 
 
 _FLAG_WORDS = {"1": True, "true": True, "yes": True, "on": True,
@@ -239,9 +239,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             self._config = cfg
             self._recall_mode = cfg.recall_mode
             self._recall_sync = getattr(cfg, "recall_sync", False)
-            # getattr: test doubles and older config objects have no raw/host.
-            raw = getattr(cfg, "raw", None) or {}
-            look = _HostLookup(_host_block(raw, getattr(cfg, "host", "") or ""), raw)
+            look = _HostLookup(_host_block(cfg.raw, cfg.host or ""), cfg.raw)
             self._injection_log_path = self._resolve_injection_log_path(look)
             self._session_start_components = self._resolve_session_start(look)
             logger.debug("Honcho recall_mode: %s", self._recall_mode)
@@ -428,8 +426,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         """Render the prefetch context, keeping only the ``injection.sessionStart`` components when pinned.
         The summary passes usable_honcho_summary here, so a contaminated one never reaches _base_context_cache."""
         ctx = {**ctx, "summary": usable_honcho_summary(ctx.get("summary")) or ""}
-        # getattr: tests build the provider without initialize().
-        allowed = getattr(self, "_session_start_components", None)
+        allowed = self._session_start_components
         parts, suppressed = [], []
         for name, key, header in _CONTEXT_SECTIONS:
             value = ctx.get(key, "")
@@ -1034,11 +1031,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def _shutdown_join_budget(self) -> float:
         """The floor, or the configured HTTP timeout when longer, so a thread blocked in a Honcho call can finish."""
-        try:
-            from plugins.memory.honcho.client_cache import _resolve_timeout_from_sources
-            return max(self._SHUTDOWN_JOIN_FLOOR, _resolve_timeout_from_sources(self._config))
-        except Exception:
-            return self._SHUTDOWN_JOIN_FLOOR
+        from plugins.memory.honcho.client_cache import _resolve_timeout_from_sources
+        return max(self._SHUTDOWN_JOIN_FLOOR, _resolve_timeout_from_sources(self._config))
 
     def shutdown(self) -> None:
         """Join the write threads, flush and stop the manager, then join every other thread this provider or its

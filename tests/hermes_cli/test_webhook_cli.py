@@ -67,9 +67,8 @@ class TestSubscribe:
         secret = _load_subscriptions()["s"]["secret"]
         assert len(secret) > 20
 
-    def test_profile_binding_and_secret_survive_update(self, tmp_path, capsys, monkeypatch):
-        monkeypatch.setattr("hermes_cli.profiles.Path.home", lambda: tmp_path)
-        profile_dir = tmp_path / ".hermes" / "profiles" / "compta"
+    def test_profile_binding_and_secret_survive_update(self, tmp_path, capsys):
+        profile_dir = tmp_path / "profiles" / "compta"
         profile_dir.mkdir(parents=True)
 
         webhook_command(_make_args(

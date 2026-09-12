@@ -4,7 +4,8 @@ Server-side fact extraction and semantic search via the Mem0 Platform API (cloud
 self-hosted Mem0 server (MEM0_HOST, HTTP), or OSS Memory. Secrets live in $HERMES_HOME/.env
 (MEM0_API_KEY, MEM0_HOST); settings in $HERMES_HOME/mem0.json via `hermes memory setup`:
 mode ("platform"|"oss"), host, user_id (canonical id across gateways; unset → gateway-native
-id), agent_id. MEM0_* env vars remain a fallback.
+id), agent_id, auto_sync (skip the automatic per-turn server-side extraction). MEM0_* env
+vars remain a fallback.
 """
 
 from __future__ import annotations
@@ -137,6 +138,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._mode, self._api_key, self._host, self._user_id, self._agent_id = "platform", "", "", _DEFAULT_USER_ID, "hermes"
         self._rerank_default, self._channel = False, "cli"  # channel = gateway name (cli/telegram/discord/...)
         self._sync_max_chars = _SYNC_MSG_MAX_CHARS
+        self._auto_sync = True
         self._prefetch_query = self._prefetch_result = ""
         self._prefetch_done = self._atexit_registered = False
         self._consecutive_failures, self._breaker_open_until = 0, 0.0  # circuit breaker state
@@ -166,6 +168,7 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
+            {"key": "auto_sync", "description": "Automatically sync each turn to Mem0 for server-side fact extraction", "default": "true", "choices": ["true", "false"]},
         ]
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
@@ -243,6 +246,10 @@ class Mem0MemoryProvider(MemoryProvider):
         self._rerank_default = _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         self._channel = kwargs.get("platform") or "cli"
         self._sync_max_chars = int(cfg.get("sync_max_chars") or _SYNC_MSG_MAX_CHARS)
+        # auto_sync: false opts out of the per-turn sync (server-side extraction); the
+        # explicit mem0_add tool (infer=False) is unaffected and remains the write path.
+        _as = cfg.get("auto_sync", True)
+        self._auto_sync = _as.lower() in ("true", "1", "yes") if isinstance(_as, str) else bool(_as)
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
             atexit.register(self._shutdown_backend)
@@ -308,6 +315,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
+        if not self._auto_sync:
+            return  # auto_sync: false in mem0.json — operator opted out of per-turn extraction
         if self._backend is None or self._is_breaker_open():
             return
 

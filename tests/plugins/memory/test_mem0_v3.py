@@ -146,6 +146,18 @@ class TestMem0V3Internal:
         assert call[2]["agent_id"] == "hermes"
         assert call[2]["infer"] is True
 
+    def test_auto_sync_false_skips_sync_turn(self, monkeypatch, tmp_path):
+        """auto_sync: false (mem0.json) makes sync_turn a no-op so the store can be
+        reserved for explicit mem0_add facts instead of per-turn server-side extraction."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        (tmp_path / "mem0.json").write_text('{"auto_sync": false}')
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider.sync_turn("user said", "assistant replied", session_id="s1")
+        assert backend.captured == []
+        assert provider._sync_thread is None
+
 
 class TestSyncTurnTruncation:
     """sync_turn must cap messages before ingestion so small-context embedding

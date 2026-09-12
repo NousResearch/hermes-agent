@@ -21,6 +21,7 @@ import {
   activeGatewayProfileKey,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  isActivePrimary,
   openGatewayForAgent,
   openGatewayForProfile,
   openSecondaryCount
@@ -958,12 +959,31 @@ export function pinNewChatProfile(name: string): string {
 export function newSessionInProfile(name: string): void {
   const target = pinNewChatProfile(name)
   requestFreshSession()
+
+  // A profile reached only through the per-profile "+" moves the live gateway
+  // onto its backend, so it is the last-used profile: persist it for the next
+  // Desktop launch once activation succeeds (#107528 follow-up). Gate mirrors
+  // the rail path's #102507 shape (isActivePrimary + local-mode check), so a
+  // registry-backed primary inherits #102507's semantics verbatim — any change
+  // to that edge belongs there, not here.
+  const shouldRememberStartupProfile = isActivePrimary()
+    ? isLocalDesktopProfile(target)
+    : Promise.resolve(false)
+
   // #81094: surface the failed dial instead of failing silently.
-  void activateOnCurrentSource(target).catch((error: unknown) => {
-    if (!notifyRemoteOverrideAuthFailure(target, error)) {
-      notifyError(error, `Failed to open profile "${target}"`)
-    }
-  })
+  void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
+    .then(([, shouldRemember]) => {
+      if (shouldRemember) {
+        return window.hermesDesktop?.profile?.remember(target)
+      }
+
+      return undefined
+    })
+    .catch((error: unknown) => {
+      if (!notifyRemoteOverrideAuthFailure(target, error)) {
+        notifyError(error, `Failed to open profile "${target}"`)
+      }
+    })
 }
 
 /** Start a draft owned by a specific registry agent. Foreground activation is

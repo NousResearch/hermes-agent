@@ -14,6 +14,7 @@ const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const ensureGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => true)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const activeGatewayConnectionId = vi.fn<() => null | string>(() => null)
+const isActivePrimary = vi.fn<() => boolean>(() => true)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
 
@@ -24,6 +25,7 @@ vi.mock('@/store/gateway', () => ({
   activeGatewayProfileKey: () => ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get(),
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  isActivePrimary,
   openGatewayForProfile
 }))
 vi.mock('@/hermes', () => ({
@@ -40,6 +42,8 @@ beforeEach(() => {
   ensureGatewayForAgent.mockClear()
   activeGatewayConnectionId.mockReset()
   activeGatewayConnectionId.mockReturnValue(null)
+  isActivePrimary.mockReset()
+  isActivePrimary.mockReturnValue(true)
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   // resolveConnectionForAgent is best-effort; without a bridge it resolves
@@ -111,6 +115,84 @@ describe('newSessionInProfile', () => {
 
     await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('local', 'default'))
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+  })
+})
+
+describe('newSessionInProfile startup preference (#107528 follow-up)', () => {
+  const rememberProfile = vi.fn(async (name: null | string) => ({ profile: name }))
+
+  beforeEach(() => {
+    rememberProfile.mockClear()
+
+    const getConnectionConfig = vi.fn(async () => ({ mode: 'local' }))
+
+    ;(globalThis as { window?: unknown }).window = {
+      hermesDesktop: {
+        getConnectionConfig,
+        profile: { remember: rememberProfile }
+      }
+    }
+  })
+
+  it('remembers the profile for the next launch after successful activation', async () => {
+    isActivePrimary.mockReturnValue(true)
+
+    newSessionInProfile('searxng')
+
+    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('searxng'))
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('searxng'))
+  })
+
+  it('waits for gateway activation before replacing the startup preference', async () => {
+    let resolveGateway!: () => void
+
+    isActivePrimary.mockReturnValue(true)
+    ensureGatewayForProfile.mockImplementationOnce(
+      () =>
+        new Promise<undefined>(resolve => {
+          resolveGateway = () => resolve(undefined)
+        })
+    )
+
+    newSessionInProfile('searxng')
+    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('searxng'))
+    expect(rememberProfile).not.toHaveBeenCalled()
+
+    resolveGateway()
+
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('searxng'))
+  })
+
+  it('does not replace the startup preference for a registry-source pick', async () => {
+    activeGatewayConnectionId.mockReturnValue('mini')
+    isActivePrimary.mockReturnValue(false)
+
+    newSessionInProfile('designer')
+
+    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('mini', 'designer'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(rememberProfile).not.toHaveBeenCalled()
+  })
+
+  it('does not replace the local startup preference for a profile SSH override', async () => {
+    isActivePrimary.mockReturnValue(true)
+
+    const getConnectionConfig = vi.fn(async () => ({ mode: 'ssh' }))
+
+    ;(globalThis as { window?: unknown }).window = {
+      hermesDesktop: {
+        getConnectionConfig,
+        profile: { remember: rememberProfile }
+      }
+    }
+
+    newSessionInProfile('macmini-hermes')
+
+    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('macmini-hermes'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(rememberProfile).not.toHaveBeenCalled()
   })
 })
 

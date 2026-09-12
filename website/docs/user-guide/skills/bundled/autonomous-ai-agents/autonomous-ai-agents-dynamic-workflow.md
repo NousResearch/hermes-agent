@@ -1,25 +1,33 @@
 ---
-name: dynamic-workflow
-description: Plan-in-code fan-outs, adversarial verification, waves.
-version: 2.0.0
-author: Teknium + Hermes Agent
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [orchestration, fan-out, subagents, delegation, verification, migration, audit, research, campaign]
-    category: autonomous-ai-agents
-    related_skills: [hermes-agent, simplify-code]
-when_to_use:
-  - A task is too big for one context window AND you can describe the split (per-file, per-endpoint, per-source, per-record)
-  - You want orchestration codified as a re-runnable script plus a shared brief, not improvised turn by turn
-  - Quality matters more than token economy - independent attempts cross-checked and refuted before you trust the answer
-  - Codebase-wide sweeps, 100+ file migrations, multi-round refactor campaigns, multi-angle research
-when_not_to_use:
-  - Small bounded task (under ~10 units) - do it inline or call the tool directly
-  - Tight serial dependency (B needs A's output) - orchestration overhead is wasted
-  - Work that must outlive this process (days, restarts) - use `cronjob` or the kanban swarm instead
+title: "Dynamic Workflow — Plan-in-code fan-outs, adversarial verification, waves"
+sidebar_label: "Dynamic Workflow"
+description: "Plan-in-code fan-outs, adversarial verification, waves"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Dynamic Workflow
+
+Plan-in-code fan-outs, adversarial verification, waves.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Bundled (installed by default) |
+| Path | `skills/autonomous-ai-agents/dynamic-workflow` |
+| Version | `2.0.0` |
+| Author | Teknium + Hermes Agent |
+| License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `orchestration`, `fan-out`, `subagents`, `delegation`, `verification`, `migration`, `audit`, `research`, `campaign` |
+| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`simplify-code`](/docs/user-guide/skills/bundled/software-development/software-development-simplify-code) |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # Dynamic Workflow Skill
 

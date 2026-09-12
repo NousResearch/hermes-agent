@@ -45,6 +45,7 @@ export function ScreenInstallCard({ bot, status, onInstalled }: ScreenInstallCar
         setLog(prev => (prev.length >= LOG_KEEP ? [...prev.slice(1), line] : [...prev, line]))
       }
     })
+
     const offDone = host.onEvent('display.install.done', (event: RpcEvent) => {
       const payload = event.payload as { profile_key?: string; code?: number; status?: DisplayStatus } | undefined
 

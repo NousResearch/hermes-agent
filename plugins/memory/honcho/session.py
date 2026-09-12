@@ -362,9 +362,10 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
     # ----- Writes -----
 
     def _join_observation_flags(self, honcho_session_id: str) -> tuple[bool, bool]:
-        """(observe_me, observe_others) for an author peer joining ``honcho_session_id``."""
-        # Manager-wide today. #103889 stores the effective flags per session and plugs in here.
-        return self._user_observe_me, self._user_observe_others
+        """(observe_me, observe_others) for an author peer joining ``honcho_session_id``: the session's
+        server-synced values once setup ran, else the manager's config snapshot."""
+        flags = self._observation_flags(honcho_session_id)
+        return flags["user_observe_me"], flags["user_observe_others"]
 
     def _author_peer_for_session(self, honcho_session: Any, honcho_session_id: str, author_peer_id: str) -> Any:
         """The author's peer, joined to the session the first time it writes.

@@ -3863,13 +3863,14 @@ class SlackAdapter(BasePlatformAdapter):
         return decision is False
 
     async def _channel_gate_allows(
-        self, *, channel_id: str, routing_text: str, bot_uid: str, is_mentioned: bool,
+        self, *, channel_id: str, routing_text: str, bot_uid: str, is_native_mentioned: bool,
+        is_mentioned: bool,
         is_thread_reply: bool, event_thread_ts, user_id: str, team_id: str, is_dm: bool,
         force_process: bool) -> bool:
-        """Channel/MPIM gate: respond in a free-response channel (still gated by
-        ``thread_require_mention``), when @mentioned, or when a wake check passes. Always silent
-        outside ``allowed_channels`` or when addressed to another user; ``force_process`` skips only
-        the mention rule."""
+        """Channel/MPIM gate: a strict channel needs a current native Slack mention; otherwise
+        respond in a free-response channel (still gated by ``thread_require_mention``), when
+        @mentioned, or when a wake check passes. Always silent outside ``allowed_channels`` or when
+        addressed to another user; ``force_process`` skips only the mention rule."""
         allowed_channels = self._slack_allowed_channels()
         if allowed_channels and channel_id not in allowed_channels:
             logger.debug("[Slack] Ignoring message in non-allowed channel: %s", channel_id)
@@ -3885,6 +3886,10 @@ class SlackAdapter(BasePlatformAdapter):
         thread_gated = self._slack_thread_require_mention() and is_thread_reply and not is_mentioned
         if force_process:
             return True
+        if channel_id in self._slack_strict_mention_channels() and not is_native_mentioned:
+            # This stronger per-channel mode requires a current native Slack mention. Wake words,
+            # free-response, thread history, and active sessions intentionally cannot bypass it.
+            return False
         free_channel = channel_id not in self._slack_require_mention_channels() and (
             channel_id in self._slack_free_response_channels() or not self._slack_require_mention())
         if not free_channel and self._slack_strict_mention() and not is_mentioned:
@@ -4198,7 +4203,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _apply_bot_mention(
         self, text: str, original_text: str, command_probe_text: str, is_command_text: bool,
-        bot_uid: str, thread_ts: Optional[str], team_id: str) -> Tuple[str, str, str, bool]:
+        bot_uid: str, thread_ts: Optional[str], team_id: str, channel_id: str,
+    ) -> Tuple[str, str, str, bool]:
         """Strip our mention, re-probe for a command hidden behind it, remember the thread.
         Returns updated ``(text, original_text, command_probe_text, is_command_text)``."""
         text = text.replace(f"<@{bot_uid}>", "").strip()
@@ -4212,11 +4218,12 @@ class SlackAdapter(BasePlatformAdapter):
         if command_text.startswith("/"):
             original_text = text = command_probe_text = command_text
             is_command_text = True
-        # Remember the thread so follow-ups auto-trigger (skipped under strict_mention /
-        # thread_require_mention, which it would defeat). Session-scoped ``thread_ts`` because a
-        # top-level @mention STARTS a thread whose replies must trigger too.
+        # Remember the thread so follow-ups auto-trigger (skipped under global or per-channel
+        # strict mention mode / thread_require_mention, which it would defeat). Session-scoped
+        # ``thread_ts`` because a top-level @mention STARTS a thread whose replies must trigger too.
         if (
             thread_ts and not self._slack_strict_mention()
+            and channel_id not in self._slack_strict_mention_channels()
             and not self._slack_thread_require_mention()):
             self._register_mentioned_thread(thread_ts, team_id=team_id)
         return text, original_text, command_probe_text, is_command_text
@@ -4277,8 +4284,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Mentions may live only in Block Kit blocks.
         # See #52387.
         routing_text = _slack_mention_detection_text(event) or original_text or ""
+        is_native_mentioned = bool(bot_uid and f"<@{bot_uid}>" in routing_text)
         is_mentioned = bool(
-            (bot_uid and f"<@{bot_uid}>" in routing_text)
+            is_native_mentioned
             or self._slack_message_matches_mention_patterns(routing_text))
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
@@ -4290,7 +4298,8 @@ class SlackAdapter(BasePlatformAdapter):
         if (
             not is_one_to_one_dm and bot_uid and not await self._channel_gate_allows(
             channel_id=channel_id, routing_text=routing_text, bot_uid=bot_uid,
-            is_mentioned=is_mentioned, is_thread_reply=is_thread_reply,
+            is_native_mentioned=is_native_mentioned, is_mentioned=is_mentioned,
+            is_thread_reply=is_thread_reply,
             event_thread_ts=event_thread_ts, user_id=user_id, team_id=team_id, is_dm=is_dm,
             force_process=force_process)):
             return
@@ -4304,7 +4313,7 @@ class SlackAdapter(BasePlatformAdapter):
         if is_mentioned:
             text, original_text, command_probe_text, is_command_text = self._apply_bot_mention(
                 text, original_text, command_probe_text, is_command_text, bot_uid, thread_ts,
-                team_id)
+                team_id, channel_id)
         # Thread history stays out of ``text``: prepending would push a command off char zero.
         (
             channel_context, thread_root_media_urls, thread_root_media_types,
@@ -5984,13 +5993,16 @@ class SlackAdapter(BasePlatformAdapter):
     # Channel-ID sets. free_response_channels: no @mention needed; allowed_channels: when set,
     # other channels are ignored even if @mentioned (DMs gated by disable_dms);
     # require_mention_channels: @mention ALWAYS required, overriding ``require_mention: false``
-    # and free_response_channels (wake checks still apply); ignored_channels: never touched.
+    # and free_response_channels (wake checks still apply); strict_mention_channels: a current
+    # native Slack @mention is required, with no wake/free-response bypass; ignored_channels: never touched.
     _slack_free_response_channels = _extra_or_env_channel_set_getter(
         "free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", coerce_scalar=True)
     _slack_allowed_channels = _extra_or_env_channel_set_getter(
         "allowed_channels", "SLACK_ALLOWED_CHANNELS")
     _slack_require_mention_channels = _extra_or_env_channel_set_getter(
         "require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS")
+    _slack_strict_mention_channels = _extra_or_env_channel_set_getter(
+        "strict_mention_channels", "SLACK_STRICT_MENTION_CHANNELS")
     _slack_ignored_channels = _extra_or_env_channel_set_getter(
         "ignored_channels", "SLACK_IGNORED_CHANNELS", coerce_scalar=True)
 
@@ -6448,6 +6460,7 @@ _YAML_BOOL_KEYS = (
 _YAML_LIST_KEYS = (
     ("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", list),
     ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", list),
+    ("strict_mention_channels", "SLACK_STRICT_MENTION_CHANNELS", list),
     ("reaction_triggers", "SLACK_REACTION_TRIGGERS", (list, tuple, set)),
     ("reaction_trigger_target", "SLACK_REACTION_TRIGGER_TARGET", ()),
     ("allowed_channels", "SLACK_ALLOWED_CHANNELS", list),

@@ -34,7 +34,6 @@ export function VoiceProviderFields({ section, providerKey }: { section: 'tts' |
   const { t } = useI18n()
   const keys = useMemo(() => voiceProviderKeys(section, providerKey), [section, providerKey])
   const { data: loadedConfig } = useHermesConfigRecord()
-  const writeConfigCache = hermesConfigCacheWriter()
 
   const { data: schemaResponse } = useQuery({
     queryKey: ['hermes-config-schema'],
@@ -63,6 +62,8 @@ export function VoiceProviderFields({ section, providerKey }: { section: 'tts' |
     if (!config || saveVersion === 0) {
       return
     }
+
+    const writeConfigCache = hermesConfigCacheWriter()
 
     const timeout = window.setTimeout(() => {
       void saveHermesConfig(config)

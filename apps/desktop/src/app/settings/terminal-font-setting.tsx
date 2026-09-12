@@ -39,7 +39,6 @@ export function TerminalFontSetting() {
   const [staleConfig, setStaleConfig] = useState<HermesConfigRecord | null>(null)
   const [saveVersion, setSaveVersion] = useState(0)
   const saveVersionRef = useRef(0)
-  const writeConfigCache = hermesConfigCacheWriter()
 
   // Lexically outside every useEffect so async save callbacks can cancel the
   // in-flight version without assigning to a ref inside an effect body.
@@ -73,6 +72,7 @@ export function TerminalFontSetting() {
 
     const version = saveVersion
     const value = normalizeTerminalFontFamily(draft)
+    const writeConfigCache = hermesConfigCacheWriter()
 
     // Already persisted (or a cache refresh confirmed it) — nothing to save.
     // This also terminates the effect re-run after a successful save updates

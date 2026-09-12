@@ -265,6 +265,126 @@ def _escape_mdv2(text: str) -> str:
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
 
 
+_PLACEHOLDER_RE = re.compile(r'\x00PH\d+\x00')
+
+
+def _placeholder_end(text: str, i: int) -> int | None:
+    """Return the index after a ``\\x00PHn\\x00`` token at *i*, else None."""
+    if i < len(text) and text[i] == '\x00':
+        matched = _PLACEHOLDER_RE.match(text, i)
+        if matched:
+            return matched.end()
+    return None
+
+
+def _asterisk_run_len(text: str, i: int) -> int:
+    end = i
+    while end < len(text) and text[end] == '*':
+        end += 1
+    return end - i
+
+
+def _find_emphasis_closer(text: str, start: int, delim_len: int, max_newlines: int) -> int:
+    """Index of a closer run for a delimiter of *delim_len*, or -1.
+
+    Italic (delim 1) closes on the first later ``*`` and does not cross
+    newlines, matching the legacy ``[^*\\n]+`` rule so ``*`` bullets survive.
+    Bold/combined may include at most one newline. Empty spans are rejected.
+    Placeholders are skipped so code/link tokens are not rewritten.
+    """
+    i = start
+    n = len(text)
+    newlines = 0
+    while i < n:
+        ph_end = _placeholder_end(text, i)
+        if ph_end is not None:
+            i = ph_end
+            continue
+        ch = text[i]
+        if ch == '\n':
+            newlines += 1
+            if newlines > max_newlines:
+                return -1
+            i += 1
+            continue
+        if ch == '*':
+            run = _asterisk_run_len(text, i)
+            if i == start:
+                i += run
+                continue
+            if delim_len == 1 or run >= delim_len:
+                return i
+            i += run
+            continue
+        i += 1
+    return -1
+
+
+def _escape_outside_placeholders(text: str) -> str:
+    """Escape MarkdownV2 specials in *text*, leaving placeholder tokens intact."""
+    parts: list[str] = []
+    last = 0
+    for matched in _PLACEHOLDER_RE.finditer(text):
+        if matched.start() > last:
+            parts.append(_escape_mdv2(text[last:matched.start()]))
+        parts.append(matched.group(0))
+        last = matched.end()
+    if last < len(text):
+        parts.append(_escape_mdv2(text[last:]))
+    return ''.join(parts)
+
+
+def _convert_asterisk_emphasis(text: str, protect) -> str:
+    """Convert valid ``*`` / ``**`` / ``***`` spans together into MarkdownV2.
+
+    Parses delimiters as a group so ``***bold italic***`` becomes
+    ``_*bold italic*_``, nested ``**bold *italic* text**`` keeps the inner
+    italic, and ``**bold\\ntext**`` (one newline) stays bold. Unmatched
+    markers are left raw for the later escape pass (fail-open).
+    """
+    parts: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ph_end = _placeholder_end(text, i)
+        if ph_end is not None:
+            parts.append(text[i:ph_end])
+            i = ph_end
+            continue
+        if text[i] != '*':
+            j = i + 1
+            while j < n and text[j] != '*' and text[j] != '\x00':
+                j += 1
+            parts.append(text[i:j])
+            i = j
+            continue
+        run = _asterisk_run_len(text, i)
+        converted = False
+        for delim_len in (3, 2, 1):
+            if run < delim_len:
+                continue
+            max_newlines = 0 if delim_len == 1 else 1
+            closer = _find_emphasis_closer(text, i + delim_len, delim_len, max_newlines)
+            if closer < 0:
+                continue
+            inner = _convert_asterisk_emphasis(text[i + delim_len:closer], protect)
+            escaped = _escape_outside_placeholders(inner)
+            if delim_len == 3:
+                wrapped = f'_*{escaped}*_'
+            elif delim_len == 2:
+                wrapped = f'*{escaped}*'
+            else:
+                wrapped = f'_{escaped}_'
+            parts.append(protect(wrapped))
+            i = closer + delim_len
+            converted = True
+            break
+        if not converted:
+            parts.append('*')
+            i += 1
+    return ''.join(parts)
+
+
 def _strip_mdv2(text: str) -> str:
     """Strip MarkdownV2 escapes and formatting markers for the plain-text fallback."""
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)  # escape backslashes
@@ -4963,10 +5083,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return _ph(f'*{_escape_mdv2(inner)}*')
 
         text = re.sub(r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE)
-        # 5) Bold **text** → *text*; 6) Italic *text* → _text_ ([^*\n]+ keeps matches on one line, or *
-        # bullet lists corrupt); 7) Strikethrough ~~text~~ → ~text~; 8) Spoiler ||text|| kept as-is.
-        text = re.sub(r'\*\*(.+?)\*\*', _ph_wrap('*', '*'), text)
-        text = re.sub(r'\*([^*\n]+)\*', _ph_wrap('_', '_'), text)
+        # 5–6) Bold/italic together: **text** → *text*, *text* → _text_, ***text*** → _*text*_ .
+        # Joint parse keeps nested * inside ** and allows one newline in bold; italic stays
+        # single-line so * bullet lists are not swallowed. Unmatched markers stay raw.
+        text = _convert_asterisk_emphasis(text, _ph)
+        # 7) Strikethrough ~~text~~ → ~text~; 8) Spoiler ||text|| kept as-is.
         text = re.sub(r'~~(.+?)~~', _ph_wrap('~', '~'), text)
         text = re.sub(r'\|\|(.+?)\|\|', _ph_wrap('||', '||'), text)
         # 9) Blockquotes: protect leading > from escaping; expandable quotes (**> starts, trailing || ends).

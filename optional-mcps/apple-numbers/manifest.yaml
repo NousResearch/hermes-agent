@@ -26,6 +26,10 @@ source: https://github.com/sweetrb/apple-numbers-mcp
 # outside the normal >=2-week age policy: 1.2.2 fixes a fast-uri security
 # vulnerability, 4 GHSAs high severity, reachable via ajv's JSON-schema
 # validation on every tool call regardless of default_enabled.)
+#
+# npm-current 1.2.3 (2026-09-09) stays declined: it removes three unused
+# imports, leaving esbuild identifier renumbering as the whole shipped delta
+# — no behaviour change, and nothing reachable through default_enabled below.
 transport:
   type: stdio
   command: "npx"

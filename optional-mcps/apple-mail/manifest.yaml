@@ -43,6 +43,12 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # The three intervening releases stay skipped, deliberately: 2.17.7 was
 # docs-only, 2.17.8 fixed reply/forward (absent from default_enabled below),
 # and 2.17.9 was a dependency bump.
+#
+# So do the two published since, which is why the pin stops here rather than
+# at npm-current 2.18.1: 2.18.0 (2026-09-10) adds an SMTP Sent copy and
+# replyTo, 2.18.1 (2026-09-10) verifies ids before a mutation, and both land
+# only on send/mutation tools that are disabled below. Moving the pin would
+# spend pin age for no change to the default surface.
 transport:
   type: stdio
   command: "npx"

@@ -44,6 +44,11 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # OSStatus, covering fully localised systems no English pattern can. Found by
 # extension from sweetrb/apple-mail-mcp#218, which reported the identical
 # defect in the sibling server.
+#
+# The pin stops at 2.8.3 rather than npm-current 2.8.4 (2026-09-10): 2.8.4
+# only fixes `update-note`/`append-to-note` readback, both absent from
+# default_enabled below, so taking it would spend pin age for no change to
+# the default surface.
 transport:
   type: stdio
   command: "npx"

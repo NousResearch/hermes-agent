@@ -32,17 +32,21 @@ def _error(message: str, **extra) -> Dict[str, Any]:
     return {"success": False, "error": message, **extra}
 
 
-def _drift_error(path: Path, bak_path: str) -> Dict[str, Any]:
+def _drift_error(path: Path, bak_path: Optional[str] = None) -> Dict[str, Any]:
     """External drift: the file wouldn't round-trip, so flushing would discard content."""
+    backup = f" A snapshot was saved to {bak_path}." if bak_path else ""
+    extra = {"drift_backup": bak_path} if bak_path else {}
     return _error((
         f"Refusing to write {path.name}: file on disk has content that wouldn't round-trip "
         f"through the memory tool (likely added by the patch tool, a shell append, a manual edit, "
-        f"or a concurrent session). A snapshot was saved to {bak_path}. Resolve the drift first — "
+        f"or a concurrent session).{backup} Resolve the drift first — "
         f"either rewrite the file as a clean §-delimited list of entries, or move the extra "
         f"content out — then retry. This guard exists to prevent silent data loss (issue #26045)."
-    ), drift_backup=bak_path, remediation=(
+    ), **extra, remediation=(
         "Open the .bak file, integrate the missing entries into the memory tool one at a time via "
-        "memory(action=add, content=...), then remove or rewrite the original file to a clean state."))
+        "memory(action=add, content=...), then remove or rewrite the original file to a clean state."
+        if bak_path else
+        "Rewrite the original file as a clean §-delimited list of entries, then retry."))
 
 
 def _read_failed_error(path: Path) -> Dict[str, Any]:
@@ -200,9 +204,12 @@ class MemoryStore:
             raw, read_ok = self._read_raw_checked(path)
             if not read_ok:
                 return _read_failed_error(path)
-            bak = None if skip_drift else self._detect_external_drift(target, raw)
+            drifted = not skip_drift and self._has_external_drift(target, raw)
             self._set_entries(target, list(dict.fromkeys(self._parse_entries(raw))))
-            if bak:
+            if drifted:
+                # Preflight must classify the same disk snapshot as approval replay,
+                # but should not create a backup for every rejected proposal.
+                bak = None if dry_run else self._backup_external_drift(path, raw)
                 return _drift_error(path, bak)
             result = mutate(self._entries_for(target), self._char_limit(target))
             if isinstance(result, dict):
@@ -276,7 +283,7 @@ class MemoryStore:
                     f"or 'remove' other stale or less important entries to make room (see current_entries "
                     f"below), then retry — all in this turn."))
             return replaced, "Entry replaced."
-        return self._mutate(target, _apply, skip_drift=dry_run, dry_run=dry_run)
+        return self._mutate(target, _apply, dry_run=dry_run)
 
     @staticmethod
     def _apply_batch_op(working: List[str], act: str, content: str, old_text: str, pos: str) -> Optional[str]:
@@ -341,7 +348,7 @@ class MemoryStore:
                     f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
                     f"entries in the same batch (see current_entries below), then retry."))
             return working, f"Applied {len(operations)} operation(s)."
-        return self._mutate(target, _apply, skip_drift=_dry_run, dry_run=_dry_run)
+        return self._mutate(target, _apply, dry_run=_dry_run)
 
     def preflight(self, target: str, *, action: Optional[str] = None,
                   content: str = "", old_text: str = "",
@@ -432,15 +439,17 @@ class MemoryStore:
         except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
-    def _detect_external_drift(self, target: str, raw: str) -> Optional[str]:
-        """``.bak.<ts>`` snapshot path if *raw* shows external drift, else None. Signals:
-        round-trip mismatch, or one entry over the whole-file limit (no tool-written
-        entry can be — an external writer appended free-form text)."""
+    def _has_external_drift(self, target: str, raw: str) -> bool:
+        """Whether *raw* would lose data when parsed and written back."""
         parsed = self._parse_entries(raw)
-        if not raw.strip() or (raw.strip() == ENTRY_DELIMITER.join(parsed)
-                               and max(map(len, parsed), default=0) <= self._char_limit(target)):
-            return None
-        path = self._path_for(target)
+        return bool(raw.strip()) and (
+            raw.strip() != ENTRY_DELIMITER.join(parsed)
+            or max(map(len, parsed), default=0) > self._char_limit(target)
+        )
+
+    @staticmethod
+    def _backup_external_drift(path: Path, raw: str) -> str:
+        """Snapshot drifted content before a real mutation refusal."""
         bak_path = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
         try:
             bak_path.write_text(raw, encoding="utf-8")

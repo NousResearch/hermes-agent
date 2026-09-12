@@ -861,6 +861,36 @@ class TestBackgroundReviewDeleteGate:
         assert wa.pending_count(wa.MEMORY) == 0
         assert store.memory_entries == ["seed"]
 
+    @pytest.mark.parametrize("proposal", [
+        {"action": "replace", "old_text": "first", "content": "first revised"},
+        {"operations": [
+            {"action": "replace", "old_text": "first", "content": "first revised"},
+            {"action": "remove", "old_text": "second"},
+        ]},
+    ])
+    def test_drifted_proposals_are_rejected_without_staging_or_backup(
+        self, store, tmp_path, monkeypatch, proposal
+    ):
+        from tools.write_approval import MEMORY, pending_count
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "first entry")
+        store.add("memory", "second entry")
+        path = store._path_for("memory")
+        path.write_text(path.read_text(encoding="utf-8").replace("\n§\n", "\n§ \n"), encoding="utf-8")
+        before = path.read_text(encoding="utf-8")
+
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(store=store, **proposal))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is False
+        assert pending_count(MEMORY) == 0
+        assert path.read_text(encoding="utf-8") == before
+        assert not list(path.parent.glob("MEMORY.md.bak.*"))
+
     def test_add_still_allowed_in_background_review(self, store):
         token = set_current_write_origin("background_review")
         try:

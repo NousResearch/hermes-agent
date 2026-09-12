@@ -3271,11 +3271,23 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                 return False
             try:
                 ack_path.parent.mkdir(parents=True, exist_ok=True)
-                fd = os.open(ack_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
-                    json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
-                    ack_file.flush()
-                    os.fsync(ack_file.fileno())
+                # Publish via write-to-temp + atomic rename. Writing ack_path in place
+                # (the old approach) let O_CREAT make the empty file visible to the
+                # scheduler's exists()-then-read polling loop before the JSON body was
+                # written, occasionally handing it a 0-byte file and a JSONDecodeError.
+                # os.replace() is a single atomic syscall on the same filesystem, so
+                # readers only ever see the file fully absent or fully written.
+                ack_tmp_path = ack_path.with_name(f"{ack_path.name}.tmp{os.getpid()}")
+                fd = os.open(ack_tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
+                        json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
+                        ack_file.flush()
+                        os.fsync(ack_file.fileno())
+                    os.replace(ack_tmp_path, ack_path)
+                except BaseException:
+                    ack_tmp_path.unlink(missing_ok=True)
+                    raise
             except Exception:
                 logger.exception(
                     "Cron external worker could not publish ready acknowledgement for %s",

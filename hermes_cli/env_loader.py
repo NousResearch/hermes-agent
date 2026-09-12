@@ -30,6 +30,8 @@ _SCOPED_SKIP_LOGGED: set[str] = set()   # routed profile homes whose multiplex d
 _SECRET_SOURCES: dict[str, str] = {}
 # Immutable per-home snapshots: os.environ is shared across profiles and a later home's apply may overwrite it.
 _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
+# Names only: bootstrap values never belong in a provider secret scope.
+_SECRET_SOURCE_PROTECTED_VARS_BY_HOME: dict[str, frozenset[str]] = {}
 # HERMES_HOME paths already pulled external secrets for: load_hermes_dotenv() runs at import time from
 # several hot modules, so without this the Bitwarden status line prints 3-5x per startup and the config
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
@@ -99,6 +101,34 @@ def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(str(Path(hermes_home).resolve()), {}))
 
 
+def get_external_secret_env_vars(hermes_home: str | os.PathLike) -> frozenset[str]:
+    """External-source and bootstrap-auth names for the resolved profile home."""
+    home_key = str(Path(hermes_home).resolve())
+    return frozenset(_SECRET_SOURCE_VALUES_BY_HOME.get(home_key, {})) | (
+        _SECRET_SOURCE_PROTECTED_VARS_BY_HOME.get(home_key, frozenset())
+    )
+
+
+def _record_secret_source_protected_vars(home_key, cfg, sources) -> None:
+    """One broken source's metadata must not hide another source's credentials."""
+    protected: set[str] = set()
+    try:
+        from agent.secret_sources.registry import get_source
+    except ImportError:
+        return
+    for source_report in sources:
+        try:
+            source = get_source(source_report.name, scope=home_key)
+            if source is not None:
+                source_cfg = cfg.get(source_report.name)
+                protected.update(source.protected_env_vars(
+                    source_cfg if isinstance(source_cfg, dict) else {}
+                ))
+        except Exception:  # metadata lookup must not prevent other source protection
+            continue
+    _SECRET_SOURCE_PROTECTED_VARS_BY_HOME[home_key] = frozenset(protected)
+
+
 def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Resolve one profile's configured sources without mutating ``os.environ``: multiplex gateways route
     turns to profiles that never ran the process-global dotenv path, so resolve against a private mapping
@@ -143,6 +173,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     if not report.sources:
         return {}
 
+    _record_secret_source_protected_vars(home_key, cfg, report.sources)
     _APPLIED_HOMES.add(home_key)
     values: dict[str, str] = {}
     for name, applied in report.provenance.items():
@@ -167,10 +198,12 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
         _APPLIED_HOMES.clear()
         _SECRET_SOURCES.clear()
         _SECRET_SOURCE_VALUES_BY_HOME.clear()
+        _SECRET_SOURCE_PROTECTED_VARS_BY_HOME.clear()
         return
     home_key = str(Path(hermes_home).resolve())
     _APPLIED_HOMES.discard(home_key)
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+    _SECRET_SOURCE_PROTECTED_VARS_BY_HOME.pop(home_key, None)
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -484,6 +517,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # A real fetch attempt happened (success OR error): mark the home so the 3-5 import-time calls per
     # startup don't re-fetch / re-print (error retries are opt-in via reset_secret_source_cache()).
     # Marking AFTER the attempt keeps the earlier failure paths retryable.
+    _record_secret_source_protected_vars(home_key, cfg, report.sources)
     _APPLIED_HOMES.add(home_key)
 
     if report.applied_any:

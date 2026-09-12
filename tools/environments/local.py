@@ -22,6 +22,7 @@ from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+    _external_secret_env_vars,
     _is_hermes_internal_secret, _is_terminal_first_party_env,
     _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys)
 from tools.environments.local_gitbash_probe import (
@@ -234,7 +235,7 @@ def _inject_session_context_env(env: dict) -> None:
 
 def _filter_secret_env(
     items: Mapping[str, str], out: dict, *, unwrap_force: bool,
-    plugin_strip: frozenset = frozenset()) -> None:
+    plugin_strip: frozenset = frozenset(), source_secrets: frozenset = frozenset()) -> None:
     """Copy *items* into *out*, dropping Hermes-managed secrets. ``_HERMES_FORCE_<NAME>``
     unwraps to ``NAME`` when ``unwrap_force`` (caller extras / terminal env), else is
     dropped. Blocklisted names survive only via env_passthrough registration or as
@@ -256,7 +257,7 @@ def _filter_secret_env(
             continue
         first_party = _is_terminal_first_party_env(key)
         passthrough = is_env_passthrough(key)
-        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
+        if (key in _HERMES_PROVIDER_ENV_BLOCKLIST or key in source_secrets) and not (passthrough or first_party):
             continue
         if passthrough and not first_party:
             value = resolve_passthrough_value(key, value)
@@ -280,9 +281,12 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     """Filter each ``(items, unwrap_force)`` in *parts* into one env, rewrite PATH via
     *fix_path* (always prepending the hermes install dir so bare ``hermes`` resolves
     for children of a systemd/cron-launched gateway), then apply the shared guards."""
+    merged = {key: value for items, _unwrap in parts for key, value in items.items()}
+    source_secrets = _external_secret_env_vars(merged)
     out: dict[str, str] = {}
     for items, unwrap_force in parts:
-        _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip)
+        _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip,
+                           source_secrets=source_secrets)
     path_key = _path_env_key(out)
     # Keep bare ``hermes`` invocations available to child jobs even when the gateway was launched by a
     # service manager or cron without the console script's directory on PATH. The terminal environment
@@ -303,13 +307,13 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     """Sanitized env for the **non-terminal** spawn surface (browser, ACP/CLI executors,
     computer-use driver, TUI Node host). Tier 1 (``_ALWAYS_STRIP_KEYS``, plugin keys,
     force-prefixed hints, dynamic internal secrets) is always removed; Tier 2 (the
-    provider/tool blocklist) unless ``inherit_credentials`` — pass that **only** for
+    provider/tool blocklist and external-source names) unless ``inherit_credentials`` — pass that **only** for
     children that legitimately need LLM credentials (user-blessed claude/codex/gemini
     CLI, TUI Node host). Terminal/execute_code use ``_sanitize_subprocess_env``."""
     env = os.environ.copy()
     strip = _ALWAYS_STRIP_KEYS | _plugin_terminal_env_strip_keys()
     if not inherit_credentials:
-        strip |= _HERMES_PROVIDER_ENV_BLOCKLIST
+        strip |= _HERMES_PROVIDER_ENV_BLOCKLIST | _external_secret_env_vars(env)
     for key in list(env):
         if (key in strip or key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
                 or _is_hermes_internal_secret(key)):

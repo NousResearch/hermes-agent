@@ -38,6 +38,39 @@ def _no_passthrough(_name):
     return False
 
 
+def test_external_secret_provenance_precedes_safe_prefix(
+    tmp_path, monkeypatch
+):
+    """Vault provenance blocks safe-prefix names unless explicitly passed."""
+    from hermes_cli import env_loader
+
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+        str(tmp_path.resolve()),
+        {"LC_VAULT_VALUE": "inert-secret-value"},
+    )
+    source_env = {
+        "HERMES_HOME": str(tmp_path),
+        "LC_ALL": "C.UTF-8",
+        "LC_VAULT_VALUE": "inert-secret-value",
+    }
+
+    scrubbed = _scrub_child_env(
+        source_env,
+        is_passthrough=_no_passthrough,
+        is_windows=False,
+    )
+    assert scrubbed["LC_ALL"] == "C.UTF-8"
+    assert "LC_VAULT_VALUE" not in scrubbed
+
+    explicit = _scrub_child_env(
+        source_env,
+        is_passthrough=lambda name: name == "LC_VAULT_VALUE",
+        is_windows=False,
+    )
+    assert explicit["LC_VAULT_VALUE"] == "inert-secret-value"
+
+
 class TestWindowsEssentialAllowlist:
     """The allowlist itself — contents, shape, and invariants."""
 

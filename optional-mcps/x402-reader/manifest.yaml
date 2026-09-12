@@ -1,0 +1,39 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: x402-reader
+description: >-
+  Probe or pay an x402 reader to fetch a public URL as markdown.
+source: https://www.npmjs.com/package/x402-reader-mcp
+
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "x402-reader-mcp@0.1.2"
+  env:
+    READER_BASE_URL: "https://reader.outbid.sh"
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - scrape
+    - browse
+
+suggest:
+  keywords:
+    - x402
+    - scrape
+    - markdown
+  hosts:
+    - reader.outbid.sh
+
+post_install: |
+  Unarmed scrape/browse return a free 422 miss or a visible 402 quote.
+  To pay: set X402_READER_PAYMENTS_ENABLED=1 and SVM_PRIVATE_KEY_FILE
+  (or EVM_PRIVATE_KEY_FILE) in the server env, then start a new session.
+  Caps refuse above $0.05/call before signing. scrape never auto-opens browse.

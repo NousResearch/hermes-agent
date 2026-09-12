@@ -531,6 +531,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/payments/payments-mpp-agent',
                     'user-guide/skills/optional/payments/payments-stripe-link-cli',
                     'user-guide/skills/optional/payments/payments-stripe-projects',
+                    'user-guide/skills/optional/payments/payments-x402-reader',
                   ],
                 },
                 {

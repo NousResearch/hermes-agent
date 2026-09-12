@@ -25,6 +25,8 @@ _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
         "deepseek-r1", "deepseek-reasoner", "deepseek-flash", "deepseek-v4-flash", "deepseek-v4.1-flash", "deepseek-v4-pro",
         # OpenAI o-series: each variant enumerated so bare ``o1`` cannot over-match ``olmo-1``.
         "o1", "o1-mini", "o1-pro", "o1-preview", "o3", "o3-pro",
+        # GPT-5.6 named reasoning variants (for example, -sol and -terra).
+        "gpt-5.6",
         # Mythos-class named models (claude-fable-5): 1M ctx + 128K output, a heavier thinking
         # phase than the numbered line — otherwise the stale detector trips the circuit breaker.
         "claude-fable",

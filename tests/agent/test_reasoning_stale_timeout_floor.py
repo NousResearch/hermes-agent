@@ -74,6 +74,9 @@ import pytest
     ("openai/o3-pro", 600.0),
     ("openai/o3-mini", 300.0),
     ("openai/o4-mini", 300.0),
+    # GPT-5.6 reasoning family; vendor prefixes and named variants inherit.
+    ("openai/gpt-5.6-sol", 600.0),
+    ("gpt-5.6-terra", 600.0),
     # Anthropic Claude 4.x thinking variants.
     ("anthropic/claude-opus-4-6", 240.0),
     ("anthropic/claude-opus-4-20250514", 240.0),
@@ -161,6 +164,29 @@ def test_non_reasoning_model_keeps_default(monkeypatch, tmp_path):
     base, implicit = agent._resolved_api_call_stale_timeout_base()
     assert base == 90.0
     assert implicit is True
+
+
+def test_gpt_5_6_floor_reaches_non_stream_and_stream_resolvers(monkeypatch, tmp_path):
+    """Small GPT-5.6 requests get the reasoning floor on both request paths."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    _write_config(tmp_path, "")
+
+    import run_agent
+    from agent.chat_completion_helpers import _cloud_stale_timeout
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    agent = _make_agent(tmp_path, model="gpt-5.6-sol")
+
+    assert agent._resolved_api_call_stale_timeout_base() == (600.0, False)
+    assert _cloud_stale_timeout(180.0, {"model": "gpt-5.6-sol", "input": "small"}) == 600.0
+    assert get_reasoning_stale_timeout_floor("vendor/my-gpt-5.6-sol") is None
+    assert get_reasoning_stale_timeout_floor("gpt-5.60-sol") is None
+
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: 900.0)
+    assert agent._resolved_api_call_stale_timeout_base() == (900.0, False)
+    assert _cloud_stale_timeout(900.0, {"model": "gpt-5.6-sol", "input": "small"}) == 900.0
 
 
 # ── stream-side mirror (the real builder lives in a worker thread) ────────

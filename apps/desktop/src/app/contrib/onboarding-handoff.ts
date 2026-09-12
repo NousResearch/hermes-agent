@@ -22,6 +22,7 @@ import { declinedLookAround, showProfileSignpost } from '@/components/onboarding
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, activateTreePane } from '@/components/pane-shell/tree/store'
 import { toChatMessages } from '@/lib/chat-messages'
+import { connectorTitle } from '@/lib/connector-tools'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { dismissNotification, notify } from '@/store/notifications'
@@ -160,10 +161,11 @@ export function useOnboardingHandoff({
               saveHandoffReceipt(receiptKey, value)
             },
             personalize: async () => {
+              const answers = $onboardingAnswers.get()
               const result = await request<{ saved?: boolean; profile?: string; target?: string }>(
                 owner,
                 'profiles.remember_onboarding',
-                { answers: $onboardingAnswers.get() }
+                { answers: { ...answers, connectors: answers.connectors.map(connectorTitle) } }
               )
 
               if (!result.saved || result.profile !== BUILD_PROFILE || result.target !== 'user') {

@@ -114,6 +114,10 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     if home_key in _APPLIED_HOMES:
         return get_secret_source_values(home)
 
+    # A retry must not keep serving a partial result after the source is removed, disabled, or can no
+    # longer be evaluated. Publish only the snapshot established by this attempt.
+    _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+
     try:
         cfg = _load_secrets_config(home)
     except Exception:  # noqa: BLE001 — external sources must not block routing

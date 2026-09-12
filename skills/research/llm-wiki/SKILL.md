@@ -1,7 +1,7 @@
 ---
 name: llm-wiki
 description: "Karpathy's LLM Wiki: build/query interlinked markdown KB."
-version: 2.1.0
+version: 2.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -68,6 +68,86 @@ wiki/
 **Layer 2 — The Wiki:** Agent-owned markdown files. Created, updated, and
 cross-referenced by the agent.
 **Layer 3 — The Schema:** `SCHEMA.md` defines structure, conventions, and tag taxonomy.
+
+## Open Knowledge Format (OKF) — Optional Interoperability Standard
+
+The wiki layout above is *shaped* like a bundle in Google's
+[Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md),
+an open standard for representing knowledge as a directory of markdown files
+with YAML frontmatter
+([announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing)).
+Opting in gives the wiki a recognized interoperability contract, so any
+OKF-aware tool or agent can consume it without bespoke parsing.
+
+OKF is deliberately minimal. Its only hard requirements (§11) are:
+
+1. Every non-reserved `.md` file has a parseable YAML frontmatter block.
+2. Every frontmatter block contains a non-empty `type` field.
+3. Reserved filenames (`index.md`, `log.md`) follow §8 and §9 when present.
+
+**A default wiki is not conformant yet.** Three gaps have to be closed first,
+which is what the migration below does:
+
+- `SCHEMA.md` and the `raw/` sources carry no `type` (`raw/` frontmatter has
+  only `source_url`/`ingested`/`sha256`), so they fail rule 2 — and `SCHEMA.md`
+  has no frontmatter at all, failing rule 1.
+- `log.md` uses `## [YYYY-MM-DD] action | subject`, but §9 requires a bare
+  ISO 8601 `## YYYY-MM-DD` date heading.
+- `sources:` is a list of bare paths; OKF §5.1 wants an entry with a
+  `resource` key. This one is a soft issue, not a conformance failure.
+
+**What changes when a wiki opts in:**
+
+- **`type` is required** (§4.1). Type values are *not* registered centrally and
+  consumers MUST tolerate unknown ones, so any non-empty string is valid.
+  Title-Case (`Entity`, `Concept`, `Comparison`, `Query`, `Reference`) is a
+  convention borrowed from the spec's examples, not a requirement.
+- **Recommended fields** gain defined meaning: `title`, `description`,
+  `resource` (canonical URI of the underlying asset), `tags`. The existing
+  `created`/`updated`/`confidence`/`contested` fields are carried through as
+  extension keys — §4.1 says consumers preserve unknown keys and MUST NOT
+  reject a document for having them.
+- **Provenance moves to frontmatter** (§5.1): `sources` entries take a
+  `resource`, plus optional `id`, `title`, and the credibility signals
+  `author`, `usage_count`, `last_modified`.
+- **Trust and lifecycle become expressible** (§5.2–§5.5): `generated: { by, at }`,
+  `verified: [{ by, at }]`, `status`, `stale_after`. Actors use the §7
+  convention — `human:<id>`, `process:<id>`, or `<producer>/<version>`.
+- **Cross-links** MAY use bundle-relative markdown links (`[text](/path.md)`,
+  §6.1) for portability. `[[wikilinks]]` keep working; the migration does not
+  touch them, so Obsidian-first vaults are unaffected.
+- **`index.md`** carries no frontmatter except an optional `okf_version` at the
+  bundle root (§8).
+- **Broken links stay tolerated** (§6.1) and soft issues never invalidate a
+  bundle (§11) — so the OKF lint step reports them separately from the wiki's
+  own stricter broken-wikilink check.
+
+### Opting in
+
+`scripts/okf.py` does the migration and the conformance check. Every command is
+a dry run until `--write`, and every command is idempotent.
+
+```bash
+WIKI="${WIKI_PATH:-$HOME/wiki}"
+
+python3 scripts/okf.py check   "$WIKI"           # what fails today, and why
+python3 scripts/okf.py migrate "$WIKI"           # preview the opt-in
+python3 scripts/okf.py migrate "$WIKI" --write   # apply it
+```
+
+`migrate` adds the missing `type` fields, Title-Cases the known ones, rewrites
+`sources` entries to carry a `resource`, converts `log.md` to ISO date
+headings, and declares `okf_version: "0.2"` in the root `index.md`. It edits
+the frontmatter as text, so comments, key order, and the body survive
+unchanged. Ask the user before running `--write` on a wiki you did not create —
+it rewrites every page's frontmatter.
+
+Wikis already on OKF v0.1 upgrade with `python3 scripts/okf.py upgrade "$WIKI"`,
+which applies the two §13.1 breaking changes: `timestamp` becomes
+`generated.at`, and a body `# Citations` list becomes `sources` frontmatter.
+
+Add `--json` to any command for machine-readable output. `check` exits non-zero
+on a hard failure, so it works as a pre-commit or CI gate on a shared wiki.
 
 ## Resuming an Existing Wiki (CRITICAL — do this every session)
 
@@ -141,6 +221,26 @@ Adapt to the user's domain. The schema constrains agent behavior and ensures con
   confidence: high | medium | low        # how well-supported the claims are
   contested: true                        # set when the page has unresolved contradictions
   contradictions: [other-page-slug]      # pages this one conflicts with
+  ---
+  ```
+
+When the wiki has opted in to OKF, `type` is Title-Case and `sources` entries
+carry a `resource` (see the OKF section above). `scripts/okf.py migrate`
+converts an existing wiki to that form; new pages should be written in it
+directly:
+
+  ```yaml
+  ---
+  title: Page Title
+  created: YYYY-MM-DD
+  updated: YYYY-MM-DD
+  type: Entity                           # Title-Case under OKF
+  description: One-line summary for index generators and search snippets.
+  tags: [from taxonomy below]
+  sources:
+    - id: source-name
+      resource: /raw/articles/source-name.md
+  generated: { by: human:<id>, at: YYYY-MM-DDTHH:MM:SSZ }
   ---
   ```
 
@@ -360,10 +460,19 @@ wiki = "<WIKI_PATH>"
 
 ⑪ **Log rotation:** If log.md exceeds 500 entries, rotate it.
 
-⑫ **Report findings** with specific file paths and suggested actions, grouped by
+⑫ **OKF conformance (when opted in):** If the root `index.md` declares
+   `okf_version`, run `python3 scripts/okf.py check "$WIKI"`. It reports §11
+   hard failures (unparseable frontmatter, missing `type`, malformed reserved
+   files) separately from soft issues (bare-string `sources`, legacy
+   `timestamp`), because the spec says consumers MUST NOT reject a bundle over
+   the soft ones. Broken links are tolerated by OKF §6.1 — they still appear in
+   step ② under the wiki's own stricter rules, not as OKF failures.
+
+⑬ **Report findings** with specific file paths and suggested actions, grouped by
    severity (broken links > orphans > source drift > contested pages > stale content > style issues).
 
-⑬ **Append to log.md:** `## [YYYY-MM-DD] lint | N issues found`
+⑭ **Append to log.md:** `## [YYYY-MM-DD] lint | N issues found`
+   (under OKF, `## YYYY-MM-DD` with a `* **Lint**: N issues found` bullet)
 
 ## Working with the Wiki
 
@@ -496,8 +605,17 @@ vault in Obsidian on your laptop/phone — changes appear within seconds.
   The agent should check log size during lint.
 - **Handle contradictions explicitly** — don't silently overwrite. Note both claims with dates,
   mark in frontmatter, flag for user review.
+- **Preview the OKF migration before writing** — `scripts/okf.py migrate` rewrites frontmatter
+  across every page. Run it without `--write` first, and confirm with the user before applying
+  it to a wiki you did not create.
 
 ## Related Tools
+
+[Open Knowledge Format (OKF)](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+is Google's open spec for representing knowledge as markdown + YAML frontmatter.
+The wiki opts in via `scripts/okf.py` — see the OKF section above. Google ships
+no standalone validator; `scripts/okf.py` implements the §11 conformance rules
+directly against the spec text.
 
 [llm-wiki-compiler](https://github.com/atomicmemory/llm-wiki-compiler) is a Node.js CLI that
 compiles sources into a concept wiki with the same Karpathy inspiration. It's Obsidian-compatible,

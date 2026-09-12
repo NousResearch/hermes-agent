@@ -141,6 +141,61 @@ class TestCommandTtsEnv:
         assert env["MY_SAFE_TTS_VAR"] == "keep"
 
 
+class TestRunCommandProviderWindowsFlags:
+    """#101585: ``shell=True`` routes through cmd.exe — the spawn must carry CREATE_NO_WINDOW.
+
+    TTS and STT share ``run_command_provider`` (imported as ``_run_command_tts`` /
+    ``_run_command_stt``), so one test covers both dispatch paths.
+    """
+
+    @staticmethod
+    def _capture_popen(monkeypatch, captured):
+        class _Stream:
+            def read(self, size):
+                return ""
+
+        class Proc:
+            returncode = 0
+            stdout = _Stream()
+            stderr = _Stream()
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(command, **kwargs):
+            captured.update(kwargs)
+            return Proc()
+
+        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
+
+    def test_windows_spawn_carries_create_no_window(self, monkeypatch):
+        from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
+        monkeypatch.setattr(os, "name", "nt")
+        captured: dict = {}
+        self._capture_popen(monkeypatch, captured)
+
+        result = _run_command_tts("echo hi", timeout=1)
+
+        assert result.returncode == 0
+        assert captured["creationflags"] == windows_detach_flags_without_breakaway()
+        assert "start_new_session" not in captured
+        if sys.platform == "win32":
+            assert captured["creationflags"] & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            # Group signalling kept so the idle-timeout tree kill still works.
+            assert captured["creationflags"] & getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+
+    def test_posix_spawn_unaffected(self, monkeypatch):
+        monkeypatch.setattr(os, "name", "posix")
+        captured: dict = {}
+        self._capture_popen(monkeypatch, captured)
+
+        result = _run_command_tts("echo hi", timeout=1)
+
+        assert result.returncode == 0
+        assert captured["start_new_session"] is True
+        assert "creationflags" not in captured
+
+
 class TestGetNamedProviderConfig:
     def test_providers_block_wins(self):
         cfg = {"providers": {"voxcpm": {"command": "new"}},

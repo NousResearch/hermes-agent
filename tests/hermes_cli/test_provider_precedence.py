@@ -81,6 +81,32 @@ class TestProviderPrecedence:
 
         assert resolve_provider("auto", skip_free_tier=True) == "custom"
 
+    def test_bare_custom_provider_entry_counts_as_inference_route(self, monkeypatch):
+        """A providers.custom endpoint is routable without duplicating model.base_url."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(
+            monkeypatch,
+            {"provider": "custom", "default": "local-model"},
+            providers={"custom": {"base_url": "http://127.0.0.1:8080/v1"}},
+        )
+
+        assert resolve_provider("auto", skip_free_tier=True) == "custom"
+
+    def test_available_llamacpp_endpoint_counts_as_inference_route(self, monkeypatch):
+        """Dashboard readiness recognizes the managed endpoint used by runtime routing."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(monkeypatch, {"provider": "llamacpp", "default": "local-model"})
+        monkeypatch.setattr(
+            "hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint",
+            lambda **kwargs: {"base_url": "http://127.0.0.1:18434/v1", "api_key": "local-key"},
+        )
+
+        assert resolve_provider("auto", skip_free_tier=True) == "llamacpp"
+
     @pytest.mark.parametrize("model_cfg", [
         {"provider": "custom", "default": "local-model"},
         {"provider": "custom:missing", "default": "local-model"},

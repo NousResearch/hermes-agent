@@ -804,7 +804,9 @@ trap 'on_signal TERM' TERM
 # Truthful completion: `hermes update` calls a GUI build failure non-fatal
 # (exit 0). For a Desktop-driven update that would relaunch the OLD build
 # and call it success -- retry the build once, propagate honestly.
-if [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
+# Both shapes: "Desktop build failed" (dependency stage) and the packaged-app
+# stage's "Desktop GUI build failed", which the narrow literal never matched.
+if [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -qE "Desktop( GUI)? build failed"; then
   log "desktop build failed inside hermes update; retrying build"
   publish_stage "Rebuilding Desktop"
   "${UPDATE_INVOKE[@]}" desktop --force-build --build-only >> "$LOG" 2>&1 || {

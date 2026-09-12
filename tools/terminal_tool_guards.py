@@ -92,8 +92,14 @@ _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"\bnext\s+dev\b",
     r"\bvite(?:\s|$)",
     r"\bnodemon\b",
-    r"\buvicorn\b",
-    r"\bgunicorn\b",
+    # Installed-package paths can contain the server name as an intermediate
+    # segment or as the final directory. Exclude both forms for POSIX and
+    # Windows site-packages/dist-packages roots while preserving bare,
+    # module, and absolute-path executable matches. This remains an
+    # intentionally safety-biased lexical guard, not a shell parser: an
+    # unquoted standalone server name in another argument can still match.
+    r"(?<!(?:site|dist)-packages[/\\])\buvicorn\b(?![/\\])",
+    r"(?<!(?:site|dist)-packages[/\\])\bgunicorn\b(?![/\\])",
     r"\bpython(?:3)?\s+-m\s+http\.server\b",
 ))
 

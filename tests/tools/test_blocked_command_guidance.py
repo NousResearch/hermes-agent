@@ -82,3 +82,39 @@ class TestBackgroundGuidanceRecipes:
 
     def test_quoted_ampersand_not_flagged(self):
         assert _foreground_background_guidance('git commit -m "a & b"') is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            (
+                "grep -n spec_version "
+                "/workspace/.venv/lib/python3.13/site-packages/uvicorn/"
+                "protocols/http/h11_impl.py"
+            ),
+            "grep -n Arbiter /workspace/.venv/lib/python3.13/site-packages/gunicorn/arbiter.py",
+            r"type C:\workspace\.venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py",
+            r"type C:\workspace\.venv\Lib\site-packages\gunicorn\arbiter.py",
+            "ls /workspace/.venv/lib/python3.13/site-packages/uvicorn",
+            "ls /usr/lib/python3/dist-packages/gunicorn",
+            r"dir C:\workspace\.venv\Lib\site-packages\uvicorn",
+            r"dir C:\Python313\Lib\dist-packages\gunicorn",
+        ],
+    )
+    def test_package_paths_are_not_mistaken_for_server_invocations(self, command):
+        assert _foreground_background_guidance(command) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "uvicorn app:create_app --factory",
+            "/workspace/.venv/bin/uvicorn app:create_app --factory",
+            r"C:\workspace\.venv\Scripts\uvicorn.exe app:create_app --factory",
+            "python -m uvicorn app:create_app --factory",
+            "gunicorn app:app",
+            "/workspace/.venv/bin/gunicorn app:app",
+        ],
+    )
+    def test_real_server_invocations_still_require_background(self, command):
+        message = _foreground_background_guidance(command)
+        assert message is not None
+        assert "background=true" in message

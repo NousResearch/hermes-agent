@@ -78,6 +78,72 @@ def _make_event(
     )
 
 
+@pytest.fixture
+def matrix_free_rooms_scope(monkeypatch):
+    from agent import secret_scope
+
+    was_multiplexed = secret_scope.is_multiplex_active()
+    monkeypatch.setenv("MATRIX_FREE_RESPONSE_ROOMS", "!process:example.org")
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope(
+        {"MATRIX_FREE_RESPONSE_ROOMS": "!scoped-a:example.org, !scoped-b:example.org"}
+    )
+    try:
+        yield
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(was_multiplexed)
+
+
+@pytest.mark.parametrize("configured_value", ["", "  \t  "])
+def test_matrix_free_response_rooms_blank_scalar_falls_back_to_scoped_value(
+    configured_value,
+    matrix_free_rooms_scope,
+):
+    from plugins.platforms.matrix.adapter import _extra_csv_set
+
+    config = PlatformConfig(
+        enabled=True,
+        extra={"free_response_rooms": configured_value},
+    )
+
+    assert _extra_csv_set(
+        config,
+        "free_response_rooms",
+        "MATRIX_FREE_RESPONSE_ROOMS",
+    ) == {"!scoped-a:example.org", "!scoped-b:example.org"}
+
+
+@pytest.mark.parametrize(
+    ("configured_value", "expected"),
+    [
+        ("!configured:example.org", {"!configured:example.org"}),
+        (
+            ["!configured-a:example.org", " !configured-b:example.org "],
+            {"!configured-a:example.org", "!configured-b:example.org"},
+        ),
+    ],
+    ids=("scalar", "list"),
+)
+def test_matrix_free_response_rooms_explicit_values_override_scoped_fallback(
+    configured_value,
+    expected,
+    matrix_free_rooms_scope,
+):
+    from plugins.platforms.matrix.adapter import _extra_csv_set
+
+    config = PlatformConfig(
+        enabled=True,
+        extra={"free_response_rooms": configured_value},
+    )
+
+    assert _extra_csv_set(
+        config,
+        "free_response_rooms",
+        "MATRIX_FREE_RESPONSE_ROOMS",
+    ) == expected
+
+
 # ---------------------------------------------------------------------------
 # Mention detection helpers
 # ---------------------------------------------------------------------------
@@ -382,5 +448,4 @@ class TestMatrixConfigBridge:
             == "!room1:example.org,!room2:example.org"
         )
         assert os.getenv("MATRIX_AUTO_THREAD") == "false"
-
 

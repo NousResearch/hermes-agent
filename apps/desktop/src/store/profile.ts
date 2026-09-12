@@ -547,10 +547,6 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     )
   }
 
-  if (routeAgrees()) {
-    return
-  }
-
   // Serialize concurrent activations so rapid session switches cannot race the
   // active pointer. Re-acquire after every wake: multiple waiters can observe
   // the same settled switch, and the first one starts the next switch before

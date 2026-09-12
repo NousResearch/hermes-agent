@@ -749,6 +749,7 @@ class TestGetHermesDir:
 
 
 
+    @pytest.mark.require_symlinks
     def test_dangling_legacy_symlink_returns_new(self, tmp_path, monkeypatch):
         """A dangling legacy symlink must NOT shadow populated new-layout data.
 
@@ -760,16 +761,14 @@ class TestGetHermesDir:
         """
         self._set_home(tmp_path, monkeypatch)
         legacy = tmp_path / "pairing"
-        try:
-            legacy.symlink_to(tmp_path / "does-not-exist")
-        except (OSError, NotImplementedError) as exc:
-            pytest.skip(f"Symlink not supported on this platform/permission: {exc}")
+        legacy.symlink_to(tmp_path / "does-not-exist")
         new = tmp_path / "platforms" / "pairing"
         new.mkdir(parents=True)
         (new / "discord-approved.json").write_text("[]")
         result = get_hermes_dir("platforms/pairing", "pairing")
         assert result == new
 
+    @pytest.mark.require_symlinks
     def test_symlink_to_populated_dir_returns_legacy(self, tmp_path, monkeypatch):
         """A legacy symlink pointing at a populated directory is honoured."""
         self._set_home(tmp_path, monkeypatch)
@@ -777,10 +776,7 @@ class TestGetHermesDir:
         real.mkdir()
         (real / "cached.png").write_bytes(b"x")
         legacy = tmp_path / "image_cache"
-        try:
-            legacy.symlink_to(real)
-        except (OSError, NotImplementedError) as exc:
-            pytest.skip(f"Symlink not supported on this platform/permission: {exc}")
+        legacy.symlink_to(real)
         result = get_hermes_dir("cache/images", "image_cache")
         assert result == legacy
 

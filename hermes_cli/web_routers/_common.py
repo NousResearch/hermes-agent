@@ -93,6 +93,20 @@ CORRUPT_STORE_DETAIL = {
 }
 
 
+def corrupt_store_status(db_path, exc) -> HTTPException:
+    """The structured ``state_db_corrupt`` 503 for a malformed store, warning once per store per
+    :data:`_CORRUPT_STORE_WARN_INTERVAL_S` (debug afterwards). Callers ``raise ... from exc``."""
+    key, now = str(db_path), time.monotonic()
+    last = _corrupt_store_warned_at.get(key)
+    if last is None or now - last >= _CORRUPT_STORE_WARN_INTERVAL_S:
+        _corrupt_store_warned_at[key] = now
+        log.warning("state.db at %s is corrupt (%s); dashboard reads return a status payload until it is "
+                    "repaired — run `hermes doctor`", db_path, exc)
+    else:
+        log.debug("state.db at %s still corrupt: %s", db_path, exc)
+    return HTTPException(status_code=503, detail={**CORRUPT_STORE_DETAIL, "path": key})
+
+
 @contextlib.contextmanager
 def corrupt_store_as_status(db_path):
     """Map a corrupt-image ``sqlite3.DatabaseError`` from a state.db read to a 503 status
@@ -105,12 +119,4 @@ def corrupt_store_as_status(db_path):
     except sqlite3.DatabaseError as exc:
         if not is_malformed_db_error(exc):
             raise
-        key, now = str(db_path), time.monotonic()
-        last = _corrupt_store_warned_at.get(key)
-        if last is None or now - last >= _CORRUPT_STORE_WARN_INTERVAL_S:
-            _corrupt_store_warned_at[key] = now
-            log.warning("state.db at %s is corrupt (%s); dashboard reads return a status payload until it is "
-                        "repaired — run `hermes doctor`", db_path, exc)
-        else:
-            log.debug("state.db at %s still corrupt: %s", db_path, exc)
-        raise HTTPException(status_code=503, detail={**CORRUPT_STORE_DETAIL, "path": key}) from exc
+        raise corrupt_store_status(db_path, exc) from exc

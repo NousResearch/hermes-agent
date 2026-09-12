@@ -3,14 +3,35 @@
 import pytest
 
 from agent.conversation_compression import (
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
     CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
     ROUTINE_COMPRESSION_STATUS_SAMPLES,
 )
+from agent.manual_compression_feedback import summarize_manual_compression
 from gateway.config import Platform
 from gateway.run import (
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
 )
+
+
+class _RefusedWouldGrowState:
+    """Stand-in for a ContextCompressor carrying only the flag the summarizer reads."""
+
+    _last_compress_refused_would_grow = True
+
+
+# The manual /compress refusal headline, built by the SAME summarizer the CLI/gateway
+# surface it from (agent/manual_compression_feedback.py), so widening the noise regex
+# cannot quietly start eating it — the property this file exists to pin.
+MANUAL_COMPRESS_REFUSAL_HEADLINE = summarize_manual_compression(
+    [{"role": "user", "content": "hi"}] * 30,
+    [{"role": "user", "content": "hi"}] * 30,
+    1000,
+    1000,
+    compression_state=_RefusedWouldGrowState(),
+)["headline"]
+
 
 # Every human-facing chat surface that must receive noise-filtered,
 # secret-redacted, provider-error-sanitized output (not just Telegram).
@@ -34,6 +55,10 @@ NOISY_STATUS_MESSAGES = [
     "💤 Resumed after 3600s idle — compacting ~120,000 tokens before continuing.",
     "⚠️  Session compressed 12 times — accuracy may degrade. Consider /new to start fresh.",
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
+    # Auto anti-growth refusal warning: a NO-OP diagnostic the commit-site guard emits via
+    # _emit_warning. Built from the emit site's own constant so a reword cannot drift past
+    # the noise regex while this list still passes.
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
     "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
     "⏳ Retrying in 4.2s (attempt 1/3)...",
     # Buffered overflow/attempt-cap retry chatter (replayed on retry exhaustion).
@@ -68,6 +93,9 @@ VISIBLE_COMPRESSION_MESSAGES = [
     "Compression aborted: 30 messages preserved",
     "Compressed with fallback: 30 → 12 messages",
     "No changes from compression: 30 messages",
+    # Manual /compress refusal feedback (#100171 sibling): shares the "Compression refused"
+    # head words with the suppressed auto warning but reports counts, so it must survive.
+    MANUAL_COMPRESS_REFUSAL_HEADLINE,
     (
         "⚠ Compression aborted: auth failure. No messages were dropped — "
         "conversation continues unchanged. Run /compress to retry, or /new "

@@ -109,6 +109,28 @@ def store(tmp_path, monkeypatch):
 
 
 class TestMemoryStoreAdd:
+    def test_shared_root_memory_is_prompt_only_and_never_written(self, tmp_path, monkeypatch):
+        profile_memory = tmp_path / "profile" / "memories"
+        root_memory = tmp_path / "root" / "memories" / "MEMORY.md"
+        profile_memory.mkdir(parents=True)
+        root_memory.parent.mkdir(parents=True)
+        profile_memory.joinpath("MEMORY.md").write_text("profile-local fact", encoding="utf-8")
+        root_memory.write_text("root-only fleet sentinel", encoding="utf-8")
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: profile_memory)
+
+        store = MemoryStore(shared_memory_path=root_memory)
+        store.load_from_disk()
+
+        assert store.memory_entries == ["profile-local fact"]
+        assert store.shared_memory_entries == ["root-only fleet sentinel"]
+        prompt = store.format_for_system_prompt("memory")
+        assert "root-only fleet sentinel" in prompt
+        assert "profile-local fact" in prompt
+
+        assert store.add("memory", "new profile-local fact")["success"] is True
+        assert root_memory.read_text(encoding="utf-8") == "root-only fleet sentinel"
+        assert "new profile-local fact" in profile_memory.joinpath("MEMORY.md").read_text(encoding="utf-8")
+
     def test_add_entry(self, store):
         result = store.add("memory", "Python 3.12 project")
         assert result["success"] is True

@@ -75,11 +75,16 @@ class MemoryStore:
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, *,
-                 memory_enabled: bool = True, user_profile_enabled: bool = True):
+                 memory_enabled: bool = True, user_profile_enabled: bool = True,
+                 shared_memory_path: Optional[Path] = None):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
+        # Optional fleet memory is read-only prompt context.  It must never be
+        # folded into ``memory_entries``: memory-tool writes are profile-local.
+        self.shared_memory_path = shared_memory_path
+        self.shared_memory_entries: List[str] = []
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
 
@@ -130,7 +135,14 @@ class MemoryStore:
             # Deduplicate (order-preserving, first occurrence wins).
             entries = list(dict.fromkeys(self._read_file(path)))
             self._set_entries(target, entries)
-            self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
+            prompt_entries = entries
+            if target == "memory" and self.shared_memory_path is not None:
+                shared_entries = list(dict.fromkeys(self._read_file(self.shared_memory_path)))
+                self.shared_memory_entries = shared_entries
+                # Shared facts come first and retain first-wins deduplication.
+                prompt_entries = list(dict.fromkeys(shared_entries + entries))
+            self._system_prompt_snapshot[target] = self._render_block(
+                target, [_sanitize(e, path.name) for e in prompt_entries])
 
     @staticmethod
     @contextmanager

@@ -9,7 +9,7 @@ import json
 import logging
 from contextvars import ContextVar
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import is_truthy_value
@@ -40,6 +40,28 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 
+def get_shared_root_memory_path() -> Optional[Path]:
+    """Return an opt-in, read-only fleet MEMORY.md for named profiles.
+
+    The switch lives in the root config so one explicit fleet decision applies
+    consistently to every profile.  Local profile memories remain writable and
+    isolated; the root file is prompt context only.
+    """
+    try:
+        root = get_default_hermes_root().resolve()
+        if get_hermes_home().resolve() == root:
+            return None
+        import yaml
+        config = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8")) or {}
+        section = config.get("memory") if isinstance(config, dict) else None
+        enabled = section.get("shared_root_memory_enabled") if isinstance(section, dict) else None
+        if is_truthy_value(enabled, default=False):
+            return root / "memories" / "MEMORY.md"
+    except Exception:
+        logger.debug("Could not resolve shared root memory", exc_info=True)
+    return None
+
+
 from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)
     ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
 
@@ -54,7 +76,8 @@ def load_on_disk_store() -> "MemoryStore":
         mem_cfg = get_builtin_memory_config(config)
         memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
         store = MemoryStore(int(mem_cfg.get("memory_char_limit", 2200)), int(mem_cfg.get("user_char_limit", 1375)),
-                            memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled)
+                            memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled,
+                            shared_memory_path=get_shared_root_memory_path())
     except Exception:
         store = MemoryStore()  # config optional — fall back to defaults rather than break /memory
     store.load_from_disk()

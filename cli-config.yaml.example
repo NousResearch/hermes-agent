@@ -905,6 +905,10 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
 
+  # Fleet opt-in: named profiles read the root MEMORY.md as additional,
+  # read-only prompt context. Profile writes remain profile-local.
+  shared_root_memory_enabled: false
+
   # Periodic memory nudge: remind the agent to consider saving memories
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)

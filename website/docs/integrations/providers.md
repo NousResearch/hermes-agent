@@ -222,6 +222,11 @@ hermes chat --provider copilot --model gpt-5.4
 
 If no token is found, `hermes model` offers an **OAuth device code login** — the same flow used by the Copilot CLI and opencode.
 
+Auxiliary tasks (including compression and title generation) recognize personal,
+Business, and Enterprise Copilot API hosts when recovering from authentication
+errors. Recovery discards the rejected exchanged token from memory and disk,
+exchanges a fresh token, and retries before considering fallbacks.
+
 :::warning Token types
 The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). Supported token types:
 

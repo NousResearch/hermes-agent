@@ -403,9 +403,10 @@ export const $activeTreeGroup = atom<null | string>(null)
  *  zone. In-memory, like the other trackers: a relaunch falls back to main. */
 export const $lastChatZoneGroup = atom<null | string>(null)
 
-/** Mirror an interacted zone into the chat-zone memory, but only when the zone
- *  can host a chat strip: a pointerdown (or hover) on the sidebar / files /
- *  terminal must leave the answer at "the chat zone I was working in". */
+/** Mirror a PRESSED zone into the chat-zone memory, but only when the zone can
+ *  host a chat strip: a pointerdown on the sidebar / files / terminal must leave
+ *  the answer at "the chat zone I was working in". Hover is deliberately not a
+ *  signal here — see `noteHoveredTreeGroup`. */
 function rememberChatZone(groupId: string) {
   const tree = $layoutTree.get()
   const group = tree ? findGroup(tree, groupId) : null
@@ -446,13 +447,12 @@ export function noteHoveredTreeGroup(groupId: null | string) {
     $hoveredTreeGroup.set(groupId)
   }
 
-  // Hovering a chat zone is the same "I'm working here" signal as clicking into
-  // it — it is what makes ⌘T / ⌘1…⌘9 land in the pane under the pointer. Leaving
-  // the panes must NOT clear the memory, though: the pointer crosses the sidebar
-  // on its way to a session row.
-  if (groupId !== null) {
-    rememberChatZone(groupId)
-  }
+  // Hover must NOT mirror into the chat-zone memory. The path from a side pane
+  // to the session list usually CROSSES main, so mirroring on hover rewrites
+  // "the chat zone I was working in" to main on the way past — which sends a
+  // session opened from a session row into the initial pane, the very outcome
+  // the memory exists to prevent. The ⌘T / ⌘1…⌘9 ladder above still follows the
+  // pointer; that answer is transient and lifts when the pointer leaves.
 }
 
 /** The zone every keyboard tab verb acts on, as an ELIGIBILITY LADDER: the
@@ -583,8 +583,14 @@ function sessionStripAnchorOf(group: GroupNode): null | string {
 function lastChatZoneGroup(): GroupNode | null {
   const tree = $layoutTree.get()
   const groupId = $lastChatZoneGroup.get()
+  const group = tree && groupId ? findGroup(tree, groupId) : null
 
-  return tree && groupId ? findGroup(tree, groupId) : null
+  // Only a zone that can STILL host a chat strip counts. A remembered zone whose
+  // last session tile was closed or dragged away would otherwise answer "open it
+  // into that pane" while `lastChatZoneSessionAnchor` finds no tab there and the
+  // caller falls back to main's strip — the same zone asked two questions with
+  // two different answers.
+  return group && sessionStripAnchorOf(group) !== null ? group : null
 }
 
 /** The pane a NEW session tab should dock beside (⌘T): the focused chat zone's

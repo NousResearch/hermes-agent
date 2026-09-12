@@ -30,6 +30,14 @@ import { pathToFileURL } from 'node:url'
 /** A canned assistant reply used for every chat completion request. */
 export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
 
+export const FOLLOW_UP_TRIGGER = 'E2E_FOLLOW_UP_DIRECTIVE'
+export const FOLLOW_UP_TRUNCATED_TRIGGER = 'E2E_FOLLOW_UP_TRUNCATED'
+export const FOLLOW_UP_EMPTY_TRIGGER = 'E2E_FOLLOW_UP_EMPTY'
+export const FOLLOW_UP_LONG_PROMPT = `${'Review the complete prompt safely. '.repeat(14)}Done.`
+export const FOLLOW_UP_REPLY = 'The requested change is complete.\n\n::followup{p1="Run the tests" p2="Open a PR"}'
+export const FOLLOW_UP_TRUNCATED_REPLY = `The long follow-up is ready.\n\n::followup{p1="${FOLLOW_UP_LONG_PROMPT}"}`
+export const FOLLOW_UP_EMPTY_REPLY = 'No usable follow-up was provided.\n\n::followup{}'
+
 export interface MockServerOptions {
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
@@ -649,13 +657,26 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
+          // Follow-up e2e specs steer the canned reply by trigger keyword so the
+          // packaged renderer receives a real ::followup directive (#98173).
+          const reply =
+            typeof lastUserMessage?.content !== 'string'
+              ? MOCK_REPLY
+              : lastUserMessage.content.includes(FOLLOW_UP_TRUNCATED_TRIGGER)
+                ? FOLLOW_UP_TRUNCATED_REPLY
+                : lastUserMessage.content.includes(FOLLOW_UP_EMPTY_TRIGGER)
+                  ? FOLLOW_UP_EMPTY_REPLY
+                  : lastUserMessage.content.includes(FOLLOW_UP_TRIGGER)
+                    ? FOLLOW_UP_REPLY
+                    : MOCK_REPLY
+
           if (stream) {
             const holdThisStream = Boolean(
               options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
                 lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
             )
 
-            streamTextResponse(res, model, MOCK_REPLY, holdThisStream || holdThisCompletion ? () => {
+            streamTextResponse(res, model, reply, holdThisStream || holdThisCompletion ? () => {
               if (holdThisCompletion) {
                 heldCompletionCount++
               }
@@ -668,9 +689,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             if (holdThisCompletion) {
               heldCompletionCount++
               resolveHeldStreamStarted?.()
-              void heldStreamReleased.then(() => nonStreamingTextResponse(res, model, MOCK_REPLY))
+              void heldStreamReleased.then(() => nonStreamingTextResponse(res, model, reply))
             } else {
-              nonStreamingTextResponse(res, model, MOCK_REPLY)
+              nonStreamingTextResponse(res, model, reply)
             }
           }
         })

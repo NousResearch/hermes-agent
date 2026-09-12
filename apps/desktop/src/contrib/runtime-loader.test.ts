@@ -23,8 +23,38 @@ const watchDirectory = vi.fn<(path: string) => Promise<{ id: string }>>()
 const watchPreviewFile = vi.fn<(path: string) => Promise<{ id: string }>>()
 const stopPreviewFileWatch = vi.fn<(id: string) => Promise<boolean>>()
 const onPreviewFileChanged = vi.fn()
+let consoleInfo: ReturnType<typeof vi.spyOn>
+
+const blobToDataUrl = () => {
+  const createObjectURL = vi
+    .spyOn(URL, 'createObjectURL')
+    .mockImplementation(
+      blob =>
+        `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+    )
+
+  const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+  const RealBlob = globalThis.Blob
+
+  vi.stubGlobal(
+    'Blob',
+    class {
+      parts: string[]
+      constructor(parts: string[]) {
+        this.parts = parts
+      }
+    }
+  )
+
+  return () => {
+    createObjectURL.mockRestore()
+    revokeObjectURL.mockRestore()
+    vi.stubGlobal('Blob', RealBlob)
+  }
+}
 
 beforeEach(() => {
+  consoleInfo = vi.spyOn(console, 'info').mockImplementation(() => {})
   desktopPluginsRoot.mockReset()
   readDir.mockReset()
   readFileText.mockReset()
@@ -47,6 +77,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  consoleInfo.mockRestore()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
@@ -223,33 +254,6 @@ describe('watchRuntimePlugins dir watch (#66899)', () => {
 })
 
 describe('plugin source reads (512 KiB preview-cap bug)', () => {
-  const blobToDataUrl = () => {
-    const createObjectURL = vi
-      .spyOn(URL, 'createObjectURL')
-      .mockImplementation(
-        blob =>
-          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
-      )
-
-    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
-    const RealBlob = globalThis.Blob
-    vi.stubGlobal(
-      'Blob',
-      class {
-        parts: string[]
-        constructor(parts: string[]) {
-          this.parts = parts
-        }
-      }
-    )
-
-    return () => {
-      createObjectURL.mockRestore()
-      revokeObjectURL.mockRestore()
-      vi.stubGlobal('Blob', RealBlob)
-    }
-  }
-
   /** Two-level standalone-root listing the metadata-walk probe needs:
    *  the root lists the package folder, the folder lists plugin.js. */
   const standaloneRootWith = (name: string) => {
@@ -347,6 +351,30 @@ describe('plugin source reads (512 KiB preview-cap bug)', () => {
     } finally {
       restore()
       delete (globalThis as unknown as { __smallRegister?: unknown }).__smallRegister
+    }
+  })
+})
+
+describe('loadRuntimePlugin activation logging', () => {
+  it('logs the plugin id, kind, and source only after registration succeeds', async () => {
+    const restore = blobToDataUrl()
+
+    try {
+      const id = await loadRuntimePlugin(
+        'export default { id: "follow-up", name: "Follow-up", register() {} }',
+        'follow-up',
+        {
+          kind: 'disk',
+          file: '/local/.hermes/desktop-plugins/follow-up/plugin.js'
+        }
+      )
+
+      expect(id).toBe('follow-up')
+      expect(consoleInfo).toHaveBeenCalledWith(
+        '[plugins] activated "follow-up" (disk) from /local/.hermes/desktop-plugins/follow-up/plugin.js'
+      )
+    } finally {
+      restore()
     }
   })
 })

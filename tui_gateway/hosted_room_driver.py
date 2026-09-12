@@ -454,11 +454,31 @@ class HostedRoomRuntime:
                     break
                 for room_thread in room_threads:
                     room_thread.join(self.active_poll_interval_seconds)
-            self._release_idle_leases()
-            self._release_wal_keeper()
+            # The keeper close must survive a lease-cleanup failure: a stray
+            # OperationalError out of _release_idle_leases would otherwise skip
+            # it — leaving _wal_keeper referenced so a later restart skips
+            # re-acquire. Nested finally guarantees both sides run.
+            try:
+                self._release_idle_leases()
+            finally:
+                self._release_wal_keeper()
 
     def _acquire_wal_keeper(self) -> None:
         """Open (once) the persistent connection that keeps the WAL sidecars alive.
+
+        The acquire goes through the canonical journal policy
+        (:func:`hermes_state_wal.apply_wal_with_fallback`) — never a raw
+        ``sqlite3.connect``: on a fresh database the keeper otherwise opens
+        while the file is still in DELETE mode, a later store connection flips
+        the header to WAL, and the stale keeper connection never joins the WAL
+        shared-memory index. From then on every ephemeral close is still a
+        "last WAL member" close and deletes ``-wal``/``-shm`` with the keeper
+        held (review-reproduced on PR #103665). Applying the policy here makes
+        the keeper the *first* WAL connection, honoring ``database.journal_mode``
+        and the WAL-reset-vulnerable-runtime gate exactly like
+        :mod:`gateway.hosted_rooms_common`, and is a mode-aware no-op when a
+        DELETE-mode or indeterminate-mode database cannot safely be flipped
+        (the keeper still pins the file against last-closer deletes).
 
         Failure is non-fatal (old behaviour: no sidecar protection) and the
         acquire is retried on the next worker cycle — a transient failure must
@@ -469,6 +489,11 @@ class HostedRoomRuntime:
         conn = None
         try:
             conn = sqlite3.connect(self.db_path, timeout=10)
+            # Apply the shared journal policy before anything else so a fresh
+            # database is in its configured mode from the first connection
+            # (see docstring for the DELETE-mode-keeper failure this avoids).
+            from hermes_state_wal import apply_wal_with_fallback
+            apply_wal_with_fallback(conn, db_label=self.db_path.name)
             # Touch the content: merely opening an fd does not join the WAL
             # shared-memory index — SQLite registers a connection only on first
             # content access, and an untouched keeper would be invisible to

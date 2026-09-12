@@ -938,14 +938,14 @@ class ToolRegistry:
                     msg = _sanitize_tool_error(str(e))
                 except Exception:
                     msg = str(e)
-                return json.dumps({"error": msg})
+                return tool_error(msg)
             except Exception:
                 logger.exception(
                     "enforcement_fn raised a non-denial exception for tool %s "
                     "(bug in enforcement fn — failing closed)",
                     name,
                 )
-                return json.dumps({"error": f"Tool '{name}' authorization unavailable (see logs)"})
+                return tool_error(f"Tool '{name}' authorization unavailable (see logs)")
 
         entry = self.get_entry(name, scope=scope)
         if not entry:

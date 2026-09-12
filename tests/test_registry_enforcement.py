@@ -214,6 +214,83 @@ class TestEnforcementFn:
         result = json.loads(r.dispatch("protected_tool", {}))
         assert result == {"result": "protected_ok"}
 
+    def test_plugin_dispatch_tool_route_is_enforced(self):
+        """``PluginContext.dispatch_tool()`` calls ``registry.dispatch()`` directly.
+
+        That route never passes through ``tool_execution`` middleware, so it is
+        the concrete bypass this hook exists to close. A denial there must
+        surface as the tool result and the handler must not run.
+        """
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+        from tools.registry import registry
+
+        handled = []
+        observed = []
+        registry.register(
+            name="_test_enforced_plugin_probe",
+            toolset="debugging",
+            schema={"name": "_test_enforced_plugin_probe", "description": "probe",
+                    "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: handled.append(args) or '{"ok": true}',
+        )
+
+        def deny_probe(name, args, **kw):
+            observed.append(name)
+            if name == "_test_enforced_plugin_probe":
+                raise EnforcementDenied("plugin route denied by policy")
+
+        registry.set_enforcement_fn(deny_probe)
+        try:
+            mgr = PluginManager()
+            ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+            result = json.loads(ctx.dispatch_tool("_test_enforced_plugin_probe", {"x": 1}))
+            assert "plugin route denied by policy" in result["error"]
+            assert handled == []
+            assert observed == ["_test_enforced_plugin_probe"]
+        finally:
+            registry.set_enforcement_fn(None)
+            registry.deregister("_test_enforced_plugin_probe")
+
+    def test_normal_agent_route_invokes_enforcement_exactly_once(self, monkeypatch):
+        """``handle_function_call`` -> tool_execution middleware -> ``registry.dispatch``.
+
+        The normal model route already wraps dispatch in middleware. Moving
+        enforcement into the registry must not make that route evaluate policy
+        twice, and an allowing fn must let the handler run exactly once.
+        """
+        import model_tools
+        from tools.registry import registry
+
+        handled = []
+        observed = []
+        registry.register(
+            name="_test_enforced_agent_route",
+            toolset="debugging",
+            schema={"name": "_test_enforced_agent_route", "description": "probe",
+                    "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: handled.append(args) or '{"ok": true}',
+        )
+        registry.set_enforcement_fn(
+            lambda name, args, **kw: observed.append((name, kw.get("session_id")))
+        )
+        # Skip the unrelated read-loop tracker side effect.
+        monkeypatch.setattr(model_tools, "_READ_SEARCH_TOOLS", frozenset())
+        try:
+            result = json.loads(model_tools.handle_function_call(
+                "_test_enforced_agent_route",
+                {"x": 1},
+                task_id="t1",
+                session_id="s1",
+                tool_call_id="tc1",
+                skip_pre_tool_call_hook=True,
+            ))
+            assert result == {"ok": True}
+            assert handled == [{"x": 1}]
+            assert observed == [("_test_enforced_agent_route", "s1")]
+        finally:
+            registry.set_enforcement_fn(None)
+            registry.deregister("_test_enforced_agent_route")
+
     def test_sentinel_vs_bug_distinct_error_messages(self):
         """EnforcementDenied and buggy exceptions produce different error shapes.
 

@@ -121,9 +121,11 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     except Exception:
         return True  # fail safe: inability to prove death must not rewrite state
     if started_at is None:
-        return pid == os.getpid()
+        return True  # A live PID without a recorded fingerprint is not proved abandoned.
     current = _process_start_time(pid)
-    return current is not None and current == started_at
+    # Metadata may be temporarily unavailable even though the process is alive. Only a known
+    # mismatch proves PID reuse; otherwise preserve the writer's right to finish its records.
+    return current is None or current == started_at
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:

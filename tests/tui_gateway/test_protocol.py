@@ -1335,6 +1335,63 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_slash_exec_skill_scan_failopen_does_not_banner_ok(server):
+    """Fail-open skill scan must not banner-ok a real skill via the worker.
+
+    `_is_profile_skill_command` swallows scan/config exceptions (returns False),
+    so a recognized skill can still reach the slash worker. Current worker
+    replies ok with the Loading banner; clients then never command.dispatch /
+    send() the scaffold (#107387). slash.exec must surface 4018 instead.
+    """
+    sid = "test-session-failopen"
+    worker = MagicMock()
+    worker.run.return_value = "⚡ Loading skill: grilling"
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "slash_worker": worker,
+    }
+
+    with patch("agent.skill_commands.get_skill_commands", side_effect=RuntimeError("scan exploded")):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/grilling", "session_id": sid},
+        })
+
+    assert "error" in resp, resp
+    assert resp["error"]["code"] == 4018
+    assert "skill command" in resp["error"]["message"]
+    # Expected refuse: do not tear down the persistent worker.
+    assert server._sessions[sid]["slash_worker"] is worker
+    worker.close.assert_not_called()
+
+
+def test_slash_exec_skill_orphan_raise_is_4018_without_teardown(server):
+    """Worker refuse (raise) must map to 4018, not the generic 5030 teardown."""
+    sid = "test-session-orphan-raise"
+    worker = MagicMock()
+    worker.run.side_effect = RuntimeError("skill command: use command.dispatch for /grilling")
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "slash_worker": worker,
+    }
+
+    with patch("agent.skill_commands.get_skill_commands", side_effect=RuntimeError("scan exploded")):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/grilling", "session_id": sid},
+        })
+
+    assert "error" in resp, resp
+    assert resp["error"]["code"] == 4018
+    assert "skill command" in resp["error"]["message"]
+    assert server._sessions[sid]["slash_worker"] is worker
+    worker.close.assert_not_called()
+
+
 def test_command_dispatch_queue_sends_message(server):
     """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
     sid = "test-session"

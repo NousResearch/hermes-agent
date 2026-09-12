@@ -808,6 +808,23 @@ def _(rid, params: dict) -> dict:
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
 
 
+def _is_orphaned_skill_banner(output: str) -> bool:
+    """True when worker stdout is only the skill-loading banner (no REPL drain)."""
+    text = (output or "").strip()
+    if not text:
+        return False
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return bool(lines) and all("Loading skill:" in ln for ln in lines)
+
+
+def _is_skill_orphan_refuse(exc: BaseException) -> bool:
+    """Worker refused a skill that only parked ``_pending_input`` (in-process or subprocess)."""
+    if type(exc).__name__ == "SkillCommandOrphanedError":
+        return True
+    msg = str(exc).lower()
+    return "skill command" in msg and "command.dispatch" in msg
+
+
 @method("slash.exec")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
@@ -856,13 +873,18 @@ def _(rid, params: dict) -> dict:
                 except Exception as e:
                     return _err(rid, 5030, f"slash worker start failed: {e}")
     try:
-        payload = {"output": worker.run(cmd) or "(no output)"}
+        output = worker.run(cmd) or "(no output)"
+        if _is_orphaned_skill_banner(output):
+            return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
+        payload = {"output": output}
         if warning := _mirror_slash_side_effects(sid, session, cmd):
             payload["warning"] = warning
         if base in _SESSION_CONTROL_SLASHES:
             _publish_session_control_snapshot(sid, session)
         return _ok(rid, payload)
     except Exception as e:
+        if _is_skill_orphan_refuse(e):
+            return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
         with contextlib.suppress(Exception):
             worker.close()
         session["slash_worker"] = None

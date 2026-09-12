@@ -37,6 +37,30 @@ _in_flight = threading.Event()  # set while a command is executing
 logger = logging.getLogger(__name__)
 
 
+class SkillCommandOrphanedError(Exception):
+    """Skill/bundle parked a prompt on ``_pending_input``; this worker has no REPL drain."""
+
+
+def _pending_input_orphaned(cli) -> bool:
+    """True when process_command queued a prompt the worker cannot submit as a turn."""
+    pending = getattr(cli, "_pending_input", None)
+    if pending is None:
+        return False
+    empty = getattr(pending, "empty", None)
+    if callable(empty):
+        try:
+            return not empty()
+        except Exception:
+            return False
+    qsize = getattr(pending, "qsize", None)
+    if callable(qsize):
+        try:
+            return qsize() > 0
+        except Exception:
+            return False
+    return False
+
+
 def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
     """Return whether this worker no longer has its original POSIX parent."""
     return getppid() != original_ppid
@@ -81,6 +105,22 @@ def _run(cli: HermesCLI, command: str) -> str:
     finally:
         if old is not None:
             cli_mod._cprint = old
+    if _pending_input_orphaned(cli):
+        base = cmd.lstrip("/").split(maxsplit=1)[0]
+        # Discard the parked scaffold here so a later non-skill command on this
+        # persistent worker is not also refused. Do not return it as ok output —
+        # clients display slash.exec output and never send() it.
+        pending = getattr(cli, "_pending_input", None)
+        drain = getattr(pending, "get_nowait", None) if pending is not None else None
+        if callable(drain):
+            try:
+                while True:
+                    drain()
+            except Exception:
+                pass
+        raise SkillCommandOrphanedError(
+            f"skill command: use command.dispatch for /{base}"
+        )
     # Desktop chat bubbles render plain text, not ANSI. A command that emits Rich color (e.g. /journey
     # under the gateway's inherited COLORTERM) would leak raw escapes; strip at this single choke point.
     from tools.ansi_strip import strip_ansi

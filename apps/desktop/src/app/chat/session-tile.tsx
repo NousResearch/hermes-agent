@@ -37,7 +37,11 @@ import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
-import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
+import {
+  type ComposerAttachmentScope,
+  createComposerAttachmentScope,
+  draftTitleFor
+} from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
@@ -174,24 +178,28 @@ const tileTranscribeAudio = async (audio: Blob) => {
 }
 
 export function SessionChatSurface({
+  attachmentScope,
   className,
   forceFocused = false,
   listSessionOnFirstSend = true,
   onRetryResume,
   onRuntimeRecovered,
   ownerRoute,
+  retainAttachmentsAcrossUnmount = false,
   runtimeId,
   scopeTarget,
   sessionAnchorOverride,
   storedSessionId,
   view
 }: {
+  attachmentScope?: ComposerAttachmentScope
   className?: string
   forceFocused?: boolean
   listSessionOnFirstSend?: boolean
   onRetryResume?: () => void
   onRuntimeRecovered?: (runtimeId: string) => void
   ownerRoute?: SessionOwnerRoute
+  retainAttachmentsAcrossUnmount?: boolean
   runtimeId: string
   scopeTarget?: string
   sessionAnchorOverride?: null | string
@@ -218,17 +226,23 @@ export function SessionChatSurface({
   const cwd = useStore(view.$cwd)
   const gatewayOpen = useStore($gatewayState) === 'open'
 
-  // One attachment set + focus key per tile, stable for the tile's lifetime.
-  const attachments = useRef(createComposerAttachmentScope()).current
+  // Layout tiles own one attachment set for their mounted lifetime. Embedded
+  // native panels may inject an owner-qualified scope that survives a
+  // conditional panel unmount/reopen.
+  const attachments = useMemo(
+    () => attachmentScope ?? createComposerAttachmentScope(),
+    [attachmentScope]
+  )
 
   const scope = useMemo<ComposerScope>(
     () => ({
       $awaitingInput: sessionAwaitingInput(runtimeId),
       $messages: view.$messages,
       attachments,
+      retainAttachmentsAcrossUnmount,
       target: scopeTarget ?? `tile:${storedSessionId}`
     }),
-    [attachments, runtimeId, scopeTarget, storedSessionId, view.$messages]
+    [attachments, retainAttachmentsAcrossUnmount, runtimeId, scopeTarget, storedSessionId, view.$messages]
   )
 
   // Tile actions must keep the persisted owner route. The ambient gateway hook

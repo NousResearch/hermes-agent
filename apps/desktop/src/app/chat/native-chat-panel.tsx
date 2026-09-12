@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { cn } from '@/lib/utils'
+import { type ComposerAttachmentScope, createComposerAttachmentScope } from '@/store/composer'
 import { requestGatewayForAgent, retainGatewayForAgent } from '@/store/gateway'
 import { setSessionOwnerHint } from '@/store/session'
 import {
@@ -58,6 +59,8 @@ export interface CreateNativeChatSessionOptions {
 
 const MAX_PENDING_NATIVE_SESSION_LEASES = 64
 const pendingNativeSessionLeases = new Map<string, () => void>()
+const MAX_NATIVE_ATTACHMENT_SCOPES = 64
+const nativeAttachmentScopes = new Map<string, ComposerAttachmentScope>()
 
 function normalizeRoute(route: NativeChatProfileRoute): NativeChatProfileRoute {
   const connectionId = route.connectionId.trim()
@@ -74,6 +77,43 @@ function normalizeRoute(route: NativeChatProfileRoute): NativeChatProfileRoute {
     profile,
     targetProfile
   }
+}
+
+function nativeBindingKey(route: NativeChatProfileRoute, storedSessionId: string): string {
+  return JSON.stringify([
+    route.connectionId,
+    route.mode,
+    route.profile,
+    route.targetProfile,
+    storedSessionId
+  ])
+}
+
+function nativeAttachmentScope(route: NativeChatProfileRoute, storedSessionId: string): ComposerAttachmentScope {
+  const key = nativeBindingKey(route, storedSessionId)
+  const existing = nativeAttachmentScopes.get(key)
+
+  if (existing) {
+    // Refresh bounded LRU order on reopen.
+    nativeAttachmentScopes.delete(key)
+    nativeAttachmentScopes.set(key, existing)
+    return existing
+  }
+
+  const created = createComposerAttachmentScope()
+  nativeAttachmentScopes.set(key, created)
+
+  while (nativeAttachmentScopes.size > MAX_NATIVE_ATTACHMENT_SCOPES) {
+    const oldest = nativeAttachmentScopes.keys().next().value as string | undefined
+
+    if (!oldest) {
+      break
+    }
+
+    nativeAttachmentScopes.delete(oldest)
+  }
+
+  return created
 }
 
 function rememberPendingNativeSessionLease(storedSessionId: string, release: () => void): void {
@@ -103,6 +143,19 @@ function releasePendingNativeSessionLease(storedSessionId: string): void {
   pendingNativeSessionLeases.delete(storedSessionId)
   release()
 }
+
+/** @internal Tests. */
+export function _resetNativeChatSessionLeasesForTests(): void {
+  for (const release of pendingNativeSessionLeases.values()) {
+    release()
+  }
+
+  pendingNativeSessionLeases.clear()
+  nativeAttachmentScopes.clear()
+}
+
+/** @internal Tests. */
+export const _nativeChatAttachmentScopeForTests = nativeAttachmentScope
 
 /** Create a normal Hermes session on one exact profile route without selecting,
  * navigating to, or adding a layout pane for it. The route lease intentionally
@@ -208,6 +261,10 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
   ])
   const storedSessionId = binding.storedSessionId.trim()
   const target = `native:${storedSessionId}`
+  const attachments = useMemo(
+    () => nativeAttachmentScope(route, storedSessionId),
+    [route, storedSessionId]
+  )
   const $runtimeId = useMemo(
     () => {
       const candidate = binding.runtimeSessionId?.trim() || ''
@@ -335,12 +392,14 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
       }
     >
       <SessionChatSurface
+        attachmentScope={attachments}
         className={className}
         forceFocused
         listSessionOnFirstSend={false}
         onRetryResume={retry}
         onRuntimeRecovered={onRuntimeRecovered}
         ownerRoute={route}
+        retainAttachmentsAcrossUnmount
         runtimeId={runtimeId}
         scopeTarget={target}
         sessionAnchorOverride={null}

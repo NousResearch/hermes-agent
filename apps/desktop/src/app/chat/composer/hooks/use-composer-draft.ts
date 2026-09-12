@@ -78,7 +78,7 @@ export function useComposerDraft({
   const composerRuntime = useComposerRuntime()
   const paneVisible = usePaneVisible()
   // Which composer this is on the focus bus + which attachment set it owns.
-  const { attachments: attachmentScope, target } = useComposerScope()
+  const { attachments: attachmentScope, retainAttachmentsAcrossUnmount, target } = useComposerScope()
 
   // Coarse edges only — these flip rarely (empty↔non-empty, the `?` help sigil,
   // steerable-vs-slash), so typing within a line costs no render.
@@ -427,7 +427,18 @@ export function useComposerDraft({
     draftScopeRef.current = activeQueueSessionKey
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
-    loadIntoComposer(text, attachments)
+    // A native embedded panel may be conditionally unmounted while its
+    // conversation remains open. Its attachment scope is deliberately owned
+    // outside the ChatBar, so retain those unsent chips when the generic draft
+    // stash contains only text (or was not flushed before the conditional
+    // unmount). Normal main/tile composers keep the existing stash-authority
+    // behaviour.
+    const restoredAttachments =
+      retainAttachmentsAcrossUnmount && attachments.length === 0 && attachmentScope.$attachments.get().length > 0
+        ? attachmentScope.$attachments.get()
+        : attachments
+
+    loadIntoComposer(text, restoredAttachments)
 
     return () => {
       const latestText = syncDraftFromEditor()

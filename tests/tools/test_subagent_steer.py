@@ -720,7 +720,9 @@ class TestSubagentSteerRPC:
         finally:
             _unregister_subagent("sid-rpc-param-spoof")
 
-    def test_session_transport_rebinding_does_not_transfer_ownership(self):
+    def test_session_transport_rebinding_moves_ownership_to_the_live_slot(self):
+        """Authority is the owning session's CURRENT transport slot (7befa11bf25 reversed the
+        original never-transfer rule): the reattached peer steers, the displaced one cannot."""
         original_transport = self._Transport()
         rebound_transport = self._Transport()
         owner_record = {
@@ -738,7 +740,7 @@ class TestSubagentSteerRPC:
         )
         owner_record["transport"] = rebound_transport
         try:
-            for transport in (original_transport, rebound_transport):
+            for transport, expected in ((original_transport, "rejected"), (rebound_transport, "queued")):
                 envelope = self._call(
                     {
                         "session_id": "owner-session",
@@ -748,8 +750,8 @@ class TestSubagentSteerRPC:
                     transport=transport,
                     session_record=owner_record,
                 )
-                assert envelope["result"]["status"] == "rejected"
-            assert agent.steered == []
+                assert envelope["result"]["status"] == expected
+            assert agent.steered == ["rebound authority"]
         finally:
             _unregister_subagent("sid-rpc-rebound")
 

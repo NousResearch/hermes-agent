@@ -74,8 +74,8 @@ repo.
 ## Quick start — your first plugin
 
 Create `$HERMES_HOME/desktop-plugins/hello/plugin.js` (that's `~/.hermes/...`
-by default, or `~/.hermes/profiles/<name>/...` under a named profile). The folder
-name must equal the plugin `id`.
+by default). Desktop plugins are app-level — one root for every profile, gateway,
+or remote machine the window connects to. The folder name must equal the plugin `id`.
 
 ```javascript
 // ~/.hermes/desktop-plugins/hello/plugin.js
@@ -380,8 +380,9 @@ host.onEvent('gateway.ready', () => {
 
 Both doors persist per profile, so a plugin-driven switch sticks exactly like a
 manual pick. To tint the *active* theme rather than replace it, use
-`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the bundled `accent`
-plugin is the worked example.
+`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the standalone
+[Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
+plugin is the worked example (it is also a complete, installable disk plugin).
 
 ### Composer extensions
 
@@ -695,10 +696,12 @@ construction**.
 ### One package, both SDKs {#one-package-both-sdks}
 
 A feature that needs a desktop UI **and** agent-side code (a Python plugin, its
-backend routes, skills) doesn't have to ship as two co-dependent installs. The
-desktop app also scans `$HERMES_HOME/plugins/<id>/` — the regular agent-plugin
-root — for a `desktop/plugin.js`, and loads it through the exact same pipeline
-as the standalone disk door (hot reload included):
+backend routes, skills) doesn't have to ship as two co-dependent installs. Put a
+`desktop/plugin.js` inside the agent package. When the package lands in any
+local `plugins/` root (default home or a profile), the Electron main process
+copies that half into `$HERMES_HOME/desktop-plugins/<id>/` beside a
+`.hermes-package.json` marker, and the renderer loads it through the exact same
+pipeline as the standalone disk door (hot reload included):
 
 ```
 ~/.hermes/plugins/<id>/           # ONE installable folder
@@ -713,7 +716,15 @@ as the standalone disk door (hot reload included):
 
 The `desktop/plugin.js` half is an ordinary disk plugin — same contract, same
 imports, same `ctx.rest('/…')` reaching the `plugin_api.py` sitting beside it.
-Installing, sharing, or removing the feature is one folder.
+Installing, sharing, or removing the feature is one folder: the app-root copy
+is refreshed when the source `plugin.js` changes (`hermes plugins update`, or
+**Rescan**) and removed when the package folder disappears. The copy is what
+makes the desktop half **app-level**: it exists once, however many profiles
+carry the package, and it never appears or disappears when the user switches
+the Capabilities profile selector. The renderer never scans `plugins/` itself.
+The marker records the package name and its origin (catalog sidecar or git
+remote), which is what the **Install here** button on the Plugins page uses to
+install the agent half into another profile.
 
 Two enable switches still apply, on purpose, and both default to **off**: the
 desktop half ships opt-in — it inventories in **Capabilities → Plugins** but stays
@@ -724,10 +735,11 @@ says otherwise. The desktop half degrades gracefully when the backend half is
 off — `ctx.rest` returns errors, not crashes.
 
 :::note
-The scan is local to the machine the desktop app runs on. Against a remote
+The copy is local to the machine the desktop app runs on. Against a remote
 backend, the remote box's `~/.hermes/plugins` is not reachable as a filesystem —
-only locally installed packages contribute a desktop half (same rule as the
-standalone door).
+only locally installed packages contribute a desktop half this way. For a
+remote backend the install dialog clones the desktop half separately into
+`desktop-plugins/`, the same as a desktop-only repo.
 :::
 
 ### Distributing with an install link {#install-link}

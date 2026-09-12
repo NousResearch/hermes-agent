@@ -329,6 +329,19 @@ On each tick Hermes:
 
 A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch.
 
+### Restart-safe workers under systemd
+
+When the gateway runs as a systemd service, each due job is handed to an external worker process launched in a transient user scope (`systemd-run --user --scope`), so restarting the gateway mid-job does not kill the job. Creating that scope needs a user systemd session; hosts without one (containers, minimal LXCs, a service user without linger) cannot provide it.
+
+By default cron then **degrades**: the job still runs as a separate external process with the same execution handoff, but without cgroup isolation, so a gateway restart during the job kills it (the execution ledger records that). One warning is logged per gateway process. To fail closed instead — skip the job and record the error on the job row — set:
+
+```yaml
+cron:
+  require_restart_safe_scope: true
+```
+
+The lasting fix is a user session for the gateway user: `sudo loginctl enable-linger <gateway-user>` (and `XDG_RUNTIME_DIR` / `DBUS_SESSION_BUS_ADDRESS` in the unit for system-level installs), then restart the gateway. Kanban workers always require a scope and fail closed regardless of this key.
+
 ### Execution history
 
 Hermes records each claimed cron attempt in the profile-local
@@ -879,6 +892,30 @@ These misses are stamped on the job record as `last_fire_error` (timestamp + rea
 - The dashboard job view
 
 The stamp always reflects **current** auto-fire health: it is overwritten by newer misses and cleared automatically by the next successful run. If you see it, the job and its schedule are fine — the gateway side of the fire path needs attention (most commonly, restart the gateway through its supervisor so it loads the full profile environment: `hermes gateway restart`).
+
+### Local missed-run policy
+
+If the gateway was down (or restarting) when a recurring job's scheduled time
+passed, the job **catches up once** when the scheduler is back: a slot missed
+inside a restart gap fires exactly one time, a slot that already ran before the
+restart is never run again, and a long outage collapses into a single run rather
+than one run per missed slot. Paused jobs never catch up. Each catch-up shows in
+`hermes cron list` as `⚠ late` / `⚠ catch-up after missed fire`.
+
+To avoid that catch-up load after a planned gateway stop, set:
+
+```yaml
+cron:
+  catch_up_missed: false   # default: true
+```
+
+Or run `hermes config set cron.catch_up_missed false`. With this opt-out, a recurring
+job later than its existing grace window (half its period, clamped to 120 seconds–2
+hours) is re-anchored to its next future occurrence without firing now. The skip is
+logged. Jobs inside grace and explicit manual triggers still run normally; if the
+next occurrence cannot be computed, the existing run-once fallback is preserved.
+This does not change one-shot expiry, resume behavior, or the hosted-provider sweep
+below. There is no per-job override.
 
 ### Misfire catch-up
 

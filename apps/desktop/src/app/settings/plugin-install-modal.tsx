@@ -159,7 +159,20 @@ export function PluginInstallModal() {
   const profileLabel = request?.profile || activeProfile || profileScope || 'default'
 
   const agentTargetHint =
-    connection?.mode === 'remote' ? m.agentTargetRemote(profileLabel) : m.agentTargetLocal(profileLabel)
+    connection?.mode === 'remote'
+      ? m.agentTargetRemote(profileLabel)
+      : m.agentTargetLocal(
+          profileLabel,
+          request?.profile && request.profile !== 'default'
+            ? `~/.hermes/profiles/${request.profile}/plugins/`
+            : '~/.hermes/plugins/'
+        )
+
+  // A unified package installed into a local backend carries its own desktop
+  // half; the app copies that half out of the package folder. Only a remote
+  // backend (whose plugins/ folder this machine cannot read) or a desktop-only
+  // repo needs a separate desktop clone.
+  const desktopHalfFromPackage = Boolean(probe?.agent && installAgent && connection?.mode !== 'remote')
 
   const sourceLinks = useMemo(() => (request ? resolvePluginSourceLinks(request.repo) : null), [request])
 
@@ -229,18 +242,32 @@ export function PluginInstallModal() {
       }
 
       if (installDesktop && probe.desktop) {
-        const installFn = window.hermesDesktop?.installDesktopPlugin
+        if (agentInstalled && desktopHalfFromPackage) {
+          // Unified package into a LOCAL backend: the desktop half ships inside
+          // the package folder Electron just watched land. Materialise it from
+          // there (one source of truth, follows updates/uninstall) instead of
+          // cloning a second, standalone copy under another folder name.
+          const touched = (await window.hermesDesktop?.reconcileDesktopPlugins?.()) ?? []
 
-        if (!installFn) {
-          errors.push(m.desktopUnavailable)
-        } else {
-          const result = await installFn({ identifier: request.repo, force: forceReinstall })
+          successes.push(m.desktopSuccess(probe.agentName ?? request.repo))
 
-          if (result.ok) {
-            successes.push(m.desktopSuccess(result.pluginName ?? request.repo))
+          if (touched.length > 0) {
             await discoverRuntimePlugins()
+          }
+        } else {
+          const installFn = window.hermesDesktop?.installDesktopPlugin
+
+          if (!installFn) {
+            errors.push(m.desktopUnavailable)
           } else {
-            errors.push(result.error || m.desktopFailed)
+            const result = await installFn({ identifier: request.repo, force: forceReinstall })
+
+            if (result.ok) {
+              successes.push(m.desktopSuccess(result.pluginName ?? request.repo))
+              await discoverRuntimePlugins()
+            } else {
+              errors.push(result.error || m.desktopFailed)
+            }
           }
         }
       }
@@ -418,8 +445,8 @@ export function PluginInstallModal() {
                     <span className="min-w-0">
                       <span className="block font-medium text-foreground">{m.desktopLabel}</span>
                       <span className="block text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {m.desktopTarget}
-                        {probe.desktopName ? ` · ${probe.desktopName}` : ''}
+                        {desktopHalfFromPackage ? m.desktopTargetFromPackage : m.desktopTarget}
+                        {desktopHalfFromPackage ? '' : probe.desktopName ? ` · ${probe.desktopName}` : ''}
                       </span>
                     </span>
                   </label>

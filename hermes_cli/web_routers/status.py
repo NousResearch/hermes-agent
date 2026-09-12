@@ -18,9 +18,12 @@ from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
-from gateway.status import derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents, resolve_gateway_liveness
+from gateway.status import (
+    derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
+    profile_platforms_from_multiplexer, resolve_gateway_liveness)
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import get_config_path, get_env_path
+from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_cli.web_routers._common import scoped_to_thread
 from pathlib import Path
@@ -250,6 +253,13 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     runtime = local_runtime
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
+    if liveness.runtime is not None:
+        # Served by the multiplexer: its record is this profile's runtime, with the profile's own
+        # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape. Unscoped, the
+        # profile is the process's own home (a pooled ``hermes --profile X serve``).
+        served_name = profile_dir.name if profile_dir is not None else profile_name_for_home(get_process_hermes_home())
+        runtime = {**liveness.runtime,
+                   "platforms": profile_platforms_from_multiplexer(liveness.runtime, served_name or "")}
 
     gateway_state = None
     gateway_platforms: dict = {}
@@ -275,10 +285,14 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     if gateway_running and gateway_state is None and remote_health_body is not None:
         gateway_state = "running"
 
+    # ``liveness.runtime`` is set only when the shared multiplexer answered for a served profile: its
+    # gateway IS that process, so name every bot a restart would blip ("default, alpha, beta").
+    served = (liveness.runtime or {}).get("served_profiles")
     return {
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
-        "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at}
+        "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
+        "gateway_shared_with": [str(p) for p in served] if isinstance(served, list) else None}
 
 
 def _auth_gate_status() -> Dict[str, Any]:
@@ -424,6 +438,8 @@ async def get_status(profile: Optional[str] = None):
             "gateway_platforms": gateway["gateway_platforms"],
             "gateway_exit_reason": gateway["gateway_exit_reason"],
             "gateway_updated_at": gateway["gateway_updated_at"],
+            # Non-null only for a profile served by the shared multiplexer: every profile that process carries.
+            "gateway_shared_with": gateway["gateway_shared_with"],
             "active_agents": active_agents,
             "gateway_busy": derive_gateway_busy(
                 gateway_running=gateway_running, gateway_state=gateway_state,
@@ -655,6 +671,9 @@ def _get_portal_status_sync():
         "logged_in": bool(auth.get("logged_in")), "portal_url": auth.get("portal_base_url"),
         "inference_url": auth.get("inference_base_url"),
         "provider": str((model_cfg or {}).get("provider") or ""),
+        # Free tier: a token exists, so logged_in stays true for callers that only ask "is there a
+        # credential"; surfaces that render an account must branch on free_tier first.
+        "free_tier": bool(auth.get("free_tier")), "account_tier": auth.get("account_tier"),
         "subscription_url": "https://portal.nousresearch.com/manage-subscription",
         "features": features}
 

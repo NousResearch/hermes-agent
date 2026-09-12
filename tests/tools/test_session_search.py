@@ -523,14 +523,14 @@ class TestCrossProfileRead:
         monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: exists)
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: home)
 
-    def test_bare_id_locates_across_profiles(self, db, tmp_path, monkeypatch):
-        # The real-world failure: model dropped the owning profile and passed a
-        # bare id. The tool must scan profiles and find it anyway.
+    def test_bare_id_never_reads_another_profiles_store(self, db, tmp_path, monkeypatch):
+        # #106761: profiles are isolated islands. A bare id that misses the caller's
+        # store must NOT be located by scanning every other profile's state.db.
         other_home = tmp_path / "asdf_home"
         other_home.mkdir()
         other = SessionDB(other_home / "state.db")
         other.create_session("s_far", source="cli")
-        other.append_message("s_far", role="user", content="hi")
+        other.append_message("s_far", role="user", content="secret")
         other._conn.commit()
 
         from collections import namedtuple
@@ -539,12 +539,15 @@ class TestCrossProfileRead:
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: tmp_path / "default_home")
         monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [Info("asdf", other_home)])
 
-        # `db` (current profile) lacks s_far; no profile passed → scan finds it.
         result = json.loads(session_search(session_id="s_far", db=db))
-        assert result["success"] is True
-        assert result["mode"] == "read"
-        assert result["profile"] == "asdf"
+        assert result["success"] is False
+        assert "messages" not in result and "secret" not in json.dumps(result)
+        assert "profile=" in result["error"]
 
+        # Naming the owning profile is still the sanctioned cross-profile read.
+        self._patch_profiles(monkeypatch, other_home)
+        named = json.loads(session_search(session_id="s_far", profile="asdf", db=db))
+        assert named["success"] is True and named["message_count"] == 1
 
     def test_combined_value_autosplits(self, db, tmp_path, monkeypatch):
         # Agent passed the raw "@session:<profile>/<id>" value as session_id with

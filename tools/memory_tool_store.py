@@ -296,6 +296,72 @@ class MemoryStore:
         working[idx:idx + 1] = [content] if act == "replace" else []
         return None
 
+    @staticmethod
+    def _scan_batch(operations: List[Dict[str, Any]]) -> Optional[str]:
+        """Scan every add/replace content in a batch; one poisoned op rejects the whole batch."""
+        for i, op in enumerate(operations):
+            scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])
+            if scan_error:
+                return f"Operation {i + 1}: {scan_error}"
+        return None
+
+    def plan_batch(self, entries: List[str], limit: int, operations: List[Dict[str, Any]],
+                   target: str = "memory") -> Tuple[Optional[List[str]], str]:
+        """Validate a batch against *entries* without touching disk or failure counters:
+        ``(new_entries, message)`` when it would apply, ``(None, failure)`` when it would not.
+        Single source of the batch rules — ``apply_batch`` persists the plan, ``preview_batch``
+        only reads it."""
+        working = list(entries)  # only committed if the whole batch validates
+        for i, op in enumerate(operations):
+            act = op.get("action") or ""
+            msg = self._apply_batch_op(working, act, (op.get("content") or op.get("new_text") or "").strip(),
+                                       (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
+            if msg:
+                return None, msg + " No operations were applied (batch is all-or-nothing)."
+        if entries and not working:
+            # #103419: a consolidation batch that removes the last entry would
+            # commit an empty file as a normal successful write. Refuse; single
+            # remove() is the deliberate-wipe path.
+            label = self._path_for(target).name
+            return None, (
+                f"Refusing to empty {label}: this batch would remove every entry from a "
+                f"previously non-empty store. Nothing was applied (batch is all-or-nothing). "
+                f"Keep at least one entry — merge overlapping entries into a shorter one instead "
+                f"of removing the last one (see current_entries below). To delete the final entry "
+                f"deliberately, use single remove() calls.")
+        new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
+        if new_total > limit:
+            return None, (
+                f"After applying all {len(operations)} operations, memory would be at "
+                f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
+                f"entries in the same batch (see current_entries below), then retry.")
+        return working, f"Applied {len(operations)} operation(s)."
+
+    def preview_batch(self, target: str, operations: List[Dict[str, Any]]) -> Optional[str]:
+        """Dry run of ``apply_batch`` against the LIVE entries: the failure message that call
+        would return, or None when the batch would apply. Never writes and never counts a
+        consolidation failure. Staging needs it because a pending write must be one the user can
+        ACCEPT — ``/memory approve`` replays the payload verbatim (no editing), so a batch that
+        cannot fit the budget would sit in the queue failing on every approve."""
+        if not operations:
+            return "operations list is empty."
+        ops = [op or {} for op in operations]
+        if scan_error := self._scan_batch(ops):
+            return scan_error
+        working, message = self.plan_batch(self._entries_for(target), self._char_limit(target), ops, target)
+        return None if working is not None else message
+
+    def preview_single(self, target: str, action: str, content: Optional[str] = None,
+                       old_text: Optional[str] = None) -> Optional[str]:
+        """Dry run of the SINGLE-op replay path (``/memory approve`` -> ``replace``/``remove``, not
+        ``apply_batch``): its failure message, or None. A lone ``remove`` only ever shrinks and
+        emptying the store is its deliberate-wipe path (#103419 is batch-only), so it is always
+        applicable; a lone ``replace`` goes through the same match + budget rules as the batch
+        form, which is why it delegates instead of restating them."""
+        if action != "replace":
+            return None
+        return self.preview_batch(target, [{"action": "replace", "content": content, "old_text": old_text}])
+
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or
@@ -303,38 +369,14 @@ class MemoryStore:
         if not operations:
             return _error("operations list is empty.")
         ops = [op or {} for op in operations]
-        # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
-        for i, op in enumerate(ops):
-            scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])
-            if scan_error:
-                return _error(f"Operation {i + 1}: {scan_error}")
+        if scan_error := self._scan_batch(ops):
+            return _error(scan_error)
 
         def _apply(entries, limit):
-            working = list(entries)  # only committed if the whole batch validates
-            for i, op in enumerate(ops):
-                act = op.get("action")
-                msg = self._apply_batch_op(working, act, (op.get("content") or op.get("new_text") or "").strip(),
-                                           (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
-                if msg:
-                    return self._failure_with_entries(target, msg + " No operations were applied (batch is all-or-nothing).")
-            if entries and not working:
-                # #103419: a consolidation batch that removes the last entry would
-                # commit an empty file as a normal successful write. Refuse; single
-                # remove() is the deliberate-wipe path.
-                label = self._path_for(target).name
-                return self._failure_with_entries(target, (
-                    f"Refusing to empty {label}: this batch would remove every entry from a "
-                    f"previously non-empty store. Nothing was applied (batch is all-or-nothing). "
-                    f"Keep at least one entry — merge overlapping entries into a shorter one instead "
-                    f"of removing the last one (see current_entries below). To delete the final entry "
-                    f"deliberately, use single remove() calls."))
-            new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
-            if new_total > limit:
-                return self._failure_with_entries(target, (
-                    f"After applying all {len(operations)} operations, memory would be at "
-                    f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
-                    f"entries in the same batch (see current_entries below), then retry."))
-            return working, f"Applied {len(operations)} operation(s)."
+            working, message = self.plan_batch(entries, limit, ops, target)
+            if working is None:
+                return self._failure_with_entries(target, message)
+            return working, message
         return self._mutate(target, _apply)
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:

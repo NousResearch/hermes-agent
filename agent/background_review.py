@@ -296,6 +296,19 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
 
 # Review prompts. AIAgent exposes them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) so
 # per-agent overrides work; the text lives here.
+
+# Memory is a BOUNDED store and a batch is validated on its FINAL total, so the fork must plan
+# its write against the budget instead of discovering the wall: an over-budget batch is refused
+# outright (tools/memory_tool.py — it could otherwise only sit in the approval queue failing on
+# every approve). Shared by the memory-only and combined prompts.
+_MEMORY_BUDGET_BLOCK = (
+    "Memory is a BOUNDED store (the tool reports usage/limit and the live entries). Plan the write "
+    "against that budget: a batch is validated on its FINAL total, so every addition must be paid "
+    "for by removes or merges in the same batch. An over-budget batch is refused, not queued — and "
+    "when a durable fact has no room and nothing can be merged, its home is the skill that governs "
+    "the task, not memory.\n\n"
+)
+
 _MEMORY_REVIEW_PROMPT = (
     "Review the conversation above and consider saving to memory if appropriate.\n\n"
     "Focus on:\n"
@@ -303,6 +316,7 @@ _MEMORY_REVIEW_PROMPT = (
     "personal details worth remembering?\n"
     "2. Has the user expressed expectations about how you should behave, their work style, or ways "
     "they want you to operate?\n\n"
+    + _MEMORY_BUDGET_BLOCK +
     "If something stands out, save it using the memory tool. If nothing is worth saving, just say "
     "'Nothing to save.' and stop."
 )
@@ -455,7 +469,7 @@ _COMBINED_REVIEW_PROMPT = (
     "Review the conversation above and update two things:\n\n"
     "**Memory**: who the user is. Did the user reveal persona, desires, preferences, personal "
     "details, or expectations about how you should behave? Save facts about the user and durable "
-    "preferences with the memory tool.\n\n"
+    "preferences with the memory tool.\n\n" + _MEMORY_BUDGET_BLOCK +
     "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "
     "skill update. A pass that does nothing is a missed learning opportunity, not a neutral "
     "outcome.\n\n"

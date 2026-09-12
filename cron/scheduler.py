@@ -1496,6 +1496,24 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
     from hermes_cli.auth import AuthError
 
     model = jc.model
+    # Per-job request_overrides (top-level keys = API kwargs, e.g. service_tier) mirror
+    # delegation.request_overrides semantics and are merged into the resolved runtime so
+    # they reach AIAgent via _construct_cron_agent. Explicit job values win over any
+    # provider-resolved overrides; absent/ non-dict job key is a None-safe no-op.
+    job_overrides = job.get("request_overrides")
+    if not isinstance(job_overrides, dict):
+        job_overrides = None
+
+    def _merge_overrides(runtime: dict) -> dict:
+        if not job_overrides:
+            return runtime
+        merged = dict(runtime)
+        merged["request_overrides"] = {
+            **(runtime.get("request_overrides") or {}),
+            **job_overrides,
+        }
+        return merged
+
     requested = job.get("provider") or jc.cron_default_provider or None
     if not requested:
         global_provider = (
@@ -1513,7 +1531,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         }
         if job.get("base_url"):
             runtime_kwargs["explicit_base_url"] = job.get("base_url")
-        return resolve_runtime_provider(**runtime_kwargs), model
+        return _merge_overrides(resolve_runtime_provider(**runtime_kwargs)), model
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
         # OAuth refresh); anything else re-raises.
@@ -1545,7 +1563,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                 logger.info(
                     "Job '%s': fallback resolved to %s model %s",
                     job_id, runtime.get("provider"), fb_model)
-                return runtime, fb_model
+                return _merge_overrides(runtime), fb_model
             except Exception as fb_exc:
                 logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
         raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc

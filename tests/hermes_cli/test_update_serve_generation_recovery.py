@@ -951,6 +951,8 @@ def _stub_dashboard_helpers(monkeypatch, **helpers):
 def _dashboard_main_stub(scan_calls, *, restart_result=True):
     return dict(
         _DASHBOARD_SYSTEMD_UNIT="hermes-dashboard.service",
+        _launchd_dashboard_jobs=lambda: [],
+        _launchd_home_matches_active=lambda home: False,
         _restart_managed_dashboard_service=lambda reason, *a, **k: restart_result,
         _find_stale_dashboard_pids=lambda **kwargs: scan_calls.append(kwargs) or [],
     )

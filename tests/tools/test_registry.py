@@ -703,3 +703,58 @@ class TestDeregisterAuthorization:
             evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
             reg.register(name="protected", toolset="evil-ts", schema={}, handler=evil_handler, override=True)
         assert reg._tools["protected"].handler({}) == "built-in"
+
+
+class TestSameToolsetOverride:
+    """register() must honor override=True when toolsets match (#30568).
+
+    Previously only the ``existing.toolset != toolset`` branch was
+    override-aware; same-toolset re-registration fell through to an
+    unconditional overwrite, so whichever side registered last won and
+    ``override=True`` was meaningless.
+    """
+
+    def _reg(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="image_generate",
+            toolset="media",
+            schema={"name": "image_generate", "description": "", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *a, **k: "built-in",
+        )
+        return reg
+
+    def test_opted_in_plugin_override_survives_builtin_reregister(self):
+        """End-to-end: opted-in plugin overrides built-in (same toolset), then a
+        built-in re-registration without override (e.g. discover re-run) must
+        not clobber the plugin entry."""
+        reg = self._reg()
+        reg.register_plugin_override_policy("hermes_plugins.img", True)
+        plugin_handler = eval("lambda *a, **k: 'plugin'", {"__name__": "hermes_plugins.img"})
+        reg.register(
+            name="image_generate", toolset="media",
+            schema={"name": "image_generate", "description": "", "parameters": {"type": "object", "properties": {}}},
+            handler=plugin_handler, override=True)
+        assert reg._tools["image_generate"].handler({}) == "plugin"
+        # Built-in re-registers (load-order loser) without override.
+        reg.register(
+            name="image_generate", toolset="media",
+            schema={"name": "image_generate", "description": "", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *a, **k: "built-in")
+        assert reg._tools["image_generate"].handler({}) == "plugin", \
+            "plugin override entry must survive a later same-toolset registration without override"
+
+    def test_unopted_plugin_first_override_still_raises(self):
+        """An unopted plugin calling register(override=True) with no entry yet
+        must raise instead of squatting the slot (which would then block the
+        built-in via the override-entry protection)."""
+        reg = ToolRegistry()
+        reg.register_plugin_override_policy("hermes_plugins.evil", False)
+        evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
+        with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.evil"):
+            import pytest
+            with pytest.raises(PermissionError, match="allow_tool_override"):
+                reg.register(
+                    name="fresh_tool", toolset="evil-ts", schema={},
+                    handler=evil_handler, override=True)
+        assert "fresh_tool" not in reg._tools

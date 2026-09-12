@@ -184,6 +184,10 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
         registered = None
     if registered is None:
         logger.warning("Selected approval transport %r is unavailable", name)
+        _ctx._fire_approval_hook(
+            "post_approval_response", _audit_only=True, command=command, description=description,
+            pattern_key=pattern_key, pattern_keys=list(pattern_keys), session_key=session_key,
+            surface=f"transport:{name}", origin_surface=surface, choice="transport_unavailable")
         return _attempt(name, "deny", "unavailable", fallback)
 
     try:
@@ -201,12 +205,18 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
         # Never fall back to raw text if redaction or request construction fails:
         # fail closed without calling the plugin or leaking the unredacted payload.
         logger.warning("Could not build redacted plugin approval request")
+        _ctx._fire_approval_hook(
+            "post_approval_response", _audit_only=True, command=command, description=description,
+            pattern_key=pattern_key, pattern_keys=list(pattern_keys), session_key=session_key,
+            surface=f"transport:{name}", origin_surface=surface, choice="transport_error")
         return _attempt(name, "deny", "error", None)
     hook_kwargs = dict(
         command=request.command, description=request.description, pattern_key=pattern_key,
         pattern_keys=list(pattern_keys), session_key=session_key, surface=f"transport:{name}",
         request_id=request.request_id, request_digest=request.digest,
     )
+    if _ctx.is_enabled():
+        hook_kwargs["origin_surface"] = surface
     _ctx._fire_approval_hook("pre_approval_request", **hook_kwargs)
     with human_wait_window(session_key):
         result = invoke_approval_transport(
@@ -292,5 +302,10 @@ def request_elicitation_consent(message: str, description: str, *,
                                            allow_permanent=False)
     except Exception as exc:
         logger.error("Elicitation CLI prompt failed: %s", exc, exc_info=True)
-        return "decline"
+        choice = "deny"
+    _ctx._fire_approval_hook(
+        "post_approval_response", _audit_only=True, command=message, description=description,
+        pattern_key="mcp_elicitation", pattern_keys=["mcp_elicitation"],
+        session_key=session_key, surface="cli", choice=choice,
+        scope="once" if choice in {"once", "session", "always"} else None)
     return _consent(choice, "cancel")  # timeout mirrors the gateway's unresolved outcome

@@ -305,6 +305,7 @@ import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
 import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
+import { createPreviewWatchRegistry } from './preview-watch'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
@@ -1704,7 +1705,6 @@ let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 let remoteHeaderRulesInstalled = false
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
-const previewWatchers = new Map()
 let previewShortcutActive = false
 let nativeThemeListenerInstalled = false
 
@@ -6407,79 +6407,26 @@ async function filePathFromPreviewUrl(rawUrl) {
   return resolvedPath
 }
 
-function sendPreviewFileChanged(payload) {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
+// Watcher lifecycle lives in ./preview-watch (unit-tested there); this module
+// keeps only URL resolution and hands the registry the window that asked for
+// the watch, so change events are delivered back to that window.
+const previewWatchRegistry = createPreviewWatchRegistry({
+  fileExists,
+  debounceMs: PREVIEW_WATCH_DEBOUNCE_MS
+})
 
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:preview-file-changed', payload)
-}
-
-async function watchPreviewFile(rawUrl) {
+async function watchPreviewFile(rawUrl, owner) {
   const filePath = await filePathFromPreviewUrl(rawUrl)
-  const watchDir = path.dirname(filePath)
-  const targetName = path.basename(filePath)
-  const id = crypto.randomBytes(12).toString('base64url')
-  let timer = null
 
-  const watcher = fs.watch(watchDir, (_eventType, filename) => {
-    const changedName = filename ? path.basename(String(filename)) : ''
-
-    if (changedName && changedName !== targetName) {
-      return
-    }
-
-    if (timer) {
-      clearTimeout(timer)
-    }
-
-    timer = setTimeout(() => {
-      timer = null
-
-      if (!fileExists(filePath)) {
-        return
-      }
-
-      sendPreviewFileChanged({ id, path: filePath, url: pathToFileURL(filePath).toString() })
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
-  })
-
-  previewWatchers.set(id, {
-    close: () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
-      watcher.close()
-    }
-  })
-
-  return { id, path: filePath }
+  return previewWatchRegistry.watch(filePath, owner)
 }
 
 function stopPreviewFileWatch(id) {
-  const watcher = previewWatchers.get(id)
-
-  if (!watcher) {
-    return false
-  }
-
-  watcher.close()
-  previewWatchers.delete(id)
-
-  return true
+  return previewWatchRegistry.stop(id)
 }
 
 function closePreviewWatchers() {
-  for (const id of previewWatchers.keys()) {
-    stopPreviewFileWatch(id)
-  }
+  previewWatchRegistry.closeAll()
 }
 
 function requestOptionsWithHeaders(options: any = {}, headers = {}) {
@@ -6497,38 +6444,14 @@ function requestOptionsWithHeaders(options: any = {}, headers = {}) {
  *  readdir poll. Same registry + change channel as the preview file watchers
  *  (the renderer reconciles on any tick; per-file edits stay on their own
  *  watches), so stopPreviewFileWatch/closePreviewWatchers manage these too. */
-function watchDirectory(rawDir) {
+function watchDirectory(rawDir, owner) {
   const watchDir = path.resolve(String(rawDir || ''))
 
   if (!fs.existsSync(watchDir) || !fs.statSync(watchDir).isDirectory()) {
     throw new Error(`Not a directory: ${watchDir}`)
   }
 
-  const id = crypto.randomBytes(12).toString('base64url')
-  let timer = null
-
-  const watcher = fs.watch(watchDir, () => {
-    if (timer) {
-      clearTimeout(timer)
-    }
-
-    timer = setTimeout(() => {
-      timer = null
-      sendPreviewFileChanged({ id, path: watchDir, url: pathToFileURL(watchDir).toString() })
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
-  })
-
-  previewWatchers.set(id, {
-    close: () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
-      watcher.close()
-    }
-  })
-
-  return { id, path: watchDir }
+  return previewWatchRegistry.watchDirectory(watchDir, owner)
 }
 
 // Best-effort read of a gateway's advertised auth providers, cached per base
@@ -17042,9 +16965,9 @@ ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
   normalizePreviewTarget(String(target || ''), baseDir ? String(baseDir) : '')
 )
 
-ipcMain.handle('hermes:watchPreviewFile', (_event, url) => watchPreviewFile(String(url || '')))
+ipcMain.handle('hermes:watchPreviewFile', (event, url) => watchPreviewFile(String(url || ''), event.sender))
 
-ipcMain.handle('hermes:watchDirectory', (_event, dir) => watchDirectory(String(dir || '')))
+ipcMain.handle('hermes:watchDirectory', (event, dir) => watchDirectory(String(dir || ''), event.sender))
 
 ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
 

@@ -578,7 +578,20 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
             last_kanban_poll = now
             _notif_poll_kanban(sid, session)
         try:
-            evt = queue.get(timeout=0.5)
+            # Every live session has a poller on this shared queue. A destructive
+            # get lets unrelated pollers repeatedly steal/requeue an owner's event;
+            # targeted dequeue leaves it in place until its owner wakes.
+            get_matching = getattr(queue, "get_matching", None)
+            evt = (
+                get_matching(
+                    lambda candidate: not _notification_event_belongs_elsewhere(
+                        sid, session, candidate
+                    ),
+                    timeout=0.5,
+                )
+                if callable(get_matching)
+                else queue.get(timeout=0.5)
+            )
         except Exception:
             continue
         ready = [evt]

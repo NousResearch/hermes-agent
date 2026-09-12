@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import platform
+import queue
 import shlex
 import signal
 import stat
@@ -27,7 +28,7 @@ _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 
@@ -36,6 +37,41 @@ from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 
 logger = logging.getLogger(__name__)
+
+
+class _NotificationQueue(queue.Queue):
+    """Queue supporting non-destructive dequeue by ownership predicate."""
+
+    def get_matching(
+        self,
+        predicate: Callable[[Any], bool],
+        timeout: float | None = None,
+    ) -> Any:
+        """Remove the first matching item without rotating unrelated events."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            with self.mutex:
+                candidates = tuple(self.queue)
+            for candidate in candidates:
+                try:
+                    matches = predicate(candidate)
+                except Exception:
+                    matches = False
+                if not matches:
+                    continue
+                with self.not_empty:
+                    for index, current in enumerate(self.queue):
+                        if current is candidate:
+                            del self.queue[index]
+                            self.not_full.notify()
+                            return current
+            if timeout == 0:
+                raise queue.Empty
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise queue.Empty
+            with self.not_empty:
+                self.not_empty.wait(remaining)
 
 # Crash-recovery checkpoint (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
@@ -483,8 +519,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self.pending_watchers: List[Dict[str, Any]] = []
         # Unified queue for all background events (distinguished by "type"); the CLI
         # process_loop and the gateway drain it after each agent turn to trigger new turns.
-        import queue as _queue_mod
-        self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
+        self.completion_queue: _NotificationQueue = _NotificationQueue()
         # Rehydrate durable delegation completions once, at registry startup.
         try:
             from tools.async_delegation import restore_undelivered_completions

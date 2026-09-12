@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home  # noqa: F401 — patched by tests
+from utils import atomic_write_text
 
 from ._oss_providers import EMBEDDER_PROVIDERS, KNOWN_DIMS, LLM_PROVIDERS, SECTION_REGISTRIES, VECTOR_PROVIDERS, validate_oss_config
 
@@ -144,7 +145,11 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
     keys = [line.split("=", 1)[0].strip() if "=" in line and not line.startswith("#") else None for line in existing_lines]
     new_lines = [f"{k}={env_writes[k]}" if k in env_writes else line for k, line in zip(keys, existing_lines)]
     new_lines += [f"{k}={v}" for k, v in env_writes.items() if k not in keys]
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # This file holds provider API keys in plaintext, so a .env this wizard CREATES must be
+    # owner-only rather than umask-default (0644). An existing file keeps its mode: a profile
+    # .env is already seeded 0600 by `hermes profile create`, and silently loosening or
+    # tightening a file the operator manages is not this writer's call.
+    atomic_write_text(env_path, "\n".join(new_lines) + "\n", preserve_mode=True, create_mode=0o600)
 
 
 def _activate_provider(config: dict) -> None:

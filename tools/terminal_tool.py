@@ -161,7 +161,7 @@ Do NOT use cat/head/tail (use read_file), grep/rg/find/ls (use search_files), se
 Environment state persists: activate a virtualenv or export variables once per session, not before every command.
 
 Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds.
-Background: set background=true (returns a session_id); add notify=true for bounded tasks, leave silent only for servers/daemons that never exit. After starting a server, verify readiness with a health check in a separate call (no blind sleep loops); manage with process(action="poll"/"wait").
+Background: set background=true (returns a session_id); add notify=true for bounded tasks, or watch_patterns=[...] for one-shot readiness signals on long-lived processes. Leave silent only for servers/daemons that never exit. After starting a server, verify readiness with a health check in a separate call (no blind sleep loops); manage with process(action="poll"/"wait").
 Working directory: use 'workdir' for per-command cwd; when a command changes the session cwd (cd, pushd), trust the result's "cwd" field instead of prefixing every command with 'cd'.
 PTY: pty=true + background=true for interactive CLIs (they hang without a terminal); drive them with process(action="write"/"submit"). Local backend only.
 """
@@ -1297,15 +1297,17 @@ TERMINAL_SCHEMA = {
                 "default": False
             },
             "notify": {
-                "description": "With background=true: notify=true fires exactly one notification when the process exits (the right choice for nearly every bounded task — builds, tests, deploys). notify=['pattern', ...] instead notifies when a line matches a pattern — ONLY for one-shot readiness signals on processes that never exit (e.g. ['Application startup complete']); rate-limited and auto-disabled if it over-fires. Omit for silent daemons.",
-                "anyOf": [
-                    {"type": "boolean"},
-                    {"type": "array", "items": {"type": "string"}}
-                ]
+                "type": "boolean",
+                "description": "With background=true: fire exactly one notification when the process exits. The right choice for nearly every bounded task (builds, tests, deploys). MUTUALLY EXCLUSIVE with watch_patterns.",
+                "default": False
+            },
+            "watch_patterns": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "With background=true: notify when a line matches any pattern. ONLY for one-shot readiness signals on processes that never exit (e.g. ['Application startup complete']); rate-limited and auto-disabled if it over-fires. MUTUALLY EXCLUSIVE with notify."
             }
-            # Legacy aliases (unadvertised, still accepted): notify_on_complete
-            # (bool) and watch_patterns (list). notify=true|[...] maps onto
-            # them in the dispatch wrapper; explicit notify wins on conflict.
+            # Legacy aliases remain accepted: notify_on_complete (bool), plus
+            # list-valued notify from transcripts created before the schema split.
         },
         "required": ["command"]
     }
@@ -1321,17 +1323,17 @@ def _handle_terminal(args, **kw):
             "command in 'command'. Use execute_code(code=...) for Python; "
             "for shell, retry as terminal(command=...)."
         )
-    # `notify` is the advertised interface (true → notify_on_complete,
-    # [...] → watch_patterns); the legacy args stay accepted, explicit
-    # `notify` wins. Background-only modifiers on a foreground call fail
-    # with the corrected call instead of being silently ignored.
+    # The advertised split is notify (bool) + watch_patterns (list). Legacy
+    # notify_on_complete and list-valued notify stay accepted for old
+    # transcripts; explicit notify wins. Background-only modifiers on a
+    # foreground call fail with the corrected call instead of being ignored.
     notify = args.get("notify")
     notify_on_complete = args.get("notify_on_complete", False)
     watch_patterns = args.get("watch_patterns")
     if not args.get("background", False):
         if notify or watch_patterns or notify_on_complete:
             return tool_error(
-                "notify only applies to background commands (foreground "
+                "notify and watch_patterns only apply to background commands (foreground "
                 "results return directly). Either drop notify, or run as "
                 "terminal(command=..., background=true, notify=...)."
             )

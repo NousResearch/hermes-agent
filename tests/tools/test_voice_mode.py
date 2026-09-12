@@ -1068,6 +1068,131 @@ class TestStreamLeakOnStartFailure:
         mock_stream.close.assert_called_once()
 
 
+class TestWslStreamStartTimeoutRetry:
+    """WSL2 cold-start paTimedOut (-9987): warm the PulseAudio source, retry once (#109303)."""
+
+    def test_timeout_in_wsl2_retries_after_warmup(self, mock_sd):
+        stream1 = MagicMock()
+        stream1.start.side_effect = OSError(
+            "Error starting stream: Wait timed out [PaErrorCode -9987]")
+        stream2 = MagicMock()
+
+        attempts = []
+
+        def _make_stream(**_kwargs):
+            attempts.append(1)
+            return stream1 if len(attempts) == 1 else stream2
+        mock_sd.InputStream.side_effect = _make_stream
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+
+        with patch("tools.voice_mode._is_wsl2_env", return_value=True), \
+             patch("tools.voice_mode._warm_wslg_pulse_source", return_value=True) as mock_warm:
+            recorder._ensure_stream()
+
+        assert recorder._stream is stream2
+        mock_warm.assert_called_once()
+        assert mock_sd.InputStream.call_count == 2
+        stream1.close.assert_called_once()
+        stream2.close.assert_not_called()
+
+    def test_non_timeout_error_in_wsl2_raises_without_warmup(self, mock_sd):
+        mock_stream = MagicMock()
+        mock_stream.start.side_effect = OSError("Invalid device")
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+
+        with patch("tools.voice_mode._is_wsl2_env", return_value=True), \
+             patch("tools.voice_mode._warm_wslg_pulse_source", return_value=True) as mock_warm:
+            with pytest.raises(RuntimeError, match="Failed to open audio input stream"):
+                recorder._ensure_stream()
+
+        mock_warm.assert_not_called()
+        assert mock_sd.InputStream.call_count == 1
+
+    def test_timeout_outside_wsl2_raises_without_warmup(self, mock_sd):
+        mock_stream = MagicMock()
+        mock_stream.start.side_effect = OSError("Wait timed out [PaErrorCode -9987]")
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+
+        with patch("tools.voice_mode._is_wsl2_env", return_value=False), \
+             patch("tools.voice_mode._warm_wslg_pulse_source", return_value=True) as mock_warm:
+            with pytest.raises(RuntimeError, match="Failed to open audio input stream"):
+                recorder._ensure_stream()
+
+        mock_warm.assert_not_called()
+        assert mock_sd.InputStream.call_count == 1
+
+    def test_retry_failure_raises_original_timeout(self, mock_sd):
+        mock_stream = MagicMock()
+        mock_stream.start.side_effect = OSError("Wait timed out [PaErrorCode -9987]")
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+
+        with patch("tools.voice_mode._is_wsl2_env", return_value=True), \
+             patch("tools.voice_mode._warm_wslg_pulse_source", return_value=True):
+            with pytest.raises(RuntimeError, match="Wait timed out"):
+                recorder._ensure_stream()
+
+        assert mock_sd.InputStream.call_count == 2
+        assert mock_stream.close.call_count == 2
+
+    def test_warmup_skipped_when_pulse_unavailable(self, mock_sd):
+        mock_stream = MagicMock()
+        mock_stream.start.side_effect = OSError("Wait timed out [PaErrorCode -9987]")
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+
+        with patch("tools.voice_mode._is_wsl2_env", return_value=True), \
+             patch("tools.voice_mode._warm_wslg_pulse_source", return_value=False):
+            with pytest.raises(RuntimeError, match="Failed to open audio input stream"):
+                recorder._ensure_stream()
+
+        assert mock_sd.InputStream.call_count == 1
+
+
+class TestWarmWslgPulseSource:
+    """The warmup helper itself: parecord probe semantics (#109303)."""
+
+    def test_missing_parecord_skips_run(self):
+        from tools import voice_mode as vm
+
+        with patch("tools.voice_mode.shutil.which", return_value=None), \
+             patch("tools.voice_mode._run_quiet") as mock_run:
+            assert vm._warm_wslg_pulse_source() is False
+        mock_run.assert_not_called()
+
+    def test_timeout_expired_counts_as_warmup_done(self):
+        import subprocess
+
+        from tools import voice_mode as vm
+
+        expired = subprocess.TimeoutExpired(cmd=["parecord"], timeout=1.5)
+        with patch("tools.voice_mode.shutil.which", return_value="/usr/bin/parecord"), \
+             patch("tools.voice_mode._run_quiet", side_effect=expired) as mock_run:
+            assert vm._warm_wslg_pulse_source() is True
+        args, kwargs = mock_run.call_args
+        assert args[0] == ["/usr/bin/parecord", os.devnull]
+        assert kwargs == {"timeout": 1.5, "check": False}
+
+    def test_oserror_means_no_warmup(self):
+        from tools import voice_mode as vm
+
+        with patch("tools.voice_mode.shutil.which", return_value="/usr/bin/parecord"), \
+             patch("tools.voice_mode._run_quiet", side_effect=OSError("spawn failed")):
+            assert vm._warm_wslg_pulse_source() is False
+
+
 # ============================================================================
 # listen_for_speech — VAD barge-in monitor
 # ============================================================================

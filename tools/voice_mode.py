@@ -600,6 +600,25 @@ class TermuxAudioRecorder(_RecorderBase):
         self.cancel()
 
 
+def _warm_wslg_pulse_source() -> bool:
+    """Best-effort warmup of a suspended WSLg RDP audio source.
+
+    A cold ALSA→Pulse bridge inside WSLg can exceed PortAudio's 1-second
+    thread-start timeout (``paTimedOut`` -9987) on the first recording press.
+    A short native PulseAudio capture pulls the RDP source out of SUSPENDED,
+    after which the ALSA bridge opens reliably (issue #109303)."""
+    parecord = shutil.which("parecord")
+    if not parecord:
+        return False
+    try:
+        _run_quiet([parecord, os.devnull], timeout=1.5, check=False)
+    except subprocess.TimeoutExpired:  # the cutoff IS the warmup duration
+        pass
+    except OSError:
+        return False
+    return True
+
+
 class AudioRecorder(_RecorderBase):
     """Thread-safe sounddevice.InputStream recorder: ``start(on_silence_stop=cb)`` ...
     ``stop()`` -> WAV path or None; ``cancel()`` discards. With a callback the recording
@@ -736,9 +755,23 @@ class AudioRecorder(_RecorderBase):
         except Exception as e:
             with suppress(Exception):
                 stream.close()
-            raise RuntimeError(
-                f"Failed to open audio input stream: {e}. "
-                "Check that a microphone is connected and accessible.") from e
+            stream = None
+            # WSLg cold-start: the ALSA→Pulse bridge handshake times out while the
+            # RDP source is SUSPENDED; warm it with a native capture, then retry once.
+            if _is_wsl2_env() and "timed out" in str(e).lower() and _warm_wslg_pulse_source():
+                logger.info("Retrying audio input stream after WSLg source warmup")
+                try:
+                    stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
+                                            callback=_callback)
+                    stream.start()
+                except Exception:
+                    with suppress(Exception):
+                        stream.close()
+                    stream = None
+            if stream is None:
+                raise RuntimeError(
+                    f"Failed to open audio input stream: {e}. "
+                    "Check that a microphone is connected and accessible.") from e
         self._stream = stream
 
     def start(self, on_silence_stop=None) -> None:

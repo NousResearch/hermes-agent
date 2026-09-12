@@ -15,6 +15,7 @@ import re
 import sys
 import threading
 import uuid
+import weakref
 from collections import namedtuple
 from functools import partial
 from types import SimpleNamespace
@@ -77,6 +78,11 @@ def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
 _backend_lock = threading.Lock()
 _backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-session injection hook (older tests)
 _backends: Dict[str, ComputerUseBackend] = {}
+# Backends evicted by _detach_locked (release / mode-toggle / cache fold). Dispatch must never
+# reanimate one: its driver session was stopped, and the driver would restart it for a stale
+# call (#108813). _install_backend revives membership, so a host-injected ``_backend`` folded
+# back into the cache dispatches normally again. Weak: identity only, no lifecycle retention.
+_detached_backends: "weakref.WeakSet[ComputerUseBackend]" = weakref.WeakSet()
 _backend_call_locks: Dict[str, threading.RLock] = {}
 _backend_permission_modes: Dict[str, str] = {}
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str], bool] = {}  # process-scoped: (provider, model) → bool
@@ -133,6 +139,7 @@ def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str
     global _backend
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
     _backend_call_locks[sid] = threading.RLock()
+    _detached_backends.discard(backend)  # cache membership is the liveness contract
     _backend = backend if sid == "" else _backend
     return backend
 
@@ -145,6 +152,8 @@ def _detach_locked(sid: str) -> Tuple[Optional[ComputerUseBackend], Optional[thr
     if sid == "":
         backend = _backend if backend is None else backend
         _backend = None if _backend is backend else _backend
+    if backend is not None:
+        _detached_backends.add(backend)
     return backend, call_lock
 
 def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLock], on_error: Callable[[Exception], None]) -> None:
@@ -206,6 +215,7 @@ def _shutdown_backend_atexit() -> None:
             unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
         _backend = None
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear()
+        _detached_backends.clear()
     with _approval_lock:
         _session_auto_approve.clear(), _always_allow.clear(), _escalation_warned.clear()
     for backend, call_lock in unique.values():
@@ -263,6 +273,13 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         with _backend_lock:
             call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
         with call_lock:
+            # The backend was selected before this lock was held: a concurrent
+            # release/mode-toggle detaches (and stops) it in that gap, and the
+            # driver would reanimate the stopped session for this stale call
+            # (#108813). Fail closed; the caller retries against a fresh backend.
+            if backend in _detached_backends:
+                return json.dumps({"error": f"computer_use {action} aborted: "
+                                            "session backend was released concurrently; retry the call"})
             return _dispatch(backend, action, args)
     except Exception as e:
         logger.exception("computer_use %s failed", action)

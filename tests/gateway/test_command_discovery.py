@@ -123,7 +123,12 @@ sys.__stdout__.write(json.dumps(results) + '\\n')
                             return reply
             for (method, params), baseline in zip(requests, expected):
                 reply = await rpc(method, params)
-                assert reply.get('result') == baseline, reply
+                got = reply.get('result')
+                if got != baseline and isinstance(got, dict) and 'skills' in got:
+                    a, b = got['skills'], baseline['skills']
+                    delta = {k: (a.get(k), b.get(k)) for k in set(a) | set(b) if a.get(k) != b.get(k)}
+                    raise AssertionError(f'skills delta daemon vs legacy: {delta}')
+                assert got == baseline, reply
             for method in ('commands.catalog', 'complete.slash'):
                 reply = await rpc(method, {'profile': 'foreign-profile', **({'text': '/probe'} if method == 'complete.slash' else {})})
                 assert reply['error']['message'] == 'profile_mismatch', reply

@@ -20,7 +20,8 @@ _IMPLEMENTATION_TITLE = re.compile(
     re.IGNORECASE,
 )
 _IMPLEMENTATION_HANDOFF = re.compile(
-    r"\b(?:implemented|built|added|created|fixed|refactored|changed files?)\b",
+    r"\b(?:implemented|built|added|created|fixed|refactored|changed files?|"
+    r"completed implementation|implementation (?:is )?(?:complete|done))\b",
     re.IGNORECASE,
 )
 _PUSH_CLAIM = re.compile(r"\b(?:push(?:ed|es|ing)?|published)\b", re.IGNORECASE)
@@ -174,7 +175,7 @@ def prepare_completion_facts(
     run_id, status, kind, path, branch, title = snapshot
     if status not in _ACTIVE_STATUSES or (expected_run_id is not None and run_id != expected_run_id):
         return False
-    if expected_run_id is None or kind != "worktree":
+    if kind != "worktree" or run_id is None:
         return None
     receipt = {
         "ok": False, "workspace": path, "branch": branch, "baseline_sha": None,

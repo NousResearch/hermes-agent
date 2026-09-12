@@ -864,8 +864,8 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     override_git_facts = getattr(args, "override_git_facts", None)
     # Handoff fields are per-run; refuse to copy them across N runs.
     if len(ids) > 1 and (summary or raw_meta or override_git_facts):
-        return _err("kanban: --summary / --metadata are per-task and can't be used "
-                    "with multiple ids (and neither can --override-git-facts). "
+        return _err("kanban: handoff and override options are per-task and can't be used "
+                    "with multiple ids. "
                     "Complete tasks one at a time, or drop the flags for the bulk close.", 2)
     if override_git_facts is not None and not override_git_facts.strip():
         return _err("kanban: --override-git-facts requires a non-empty audit reason", 2)

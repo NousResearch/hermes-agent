@@ -3080,7 +3080,18 @@ def _is_timeout_error(exc: Exception) -> bool:
         from openai import APITimeoutError
         if isinstance(exc, APITimeoutError):
             return True
-    return "Timeout" in type(exc).__name__ or "timed out" in str(exc).lower()
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    # HTTP 408/504 consume the request's full critical-path budget just like
+    # SDK timeout exceptions. Treat them as timeouts so compression does not
+    # retry the same origin before fallback.
+    if status in {408, 504}:
+        return True
+    if "Timeout" in type(exc).__name__:
+        return True
+    err_text = str(exc).lower()
+    return "timed out" in err_text or "time-out" in err_text
 
 
 def _is_connection_error(exc: Exception) -> bool:
@@ -3100,6 +3111,16 @@ def _is_connection_error(exc: Exception) -> bool:
     ))
 
 
+def _is_auxiliary_fallback_transport_error(exc: Exception) -> bool:
+    """Return True when the selected auxiliary route cannot serve this call."""
+    if _is_connection_error(exc):
+        return True
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    return isinstance(status, int) and status in {408, 500, 502, 503, 504}
+
+
 def _is_transient_transport_error(exc: Exception) -> bool:
     """One-off transport blip worth retrying on the SAME provider: connection/stream-close errors plus pure 5xx/408.
 
@@ -3108,7 +3129,7 @@ def _is_transient_transport_error(exc: Exception) -> bool:
     if _is_connection_error(exc):
         return True
     status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
-    return isinstance(status, int) and (status == 408 or 500 <= status < 600)
+    return isinstance(status, int) and status in {408, 500, 502, 503, 504}
 
 
 _DEFAULT_TRANSIENT_RETRIES = 2
@@ -6826,7 +6847,7 @@ _RERAISE_ORIGINAL = object()
 _FALLBACK_REASONS: Tuple[Tuple[Callable[[Exception], bool], str], ...] = (
     (_is_auth_error, "auth error"), (_is_payment_error, "payment error"),
     (_is_rate_limit_error, "rate limit"), (_is_model_incompatible_error, "model incompatible with route"),
-    (_is_invalid_aux_response_error, "invalid provider response"), (_is_connection_error, "connection error"),
+    (_is_invalid_aux_response_error, "invalid provider response"), (_is_auxiliary_fallback_transport_error, "connection error"),
 )
 
 
@@ -6845,7 +6866,7 @@ def _rung(step: "_LadderStep", accept: Callable[[Exception], bool]):
 def _param_rung_accepts(exc: Exception) -> bool:
     """After a parameter-strip retry: fall through to the max_tokens/payment/auth
     chains with the stripped kwargs; re-raise anything those chains won't handle."""
-    return (_is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
+    return (_is_payment_error(exc) or _is_auxiliary_fallback_transport_error(exc) or _is_auth_error(exc)
             or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc))
 
 
@@ -6901,7 +6922,7 @@ def _ladder_parameter_rungs(
         kwargs.pop("max_completion_tokens", None)
         resp, first_err = yield from _rung(
             _LadderStep("call", (client, kwargs)),
-            lambda exc: _is_payment_error(exc) or _is_connection_error(exc) or _is_rate_limit_error(exc),
+            lambda exc: _is_payment_error(exc) or _is_auxiliary_fallback_transport_error(exc) or _is_rate_limit_error(exc),
         )
         if first_err is None:
             return resp, None, kwargs
@@ -6951,7 +6972,7 @@ def _ladder_nous_rungs(
             "Auxiliary %s%s: refreshed Nous runtime credentials after paid account check, retrying")
         if step is not None:
             resp, first_err = yield from _rung(
-                step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
+                step, lambda exc: _credential_rung_accepts(exc) or _is_auxiliary_fallback_transport_error(exc))
             if first_err is None:
                 return resp, None
     if _is_auth_error(first_err) and client_is_nous:
@@ -7146,7 +7167,7 @@ def _aux_recovery_ladder(
     # rebuilds a fresh client instead of reusing the dead one. See issue #23432.
     # Mirror the sync path: drop poisoned clients on connection/timeout so the next aux call rebuilds. See
     # issue #23432.
-    if _is_connection_error(first_err):
+    if _is_auxiliary_fallback_transport_error(first_err):
         try:
             _evict_cached_client_instance(client)
         except Exception:

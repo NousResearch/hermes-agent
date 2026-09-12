@@ -194,6 +194,7 @@ def _set_fast(rid, params, key, value, session):
         _write_config_key("agent.service_tier", nv)
     if agent is not None:
         agent.service_tier = {"fast": "priority", "normal": None}.get(nv, nv)
+        agent._service_tier_session_override = session is not None
         current_overrides = {k: v for k, v in (getattr(agent, "request_overrides", {}) or {}).items()
                              if k not in ("service_tier", "speed")}
         agent.request_overrides = {**current_overrides, **(overrides or {})}

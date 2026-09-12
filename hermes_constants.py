@@ -980,6 +980,59 @@ def _canonical_model_variants(model: str) -> list[str]:
     return variants
 
 
+_SERVICE_TIER_ALIASES = {
+    "normal": None,
+    "default": None,
+    "standard": None,
+    "off": None,
+    "none": None,
+    "fast": "priority",
+    "priority": "priority",
+    "on": "priority",
+    "auto": "auto",
+    "cold": "cold",
+}
+
+
+def parse_service_tier(raw) -> str | None:
+    """Parse the canonical fast-mode values and their existing aliases.
+
+    Empty or unrecognized input fails open to normal mode. Callers that need to distinguish an
+    invalid per-model value from explicit ``normal`` check membership in
+    :data:`_SERVICE_TIER_ALIASES` before calling this parser.
+    """
+    value = str(raw or "").strip().lower()
+    if not value:
+        return None
+    if value not in _SERVICE_TIER_ALIASES:
+        import logging
+        logging.getLogger(__name__).warning("Unknown service_tier '%s', ignoring", raw)
+        return None
+    return _SERVICE_TIER_ALIASES[value]
+
+
+def resolve_service_tier_config(cfg: dict | None, model: str = "") -> str | None:
+    """Effective tier for *model*: matching per-model override, then ``agent.service_tier``."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    if not model:
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, dict):
+            model_cfg = model_cfg.get("default") or model_cfg.get("model") or ""
+        model = model_cfg.strip() if isinstance(model_cfg, str) else ""
+
+    overrides = agent_cfg.get("service_tier_overrides")
+    if isinstance(overrides, dict) and model:
+        for variant in _canonical_model_variants(model):
+            if variant not in overrides:
+                continue
+            raw = str(overrides[variant] or "").strip().lower()
+            if raw in _SERVICE_TIER_ALIASES:
+                return parse_service_tier(raw)
+
+    return parse_service_tier(agent_cfg.get("service_tier", ""))
+
+
 def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> dict | None:
     """Per-model reasoning_effort override with spelling tolerance; first non-None parse wins.
 

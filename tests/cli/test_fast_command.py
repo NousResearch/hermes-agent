@@ -347,3 +347,4 @@ class TestConfigDefault(unittest.TestCase):
         agent = DEFAULT_CONFIG.get("agent", {})
         self.assertIn("service_tier", agent)
         self.assertEqual(agent["service_tier"], "")
+        self.assertEqual(agent["service_tier_overrides"], {})

@@ -1739,12 +1739,9 @@ def _load_reasoning_config(model: str = "") -> dict | None:
     return resolve_reasoning_config(_load_cfg(), model)
 
 
-_SERVICE_TIER_ALIASES = {"fast": "priority", "priority": "priority", "on": "priority", "auto": "auto", "cold": "cold"}
-
-
-def _load_service_tier() -> str | None:
-    raw = str((_load_cfg().get("agent") or {}).get("service_tier", "") or "").strip().lower()
-    return _SERVICE_TIER_ALIASES.get(raw)
+def _load_service_tier(model: str = "") -> str | None:
+    from hermes_constants import resolve_service_tier_config
+    return resolve_service_tier_config(_load_cfg(), model)
 
 
 def _load_provider_routing() -> dict:
@@ -2295,6 +2292,16 @@ def _make_agent(
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+    service_tier = (
+        (service_tier_override or None)
+        if service_tier_override is not None else _load_service_tier(str(model or ""))
+    )
+    request_overrides = None
+    if service_tier == "priority":
+        from hermes_cli.models import resolve_fast_mode_overrides
+        request_overrides = resolve_fast_mode_overrides(
+            model, provider=runtime.get("provider"), base_url=runtime.get("base_url")
+        )
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
@@ -2303,7 +2310,7 @@ def _make_agent(
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
-        service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
+        service_tier=service_tier, request_overrides=request_overrides,
         enabled_toolsets=_load_enabled_toolsets(platform),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
@@ -2314,6 +2321,7 @@ def _make_agent(
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
         **_agent_cbs(sid))
+    agent._service_tier_session_override = service_tier_override is not None
     if context_cwd_is_launch_artifact is None:
         with _sessions_lock:
             context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(_sessions.get(sid))

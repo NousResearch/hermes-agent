@@ -2626,6 +2626,7 @@ class CLICommandsMixin:
         self.service_tier, saved_value = _FAST_TIERS[arg]
         self.agent = None  # Force agent re-init with new service-tier config
         saved = explicit_global and _save("agent.service_tier", saved_value)
+        self._service_tier_session_override = not saved
         outcome = _scope_outcome(explicit_global, saved)
         _cp(_accent_line(f"✓ {feature_name} set to {saved_value.upper()} {outcome}"))
 

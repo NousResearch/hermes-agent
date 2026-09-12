@@ -307,6 +307,7 @@ def _mirror_fast(sid, session, agent, arg) -> None:
     if agent:
         if arg.lower() in _FAST_TIERS:
             agent.service_tier = _FAST_TIERS[arg.lower()]
+            agent._service_tier_session_override = True
         _emit("session.info", sid, _session_info(agent, session))
 
 

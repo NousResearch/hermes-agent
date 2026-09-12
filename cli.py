@@ -273,15 +273,8 @@ def _parse_reasoning_config(effort) -> dict | None:
 
 def _parse_service_tier_config(raw: str) -> str | None:
     """Parse a persisted fast-mode preference: None, "priority", "auto", or "cold"."""
-    value = str(raw or "").strip().lower()
-    if not value or value in {"normal", "default", "standard", "off", "none"}:
-        return None
-    if value in {"fast", "priority", "on"}:
-        return "priority"
-    if value in {"auto", "cold"}:
-        return value
-    logger.warning("Unknown service_tier '%s', ignoring", raw)
-    return None
+    from hermes_constants import parse_service_tier
+    return parse_service_tier(raw)
 
 
 # terminal.<key> -> TERMINAL_<KEY> env var. Container-resource keys apply to docker,
@@ -2774,7 +2767,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # Per-model override > global reasoning_effort.
         # Reasoning config (OpenRouter reasoning effort level) Per-model override > global reasoning_effort
         # — resolved through the shared chokepoint in hermes_constants (Closes #21256).
-        from hermes_constants import resolve_reasoning_config
+        from hermes_constants import resolve_reasoning_config, resolve_service_tier_config
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         # --reasoning wins for this run only (never persisted); unparseable -> warn and ignore.
         if reasoning is not None and str(reasoning).strip():
@@ -2783,7 +2776,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 logger.warning("Unknown --reasoning '%s', keeping the configured level", reasoning)
             else:
                 self.reasoning_config = _cli_reasoning
-        self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
+        self.service_tier = resolve_service_tier_config(CLI_CONFIG, self.model)
+        self._service_tier_session_override = False
 
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
         self._provider_sort = pr.get("sort")

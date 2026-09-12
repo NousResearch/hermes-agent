@@ -2644,6 +2644,44 @@ class TestModelRoutesHandlers:
 
 class TestModelRoutesAgentCreation:
 
+    @pytest.mark.parametrize(
+        ("service_tier", "expected_fast_override"),
+        [(None, None), ("priority", "priority")],
+    )
+    def test_service_tier_preserves_runtime_request_overrides(
+        self, monkeypatch, service_tier, expected_fast_override,
+    ):
+        """Fast routing layers onto provider-owned request body settings."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openai",
+                "api_key": "sk-global",
+                "base_url": "https://api.openai.com/v1",
+                "api_mode": "chat_completions",
+                "request_overrides": {"extra_body": {"required_route": "value"}},
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.4")
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_service_tier",
+            staticmethod(lambda model="": service_tier),
+        )
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        adapter._create_agent(session_id="s1")
+
+        assert captured["request_overrides"]["extra_body"] == {"required_route": "value"}
+        assert captured["request_overrides"].get("service_tier") == expected_fast_override
+
     def test_route_provider_resolves_provider_credentials(self, monkeypatch):
         captured = {}
 

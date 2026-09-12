@@ -506,7 +506,7 @@ class CLISessionMixin:
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         from cli import (
-            CLI_CONFIG, _parse_reasoning_config, _parse_service_tier_config,
+            CLI_CONFIG, _parse_reasoning_config,
             _sync_process_session_id, datetime)
         old_session_id = self.session_id
         _boundary_snapshot = None
@@ -550,8 +550,17 @@ class CLISessionMixin:
         # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
         # into the next session (#48055, #23131).
         self._pending_one_turn_model_restore = None
-        self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
+        self._service_tier_session_override = False
+        if self.agent:
+            self.agent._service_tier_session_override = False
         _reset_model_to_config_default(self, silent)
+        from agent.chat_completion_helpers import _reresolve_service_tier_config
+        from hermes_constants import resolve_service_tier_config
+        if self.agent:
+            _reresolve_service_tier_config(self.agent, config=CLI_CONFIG)
+            self.service_tier = self.agent.service_tier
+        else:
+            self.service_tier = resolve_service_tier_config(CLI_CONFIG, self.model)
         _sync_process_session_id(self.session_id)
 
         if self.agent:

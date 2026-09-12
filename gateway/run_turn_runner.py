@@ -1167,6 +1167,9 @@ class TurnRunner:
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        agent._service_tier_session_override = runner._has_session_service_tier_override(
+            ctx.session_key
+        )
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
@@ -1734,7 +1737,9 @@ class TurnRunner:
         pr = runner._provider_routing
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
         runner._reasoning_config = reasoning_config
-        runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
+        runner._service_tier = runner._resolve_session_service_tier(
+            source=ctx.source, session_key=ctx.session_key, model=model,
+        )
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
         agent, reused_cached_agent = self._resolve_turn_agent(

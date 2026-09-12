@@ -322,6 +322,7 @@ from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
+from hermes_cli.subcommands.terminal_setup import build_terminal_setup_parser
 
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser, build_whatsapp_cloud_parser
 from hermes_cli.subcommands.slack import build_slack_parser
@@ -1806,6 +1807,15 @@ def _forward_command(name: str, module: str, attr: str, *, forward_return: bool 
 
 
 cmd_setup = _forward_command("cmd_setup", "hermes_cli.setup", "run_setup_wizard", doc='Interactive setup wizard.')
+
+
+def cmd_terminal_setup(args):
+    """Show safe terminal guidance for multiline classic-CLI input."""
+    from hermes_cli.terminal_setup import run_terminal_setup
+
+    return run_terminal_setup(args)
+
+
 cmd_login = _forward_command("cmd_login", "hermes_cli.auth", "login_command", doc='Authenticate Hermes CLI with a provider.')
 cmd_logout = _forward_command("cmd_logout", "hermes_cli.auth", "logout_command", doc='Clear provider authentication.')
 cmd_auth = _forward_command("cmd_auth", "hermes_cli.auth_commands", "auth_command", doc='Manage pooled credentials.')
@@ -2638,7 +2648,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy",
         "prompt-size",
         "resume",
-        "send", "sessions", "setup",
+        "send", "sessions", "setup", "terminal-setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
@@ -3224,6 +3234,8 @@ def _build_cli_parser():
         logger.debug("LSP CLI registration failed: %s", _lsp_err)
 
     build_setup_parser(subparsers, cmd_setup=cmd_setup)
+    # Only kitty and Ghostty receive a marked, user-level config block.
+    build_terminal_setup_parser(subparsers, cmd_terminal_setup=cmd_terminal_setup)
     build_whatsapp_parser(subparsers, cmd_whatsapp=cmd_whatsapp)
     build_whatsapp_cloud_parser(subparsers, cmd_whatsapp_cloud=cmd_whatsapp_cloud)
     build_slack_parser(subparsers, cmd_slack=cmd_slack)

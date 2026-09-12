@@ -1261,6 +1261,53 @@ def _print_legacy_units_warning() -> None:
     print("  (add `sudo` if any are in system scope)")
 
 
+def _launchd_fresh_pids_for_profiles(down_rows: list) -> set:
+    """Return the set of profile names where launchd already supervises a fresh (non-pre-restart) PID.
+
+    On macOS with KeepAlive, launchd respawns the gateway immediately after it exits but the new
+    process may take several seconds to write gateway_state.json — during which collect_fleet_versions
+    emits a spurious 'down' row. We query launchctl directly to distinguish 'launchd is respawning'
+    (keep polling) from 'launchd truly did not restart' (real down). Only called on darwin.
+
+    Fixes #94743.
+    """
+    settling: set = set()
+    try:
+        import sys as _sys
+        if _sys.platform != "darwin":
+            return settling
+        from hermes_cli.gateway import (
+            _launchd_domain, _locate_launchd_gateway_service,
+            launchd_gateway_labels_for_install, get_launchd_label,
+        )
+        from hermes_cli.profiles import list_profiles
+
+        # Build label → profile-name mapping for the profiles that produced down rows.
+        down_profile_names = {row.get("profile") for row in down_rows}
+        label_to_profile: dict = {}
+        for profile in list_profiles():
+            label = (
+                "ai.hermes.gateway"
+                if profile.is_default
+                else f"ai.hermes.gateway-{profile.name}"
+            )
+            if profile.name in down_profile_names or (profile.is_default and "default" in down_profile_names):
+                label_to_profile[label] = profile.name if not profile.is_default else "default"
+
+        for label, profile_name in label_to_profile.items():
+            try:
+                domain, pid = _locate_launchd_gateway_service(label)
+                if domain is not None and pid is not None and pid > 0:
+                    # launchd already supervises a live PID for this service — gateway is
+                    # still writing gateway_state.json. Treat as settling, not truly down.
+                    settling.add(profile_name)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return settling
+
+
 def _collect_fleet_snapshot(restart, rows_expected: bool) -> list:
     """Fleet version rows, polled over a bounded settle window when runtimes are expected.
 
@@ -1269,6 +1316,11 @@ def _collect_fleet_snapshot(restart, rows_expected: bool) -> list:
     detached replacement still booting: poll until none remain or the deadline passes.
     Pre-restart PIDs make a gateway stopped WITHOUT verified replacement a DOWN row (exit 1)
     instead of no row at all.
+
+    On macOS, launchd KeepAlive respawns the gateway nearly immediately but the new process
+    may not have written gateway_state.json within the first probe. We check launchctl to
+    distinguish "launchd replacement pending" from "launchd truly did not restart", and
+    extend polling for the former. Fixes #94743.
     """
     from hermes_cli.update_receipt import collect_fleet_versions
     if not rows_expected:
@@ -1277,10 +1329,22 @@ def _collect_fleet_snapshot(restart, rows_expected: bool) -> list:
     while True:
         _time.sleep(2.0)
         snapshot = collect_fleet_versions(pre_restart_pids=restart.pre_restart_gateway_pids)
-        if snapshot and not any(row.get("state") == "down" for row in snapshot):
+        down_rows = [row for row in snapshot if row.get("state") == "down"]
+        if snapshot and not down_rows:
             return snapshot
+        # On macOS, check if launchd already supervises a fresh PID for any 'down' profiles.
+        # If it does, those gateways are settling (launchd respawned them but they haven't
+        # written gateway_state.json yet) — keep polling for those, but stop early if only
+        # "real" down rows (no launchd PID) remain.
+        if down_rows and _time.monotonic() < _fleet_deadline:
+            settling = _launchd_fresh_pids_for_profiles(down_rows)
+            if settling:
+                # At least one 'down' profile has a fresh launchd PID — keep waiting.
+                continue
         if _time.monotonic() >= _fleet_deadline:
             return snapshot
+
+
 
 
 def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, node_failures, update_complete):

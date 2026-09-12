@@ -45,3 +45,78 @@ def test_checkpoint_requires_opt_in_or_dispatcher_completion_scope(
             assert agent.iteration_budget.remaining == 1
         finally:
             agent._session_db.close()
+
+
+def _tool_tail(content="verified artifact"):
+    return [{"role": "user", "content": "work"},
+            {"role": "assistant", "tool_calls": [{"id": "t", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "t", "content": content}]
+
+
+def test_goal_mode_landing_checkpoint_at_two_thirds(tmp_path, monkeypatch):
+    """Goal-mode workers get a landing-only notice at 60/90, with 2 turns reserved."""
+    from agent.turn_iteration_prep import (
+        KANBAN_GOAL_LANDING_CHECKPOINT_TEMPLATE,
+        iteration_checkpoint_threshold,
+        prepare_iteration,
+    )
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_landing")
+    monkeypatch.setenv("HERMES_KANBAN_GOAL_MODE", "1")
+    agent = _agent(tmp_path, monkeypatch, "null", max_iterations=90)
+    try:
+        assert iteration_checkpoint_threshold(90, 2 / 3, 2) == 60
+        for _ in range(59):
+            agent.iteration_budget.consume()
+        messages = _tool_tail()
+        prepare_iteration(agent, messages=messages, api_call_count=59)
+        assert messages[-1]["content"] == "verified artifact"
+
+        agent.iteration_budget.consume()  # 60
+        messages = _tool_tail()
+        prepare_iteration(agent, messages=messages, api_call_count=60)
+        content = messages[-1]["content"]
+        assert "kanban landing checkpoint" in content
+        assert "60 of 90" in content
+        assert "Stop product work" in content
+        assert "Do not invent a blocker" in content
+        assert "continue the task" not in content
+        expected = KANBAN_GOAL_LANDING_CHECKPOINT_TEMPLATE.format(used=60, maximum=90)
+        assert expected in content
+        assert agent.iteration_budget.remaining == 30
+    finally:
+        agent._session_db.close()
+
+
+def test_no_landing_checkpoint_for_non_goal_runs(tmp_path, monkeypatch):
+    """Ordinary conversations and non-goal Kanban workers do not get the 60/90 landing fuse."""
+    from agent.turn_iteration_prep import prepare_iteration
+
+    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    ordinary_home = tmp_path / "ordinary"
+    ordinary_home.mkdir()
+    ordinary = _agent(ordinary_home, monkeypatch, "null", max_iterations=90)
+    try:
+        for _ in range(60):
+            ordinary.iteration_budget.consume()
+        messages = _tool_tail()
+        prepare_iteration(ordinary, messages=messages, api_call_count=60)
+        assert messages[-1]["content"] == "verified artifact"
+        assert "kanban landing checkpoint" not in messages[-1]["content"]
+    finally:
+        ordinary._session_db.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_nongoal")
+    nongoal_home = tmp_path / "nongoal"
+    nongoal_home.mkdir()
+    nongoal = _agent(nongoal_home, monkeypatch, "null", max_iterations=90)
+    try:
+        for _ in range(60):
+            nongoal.iteration_budget.consume()
+        messages = _tool_tail()
+        prepare_iteration(nongoal, messages=messages, api_call_count=60)
+        assert "kanban landing checkpoint" not in messages[-1]["content"]
+        assert messages[-1]["content"] == "verified artifact"
+    finally:
+        nongoal._session_db.close()

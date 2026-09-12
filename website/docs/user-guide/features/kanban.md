@@ -12,19 +12,34 @@ Hermes Kanban is a durable task board, shared across all your Hermes profiles, t
 
 ### Completion checkpoints before the iteration cap
 
-Dispatcher-owned workers get one checkpoint notice near 90% of their finite iteration
-budget, attached to a fresh tool result while another tool-capable call remains. Use
-`agent.budget_warning_ratio` to choose an earlier threshold. Tiny budgets warn no later
-than their penultimate iteration; a one-iteration run has no pre-cap checkpoint window.
-The notice is saved in the session transcript before the next request. Workers should
-call `kanban_complete` only after verifying the task contract, or persist a progress
-comment and continue. A commit or diff alone never automatically completes a task.
+Dispatcher-owned workers get one checkpoint notice attached to a fresh tool
+result while another tool-capable call remains:
 
-The hard cap, toolless final summary, and consecutive-failure circuit breaker are
-unchanged: workers that still exhaust their budget remain subject to bounded retries.
-This is a reporting opportunity, not a guarantee that a model will heed the notice.
-Ordinary conversations and delegated children do not inherit the automatic Kanban
-checkpoint; their iteration warning remains opt-in.
+- **Goal-mode workers** receive a *landing-only* checkpoint at two-thirds of
+  the finite iteration budget (60 of 90), leaving at least two iterations for
+  `kanban_comment` plus `kanban_block` / `kanban_complete`. The notice tells
+  the worker to stop product work and close the card. Hermes does not
+  auto-complete the task or invent a blocker.
+- **Non-goal Kanban workers** keep the earlier 90% "checkpoint and continue"
+  notice. Use `agent.budget_warning_ratio` to choose an earlier threshold.
+
+Tiny budgets warn no later than their penultimate iteration; a one-iteration
+run has no pre-cap checkpoint window. The notice is saved in the session
+transcript before the next request. A commit or diff alone never automatically
+completes a task.
+
+The hard cap, toolless final summary, and consecutive-failure circuit breaker
+are unchanged: workers that still exhaust their budget without a terminal
+lifecycle call remain subject to bounded retries (`timed_out`). If the worker
+already called `kanban_complete`, `kanban_block`, or `kanban_request_review`,
+exhaustion finalization leaves that terminal state in place and does not
+append a synthetic `timed_out` / `gave_up` over it.
+
+Goal-mode's Ralph loop applies the same landing-only prompt on the last two
+goal turns before the turn-budget synthetic block.
+
+Ordinary conversations and delegated children do not inherit the automatic
+Kanban checkpoint; their iteration warning remains opt-in.
 
 ### Two surfaces: the model talks through tools, you talk through the CLI
 

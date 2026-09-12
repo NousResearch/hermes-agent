@@ -7,6 +7,9 @@ keeps intercepting them at call time.
 
 from __future__ import annotations
 
+from collections import deque
+from gateway.progress_events import ContentBoundaryBuffer, DurableContentBoundary
+
 import asyncio
 import dataclasses
 import json
@@ -471,6 +474,8 @@ class TurnRunner:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        boundaries: Any = dataclasses.field(default_factory=ContentBoundaryBuffer)
+        ready: Any = dataclasses.field(default_factory=deque)
 
     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
         ctx = self._ctx
@@ -559,9 +564,17 @@ class TurnRunner:
         st.progress_lines = groups[-1]
         return True
 
-    @staticmethod
-    def _is_reset_marker(raw) -> bool:
-        return isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__"
+    def _next_progress_event(self, st):
+        while not st.ready:
+            st.ready.extend(st.boundaries.feed(self._ctx.progress_queue.get_nowait()))
+        return st.ready.popleft()
+
+    async def _seal_progress_boundary(self, st):
+        await self._roll_progress_overflow_if_needed(st)
+        if st.progress_lines and st.progress_msg_id is None:
+            await self._progress_send_or_edit(st, self._progress_text(st.progress_lines))
+        await self._flush_progress_edit(st)
+        self._reset_progress_bubble(st)
 
     def _reset_progress_bubble(self, st) -> None:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
@@ -574,6 +587,7 @@ class TurnRunner:
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
             if not st.progress_lines:
+                st.progress_lines.append(base_msg)
                 return base_msg
             st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
             return st.progress_lines[-1]
@@ -587,22 +601,27 @@ class TurnRunner:
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
-        with suppress(Exception):
-            while not ctx.progress_queue.empty():
-                raw = ctx.progress_queue.get_nowait()
-                if self._is_reset_marker(raw):
-                    # Content-bubble marker during drain: close the current progress bubble
-                    # and start a fresh one for tool lines that arrived after.
-                    await self._roll_progress_overflow_if_needed(st)
-                    await self._flush_progress_edit(st)
-                    self._reset_progress_bubble(st)
+        if not ctx._run_still_current() or self._agent_interrupted():
+            self._drain_progress_queue()
+            return
+        while not ctx.progress_queue.empty():
+            st.ready.extend(st.boundaries.feed(ctx.progress_queue.get_nowait()))
+        st.ready.extend(st.boundaries.finish())
+        while st.ready:
+            raw = st.ready.popleft()
+            if isinstance(raw, DurableContentBoundary):
+                await self._seal_progress_boundary(st)
+            else:
+                msg = self._progress_absorb(st, raw)
+                if not st.can_edit:
+                    await self._send_progress_text(st, msg)
+                    st.progress_lines.clear()
                 else:
-                    self._progress_absorb(st, raw)
                     await self._roll_progress_overflow_if_needed(st)
-        # Final edit with all remaining tools (only if editing works)
-        if st.can_edit and st.progress_lines and st.progress_msg_id:
-            await self._roll_progress_overflow_if_needed(st)
-        await self._flush_progress_edit(st)
+        if st.can_edit and st.progress_lines:
+            if st.progress_msg_id is None:
+                await self._progress_send_or_edit(st, self._progress_text(st.progress_lines))
+            await self._flush_progress_edit(st)
 
     async def _progress_restore_typing(self, st) -> None:
         ctx = self._ctx
@@ -658,14 +677,14 @@ class TurnRunner:
                 if not ctx._run_still_current():
                     self._drain_progress_queue()
                     return
-                raw = ctx.progress_queue.get_nowait()
+                raw = self._next_progress_event(st)
                 # Drain silently when interrupted: events queued in the window between tool parse
                 # and interrupt processing should not render as bubbles.
                 if self._agent_interrupted():
                     await asyncio.sleep(0)
                     continue
-                if self._is_reset_marker(raw):
-                    self._reset_progress_bubble(st)
+                if isinstance(raw, DurableContentBoundary):
+                    await self._seal_progress_boundary(st)
                     continue
                 msg = self._progress_absorb(st, raw)
                 if not await self._roll_progress_overflow_if_needed(st):
@@ -683,7 +702,11 @@ class TurnRunner:
                 last_edit_ts = time.monotonic()
                 await self._progress_restore_typing(st)
             except queue.Empty:
-                await asyncio.sleep(0.3)
+                try:
+                    await asyncio.sleep(0.3)
+                except asyncio.CancelledError:
+                    await self._drain_progress_on_cancel(st)
+                    return
             except asyncio.CancelledError:
                 await self._drain_progress_on_cancel(st)
                 return
@@ -863,8 +886,8 @@ class TurnRunner:
                     stream_consumer = GatewayStreamConsumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
                         metadata=ctx._status_thread_metadata,
-                        on_new_message=(
-                            (lambda: ctx.progress_queue.put(("__reset__",))) if ctx.progress_queue is not None else None
+                        on_content_boundary=(
+                            ctx.progress_queue.put if ctx.progress_queue is not None else None
                         ),
                         on_before_finalize=pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,

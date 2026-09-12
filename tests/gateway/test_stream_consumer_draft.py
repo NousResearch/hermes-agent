@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.progress_events import DurableContentBoundary, ProvisionalContentBoundary
 from gateway.stream_consumer import (
     GatewayStreamConsumer,
     StreamConsumerConfig,
@@ -106,13 +107,25 @@ class TestDraftStreamingHappyPath:
             transport="auto", chat_type="dm",
             edit_interval=0.01, buffer_threshold=5, cursor="",
         )
-        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+        boundaries = []
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "12345",
+            cfg,
+            on_content_boundary=boundaries.append,
+        )
 
         consumer.on_delta("Hello ")
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.05)
         consumer.on_delta("world!")
         await asyncio.sleep(0.05)
+        assert len(boundaries) == 1
+        assert isinstance(boundaries[0], ProvisionalContentBoundary)
+        assert not any(
+            isinstance(boundary, DurableContentBoundary)
+            for boundary in boundaries
+        ), "native draft frames are not persistent entries"
         consumer.finish()
         await task
 
@@ -139,6 +152,10 @@ class TestDraftStreamingHappyPath:
         final_metadata = final_call.kwargs.get("metadata") or {}
         assert final_metadata.get("notify") is True
         assert "expect_edits" not in final_metadata
+        assert len(boundaries) == 2
+        assert isinstance(boundaries[0], ProvisionalContentBoundary)
+        assert isinstance(boundaries[1], DurableContentBoundary)
+        assert boundaries[0].boundary_id == boundaries[1].boundary_id
 
     @pytest.mark.asyncio
     async def test_stream_is_message_preserves_cumulative_text_across_tool_boundaries(self):

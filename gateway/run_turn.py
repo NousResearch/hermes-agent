@@ -3595,7 +3595,7 @@ class GatewayTurnMixin:
     ) -> None:
         """``finally`` half of a turn: cancel background tasks, flush stream, release the session slot."""
         stream_consumer_holder, session_key = turn_ctx.stream_consumer_holder, turn_ctx.session_key
-        for task in (progress_task, log_task, interrupt_monitor, _notify_task):
+        for task in (log_task, interrupt_monitor, _notify_task):
             if task:
                 task.cancel()
 
@@ -3607,6 +3607,16 @@ class GatewayTurnMixin:
                     await stream_task
             else:
                 await self._await_stream_task(stream_task)
+
+        # Stream cleanup must publish preview resolutions before progress drains.
+        if progress_task:
+            progress_task.cancel()
+            try:
+                await asyncio.wait_for(progress_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            except Exception:
+                logger.debug("Progress drain failed during cleanup", exc_info=True)
 
         # Abort + bounded wait for streaming TTS: covers paths where normal finalisation was skipped.
         _stts_finally = turn_ctx.streaming_tts_consumer_holder[0]

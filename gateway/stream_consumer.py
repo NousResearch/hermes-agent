@@ -31,6 +31,8 @@ from gateway.response_filters import (
     is_intentional_silence_response as _is_intentional_silence_response,
     is_partial_silence_marker as _is_partial_silence_marker)
 from gateway.stream_consumer_fences import ensure_closed_code_fences
+from gateway.stream_consumer_boundaries import StreamBoundaryMixin
+from gateway.progress_events import ContentBoundaryEvent, ProvisionalContentBoundary
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
 from gateway.stream_consumer_think import StreamThinkFilterMixin
@@ -96,7 +98,7 @@ class _Tick:
         return not self.got_done and not self.got_segment_break and self.commentary_text is None
 
 
-class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThinkFilterMixin):
+class GatewayStreamConsumer(StreamBoundaryMixin, StreamTransportMixin, StreamFallbackMixin, StreamThinkFilterMixin):
     """Async consumer that progressively edits a platform message with streamed tokens.
     Usage: ``agent.stream_delta_callback = consumer.on_delta``; ``create_task(consumer.run())``;
     after the agent finishes ``consumer.finish()`` then ``await task`` for the final edit."""
@@ -115,7 +117,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         chat_id: str,
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
-        on_new_message: Optional[callable] = None,
+        on_content_boundary: Optional[Callable[[ContentBoundaryEvent], None]] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
         run_still_current: Optional[Callable[[], bool]] = None):
@@ -123,9 +125,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
-        # Hooks (exceptions swallowed): on_new_message per fresh content bubble (next
-        # tool-progress bubble goes BELOW it); on_before_finalize once (pause typing).
-        self._on_new_message = on_new_message
+        self._on_content_boundary = on_content_boundary
+        self._pending_preview_boundary = None
+        self._producer_boundary = None
+        self._content_boundary_lock = threading.Lock()
+        self._content_boundary_sequence = 0
+        self._published_content_boundaries = set()
+        self._persistent_stream_boundary_published = False
         self._on_before_finalize = on_before_finalize
         self._initial_reply_to_id = initial_reply_to_id
         self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer
@@ -360,7 +366,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
-        self._queue.put(_NEW_SEGMENT)
+        with self._content_boundary_lock:
+            self._queue.put(_NEW_SEGMENT)
+            self._producer_boundary = None
 
     def close_for_approval_prompt(
         self, placeholder: str | None = None, reason: str = "Approval", reopen: bool = False,
@@ -390,7 +398,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def on_commentary(self, text: str) -> None:
         """Queue a completed interim assistant commentary message."""
         if text:
-            self._queue.put((_COMMENTARY, text))
+            self.on_segment_break()
+            self._enqueue_content((_COMMENTARY, text))
+            with self._content_boundary_lock:
+                self._producer_boundary = None
 
     def flush_pending_sync(self, timeout: float = 5.0) -> bool:
         """Block the agent worker thread until everything queued so far is delivered:
@@ -414,14 +425,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._reopen_seed_pending():
             self._queue.put(_REOPEN_SEED)
 
-    def _notify_new_message(self) -> None:
-        """Fire the on_new_message callback, swallowing any errors."""
-        try:
-            if self._on_new_message is not None:
-                self._on_new_message()
-        except Exception:
-            logger.debug("on_new_message callback error", exc_info=True)
-
     @staticmethod
     def _signal_flush(flush_event) -> None:
         """Wake a thread blocked in flush_pending_sync(), swallowing errors.  Every loop path
@@ -434,6 +437,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
+        self._settle_preview_boundary()
+        self._persistent_stream_boundary_published = False
         # Retain the segment's visible text so has_delivered_text still matches.
         finalized = self._clean_for_display(self._last_sent_text).strip()
         if finalized:
@@ -512,7 +517,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         boundary: the current message is finalized and subsequent text goes out as a new
         message below any tool-progress messages."""
         if text:
-            self._queue.put(text)
+            self._enqueue_content(text)
         elif text is None:
             self.on_segment_break()
 
@@ -587,6 +592,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
         finally:
+            self._settle_preview_boundary()
             self._wake_flush_waiters()
 
     # ── run() collaborators ─────────────────────────────────────────────
@@ -631,6 +637,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 item = self._queue.get_nowait()
             except queue.Empty:
                 return tick
+            if isinstance(item, ProvisionalContentBoundary):
+                if self._pending_preview_boundary is not None:
+                    from gateway.progress_events import RetractedContentBoundary
+                    self._publish_content_boundary(RetractedContentBoundary(item.boundary_id))
+                else:
+                    self._pending_preview_boundary = item
+                continue
             if item is _DONE:
                 tick.got_done = True
                 return tick
@@ -881,8 +894,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Post commentary as its own message.  Cumulative transports keep the stream going —
         resetting _accumulated would break the append-only invariant / lose text."""
         cumulative = self._cumulative_transport()
-        if not cumulative:
-            self._reset_segment_state()
         await self._send_commentary(commentary_text)
         self._last_edit_time = time.monotonic()
         if not cumulative:
@@ -896,6 +907,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         must keep its sentinel or every tool boundary posts a new message; the
         continuation goes out once via _send_fallback_final."""
         if self._cumulative_transport():
+            # Keep its first boundary until the persistent stream is finalized.
+            # Later segments do not create additional chat entries.
             return
         # If the segment-break edit didn't land (flood control / fallback mode),
         # _accumulated holds unseen pre-boundary text — flush it before the reset.
@@ -927,6 +940,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         with contextlib.suppress(Exception):
             while True:
                 item = self._queue.get_nowait()
+                if isinstance(item, ProvisionalContentBoundary):
+                    from gateway.progress_events import RetractedContentBoundary
+                    self._publish_content_boundary(RetractedContentBoundary(item.boundary_id))
                 if isinstance(item, tuple) and len(item) == 2 and item[0] is _FLUSH:
                     self._signal_flush(item[1])
 

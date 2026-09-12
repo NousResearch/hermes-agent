@@ -5,6 +5,8 @@ state model and the drain loop that calls into these."""
 
 from __future__ import annotations
 
+from gateway.progress_events import DurableContentSource
+
 import asyncio
 import inspect
 import logging
@@ -68,11 +70,12 @@ class StreamTransportMixin:
         self._native_stream_opened = False
         self._native_last_pushed_len = 0
 
-    async def _close_empty_native_bubble(self, fail_log: str) -> None:
+    async def _close_empty_native_bubble(self, fail_log: str) -> bool:
         """Best-effort empty finalize frame to close an open typing bubble, then mark closed."""
-        await self._try_frame(self._send_frame("", finalize=True), fail_log)
+        closed = await self._try_frame(self._send_frame("", finalize=True), fail_log)
         self._close_native_state()
         self._reopen_seeded_eagerly = False
+        return closed
 
     def _degrade_native_to_buffered_send(self) -> None:
         """Leave native mode; buffer_only so post-boundary output is ONE send() at got_done
@@ -98,11 +101,12 @@ class StreamTransportMixin:
         return stale_ids
 
     async def _delete_previews(self, stale_ids, *, skip=None, label: str,
-                               retry_on_false: bool = False, skip_sentinel: bool = True) -> None:
+                               retry_on_false: bool = False, skip_sentinel: bool = True) -> bool:
         """Best-effort delete of stale previews; never the message just sent (``skip``)."""
         delete_fn = getattr(self.adapter, "delete_message", None)
         if delete_fn is None:
-            return
+            return not stale_ids
+        deleted_all = True
         for stale_id in stale_ids:
             if not stale_id or stale_id == skip or (skip_sentinel and stale_id == "__no_edit__"):
                 continue
@@ -114,9 +118,13 @@ class StreamTransportMixin:
                     # preview bubble next to the fresh final (#71047 Problem B). One short bounded retry
                     # clears the common transient case; a second failure stays best-effort.
                     await asyncio.sleep(1.0)
-                    await delete_fn(self.chat_id, stale_id)
+                    deleted = await delete_fn(self.chat_id, stale_id)
+                if deleted is False or getattr(deleted, "success", True) is False:
+                    deleted_all = False
             except Exception as e:
+                deleted_all = False
                 logger.debug("%s preview cleanup failed (%s): %s", label, stale_id, e)
+        return deleted_all
 
     def _resolve_draft_streaming(self) -> bool:
         """cfg.transport "draft"/"auto" → the adapter's supports_draft_streaming probe
@@ -173,6 +181,8 @@ class StreamTransportMixin:
         else:
             if getattr(result, "success", False):
                 self._last_sent_text = text  # parity with the edit-based no-op skip
+                if self._stream_is_message():
+                    self._ack_persistent_stream_boundary()
                 return True
             # P5(b): an AUTHORIZATION decline is terminal for the whole run, not
             # merely "drafts are unusable". Disabling drafts alone routes the
@@ -289,6 +299,7 @@ class StreamTransportMixin:
         self._adopt_message_id(new_message_id)
         self._already_sent = True
         self._last_sent_text = text
+        self._confirm_or_notify_content_boundary(DurableContentSource.FRESH_FINAL, message_id=new_message_id)
         if is_turn_final:
             self._final_response_sent = True
             self._record_turn_final_payload(text)
@@ -383,6 +394,8 @@ class StreamTransportMixin:
             self._already_sent = True
             self._last_sent_text = text
             self._native_last_pushed_len = len(text)
+            if self._accumulated:
+                self._ack_persistent_stream_boundary()
             if finalize:
                 self._mark_final_delivered()
             return True
@@ -439,10 +452,22 @@ class StreamTransportMixin:
                 "declined this destination for this run"
             )
             return False
-        result = await self.adapter.send(
-            chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
-            metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
+        self._open_preview_boundary()
+        try:
+            result = await self.adapter.send(
+                chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
+                metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
+        except BaseException as exc:
+            if isinstance(exc, asyncio.CancelledError) or self._send_failure_may_have_delivered(exc):
+                self._confirm_pending_preview_boundary(source=DurableContentSource.STREAM_PERSISTED)
+            else:
+                self._retract_pending_preview_boundary()
+            raise
         if not result.success:
+            if self._send_failure_may_have_delivered(result):
+                self._confirm_pending_preview_boundary(source=DurableContentSource.STREAM_PERSISTED)
+            else:
+                self._retract_pending_preview_boundary()
             self._edit_supported = False
             return False
         self._already_sent = True
@@ -454,7 +479,11 @@ class StreamTransportMixin:
             # No editable id: fallback mode + sentinel so we don't re-enter first-send.
             self._enter_fallback_mode(self._visible_prefix())
             self._message_id = "__no_edit__"
-        self._notify_new_message()
+        if result.message_id:
+            self._record_pending_preview_message_id(str(result.message_id))
+        if finalize or not result.message_id:
+            self._confirm_pending_preview_boundary(source=(DurableContentSource.STREAM_FINALIZED
+                if finalize else DurableContentSource.STREAM_PERSISTED))
         return True
 
     async def _edit_existing(self, text: str, *, finalize: bool, is_turn_final: bool) -> bool:
@@ -492,7 +521,7 @@ class StreamTransportMixin:
             self._turn_split_delivery = True
             self._adopt_message_id(str(result.message_id))
             self._last_sent_text = ""
-            self._notify_new_message()
+            self._confirm_or_notify_content_boundary(DurableContentSource.OVERFLOW, message_id=result.message_id)
         else:
             self._last_sent_text = text
         self._flood_strikes = 0
@@ -552,7 +581,7 @@ class StreamTransportMixin:
                 self._fallback_preserve_partial_messages = False
                 self._enter_fallback_mode(self._visible_prefix())
             if getattr(result, "continuation_message_ids", ()):
-                self._notify_new_message()
+                self._confirm_or_notify_content_boundary(DurableContentSource.OVERFLOW, message_id=result.message_id)
             return False
 
         # Flood control: adaptive backoff (double the interval); disable edits only

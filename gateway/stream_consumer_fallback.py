@@ -3,6 +3,8 @@ stop working, chunking, cursor cleanup, commentary and silence retraction."""
 
 from __future__ import annotations
 
+from gateway.progress_events import DurableContentSource
+
 import asyncio
 import contextlib
 import logging
@@ -34,7 +36,7 @@ class StreamFallbackMixin:
             self._track_preview_ids_from_result(result)
             self._already_sent = True
             self._last_sent_text = text
-            self._notify_new_message()
+            self._confirm_or_notify_content_boundary(DurableContentSource.OVERFLOW, message_id=result.message_id)
             return str(result.message_id)
         except Exception as e:
             logger.error("Stream send chunk error: %s", e)
@@ -123,7 +125,7 @@ class StreamFallbackMixin:
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
-            self._notify_new_message()
+            self._confirm_or_notify_content_boundary(DurableContentSource.FALLBACK, message_id=result.message_id)
 
         # Best-effort delete of the frozen partial — ONLY when the FULL final was
         # re-sent.  If only the missing tail went out, the partial IS the head of
@@ -254,7 +256,7 @@ class StreamFallbackMixin:
         self._last_sent_text = final_text
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
-        self._notify_new_message()
+        self._confirm_or_notify_content_boundary(DurableContentSource.FRESH_FINAL, message_id=result.message_id)
         return "delivered"
 
     @staticmethod
@@ -339,14 +341,23 @@ class StreamFallbackMixin:
             # Do NOT set _already_sent: commentary is interim, and the flag would
             # suppress the real final after multiple tool calls.
             if result.success:
-                self._notify_new_message()
+                self._confirm_or_notify_content_boundary(DurableContentSource.COMMENTARY, message_id=result.message_id)
                 # Lets run.py confirm whether an interim send carried the final.
                 # Record the exact delivered text so run.py can confirm whether an interim "preview"
                 # actually carried the final response, vs. unrelated commentary delivered during a session
                 # split (#14238).
                 self._delivered_commentary_texts.append(text)
+            if not result.success:
+                if self._send_failure_may_have_delivered(result):
+                    self._confirm_pending_preview_boundary(source=DurableContentSource.STREAM_PERSISTED)
+                else:
+                    self._retract_pending_preview_boundary()
             return result.success
         except Exception as e:
+            if self._send_failure_may_have_delivered(e):
+                self._confirm_pending_preview_boundary(source=DurableContentSource.STREAM_PERSISTED)
+            else:
+                self._retract_pending_preview_boundary()
             logger.error("Commentary send error: %s", e)
             return False
 
@@ -378,10 +389,15 @@ class StreamFallbackMixin:
         fallback send happens either."""
         # A native-stream bubble isn't a deletable message — close an open one
         # (e.g. from an eager re-seed) with an empty finalize so it doesn't hang.
+        closed = True
         if self._native_stream_opened:
-            await self._close_empty_native_bubble("Silence-marker native stream close failed: %s")
+            closed = await self._close_empty_native_bubble("Silence-marker native stream close failed: %s")
 
-        await self._delete_previews(self._stale_preview_ids(), label="Silence-marker")
+        deleted = await self._delete_previews(self._stale_preview_ids(), label="Silence-marker")
+        if closed and deleted and self._message_id != "__no_edit__":
+            self._retract_pending_preview_boundary()
+        else:
+            self._confirm_pending_preview_boundary(source=DurableContentSource.STREAM_PERSISTED)
         self._preview_message_ids = set()
         self._message_id = None
         self._accumulated = self._stream_ledger = self._last_sent_text = ""

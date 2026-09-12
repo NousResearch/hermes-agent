@@ -98,6 +98,22 @@ def finish_text_response(
 
     agent._empty_content_retries = 0
     agent._thinking_prefill_retries = 0
+    # A real, content-bearing response arrived from the active provider: clear its
+    # rolling-window failure count so the circuit breaker recovers automatically.
+    from agent.provider_circuit_breaker import record_success as _cb_record_success
+    _cb_record_success(
+        getattr(agent, "provider", ""),
+        str(getattr(agent, "base_url", "") or ""),
+    )
+    # Key-level lenient cooldown: a real success clears the rolling-window state
+    # for the credential that answered (opt-in; no-op under the default strict
+    # mode). Mirrors the provider-level recovery above.
+    try:
+        _pool = getattr(agent, "_credential_pool", None)
+        if _pool is not None:
+            _pool.mark_success(getattr(agent, "_credential_pool_entry_id", None))
+    except Exception:  # pragma: no cover - recovery must never break the turn
+        pass
     # Surface the one-shot fallback switch notice before dropping the retry buffer so a
     # provider/model switch stays visible on success.
     agent._emit_pending_fallback_notice()

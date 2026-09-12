@@ -174,6 +174,10 @@ _EXTRA_KEYS = frozenset({
     # raw status cannot size a cooldown; persisted so a restart doesn't downgrade
     # a billing bench to a 60s transient cooldown.
     "failure_reason",
+    # Opt-in lenient rolling-window state (agent/provider_cooldown.py). MUST be
+    # listed here or from_dict() drops it on reload, resetting the rolling count
+    # every pool reload and silently defeating the policy.
+    "provider_cooldown",
 })
 
 # Nous singleton metadata mirrored between auth.json state and ``entry.extra``.
@@ -434,6 +438,35 @@ def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) 
             failure_reason=entry.failure_reason,
         )
     return None
+
+
+def _lenient_holds_probe(
+    entry: "PooledCredential", *, advance: bool, now: float
+) -> bool:
+    """Opt-in lenient mode: hold a benched key until its probe gate opens.
+
+    The bench (blackout) rides the upstream time gate; this adds the extra
+    "``probe_requests`` selections after the bench" hold so a recharged key is
+    re-probed within a bounded number of calls. Strict mode (the default) and
+    non-rolling credentials always return False, leaving upstream behaviour
+    byte-identical. Best-effort: any failure degrades to "not held", resuming
+    normal rotation.
+    """
+    try:
+        from agent import provider_cooldown as _pc
+
+        if not _pc.is_lenient() or not _pc.has_rolling_state(entry.extra):
+            return False
+        if advance:
+            return not _pc.probe_after_blackout(entry.extra, now=now)
+        state = entry.extra.get(_pc.STATE_KEY) or {}
+        if now < float(state.get("blackout_until") or 0.0):
+            return True
+        needed = max(1, int(state.get("probe_requests") or 1))
+        seen = int(state.get("probe_seen") or 0)
+        return seen < needed
+    except Exception:  # pragma: no cover - policy layer is best-effort
+        return False
 
 
 # --- Custom (OpenAI-compatible) endpoint pool keys ---
@@ -994,6 +1027,31 @@ class CredentialPool(CredentialPoolAdminMixin):
         with self._lock:
             return list(self._entries)
 
+    def mark_success(self, credential_id: Optional[str] = None) -> bool:
+        """Clear the opt-in lenient rolling state for a key after a real success.
+
+        No-op under the default strict mode (and when no rolling state exists),
+        so upstream behaviour is unchanged. Returns True when state was cleared.
+        """
+        with self._lock:
+            try:
+                from agent import provider_cooldown as _pc
+
+                if not _pc.is_lenient():
+                    return False
+            except Exception:  # pragma: no cover - policy layer is best-effort
+                return False
+            entry = self._find(lambda e: e.id == credential_id) if credential_id else self._current_unlocked()
+            if entry is None:
+                return False
+            updated_extra = dict(entry.extra)
+            if not _pc.record_success(updated_extra):
+                return False
+            self._adopt(entry, extra=updated_extra)
+            logger.info("credential pool: %s recovered — cleared lenient cooldown state",
+                        entry.label or entry.id[:8])
+            return True
+
     def _is_sole_credential(self) -> bool:
         """DEAD entries never re-enter rotation, so <=1 non-DEAD entry means nothing to rotate to."""
         return sum(1 for e in self._entries if e.last_status != STATUS_DEAD) <= 1
@@ -1120,6 +1178,27 @@ class CredentialPool(CredentialPoolAdminMixin):
             updated_extra["failure_reason"] = failure_reason
         else:
             updated_extra.pop("failure_reason", None)
+        # Opt-in lenient rolling-window policy (agent/provider_cooldown). Default
+        # mode is "strict" -> lenient_reset_at stays None and this block is a
+        # no-op, leaving the upstream path byte-identical. In lenient mode a
+        # single 429/402 only PARKS the key briefly; the key is really benched
+        # (with a growing ladder) once the window threshold is crossed. The
+        # computed reset time rides on last_error_reset_at, which
+        # ``_exhausted_until`` already prefers over the strict TTL.
+        lenient_reset_at: Optional[float] = None
+        if not terminal:
+            try:
+                from agent import provider_cooldown as _pc
+
+                if _pc.is_lenient():
+                    result = _pc.record_lenient_failure(
+                        updated_extra, status_code=status_code, failure_reason=failure_reason
+                    )
+                    if result is not None:
+                        ttl, _benched = result
+                        lenient_reset_at = time.time() + ttl
+            except Exception as exc:  # pragma: no cover - policy layer is best-effort
+                logger.debug("provider cooldown (lenient) hook failed; using strict TTL: %s", exc)
         return self._adopt(
             entry,
             persist=persist,
@@ -1128,7 +1207,9 @@ class CredentialPool(CredentialPoolAdminMixin):
             last_error_code=status_code,
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
-            last_error_reset_at=normalized_error.get("reset_at"),
+            last_error_reset_at=(
+                lenient_reset_at if lenient_reset_at is not None else normalized_error.get("reset_at")
+            ),
             extra=updated_extra,
         )
 
@@ -1825,6 +1906,7 @@ class CredentialPool(CredentialPoolAdminMixin):
 
     def _available_entries(
         self, *, clear_expired: bool = False, refresh: bool = False,
+        advance_probe: bool = False,
     ) -> Tuple[List[PooledCredential], List[PooledCredential]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
@@ -1880,6 +1962,13 @@ class CredentialPool(CredentialPoolAdminMixin):
                     and not (clear_expired and self._codex_quota_restored_upstream(entry))
                 ):
                     continue
+                # Opt-in lenient mode: once the bench elapses the key is still
+                # held for `probe_requests` selections before a probe is let
+                # through. Strict mode and non-rolling credentials are unaffected.
+                if clear_expired and _lenient_holds_probe(
+                    entry, advance=advance_probe, now=now
+                ):
+                    continue
                 if clear_expired:
                     entry = self._adopt(entry, persist=False, **_MARK_OK)
                     cleared_any = True
@@ -1921,7 +2010,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         ``count=False`` skips the ``request_count`` bump for selections that are
         not going to serve a request (a forced-refresh target lookup).
         """
-        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh)
+        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, advance_probe=count)
         if not available:
             self._current_id = None
             self._log_no_available_entries()

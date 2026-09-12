@@ -1731,6 +1731,16 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         return True
     if not fb_provider or not fb_model:
         return True
+    # Durable provider-level circuit breaker: a backend that accumulated too many
+    # failures inside the rolling window is skipped until its cooldown elapses,
+    # instead of being re-tried (and re-failed) on every single turn.
+    from agent.provider_circuit_breaker import is_quiesced, remaining_cooldown
+    if is_quiesced(fb_provider, str(fb.get("base_url") or "")):
+        logger.info(
+            "Fallback skip: %s/%s is quiesced by the provider circuit breaker (%.0fs left)",
+            fb_provider, fb_model, remaining_cooldown(fb_provider, str(fb.get("base_url") or "")),
+        )
+        return True
     from agent.fallback_cooldown import _is_entitlement_rejected
     if _is_entitlement_rejected(agent, fb_provider, fb_model):
         logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
@@ -1831,6 +1841,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
     from agent.fallback_cooldown import _arm_rate_limit_cooldown
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason)
+    # The current backend just failed — that is the failure this walk exists for.
+    # Count it against the rolling window; crossing the threshold quiesces the backend.
+    from agent.provider_circuit_breaker import record_failure as _cb_record_failure
+    _cb_record_failure(
+        getattr(agent, "provider", ""),
+        str(getattr(agent, "base_url", "") or ""),
+    )
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
             return _fallback_chain_exhausted(agent, reason)

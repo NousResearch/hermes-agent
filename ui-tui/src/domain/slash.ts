@@ -78,6 +78,28 @@ export const applyCompletion = (value: string, rowText: string, compReplace: num
 }
 
 /**
+ * The value Tab applies, or `null` when Tab has nothing to do.
+ *
+ * One rule for both sources so they can't drift: the highlighted menu row wins
+ * when there is one, and the inline ghost is what Tab means when no menu is up
+ * (a history recall, or a suggestion whose rows have since been cleared).
+ * Preferring the row is not a demotion of the ghost — the ghost IS one of those
+ * rows, so a user who moved the highlight gets the row they chose.
+ */
+export const tabAcceptValue = (
+  value: string,
+  rowText: string | undefined,
+  compReplace: number,
+  ghost: string
+): string | null => {
+  if (rowText) {
+    return applyCompletion(value, rowText, compReplace)
+  }
+
+  return ghost ? value + ghost : null
+}
+
+/**
  * Decide what Enter does when a completion is highlighted: returns the value
  * to set (accept the completion) or `null` to fall through to submit.
  *

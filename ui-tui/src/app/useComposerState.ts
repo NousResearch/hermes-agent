@@ -9,6 +9,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
 import { droppedTokens, imageToken, nextImageIndex } from '../domain/attachments.js'
+import { inlineSuggestion } from '../domain/inlineSuggest.js'
 import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
@@ -143,6 +144,19 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
+
+  // Inline ghost text. Derived from the completion rows already fetched for
+  // this keystroke plus the recall history, so it adds no round trip of its own
+  // (see domain/inlineSuggest). Suppressed while a history recall is being
+  // stepped through: the input IS a past line there, and ghosting the tail of
+  // an even longer one fights the ↑/↓ the user is actually driving.
+  const ghost = useMemo(
+    () =>
+      isBlocked || historyIdx !== null
+        ? ''
+        : inlineSuggestion({ compReplace, completions, history: historyRef.current, value: input }),
+    [compReplace, completions, historyIdx, historyRef, input, isBlocked]
+  )
 
   const clearIn = useCallback(() => {
     setInput('')
@@ -479,6 +493,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       compIdx,
       compReplace,
       completions,
+      ghost,
       historyIdx,
       input,
       inputBuf,
@@ -486,7 +501,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       queuedDisplay,
       tokens
     }),
-    [compIdx, compReplace, completions, historyIdx, input, inputBuf, queueEditIdx, queuedDisplay, tokens]
+    [compIdx, compReplace, completions, ghost, historyIdx, input, inputBuf, queueEditIdx, queuedDisplay, tokens]
   )
 
   return {

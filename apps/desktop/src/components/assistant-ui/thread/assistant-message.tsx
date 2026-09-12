@@ -89,6 +89,15 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
   // user message already renders as. Grok-bots parity: the transcript shows
   // events; the texts are one click away. Detection: the immediately
   // preceding user message matches AGENT_MESSAGE_RE.
+  //
+  // Owner-directed exemption: when the thread also contains a REAL user
+  // message (one that is not itself an agent delivery), the reply is likely
+  // an owner-directed report that happened to follow a bot delivery in the
+  // same thread — collapse only when the reply carries an explicit
+  // inter-agent marker OR there is no evidence a human is participating in
+  // this thread. We only exempt on high-confidence signals so the default
+  // (Grok-bots parity) collapse behaviour is preserved for genuine
+  // bot-to-bot exchanges.
   const interAgentSender = useAuiState(s => {
     const messages = s.thread.messages
 
@@ -107,7 +116,26 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
         if (prev.role === 'user') {
           const match = AGENT_MESSAGE_RE.exec(messageContentText(prev.content as never).trim())
 
-          return match ? (match[1] || match[3] || 'agent').trim() : null
+          if (!match) {
+            return null
+          }
+
+          const sender = (match[1] || match[3] || 'agent').trim()
+
+          // Exemption: only if the thread contains a genuine human message
+          // (not another agent delivery) AND this reply is not explicitly
+          // marked as an inter-agent answer. Both signals together give high
+          // confidence that this is an owner-directed report that merely
+          // follows a bot delivery — everything else keeps the default
+          // collapse so bot-to-bot exchanges stay compact.
+          const hasRealUserMessage = messages.some(
+            m => m.role === 'user' && !AGENT_MESSAGE_RE.test(messageContentText(m.content as never).trim())
+          )
+
+          const isExplicitAgentReply =
+            (s.message.metadata?.custom as { agentReply?: boolean } | undefined)?.agentReply === true
+
+          return !isExplicitAgentReply && hasRealUserMessage ? null : sender
         }
       }
 

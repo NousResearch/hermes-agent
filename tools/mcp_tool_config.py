@@ -289,11 +289,12 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> List[str]:
 
 
 def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
-    """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
+    """Drop suspicious MCP configs; fail closed if validation cannot be loaded."""
     try:
         from hermes_cli.mcp_security import validate_mcp_server_entry
     except Exception:
-        return servers
+        logger.warning("MCP security validator unavailable; refusing configured MCP servers")
+        return {}
     safe_servers = {}
     for name, cfg in servers.items():
         issues = validate_mcp_server_entry(name, cfg) if isinstance(cfg, dict) else None
@@ -302,6 +303,13 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
         else:
             safe_servers[name] = cfg
     return safe_servers
+
+
+def _validate_mcp_server_at_spawn(name: str, config: dict) -> None:
+    """Validate the fully resolved entry immediately before an MCP transport is opened."""
+    filtered = _filter_suspicious_mcp_servers({name: config})
+    if name not in filtered:
+        raise ValueError(f"MCP server '{name}' refused by security validation")
 
 
 def _portable_mcp_servers(safe_servers: Dict[str, dict]) -> None:
@@ -333,11 +341,11 @@ def _load_mcp_config() -> Dict[str, dict]:
         except Exception:
             pass
         safe_servers: Dict[str, dict] = {}
-        for name, cfg in _filter_suspicious_mcp_servers(servers if isinstance(servers, dict) else {}).items():
+        for name, cfg in (servers if isinstance(servers, dict) else {}).items():
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
-                safe_servers[name] = interpolated
+                safe_servers.update(_filter_suspicious_mcp_servers({name: interpolated}))
         _portable_mcp_servers(safe_servers)
         return safe_servers
     except Exception as exc:

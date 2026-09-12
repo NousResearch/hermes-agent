@@ -213,6 +213,7 @@ class MCPServerTransportMixin:
         command = config.get("command")
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
+        _config._validate_mcp_server_at_spawn(self.name, config)
         command, safe_env = _config._resolve_stdio_command(command, _config._build_safe_env(config.get("env")))
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
         command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
@@ -392,6 +393,7 @@ class MCPServerTransportMixin:
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP (or SSE) transport."""
         _core._ensure_mcp_sdk()
+        _config._validate_mcp_server_at_spawn(self.name, config)
         if not _core._MCP_HTTP_AVAILABLE:
             raise ImportError(f"MCP server '{self.name}' requires HTTP transport but "
                               "mcp.client.streamable_http is not available. "

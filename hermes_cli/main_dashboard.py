@@ -781,19 +781,25 @@ def _resolve_dashboard_web_dist(args, _headless_backend: bool) -> None:
 # ---------------------------------------------------------------------------
 
 def _drop_cwd_from_sys_path() -> None:
-    """Remove the working-directory placeholder from ``sys.path``.
+    """Remove the working directory from ``sys.path``.
 
-    ``python -m`` puts ``""`` first, which makes the *working directory*
-    importable. Hermes Desktop spawns this backend with ``cwd`` set to the
-    user's home directory, so a stray module there wins over the installed
-    package of the same name: a leftover ``~/email_validator.py`` shadowed
-    pydantic's optional email dependency and the backend died on its first
-    ``import fastapi``, before the gateway could bind. Absolute entries
-    (``PYTHONPATH``, the repo root inserted at startup) are deliberate — only
-    the CWD placeholder goes.
+    ``python -m`` puts the *absolute* working directory at ``sys.path[0]``; the
+    bare ``""`` placeholder only appears for ``-c``/interactive runs. Hermes
+    Desktop spawns this backend with ``cwd`` set to the user's home directory,
+    so either form makes the working directory importable and a stray module
+    there wins over the installed package of the same name: a leftover
+    ``~/email_validator.py`` shadowed pydantic's optional email dependency and
+    the backend died on its first ``import fastapi``, before the gateway could
+    bind. Entries that resolve inside the working directory are dropped; other
+    absolute entries (``PYTHONPATH``, the repo root inserted at startup) are
+    deliberate and stay.
     """
-    while "" in sys.path:
-        sys.path.remove("")
+    cwd = os.path.normcase(os.path.abspath(os.getcwd()))
+    sys.path[:] = [
+        entry
+        for entry in sys.path
+        if os.path.normcase(os.path.abspath(entry or os.curdir)) != cwd
+    ]
 
 
 def _import_outside_environment(name: str) -> str | None:

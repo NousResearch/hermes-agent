@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import os
 import sys
 from pathlib import Path
 
@@ -32,11 +33,30 @@ from hermes_cli.main_dashboard import (
 REPORT_KWARGS = {"project_root": "/repo", "python_executable": "/repo/venv/bin/python"}
 
 
-def test_drop_cwd_from_sys_path_removes_only_the_cwd_placeholder(monkeypatch):
-    """The CWD placeholder goes; explicit absolute entries are deliberate."""
-    monkeypatch.setattr(sys, "path", ["", "/keep/me", "", "/keep/me/too"])
+def test_drop_cwd_from_sys_path_removes_cwd_entries_only(monkeypatch, tmp_path):
+    """Every entry resolving to the cwd goes; other absolute entries stay."""
+    monkeypatch.chdir(tmp_path)
+    cwd = os.path.normcase(os.path.abspath(str(tmp_path)))
+    monkeypatch.setattr(
+        sys, "path", ["", "/keep/me", cwd, str(tmp_path / "sub"), ""]
+    )
     _drop_cwd_from_sys_path()
-    assert sys.path == ["/keep/me", "/keep/me/too"]
+    assert sys.path == ["/keep/me", str(tmp_path / "sub")]
+
+
+def test_drop_cwd_from_sys_path_removes_the_absolute_cwd(monkeypatch, tmp_path):
+    """``python -m`` puts the absolute cwd on ``sys.path[0]``, not ``""``.
+
+    The desktop spawns the backend as ``python -m hermes_cli.main serve`` with
+    cwd set to the home directory, so this is the entry that actually shadows
+    an installed package in the reported repro. Stripping only ``""`` leaves it
+    in place and the backend still dies on the ``import fastapi`` chain.
+    """
+    monkeypatch.chdir(tmp_path)
+    cwd = os.path.normcase(os.path.abspath(str(tmp_path)))
+    monkeypatch.setattr(sys, "path", [cwd, "/keep/me"])
+    _drop_cwd_from_sys_path()
+    assert sys.path == ["/keep/me"]
 
 
 def test_import_outside_environment_flags_a_stray_file(tmp_path, monkeypatch):

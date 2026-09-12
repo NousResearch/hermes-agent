@@ -34,6 +34,7 @@ import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, buildWsUrl } from "@/lib/api";
+import { assistantFinalText } from "@/lib/assistant-voice-output";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 import {
   EVENTS_CONNECT_TIMEOUT_MS,
@@ -92,6 +93,7 @@ interface ChatSidebarProps {
   className?: string;
   onDashboardNewSessionRequest?: () => void;
   onSessionTitleChange?: (title: string | null) => void;
+  onAssistantFinal?: (text: string) => void;
 }
 
 /** Build the ``session.create`` params for the sidecar session.
@@ -115,6 +117,7 @@ export function ChatSidebar({
   className,
   onDashboardNewSessionRequest,
   onSessionTitleChange,
+  onAssistantFinal,
 }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
@@ -413,6 +416,9 @@ export function ChatSidebar({
           }
         } else if (type === "dashboard.new_session_requested") {
           onDashboardNewSessionRequest?.();
+        } else if (type === "message.complete") {
+          const text = assistantFinalText(type, payload);
+          if (text) onAssistantFinal?.(text);
         }
       });
     };
@@ -429,7 +435,7 @@ export function ChatSidebar({
       }
       ws?.close();
     };
-  }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
+  }, [channel, onAssistantFinal, onDashboardNewSessionRequest, onSessionTitleChange, version]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
   // (a profile/channel switch bumps `version`).

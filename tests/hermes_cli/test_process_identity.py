@@ -134,6 +134,19 @@ def test_register_self_writes_and_prunes_dead(tmp_path):
     assert me["create_time"] == pytest.approx(50.0, abs=0.01)
 
 
+def test_register_self_survives_non_utf8_argv(tmp_path):
+    ledger = tmp_path / "spawn-ledger.json"
+    fake = _fake_psutil({999: 50.0})
+    bad_argv = ["hermes", "serve", os.fsdecode(b"/tmp/project-\xff")]  # surrogate-escaped path
+    with patch.dict(sys.modules, {"psutil": fake}), \
+         patch.object(pi, "_ledger_path", return_value=ledger), \
+         patch.object(pi.os, "getpid", return_value=999), \
+         patch.object(sys, "argv", bad_argv):
+        assert pi.register_self("serve", project_root=Path("/x/install")) is True
+    me = next(e for e in json.loads(ledger.read_text(encoding="utf-8")) if e["pid"] == 999)
+    assert me["argv"] == " ".join(bad_argv)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
 def test_register_self_writes_ledger_with_0600(tmp_path):
     ledger = tmp_path / "spawn-ledger.json"

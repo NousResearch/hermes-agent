@@ -106,9 +106,27 @@ def _result_is_error(result) -> bool:
 
 
 def _record_call_outcome(server_name: str, result) -> Any:
-    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike."""
-    (_core._bump_server_error if _result_is_error(result) else _core._reset_server_error)(server_name)
+    """A returned handler result proves the MCP RPC transport completed.
+
+    Domain failures are intentionally represented as ``{"error": ...}`` too.  They must remain
+    visible to downstream consumers, but they are not evidence that the connection is unhealthy.
+    """
+    _core._reset_server_error(server_name)
     return result
+
+
+def _is_tool_result_validation_error(exc: BaseException) -> bool:
+    """Whether the MCP SDK rejected a completed tool result's output schema.
+
+    MCP 2.0 currently exposes these as untyped ``RuntimeError`` instances after the response has
+    arrived.  Match only its two stable message prefixes: an arbitrary server-side ``RuntimeError``
+    must not be misclassified as a completed RPC.
+    """
+    if not isinstance(exc, RuntimeError):
+        return False
+    message = str(exc)
+    return (message.startswith("Tool ") and " has an output schema but did not return structured content" in message
+            or message.startswith("Invalid structured content returned by tool "))
 
 
 def _strike(server_name: str, message: str, **extra) -> str:
@@ -277,7 +295,10 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
             recovered = recover(server_name, exc, call_once, op)
             if recovered is not None:
                 return recovered
-        on_final_failure(exc)
+        if _is_tool_result_validation_error(exc):
+            _core._reset_server_error(server_name)
+        else:
+            on_final_failure(exc)
         return tool_error(_sanitize_error(f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"))
 
 
@@ -409,14 +430,9 @@ def _capped_structured_content(result):
     truncated JSON string (multi-MB JSON flood guard)."""
     # Hard-cap pathological payloads before they propagate (#56059); ordinary large results pass untouched
     # to the spillover layer.
-    # content and structuredContent are ALTERNATIVES — never both forwarded (ported from
-    # MoonshotAI/kimi-code#3234). Spec-following servers already render their data into content (the
-    # verbatim dual-emit SHOULD, or a faithful human reorganisation), so forwarding both sent the same
-    # information to the model twice. content wins whenever it rendered anything usable; there is no
-    # reliable signal that the structured payload is richer than what the server put in content (semantic
-    # equality misses faithful reorganisations, size ratios misjudge both directions), so no heuristic is
-    # attempted. structuredContent fills in only when the content blocks rendered effectively empty, which
-    # keeps structuredContent-only servers working. Server-level `_meta` is also surfaced (ported from
+    # Exact content/structuredContent dual emissions are collapsed later (ported from
+    # MoonshotAI/kimi-code#3234). Distinct summaries and structured payloads are both retained because
+    # semantic similarity cannot safely prove equality. Server-level `_meta` is also surfaced (ported from
     # MoonshotAI/kimi-code#2596): servers return namespaced metadata there (validated contracts,
     # browser-handoff payloads, ...) that was previously invisible to the agent. Protocol-reserved keys are
     # dropped first (kimi-code#2600) — per the MCP spec's key-name rules a prefix is reserved when a
@@ -432,20 +448,70 @@ def _capped_structured_content(result):
     return _truncate_mcp_text_result(as_json) if len(as_json) > _MCP_HARD_RESULT_CAP_CHARS else structured
 
 
+def _json_type_stable_equal(left: Any, right: Any) -> bool:
+    """Conservative equality for JSON trees without Python's bool/int coercion.
+
+    JSON objects and arrays recurse; scalar values compare only when their concrete Python types
+    match.  Unsupported values are never considered equal.  False negatives merely retain some
+    duplicate context, while a false positive would discard model-visible data.
+    """
+    if isinstance(left, dict) and isinstance(right, dict):
+        return (left.keys() == right.keys()
+                and all(_json_type_stable_equal(left[key], right[key]) for key in left))
+    if isinstance(left, list) and isinstance(right, list):
+        return (len(left) == len(right)
+                and all(_json_type_stable_equal(a, b) for a, b in zip(left, right)))
+    if type(left) not in (str, int, float, bool, type(None)) or type(left) is not type(right):
+        return False
+    return left == right
+
+
+def _text_duplicates_structured(text: str, structured: Any) -> bool:
+    """True only when *text* is JSON and type-stably identical to *structured*."""
+    try:
+        parsed = json.loads(text, parse_constant=lambda _value: _MISSING)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return _json_type_stable_equal(parsed, structured)
+
+
+def _dump_result_payload(payload: Dict[str, Any], fallback: str) -> str:
+    """Serialize a model payload, dropping only malformed optional metadata first."""
+    try:
+        return json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        if "_meta" not in payload:
+            return fallback
+        without_meta = dict(payload)
+        without_meta.pop("_meta", None)
+        try:
+            return json.dumps(without_meta, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return fallback
+
+
 def _render_call_tool_result(result, server_name: str) -> str:
-    """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are
-    ALTERNATIVES, never both forwarded (kimi-code#3234): spec-following servers already render
-    their data into content, so forwarding both sent it twice. content wins whenever it rendered
-    anything usable (no richness heuristic is attempted — none is reliable); structuredContent
-    fills in only when the blocks rendered effectively empty, keeping structuredContent-only
-    servers working. ``_meta`` minus reserved keys is always surfaced."""
-    if mcp_field(result, "is_error", "isError", False):
-        return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error")))
-    text_result, usable_parts = _render_content_blocks(result, server_name)
+    """Pure: ``CallToolResult`` -> handler JSON.
+
+    The kimi-code#3234 duplicate-context protection remains, but only exact, type-stable JSON
+    dual-emissions are collapsed.  Distinct human text and structured data are both model-visible.
+    Domain errors retain the established top-level ``error`` string as well as structured content
+    and allowed server metadata from the completed RPC.
+    """
     structured = _capped_structured_content(result)
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
-    if structured is not None and usable_parts > 0:
-        structured = None  # drop notices do not count as usable content
+    if mcp_field(result, "is_error", "isError", False):
+        message = _sanitize_error(_truncate_mcp_text_result(
+            _error_result_text(result) or "MCP tool returned an error"))
+        payload = json.loads(tool_error(message))
+        if structured is not None:
+            payload["structuredContent"] = structured
+        if meta is not None:
+            payload["_meta"] = meta
+        return _dump_result_payload(payload, tool_error(message))
+    text_result, usable_parts = _render_content_blocks(result, server_name)
+    if structured is not None and usable_parts > 0 and _text_duplicates_structured(text_result, structured):
+        structured = None  # exact dual-emission: keep one copy in content
     if structured is None and meta is None:
         return json.dumps({"result": text_result}, ensure_ascii=False)
     # Key order is part of the output: "result" leads when there is text, otherwise "_meta" precedes it.
@@ -458,10 +524,7 @@ def _render_call_tool_result(result, server_name: str) -> str:
     if meta is not None:
         payload["_meta"] = meta
     payload.setdefault("result", text_result)
-    try:
-        return json.dumps(payload, ensure_ascii=False)
-    except (TypeError, ValueError):  # Non-serializable metadata: drop the extras, keep the call.
-        return json.dumps({"result": text_result}, ensure_ascii=False)
+    return _dump_result_payload(payload, json.dumps({"result": text_result}, ensure_ascii=False))
 
 
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):

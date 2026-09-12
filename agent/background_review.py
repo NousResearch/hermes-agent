@@ -545,10 +545,31 @@ def _verbose_skill_line(data: Dict, detail: Dict, message: str) -> str:
     if action == "patch" and (old_string or new_string):
         old_preview, new_preview = (_preview(t, 80).replace("\n", " ") for t in (old_string, new_string))
         return f"📝 Skill '{skill_name}' patched: \"{old_preview}\" → \"{new_preview}\""
+    file_path = detail.get("file_path", "")
+    if action == "write_file" and file_path:
+        return f"📝 Skill '{skill_name}' wrote file '{file_path}'"
+    if action == "remove_file" and file_path:
+        return f"📝 Skill '{skill_name}' removed file '{file_path}'"
     verb = {"create": "created", "edit": "rewritten"}.get(action)
     if verb and change.get("description"):
         return f"📝 Skill '{skill_name}' {verb}: {change['description']}"
-    return f"📝 {message}" if message else f"Skill {action}"
+    if verb and skill_name:
+        return f"📝 Skill '{skill_name}' {verb}"
+    return f"📝 {message}" if message else "Skill updated"
+
+
+def _verbose_skill_lines(data: Dict, detail: Dict, message: str) -> List[str]:
+    """Render a single skill operation or each operation in a batch."""
+    operations = detail.get("operations")
+    if isinstance(operations, list) and operations:
+        lines = [
+            _verbose_skill_line({}, op, "")
+            for op in operations
+            if isinstance(op, dict)
+        ]
+        if lines:
+            return lines
+    return [_verbose_skill_line(data, detail, message)]
 
 
 def _verbose_memory_lines(label: str, detail: Dict) -> List[str]:
@@ -562,8 +583,8 @@ def _verbose_memory_lines(label: str, detail: Dict) -> List[str]:
 
 # Tool-call argument fields surfaced in action summaries, with their defaults.
 _CALL_DETAIL_DEFAULTS = (
-    ("action", "?"), ("target", "memory"), ("content", ""), ("old_text", ""), ("name", ""),
-    ("old_string", ""), ("new_string", ""),
+    ("action", ""), ("target", "memory"), ("content", ""), ("old_text", ""), ("name", ""),
+    ("old_string", ""), ("new_string", ""), ("file_path", ""),
 )
 
 
@@ -644,7 +665,7 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
         return []
     label = "Skill" if is_skill else {"memory": "Memory", "user": "User profile"}.get(target, target)
     if verbose:
-        return [_verbose_skill_line(data, detail, message)] if is_skill else _verbose_memory_lines(label, detail)
+        return _verbose_skill_lines(data, detail, message) if is_skill else _verbose_memory_lines(label, detail)
     hit = any(k in lower for k in ("added", "replaced", "removed", "applied")) or (target and "add" in lower)
     return [f"{label} updated"] if hit else []
 

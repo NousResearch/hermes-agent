@@ -872,7 +872,7 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
         else:
             model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False)
         b.add_builtin_row(
-            cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
+            cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical")
 
 
 def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:

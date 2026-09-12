@@ -240,3 +240,51 @@ def test_distinct_kimi_china_credential_still_listed(monkeypatch):
     assert slugs.count("kimi-coding") == 1
     assert "kimi" not in slugs          # alias collapsed into the canonical row
     assert "kimi-coding-cn" in slugs    # distinct China endpoint preserved
+
+
+def test_canonical_uncapped_provider_keeps_full_picker_catalog(monkeypatch):
+    """Canonical plugin rows honor uncapped eligibility without lifting the default cap."""
+    from hermes_cli.auth import ProviderConfig
+    from hermes_cli.models_catalog_static import ProviderEntry
+    import hermes_cli.auth as auth
+    import hermes_cli.models as models
+
+    uncapped_slug = "opencode-zen"
+    capped_slug = "ordinary-plugin"
+    catalogs = {
+        uncapped_slug: [f"zen-model-{i}" for i in range(75)],
+        capped_slug: [f"ordinary-model-{i}" for i in range(75)],
+    }
+    canonical = [
+        ProviderEntry(uncapped_slug, "OpenCode Zen Plugin", "desc"),
+        ProviderEntry(capped_slug, "Ordinary Plugin", "desc"),
+    ]
+    registry = {
+        slug: ProviderConfig(slug, label, "api_key", api_key_env_vars=(env_var,))
+        for slug, label, env_var in (
+            (uncapped_slug, "OpenCode Zen Plugin", "TEST_ZEN_API_KEY"),
+            (capped_slug, "Ordinary Plugin", "TEST_ORDINARY_API_KEY"),
+        )
+    }
+
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr(auth, "PROVIDER_REGISTRY", registry)
+    monkeypatch.setattr(models, "CANONICAL_PROVIDERS", canonical)
+    monkeypatch.setattr(model_switch_providers, "_build_curated_lists", lambda *_a: catalogs)
+    monkeypatch.setattr(
+        model_switch_providers,
+        "_live_or_curated_ids",
+        lambda slug, *_a, **_kw: catalogs[slug],
+    )
+    monkeypatch.setenv("TEST_ZEN_API_KEY", "test-key")
+    monkeypatch.setenv("TEST_ORDINARY_API_KEY", "test-key")
+
+    rows = model_switch_providers.list_picker_providers(max_models=50)
+    by_slug = {row["slug"]: row for row in rows}
+
+    assert by_slug[uncapped_slug]["models"] == catalogs[uncapped_slug]
+    assert by_slug[uncapped_slug]["total_models"] == 75
+    assert by_slug[capped_slug]["models"] == catalogs[capped_slug][:50]
+    assert by_slug[capped_slug]["total_models"] == 75

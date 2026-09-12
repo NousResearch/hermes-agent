@@ -567,7 +567,7 @@ hermes config set memory.provider byterover
 
 ### Supermemory
 
-Semantic long-term memory with profile recall, semantic search, explicit memory tools, and session-end conversation ingest via the Supermemory graph API.
+Semantic long-term memory with profile recall, semantic search, explicit memory tools, and per-turn conversation capture (one document per session per 4-hour window).
 
 | | |
 |---|---|

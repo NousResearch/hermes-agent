@@ -701,6 +701,21 @@ class TestRuntimeCutover:
 # ---------------------------------------------------------------------------
 
 class TestInstallUvInternals:
+    def test_windows_installer_child_powershell_ignores_user_profiles(self):
+        import hermes_cli.managed_uv as managed_uv
+
+        env = {"UV_INSTALL_DIR": r"C:\hermes\bin"}
+        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            managed_uv._install_uv_windows(env)
+
+        command = mock_run.call_args.args[0]
+        assert command[:4] == [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+        ]
+
     def test_installer_uses_host_branch_and_managed_directory(self, tmp_path):
         """The native installer receives the managed directory, not a PATH default."""
         import hermes_cli.managed_uv as managed_uv

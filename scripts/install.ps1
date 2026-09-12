@@ -781,7 +781,7 @@ function Install-Uv {
         # "installed but not found" message.
         $installerOutput = @()
         $astralOut = @()
-        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
+        & $psHostExe -NoProfile -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
         $installerOutput += "--- uv installer source: astral.sh ---"
         $installerOutput += @($astralOut | ForEach-Object { "$_" })
         if (Test-Path $managedUv) {
@@ -789,7 +789,7 @@ function Install-Uv {
         } else {
             Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
             $ghOut = @()
-            & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
+            & $psHostExe -NoProfile -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
             $installerOutput += "--- uv installer source: GitHub releases ---"
             $installerOutput += @($ghOut | ForEach-Object { "$_" })
             if (Test-Path $managedUv) {

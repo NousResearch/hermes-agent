@@ -1006,7 +1006,7 @@ def _install_uv_windows(env: dict[str, str]) -> None:
     """Invoke the PowerShell installer."""
     cmd = "irm https://astral.sh/uv/install.ps1 | iex"
     subprocess.run(
-        ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd], env=env, check=True,
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-c", cmd], env=env, check=True,
         capture_output=True)
 
 

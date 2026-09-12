@@ -4629,12 +4629,24 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
     no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
-        codex_token = _read_codex_access_token()
+        # Use the runtime credential resolver so token refreshes and base URL
+        # overrides (HERMES_CODEX_BASE_URL) are honored, consistent with the
+        # primary Codex runtime path.
+        codex_token = ""
+        base_url = _CODEX_AUX_BASE_URL
+        try:
+            from hermes_cli.auth import resolve_codex_runtime_credentials
+
+            creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+            codex_token = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or base_url).strip().rstrip("/") or base_url
+        except Exception:
+            codex_token = _read_codex_access_token() or ""
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None
-        raw_client = _create_openai_client(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL,
-                                           default_headers=_codex_cloudflare_headers(codex_token))
+        raw_client = _create_openai_client(api_key=codex_token, base_url=base_url,
+                                           default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url))
         return raw_client, _normalize_resolved_model(model, req.provider)
     client, default = _build_codex_client(model)
     return _route_or_warn(req, client, default, no_token_msg)

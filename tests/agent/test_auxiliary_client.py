@@ -724,6 +724,63 @@ class TestBuildCodexClient:
         assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
         assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
 
+    def test_raw_codex_uses_runtime_resolved_base_url(self, monkeypatch):
+        """raw_codex honors HERMES_CODEX_BASE_URL via the runtime resolver (#5875)."""
+        class DummyClient:
+            def __init__(self, *, api_key, base_url, default_headers=None, **kwargs):
+                self.api_key = api_key
+                self.base_url = base_url
+                self.default_headers = default_headers
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", DummyClient)
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_codex_runtime_credentials",
+            lambda refresh_if_expiring=True: {
+                "api_key": "codex-runtime-token",
+                "base_url": "https://runtime.example/codex",
+            },
+        )
+
+        client, model = resolve_provider_client(
+            "openai-codex",
+            "gpt-5.4",
+            async_mode=False,
+            raw_codex=True,
+        )
+
+        assert isinstance(client, DummyClient)
+        assert client.api_key == "codex-runtime-token"
+        assert client.base_url == "https://runtime.example/codex"
+        assert model == "gpt-5.4"
+
+    def test_raw_codex_falls_back_to_auth_store_token(self, monkeypatch):
+        """Resolver failure still yields the legacy auth-store token at the default base URL."""
+        class DummyClient:
+            def __init__(self, *, api_key, base_url, default_headers=None, **kwargs):
+                self.api_key = api_key
+                self.base_url = base_url
+
+        def _boom(*, refresh_if_expiring=True):
+            raise RuntimeError("no runtime creds")
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", DummyClient)
+        monkeypatch.setattr("hermes_cli.auth.resolve_codex_runtime_credentials", _boom)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_codex_access_token", lambda: "codex-auth-token"
+        )
+
+        client, model = resolve_provider_client(
+            "openai-codex",
+            "gpt-5.4",
+            async_mode=False,
+            raw_codex=True,
+        )
+
+        assert isinstance(client, DummyClient)
+        assert client.api_key == "codex-auth-token"
+        assert client.base_url == "https://chatgpt.com/backend-api/codex"
+        assert model == "gpt-5.4"
+
     def test_rejects_missing_model(self):
         """Callers must pass an explicit model; no hardcoded default."""
         from agent.auxiliary_client import _build_codex_client

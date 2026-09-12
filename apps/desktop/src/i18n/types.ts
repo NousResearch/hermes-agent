@@ -2063,7 +2063,9 @@ export interface Translations {
       title: string
       message: (count: number) => string
       detailMore: (names: string, remaining: number) => string
-      review: string
+      adopt: string
+      adopted: (count: number) => string
+      adoptFailed: string
       saveFailed: string
       confirmTitle: string
       confirmDetail: string

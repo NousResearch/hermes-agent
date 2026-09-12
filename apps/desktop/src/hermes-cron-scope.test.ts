@@ -7,6 +7,7 @@ import {
   getCronJobRuns,
   getCronJobs,
   pauseCronJob,
+  resnapshotCronJobs,
   resumeCronJob,
   setApiRequestConnection,
   setApiRequestProfile,
@@ -50,6 +51,7 @@ describe('cron helpers are profile-scoped', () => {
     void createCronJob({ name: 'nightly', prompt: 'run', schedule: '0 3 * * *' } as never)
     void updateCronJob('job-1', { enabled: false } as never)
     void pauseCronJob('job-1')
+    void resnapshotCronJobs({ provider: 'nous', model: 'new/model' })
     void resumeCronJob('job-1')
     void triggerCronJob('job-1')
     void deleteCronJob('job-1')
@@ -80,6 +82,7 @@ describe('cron helpers are profile-scoped', () => {
     void createCronJob({ name: 'nightly', prompt: 'run', schedule: '0 3 * * *' } as never)
     void updateCronJob('job-1', { enabled: false } as never)
     void pauseCronJob('job-1')
+    void resnapshotCronJobs({ provider: 'nous', model: 'new/model' })
     void resumeCronJob('job-1')
     void triggerCronJob('job-1')
     void deleteCronJob('job-1')

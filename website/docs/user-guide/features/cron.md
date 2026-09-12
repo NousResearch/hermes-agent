@@ -107,12 +107,15 @@ never changes (or stops) your cron fleet. When you *do* want scheduled jobs to m
 
 ```bash
 hermes cron edit <job_id> --provider <provider> --model <model>   # one job
+hermes cron resnap <job_id>                                      # one unpinned job
+hermes cron resnap --all                                         # every unpinned job
 hermes config set cron.model <model>                               # every unpinned job
 ```
 
 `hermes config set model.default …` and the Desktop model picker list the unpinned jobs that will
 keep their original model so you can decide deliberately. Stored snapshots are refreshed whenever
-you edit a job's provider, model, or base URL.
+you edit a job's provider, model, or base URL. `resnap` refreshes the snapshot without adding an
+explicit per-job pin; the new snapshot remains effective until you move the job again.
 
 ## Skill-backed cron jobs
 

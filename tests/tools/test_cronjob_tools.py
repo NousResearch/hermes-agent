@@ -645,6 +645,65 @@ class TestLocalDeliveryNotice:
         assert created["deliver"] == "origin"
         assert "local-only cron job" not in created["message"]
 
+    def test_resnap_requires_scope(self):
+        # resnap with neither job_id nor all=true must refuse to guess scope.
+        result = json.loads(cronjob(action="resnap"))
+        assert result["success"] is False
+        assert "resnap requires either" in result["error"]
+
+    def test_resnap_single_job(self, monkeypatch, tmp_path):
+        from unittest.mock import patch as _patch
+        # Deterministic global resolution for the snapshot recompute.
+        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n", encoding="utf-8")
+        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
+        with _patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"provider": "openrouter"},
+        ):
+            created = json.loads(
+                cronjob(action="create", prompt="Check", schedule="every 1h")
+            )
+            job_id = created["job_id"]
+            result = json.loads(cronjob(action="resnap", job_id=job_id))
+        assert result["success"] is True
+        assert "Existing explicit pins were kept" in result["message"]
+        assert result["job"]["job_id"] == job_id
+
+    @pytest.mark.parametrize(
+        ("job_kwargs", "error"),
+        [
+            ({"prompt": "Pinned", "provider": "nous", "model": "model-a"}, "fully pinned"),
+            ({"prompt": None, "script": "collect.py", "no_agent": True}, "script-only"),
+        ],
+    )
+    def test_resnap_rejects_jobs_without_an_unpinned_agent_axis(
+        self, monkeypatch, tmp_path, job_kwargs, error
+    ):
+        from cron.jobs import create_job
+
+        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
+        created = create_job(schedule="every 1h", **job_kwargs)
+
+        result = json.loads(cronjob(action="resnap", job_id=created["id"]))
+
+        assert result["success"] is False
+        assert error in result["error"]
+
+    def test_resnap_all(self, monkeypatch, tmp_path):
+        from unittest.mock import patch as _patch
+        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n", encoding="utf-8")
+        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
+        with _patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"provider": "openrouter"},
+        ):
+            cronjob(action="create", prompt="One", schedule="every 1h")
+            cronjob(action="create", prompt="Two", schedule="every 2h")
+            result = json.loads(cronjob(action="resnap", all=True))
+        assert result["success"] is True
+        assert "Refreshed inference snapshots on" in result["message"]
+        assert len(result["updated_jobs"]) >= 1
+
 
 class TestValidateCronBaseUrl:
     """The cron base_url guard must not let a NAMED custom provider's stored

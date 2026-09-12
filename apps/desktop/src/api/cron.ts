@@ -82,6 +82,16 @@ export function updateCronJob(jobId: string, updates: CronJobUpdates): Promise<C
   })
 }
 
+export function resnapshotCronJobs(body: { model: string; provider: string }): Promise<{ updated_count: number }> {
+  return hermesApi<{ updated_count: number }>({
+    ...profileScoped(),
+    ...connectionScoped(),
+    path: '/api/cron/jobs/resnapshot',
+    method: 'POST',
+    body
+  })
+}
+
 export function pauseCronJob(jobId: string): Promise<CronJob> {
   return hermesApi<CronJob>({
     ...profileScoped(),

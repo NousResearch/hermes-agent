@@ -2648,6 +2648,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         )
         # resume must not clobber an explicit -m with the session's stored model.
         self._explicit_model_override = bool(model)
+        self._explicit_provider_override = bool(provider)
         self.model = model or _config_model or ""
         _cfg_provider = _model_config.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER")
         _startup_provider_override = _startup_base_url_override = _startup_api_key_override = ""
@@ -2766,6 +2767,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # Env var wins, then hermes_cli.personality (single owner of overlay resolution).
         from hermes_cli.personality import available_personalities, resolve_ephemeral_system_prompt
 
+        self._explicit_reasoning_override = reasoning is not None and bool(str(reasoning).strip())
         self.system_prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "") or resolve_ephemeral_system_prompt(CLI_CONFIG)
         self.personalities = available_personalities(CLI_CONFIG)
 

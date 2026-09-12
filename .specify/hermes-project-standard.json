@@ -1,0 +1,15 @@
+{
+  "authority_audit_status": "pending",
+  "core_sha256": "04b24bf2fd15fd92a19edd3f66f7227c178212b3d364feb1c2cef3b4802ef26d",
+  "cutover_state": "not-complete",
+  "history_rewritten": false,
+  "legacy_authority": "inventory-pending",
+  "live_mutation": false,
+  "migration_mode": "brownfield-missing-only",
+  "project_class": "full",
+  "project_id": "hermes-execution-router-api",
+  "project_version": "0.1.1",
+  "schema_version": 1,
+  "standard_version": "2.0.0",
+  "version_state": "ACCEPTED"
+}

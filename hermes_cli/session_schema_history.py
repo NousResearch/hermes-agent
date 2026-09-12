@@ -255,4 +255,22 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
         ('02 2026-07-16T11:23Z eb6aa03609', (('+', 'task', 'billing_mode'),)),
         ),
     ),
+    "execution_route_attempts": _TableHistory(
+        base=(
+            'session_id', 'request_id', 'attempt_id', 'root_id', 'task_id',
+            'execution_id', 'previous_attempt_id', 'execution_kind', 'surface_class',
+            'router_plugin_id', 'router_provider_id', 'router_contract_version',
+            'router_generation', 'request_digest', 'instruction_digest',
+            'eligibility_revision', 'resolution_state', 'decision_json',
+            'accepted_route_json', 'reason_code', 'reason_text',
+        ),
+        events=(),
+    ),
+    "execution_route_events": _TableHistory(
+        base=(
+            'event_id', 'session_id', 'request_id', 'attempt_id', 'sequence',
+            'event_type', 'event_json',
+        ),
+        events=(),
+    ),
 }

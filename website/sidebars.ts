@@ -794,6 +794,7 @@ const sidebars: SidebarsConfig = {
               label: 'Plugins',
               link: {type: 'doc', id: 'developer-guide/plugins/index'},
               items: [
+                'developer-guide/execution-router-plugin',
                 'developer-guide/plugin-llm-access',
                 'developer-guide/subagent-lifecycle-api',
                 'developer-guide/desktop-plugin-sdk',

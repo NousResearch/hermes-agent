@@ -2244,5 +2244,597 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIn("missing-acp-binary", str(ctx.exception))
 
 
+class TestNativeChildExecutionRouterSliceA(unittest.TestCase):
+    @staticmethod
+    def _registration(callback):
+        from agent.execution_router import ExecutionKind, ExecutionRouterProviderDescriptorV1
+        from hermes_cli.execution_router_runtime import ExecutionRouterRegistration
+
+        class Provider:
+            descriptor = ExecutionRouterProviderDescriptorV1(
+                plugin_id="router-plugin", plugin_version="1.0.0", provider_id="router-provider",
+                contract_version="1.0", supported_execution_kinds=(ExecutionKind.NATIVE_CHILD,),
+            )
+
+            def resolve_execution_route(self, request, cancellation):
+                return callback(request, cancellation)
+
+        return ExecutionRouterRegistration(Provider(), 1, lambda generation: generation == 1)
+
+    @staticmethod
+    def _child(index, provider, model, reasoning=None):
+        child = MagicMock()
+        child._delegate_role = "leaf"
+        child._subagent_id = f"sa-{index}"
+        child.session_id = f"child-{index}"
+        child.provider = child.requested_provider = provider
+        child.model = model
+        child.reasoning_config = {"enabled": True, "effort": reasoning} if reasoning else None
+        return child
+
+    def test_active_mixed_children_route_before_credentials_and_keep_batch_units(self):
+        import tempfile
+        from pathlib import Path
+        from agent.execution_router import ExecutionKind, ExecutionRouteDecisionV1
+        from tools.delegate_tool_dispatch import _dispatched_payload, _units_of
+
+        trace, requests, credential_cfgs, built_routes = [], [], [], []
+
+        def decide(request, _cancellation):
+            trace.append(("resolve", request.instruction.text))
+            requests.append(request)
+            if request.instruction.text == "route child":
+                return ExecutionRouteDecisionV1.route(
+                    request_id=request.request_id, attempt_id=request.attempt_id, candidate_id="fallback-0"
+                )
+            if request.instruction.text.startswith("pass child"):
+                return ExecutionRouteDecisionV1.pass_through(
+                    request_id=request.request_id, attempt_id=request.attempt_id
+                )
+            if request.instruction.text == "stop child":
+                return ExecutionRouteDecisionV1.stop(
+                    request_id=request.request_id, attempt_id=request.attempt_id,
+                    reason_code="owner_stop", reason_text="stopped",
+                )
+            raise RuntimeError("router unavailable")
+
+        manager = MagicMock()
+        manager.get_execution_router_registration.return_value = self._registration(decide)
+        parent = _make_mock_parent()
+        parent.session_id = "parent-session"
+        temp_db_dir = tempfile.TemporaryDirectory()
+        parent._session_db = SessionDB(Path(temp_db_dir.name) / "state.db")
+        parent._session_db.create_session(parent.session_id, source="cli")
+        parent._memory_manager = MagicMock()
+        parent.session_estimated_cost_usd = 0.0
+        parent.session_cost_source = "none"
+        parent.session_cost_status = "unknown"
+        parent._fallback_chain = [{
+            "provider": "fallback-provider", "model": "fallback-model", "reasoning_effort": "medium",
+        }]
+        cfg = {"max_iterations": 9, "independent_completions": True}
+
+        def credentials(child_cfg, _parent):
+            trace.append(("credentials", child_cfg.get("provider")))
+            credential_cfgs.append(dict(child_cfg))
+            return {
+                "provider": child_cfg.get("provider"), "model": child_cfg.get("model"),
+                "base_url": None, "api_key": None, "api_mode": None, "request_overrides": None,
+            }
+
+        def build(**kwargs):
+            trace.append(("build", kwargs["task_index"]))
+            built_routes.append((
+                kwargs["goal"], kwargs["override_provider"], kwargs["model"],
+                (kwargs["routing_cfg"] or {}).get("reasoning_effort"),
+            ))
+            return self._child(
+                kwargs["task_index"], kwargs["override_provider"] or parent.provider,
+                kwargs["model"] or parent.model, (kwargs["routing_cfg"] or {}).get("reasoning_effort"),
+            )
+
+        def run(*, task_index, **_kwargs):
+            trace.append(("run", task_index))
+            return {
+                "task_index": task_index, "status": "completed", "summary": f"done-{task_index}",
+                "api_calls": 1, "duration_seconds": 0, "_child_role": "leaf", "_child_cost_usd": 0.25,
+            }
+
+        tasks = [
+            {"goal": "route child", "group": "g"}, {"goal": "pass child"},
+            {"goal": "pass child 2"}, {"goal": "stop child", "group": "g"},
+            {"goal": "error child"},
+        ]
+        captured = {}
+        from tools import delegate_tool_dispatch
+        original_run_batch = delegate_tool_dispatch._run_batch
+
+        def capture_run_batch(batch, background):
+            captured["batch"] = batch
+            return original_run_batch(batch, background)
+
+        with (
+            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=credentials),
+            patch("tools.delegate_tool._build_child_preserving_parent_tools", side_effect=build),
+            patch("tools.delegate_tool._run_single_child", side_effect=run),
+            patch("tools.delegate_tool._run_batch", side_effect=capture_run_batch),
+            patch("tools.delegation_live_log.create_live_transcripts", return_value=(None, [], [])),
+            patch("hermes_cli.plugins.invoke_hook") as invoke_hook,
+        ):
+            result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+
+        self.assertEqual([entry["task_index"] for entry in result["results"]], [0, 1, 2, 3, 4])
+        self.assertEqual([request.execution_kind for request in requests], [ExecutionKind.NATIVE_CHILD] * 5)
+        self.assertEqual(
+            [request.instruction.text for request in requests],
+            ["route child", "pass child", "pass child 2", "stop child", "error child"],
+        )
+        self.assertEqual(
+            [(item.candidate_id, item.provider, item.model, item.reasoning)
+             for item in requests[0].eligible_candidates],
+            [("native", parent.provider, parent.model, None),
+             ("fallback-0", "fallback-provider", "fallback-model", "medium")],
+        )
+        self.assertEqual(len(credential_cfgs), 2)
+        self.assertEqual(
+            (credential_cfgs[0]["provider"], credential_cfgs[0]["model"], credential_cfgs[0]["reasoning_effort"]),
+            ("fallback-provider", "fallback-model", "medium"),
+        )
+        self.assertIsNone(credential_cfgs[1].get("provider"))
+        last_resolution = max(i for i, item in enumerate(trace) if item[0] == "resolve")
+        self.assertTrue(all(
+            i > last_resolution for i, item in enumerate(trace) if item[0] in {"credentials", "build", "run"}
+        ))
+        self.assertEqual([item[1] for item in trace if item[0] == "build"], [0, 1, 2])
+        self.assertEqual(sorted(item[1] for item in trace if item[0] == "run"), [0, 1, 2])
+        self.assertEqual(built_routes, [
+            ("route child", "fallback-provider", "fallback-model", "medium"),
+            ("pass child", None, None, None),
+            ("pass child 2", None, None, None),
+        ])
+        self.assertEqual([
+            (child.requested_provider, child.model, child.reasoning_config["effort"] if child.reasoning_config else None)
+            for _index, _task, child in captured["batch"].children
+        ], [
+            ("fallback-provider", "fallback-model", "medium"),
+            (parent.provider, parent.model, None),
+            (parent.provider, parent.model, None),
+        ])
+        self.assertEqual(parent._memory_manager.on_delegation.call_count, 3)
+        self.assertEqual(invoke_hook.call_count, 3)
+        self.assertEqual(
+            [call.kwargs["child_session_id"] for call in invoke_hook.call_args_list],
+            ["child-0", "child-1", "child-2"],
+        )
+        self.assertEqual(parent.session_estimated_cost_usd, 0.75)
+
+        with patch("tools.delegate_tool_config._get_independent_completions", return_value=True):
+            units = _units_of(captured["batch"])
+        self.assertEqual(
+            [sorted([item[0] for item in unit.children] + [item["task_index"] for item in unit.terminal_results])
+             for unit in units],
+            [[0, 3], [1], [2], [4]],
+        )
+        payload = _dispatched_payload(captured["batch"], [(unit, f"unit-{i}") for i, unit in enumerate(units)])
+        self.assertEqual([unit["task_indexes"] for unit in payload["units"]], [[0, 3], [1], [2], [4]])
+
+        built_routes.clear()
+        with (
+            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=credentials),
+            patch("tools.delegate_tool._build_child_preserving_parent_tools", side_effect=build),
+            patch("tools.delegate_tool._run_single_child", side_effect=run),
+            patch("tools.delegation_live_log.create_live_transcripts", return_value=(None, [], [])),
+        ):
+            reversed_result = json.loads(delegate_task(
+                tasks=[{"goal": "pass child"}, {"goal": "route child"}], parent_agent=parent,
+            ))
+        self.assertEqual([entry["task_index"] for entry in reversed_result["results"]], [0, 1])
+        self.assertEqual(built_routes, [
+            ("pass child", None, None, None),
+            ("route child", "fallback-provider", "fallback-model", "medium"),
+        ])
+
+        from tools.delegate_tool_config import _resolve_child_runtime
+        runtime = _resolve_child_runtime(
+            parent, {"reasoning_effort": "high"}, None,
+            model="fallback-model", override_provider="fallback-provider",
+            override_base_url=None, override_api_key=None, override_api_mode=None,
+            override_acp_command=None, override_acp_args=None,
+            routing_cfg={"reasoning_effort": "medium"},
+        )
+        self.assertEqual(runtime["reasoning_config"]["effort"], "medium")
+
+        pinned_requests = []
+        manager.get_execution_router_registration.return_value = self._registration(
+            lambda request, _cancellation: (
+                pinned_requests.append(request)
+                or ExecutionRouteDecisionV1.pass_through(request_id=request.request_id, attempt_id=request.attempt_id)
+            )
+        )
+        pinned_cfg = {"provider": "pinned-provider", "model": "pinned-model", "reasoning_effort": "high"}
+        with (
+            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+            patch("tools.delegate_tool._load_config", return_value=pinned_cfg),
+            patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=credentials),
+            patch("tools.delegate_tool._build_child_preserving_parent_tools", side_effect=build),
+            patch("tools.delegate_tool._run_single_child", side_effect=run),
+            patch("tools.delegation_live_log.create_live_transcripts", return_value=(None, [], [])),
+        ):
+            delegate_task(goal="pinned", parent_agent=parent)
+        self.assertEqual(
+            (pinned_requests[0].pins.provider, pinned_requests[0].pins.model, pinned_requests[0].pins.reasoning),
+            ("pinned-provider", "pinned-model", "high"),
+        )
+        parent._session_db.close()
+        temp_db_dir.cleanup()
+
+    def test_parent_session_lifecycle_precedes_isolated_redacted_notice_and_actual_start(self):
+        import tempfile
+        from pathlib import Path
+        from agent.execution_router import ExecutionRouteDecisionV1
+
+        def decide(request, _cancellation):
+            if request.instruction.text == "pass child":
+                return ExecutionRouteDecisionV1.pass_through(
+                    request_id=request.request_id, attempt_id=request.attempt_id, reason_text="native"
+                )
+            if request.instruction.text == "route child":
+                return ExecutionRouteDecisionV1.route(
+                    request_id=request.request_id, attempt_id=request.attempt_id, candidate_id="fallback-0",
+                    reason_text="credential path",
+                )
+            return ExecutionRouteDecisionV1.stop(
+                request_id=request.request_id, attempt_id=request.attempt_id,
+                reason_code="blocked", reason_text="sk-1234567890abcdef " + ("x" * 400),
+            )
+
+        manager = MagicMock()
+        manager.get_execution_router_registration.return_value = self._registration(decide)
+
+        parent_without_db = _make_mock_parent()
+        parent_without_db.session_id = "missing-lifecycle"
+        with (
+            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("tools.delegate_tool._resolve_delegation_credentials") as missing_credentials,
+            patch("tools.delegate_tool._build_child_preserving_parent_tools") as missing_builder,
+        ):
+            unavailable = json.loads(delegate_task(goal="route child", parent_agent=parent_without_db))
+        self.assertEqual(unavailable["results"][0]["status"], "error")
+        self.assertIn("lifecycle", unavailable["results"][0]["error"])
+        manager.get_execution_router_registration.assert_called_once()
+        missing_credentials.assert_not_called()
+        missing_builder.assert_not_called()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(Path(tmp) / "state.db")
+            db.create_session("parent-session", source="cli")
+            parent = _make_mock_parent()
+            parent.session_id, parent._session_db = "parent-session", db
+            parent._fallback_chain = [{"provider": "broken-provider", "model": "broken-model"}]
+            notices = []
+
+            def render(notice):
+                lifecycle = db.execution_route_lifecycle("parent-session")
+                events = lifecycle.read_events(limit=100)
+                latest = events[-1]
+                self.assertIsNotNone(lifecycle.get_execution_route_resolution(
+                    latest.request_id, latest.attempt_id
+                ))
+                notices.append(notice.text)
+                raise RuntimeError("renderer failed")
+
+            parent._emit_notice = render
+            built_children = []
+
+            def build_child(**kwargs):
+                child = self._child(
+                    kwargs["task_index"], kwargs["override_provider"] or parent.provider,
+                    kwargs["model"] or parent.model,
+                )
+                built_children.append(child)
+                return child
+
+            def resolve_credentials(child_cfg, _parent):
+                return {
+                    "provider": child_cfg.get("provider"), "model": child_cfg.get("model"),
+                    "base_url": None, "api_key": None,
+                    "api_mode": None, "request_overrides": None,
+                }
+
+            def finish_child(*, task_index, child, **_kwargs):
+                prepared = child._execution_router_native_child_attempt
+                prepared.lifecycle.record_finished(
+                    "completed",
+                    request_id=prepared.request.request_id,
+                    attempt_id=prepared.request.attempt_id,
+                )
+                return {
+                    "task_index": task_index, "status": "completed", "summary": "done",
+                    "api_calls": 1, "duration_seconds": 0, "_child_role": "leaf",
+                }
+
+            with (
+                patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+                patch("tools.delegate_tool._load_config", return_value={}),
+                patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=resolve_credentials) as credentials_mock,
+                patch("tools.delegate_tool._build_child_preserving_parent_tools", side_effect=build_child) as build_mock,
+                patch("tools.delegate_tool._run_single_child", side_effect=finish_child),
+                patch("tools.delegation_live_log.create_live_transcripts", return_value=(None, [], [])),
+            ):
+                result = json.loads(delegate_task(
+                    tasks=[{"goal": "pass child"}, {"goal": "stop child"}, {"goal": "route child"}],
+                    parent_agent=parent,
+                ))
+
+            self.assertNotIn("error", result)
+            self.assertEqual([entry["task_index"] for entry in result["results"]], [0, 1, 2])
+            self.assertEqual(result["results"][0]["status"], "completed")
+            self.assertEqual([entry["status"] for entry in result["results"]], ["completed", "error", "completed"])
+            self.assertTrue(all("1234567890abcdef" not in json.dumps(entry) for entry in result["results"]))
+            self.assertEqual(credentials_mock.call_count, 2)
+            self.assertEqual(build_mock.call_count, 2)
+            self.assertTrue(all(hasattr(child, "_execution_router_native_child_attempt") for child in built_children))
+            self.assertNotIn("_execution_router_selected_attempt", built_children[0].__dict__)
+            self.assertIn("_execution_router_selected_attempt", built_children[1].__dict__)
+            events = db.execution_route_lifecycle("parent-session").read_events(limit=100)
+            by_attempt = {}
+            for event in events:
+                by_attempt.setdefault(event.attempt_id, []).append(event)
+            self.assertEqual(sorted(len(value) for value in by_attempt.values()), [2, 3, 4])
+            self.assertEqual(sum(
+                event.event_type.value == "route_not_started" for event in events
+            ), 1)
+            started = [event for event in events if event.event_type.value == "route_started"]
+            self.assertEqual(len(started), 2)
+            self.assertTrue(all(event.actual_route is not None for event in started))
+            self.assertEqual({
+                (getattr(event.actual_route, "provider", None), getattr(event.actual_route, "model", None))
+                for event in started
+            }, {
+                (parent.provider, parent.model),
+                ("broken-provider", "broken-model"),
+            })
+            self.assertTrue(notices)
+            self.assertTrue(all(len(text) <= 400 and "1234567890abcdef" not in text for text in notices))
+            durable_reasons = [event.reason_text for event in events if event.reason_text]
+            self.assertTrue(durable_reasons)
+            self.assertTrue(all(
+                len(reason.encode("utf-8")) <= 512 and "1234567890abcdef" not in reason
+                for reason in durable_reasons
+            ))
+            stopped_event = next(event for event in events if event.reason_code == "blocked")
+            lifecycle = db.execution_route_lifecycle("parent-session")
+            stopped_resolution = lifecycle.get_execution_route_resolution(
+                stopped_event.request_id, stopped_event.attempt_id
+            )
+            self.assertIsNotNone(stopped_resolution)
+            assert stopped_resolution is not None
+            self.assertIsNotNone(stopped_resolution.decision)
+            assert stopped_resolution.decision is not None
+            self.assertEqual(stopped_resolution.state.value, "stop")
+            self.assertEqual(stopped_resolution.decision.kind.value, "stop")
+            self.assertEqual(stopped_resolution.decision.request_id, stopped_event.request_id)
+            self.assertEqual(stopped_resolution.decision.attempt_id, stopped_event.attempt_id)
+            self.assertIsNone(stopped_resolution.decision.candidate_id)
+            self.assertEqual(stopped_resolution.reason_code, "blocked")
+            self.assertEqual(stopped_resolution.decision.reason_code, "blocked")
+            self.assertIsNone(stopped_resolution.accepted_route)
+            with db._read_ctx() as conn:
+                durable_row = conn.execute(
+                    "SELECT decision_json FROM execution_route_attempts "
+                    "WHERE request_id = ? AND attempt_id = ?",
+                    (stopped_event.request_id, stopped_event.attempt_id),
+                ).fetchone()
+                durable_event_rows = conn.execute(
+                    "SELECT event_json FROM execution_route_events "
+                    "WHERE request_id = ? AND attempt_id = ?",
+                    (stopped_event.request_id, stopped_event.attempt_id),
+                ).fetchall()
+            self.assertIsNotNone(durable_row)
+            assert durable_row is not None
+            durable_copies = [
+                stopped_resolution.reason_text,
+                stopped_resolution.decision.reason_text,
+                durable_row["decision_json"],
+                *(row["event_json"] for row in durable_event_rows),
+            ]
+            self.assertTrue(all("1234567890abcdef" not in copy for copy in durable_copies if copy))
+            self.assertTrue(all(
+                len(reason.encode("utf-8")) <= 512
+                for reason in (stopped_resolution.reason_text, stopped_resolution.decision.reason_text)
+                if reason is not None
+            ))
+
+            partial_requests = []
+
+            def admit_partial(request, _cancellation):
+                partial_requests.append(request)
+                return ExecutionRouteDecisionV1.pass_through(
+                    request_id=request.request_id,
+                    attempt_id=request.attempt_id,
+                )
+
+            manager.get_execution_router_registration.return_value = self._registration(admit_partial)
+            partial_child = self._child(0, parent.provider, parent.model)
+            build_count = 0
+
+            def build_partial(**_kwargs):
+                nonlocal build_count
+                build_count += 1
+                if build_count == 2:
+                    raise RuntimeError("second builder failed")
+                return partial_child
+
+            with (
+                patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+                patch("tools.delegate_tool._load_config", return_value={}),
+                patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=resolve_credentials),
+                patch("tools.delegate_tool._build_child_preserving_parent_tools", side_effect=build_partial),
+                patch("tools.delegation_live_log.create_live_transcripts", return_value=(None, [], [])),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "second builder failed"):
+                    delegate_task(
+                        tasks=[{"goal": "built first"}, {"goal": "never built"}],
+                        parent_agent=parent,
+                    )
+
+            self.assertEqual(build_count, 2)
+            self.assertEqual(len(partial_requests), 2)
+            partial_events = db.execution_route_lifecycle("parent-session").read_events(limit=100)
+            first_events = [
+                event for event in partial_events
+                if event.request_id == partial_requests[0].request_id
+                and event.attempt_id == partial_requests[0].attempt_id
+            ]
+            second_events = [
+                event for event in partial_events
+                if event.request_id == partial_requests[1].request_id
+                and event.attempt_id == partial_requests[1].attempt_id
+            ]
+            self.assertEqual(
+                sorted(event.event_type.value for event in first_events),
+                ["route_finished", "route_requested", "route_started"],
+            )
+            self.assertEqual(
+                next(event for event in first_events if event.event_type.value == "route_finished").terminal_state,
+                "child_construction_failed",
+            )
+            self.assertEqual(
+                sorted(event.event_type.value for event in second_events),
+                ["route_not_started", "route_requested"],
+            )
+            partial_child.close.assert_called_once_with()
+
+            db.close()
+
+    def test_no_router_and_pass_through_preserve_native_delegate_control_flow(self):
+        import tempfile
+        from pathlib import Path
+        from agent.execution_router import ExecutionRouteDecisionV1
+
+        parent = _make_mock_parent()
+        parent.session_id = "parent-session"
+        temp_db_dir = tempfile.TemporaryDirectory()
+        parent._session_db = SessionDB(Path(temp_db_dir.name) / "state.db")
+        parent._session_db.create_session(parent.session_id, source="cli")
+        cfg = {"provider": "native-provider", "model": "native-model", "independent_completions": True,
+               "fallback_providers": [{
+            "provider": "fallback-provider", "model": "fallback-model",
+        }]}
+        tasks = [
+            {"goal": "native child a", "group": "g"},
+            {"goal": "native child b", "group": "g"},
+        ]
+
+        for active in (False, True):
+            with self.subTest(active_router=active):
+                trace, provider_calls, captured = [], [], {}
+                manager = MagicMock()
+                if active:
+                    def decide(request, _cancellation):
+                        provider_calls.append(request)
+                        trace.append("provider")
+                        return ExecutionRouteDecisionV1.pass_through(
+                            request_id=request.request_id, attempt_id=request.attempt_id
+                        )
+                    manager.get_execution_router_registration.return_value = self._registration(decide)
+                else:
+                    manager.get_execution_router_registration.return_value = None
+                creds = {
+                    "provider": "native-provider", "model": "native-model", "base_url": "native-url",
+                    "api_key": "native-key", "api_mode": "chat_completions", "request_overrides": {"x": 1},
+                }
+
+                def credentials(arg, agent):
+                    trace.append("credentials")
+                    self.assertIs(arg, cfg)
+                    self.assertIs(agent, parent)
+                    return creds
+
+                def normalize(*args):
+                    from tools.delegate_tool_tasks import _normalize_task_list as original
+                    trace.append("normalize")
+                    return original(*args)
+
+                def schemas(*args):
+                    from tools.delegate_tool_tasks import _coerce_task_schemas as original
+                    trace.append("schemas")
+                    return original(*args)
+
+                def build(*args, **kwargs):
+                    trace.append("build")
+                    captured["build_args"], captured["build_kwargs"] = args, kwargs
+                    return [(i, task, self._child(i, "native-provider", "native-model"))
+                            for i, task in enumerate(tasks)], None
+
+                def run(batch, background):
+                    trace.append("run")
+                    captured["batch"], captured["background"] = batch, background
+                    return json.dumps({"results": []})
+
+                with (
+                    patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+                    patch("tools.delegate_tool._load_config", return_value=cfg),
+                    patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=credentials),
+                    patch("tools.delegate_tool._normalize_task_list", side_effect=normalize),
+                    patch("tools.delegate_tool._coerce_task_schemas", side_effect=schemas),
+                    patch("tools.delegate_tool._build_children", side_effect=build),
+                    patch("tools.delegate_tool._run_batch", side_effect=run),
+                    patch("tools.delegation_live_log.create_live_transcripts", return_value=(None, [], [])),
+                ):
+                    delegate_task(tasks=tasks, parent_agent=parent)
+
+                if active:
+                    self.assertEqual(
+                        trace,
+                        ["normalize", "schemas", "provider", "provider", "credentials", "build", "run"],
+                    )
+                    self.assertEqual(len(provider_calls), 2)
+                    self.assertEqual(captured["build_args"], (tasks, [None, None], creds))
+                else:
+                    self.assertEqual(trace, ["credentials", "normalize", "schemas", "build", "run"])
+                    self.assertEqual(provider_calls, [])
+                    self.assertEqual(captured["build_args"], (tasks, [None, None], creds))
+                    self.assertEqual(set(captured["build_kwargs"]), {
+                        "top_role", "max_iterations", "parent_agent", "routing_cfg",
+                        "live_deleg_id", "live_writers",
+                    })
+                    self.assertIs(captured["batch"].task_list, tasks)
+                    self.assertFalse(hasattr(captured["batch"], "route_metadata"))
+                self.assertIs(captured["build_kwargs"]["routing_cfg"], cfg)
+
+        manager = MagicMock()
+        active_calls = []
+        manager.get_execution_router_registration.return_value = self._registration(
+            lambda request, _cancellation: (
+                active_calls.append(request)
+                or ExecutionRouteDecisionV1.pass_through(
+                    request_id=request.request_id, attempt_id=request.attempt_id
+                )
+            )
+        )
+        with (
+            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+                "provider": "native-provider", "model": "native-model", "base_url": None,
+                "api_key": None, "api_mode": None, "request_overrides": None,
+            }) as active_credentials,
+            patch("tools.delegate_tool._build_child_preserving_parent_tools", side_effect=RuntimeError("native boom")),
+            patch("tools.delegation_live_log.create_live_transcripts", return_value=(None, [], [])),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "native boom"):
+                delegate_task(goal="native builder error", parent_agent=parent)
+        self.assertEqual(len(active_calls), 1)
+        active_credentials.assert_called_once_with(cfg, parent)
+        parent._session_db.close()
+        temp_db_dir.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()

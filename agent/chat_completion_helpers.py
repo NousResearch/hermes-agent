@@ -1831,6 +1831,18 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
     from agent.fallback_cooldown import _arm_rate_limit_cooldown
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason)
+    if getattr(agent, "_execution_router_selected_attempt", False):
+        if agent._fallback_index >= len(agent._fallback_chain):
+            return False
+        consumed_slot = agent._fallback_index
+        agent._fallback_index += 1
+        from agent.execution_router import RoutedAttemptRestartRequired
+        reason_code = getattr(reason, "value", None) or str(reason or "fallback")
+        agent._routed_restart_required = RoutedAttemptRestartRequired(
+            reason_code=reason_code,
+            consumed_fallback_slot=consumed_slot,
+        )
+        return False
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
             return _fallback_chain_exhausted(agent, reason)

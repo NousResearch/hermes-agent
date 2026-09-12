@@ -1,0 +1,43 @@
+COMMAND: /home/hermes/hermes-agent-prestage/venv/bin/python /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/py-compile-repeat.py
+PY_COMPILE_OK agent/agent_init.py
+PY_COMPILE_OK agent/chat_completion_helpers.py
+PY_COMPILE_OK agent/conversation_loop.py
+PY_COMPILE_OK agent/delegation_context.py
+PY_COMPILE_OK agent/execution_router.py
+PY_COMPILE_OK agent/execution_router_reference.py
+PY_COMPILE_OK agent/main_turn_continuation.py
+PY_COMPILE_OK cli.py
+PY_COMPILE_OK gateway/run_turn_runner.py
+PY_COMPILE_OK hermes_cli/cli_chat_turn_mixin.py
+PY_COMPILE_OK hermes_cli/execution_router_runtime.py
+PY_COMPILE_OK hermes_cli/kanban_db.py
+PY_COMPILE_OK hermes_cli/kanban_db_dispatch.py
+PY_COMPILE_OK hermes_cli/oneshot.py
+PY_COMPILE_OK hermes_cli/plugin_capabilities.py
+PY_COMPILE_OK hermes_cli/plugins.py
+PY_COMPILE_OK hermes_cli/plugins_cmd.py
+PY_COMPILE_OK hermes_cli/plugins_loader.py
+PY_COMPILE_OK hermes_cli/session_recovery.py
+PY_COMPILE_OK hermes_cli/session_schema_history.py
+PY_COMPILE_OK hermes_state.py
+PY_COMPILE_OK hermes_state_common.py
+PY_COMPILE_OK hermes_state_execution_router.py
+PY_COMPILE_OK tests/agent/test_execution_router.py
+PY_COMPILE_OK tests/agent/test_execution_router_reference.py
+PY_COMPILE_OK tests/agent/test_main_turn_continuation.py
+PY_COMPILE_OK tests/hermes_cli/test_kanban_execution_router.py
+PY_COMPILE_OK tests/hermes_cli/test_main_turn_c6_surfaces.py
+PY_COMPILE_OK tests/hermes_cli/test_plugin_capabilities.py
+PY_COMPILE_OK tests/hermes_cli/test_plugin_execution_router.py
+PY_COMPILE_OK tests/hermes_cli/test_session_schema_history.py
+PY_COMPILE_OK tests/hermes_state/test_execution_router_lifecycle.py
+PY_COMPILE_OK tests/test_execution_router_distribution.py
+PY_COMPILE_OK tests/tools/test_delegate.py
+PY_COMPILE_OK tests/tools/test_delegate_fallback_matrix.py
+PY_COMPILE_OK tools/delegate_tool.py
+PY_COMPILE_OK tools/delegate_tool_config.py
+PY_COMPILE_OK tools/delegate_tool_dispatch.py
+PY_COMPILE_OK tools/kanban_tools.py
+PY_COMPILE_OK tui_gateway/prompt_turn.py
+PY_COMPILE_COUNT=40
+PY_COMPILE=PASS

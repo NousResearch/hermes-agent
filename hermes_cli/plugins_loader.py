@@ -315,6 +315,8 @@ class PluginLoaderMixin:
                 register_fn(PluginContext(manifest, self))
                 self._attribute_registrations(loaded, plugin_key, registration_start)
                 loaded.enabled = True
+                if plugin_key in self._execution_router_pending_plugins:
+                    loaded.error = "execution_router: consent_required"
                 from hermes_cli.plugins_ledger import _hook_source_of
 
                 self._drop_fallback_hooks(_hook_source_of(manifest.name, module))

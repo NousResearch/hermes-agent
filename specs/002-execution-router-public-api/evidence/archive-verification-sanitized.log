@@ -1,0 +1,33 @@
+FINAL ARTIFACT AND MEMBER IDENTITY
+ARTIFACT /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/dist/hermes_agent-0.21.1-py3-none-any.whl 96bbe1a789375844e1799a7850c8b6da17e6f46828f62dbe2622b26dc06032db
+ARTIFACT /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/dist/hermes_agent-0.21.1.tar.gz ddcbaa244377e8d5f9a43b5d9fb19746add77e05e5b1b7de8ea2e2b92ea81bb9
+WHEEL_IDENTITY hermes-agent 0.21.1
+WHEEL_MEMBER agent/execution_router.py dacb32a2eaf0e8ee1c5dacde7bbfc6b4afa2168fd96847c5edbdf95285ef2511
+WHEEL_MEMBER agent/execution_router_reference.py a6ae21236157723536baecae8655249094d0e9a1446152b8981f7dc864081f68
+WHEEL_MEMBER hermes_agent-0.21.1.data/data/share/hermes-agent/docs/execution-router-plugin.md 50456fcedd3d53ae898e22f4f96adf448febb36f0acad1904cb89cbe62556a62
+WHEEL_MEMBER hermes_agent-0.21.1.dist-info/METADATA ca70db9bcedf6d60178885f96caeba216d7f8e509e4ea2c6130b600be452f3ae
+SDIST_IDENTITY hermes-agent 0.21.1
+SDIST_MEMBER hermes_agent-0.21.1/agent/execution_router.py dacb32a2eaf0e8ee1c5dacde7bbfc6b4afa2168fd96847c5edbdf95285ef2511
+SDIST_MEMBER hermes_agent-0.21.1/agent/execution_router_reference.py a6ae21236157723536baecae8655249094d0e9a1446152b8981f7dc864081f68
+SDIST_MEMBER hermes_agent-0.21.1/website/docs/developer-guide/execution-router-plugin.md 50456fcedd3d53ae898e22f4f96adf448febb36f0acad1904cb89cbe62556a62
+SDIST_MEMBER hermes_agent-0.21.1/PKG-INFO ca70db9bcedf6d60178885f96caeba216d7f8e509e4ea2c6130b600be452f3ae
+MEMBER_HASH_IDENTITY_CHECKS=PASS
+
+INVALID HARNESS HISTORY
+First final archive import used /tmp/hermes-execution-router-api-T006-precommit/isolated-python, which lacked yaml. It ended with ModuleNotFoundError: No module named 'yaml'. This was an invalid isolated-wrapper result, not a product known failure. Preserved raw reference: /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/archive-verification.log
+
+OWNER-AUTHORIZED SOLE IMPORT REPEAT
+COMMAND: /home/hermes/hermes-agent-prestage/venv/bin/python /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/archive-import-verification-repeat.py
+WHEEL_IMPORT_RC 0
+PUBLIC_IMPORT=PASS
+CONTRACT_VERSION=1.0
+SUPPORTED=main_turn,native_child,kanban_worker
+UNSUPPORTED=unsupported_kind rejected; operational_execution_kinds empty
+SDIST_IMPORT_RC 0
+PUBLIC_IMPORT=PASS
+CONTRACT_VERSION=1.0
+SUPPORTED=main_turn,native_child,kanban_worker
+UNSUPPORTED=unsupported_kind rejected; operational_execution_kinds empty
+ARCHIVE_IMPORT_VERIFICATION_REPEAT=PASS
+EXIT: 0
+No installation or rebuild occurred during import verification.

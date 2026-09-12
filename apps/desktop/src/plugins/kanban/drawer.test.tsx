@@ -23,6 +23,7 @@ const legacyDetail: Omit<KanbanTaskDetail, 'attachments'> = {
 }
 
 let detail: object
+let patchError: Error | null
 let client: QueryClient
 let disposeApi: () => void
 let disposeLocales: () => void
@@ -35,6 +36,17 @@ const rest = vi.fn(async (path: string, options?: PluginRestOptions): Promise<un
   }
 
   if (path === '/tasks/t_example') {
+    if (options?.method === 'PATCH') {
+      if (patchError) {
+        throw patchError
+      }
+
+      const current = detail as KanbanTaskDetail
+      detail = { ...current, task: { ...current.task, ...(options.body as Partial<KanbanTaskDetail['task']>) } }
+
+      return { ok: true }
+    }
+
     return detail
   }
 
@@ -54,6 +66,7 @@ const rest = vi.fn(async (path: string, options?: PluginRestOptions): Promise<un
 })
 
 beforeEach(() => {
+  patchError = null
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   disposeLocales = registerPluginLocales('kanban', KANBAN_LOCALES)
   disposeApi = bindApi(
@@ -71,13 +84,88 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function openDrawer() {
+function openDrawer(onClose = vi.fn()) {
   return render(
     <QueryClientProvider client={client}>
-      <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={vi.fn()} onOpen={vi.fn()} />
+      <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={onClose} onOpen={vi.fn()} />
     </QueryClientProvider>
   )
 }
+
+function priorityPatchCalls() {
+  return rest.mock.calls.filter(([path, options]) => path === '/tasks/t_example' && options?.method === 'PATCH')
+}
+
+describe('task priority editing', () => {
+  beforeEach(() => {
+    detail = { ...legacyDetail, task: { ...legacyDetail.task, priority: 2 }, attachments: [] }
+  })
+
+  it('saves a changed integer directly from the priority field on blur', async () => {
+    openDrawer()
+    const input = await screen.findByRole('spinbutton', { name: en.metaPriority })
+
+    fireEvent.change(input, { target: { value: '7' } })
+    fireEvent.blur(input)
+
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith('/tasks/t_example', {
+        method: 'PATCH',
+        body: { priority: 7 }
+      })
+    )
+    await waitFor(() => expect((input as HTMLInputElement).value).toBe('7'))
+  })
+
+  it('saves a changed integer on Enter', async () => {
+    openDrawer()
+    const input = await screen.findByRole('spinbutton', { name: en.metaPriority })
+
+    input.focus()
+    fireEvent.change(input, { target: { value: '8' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(priorityPatchCalls()).toHaveLength(1))
+    expect(priorityPatchCalls()[0][1]?.body).toEqual({ priority: 8 })
+  })
+
+  it('restores the saved value on Escape without closing the drawer', async () => {
+    const onClose = vi.fn()
+    openDrawer(onClose)
+    const input = await screen.findByRole('spinbutton', { name: en.metaPriority })
+
+    input.focus()
+    fireEvent.change(input, { target: { value: '9' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+
+    expect((input as HTMLInputElement).value).toBe('2')
+    expect(priorityPatchCalls()).toHaveLength(0)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it.each(['', '2.5'])('restores the saved value instead of writing invalid input %j', async value => {
+    openDrawer()
+    const input = await screen.findByRole('spinbutton', { name: en.metaPriority })
+
+    fireEvent.change(input, { target: { value } })
+    fireEvent.blur(input)
+
+    expect((input as HTMLInputElement).value).toBe('2')
+    expect(priorityPatchCalls()).toHaveLength(0)
+  })
+
+  it('restores the saved value when the write fails', async () => {
+    patchError = new Error('priority write failed')
+    openDrawer()
+    const input = await screen.findByRole('spinbutton', { name: en.metaPriority })
+
+    fireEvent.change(input, { target: { value: '7' } })
+    fireEvent.blur(input)
+
+    await waitFor(() => expect(priorityPatchCalls()).toHaveLength(1))
+    await waitFor(() => expect((input as HTMLInputElement).value).toBe('2'))
+  })
+})
 
 describe('task attachment compatibility', () => {
   it.each([{}, { attachments: null }])(
@@ -87,6 +175,7 @@ describe('task attachment compatibility', () => {
       openDrawer()
 
       expect(await screen.findByRole('heading', { name: legacyDetail.task.title })).toBeTruthy()
+      expect((screen.getByRole('spinbutton', { name: en.metaPriority }) as HTMLInputElement).value).toBe('0')
       expect(screen.getByText(legacyDetail.task.body!)).toBeTruthy()
       expect(screen.getByText(legacyDetail.comments[0].body)).toBeTruthy()
       expect(screen.queryByRole('button', { name: en.uploadAttachment })).toBeNull()

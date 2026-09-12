@@ -3219,6 +3219,31 @@ export const zhHant = defineLocale({
       lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。'
     },
     tool: {
+      detailsAction: '詳細資料',
+      details: {
+        title: toolName => `${toolName} 詳細資料`,
+        description: '檢查桌面端收到的完整承載內容。後端已截斷或未儲存的內容無法在此復原。',
+        sectionsLabel: '工具承載內容區段',
+        searchPlaceholder: '搜尋所選區段',
+        previousMatch: '上一個相符項目',
+        nextMatch: '下一個相符項目',
+        wrap: '自動換行',
+        unwrap: '不換行',
+        copySection: label => `複製${label}`,
+        unavailable: '未提供',
+        empty: '已提供，但為空',
+        receivedPayload: '這是桌面端收到的承載內容。',
+        nextChunk: '下一段',
+        sections: {
+          arguments: '引數',
+          command: '指令',
+          diff: '差異',
+          metadata: '中繼資料',
+          result: '結果',
+          stderr: '標準錯誤',
+          stdout: '標準輸出'
+        }
+      },
       copyCode: '複製程式碼',
       renderingImage: '正在渲染圖片',
       copyOutput: '複製輸出',

@@ -2868,6 +2868,32 @@ export const ar = defineLocale({
       questionProgress: (answered, total) => `تمت الإجابة على ${answered} من ${total}`
     },
     tool: {
+      detailsAction: 'التفاصيل',
+      details: {
+        title: toolName => `تفاصيل ${toolName}`,
+        description:
+          'افحص الحمولة الكاملة التي استلمها تطبيق سطح المكتب. لا يمكن استعادة المحتوى المقتطع في الخلفية أو غير المحفوظ.',
+        sectionsLabel: 'أقسام حمولة الأداة',
+        searchPlaceholder: 'البحث في القسم المحدد',
+        previousMatch: 'المطابقة السابقة',
+        nextMatch: 'المطابقة التالية',
+        wrap: 'التفاف النص',
+        unwrap: 'بدون التفاف',
+        copySection: label => `نسخ ${label}`,
+        unavailable: 'غير متوفر',
+        empty: 'متوفر، لكنه فارغ',
+        receivedPayload: 'هذه هي الحمولة التي استلمها تطبيق سطح المكتب.',
+        nextChunk: 'المقطع التالي',
+        sections: {
+          arguments: 'الوسائط',
+          command: 'الأمر',
+          diff: 'الفروقات',
+          metadata: 'البيانات الوصفية',
+          result: 'النتيجة',
+          stderr: 'الخطأ القياسي',
+          stdout: 'الإخراج القياسي'
+        }
+      },
       copyCode: 'نسخ الكود',
       renderingImage: 'جار عرض الصورة...',
       copyOutput: 'نسخ الإخراج',

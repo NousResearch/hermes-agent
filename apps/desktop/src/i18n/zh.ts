@@ -4036,6 +4036,31 @@ export const zh = defineLocale({
       gatewayDisconnected: 'Hermes 网关未连接'
     },
     tool: {
+      detailsAction: '详情',
+      details: {
+        title: toolName => `${toolName} 详情`,
+        description: '检查桌面端收到的完整载荷。后端已截断或未保存的内容无法在此恢复。',
+        sectionsLabel: '工具载荷分区',
+        searchPlaceholder: '搜索所选分区',
+        previousMatch: '上一个匹配项',
+        nextMatch: '下一个匹配项',
+        wrap: '自动换行',
+        unwrap: '不换行',
+        copySection: label => `复制${label}`,
+        unavailable: '未提供',
+        empty: '已提供，但为空',
+        receivedPayload: '这是桌面端收到的载荷。',
+        nextChunk: '下一段',
+        sections: {
+          arguments: '参数',
+          command: '命令',
+          diff: '差异',
+          metadata: '元数据',
+          result: '结果',
+          stderr: '标准错误',
+          stdout: '标准输出'
+        }
+      },
       copyCode: '复制代码',
       renderingImage: '正在渲染图片',
       copyOutput: '复制输出',

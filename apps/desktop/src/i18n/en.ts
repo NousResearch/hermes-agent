@@ -3911,6 +3911,32 @@ export const en: Translations = {
       gatewayDisconnected: 'Hermes gateway is not connected'
     },
     tool: {
+      detailsAction: 'Details',
+      details: {
+        title: toolName => `${toolName} details`,
+        description:
+          'Inspect the complete payload available to Desktop. Backend-truncated or unsaved content cannot be recovered here.',
+        sectionsLabel: 'Tool payload sections',
+        searchPlaceholder: 'Search selected section',
+        previousMatch: 'Previous match',
+        nextMatch: 'Next match',
+        wrap: 'Wrap',
+        unwrap: 'No wrap',
+        copySection: label => `Copy ${label.toLowerCase()}`,
+        unavailable: 'Not provided',
+        empty: 'Provided, but empty',
+        receivedPayload: 'This is the payload Desktop received.',
+        nextChunk: 'Next chunk',
+        sections: {
+          arguments: 'Arguments',
+          command: 'Command',
+          diff: 'Diff',
+          metadata: 'Metadata',
+          result: 'Result',
+          stderr: 'stderr',
+          stdout: 'stdout'
+        }
+      },
       copyCode: 'Copy code',
       renderingImage: 'Rendering image',
       copyOutput: 'Copy output',

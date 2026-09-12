@@ -3335,6 +3335,32 @@ export const ja = defineLocale({
       lateAnswerHint: 'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。'
     },
     tool: {
+      detailsAction: '詳細',
+      details: {
+        title: toolName => `${toolName} の詳細`,
+        description:
+          'Desktop が受信した完全なペイロードを確認します。バックエンドで切り詰められた、または保存されなかった内容は復元できません。',
+        sectionsLabel: 'ツールペイロードのセクション',
+        searchPlaceholder: '選択したセクションを検索',
+        previousMatch: '前の一致',
+        nextMatch: '次の一致',
+        wrap: '折り返す',
+        unwrap: '折り返さない',
+        copySection: label => `${label}をコピー`,
+        unavailable: '提供されていません',
+        empty: '提供されていますが空です',
+        receivedPayload: 'これは Desktop が受信したペイロードです。',
+        nextChunk: '次の範囲',
+        sections: {
+          arguments: '引数',
+          command: 'コマンド',
+          diff: '差分',
+          metadata: 'メタデータ',
+          result: '結果',
+          stderr: '標準エラー',
+          stdout: '標準出力'
+        }
+      },
       copyCode: 'コードをコピー',
       renderingImage: '画像をレンダリング中',
       copyOutput: '出力をコピー',

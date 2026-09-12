@@ -3640,6 +3640,32 @@ export const ru = defineLocale({
       gatewayDisconnected: 'Шлюз Hermes не подключён'
     },
     tool: {
+      detailsAction: 'Подробности',
+      details: {
+        title: toolName => `Подробности: ${toolName}`,
+        description:
+          'Просмотр полного пакета данных, полученного Desktop. Усечённые сервером или несохранённые данные восстановить нельзя.',
+        sectionsLabel: 'Разделы данных инструмента',
+        searchPlaceholder: 'Поиск в выбранном разделе',
+        previousMatch: 'Предыдущее совпадение',
+        nextMatch: 'Следующее совпадение',
+        wrap: 'Переносить',
+        unwrap: 'Без переноса',
+        copySection: label => `Копировать: ${label}`,
+        unavailable: 'Не предоставлено',
+        empty: 'Предоставлено, но пусто',
+        receivedPayload: 'Это данные, полученные Desktop.',
+        nextChunk: 'Следующий фрагмент',
+        sections: {
+          arguments: 'Аргументы',
+          command: 'Команда',
+          diff: 'Изменения',
+          metadata: 'Метаданные',
+          result: 'Результат',
+          stderr: 'stderr',
+          stdout: 'stdout'
+        }
+      },
       copyCode: 'Копировать код',
       renderingImage: 'Рендеринг изображения',
       copyOutput: 'Копировать вывод',

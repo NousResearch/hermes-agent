@@ -3440,6 +3440,31 @@ export interface Translations {
       gatewayDisconnected: string
     }
     tool: {
+      detailsAction: string
+      details: {
+        title: (toolName: string) => string
+        description: string
+        sectionsLabel: string
+        searchPlaceholder: string
+        previousMatch: string
+        nextMatch: string
+        wrap: string
+        unwrap: string
+        copySection: (label: string) => string
+        unavailable: string
+        empty: string
+        receivedPayload: string
+        nextChunk: string
+        sections: {
+          arguments: string
+          command: string
+          diff: string
+          metadata: string
+          result: string
+          stderr: string
+          stdout: string
+        }
+      }
       copyCode: string
       renderingImage: string
       copyOutput: string

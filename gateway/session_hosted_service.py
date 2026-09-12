@@ -25,8 +25,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def profile_homes(self):
         from gateway.run import _load_gateway_config
         from gateway.hosted_rooms_common import IDENTIFIER_RE
+        from gateway.session_authorities import served_profile_name
         home = Path(self.authority.profile_id)
-        own = home.name if home.parent.name == 'profiles' else 'default'
+        own = served_profile_name(home)
         configured = _load_gateway_config().get('hosted_rooms', {}).get('profiles', {})
         result = {own: home}
         if not isinstance(configured, dict):

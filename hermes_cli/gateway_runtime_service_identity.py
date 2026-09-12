@@ -77,7 +77,8 @@ def verify_gateway_argv(argv: list[str], home: Path) -> None:
     if profiles:
         # An explicit selector must agree with the pinned environment. This
         # preserves custom-root profiles without borrowing the caller's root.
-        expected = home.name if home.parent.name == "profiles" else "default"
+        from hermes_constants import profile_name_for_home
+        expected = profile_name_for_home(home) or (home.name if home.parent.name == "profiles" else "default")
         if profiles[0] != expected:
             raise ValueError("profile_mismatch")
     if filtered[:2] != ["gateway", "run"] or any(

@@ -139,7 +139,8 @@ def _group(authority, actor, home, method, params):
         if service is not None:
             return {'room': service.create_room(**params)}
         from gateway.hosted_room_discussion import validate_roster
-        name = home.name if home.parent.name == 'profiles' else 'default'
+        from gateway.session_authorities import served_profile_name
+        name = served_profile_name(home)
         profiles = {name}
         if name == 'default' and (home / 'profiles').is_dir():
             profiles.update(path.name for path in (home / 'profiles').iterdir() if path.is_dir())
@@ -233,7 +234,8 @@ def _profiles(authority, actor, home, params):
     include_sessions = params.get('include_sessions', True)
     if type(include_sessions) is not bool:
         raise RuntimeStoreError('invalid_params')
-    name = home.name if home.parent.name == 'profiles' else 'default'
+    from gateway.session_authorities import served_profile_name
+    name = served_profile_name(home)
     profile = _profile_info(name, home, is_default=name == 'default')
     row = {'name': name, 'path': str(home), 'is_default': profile.is_default,
            'model': profile.model, 'provider': profile.provider,

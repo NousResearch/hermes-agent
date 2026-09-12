@@ -157,8 +157,8 @@ def install_hosted_transport(server, authority, loop, *, attest):
         selector = envelope['selector']
         if operation not in _OPERATIONS or set(selector) != {'room_id', 'member_id', 'profile'}:
             raise RuntimeStoreError('invalid_params')
-        home = Path(authority.profile_id)
-        profile = home.name if home.parent.name == 'profiles' else 'default'
+        from gateway.session_authorities import served_profile_name
+        profile = served_profile_name(Path(authority.profile_id))
         if selector['profile'] != profile:
             raise RuntimeStoreError('profile_mismatch')
         binding = {'source_home': envelope['source_home'], 'selector': selector,

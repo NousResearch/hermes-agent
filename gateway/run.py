@@ -3711,6 +3711,71 @@ class GatewayRunner(
         self._scale_to_zero_cooldown_until: float = 0.0
         self._scale_to_zero_no_suspend_logged: bool = False
 
+        # Registered background services (see plugins/services/ and
+        # gateway/service_registry.py). Wired up in start() after platforms
+        # are connected; stopped before adapters in stop() so they don't
+        # try to deliver during teardown.
+        self.services: Dict[str, Any] = {}
+
+    async def _start_plugin_background_services(self) -> None:
+        """Instantiate and start each enabled background service.
+
+        Iterates ``self.config.services`` (loaded from ``services:`` in
+        config.yaml) and looks each name up in the global
+        ``service_registry``. Misses are logged and skipped — they're either
+        a typo, a disabled plugin, or a service we removed but config still
+        references.
+        """
+        from gateway.service_registry import service_registry
+
+        services_cfg = getattr(self.config, "services", None) or {}
+        if not services_cfg:
+            return
+
+        for svc_name, svc_config in services_cfg.items():
+            if not isinstance(svc_config, dict) or not svc_config.get("enabled", False):
+                continue
+
+            if not service_registry.is_registered(svc_name):
+                logger.warning(
+                    "Background service '%s' is enabled in config.yaml but no "
+                    "plugin registered it. Is the plugin installed and enabled?",
+                    svc_name,
+                )
+                continue
+
+            svc = service_registry.create_service(svc_name, svc_config, self)
+            if svc is None:
+                continue
+
+            try:
+                if await svc.start():
+                    self.services[svc_name] = svc
+                    logger.info("Background service '%s' started", svc_name)
+                else:
+                    logger.warning("Background service '%s' failed to start", svc_name)
+            except Exception as e:
+                logger.error("Background service '%s' startup error: %s", svc_name, e, exc_info=True)
+
+    async def _stop_plugin_background_services(self) -> None:
+        """Stop every running background service and clear the registry dict.
+
+        Called from ``_stop_impl`` BEFORE adapter teardown — services produce
+        events that deliver through the adapters, so producers stop first.
+        A raising ``stop()`` is logged and does not block the remaining
+        services or the rest of shutdown.
+        """
+        services = getattr(self, "services", None)
+        if not services:
+            return
+        for svc_name, svc in list(services.items()):
+            try:
+                await svc.stop()
+                logger.info("Background service '%s' stopped", svc_name)
+            except Exception as e:
+                logger.error("Background service '%s' stop error: %s", svc_name, e)
+        services.clear()
+
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
         """AsyncSessionDB for the active profile scope, resolved per access (not in ``__init__``) since
         ``SessionDB()`` reads the context-local HERMES_HOME; one handle cached per path. Construction

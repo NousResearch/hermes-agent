@@ -1683,6 +1683,12 @@ class GatewayShutdownMixin:
                 await self._cleanup_agent_resources_off_loop(
                     _entry[0] if isinstance(_entry, tuple) else _entry, context="shutdown idle-cache"
                 )
+        # Stop plugin-registered background services BEFORE the delivery
+        # adapters disconnect: services are event producers (pollers,
+        # watchers) that deliver through the adapters, so quiescing them
+        # first means no service polls into a world without adapters and
+        # no event is picked up that can no longer be delivered.
+        await self._stop_plugin_background_services()
         # Settle completion flush tasks while adapters are alive so every watcher gets a retryable result.
         cancel_completion_batches = getattr(self, "_cancel_process_completion_batch_tasks", None)
         if cancel_completion_batches is not None:

@@ -1397,6 +1397,16 @@ class GatewayStartupMixin:
         self._update_runtime_status("running")
         await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
+        # Start plugin-registered background services (Nextcloud notifications,
+        # file watchers, RSS pollers, etc.). Each entry in
+        # ``config.services.<name>`` whose ``enabled`` flag is set is matched
+        # against an entry in :data:`gateway.service_registry.service_registry`.
+        # Services that fail to start are logged but do not abort gateway
+        # startup — they can be retried after a config fix + restart.
+        try:
+            await self._start_plugin_background_services()
+        except Exception as _e:
+            logger.error("Plugin background services startup error: %s", _e, exc_info=True)
         logger.info("Press Ctrl+C to stop")
         return True
 

@@ -510,6 +510,13 @@ class GatewayConfig:
     platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
     reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
     quick_commands: Dict[str, Any] = field(default_factory=dict)  # slash commands that bypass the agent loop
+    # Background services (long-running observers/pollers registered by
+    # plugins via ``PluginContext.register_background_service``). Each entry
+    # mirrors a ``services.<name>`` block from config.yaml verbatim, including
+    # the ``enabled`` flag and arbitrary plugin-defined keys. The gateway
+    # looks each name up in ``gateway.service_registry.service_registry``
+    # at startup.
+    services: Dict[str, Any] = field(default_factory=dict)
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
     # Legacy sessions.json mirror of the routing index (primary: state.db) for external tooling / downgrades.
     # The primary copy lives in state.db (gateway_routing table, #9006). Default True for backward
@@ -693,6 +700,11 @@ class GatewayConfig:
             platforms=by_platform("platforms", PlatformConfig.from_dict, dicts_only=True),
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=_coerce_dict(data.get("quick_commands", {})),
+            # Background services (see ``GatewayConfig.services`` docstring).
+            # Each entry maps a plugin-registered service name to its config
+            # dict, preserved verbatim — plugin owners define their own schema
+            # under ``services.<name>.extra`` / ``services.<name>.rules``.
+            services=_coerce_dict(data.get("services", {})),
             sessions_dir=Path(data["sessions_dir"]) if "sessions_dir" in data else get_hermes_home() / "sessions",
             **{name: _coerce_bool(data.get(name), default) for name, default in _TOPLEVEL_BOOL_DEFAULTS.items()},
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),

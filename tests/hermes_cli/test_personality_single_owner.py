@@ -50,6 +50,17 @@ def test_user_entries_overlay_builtins_by_name():
     assert merged["custom"] == "hi"
 
 
+def test_root_level_personalities_are_honoured_below_agent_block():
+    """config.yaml's top-level ``personalities:`` (the shape DEFAULT_CONFIG ships) must be
+    visible on every surface; ``agent.personalities`` wins on a clash (#9636)."""
+    cfg = {"personalities": {"robot": "root", "shared": "root"},
+           "agent": {"personalities": {"shared": "agent"}}}
+    merged = available_personalities(cfg)
+    assert merged["robot"] == "root"
+    assert merged["shared"] == "agent"
+    assert resolve_personality("robot", cfg)[0] == "robot"
+
+
 def test_neutral_names_normalize_to_empty():
     for raw in ("", "none", "None", " DEFAULT ", "neutral", None):
         assert normalize_personality_name(raw) == ""

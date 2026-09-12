@@ -471,14 +471,15 @@ def _finalize_routing(agent, api_mode, credential_pool):
         # GPT-5.x models usually require the Responses API path, but some providers have exceptions (for
         # example Copilot's gpt-5-mini still uses chat completions). ACP runtimes are excluded: an ACP
         # client handles its own routing and does not implement the Responses API surface. Keyed on the
-        # `acp://` scheme, not one vendor, so every ACP client is covered. When api_mode was explicitly
-        # provided, respect it — the user knows what their endpoint supports (#10473). Exception: Azure
+        # `acp://` scheme plus the provider profile's auth_type, not on one vendor's name, so every ACP
+        # client is covered. When api_mode was explicitly provided, respect it — the user knows what
+        # their endpoint supports (#10473). Exception: Azure
         # OpenAI serves gpt-5.x on /chat/completions and does NOT support the Responses API — skip the
         # upgrade for Azure (openai.azure.com), even though it looks OpenAI-compatible.
         api_mode is None
         and agent.api_mode == "chat_completions"
         and not is_actual_route(agent.provider, agent.base_url)
-        and agent.provider != "copilot-acp"
+        and not _acp_provider(agent.provider)
         and not _base_lower.startswith(("acp://", "acp+tcp://"))
         and not agent._is_azure_openai_url()
         and (
@@ -782,6 +783,31 @@ def _init_bedrock_client(agent, base_url):
         print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
 
 
+def _acp_provider(provider: str) -> bool:
+    """True when the provider launches an external ACP CLI (profile-driven, no name list)."""
+    from providers import is_external_process_provider
+
+    return is_external_process_provider(provider)
+
+
+def _acp_launch_spec(agent) -> tuple[str, list[str]]:
+    """Launch command/args for an ACP provider, else ``("", [])``.
+
+    Explicit runtime credentials win; otherwise the provider's own profile
+    supplies them, so a newly-registered external-process provider is driven
+    without core knowing its name.
+    """
+    from providers import acp_launch_spec, get_provider_profile
+
+    if not _acp_provider(agent.provider):
+        return "", []
+    command = str(getattr(agent, "acp_command", "") or "")
+    args = list(getattr(agent, "acp_args", None) or [])
+    if command or args:
+        return command, args
+    return acp_launch_spec(get_provider_profile(agent.provider)) or ("", [])
+
+
 def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict[str, Any]:
     """OpenAI-client kwargs from explicit CLI/gateway credentials (auth already resolved)."""
     _parsed_url = urlparse(base_url)
@@ -791,9 +817,10 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
         client_kwargs["default_query"] = {k: v[0] for k, v in parse_qs(_parsed_url.query).items()}
     if _provider_timeout is not None:
         client_kwargs["timeout"] = _provider_timeout
-    if agent.provider == "copilot-acp":
-        client_kwargs["command"] = agent.acp_command
-        client_kwargs["args"] = agent.acp_args
+    command, args = _acp_launch_spec(agent)
+    if command or args:
+        client_kwargs["command"] = command
+        client_kwargs["args"] = args
     # OpenCode Zen free tier is served ANONYMOUSLY and 401s any bearer (incl. our keyless
     # placeholder): send an empty Authorization header to override the SDK's "Bearer <key>".
     with suppress(Exception):

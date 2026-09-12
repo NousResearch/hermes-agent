@@ -626,6 +626,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # in the rendered index (pure string check — inherits the index's stability).
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
+    # Documented append for custom deployments (environment-variables.md): extra
+    # guidance rides the same slot, whichever variant won it. Blank = untouched.
+    if extra_guidance := os.environ.get("HERMES_AGENT_HELP_GUIDANCE", "").strip():
+        stable_parts[_help_guidance_slot] += "\n\n" + extra_guidance
     stable_parts.extend(_alibaba_identity_part(agent))
     # Coding posture: the operating brief stays in the stable prefix. The
     # environment block contains the current cwd/backend and belongs after

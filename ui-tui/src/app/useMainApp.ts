@@ -18,6 +18,7 @@ import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
+import { promptRowIndexes, steppedPromptOffset } from '../domain/viewport.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type { SubagentListResponse } from '../gatewayTypes.js'
 import type {
@@ -43,6 +44,7 @@ import {
   sameToolTrailGroup,
   toolTrailLabel
 } from '../lib/text.js'
+import { getViewportSnapshot } from '../lib/viewportStore.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
@@ -452,6 +454,36 @@ export function useMainApp(gw: GatewayClient) {
     [selection]
   )
 
+  // Prompt rail targets — the same pure derivation the rail's ticks use, so a
+  // hotkey step and a tick click can never land on different rows.
+  const promptRows = useMemo(() => promptRowIndexes(historyItems), [historyItems])
+
+  // Alt+↑ / Alt+↓ — step to the previous/next prompt. An ABSOLUTE jump, never a
+  // scroll delta: rows below the measured span are height-estimated, so a delta
+  // drifts further off target the longer the session runs. The viewport is
+  // re-homed, so a live selection is dropped rather than left holding rows this
+  // jump just scrolled away from.
+  const jumpToPrompt = useCallback(
+    (dir: -1 | 1) => {
+      const s = scrollRef.current
+
+      if (!s) {
+        return
+      }
+
+      const { atBottom, top } = getViewportSnapshot(s)
+      const target = steppedPromptOffset(virtualHistory.offsets, promptRows, top, atBottom, dir)
+
+      if (target === null) {
+        return
+      }
+
+      selection.clearSelection()
+      s.scrollTo(target)
+    },
+    [promptRows, selection, virtualHistory.offsets]
+  )
+
   const appendMessage = useCallback(
     (msg: Msg) => setHistoryItems(prev => appendTranscriptMessage(prev, msg)),
     [setHistoryItems]
@@ -848,7 +880,7 @@ export function useMainApp(gw: GatewayClient) {
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
     gateway,
-    terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
+    terminal: { hasSelection, jumpToPrompt, scrollRef, scrollWithSelection, selection, stdout },
     voice: {
       enabled: voiceEnabled,
       recordKey: voiceRecordKey,

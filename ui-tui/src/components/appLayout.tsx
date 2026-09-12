@@ -14,6 +14,7 @@ import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
+import { promptRowIndexes } from '../domain/viewport.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -179,6 +180,11 @@ const TranscriptPane = memo(function TranscriptPane({
     [transcript.historyItems]
   )
 
+  // Prompt rail targets: the message rows of every user prompt, which the rail
+  // maps onto its column and Alt+↑/↓ steps through. Same rows the transcript
+  // already indexes, so a tick and a jump can never disagree.
+  const promptRows = useMemo(() => promptRowIndexes(transcript.historyItems), [transcript.historyItems])
+
   return (
     <>
       <ScrollBox
@@ -259,7 +265,12 @@ const TranscriptPane = memo(function TranscriptPane({
       </ScrollBox>
 
       <NoSelect flexShrink={0} marginLeft={1}>
-        <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
+        <TranscriptScrollbar
+          offsets={transcript.virtualHistory.offsets}
+          promptRows={promptRows}
+          scrollRef={transcript.scrollRef}
+          t={ui.theme}
+        />
       </NoSelect>
 
       <StickyPromptTracker

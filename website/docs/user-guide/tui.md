@@ -110,6 +110,7 @@ Keybindings match the [Classic CLI](cli.md#keybindings) exactly. The only behavi
 - **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown.
 - **`Ctrl+X`** opens the live session switcher. When a queued message is highlighted (sent while the agent was still running), it still deletes that queued message instead. **`Esc`** cancels editing and unhighlights without deleting.
 - **`Ctrl+G` / `Ctrl+X Ctrl+E`** — open the current input buffer in `$EDITOR` for multi-line / long-prompt composition; save-and-exit sends the contents back as the prompt.
+- **`Alt+Up` / `Alt+Down`** (**Option** on macOS) jump to the previous / next prompt in the transcript — the short way back to your own last message when a reply runs long. The right-edge column marks where each of your prompts sits; the mark for the one you are on is filled, and clicking a mark jumps to it.
 
 ## Slash commands
 

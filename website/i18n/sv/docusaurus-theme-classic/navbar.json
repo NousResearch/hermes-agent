@@ -1,0 +1,38 @@
+{
+  "title": {
+    "message": "Hermes Agent",
+    "description": "The title in the navbar"
+  },
+  "logo.alt": {
+    "message": "Hermes Agent",
+    "description": "The alt text of navbar logo"
+  },
+  "item.label.Docs": {
+    "message": "Dokumentation",
+    "description": "Navbar item with label Docs"
+  },
+  "item.label.Skills": {
+    "message": "Färdigheter",
+    "description": "Navbar item with label Skills"
+  },
+  "item.label.Plugins": {
+    "message": "Pluginer",
+    "description": "Navbar item with label Plugins"
+  },
+  "item.label.Download": {
+    "message": "Hämta",
+    "description": "Navbar item with label Download"
+  },
+  "item.label.Home": {
+    "message": "Startsida",
+    "description": "Navbar item with label Home"
+  },
+  "item.label.GitHub": {
+    "message": "GitHub",
+    "description": "Navbar item with label GitHub"
+  },
+  "item.label.Discord": {
+    "message": "Discord",
+    "description": "Navbar item with label Discord"
+  }
+}

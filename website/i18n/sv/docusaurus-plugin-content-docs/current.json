@@ -1,0 +1,258 @@
+{
+  "version.label": {
+    "message": "Nästa",
+    "description": "The label for version current"
+  },
+  "sidebar.docs.category.Getting Started": {
+    "message": "Kom i gång",
+    "description": "The label for category 'Getting Started' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Using Hermes": {
+    "message": "Använda Hermes",
+    "description": "The label for category 'Using Hermes' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Secrets": {
+    "message": "Hemligheter",
+    "description": "The label for category 'Secrets' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Egress proxy": {
+    "message": "Proxy för utgående trafik",
+    "description": "The label for category 'Egress proxy' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Features": {
+    "message": "Funktioner",
+    "description": "The label for category 'Features' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Core": {
+    "message": "Kärna",
+    "description": "The label for category 'Core' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Automation": {
+    "message": "Automatisering",
+    "description": "The label for category 'Automation' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Media & Web": {
+    "message": "Medier och webb",
+    "description": "The label for category 'Media & Web' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Management": {
+    "message": "Hantering",
+    "description": "The label for category 'Management' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Skills": {
+    "message": "Färdigheter",
+    "description": "The label for category 'Skills' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Bundled": {
+    "message": "Inbyggda",
+    "description": "The label for category 'Bundled' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-apple": {
+    "message": "Apple",
+    "description": "The label for category 'apple' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-autonomous-ai-agents": {
+    "message": "Självständiga AI-agenter",
+    "description": "The label for category 'autonomous-ai-agents' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-creative": {
+    "message": "Skapande",
+    "description": "The label for category 'creative' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-devops": {
+    "message": "DevOps",
+    "description": "The label for category 'devops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-email": {
+    "message": "E-post",
+    "description": "The label for category 'email' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-media": {
+    "message": "Medier",
+    "description": "The label for category 'media' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-note-taking": {
+    "message": "Anteckningar",
+    "description": "The label for category 'note-taking' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-productivity": {
+    "message": "Produktivitet",
+    "description": "The label for category 'productivity' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-research": {
+    "message": "Forskning",
+    "description": "The label for category 'research' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-social-media": {
+    "message": "Sociala medier",
+    "description": "The label for category 'social-media' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-software-development": {
+    "message": "Programvaruutveckling",
+    "description": "The label for category 'software-development' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-web": {
+    "message": "Webb",
+    "description": "The label for category 'web' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Optional": {
+    "message": "Valfria",
+    "description": "The label for category 'Optional' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-autonomous-ai-agents": {
+    "message": "Självständiga AI-agenter",
+    "description": "The label for category 'autonomous-ai-agents' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-blockchain": {
+    "message": "Blockkedjor",
+    "description": "The label for category 'blockchain' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-communication": {
+    "message": "Kommunikation",
+    "description": "The label for category 'communication' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-creative": {
+    "message": "Skapande",
+    "description": "The label for category 'creative' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-data-science": {
+    "message": "Datavetenskap",
+    "description": "The label for category 'data-science' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-devops": {
+    "message": "DevOps",
+    "description": "The label for category 'devops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-dogfood": {
+    "message": "Egen användning",
+    "description": "The label for category 'dogfood' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-email": {
+    "message": "E-post",
+    "description": "The label for category 'email' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-finance": {
+    "message": "Ekonomi",
+    "description": "The label for category 'finance' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-gaming": {
+    "message": "Spel",
+    "description": "The label for category 'gaming' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-health": {
+    "message": "Hälsa",
+    "description": "The label for category 'health' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-mcp": {
+    "message": "MCP",
+    "description": "The label for category 'mcp' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-migration": {
+    "message": "Migrering",
+    "description": "The label for category 'migration' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-mlops": {
+    "message": "MLOps",
+    "description": "The label for category 'mlops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-payments": {
+    "message": "Betalningar",
+    "description": "The label for category 'payments' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-productivity": {
+    "message": "Produktivitet",
+    "description": "The label for category 'productivity' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-research": {
+    "message": "Forskning",
+    "description": "The label for category 'research' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-security": {
+    "message": "Säkerhet",
+    "description": "The label for category 'security' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-smart-home": {
+    "message": "Smarta hem",
+    "description": "The label for category 'smart-home' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-social-media": {
+    "message": "Sociala medier",
+    "description": "The label for category 'social-media' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-software-development": {
+    "message": "Programvaruutveckling",
+    "description": "The label for category 'software-development' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-web-development": {
+    "message": "Webbutveckling",
+    "description": "The label for category 'web-development' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-yuanbao": {
+    "message": "Yuanbao",
+    "description": "The label for category 'yuanbao' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Messaging Platforms": {
+    "message": "Meddelandeplattformar",
+    "description": "The label for category 'Messaging Platforms' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Popular": {
+    "message": "Populära",
+    "description": "The label for category 'Popular' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Microsoft 365": {
+    "message": "Microsoft 365",
+    "description": "The label for category 'Microsoft 365' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Chinese platforms": {
+    "message": "Kinesiska plattformar",
+    "description": "The label for category 'Chinese platforms' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Other": {
+    "message": "Övriga",
+    "description": "The label for category 'Other' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Integrations": {
+    "message": "Integrationer",
+    "description": "The label for category 'Integrations' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Guides & Tutorials": {
+    "message": "Guider och handledningar",
+    "description": "The label for category 'Guides & Tutorials' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Developer Guide": {
+    "message": "Utvecklarguide",
+    "description": "The label for category 'Developer Guide' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Architecture": {
+    "message": "Arkitektur",
+    "description": "The label for category 'Architecture' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Extending": {
+    "message": "Utökning",
+    "description": "The label for category 'Extending' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Plugins": {
+    "message": "Pluginer",
+    "description": "The label for category 'Plugins' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Internals": {
+    "message": "Intern funktion",
+    "description": "The label for category 'Internals' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Reference": {
+    "message": "Referens",
+    "description": "The label for category 'Reference' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Command Reference": {
+    "message": "Kommandoreferens",
+    "description": "The label for category 'Command Reference' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Configuration Reference": {
+    "message": "Konfigurationsreferens",
+    "description": "The label for category 'Configuration Reference' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Tools & Skills Reference": {
+    "message": "Verktygs- och färdighetsreferens",
+    "description": "The label for category 'Tools & Skills Reference' in sidebar 'docs'"
+  }
+}

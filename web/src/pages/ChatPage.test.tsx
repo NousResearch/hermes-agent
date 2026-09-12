@@ -17,6 +17,9 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
+
+  writeCallbacks: Array<() => void> = [];
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
@@ -27,6 +30,7 @@ class FakeTerminal {
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
   attachCustomKeyEventHandler() {
@@ -75,7 +79,9 @@ class FakeTerminal {
 
   refresh() {}
 
-  write() {}
+  write(_data: string, callback?: () => void) {
+    if (callback) this.writeCallbacks.push(callback);
+  }
 }
 
 const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false);
@@ -93,6 +99,11 @@ vi.mock("@/components/ChatSidebar", () => ({
 }));
 vi.mock("@/components/ChatSessionList", () => ({
   ChatSessionList: () => null,
+}));
+vi.mock("@/components/ChatVoiceControl", () => ({
+  ChatVoiceControl: ({ submit }: { submit(text: string): void }) => (
+    <button onClick={() => submit("voice transcript")}>submit voice</button>
+  ),
 }));
 vi.mock("@/components/Backdrop", () => ({ Backdrop: () => null }));
 vi.mock("@/plugins", () => ({
@@ -190,6 +201,7 @@ async function render(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  FakeTerminal.instances = [];
   FakeWebSocket.instances = [];
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
@@ -255,6 +267,62 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
+  it("waits for the post-submission terminal write before sending voice Return", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.send = vi.fn();
+    socket.onmessage?.({ data: "older output" });
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "submit voice")!
+        .dispatchEvent(
+          new MouseEvent("click", { bubbles: true }),
+        );
+    });
+    expect(socket.send).toHaveBeenCalledOnce();
+    expect(socket.send).toHaveBeenCalledWith("voice transcript");
+
+    const terminal = FakeTerminal.instances[0];
+    terminal.writeCallbacks.shift()?.();
+    expect(socket.send).toHaveBeenCalledOnce();
+
+    socket.onmessage?.({ data: "voice transcript" });
+    terminal.writeCallbacks.shift()?.();
+    expect(socket.send).toHaveBeenNthCalledWith(2, "\r");
+  });
+
+  it("surfaces a voice submission failure when the socket closes before echo", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.send = vi.fn();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "submit voice")!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      socket.readyState = 3;
+      socket.onclose?.({ code: 1006, reason: "", wasClean: false });
+    });
+
+    expect(container.textContent).toContain(
+      "Chat disconnected before the voice transcript could be submitted.",
+    );
+    expect(socket.send).not.toHaveBeenCalledWith("\r");
+  });
+
   it("treats loopback 4401 closes as stale-token reload candidates", async () => {
     const { default: ChatPage } = await import("./ChatPage");
 

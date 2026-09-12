@@ -1,16 +1,13 @@
-"""Tests for the empty-terminal reasoning surface.
+"""Tests for reasoning-only and truly empty final responses.
 
-When the empty-response ladder is fully exhausted (prefill continuation,
-empty-content retries, provider fallback) and the model produced structured
-reasoning but no visible text, the DELIVERED final_response is a clearly
-labeled reasoning excerpt instead of a bare "(empty)" — the reasoning often
-contains the actual answer. Idea credit: PR #48795 (@ligl0325).
+When a provider reports a clean stop with structured reasoning but no visible
+text, the reasoning is the completed response and must bypass the expensive
+empty-response recovery ladder. Idea credit: PR #48795 (@ligl0325).
 
 Invariants pinned here:
-- The persisted assistant message keeps the "(empty)" sentinel and the
-  ``_empty_terminal_sentinel`` marker (replay semantics unchanged).
-- Raw reasoning is NEVER promoted earlier in the ladder — a reasoning-only
-  response still goes through prefill continuation first.
+- Clean-stop reasoning is returned and persisted without another API call.
+- Length-limited reasoning still goes through continuation instead of being
+  promoted as a complete answer.
 - A truly empty exhaustion (no reasoning either) still returns "(empty)".
 """
 
@@ -47,7 +44,7 @@ def _build_agent(tmp_path, monkeypatch):
     return agent
 
 
-def _reasoning_only_response():
+def _reasoning_only_response(*, finish_reason="stop"):
     return SimpleNamespace(
         choices=[SimpleNamespace(
             message=SimpleNamespace(
@@ -57,7 +54,7 @@ def _reasoning_only_response():
                 reasoning_details=None,
                 tool_calls=None,
             ),
-            finish_reason="stop",
+            finish_reason=finish_reason,
         )],
         usage=None,
         model="test-model",
@@ -81,32 +78,25 @@ def _truly_empty_response():
     )
 
 
-def test_exhausted_reasoning_only_delivers_labeled_excerpt(tmp_path, monkeypatch):
-    """After the full ladder is exhausted on reasoning-only responses, the
-    delivered text is the labeled excerpt — not a bare '(empty)' — while the
-    transcript keeps its existing sentinel-scaffolding semantics."""
+def test_clean_stop_reasoning_is_promoted_without_retry(tmp_path, monkeypatch):
     agent = _build_agent(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        agent, "_interruptible_api_call",
-        lambda api_kwargs: _reasoning_only_response(),
-    )
+    calls = 0
+
+    def respond(api_kwargs):
+        nonlocal calls
+        calls += 1
+        return _reasoning_only_response()
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", respond)
 
     result = agent.run_conversation("what is the answer?")
 
-    final = result["final_response"]
-    assert "(empty)" != final
-    assert "only internal reasoning" in final
-    assert "The answer is 42" in final
-
-    # Persistence semantics unchanged: the delivered excerpt is
-    # delivery-only. The turn finalizer strips the "(empty)" terminal
-    # sentinel from the transcript tail (replay safety, existing design),
-    # and the labeled excerpt must never be persisted as assistant content.
-    assert not any(
-        m.get("role") == "assistant"
-        and "only internal reasoning" in (m.get("content") or "")
-        for m in result["messages"]
-    )
+    expected = "The answer is 42 because of the calculation above."
+    assert result["final_response"] == expected
+    assert result["turn_exit_reason"] == "reasoning_response(clean_stop)"
+    assert calls == 1
+    assert result["messages"][-1]["content"] == expected
+    assert result["messages"][-1]["reasoning"] == expected
 
 
 def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):
@@ -128,13 +118,10 @@ def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):
     assert "only internal reasoning" not in final
 
 
-def test_reasoning_never_promoted_before_ladder_exhaustion(tmp_path, monkeypatch):
-    """A reasoning-only response must first go through prefill continuation —
-    if the model then produces real text, THAT is the answer, and no labeled
-    reasoning excerpt appears."""
+def test_length_limited_reasoning_still_uses_continuation(tmp_path, monkeypatch):
     agent = _build_agent(tmp_path, monkeypatch)
     responses = [
-        _reasoning_only_response(),
+        _reasoning_only_response(finish_reason="length"),
         SimpleNamespace(
             choices=[SimpleNamespace(
                 message=SimpleNamespace(
@@ -158,4 +145,5 @@ def test_reasoning_never_promoted_before_ladder_exhaustion(tmp_path, monkeypatch
     result = agent.run_conversation("what is the answer?")
 
     assert result["final_response"] == "42."
-    assert "only internal reasoning" not in result["final_response"]
+    assert result["turn_exit_reason"] == "text_response(finish_reason=stop)"
+    assert not responses

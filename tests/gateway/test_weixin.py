@@ -139,6 +139,44 @@ class TestWeixinConfig:
 
         assert config.get_connected_platforms() == [Platform.WEIXIN]
 
+    def test_get_connected_platforms_requires_account_id(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.WEIXIN: PlatformConfig(
+                    enabled=True,
+                    token="bot-token",
+                )
+            }
+        )
+
+        assert config.get_connected_platforms() == []
+
+    def test_explicit_zero_send_chunk_retries_overrides_environment(self, monkeypatch):
+        monkeypatch.setenv("WEIXIN_SEND_CHUNK_RETRIES", "7")
+
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="bot-token",
+                extra={"account_id": "bot-account", "send_chunk_retries": 0},
+            )
+        )
+
+        assert adapter._send_chunk_retries == 0
+
+    def test_missing_send_chunk_retries_uses_environment(self, monkeypatch):
+        monkeypatch.setenv("WEIXIN_SEND_CHUNK_RETRIES", "7")
+
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="bot-token",
+                extra={"account_id": "bot-account"},
+            )
+        )
+
+        assert adapter._send_chunk_retries == 7
+
 
 class TestWeixinStatePersistence:
     def test_save_weixin_account_preserves_existing_file_on_replace_failure(self, tmp_path, monkeypatch):
@@ -166,6 +204,61 @@ class TestWeixinStatePersistence:
             raise AssertionError("expected save_weixin_account to propagate replace failure")
 
         assert json.loads(account_path.read_text(encoding="utf-8")) == original
+
+    def test_context_token_persist_preserves_existing_file_on_replace_failure(self, tmp_path, monkeypatch):
+        token_path = tmp_path / "weixin" / "accounts" / "acct.context-tokens.json"
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(json.dumps({"user-a": "old-token"}), encoding="utf-8")
+
+        def _boom(_src, _dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("utils.os.replace", _boom)
+
+        store = ContextTokenStore(str(tmp_path))
+        with patch.object(weixin.logger, "warning") as warning_mock:
+            store.set("acct", "user-b", "new-token")
+
+        assert json.loads(token_path.read_text(encoding="utf-8")) == {"user-a": "old-token"}
+        warning_mock.assert_called_once()
+
+    def test_context_token_delete_removes_only_selected_account_peer(self, tmp_path):
+        store = ContextTokenStore(str(tmp_path))
+        store.set("acct-a", "peer-a", "token-a")
+        store.set("acct-a", "peer-b", "token-b")
+        store.set("acct-b", "peer-a", "token-c")
+
+        store.delete("acct-a", "peer-a", "token-a")
+
+        assert store.get("acct-a", "peer-a") is None
+        assert store.get("acct-a", "peer-b") == "token-b"
+        assert store.get("acct-b", "peer-a") == "token-c"
+
+        restored = ContextTokenStore(str(tmp_path))
+        restored.restore("acct-a")
+        restored.restore("acct-b")
+        assert restored.get("acct-a", "peer-a") is None
+        assert restored.get("acct-a", "peer-b") == "token-b"
+        assert restored.get("acct-b", "peer-a") == "token-c"
+
+    def test_save_sync_buf_preserves_existing_file_on_replace_failure(self, tmp_path, monkeypatch):
+        sync_path = tmp_path / "weixin" / "accounts" / "acct.sync.json"
+        sync_path.parent.mkdir(parents=True, exist_ok=True)
+        sync_path.write_text(json.dumps({"get_updates_buf": "old-sync"}), encoding="utf-8")
+
+        def _boom(_src, _dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("utils.os.replace", _boom)
+
+        try:
+            weixin._save_sync_buf(str(tmp_path), "acct", "new-sync")
+        except OSError:
+            pass
+        else:
+            raise AssertionError("expected _save_sync_buf to propagate replace failure")
+
+        assert json.loads(sync_path.read_text(encoding="utf-8")) == {"get_updates_buf": "old-sync"}
 
 
 class TestWeixinQrLogin:
@@ -293,6 +386,34 @@ class TestWeixinChunkDelivery:
             call.kwargs["context_token"]
             for call in send_message_mock.await_args_list
         ] == ["ctx-token", None, None]
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_repeated_stale_response_does_not_trigger_rate_limit_handling(
+        self,
+        send_message_mock,
+        sleep_mock,
+        tmp_path,
+    ):
+        adapter = self._connected_adapter()
+        adapter._token_store = ContextTokenStore(str(tmp_path))
+        adapter._token_store.set(adapter._account_id, "wxid_test123", "ctx-token")
+        send_message_mock.side_effect = [
+            {"ret": -2, "errmsg": "prepare failed"},
+            {"ret": -2, "errmsg": "prepare failed"},
+        ]
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is False
+        assert "stale session" in (result.error or "")
+        assert [
+            call.kwargs["context_token"]
+            for call in send_message_mock.await_args_list
+        ] == ["ctx-token", None]
+        assert adapter._rate_limit_events == []
+        assert adapter._rate_limit_circuit_until == 0.0
+        sleep_mock.assert_not_awaited()
 
     @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
     def test_failed_stale_recovery_does_not_restart_with_original_token(
@@ -657,6 +778,13 @@ class TestIsStaleSessionRet:
             "prepare failed",
         ) is True
 
+
+    def test_prepare_failed_with_case_and_whitespace_is_stale_context_token(self):
+        assert weixin._is_stale_context_token_ret(
+            -2,
+            None,
+            "  Prepare Failed  ",
+        ) is True
 
     def test_ret_minus_2_with_freq_limit_is_not_stale(self):
         # Genuine rate limit — must NOT be treated as stale session.

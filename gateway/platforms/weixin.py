@@ -1219,9 +1219,10 @@ class WeixinAdapter(BasePlatformAdapter):
         self._send_chunk_delay_seconds = float(
             extra.get("send_chunk_delay_seconds") or os.getenv("WEIXIN_SEND_CHUNK_DELAY_SECONDS", "1.5")
         )
-        self._send_chunk_retries = int(
-            extra.get("send_chunk_retries") or os.getenv("WEIXIN_SEND_CHUNK_RETRIES", "4")
-        )
+        send_chunk_retries = extra.get("send_chunk_retries")
+        if send_chunk_retries is None:
+            send_chunk_retries = os.getenv("WEIXIN_SEND_CHUNK_RETRIES", "4")
+        self._send_chunk_retries = int(send_chunk_retries)
         self._send_chunk_retry_delay_seconds = float(
             extra.get("send_chunk_retry_delay_seconds")
             or os.getenv("WEIXIN_SEND_CHUNK_RETRY_DELAY_SECONDS", "1.0")
@@ -1825,14 +1826,13 @@ class WeixinAdapter(BasePlatformAdapter):
                     ret = resp.get("ret")
                     errcode = resp.get("errcode")
                     if (ret is not None and ret not in {0,}) or (errcode is not None and errcode not in {0,}):
+                        is_stale_context_token = _is_stale_context_token_ret(
+                            ret, errcode, resp.get("errmsg")
+                        )
                         is_session_expired = (
                             ret == SESSION_EXPIRED_ERRCODE
                             or errcode == SESSION_EXPIRED_ERRCODE
-                            or _is_stale_context_token_ret(
-                                ret,
-                                errcode,
-                                resp.get("errmsg"),
-                            )
+                            or is_stale_context_token
                         )
                         # Session expired — strip token and retry once
                         if is_session_expired and context_token:
@@ -1848,6 +1848,13 @@ class WeixinAdapter(BasePlatformAdapter):
                                 self.name, _safe_id(chat_id),
                             )
                             continue
+                        if is_stale_context_token:
+                            errmsg = resp.get("errmsg") or resp.get("msg") or "unknown error"
+                            last_error = RuntimeError(
+                                f"iLink sendmessage stale session: "
+                                f"ret={ret} errcode={errcode} errmsg={errmsg}"
+                            )
+                            break
                         # Rate limit (-2) — backoff and retry
                         is_rate_limited = (
                             ret == RATE_LIMIT_ERRCODE

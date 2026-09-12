@@ -100,9 +100,9 @@ _CONFIG_SCHEMA = [
 # Typed settings (config.yaml primary, env override) keyed by config key.
 _SETTING_SPECS = {f["key"]: f for f in _CONFIG_SCHEMA if "type" in f}
 _RECALL_SETTING_KEYS = tuple(k for k in _SETTING_SPECS if k.startswith("recall_"))
-# Explicit-uid URIs (viking://user/<uid>/...) work under every auth mode; the `~`
-# alias only expands for USER/ADMIN roles and is rejected with 400 under dev/ROOT,
-# so the user space is resolved client-side from /api/v1/system/status.
+# Explicit-uid URIs (viking://user/<uid>/...) work under every auth mode and
+# supported OpenViking version. The `~` alias requires OpenViking 0.4.16+ for
+# USER/ADMIN roles and 0.4.17+ for ROOT, so internal paths remain explicit.
 _SESSION_START_SUFFIXES = ("memories/profile.md", "memories/preferences", "memories/entities")
 _SESSION_START_LIST_PARAMS = {"output": "agent", "recursive": True, "abs_limit": 512, "node_limit": 512}
 # Built-in memory tool `target` -> mirror subdir (user facts -> preferences, agent notes -> patterns).
@@ -129,7 +129,7 @@ _FIX_ENDPOINT = "OpenViking memory is temporarily unavailable; correct the endpo
 _HTTPX_MISSING = "httpx not installed — OpenViking plugin disabled"
 _LEGACY_OPENVIKING_IDENTITY_DETAIL = (
     "returned OpenViking's legacy health response, but its anonymous OpenAPI metadata did not identify OpenViking. "
-    "If this is OpenViking 0.2.6 or earlier, upgrade to OpenViking 0.2.10 or newer."
+    "If this is OpenViking 0.2.6 or earlier, upgrade to OpenViking 0.2.14 or newer."
 )
 _PENDING_SESSIONS_RELATIVE_DIR = Path("openviking") / "pending_sessions"
 _RUN_LOCKS_RELATIVE_DIR = Path("openviking") / "runs"
@@ -493,7 +493,7 @@ def _is_windows_absolute_path(value: str) -> bool:
     return len(value) >= 3 and value[0].isalpha() and value[1] == ":" and value[2] in {"/", "\\"}
 
 
-def _validate_forget_memory_uri(raw_uri: Any) -> tuple[Optional[str], Optional[str]]:
+def _validate_forget_memory_uri(raw_uri: Any, *, user_space: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
     uri = raw_uri.strip() if isinstance(raw_uri, str) else ""
     if not uri:
         return None, "uri is required"
@@ -505,11 +505,23 @@ def _validate_forget_memory_uri(raw_uri: Any) -> tuple[Optional[str], Optional[s
     if uri.endswith("/") or not uri.endswith(".md"):
         return None, "viking_forget only deletes concrete .md memory files"
     parts = [part for part in uri[len("viking://") :].split("/") if part]
-    # ``memories`` segment index for the user / user-uid / peer / uid-peer layouts.
-    memories_idx = next((idx for idx, peer_at in ((1, None), (2, None), (3, 1), (4, 2))
-                         if parts[:1] == ["user"] and len(parts) > idx and parts[idx] == "memories" and (peer_at is None or parts[peer_at] == "peers")), None)
+    if any(unquote(part) in {".", ".."} for part in parts):
+        return None, "viking_forget does not accept dot path segments"
+    # ``memories`` index for ``<scope>/[peers/<agent>/]memories/``; under ``user`` the uid is
+    # required, since the uid-less shorthands are deprecated upstream.
+    offsets = ((1, None), (3, 1)) if parts[:1] == ["~"] else ((2, None), (4, 2)) if parts[:1] == ["user"] else ()
+    memories_idx = next((idx for idx, peer_at in offsets
+                         if len(parts) > idx and parts[idx] == "memories" and (peer_at is None or parts[peer_at] == "peers")), None)
     if memories_idx is None or len(parts) < memories_idx + 2:
         return None, "viking_forget only deletes user memory file URIs"
+    # An explicit uid can name someone else's space. Do not send a destructive
+    # request unless the server has confirmed that this uid belongs to the caller.
+    if parts[0] == "user":
+        if not user_space:
+            return None, "viking_forget could not verify the current OpenViking user identity; retry or use viking://~/..."
+        if parts[1] != user_space:
+            return None, (f"viking_forget only deletes your own memories; use viking://user/{user_space}/... "
+                          "or viking://~/... instead")
     if uri.rsplit("/", 1)[-1] in _GENERATED_MEMORY_SUMMARY_FILENAMES:
         return None, "viking_forget cannot delete generated memory summary files"
     return uri, None
@@ -2427,9 +2439,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         reload mid-write can't borrow a later peer; an empty peer there is intentional.
         getattr(): hand-wired providers (``__new__``) may lack ``_client`` / ``_agent``.
         """
-        # Explicit-uid URIs are canonical under every auth mode; the uid-less `viking://user/peers/...`
-        # shorthand was removed upstream (#4196) and `viking://~/...` only expands for USER/ADMIN roles, not
-        # dev/ROOT.
+        # Explicit-uid URIs are canonical across supported OpenViking versions. The
+        # uid-less shorthand was removed upstream, and `viking://~` is newer.
         active_client = client if client is not None else getattr(self, "_client", None)
         agent = str(getattr(active_client, "_agent", getattr(self, "_agent", "")) or "").strip()
         peer_prefix = f"peers/{agent}/" if agent else ""
@@ -2639,7 +2650,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         })
 
     def _tool_forget(self, args: dict) -> str:
-        uri, error = _validate_forget_memory_uri(args.get("uri"))
+        # _resolve_user_space, not _user_space: its "default" fallback is a guess, not an identity.
+        uri, error = _validate_forget_memory_uri(args.get("uri"), user_space=_resolve_user_space(self._client))
         if error:
             return tool_error(error)
         result = self._unwrap_result(self._client.delete("/api/v1/fs", params={"uri": uri, "recursive": False}))

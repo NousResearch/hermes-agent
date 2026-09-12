@@ -1870,32 +1870,6 @@ def _prune_checkpoints(
     size_after = _dir_size_bytes(base)
     delta = size_before - size_after
     result["bytes_freed"] = max(result["bytes_freed"], delta)
-
-def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, checkpoint_base: Optional[Path] = None,
-                      max_total_size_mb: int = 0, orphan_allowlist: Optional[set] = None) -> Dict[str, int]:
-    """Delete stale/orphan checkpoints and reclaim store space.  Never raises.  Deleted when
-    ``delete_orphans`` and the workdir is observably gone, OR last touch predates ``retention_days``
-    (``<= 0`` disables).  ``orphan_allowlist`` (v2 ``_hash`` strings and/or pre-v2 repo paths as
-    ``str``) binds orphan deletion to exactly what a ``store_status()`` preview showed — a project
-    orphaned after the preview is skipped; ``None`` deletes every current orphan (``--force``,
-    unattended).  ``max_total_size_mb > 0`` drops the oldest commit per project until the store fits."""
-    base = checkpoint_base or _resolve_checkpoint_base()
-    result = _empty_prune_result()
-    if not base.exists():
-        return result
-    size_before = _dir_size_bytes(base)
-    cutoff = time.time() - retention_days * 86400 if retention_days > 0 else 0.0
-    _prune_legacy_archives(base, cutoff, result)
-    _prune_pre_v2_repos(base, cutoff, delete_orphans, orphan_allowlist, result)
-    store = _store_path(base)
-    if _store_has_head(store):
-        _prune_v2_projects(store, cutoff, delete_orphans, orphan_allowlist, result)
-        _gc_store(store, str(base))
-        if max_total_size_mb > 0:
-            _shrink_store_to_cap(store, str(base), max_total_size_mb * _MB)
-            _gc_store(store, str(base))
-
-    result["bytes_freed"] = max(result["bytes_freed"], size_before - _dir_size_bytes(base))
     return result
 
 

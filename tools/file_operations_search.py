@@ -527,18 +527,37 @@ class SearchMixin:
             # are exact; root admission wraps the actual rg/find invocation.
             merged = self._search_files(pattern, existing, limit, offset, order)
         else:
+            # One global pagination window across roots (mirroring the files
+            # path above): applying the caller's offset per root would skip
+            # offset×N roots' worth, and truncating each root to limit before
+            # the global slice drops later roots' hits. Fetch every root from
+            # zero with a shared budget, then slice once.
             merged = SearchResult()
+            errors: list[str] = []
             for root in existing:
-                sub = self._search_content(pattern, root, file_glob, limit, offset, output_mode, context)
+                sub = self._search_content(
+                    pattern, root, file_glob, limit + offset, 0, output_mode, context)
                 if sub.error:
-                    return sub
+                    errors.append(f"{root}: {sub.error}")
+                    continue
                 merged.matches.extend(sub.matches)
                 merged.files.extend(sub.files)
                 merged.counts.update(sub.counts)
                 merged.total_count += sub.total_count
                 merged.truncated = merged.truncated or sub.truncated
-            merged.matches = merged.matches[:limit]
-            merged.files = merged.files[:limit]
+                if sub.limit_reason and not merged.limit_reason:
+                    merged.limit_reason = sub.limit_reason
+            if not merged.matches and not merged.files and not merged.counts:
+                if errors:
+                    return SearchResult(error="; ".join(errors))
+            elif errors:
+                failed = "Some roots failed: " + "; ".join(errors)
+                merged.warning = f"{merged.warning} {failed}" if merged.warning else failed
+            over_window = (
+                len(merged.matches) > offset + limit or len(merged.files) > offset + limit)
+            merged.matches = merged.matches[offset:offset + limit]
+            merged.files = merged.files[offset:offset + limit]
+            merged.truncated = merged.truncated or over_window
         note = f"path contained {len(parts)} entries; searched {len(existing)} that exist"
         if missing:
             note += "; skipped missing: " + ", ".join(missing[:3])
@@ -549,6 +568,9 @@ class SearchMixin:
             protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(existing)]
             if protected_paths:
                 warning_parts.append(self._macos_protected_search_warning(protected_paths))
+        if merged.warning:
+            # Per-root failures recorded above survive alongside the note.
+            warning_parts.append(merged.warning)
         merged.warning = " ".join(warning_parts)
         return merged
 

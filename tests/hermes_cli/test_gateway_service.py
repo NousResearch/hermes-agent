@@ -2698,8 +2698,9 @@ class TestUnitAnchoredServiceIdentity:
     """The installed ``hermes-gateway.service`` owns the bare name: under ``sudo`` the naming basis moves
     mid-command when ``_sync_hermes_home_from_systemd_unit()`` adopts the unit's HERMES_HOME (#108674).
 
-    ``linux_only`` because ``_bare_unit_pinned_home()`` is Linux-gated on purpose: a systemd unit is not
-    an identity authority for launchd labels, Windows tasks, or s6 slots, which share the same resolver.
+    ``linux_only`` because ``_bare_unit_pinned_home()`` is Linux- and root-gated on purpose: a systemd unit
+    is not an identity authority for launchd labels, Windows tasks, or s6 slots, which share the same
+    resolver, and only an elevated process operates the system unit.
     """
 
     @pytest.mark.linux_only
@@ -2723,6 +2724,23 @@ class TestUnitAnchoredServiceIdentity:
         assert name.startswith(gateway_cli._SERVICE_BASE + "-")
 
     @pytest.mark.linux_only
+    def test_unprivileged_profile_command_ignores_the_system_unit(self, tmp_path, monkeypatch):
+        """A bare system unit pinning ``profiles/<name>`` must not alias that profile onto the user's
+        default unit when an unprivileged user-scope command resolves the name."""
+        profile_home = tmp_path / "alice" / ".hermes" / "profiles" / "kimi"
+        profile_home.mkdir(parents=True)
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+        (unit_dir / f"{gateway_cli._SERVICE_BASE}.service").write_text(
+            f'[Service]\nEnvironment="HERMES_HOME={profile_home}"\n', encoding="utf-8"
+        )
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "alice")
+        monkeypatch.setattr(os, "geteuid", lambda: 1000)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        assert gateway_cli.get_service_name() == "hermes-gateway-kimi"
+
+    @pytest.mark.linux_only
     def test_bare_unit_pinning_a_named_profile_home_keeps_the_bare_name(self, tmp_path, monkeypatch):
         """``sudo ... install --system`` names the unit from root's default but pins the invoking user's
         remapped home, so the BARE unit legitimately carries a ``profiles/<name>`` home. The unit-pinned
@@ -2737,6 +2755,7 @@ class TestUnitAnchoredServiceIdentity:
         unit_path = unit_dir / f"{gateway_cli._SERVICE_BASE}.service"
         unit_path.write_text(f'[Service]\nEnvironment="HERMES_HOME={profile_home}"\n', encoding="utf-8")
         monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
         monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
         assert gateway_cli.get_service_name() == gateway_cli._SERVICE_BASE
@@ -2758,6 +2777,7 @@ class TestUnitAnchoredServiceIdentity:
             f'[Service]\nEnvironment="HERMES_HOME={alice_home}"\n', encoding="utf-8"
         )
         monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
         monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
         monkeypatch.delenv("HERMES_HOME", raising=False)
 

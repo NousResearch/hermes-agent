@@ -1977,19 +1977,22 @@ def _bare_unit_pinned_home() -> Path | None:
     after it. The installed unit is the only basis that holds still, and it holds for every elevated
     identity — ``sudo -i`` and cron included, where SUDO_USER is absent.
 
-    Linux-gated because a systemd unit is not an identity authority for launchd labels, Windows
-    scheduled tasks, or s6 slots, which share ``_profile_suffix()``. ``is_linux()`` is a plain
-    ``sys.platform`` test; ``supports_systemd_services()`` would be wrong here, since it can shell out
-    to ``systemctl is-system-running`` on WSL/containers and this runs on every name resolution.
+    Linux- and root-gated: a systemd unit is not an identity authority for launchd labels, Windows
+    scheduled tasks, or s6 slots, which share ``_profile_suffix()``, and only an elevated process ever
+    operates the system unit — an unprivileged user-scope command must keep naming its own units, or a
+    bare system unit pinning ``profiles/<name>`` would alias that profile onto the user's default unit.
+    ``is_linux()`` is a plain ``sys.platform`` test; ``supports_systemd_services()`` would be wrong here,
+    since it can shell out to ``systemctl is-system-running`` on WSL/containers and this runs on every
+    name resolution.
     """
-    if not is_linux():
+    if not is_linux() or os.geteuid() != 0:  # windows-footgun: ok — behind is_linux()
         return None
     pinned = _hermes_home_pinned_by_unit(_SYSTEM_UNIT_DIR / f"{_SERVICE_BASE}.service")
     if not pinned:
         return None
     try:
         return Path(pinned).expanduser().resolve()
-    except (OSError, RuntimeError, ValueError):
+    except (RuntimeError, ValueError):  # hand-edited unit: ``~nouser`` or an embedded NUL
         return None
 
 
@@ -2288,7 +2291,7 @@ _LEGACY_UNIT_EXECSTART_MARKERS: tuple[str, ...] = (
 
 def _legacy_unit_search_paths() -> list[tuple[bool, Path]]:
     """``[(is_system, base_dir), ...]`` to scan for legacy units; factored out so tests can monkeypatch."""
-    return [(False, Path.home() / ".config" / "systemd" / "user"), (True, Path("/etc/systemd/system"))]
+    return [(False, Path.home() / ".config" / "systemd" / "user"), (True, _SYSTEM_UNIT_DIR)]
 
 
 def _find_legacy_hermes_units() -> list[tuple[str, Path, bool]]:

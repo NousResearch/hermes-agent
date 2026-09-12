@@ -845,3 +845,14 @@ class TestMcpReauth:
         cmd_mcp_reauth(_make_args(name="ghost", all=False))
         out = capsys.readouterr().out
         assert "not found" in out
+
+
+def test_tool_filters_keeps_explicit_empty_include():
+    """``include: []`` (block-all, as written by an all-unchecked picker) is a filter, not
+    "no filter"; only an absent/non-list key is None (#12865)."""
+    from hermes_cli.mcp_config import _tool_filters
+
+    assert _tool_filters({"tools": {"include": []}}) == ([], None)
+    assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
+    assert _tool_filters({}) == (None, None)
+

@@ -576,7 +576,9 @@ def _apply_tool_selection(
         )
         return
 
-    pre_set = {n for n in (prior_selection or entry.tools.default_enabled or tool_names) if n in tool_names}
+    # A prior ``include: []`` (user chose zero tools) outranks manifest defaults, like the non-TTY path.
+    preferred = prior_selection if prior_selection is not None else (entry.tools.default_enabled or tool_names)
+    pre_set = {n for n in preferred if n in tool_names}
     pre_indices = {i for i, n in enumerate(tool_names) if n in pre_set}
     _say(f"  Found {len(probed)} tool(s). Pre-checked: {len(pre_indices)}.")
 

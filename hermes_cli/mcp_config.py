@@ -61,14 +61,18 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
 
 
 def _tool_filters(cfg: dict) -> Tuple[Optional[list], Optional[list]]:
-    """Return the ``(include, exclude)`` tool lists from a server config (non-empty lists only)."""
+    """Return the ``(include, exclude)`` tool lists from a server config; ``None`` = key absent.
+
+    An explicit ``include: []`` is a real (block-all) whitelist — the runtime registers nothing
+    (tools/mcp_tool_registration.py) — so it must not collapse to "no filter" here (#12865).
+    """
     tools_cfg = cfg.get("tools", {})
     if not isinstance(tools_cfg, dict):
         return None, None
     include, exclude = tools_cfg.get("include"), tools_cfg.get("exclude")
     return (
-        include if include and isinstance(include, list) else None,
-        exclude if exclude and isinstance(exclude, list) else None)
+        include if isinstance(include, list) else None,
+        exclude if isinstance(exclude, list) else None)
 
 
 def _save_mcp_server(name: str, server_config: dict) -> bool:
@@ -565,7 +569,7 @@ def cmd_mcp_list(args=None):
             transport = transport[:25] + "..."
 
         include, exclude = _tool_filters(cfg)
-        if include:
+        if include is not None:
             tools_str = f"{len(include)} selected"
         elif exclude:
             tools_str = f"-{len(exclude)} excluded"
@@ -814,11 +818,10 @@ def cmd_mcp_configure(args):
         def matches_name_filter(tool_name, patterns):
             return tool_name in patterns
 
-    patterns = {str(p) for p in (include or exclude or [])}
-    if patterns:
-        pre_selected = {
-            i for i, tn in enumerate(tool_names) if matches_name_filter(tn, patterns) == bool(include)
-        }
+    if include is not None:
+        pre_selected = {i for i, tn in enumerate(tool_names) if matches_name_filter(tn, {str(p) for p in include})}
+    elif exclude:
+        pre_selected = {i for i, tn in enumerate(tool_names) if not matches_name_filter(tn, {str(p) for p in exclude})}
     else:
         pre_selected = set(range(total))
 
@@ -835,7 +838,7 @@ def cmd_mcp_configure(args):
 
     config = load_config()
     server_entry = cfg_get(config, "mcp_servers", name, default={})
-    exclude_mode = bool(exclude) and not include
+    exclude_mode = bool(exclude) and include is None
 
     if len(chosen) == total and not exclude_mode:
         server_entry.pop("tools", None)  # all selected → register all

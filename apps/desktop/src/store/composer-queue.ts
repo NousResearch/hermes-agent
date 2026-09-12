@@ -30,6 +30,50 @@ export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 
 type QueueState = Record<string, QueuedPromptEntry[]>
 
 const STORAGE_KEY = 'hermes.desktop.composerQueue.v1'
+const QUEUE_ENTRY_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+const isQueuedPromptEntry = (value: unknown): value is QueuedPromptEntry => {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const entry = value as Partial<QueuedPromptEntry>
+
+  return (
+    typeof entry.id === 'string' &&
+    typeof entry.text === 'string' &&
+    (entry.displayText === undefined || typeof entry.displayText === 'string') &&
+    (entry.displayKind === undefined || entry.displayKind === 'hidden') &&
+    Array.isArray(entry.attachments) &&
+    typeof entry.queuedAt === 'number' &&
+    Number.isFinite(entry.queuedAt)
+  )
+}
+
+export const sanitizePersistedQueueState = (value: unknown, now = Date.now()): QueueState => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+
+  const cutoff = now - QUEUE_ENTRY_TTL_MS
+  const state: QueueState = {}
+
+  for (const [sessionKey, entries] of Object.entries(value)) {
+    if (!sessionKey.trim() || !Array.isArray(entries)) {
+      continue
+    }
+
+    const liveEntries = entries.filter(
+      (entry): entry is QueuedPromptEntry => isQueuedPromptEntry(entry) && entry.queuedAt >= cutoff
+    )
+
+    if (liveEntries.length > 0) {
+      state[sessionKey] = liveEntries
+    }
+  }
+
+  return state
+}
 
 const load = (): QueueState => {
   if (typeof window === 'undefined') {
@@ -39,8 +83,18 @@ const load = (): QueueState => {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : null
+    const state = sanitizePersistedQueueState(parsed)
+    const sanitized = Object.keys(state).length > 0 ? JSON.stringify(state) : null
 
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as QueueState) : {}
+    if (sanitized !== raw) {
+      if (sanitized) {
+        window.localStorage.setItem(STORAGE_KEY, sanitized)
+      } else {
+        window.localStorage.removeItem(STORAGE_KEY)
+      }
+    }
+
+    return state
   } catch {
     return {}
   }

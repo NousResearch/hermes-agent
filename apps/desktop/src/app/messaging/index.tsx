@@ -166,6 +166,17 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [])
 
+  // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
+  // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
+  const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
+    if (hotServed) {
+      window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
+      return
+    }
+
+    setRestartNeeded(true)
+  }, [])
+
   const refreshPlatforms = useCallback(
     async (silent = false) => {
       if (!silent) {
@@ -320,7 +331,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`enabled:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { enabled }, scopeProfile)
+      const result = await updateMessagingPlatform(platform.id, { enabled }, scopeProfile)
       setPlatforms(
         current =>
           current?.map(row =>
@@ -333,11 +344,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               : row
           ) ?? current
       )
-      setRestartNeeded(true)
+      settleAfterUpdate(result.hot_served)
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: m.restartToApply
+        message: result.hot_served ? m.appliedLive : m.restartToApply
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))
@@ -356,14 +367,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`env:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { env }, scopeProfile)
+      const result = await updateMessagingPlatform(platform.id, { env }, scopeProfile)
       setEdits(current => ({ ...current, [platform.id]: {} }))
       await refreshPlatforms()
-      setRestartNeeded(true)
+      settleAfterUpdate(result.hot_served)
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: m.restartToReconnect
+        message: result.hot_served ? m.connectingLive : m.restartToReconnect
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))
@@ -376,7 +387,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`clear:${key}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { clear_env: [key] }, scopeProfile)
+      const result = await updateMessagingPlatform(platform.id, { clear_env: [key] }, scopeProfile)
       setEdits(current => ({
         ...current,
         [platform.id]: {
@@ -385,7 +396,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      setRestartNeeded(true)
+      settleAfterUpdate(result.hot_served)
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
       notifyError(err, m.failedClear(key))

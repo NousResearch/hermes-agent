@@ -78,10 +78,18 @@ class SessionAuthority:
         if self.runner._draining:
             raise RuntimeStoreError('runtime_draining')
 
+    def logical_owner(self, session_id):
+        """The FIFO/admission identity of a route: the root of its compression lineage.
+        Compression advances the physical transcript, never the admission identity."""
+        return self.db.get_compression_lineage(session_id)[0] if session_id else session_id
+
+    def physical_target(self, ref):
+        return self.db.get_compression_tip(ref.session_id) or ref.session_id
+
     def register(self, source):
         self._require_admission_open()
         entry = self.runner.session_store.get_or_create_session(source)
-        sid = entry.session_id
+        sid = self.logical_owner(entry.session_id)
         self.sessions.setdefault(sid, LiveSession(source, entry.session_key))
         # SessionStore reserves routing metadata before the first AIAgent exists.
         if self.db.get_session(sid) is None:
@@ -210,13 +218,14 @@ class SessionAuthority:
                 native = [row for row in rows if 'native_text_v1' in row['payload']]
                 if not native:
                     raise RuntimeStoreError('not_found')
-                source, route = await check_native_route(self.runner, native[-1]['payload'], sid,
+                target = self.physical_target(SessionRef(self.profile_id, sid))
+                source, route = await check_native_route(self.runner, native[-1]['payload'], target,
                                                     available_source, adapter)
                 for row in rows:
                     if row['status'] == 'queued':
                         if 'native_text_v1' not in row['payload']:
                             raise RuntimeStoreError('invalid_params')
-                        await check_native_route(self.runner, row['payload'], sid, available_source, adapter)
+                        await check_native_route(self.runner, row['payload'], target, available_source, adapter)
                 self._require_admission_open()
                 self.sessions.setdefault(sid, LiveSession(source, route))
                 if any(row['status'] == 'unknown' for row in rows):
@@ -230,13 +239,15 @@ class SessionAuthority:
     async def submit(self, actor: Principal, request: Submission):
         self.authorize(actor, request.ref, 'session:submit')
         self._require_admission_open()
-        if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {'text', 'attachments', 'finite'}
+        if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
+                'text', 'attachments', 'finite', 'surface', 'voice_context', 'interrupted'}
                 or not isinstance(request.payload['text'], str)):
             raise RuntimeStoreError('invalid_params')
         from gateway.session_ingress_media import admit_attachments
         from gateway.session_finite import admit_finite
+        from gateway.session_surface import admit_surface
         finite = admit_finite(request.payload)
-        payload = {'text': request.payload['text'], **finite,
+        payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
                    **admit_attachments(request.payload.get('attachments'))}
         from gateway.config import Platform
         source = self.sessions[request.ref.session_id].source
@@ -265,6 +276,8 @@ class SessionAuthority:
     async def cancel_queued(self, actor, ref, admission_id):
         await self.receipt(actor, ref, admission_id)
         row = cancel_session_input(self.db, epoch=self.epoch, admission_id=admission_id)
+        from gateway.session_ingress_media import release_admission_media
+        release_admission_media(self.db, admission_id)
         self._publish_pending(ref)
         return self._receipt(row)
 
@@ -363,7 +376,7 @@ class SessionAuthority:
                         check_local_input(self, ref, first)
                 if first is not None and 'native_text_v1' in first['payload']:
                     from gateway.session_envelope import check_native_route
-                    await check_native_route(self.runner, first['payload'], ref.session_id, live.source,
+                    await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,
                                        self.runner._adapter_for_source(live.source))
                     # Cancellation may advance FIFO while the connector is awaited.
                     # Never let the successor inherit this row's fresh verdict.
@@ -402,6 +415,8 @@ class SessionAuthority:
                     response=response, outcome=outcome,
                     result=self.pending_results.pop(admission_id, None))
                 live.controls.snapshot(ref.session_id, None)
+                from gateway.session_ingress_media import release_admission_media
+                release_admission_media(self.db, admission_id)
                 self._publish_pending(ref)
                 live.event_stream.publish(ref.session_id, {
                     'text': response, 'content': response, 'admission_id': admission_id,

@@ -413,3 +413,11 @@ def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIM
     Step 2 of the socket migration (#92091).
     """
     return query_gateway_control(home, "pause-for-update", timeout=timeout)
+
+
+def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dict[str, Any]]:
+    """Ask the multiplexer serving ``home`` to reconcile ``profiles/`` now (hot-serve a created profile,
+    unroute a deleted one). Returns its ``{"served_profiles", "added", "removed", ...}`` answer, or None
+    when no gateway answers / the gateway predates the verb — callers then rely on the periodic rescan
+    (or the restart reminder)."""
+    return query_gateway_control(home, "rescan-profiles", timeout=timeout)

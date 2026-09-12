@@ -135,17 +135,14 @@ export function configureWindowsGatewayTicketClient(client: NonNullable<typeof w
   windowsTicketClient = client
 }
 
-export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' = 'interactive'): Promise<string> {
-  if (process.platform === 'win32') {
-    if (!windowsTicketClient) {throw new Error('Gateway ticket client is not configured')}
+function isMissingNodeError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code
 
-    return windowsTicketClient(endpoint, purpose)
-  }
-  const home = endpoint.profile_id
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
 
-  if (await fs.realpath(home) !== home) {throw new Error('Noncanonical gateway profile')}
-  await privateNode(home, 'directory')
-  let socketPath = path.join(home, 'gateway.sock')
+async function resolveControlSocket(home: string): Promise<string> {
+  const socketPath = path.join(home, 'gateway.sock')
 
   try { await privateNode(socketPath, 'socket') } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {throw error}
@@ -157,7 +154,31 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
     if (!path.isAbsolute(target) || path.basename(path.dirname(target)) !== `hermes-gw-${hash}` || path.basename(target) !== 'control.sock') {throw new Error('Invalid gateway control pointer')}
     await privateNode(path.dirname(target), 'directory')
     await privateNode(target, 'socket')
-    socketPath = target
+
+    return target
+  }
+
+  return socketPath
+}
+
+export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' = 'interactive'): Promise<string> {
+  if (process.platform === 'win32') {
+    if (!windowsTicketClient) {throw new Error('Gateway ticket client is not configured')}
+
+    return windowsTicketClient(endpoint, purpose)
+  }
+
+  const home = endpoint.profile_id
+
+  if (await fs.realpath(home) !== home) {throw new Error('Noncanonical gateway profile')}
+  await privateNode(home, 'directory')
+  let socketPath: string
+
+  try { socketPath = await resolveControlSocket(home) } catch (error) {
+    // `gateway stop` unlinks both the socket and its pointer: the owner is gone,
+    // which the redial must treat as stale rather than as a raw filesystem error.
+    if (isMissingNodeError(error)) {throw new Error('Gateway ticket control socket missing')}
+    throw error
   }
 
   return new Promise((resolve, reject) => {

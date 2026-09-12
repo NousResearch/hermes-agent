@@ -2053,50 +2053,6 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
-def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
-    """Return the assigned profile's effective CLI toolsets for a worker.
-
-    Resolved at dispatch time and passed as an explicit ``--toolsets`` pin so
-    worker startup cannot fall back to a stale root/active-profile config or a
-    profile whose top-level ``toolsets`` is only the kanban orchestrator
-    surface. ``model_tools`` still appends the task-scoped kanban lifecycle
-    tools when ``HERMES_KANBAN_TASK`` is set.
-    """
-    if not hermes_home:
-        return None
-    try:
-        from agent.secret_scope import (
-            build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
-
-        token = set_hermes_home_override(hermes_home)
-        # Toolset availability probes read credentials (``get_secret``); under multiplex an
-        # unscoped read raises and the pin was silently dropped for every worker.
-        secret_token = (
-            set_secret_scope(build_profile_secret_scope(Path(hermes_home)))
-            if is_multiplex_active() else None)
-        try:
-            cfg = load_config()
-            toolsets = sorted(_get_platform_tools(cfg, "cli"))
-        finally:
-            if secret_token is not None:
-                reset_secret_scope(secret_token)
-            reset_hermes_home_override(token)
-        return toolsets or None
-    except Exception as exc:
-        _kb._log.debug(
-            "kanban worker: could not resolve CLI toolsets for HERMES_HOME=%r (%s)",
-            hermes_home,
-            exc,
-        )
-        return None
-
-
-_retagged_workspace_roots: set[str] = set()
-
-
 def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
     """Reclaim pre-tag worker rows in state.db so they leave the session lists.
 
@@ -2140,17 +2096,23 @@ def _open_worker_log(task: Task, board: Optional[str]):
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
-    """Wrap a managed-gateway worker in the shared restart-safe scope."""
+    """Wrap a managed-gateway worker in the shared restart-safe scope.
+
+    Kanban workers are long-lived agentic runs, so they never take cron's
+    degraded mode: ``require_restart_safe_scope=True`` makes the helper raise.
+    """
     from tools.process_registry import restart_safe_gateway_child_argv
 
     if task.current_run_id is None:
         # Outside managed systemd this is harmless, but a managed dispatch must
-        # never mint an untraceable scope.  Check topology through the shared
+        # never mint an untraceable worker.  Check topology through the shared
         # helper first, using a placeholder suffix that cannot be launched.
-        scoped = restart_safe_gateway_child_argv(
-            command, unit_suffix=f"kanban-{task.id}-run-missing"
+        dispatch = restart_safe_gateway_child_argv(
+            command,
+            unit_suffix=f"kanban-{task.id}-run-missing",
+            require_restart_safe_scope=True,
         )
-        if scoped is not command:
+        if dispatch.mode != "in_process":
             raise RuntimeError(
                 "cannot create restart-safe systemd scope for Kanban worker: "
                 "the claimed task has no current run id"
@@ -2160,7 +2122,8 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     return restart_safe_gateway_child_argv(
         command,
         unit_suffix=f"kanban-{task.id}-run-{task.current_run_id}",
-    )
+        require_restart_safe_scope=True,
+    ).argv
 
 
 def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:

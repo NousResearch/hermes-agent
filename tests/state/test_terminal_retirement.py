@@ -1,5 +1,7 @@
 """Deletion removes history but retains exact, scoped terminal evidence."""
 import sqlite3
+from types import SimpleNamespace
+
 import pytest
 from hermes_state import SessionDB
 import hermes_state_runtime as rt
@@ -88,3 +90,63 @@ def test_nonterminal_obligations_prevent_any_retirement(tmp_path):
             assert db.get_session(status) is not None
             with db._read_ctx() as c:
                 assert not c.execute("SELECT 1 FROM state_meta WHERE key LIKE 'gateway.retired_session.v1.%'").fetchall()
+
+
+def test_late_accounting_backfill_cannot_resurrect_a_retired_session(tmp_path):
+    """A delayed background-review usage callback lands after delete committed: the
+    retirement fence must refuse the missing-row backfill instead of recreating the
+    session beside its durable tombstone."""
+    with SessionDB(tmp_path / 'state.db') as db:
+        db.create_session('retired', source='cli')
+        db.append_message('retired', 'user', 'history')
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        snap = db.get_session('retired')
+        delete = dict(principal_id='human', session_id='retired', request_id='delete', operation='delete',
+                      payload={}, expected_revision=snap['runtime_revision'],
+                      expected_generation=snap['runtime_generation'])
+        receipt = rt.mutate_runtime_session(db, epoch=epoch, **delete)
+        # The real delayed callback: a background-review fork reporting into its parent.
+        from agent.background_review import _record_review_usage_to_parent
+        parent = SimpleNamespace(_session_db=db, session_id='retired')
+        _record_review_usage_to_parent(parent, {'model': 'm', 'provider': 'p', 'base_url': None,
+                                                'api_calls': 1, 'input_tokens': 3, 'output_tokens': 1})
+        for late in (lambda: db.update_token_counts('retired', input_tokens=5, output_tokens=2, model='m'),
+                     lambda: db.ensure_session('retired', source='unknown')):
+            with pytest.raises(rt.RuntimeStoreError, match='not_found'):
+                late()
+        assert db.get_session('retired') is None, 'late accounting resurrected a deleted session'
+        with db._read_ctx() as c:
+            assert c.execute("SELECT COUNT(*) FROM session_model_usage WHERE session_id='retired'").fetchone()[0] == 0
+        assert rt.mutate_runtime_session(db, epoch=epoch, **delete) == receipt
+        # Live sessions keep the legacy missing-row backfill.
+        db.update_token_counts('fresh', input_tokens=1, output_tokens=1, model='m')
+        assert db.get_session('fresh')['source'] == 'unknown'
+
+
+def test_deletion_tombstone_keeps_only_the_closing_worker_result(tmp_path):
+    """Full worker results (history reads) must not outlive the user's delete;
+    only the closing receipt stays replayable, earlier digests still detect conflicts."""
+    import hermes_state_mutation_retirement as retirement
+    from hermes_state_terminal import terminal_worker_receipt
+    with SessionDB(tmp_path / 'state.db') as db:
+        db.create_session('gone', source='api_server')
+        db.append_message('gone', 'user', 'SECRET_HISTORY_LINE')
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        rt.register_worker_execution(db, epoch=epoch, execution_id='worker', session_id='gone',
+            generation=0, kind='compute', adoption_secret='proof')
+        history = rt.mutate_worker_execution(db, epoch=epoch, execution_id='worker', session_id='gone',
+            generation=0, sequence=1, operation='compression.history', payload={
+                'target': 'gone', 'include_ancestors': False, 'include_inactive': False,
+                'repair_alternation': False, 'include_row_ids': False, 'include_compacted': False})
+        assert 'SECRET_HISTORY_LINE' in str(history)
+        closing = rt.mutate_worker_execution(db, epoch=epoch, execution_id='worker', session_id='gone',
+            generation=0, sequence=2, operation='execution.finish', payload={})
+        db._execute_write(lambda c: retirement.retire_terminal_receipts(c, ['gone']))
+        with db._read_ctx() as c:
+            tombstones = ''.join(v for (v,) in c.execute("SELECT value FROM state_meta WHERE key LIKE 'gateway.terminal_worker.v1.%'"))
+        assert 'SECRET_HISTORY_LINE' not in tombstones
+        digest = lambda op, payload: rt.admission_fingerprint(canonical_target='gone', payload={'operation': op, 'payload': payload})
+        args = dict(execution_id='worker', session_id='gone', generation=0, adoption_secret='proof')
+        assert terminal_worker_receipt(db, sequence=2, payload_digest=digest('execution.finish', {}), **args) == closing
+        with pytest.raises(rt.RuntimeStoreError, match='admission_conflict'):
+            terminal_worker_receipt(db, sequence=1, payload_digest=digest('execution.finish', {}), **args)

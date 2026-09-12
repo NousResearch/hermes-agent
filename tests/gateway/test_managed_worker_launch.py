@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import threading
 
 import pytest
@@ -39,7 +40,7 @@ class Model(BaseHTTPRequestHandler):
             self.server.requests.append(body)
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                 'id': 'managed-tool', 'type': 'function', 'function': {'name': 'terminal',
-                'arguments': json.dumps({'command': self.server.command, 'timeout': 10})}}]}
+                'arguments': json.dumps({'command': self.server.command, 'timeout': 10, **self.server.tool_args})}}]}
         choice = {'index': 0, 'message': message, 'finish_reason': 'tool_calls' if message.get('tool_calls') else 'stop'}
         frame = {'id': 'managed-model', 'model': 'managed-model', 'choices': [choice],
                  'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}}
@@ -62,8 +63,32 @@ class Model(BaseHTTPRequestHandler):
             pass
 
 
+MCP_PEER = '''import json, os, sys
+for line in sys.stdin:
+    r = json.loads(line); method = r.get("method"); ident = r.get("id")
+    if ident is None: continue
+    if method == "initialize":
+        result = {"protocolVersion": r["params"]["protocolVersion"], "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "owned-peer", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "echo", "description": "owned echo",
+                             "inputSchema": {"type": "object", "properties": {}}}]}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": ident, "result": result}), flush=True)
+'''
+
+
+def _model_saw_tool(request, name):
+    """Direct definition or the tool_search deferred catalog (bridge description lists names)."""
+    return any(name in json.dumps(t) for t in request.get('tools') or [])
+
+
 @pytest.mark.linux_only
-@pytest.mark.parametrize('worker_action', ['detach', 'kill', 'controls', 'stop', 'history'])
+# The 'background' case probes a process the retired worker reparented to init: the test spawned it
+# (through its own daemon), but pid_exists() on it is outside pytest's subtree for the live guard.
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.parametrize('worker_action', ['detach', 'kill', 'controls', 'stop', 'history', 'background', 'mcp'])
 def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path, worker_action):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -76,16 +101,28 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
     target.mkdir()
     (target / 'owned.txt').write_text('owned')
     peer.command = 'rm -rf ' + str(target) if peer.control_mode else 'printf MANAGED_TOOL_EFFECT'
+    peer.tool_args = {}
+    gate = tmp_path / 'background-exit'
+    if worker_action == 'background':
+        # A session-owned background process is a turn-boundary survivor, not turn litter (F24).
+        peer.command = f'printf MANAGED_TOOL_EFFECT; while [ ! -e {gate} ]; do sleep .1; done'
+        peer.tool_args = {'background': True}
     peer.blocked, peer.release = threading.Event(), threading.Event()
     thread = threading.Thread(target=peer.serve_forever, daemon=True)
     thread.start()
     url = f'http://127.0.0.1:{peer.server_port}/v1'
-    (home / 'config.yaml').write_text(json.dumps({
+    config = {
         'gateway': {'multiplex_profiles': False, 'managed_workers': True},
         'model': {'provider': 'custom', 'default': 'managed-model', 'base_url': url},
         'auxiliary': {'title_generation': {'enabled': False}},
         'approvals': {'mode': 'manual'},
-        'platform_toolsets': {'cli': ['terminal']}}))
+        'platform_toolsets': {'cli': ['terminal']}}
+    if worker_action == 'mcp':
+        # A configured stdio MCP server the owner discovered must reach the worker's model too (F25).
+        (home / 'peer.py').write_text(MCP_PEER)
+        config['mcp_servers'] = {'owned': {'command': sys.executable, 'args': [str(home / 'peer.py')]}}
+        config['platform_toolsets']['cli'] = ['terminal', 'owned']
+    (home / 'config.yaml').write_text(json.dumps(config))
     env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
     audit = tmp_path / 'sqlite-opens.jsonl'
     site = tmp_path / 'audit-site'
@@ -106,9 +143,10 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
     async def exercise(desc, owner):
         import psutil
         async with websocket(home, desc) as ws:
+            toolsets = ['terminal', 'clarify'] if peer.control_mode else ['terminal', 'owned'] if worker_action == 'mcp' else ['terminal']
             created = await rpc(ws, 'session.create', request_id='managed', source='cli', cwd=str(home),
                                 model='managed-model', provider='custom', base_url=url, api_key='loopback-only',
-                                toolsets=['terminal', 'clarify'] if peer.control_mode else ['terminal'], ignore_rules=True)
+                                toolsets=toolsets, ignore_rules=True)
             assert 'result' in created, created
             sid = created['result']['session_id']
             submitted = await rpc(ws, 'prompt.submit', session_id=sid, input_id='managed-input', text='DO_MANAGED_TOOL')
@@ -142,7 +180,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
                 answered = await rpc(ws, 'clarify.respond', session_id=sid,
                     execution_generation=clarify['execution_generation'], prompt_id=clarify['prompt_id'], answer='Beta')
                 assert answered['result']['status'] == 'resolved', answered
-            assert await asyncio.to_thread(peer.blocked.wait, 30), (home / 'restart.log').read_text()
+            assert await asyncio.to_thread(peer.blocked.wait, 240), (home / 'restart.log').read_text()
             workers = query('SELECT execution_id,status FROM worker_executions WHERE session_id=?', (sid,))
             assert len(workers) == 1, workers
             children = [p for p in psutil.Process(owner.pid).children() if p.cmdline()[-2:] == ['-m', 'agent.managed_worker']]
@@ -189,10 +227,24 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         assert sum(role == 'assistant' and 'MANAGED_TOOL_DONE' in (content or '') for role, content in rows) == 1, rows
         if peer.control_mode:
             assert any(role == 'tool' and 'Beta' in content for role, content in rows), rows
+        elif worker_action == 'background':
+            started = json.loads(next(content for role, content in rows if role == 'tool'))
+            assert started['output'] == 'Background process started', started
+            background = psutil.Process(started['pid'])
+            assert background.is_running() and background.status() != psutil.STATUS_ZOMBIE, started
+            assert not psutil.pid_exists(pid), 'worker interpreter still alive after settlement'
+            # The next admission's worker adopts it from the profile checkpoint (process_manage).
+            assert started['pid'] in [e['pid'] for e in json.loads((home / 'processes.json').read_text())]
+            gate.touch()
+            async with asyncio.timeout(10):
+                while psutil.pid_exists(background.pid) and psutil.Process(background.pid).status() != psutil.STATUS_ZOMBIE:
+                    await asyncio.sleep(.05)
         else:
             assert any(role == 'tool' and 'MANAGED_TOOL_EFFECT' in content for role, content in rows), rows
         assert query('SELECT status FROM worker_executions WHERE session_id=?', (sid,)) == [('terminal',)]
         assert query('SELECT COUNT(*) FROM session_turn_leases') == [(0,)]
+        if worker_action == 'mcp':
+            assert all(_model_saw_tool(r, 'mcp__owned__echo') for r in peer.requests), [r.get('tools') for r in peer.requests]
         assert len(peer.requests) == (3 if peer.control_mode else 2), json.dumps([
             {'model': r.get('model'), 'roles': [m['role'] for m in r['messages']],
              'user': [str(m.get('content'))[:120] for m in r['messages'] if m['role'] == 'user']} for r in peer.requests])
@@ -225,6 +277,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         with daemon(root, home, env, barrier=False) as (owner, desc):
             asyncio.run(exercise(desc, owner))
     finally:
+        gate.touch()
         peer.release.set()
         peer.shutdown()
         peer.server_close()

@@ -1,6 +1,7 @@
 """Public ``prompt.submit`` attachments: scoped to the profile staging dir, committed as bytes."""
 from types import SimpleNamespace
 
+import os
 import pytest
 
 _ONE_PX_PNG = bytes.fromhex(
@@ -65,5 +66,6 @@ async def test_staged_attachment_reaches_message_event_media(tmp_path, monkeypat
     assert event.media_types == ['image/png']
     (path,) = event.media_urls
     assert path != staged, 'execution must read committed bytes, not the mutable staging file'
-    with open(path, 'rb') as fh:
-        assert fh.read() == _ONE_PX_PNG
+    assert 'native-inputs' in path
+    # Retained bytes are exact-retry evidence by digest only; settlement releases them.
+    assert not os.path.exists(path)

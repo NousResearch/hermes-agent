@@ -106,9 +106,11 @@ def _binding(runner, source, profile):
         owner_name = profile or primary
         if homes.get(owner_name) != home:
             raise RuntimeStoreError('profile_mismatch')
+        # Same matcher as ingress stamping: a route applies only to its ``bot_profile``'s bot
+        # (#104933), so the receiving adapter's owner is part of the match.
         matches = [route for route in runner.config.profile_routes if route.matches(
             source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
-            thread_id=source.thread_id, parent_chat_id=source.parent_chat_id)]
+            thread_id=source.thread_id, parent_chat_id=source.parent_chat_id, adapter_profile=profile)]
         if matches:
             rank = max(route.specificity for route in matches)
             best = [route for route in matches if route.specificity == rank]

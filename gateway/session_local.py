@@ -118,8 +118,8 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
     if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
         raise RuntimeStoreError('invalid_params')
     from dataclasses import asdict
-    from datetime import datetime, timezone
     from gateway.session import SessionEntry
+    from gateway.session_lifecycle import _now
     from gateway.session_local_recovery import local_identity, restore_local_session
     from hermes_state_local import commit_local_session
     authority._require_admission_open()
@@ -141,7 +141,9 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
     from gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)
-    now = datetime.now(timezone.utc)
+    # Same clock as every other routing entry: the recovery sweeps compare against a
+    # naive cutoff, and one aware entry aborts the whole iteration.
+    now = _now()
     entry = SessionEntry(route, sid, now, now, origin=source, platform=Platform.LOCAL)
     commit_local_session(authority.db, epoch=authority.epoch, receipt={
         'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,

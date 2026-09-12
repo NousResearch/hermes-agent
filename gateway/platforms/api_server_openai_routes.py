@@ -76,6 +76,10 @@ def _finish_reason(completed, is_partial, is_failed, err_msg, agent_error=None) 
     return 'cancelled' if not completed else 'stop'
 
 
+_RESPONSES_FINGERPRINT_KEYS = ("input", "instructions", "previous_response_id", "conversation", "model",
+                               "provider", "model_options", "tools")
+
+
 def _response_status(result):
     if result.get('interrupted'):
         return 'cancelled'
@@ -813,6 +817,20 @@ class OpenAICompatRoutesMixin:
         store = _coerce_request_bool(body.get("store"), default=True)
         if conversation and previous_response_id:
             return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
+        durable_key = None
+        if getattr(self.gateway_runner, 'session_authority', None) is not None and request.headers.get('Idempotency-Key'):
+            # An exact retry replays the committed response BEFORE the conversation name is
+            # expanded: the first success already advanced the conversation, so re-expanding
+            # would build a different admission payload and refuse the retry as a conflict.
+            from gateway.platforms.api_server import _make_request_fingerprint
+            durable_key = ('idem:' + self._run_idempotency_scope(request) + ':' + request.headers['Idempotency-Key'],
+                           _make_request_fingerprint(body, keys=_RESPONSES_FINGERPRINT_KEYS))
+            replay = self._response_store.get(durable_key[0])
+            if replay is not None:
+                if replay.get('fingerprint') != durable_key[1]:
+                    from gateway.platforms.api_server import _openai_error
+                    return web.json_response(_openai_error('admission_conflict', code='admission_conflict'), status=409)
+                return web.json_response(replay['response'], headers=replay.get('headers') or {})
         if conversation:
             # A conversation name resolves to its latest response_id (unknown = new conversation).
             previous_response_id = self._response_store.get_conversation(conversation)
@@ -925,8 +943,7 @@ class OpenAICompatRoutesMixin:
             return await self._run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
-            fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
-            route="responses",
+            fingerprint_keys=list(_RESPONSES_FINGERPRINT_KEYS), route="responses",
         )
         if err is not None:
             return err
@@ -964,6 +981,9 @@ class OpenAICompatRoutesMixin:
         response_headers = {"X-Hermes-Session-Id": _effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if durable_key is not None:
+            self._response_store.put(durable_key[0], {
+                'fingerprint': durable_key[1], 'response': response_data, 'headers': response_headers})
         return web.json_response(response_data, headers=response_headers)
 
     async def _handle_get_response(self, request: "web.Request") -> "web.Response":

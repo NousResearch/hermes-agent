@@ -155,6 +155,25 @@ def outbox_dir(home, execution_id):
     return Path(home) / 'worker-outboxes' / execution_id.replace(':', '-')
 
 
+def discover_profile_mcp(policy):
+    """The owner's MCP registry never crosses into this fresh interpreter; connect the profile's
+    configured servers here, filtered to the frozen toolset selection, before tool discovery snapshots
+    agent.tools. Safe mode keeps its deliberate no-MCP policy (discover_mcp_tools returns [])."""
+    from tools.mcp_oauth import suppress_interactive_oauth
+    from tools.mcp_tool_discovery import discover_mcp_tools
+    with suppress_interactive_oauth():
+        discover_mcp_tools(allowed_mcp_names=list(policy.toolsets))
+
+
+def retire_agent(agent):
+    """A settled admission is a turn boundary, not the end of the session: the owner's
+    in-process agent keeps its background processes, sandbox and browser between turns
+    (release_clients), so the worker must too. Only memory extraction is turn-final work."""
+    messages = getattr(agent, '_session_messages', None)
+    agent.shutdown_memory_provider(messages if isinstance(messages, list) else None)
+    agent.release_clients()
+
+
 def execute(frame, channel):
     # The owner RPC below imports gateway/config modules (hermes_cli.config, providers,
     # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
@@ -168,9 +187,14 @@ def execute(frame, channel):
     store = RuntimeSessionStore(rpc, scope, outbox_dir(frame['home'], scope['execution_id']))
     from gateway.session_kanban import bind_worker_context
     bind_worker_context(frame)
+    # Background processes a previous admission of this session started outlive that worker
+    # (F24); adopt them so process_manage in this turn can poll and kill them.
+    from tools.process_registry import process_registry
+    process_registry.recover_from_checkpoint()
     # Store construction binds the delegation ledger before tool discovery.
     from gateway.session_policy import restore_policy, policy_scope
     policy = restore_policy(frame['policy'])
+    discover_profile_mcp(policy)
     from run_agent import AIAgent
     from tools.approval import register_gateway_notify, unregister_gateway_notify
     from tools.approval_context import set_current_session_key
@@ -207,8 +231,7 @@ def execute(frame, channel):
                     raise ValueError('managed_attachment_unavailable')
                 frame = {**frame, 'text': content}
             result = run_worker_turns(agent, frame, history)
-            agent._end_session_on_close = False
-            agent.close()
+            retire_agent(agent)
             agent = None
             store.flush_token_counts()
             if result.get('final_response') is None and (result.get('interrupted') or result.get('failed')):
@@ -222,8 +245,7 @@ def execute(frame, channel):
     finally:
         unregister_gateway_notify(frame['route'])
         if agent is not None:
-            agent._end_session_on_close = False
-            agent.close()
+            retire_agent(agent)
         store.close()
 
 

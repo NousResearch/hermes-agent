@@ -529,10 +529,6 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
-        try:
-            _poll_bot_live_delivery_once(sid, session)
-        except Exception:
-            logger.warning("Bot live-owner delivery poll failed", exc_info=True)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
@@ -630,11 +626,11 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _hud_surface_note(session: dict) -> str:
-    """The HUD-mode note for this turn, or "" when it was not typed there."""
-    if session.get("client_surface") != "hud":
-        return ""
-    from agent.prompt_builder import hud_surface_note
-    return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+    """The per-surface note for this turn ("" for the plain app window): HUD -> the read-the-window-below
+    prior; voice-live -> the spoken-delegation contract with the recent transcript."""
+    from gateway.session_surface import surface_note
+    committed = {"surface": session.get("client_surface"), "voice_context": session.get("voice_live_context")}
+    return surface_note(committed, getattr(session.get("agent"), "valid_tool_names", None))
 
 
 def _prepend_note(run_message: Any, note: str) -> Any:

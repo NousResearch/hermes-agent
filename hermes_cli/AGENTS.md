@@ -136,6 +136,12 @@ Enumeration is a pure read: never `mkdir` a profile home from a served path (`Se
 cron all go through `mkdir_under_hermes_home` / `_ensure_cron_dir`, which refuse a deleted or
 missing named profile, #94590). Process-global per-profile slots (MCP discovery in `mcp_startup.py`,
 tool registry overlays) key on `hermes_constants.hermes_home_key()`, never a single flag.
+Migration from per-profile gateways: `hermes_cli/gateway_migrate.py` (`hermes gateway migrate
+--multiplex|--standalone`, table-driven `_PREFLIGHT_CHECKS`, manifest `<default>/gateway_migration.json`);
+`update_cmd_fleet._verify_fleet_after_update` calls `maybe_auto_migrate_after_update` on the success
+path only. Blockers reuse `GatewayRunner._adapter_credential_fingerprint` and `platform_binds_port`;
+"has a `/p/<profile>/` ingress" is the adapter class attribute `serves_profile_prefix` — set it on a
+new HTTP-inbound adapter when it answers the prefix, never extend a list here.
 
 ## Nous free tier (`hermes_cli/anon_auth.py`)
 

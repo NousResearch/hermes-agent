@@ -155,6 +155,8 @@ def check_whatsapp_cloud_requirements() -> bool:
 class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     """Outbound: Graph ``/<api_version>/<phone_id>/messages``; inbound: aiohttp webhook
     server. The mixin comes first so its ``format_message`` overrides the base one."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     splits_long_messages = True  # send() chunks via truncate_message()
 
@@ -270,14 +272,15 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_verify)
         app.router.add_post(self._webhook_path, self._handle_webhook)
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        await web.TCPSite(self._runner, self._webhook_host, self._webhook_port).start()
+        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
+        from gateway.platforms.shared_ingress import bind_listener
+        self._runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, self._webhook_path)
         self._mark_connected()
-        logger.info(
-            "[whatsapp_cloud] Listening on %s:%d%s (Graph %s, phone_id=%s)",
-            self._webhook_host, self._webhook_port, self._webhook_path, self._api_version, self._phone_number_id,
-        )
+        if self._runner is not None:
+            logger.info(
+                "[whatsapp_cloud] Listening on %s:%d%s (Graph %s, phone_id=%s)",
+                self._webhook_host, self._webhook_port, self._webhook_path, self._api_version, self._phone_number_id,
+            )
         if not self._verify_token:
             logger.warning("[whatsapp_cloud] WHATSAPP_CLOUD_VERIFY_TOKEN is not set — the GET subscription handshake will fail until it is.")
         if not self._app_secret:

@@ -1897,7 +1897,7 @@ class BuzzAdapter(BasePlatformAdapter):
             message_type = MessageType.DOCUMENT
         source = self.build_source(
             chat_id=chat_id, chat_name=self._channel_names.get(chat_id, chat_id), chat_type=chat_type,
-            user_id=user_id, user_name=user_name, thread_id=thread_id,
+            user_id=user_id, user_name=user_name, thread_id=thread_id, message_id=message_id,
         )
         event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=raw_message, message_id=message_id,

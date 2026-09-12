@@ -87,7 +87,7 @@ async def test_identity_fields_cannot_grant_operator_or_first_claim(tmp_path, mo
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
-                             _cached_agent_for=lambda route: None)
+                             _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='fixture')
     owner = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'owner')
     ref = create_local_session(authority, owner, {'request_id': 'owner', 'source': 'gui',

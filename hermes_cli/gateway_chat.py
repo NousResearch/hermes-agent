@@ -21,6 +21,28 @@ _UNSUPPORTED = (
 )
 _POLICY = ("model", "provider", "reasoning", "toolsets", "max_turns", "base_url", "ignore_rules", "api_key",
            "safe_mode", "ignore_user_config")
+# Where each refused option lives now; the refusal names it so the user is not left guessing.
+_RELOCATED = {
+    "image": "attach the image in `hermes --tui` or the Desktop app",
+    "skills": "`hermes --tui -s <skill>`",
+    "worktree": "`hermes --tui -w`",
+    "w": "`hermes --tui -w`",
+    "checkpoints": "`checkpoints.enabled: true` in config.yaml, or `hermes --tui --checkpoints`",
+    "pass_session_id": "`hermes --tui --pass-session-id`",
+    "yolo": "`approvals.mode: off` in config.yaml, or `/yolo` inside the session",
+    "accept_hooks": "`hooks_auto_accept: true` in config.yaml, or `hermes --tui --accept-hooks`",
+    "no_restore_cwd": "`--in <dir>` (the gateway keeps the session's frozen cwd)",
+    "usage_file": "`hermes sessions stats` / `hermes insights` after the run",
+    "run_budget": "`agent.run_budget_seconds` in config.yaml",
+    "verbose": "`hermes logs --follow`, or `hermes --tui -v`",
+    "compact": "`display.compact: true` in config.yaml",
+    "list_tools": "`hermes tools list`",
+    "list_toolsets": "`hermes tools list`",
+    "resume latest": "`hermes --tui --resume latest`, or `hermes sessions list` then `--resume <id>`",
+    "continue": "`-c <name>` (or `hermes --tui -c` for the most recent session)",
+    "create-if-missing without -c <name>": "`-c <name> --create-if-missing`",
+}
+_SAFE_MODE_EXAMPLE = 'hermes chat --safe-mode --provider openrouter --model anthropic/claude-sonnet-4 -q "hello"'
 
 
 def bypass_launch(args) -> bool:
@@ -45,13 +67,16 @@ def validate_options(args):
         unsupported.append("create-if-missing without -c <name>")
     if unsupported:
         flags = ", ".join("--" + name.replace("_", "-") for name in unsupported)
-        raise GatewayClientError(f"Unsupported gateway CLI options: {flags}. No local fallback or policy changes were made.")
+        where = "".join(f"\n  --{name.replace('_', '-')}: use {_RELOCATED[name]}" for name in unsupported)
+        raise GatewayClientError(
+            f"Unsupported gateway CLI options: {flags}. No local fallback or policy changes were made.{where}")
     resuming = getattr(args, "resume", None) or (continue_title(args) and not getattr(args, "create_if_missing", False))
     if resuming and (getattr(args, "in_dir", None) or getattr(args, "source", None) or
             any(getattr(args, name, None) not in (None, False) for name in _POLICY)):
         raise GatewayClientError("Resume retains gateway session policy; creation overrides are unsupported on resume.")
     if bypass_launch(args) and not getattr(args, "model", None):
-        raise GatewayClientError("--safe-mode / --ignore-user-config read no profile default: pass --model explicitly.")
+        raise GatewayClientError("--safe-mode / --ignore-user-config read no profile default: pass --model explicitly."
+                                 f"\n  Example: {_SAFE_MODE_EXAMPLE}")
 
 
 async def run_gateway_chat(args):

@@ -17,6 +17,9 @@ class SessionEvents:
         self.epoch = uuid.uuid4().hex
         self.sequence = 0
         self.execution = {}
+        # Synchronous same-thread recipients (API run projections): unlike fanout peers they
+        # cannot lose a frame to a detach that races the writer thread.
+        self.observers = set()
 
     def watermark(self):
         with self.lock:
@@ -43,6 +46,8 @@ class SessionEvents:
             frame['params']['session_id'] = session_id
             self.sequence = frame['params']['seq']
             self.fanout.write(frame)
+            for observer in tuple(self.observers):
+                observer(frame)
 
     def since(self, epoch, sequence):
         with self.lock:

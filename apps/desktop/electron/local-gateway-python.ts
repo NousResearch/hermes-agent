@@ -6,6 +6,8 @@ interface TicketEndpoint {
   profile_id: string
   instance_id: string
   runtime_protocol: number
+  /** Multiplexer home whose control socket mints tickets for a served secondary. */
+  control_home?: string | null
 }
 
 // Reuse the runtime's SID-validated, deadline-bounded pipe client. No Node pipe

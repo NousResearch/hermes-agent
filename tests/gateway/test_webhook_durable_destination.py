@@ -53,6 +53,48 @@ async def test_destination_commits_with_input_and_survives_adapter_restart():
 
 
 @pytest.mark.asyncio
+async def test_later_automation_completion_keeps_original_destination_resolvable():
+    """F28: a process/watch completion admitted for the same webhook chat never competes with the signed origin."""
+    config = PlatformConfig(enabled=True, extra={'secret': 'owned-secret', 'routes': {
+        'fixture': {'prompt': '{text}', 'deliver': 'github_comment',
+                    'deliver_extra': {'repo': '{repo}', 'pr_number': '{number}'}}}})
+    adapter = WebhookAdapter(config)
+    app = web.Application()
+    mount_authority(app, adapter)
+    app.router.add_post('/webhooks/{route_name}', adapter._handle_webhook)
+    async with TestClient(TestServer(app)) as client:
+        body = json.dumps({'text': 'hello', 'repo': 'owned/repo', 'number': 7}).encode()
+        headers = {'X-GitHub-Delivery': 'automation-one', 'X-Hub-Signature-256':
+                   'sha256=' + hmac.new(b'owned-secret', body, hashlib.sha256).hexdigest()}
+        assert (await client.post('/webhooks/fixture', data=body, headers=headers)).status == 202
+        runner = adapter._message_handler.__self__
+        authority = runner.session_authority
+        calls = []
+        async def sink(content, delivery):
+            from gateway.platforms.base import SendResult
+            calls.append((content, delivery))
+            return SendResult(success=True)
+        adapter._deliver_github_comment = sink
+        chat_id = 'webhook:fixture:automation-one'
+        assert (await adapter.send(chat_id, 'first reply')).success
+        # The production completion path: an internal native_text_v1 admission on the original chat.
+        from gateway.platforms.event import MessageEvent
+        from gateway.session_envelope import restore_native
+        origin = restore_native(json.loads(authority.db._read_one(
+            'SELECT payload_json FROM session_admissions')['payload_json']), runner)
+        entry = runner.session_store.lookup_by_session_key(runner.session_store._generate_session_key(origin.source))
+        completion = MessageEvent(text='[process finished]', source=origin.source, internal=True,
+                                  metadata={'gateway_session_key': entry.session_key,
+                                            'gateway_session_id': entry.session_id})
+        await authority.admit_automation(adapter, completion, 'process:abc:1')
+        assert len(authority.db._read_all('SELECT admission_id FROM session_admissions')) == 2
+        assert (await adapter.send(chat_id, 'second reply')).success
+        assert [content for content, _ in calls] == ['first reply', 'second reply']
+        assert calls[0][1] == calls[1][1] == {'deliver': 'github_comment',
+                                              'deliver_extra': {'repo': 'owned/repo', 'pr_number': '7'}}
+
+
+@pytest.mark.asyncio
 async def test_missing_destination_never_counts_as_log_delivery():
     adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={}))
     assert not (await adapter.send('webhook:missing:receipt', 'completed answer')).success

@@ -355,3 +355,38 @@ async def test_start_gateway_classifies_startup_signal_exit(
 
     assert result is expected_success
     assert cron_started is False
+
+
+@pytest.mark.asyncio
+async def test_failure_exit_still_stops_cron_housekeeping_and_mcp(monkeypatch):
+    """``should_exit_with_failure`` used to return before the cooperative teardown, leaking the
+    cron ticker / housekeeping threads and open MCP connections for embedded callers (#12175)."""
+    import threading
+
+    stopped = []
+    cron_stop = threading.Event()
+    threads = [threading.Thread(target=cron_stop.wait, name=n, daemon=True) for n in ("cron", "housekeeping")]
+    for thread in threads:
+        thread.start()
+    watcher_stop = threading.Event()
+    watcher = threading.Thread(target=watcher_stop.wait, daemon=True)
+    watcher.start()
+
+    async def fake_mcp_shutdown():
+        stopped.append("mcp")
+
+    monkeypatch.setattr(gateway_run, "_shutdown_mcp_servers_nonblocking", fake_mcp_shutdown)
+    monkeypatch.setattr(gateway_run, "_stop_cron_provider", lambda provider: stopped.append("provider"))
+    monkeypatch.setattr("hermes_cli.nous_auth_keepalive.stop_nous_auth_keepalive", lambda: None)
+    runner = MagicMock(should_exit_with_failure=True, exit_reason="boom", exit_code=None)
+
+    from gateway.run_bootstrap import _start_gateway_shutdown_tail
+    result = await _start_gateway_shutdown_tail(
+        runner, None, cron_stop, object(), threads[0], threads[1], watcher_stop, watcher, [False])
+
+    assert result is False
+    assert cron_stop.is_set() and watcher_stop.is_set()
+    assert stopped == ["provider", "mcp"]
+    for thread in threads + [watcher]:
+        thread.join(timeout=2)
+        assert not thread.is_alive()

@@ -698,69 +698,6 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
     except Exception as exc:
         return f"bot-chat delivery to profile '{profile_label}' unverified: {exc}"
 
-    hermes_bin = shutil.which("hermes")
-    if hermes_bin:
-        argv = [hermes_bin]
-    else:
-        try:
-            import importlib.util as _ilu
-            found = _ilu.find_spec("hermes_cli") is not None
-        except Exception:
-            found = False
-        if not found:
-            return "bot-chat delivery failed: hermes CLI not resolvable"
-        argv = [sys.executable, "-m", "hermes_cli.main"]
-
-    def _fail(msg: str, **log_kwargs) -> str:
-        logger.warning("Job '%s': %s", job_id, msg, **log_kwargs)
-        return msg
-
-    from agent.delegation_context import delegated_child_subprocess_env
-    from tools.environments.local import strip_launch_profile_env
-    env = strip_launch_profile_env(delegated_child_subprocess_env(os.environ))
-    if profile:
-        argv += ["-p", profile]
-        # -p owns profile resolution; this scheduler's HERMES_HOME must not shadow it.
-        env.pop("HERMES_HOME", None)
-    else:
-        # Multiplex workers carry the profile in a ContextVar, not os.environ.
-        env["HERMES_HOME"] = str(source_home)
-
-    query_file = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", suffix=".txt", prefix="hermes-cron-botchat-", delete=False,
-        ) as fh:
-            fh.write(message)
-            query_file = fh.name
-
-        argv += [
-            "chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing",
-            "-Q", "--query-file", query_file,
-        ]
-        result = subprocess.run(
-            argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,
-            creationflags=windows_hide_flags())
-        if result.returncode != 0:
-            tail = (result.stderr or result.stdout or "").strip()[-500:]
-            return _fail(
-                f"bot-chat delivery to profile '{profile_label}' failed (exit {result.returncode})"
-                + (f": {tail}" if tail else ""))
-        logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
-        return None
-    except subprocess.TimeoutExpired:
-        return _fail(
-            f"bot-chat delivery to profile '{profile_label}' timed out "
-            f"after {_get_bot_chat_delivery_timeout()}s (the bot's turn may "
-            "still complete; raise cron.bot_chat_delivery_timeout_seconds if "
-            "this recurs)")
-    except Exception as e:
-        return _fail(f"bot-chat delivery failed: {str(e) or type(e).__name__}", exc_info=True)
-    finally:
-        if query_file:
-            with contextlib.suppress(OSError):
-                os.unlink(query_file)
-
 
 def _normalize_deliver_value(deliver) -> str:
     """Normalize ``deliver`` to its canonical comma-separated string; ``"local"`` when falsy.

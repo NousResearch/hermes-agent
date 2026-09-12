@@ -70,3 +70,34 @@ async def test_local_create_receipt_survives_cold_authority_atomically(tmp_path,
 def test_real_daemon_recovers_only_authorized_never_started_local_work(tmp_path):
     from tests.gateway.fixtures.local_recovery_probe import probe
     print(json.dumps(probe(tmp_path)))
+
+
+@pytest.mark.asyncio
+async def test_local_entry_timestamps_keep_fallback_recovery_sweeping_other_routes(tmp_path, monkeypatch):
+    """A canonical local entry must not abort the naive-cutoff recovery sweep that marks
+    a recent marker-less messaging route ``resume_pending``."""
+    from gateway.config import GatewayConfig, Platform
+    from gateway.session import SessionSource, SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import Principal
+    from gateway.session_local import create_local_session
+    from gateway import run
+
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+    authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
+    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
+    ref = create_local_session(authority, actor, {'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path),
+                                                  'model': 'frozen', 'toolsets': []})
+    from gateway.session_api import bind_api_session
+    bind_api_session(authority, 'api-owner')
+    telegram = SessionSource(platform=Platform.TELEGRAM, chat_id='7', user_id='7', chat_type='dm')
+    entry = store.get_or_create_session(telegram)
+    assert not entry.resume_pending
+    # Cold store: only the durable index feeds the sweep.
+    cold = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    assert cold.suspend_recently_active(120) >= 1
+    assert cold.lookup_by_session_key(entry.session_key).resume_pending
+    # The canonical local route recovers through its durable FIFO, not the legacy marker.
+    assert not cold.lookup_by_session_key(authority.sessions[ref.session_id].route).resume_pending

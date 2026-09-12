@@ -65,13 +65,15 @@ def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_p
             assert (scope['pid'], scope['birth']) == (real, psutil.Process(real).create_time())
             assert scope['pid'] != launcher.pid
     finally:
+        # The real interpreter first, while it is still the launcher's child: killing the launcher
+        # first reparents it outside the test subtree, where the conftest kill guard refuses it.
+        if psutil.pid_exists(real):
+            psutil.Process(real).kill()
         for proc in (launcher, stranger):
             proc.stdin.close()
             if proc.poll() is None:
                 proc.kill()
             proc.wait(timeout=10)
-        if psutil.pid_exists(real):
-            psutil.Process(real).kill()
 
 
 @pytest.mark.linux_only

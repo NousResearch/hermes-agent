@@ -60,7 +60,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         self._approval_owner = None
         if authority is not None:
             source = getattr(ctx, 'source', None)
-            owner_id = source.chat_id if getattr(source, 'platform', None) == Platform.LOCAL else ctx.session_id
+            owner_id = (source.chat_id if getattr(source, 'platform', None) == Platform.LOCAL
+                        else authority.logical_owner(ctx.session_id))
             if owner_id in authority.sessions:
                 generation = authority.db.get_session(owner_id)["runtime_generation"]
                 self._approval_owner = (authority, owner_id, generation)
@@ -71,6 +72,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             authority, session_id, generation = self._approval_owner
             return authority.publish_execution(session_id, generation, event_type, payload)
         return False
+
+    def _publish_api_tool(self, event_type, call_id, tool_name, args, result=None):
+        """The retained tool payload reaches the API observers of this exact admission only;
+        the shared viewer stream keeps its ID-correlated frames."""
+        if self._approval_owner is not None:
+            from gateway.session_api_turn import publish_api_tool_event
+            authority, session_id, generation = self._approval_owner
+            publish_api_tool_event(authority, session_id, generation, event_type,
+                                   str(call_id or ""), str(tool_name or "tool"), args, result)
 
     # ── stream consumer / interim commentary wiring ─────────────────────────────────────────
 
@@ -234,7 +244,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
-        agent._gateway_turn_context_notes = "\n\n".join(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
+        from gateway.session_surface import surface_turn_note
+        agent._gateway_turn_context_notes = "\n\n".join(
+            note for note in (*runner._consume_pending_turn_sidecar_notes(ctx.session_key), surface_turn_note(agent)) if note)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.

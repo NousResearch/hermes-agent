@@ -38,6 +38,7 @@ DEFAULT_BROWSER_CDP_URL = f"http://127.0.0.1:{DEFAULT_BROWSER_CDP_PORT}"
 class _Browser:
     """Per-browser install/profile locations for one Chromium-family product."""
     key: str
+    label: str                            # human name for pickers (`hermes doctor`, desktop)
     mac_app: str
     mac_support: tuple[str, ...]          # under ~/Library/Application Support
     win_bins: tuple[str, ...]             # shutil.which names on Windows
@@ -57,11 +58,11 @@ class _Browser:
 # ``com.brave.Browser.origin`` bundle id) that installs side-by-side with Brave. Its
 # profile is NOT under Brave-Browser and must never be conflated with the ``brave``
 # key — a "brave" lookup resolving to the Origin binary drives the wrong profile.
-# Positional layout per entry: key, mac_app / mac_support, win_bins / win_install /
+# Positional layout per entry: key, label, mac_app / mac_support, win_bins / win_install /
 # win_profile / linux_bins / linux_paths / linux_config [, linux_exec].
 _BROWSERS = (
     _Browser(
-        "chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "chrome", "Google Chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         ("Google", "Chrome"), ("chrome.exe", "chrome"),
         (("Google", "Chrome", "Application", "chrome.exe"),),
         ("Google", "Chrome", "User Data"),
@@ -69,7 +70,7 @@ _BROWSERS = (
         ("/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"),
         "google-chrome"),
     _Browser(
-        "chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "chromium", "Chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium",
         ("Chromium",), ("chromium.exe", "chromium"),
         (("Chromium", "Application", "chrome.exe"), ("Chromium", "Application", "chromium.exe")),
         ("Chromium", "User Data"),
@@ -77,7 +78,7 @@ _BROWSERS = (
         ("/usr/bin/chromium-browser", "/usr/bin/chromium"),
         "chromium"),
     _Browser(
-        "brave", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        "brave", "Brave", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
         ("BraveSoftware", "Brave-Browser"), ("brave.exe", "brave"),
         (("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),),
         ("BraveSoftware", "Brave-Browser", "User Data"),
@@ -87,7 +88,7 @@ _BROWSERS = (
          "/opt/brave-bin/brave"),
         "BraveSoftware/Brave-Browser"),
     _Browser(
-        "brave-origin", "/Applications/Brave Origin.app/Contents/MacOS/Brave Origin",
+        "brave-origin", "Brave Origin", "/Applications/Brave Origin.app/Contents/MacOS/Brave Origin",
         ("BraveSoftware", "Brave-Origin"), ("brave-origin.exe", "brave-origin"),
         (("BraveSoftware", "Brave-Origin", "Application", "brave.exe"),
          ("BraveSoftware", "Brave-Origin", "Application", "brave-origin.exe")),
@@ -97,7 +98,7 @@ _BROWSERS = (
          "/opt/brave.com/brave-origin-nightly/brave-origin"),
         "BraveSoftware/Brave-Origin", linux_exec=("brave-origin",)),
     _Browser(
-        "edge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "edge", "Microsoft Edge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
         ("Microsoft Edge",), ("msedge.exe", "msedge"),
         (("Microsoft", "Edge", "Application", "msedge.exe"),),
         ("Microsoft", "Edge", "User Data"),
@@ -310,6 +311,160 @@ def detect_default_chromium(system: str | None = None) -> str | None:
     return detect.get(system or platform.system(), _detect_default_linux)()
 
 
+# --- Which browser does real-profile browsing drive? ------------------------------------
+# ONE resolver, so the launch path, `hermes browser close-profile` and the desktop picker
+# can never disagree about the principal. Precedence: an explicit ``browser.real_profile_browser``
+# override, else the OS default. Every rung fails closed with a fixable message rather than
+# falling through to another browser's profile (#95549 wrong-principal invariant).
+
+def real_profile_browser_keys() -> tuple[str, ...]:
+    """Canonical keys real-profile browsing supports, in picker order."""
+    return tuple(b.key for b in _BROWSERS)
+
+
+def browser_label(browser: str) -> str:
+    """Human-readable product name for ``browser`` (falls back to the key)."""
+    b = _BROWSER_BY_KEY.get(browser)
+    return b.label if b else browser
+
+
+def _real_profile_browser_override() -> str | None:
+    """``browser.real_profile_browser`` from config; None when unset/blank."""
+    value = _browser_setting("real_profile_browser")
+    return value.strip().lower() if isinstance(value, str) and value.strip() else None
+
+
+def resolve_real_profile_browser(system: str | None = None) -> tuple[str | None, str | None]:
+    """``(browser_key, error)`` for real-profile browsing.
+
+    An explicit ``browser.real_profile_browser`` pin wins over the OS default so a Hermes
+    profile can drive Brave while the machine defaults to Chrome (and two profiles on one
+    machine can drive different browsers). An unknown key, or a pinned browser missing
+    either half of what a launch needs — its profile directory (to snapshot) or its binary
+    (to run the copy) — FAILS CLOSED. Silently falling back to the OS default would browse
+    as a different identity than the one the user picked, which is exactly the
+    wrong-principal bug the pin exists to prevent. Unset: the OS default, whose own
+    non-Chromium / pre-release-channel outcomes the caller reports.
+    """
+    override = _real_profile_browser_override()
+    if override is None:
+        return detect_default_chromium(system), None
+    if override not in _BROWSER_BY_KEY:
+        return None, (
+            f"browser.real_profile_browser is set to '{override}', which is not a supported "
+            f"Chromium browser. Use one of: {', '.join(real_profile_browser_keys())} — or clear "
+            "it to follow your system default browser.")
+    src = real_profile_data_dir(override, system)
+    if not src or not os.path.isdir(src):
+        return None, (
+            f"browser.real_profile_browser is set to '{override}' but no profile directory was "
+            f"found for it ({src!r}). Launch {browser_label(override)} at least once, pick a "
+            "different browser, or clear the setting to follow your system default.")
+    # A leftover profile dir from an uninstalled browser would pass the check above and
+    # then die at launch ("binary could not be found"); catch it where it is fixable.
+    if chromium_executable(override, system) is None:
+        return None, (
+            f"browser.real_profile_browser is set to '{override}' but {browser_label(override)} "
+            "is not installed on this machine. Install it, pick a different browser, or clear "
+            "the setting to follow your system default.")
+    return override, None
+
+
+def list_profiles_in_data_dir(src: str | None) -> list[dict]:
+    """Profile directories inside a Chromium user-data-dir, newest-identity info first.
+
+    Each row is ``{"directory", "name", "last_used"}``: ``directory`` is what
+    ``browser.real_profile_pin`` takes ("Default", "Profile 2"), ``name`` the display name
+    from ``Local State`` → ``profile.info_cache`` (falling back to the directory name), and
+    ``last_used`` marks the one an unpinned snapshot would copy. Read-only: nothing is
+    copied, launched, or written. Missing/unreadable ``Local State`` still yields the dirs
+    that exist on disk, so the picker degrades to bare directory names instead of empty.
+    """
+    if not src or not os.path.isdir(src):
+        return []
+    try:
+        with open(os.path.join(src, "Local State"), encoding="utf-8", errors="replace") as fh:
+            info_cache = ((json.load(fh).get("profile") or {}).get("info_cache")) or {}
+    except (OSError, ValueError, AttributeError):
+        info_cache = {}
+    if not isinstance(info_cache, dict):
+        info_cache = {}
+    last_used = _last_used_profile(src)
+    rows = []
+    for entry in sorted(os.listdir(src)):
+        if entry != "Default" and not entry.startswith("Profile "):
+            continue
+        if not os.path.isdir(os.path.join(src, entry)):
+            continue
+        meta = info_cache.get(entry)
+        name = meta.get("name") if isinstance(meta, dict) else None
+        rows.append({
+            "directory": entry,
+            "name": str(name).strip() if isinstance(name, str) and str(name).strip() else entry,
+            "last_used": entry == last_used})
+    return rows
+
+
+def list_real_profile_candidates(system: str | None = None) -> dict:
+    """Everything a picker needs to choose a browser + profile, without touching credentials.
+
+    Returns ``{"supported", "detected_default", "resolved_browser", "resolved_profile",
+    "error", "browsers": [...]}`` where each browser row carries ``key``/``label``, whether it
+    is ``installed`` (binary present) and ``has_profile`` (user-data-dir present), the
+    ``data_dir``, and its ``profiles`` (see ``list_profiles_in_data_dir``). ``resolved_*``
+    are what a launch RIGHT NOW would use, so the UI can name the identity instead of saying
+    "your default browser". ``supported`` is False on a platform where real-profile browsing
+    cannot work at all, and ``error`` carries the same fail-closed message the launch path
+    would give (unknown pin, missing profile dir, non-Chromium default, pre-release channel).
+    """
+    system = system or platform.system()
+    detected = detect_default_chromium(system)
+    resolved, error = resolve_real_profile_browser(system)
+    if error is None:
+        if resolved is None:
+            error = (
+                "Your default browser is not a supported Chromium browser. Pick one below, or "
+                "set a Chromium browser (Chrome, Edge, Brave, Brave Origin, Chromium) as your "
+                "system default.")
+        elif resolved == UNSUPPORTED_CHANNEL:
+            error = (
+                "Your default browser is a pre-release Chromium channel (Beta / Dev / Canary), "
+                "which real-profile browsing does not support. Pick a stable browser below.")
+    browsers = []
+    for b in _BROWSERS:
+        data_dir = real_profile_data_dir(b.key, system)
+        has_profile = bool(data_dir and os.path.isdir(data_dir))
+        browsers.append({
+            "key": b.key,
+            "label": b.label,
+            "installed": chromium_executable(b.key, system) is not None,
+            "has_profile": has_profile,
+            "is_system_default": b.key == detected,
+            "data_dir": data_dir or "",
+            "profiles": list_profiles_in_data_dir(data_dir) if has_profile else []})
+    resolved_key = resolved if resolved in _BROWSER_BY_KEY else None
+    resolved_profile = None
+    if resolved_key:
+        src = real_profile_data_dir(resolved_key, system)
+        if src and os.path.isdir(src):
+            profile, resolve_err = _resolve_source_profile(src)
+            resolved_profile = profile
+            error = error or resolve_err
+    return {
+        # Real-profile browsing drives a locally-installed Chromium, so it is a desktop-OS
+        # capability: Linux, macOS and Windows all work; anything else has no browser to drive.
+        "supported": system in ("Linux", "Darwin", "Windows"),
+        "platform": system,
+        "detected_default": detected if detected in _BROWSER_BY_KEY else None,
+        "detected_unsupported_channel": detected == UNSUPPORTED_CHANNEL,
+        "resolved_browser": resolved_key,
+        "resolved_profile": resolved_profile,
+        "pinned_browser": _real_profile_browser_override(),
+        "pinned_profile": _real_profile_pin(),
+        "error": error,
+        "browsers": browsers}
+
+
 # --- Real-profile SNAPSHOT launch -------------------------------------------------------
 # Never drive the live default user-data-dir: Chromium ≥136 (Google builds) refuses remote
 # debugging on it, and the user's running browser holds it (SingletonLock). Instead snapshot
@@ -434,6 +589,23 @@ _SNAPSHOT_DONE_MARKER = ".hermes-snapshot-complete"
 # Prefix stamped on the "profile is locked" error so the calling layer can recognize the
 # needs-the-browser-closed condition and surface the close-with-approval flow.
 _PROFILE_LOCKED_PREFIX = "[profile-locked] "
+
+
+def _snapshot_matches(marker: str, source_profile: str) -> bool:
+    """True when a completed snapshot at ``marker`` was built from ``source_profile``.
+
+    The marker records which profile dir was copied. A mismatch means the user re-pinned
+    (or last_used moved) since the tree was built, so the tree belongs to a DIFFERENT
+    identity and must be rebuilt rather than auth-overlaid — an overlay would leave the old
+    profile's Preferences/Local Storage under the new profile's cookies. An empty/unreadable
+    marker (older builds wrote the name; a torn write may not have) is treated as a
+    mismatch: rebuilding is always safe, reusing a foreign tree is not.
+    """
+    try:
+        with open(marker, encoding="utf-8") as fh:
+            return fh.read().strip() == source_profile
+    except OSError:
+        return False
 
 
 def _profile_is_locked(src: str, source_profile: str) -> bool:
@@ -645,9 +817,13 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     if _profile_is_locked(src, source_profile):
         return None, _locked_profile_error(browser)
     marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
-    # Only a copy that previously COMPLETED counts as populated; a half-written tree is
-    # rebuilt — otherwise a torn first copy poisons freshness forever.
-    populated = os.path.isfile(marker)
+    # Only a copy that previously COMPLETED **for this same source profile** counts as
+    # populated. The marker stores the profile it was built from, so re-pinning
+    # (browser.real_profile_pin: "Profile 1" -> "Profile 2") rebuilds the tree instead of
+    # overlaying the new profile's auth onto the old profile's Preferences/Local Storage —
+    # a half-swapped identity. A half-written tree (no marker) is rebuilt for the same
+    # reason: a torn first copy must not poison freshness forever.
+    populated = _snapshot_matches(marker, source_profile)
     try:
         os.makedirs(dst, exist_ok=True)
         # Secure the snapshot dir AND its browser-profile parent on EVERY launch so a failed
@@ -680,12 +856,26 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     return dst, None
 
 
-def cleanup_real_profile_snapshots() -> None:
-    """Delete the whole real-profile snapshot store when consent is OFF (idempotent)."""
-    root = str(get_hermes_home() / "browser-profile")
-    if os.path.isdir(root):
+def cleanup_real_profile_snapshots(keep: str | None = None) -> None:
+    """Delete real-profile snapshot stores (idempotent).
+
+    With no ``keep``, removes the whole store — what revoking consent does, so copied
+    cookies/logins never outlive the consent that created them. With ``keep``, removes every
+    OTHER browser's snapshot: switching ``browser.real_profile_browser`` must not leave the
+    previous browser's credential copy sitting on disk indefinitely, unreachable from the UI
+    that could have told you it was there.
+    """
+    root = get_hermes_home() / "browser-profile"
+    if not root.is_dir():
+        return
+    if keep is None:
         shutil.rmtree(root, ignore_errors=True)
         logger.info("real-profile: removed snapshot store %s (consent off)", root)
+        return
+    for child in root.iterdir():
+        if child.is_dir() and child.name != keep:
+            shutil.rmtree(child, ignore_errors=True)
+            logger.info("real-profile: removed stale snapshot %s (now driving %s)", child, keep)
 
 
 def _debug_candidate_paths(system: str):

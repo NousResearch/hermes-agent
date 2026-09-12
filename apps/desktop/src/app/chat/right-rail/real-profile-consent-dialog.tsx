@@ -1,7 +1,12 @@
 import { useStore } from '@nanostores/react'
+import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useState } from 'react'
 
-import { readUseRealProfile } from '@/app/settings/browser-real-profile-panel'
+import {
+  describeResolved,
+  readUseRealProfile,
+  realProfileCandidatesKey
+} from '@/app/settings/browser-real-profile-panel'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -11,7 +16,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { saveHermesConfigRecord } from '@/hermes'
+import { getBrowserRealProfile, saveHermesConfigRecord } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, Globe } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
@@ -62,6 +67,18 @@ export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProp
 
   const enabled = readUseRealProfile(config)
 
+  // Name the identity the user is about to hand over ("Brave · Personal")
+  // instead of the vague "your default browser profile": consent to copy
+  // cookies should say WHOSE cookies. Fetched only while the dialog can show.
+  const { data: candidates } = useQuery({
+    queryKey: realProfileCandidatesKey(),
+    queryFn: () => getBrowserRealProfile(),
+    enabled: Boolean(config) && !enabled && !dismissed && !muted && claim === tabId,
+    staleTime: 30_000
+  })
+
+  const target = describeResolved(candidates, copy.picker)
+
   const enable = useCallback(async () => {
     if (!config || busy) {
       return
@@ -97,7 +114,12 @@ export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProp
     return null
   }
 
-  const bullets = [prompt.bulletSnapshot, prompt.bulletLiveProfile, prompt.bulletLocal]
+  const bullets = [
+    prompt.bulletSnapshot,
+    prompt.bulletLiveProfile,
+    prompt.bulletLocal,
+    ...(target ? [prompt.bulletTarget(target)] : [])
+  ]
 
   return (
     <Dialog

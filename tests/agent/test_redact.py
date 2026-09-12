@@ -305,6 +305,17 @@ class TestAuthHeaders:
         assert result.count('"') == 2, result  # both quotes survive
         assert result.endswith('"'), result
 
+    def test_mixed_case_authorization_header_masked(self):
+        # Regression for #108807: the cheap pre-mask gate was case-sensitive
+        # ("uthorization" / "UTHORIZATION" `in` checks) while the masking regex
+        # itself is case-insensitive — a mixed-case header name skipped masking
+        # entirely and the credential leaked verbatim.
+        for header in ("aUtHoRiZaTiOn", "PrOxY-aUtHoRiZaTiOn", "authorization", "PROXY-AUTHORIZATION"):
+            secret = "SyntheticOpaqueCredential92837465"
+            result = redact_sensitive_text(f"{header}: Bearer {secret}")
+            assert secret not in result, header
+            assert f"{header}: Bearer" in result, header  # name and scheme preserved
+
 
 
 class TestApiKeyHeaders:

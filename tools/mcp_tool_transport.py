@@ -44,6 +44,113 @@ def _pgroup_alive(pgid: Optional[int]) -> bool:
         return False
 
 
+# SEP-2243 routing headers. Handshake-era SDK stamps only set mcp-protocol-version;
+# modern stamps already set these — we setdefault so we never overwrite (#106799).
+_SEP2243_METHOD_HEADER = "mcp-method"
+_SEP2243_NAME_HEADER = "mcp-name"
+_SEP2243_NAME_BEARING = {
+    "tools/call": "name",
+    "prompts/get": "name",
+    "resources/read": "uri",
+}
+
+
+def _sep2243_header_helpers():
+    """Resolve header names / encoder from mcp.shared.inbound, with literal fallbacks."""
+    method_header = _SEP2243_METHOD_HEADER
+    name_header = _SEP2243_NAME_HEADER
+    name_bearing = dict(_SEP2243_NAME_BEARING)
+    encode = None
+    try:
+        from mcp.shared.inbound import (
+            MCP_METHOD_HEADER,
+            MCP_NAME_HEADER,
+            NAME_BEARING_METHODS,
+            encode_header_value,
+        )
+        if MCP_METHOD_HEADER:
+            method_header = MCP_METHOD_HEADER
+        if MCP_NAME_HEADER:
+            name_header = MCP_NAME_HEADER
+        if NAME_BEARING_METHODS:
+            name_bearing = dict(NAME_BEARING_METHODS)
+        encode = encode_header_value
+    except Exception:
+        pass
+    return method_header, name_header, name_bearing, encode
+
+
+def _encode_sep2243_name(value: str, encode) -> Optional[str]:
+    """Encode a name-bearing param for ``mcp-name``. Never raise to the caller."""
+    if encode is not None:
+        try:
+            encoded = encode(value)
+            if isinstance(encoded, str):
+                return encoded
+        except Exception:
+            pass
+    try:
+        if value.isascii() and value == value.strip() and "\n" not in value and "\r" not in value:
+            return value
+    except Exception:
+        return None
+    return None
+
+
+def _apply_sep2243_headers(data, opts, method_header, name_header, name_bearing, encode) -> None:
+    """Stamp ``mcp-method`` / ``mcp-name`` onto *opts* with setdefault. Fail-open."""
+    try:
+        if not isinstance(data, dict) or not isinstance(opts, dict):
+            return
+        method = data.get("method")
+        if not isinstance(method, str) or not method:
+            return
+        headers = opts.get("headers")
+        if headers is None:
+            headers = {}
+            opts["headers"] = headers
+        if not isinstance(headers, dict):
+            return
+        headers.setdefault(method_header, method)
+        name_key = name_bearing.get(method)
+        if not isinstance(name_key, str):
+            return
+        params = data.get("params")
+        if not isinstance(params, dict):
+            return
+        name = params.get(name_key)
+        if not isinstance(name, str):
+            return
+        encoded = _encode_sep2243_name(name, encode)
+        if encoded is not None:
+            headers.setdefault(name_header, encoded)
+    except Exception:
+        return
+
+
+def _ensure_sep2243_headers_stamp(session) -> None:
+    """Wrap ``session._stamp`` so handshake-era requests still carry SEP-2243 headers.
+
+    Called after ``_negotiate_session``: ``adopt()`` has replaced the preconnect
+    stamp with the handshake or modern stamp. We keep that stamp's behavior and
+    setdefault ``mcp-method`` / ``mcp-name``. Missing ``_stamp``, missing method,
+    or encode failures never break the session.
+    """
+    original = getattr(session, "_stamp", None)
+    if not callable(original):
+        return
+    method_header, name_header, name_bearing, encode = _sep2243_header_helpers()
+
+    def stamp(data, opts):
+        original(data, opts)
+        _apply_sep2243_headers(data, opts, method_header, name_header, name_bearing, encode)
+
+    try:
+        session._stamp = stamp
+    except Exception:
+        return
+
+
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
@@ -111,6 +218,7 @@ class MCPServerTransportMixin:
         breaker state but leaves the session UNPROVEN: flapping transports handshake fine and drop
         moments later, so only keepalive/tool-call success clears the reconnect budget."""
         self.initialize_result = await self._negotiate_session(session, connect_timeout)
+        _ensure_sep2243_headers_stamp(session)
         self.session = session
         if mark_lifecycle:
             self._mark_lifecycle_started()

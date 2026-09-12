@@ -1,9 +1,10 @@
 """Text-response stop gates for the conversation turn loop.
 
-When the model stops with a text answer, three gates may instead append the answer as an
+When the model stops with a text answer, four gates may instead append the answer as an
 interim row plus a synthetic user-role nudge and continue the turn: verify-on-stop (#65919),
-the ``pre_verify`` plugin hook after code edits, and the kanban worker terminal-tool guard.
-Each keeps the candidate answer as a budget-exhaustion fallback
+the ``pre_verify`` plugin hook after code edits, the kanban worker terminal-tool guard, and
+the generic ``pre_turn_finalize`` plugin hook. Each keeps the candidate answer as a
+budget-exhaustion fallback
 (``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
 this gate from error exits (#61631). Nothing here imports ``agent.conversation_loop`` at
 module level (cycle).
@@ -90,6 +91,42 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
         return None
 
 
+#: Hard bound of ``pre_turn_finalize`` continuations per turn (V1 has no config key, so a
+#: plugin that always returns ``continue`` can never trap the loop).
+MAX_PRE_TURN_FINALIZE_NUDGES = 1
+
+
+def _pre_turn_finalize_nudge(
+    agent, final_response, *, finish_reason: str, api_call_count: int, turn_id: str,
+    attempt: int,
+) -> Optional[str]:
+    """Last plugin checkpoint before a plain-text final is accepted. Fires after every
+    built-in stop gate, so it can never bypass mandatory stop policy. Fail-open: any
+    lookup/dispatch error finalizes normally."""
+    if attempt >= MAX_PRE_TURN_FINALIZE_NUDGES:
+        return None
+    try:
+        from hermes_cli.lifecycle import has_hook
+        from hermes_cli.plugins import get_pre_turn_finalize_continue_message
+
+        if not has_hook("pre_turn_finalize"):
+            return None
+        return get_pre_turn_finalize_continue_message(
+            session_id=getattr(agent, "session_id", None) or "",
+            turn_id=turn_id or getattr(agent, "_current_turn_id", "") or "",
+            platform=getattr(agent, "platform", "") or "",
+            model=getattr(agent, "model", "") or "",
+            provider=getattr(agent, "provider", "") or "",
+            final_response=final_response if isinstance(final_response, str) else "",
+            finish_reason=finish_reason or "stop",
+            api_call_count=api_call_count,
+            attempt=attempt,
+        )
+    except Exception:
+        logger.debug("pre_turn_finalize hook check failed", exc_info=True)
+    return None
+
+
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
     only the nudge is flagged synthetic (#65919)."""
@@ -105,11 +142,14 @@ def apply_stop_gates(
     agent: Any, final_msg: Dict[str, Any], *, final_response: Any, messages: List[Dict[str, Any]],
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
+    finish_reason: Any = "stop", api_call_count: int = 0, turn_id: Any = None,
 ) -> StopGateVerdict:
-    """Run verify-on-stop → pre_verify hook → kanban stop guard, in that order. Nudges
+    """Run verify-on-stop → pre_verify hook → kanban stop guard → pre_turn_finalize hook, in
+    that order. Nudges
     are user-role rows appended only after the assistant answer row, so role alternation
     holds. Hook lookups are imported lazily from their origin modules (tests patch them
-    there)."""
+    there). The generic ``pre_turn_finalize`` plugin checkpoint runs last so it can never
+    bypass the mandatory built-in stop policy."""
 
     def _continue(nudge: str, flag: str) -> StopGateVerdict:
         """Append the synthetic nudge row and hand the turn back to the loop."""
@@ -166,6 +206,23 @@ def apply_stop_gates(
             "⚠️ Kanban worker tried to exit without "
             "kanban_complete/kanban_block — nudging to finish"
         )
+        return verdict
+
+    _finalize_attempt = getattr(agent, "_pre_turn_finalize_nudges", 0)
+    _finalize_nudge = _pre_turn_finalize_nudge(
+        agent, final_response, finish_reason=str(finish_reason or "stop"),
+        api_call_count=api_call_count, turn_id=str(turn_id or ""),
+        attempt=_finalize_attempt,
+    )
+    if _finalize_nudge:
+        agent._pre_turn_finalize_nudges = _finalize_attempt + 1
+        final_msg["finish_reason"] = "pre_turn_finalize_continue"
+        _append_interim_answer(
+            agent, final_msg, messages, conversation_history,
+            "pre_turn_finalize interim flush failed",
+        )
+        verdict = _continue(_finalize_nudge, "_pre_turn_finalize_synthetic")
+        logger.debug("pre_turn_finalize nudge issued (attempt %d)", agent._pre_turn_finalize_nudges)
         return verdict
     return StopGateVerdict(
         continue_turn=False, final_response=final_response,

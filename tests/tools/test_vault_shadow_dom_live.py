@@ -116,6 +116,13 @@ def shadow_form(sup):
         '<input autocomplete="cc-number"><input autocomplete="postal-code">' +
         '<input autocomplete="one-time-code"></form>';
       window.testRoot = inner;
+      window.testInputObservers = [];
+      for (const [name, target] of [['host', host], ['document', document]]) {
+        target.addEventListener('input', event => {
+          window.testInputObservers.push({observer: name, composed: event.composed,
+            retargeted: event.target === host, inputType: event.inputType});
+        });
+      }
     })()""")
 
 
@@ -173,6 +180,12 @@ def test_vault_fill_finds_shadow_login_not_unrelated_first_tab(browser):
     assert result['filled_fields'] == 1 and result['origin'] == login_origin
     assert 'dummy-live-value' not in raw
     assert evaluate(sup, "testRoot.querySelector('input').value === 'dummy-live-value'")
+    # Framework observers outside both shadow roots must see the input event,
+    # with normal shadow-DOM retargeting and without exposing the field value.
+    assert evaluate(sup, 'window.testInputObservers') == [
+        {'observer': observer, 'composed': True, 'retargeted': True, 'inputType': 'insertText'}
+        for observer in ('host', 'document')
+    ]
     assert sup.focus_page(origin)['ok']
     assert evaluate(sup, "document.querySelectorAll('input').length") == 0
     # No tab on the bound origin: never weaken origin matching to make progress.

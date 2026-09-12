@@ -731,6 +731,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
             return False
 
     @staticmethod
+    def _proc_alive_strict(proc) -> bool:
+        """Probe liveness without treating an inaccessible process as dead."""
+        import psutil
+        try:
+            return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+
+    @staticmethod
     def _config_value(section: str, key: str, fallback):
         """``config.yaml`` value for ``section.key``, else the DEFAULT_CONFIG value.
         Raises if config is unreadable; callers wrap with their own hard fallback so
@@ -771,6 +780,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
             logger.warning(
                 "Refusing to terminate host pid %d: start-time mismatch — "
                 "PID was recycled onto an unrelated process.", pid)
+            if verify:
+                raise RuntimeError(
+                    f"Could not verify Windows process tree rooted at pid {pid}: "
+                    "the root process is gone or its start time no longer matches"
+                )
             return
 
         def _sigterm_quietly():
@@ -796,20 +810,44 @@ class ProcessRegistry(ProcessCheckpointMixin):
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
                 _sigterm_quietly()
             if verify:
+                def _probe_targets():
+                    survivors = []
+                    inconclusive = []
+                    for proc in targets:
+                        try:
+                            if cls._proc_alive_strict(proc):
+                                survivors.append(proc)
+                        except Exception as exc:
+                            inconclusive.append((proc, exc))
+                    return survivors, inconclusive
+
                 grace = max(cls._daemon_term_grace_seconds(), 0.5)
                 deadline = time.monotonic() + grace
-                survivors = [proc for proc in targets if cls._proc_alive(proc)]
-                while survivors and time.monotonic() < deadline:
+                survivors, inconclusive = _probe_targets()
+                while (survivors or inconclusive) and time.monotonic() < deadline:
                     time.sleep(0.05)
-                    survivors = [proc for proc in targets if cls._proc_alive(proc)]
-                if survivors:
+                    survivors, inconclusive = _probe_targets()
+                if survivors or inconclusive:
                     survivor_pids = ", ".join(str(proc.pid) for proc in survivors)
-                    detail = ""
-                    if result is not None and result.returncode != 0:
-                        detail = f"; taskkill exited {result.returncode}: {(result.stderr or result.stdout).strip()}"
+                    failures = []
+                    if survivors:
+                        failures.append(f"live owned pids: {survivor_pids}")
+                    if inconclusive:
+                        inaccessible = ", ".join(
+                            f"{proc.pid} ({type(exc).__name__}: {exc})"
+                            for proc, exc in inconclusive
+                        )
+                        failures.append(
+                            f"liveness could not be verified for owned pids: {inaccessible}"
+                        )
+                    if result is not None:
+                        failures.append(
+                            f"taskkill exited {result.returncode}: "
+                            f"{(result.stderr or result.stdout).strip()}"
+                        )
                     raise RuntimeError(
-                        f"Windows process tree rooted at pid {pid} still has live owned pids: "
-                        f"{survivor_pids}{detail}"
+                        f"Windows process tree rooted at pid {pid} was not verified terminated; "
+                        + "; ".join(failures)
                     )
             return
         import psutil

@@ -703,3 +703,138 @@ class TestDeregisterAuthorization:
             evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
             reg.register(name="protected", toolset="evil-ts", schema={}, handler=evil_handler, override=True)
         assert reg._tools["protected"].handler({}) == "built-in"
+class TestInputSchemaAlias:
+    """A plugin that writes the Anthropic/MCP ``input_schema`` key instead of
+    ``parameters`` should still expose its schema to the model, with a warning."""
+
+    def test_input_schema_is_aliased_to_parameters(self, caplog):
+        reg = ToolRegistry()
+        schema = {
+            "name": "legacy",
+            "description": "declares input_schema like an Anthropic tool spec",
+            "input_schema": {
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+                "required": ["x"],
+            },
+        }
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            reg.register(
+                name="legacy",
+                toolset="s1",
+                schema=schema,
+                handler=_dummy_handler,
+            )
+
+        fn = reg.get_definitions({"legacy"})[0]["function"]
+        assert fn["parameters"]["properties"] == {"x": {"type": "string"}}
+        assert fn["parameters"]["required"] == ["x"]
+        assert "input_schema" not in fn
+        assert any("input_schema" in r.getMessage() for r in caplog.records)
+
+    def test_repeated_registration_warns_once(self, caplog):
+        reg = ToolRegistry()
+        schema = {
+            "name": "legacy",
+            "description": "declares input_schema like an Anthropic tool spec",
+            "input_schema": {
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+            },
+        }
+
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            reg.register(
+                name="legacy",
+                toolset="s1",
+                schema=schema,
+                handler=_dummy_handler,
+            )
+            reg.register(
+                name="legacy",
+                toolset="s1",
+                schema=schema,
+                handler=_dummy_handler,
+            )
+
+        warnings = [
+            record for record in caplog.records
+            if "legacy" in record.getMessage() and "input_schema" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+
+    def test_parameters_wins_over_stray_input_schema(self, caplog):
+        reg = ToolRegistry()
+        schema = {
+            "name": "both",
+            "description": "has both keys",
+            "parameters": {"type": "object", "properties": {"p": {"type": "string"}}},
+            "input_schema": {"type": "object", "properties": {"i": {"type": "string"}}},
+        }
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            reg.register(
+                name="both",
+                toolset="s1",
+                schema=schema,
+                handler=_dummy_handler,
+            )
+
+        fn = reg.get_definitions({"both"})[0]["function"]
+        assert fn["parameters"]["properties"] == {"p": {"type": "string"}}
+        assert not any("input_schema" in r.getMessage() for r in caplog.records)
+
+    def test_caller_schema_dict_not_mutated(self):
+        reg = ToolRegistry()
+        schema = {
+            "name": "legacy2",
+            "description": "d",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+        reg.register(
+            name="legacy2",
+            toolset="s1",
+            schema=schema,
+            handler=_dummy_handler,
+        )
+        # The original dict the caller passed is left intact.
+        assert "input_schema" in schema
+        assert "parameters" not in schema
+
+    def test_assembled_model_tool_preserves_aliased_parameters(self):
+        from model_tools import _clear_tool_defs_cache, get_tool_definitions
+        from tools.registry import registry
+
+        name = "test_input_schema_alias_assembled"
+        toolset = "test-input-schema-alias"
+        parameters = {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }
+        registry.register(
+            name=name,
+            toolset=toolset,
+            schema={
+                "name": name,
+                "description": "integration test tool",
+                "input_schema": parameters,
+            },
+            handler=_dummy_handler,
+        )
+        try:
+            definitions = get_tool_definitions(
+                enabled_toolsets=[toolset],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+            assembled = next(
+                definition["function"]
+                for definition in definitions
+                if definition["function"]["name"] == name
+            )
+        finally:
+            registry.deregister(name)
+            _clear_tool_defs_cache()
+
+        assert assembled["parameters"] == parameters
+        assert "input_schema" not in assembled

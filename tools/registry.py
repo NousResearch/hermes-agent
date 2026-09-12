@@ -55,6 +55,37 @@ def _bound_json_error_result(result: str) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _normalize_tool_schema_keys(schema: dict) -> tuple[dict, bool]:
+    """Adopt a tool's ``input_schema`` as ``parameters`` when only the former is set.
+
+    The OpenAI tool format — and therefore everything downstream of the
+    registry (the ``{"type": "function", ...}`` wrap in
+    :meth:`ToolRegistry.get_definitions`, the schema sanitizer, every
+    transport) — reads a tool's JSON Schema from the ``parameters`` key.
+    Anthropic and MCP tool definitions instead carry it under
+    ``input_schema``. A plugin author who copies an Anthropic-shaped tool spec
+    therefore registers a schema the registry silently ignores: ``parameters``
+    is absent, ``schema_sanitizer`` substitutes an empty object, and the model
+    ends up calling the tool with no arguments — a silent failure with no
+    error anywhere.
+
+    When a schema carries ``input_schema`` but no ``parameters``, alias it and
+    report that normalization occurred so the registry can warn once. A schema
+    that already has ``parameters`` is left untouched (it wins over any stray
+    ``input_schema``).
+    """
+    if (
+        isinstance(schema, dict)
+        and "parameters" not in schema
+        and isinstance(schema.get("input_schema"), dict)
+    ):
+        params = schema["input_schema"]
+        schema = {k: v for k, v in schema.items() if k != "input_schema"}
+        schema["parameters"] = params
+        return schema, True
+    return schema, False
+
+
 def _is_registry_register_call(node: ast.AST) -> bool:
     """True when *node* is a ``registry.register(...)`` call expression."""
     if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
@@ -379,6 +410,7 @@ class ToolRegistry:
         self._plugin_module_scopes: Dict[str, Set[Optional[str]]] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
+        self._warned_input_schema_aliases: Set[str] = set()
         # MCP refresh mutates while other threads read: serialize writes, snapshot reads.
         self._lock = threading.RLock()
         # Bumped on every mutation; get_tool_definitions memoizes against it.
@@ -602,12 +634,24 @@ class ToolRegistry:
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
+        schema, aliased_input_schema = _normalize_tool_schema_keys(schema)
         handler_owner = self._plugin_owner_of(handler)
         caller_owner = self._plugin_namespace_of_module(self._caller_module())
         owner = caller_owner or handler_owner
         if scope is None and owner is not None:
             scope = self._plugin_scope_of(owner)
         with self._lock:
+            if aliased_input_schema and name not in self._warned_input_schema_aliases:
+                self._warned_input_schema_aliases.add(name)
+                logger.warning(
+                    "Tool %r declares its JSON Schema under 'input_schema'; the tool "
+                    "registry and OpenAI tool format read it from 'parameters'. "
+                    "Aliasing it automatically, but rename the key to 'parameters' in "
+                    "the tool's schema — otherwise a tool that gets this wrong is "
+                    "exposed to the model with no parameters and called with no "
+                    "arguments, silently.",
+                    name,
+                )
             target = self._slot(scope, create=True)
             existing = (self._tools if scope is None else self._merged_tools(scope)).get(name)
             plugin_override_denied = (

@@ -435,11 +435,8 @@ class GatewayTopicThreadsMixin:
         copied_source = source
         with suppress(Exception):
             copied_source = dataclasses.replace(source)
-            # ``dataclasses.replace`` intentionally copies only declared fields.
-            # Preserve the in-process transport-owner ref that build_source()
-            # stamps on live inbound events; multiplex routed profiles need it
-            # for side effects such as Discord thread rename, because the
-            # runtime profile may not own the Discord adapter/token.
+            # Keep the live transport owner; multiplex routes may run under a
+            # profile that does not own the Discord adapter/token.
             transport_ref = getattr(source, "_transport_adapter_ref", None)
             if transport_ref is not None:
                 setattr(copied_source, "_transport_adapter_ref", transport_ref)

@@ -119,8 +119,6 @@ def test_title_thread_copy_preserves_transport_adapter_ref(monkeypatch):
         return None
 
     def fake_schedule(coro, loop, logger=None, log_message=None):
-        # The test only inspects the source passed into make_coro; close the
-        # coroutine so pytest does not warn about an unawaited object.
         coro.close()
         return None
 

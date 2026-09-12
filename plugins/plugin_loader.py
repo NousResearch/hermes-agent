@@ -110,6 +110,9 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
         sub_mod = _new_module(full_sub_name, sub_file)
         if _exec(sub_mod, logger):
             loaded_submodules.append((sub_file.stem, sub_mod))
+        else:
+            # A later setup may supply the missing dependency; do not cache a partial module.
+            sys.modules.pop(full_sub_name, None)
     if not _exec(mod, logger):
         sys.modules.pop(module_name, None)
         return None

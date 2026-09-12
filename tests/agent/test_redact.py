@@ -883,6 +883,9 @@ class TestTerminalOutputRedaction:
         assert _command_reads_secret_file("grep TOKEN $HERMES_HOME/config.yaml")
         assert _command_reads_secret_file("grep TOKEN ${HERMES_HOME}/config.yaml")
         assert _command_reads_secret_file("awk '{print $0}' ~/.bashrc")
+        assert _command_reads_secret_file("cat ~/.bash_login")
+        assert _command_reads_secret_file("cat ~/.zshenv")
+        assert _command_reads_secret_file("cat ~/.zlogin")
         assert _command_reads_secret_file("grep -E 'API_KEY|TOKEN' $HERMES_HOME/config.yaml")
         assert _command_reads_secret_file("sed -n '1;5p' ~/.bashrc")
         assert _command_reads_secret_file("grep -e config.yaml $HERMES_HOME/config.yaml")
@@ -981,7 +984,10 @@ class TestTerminalOutputRedaction:
             ("cat <<EOF; cat .env\ntext\nEOF", True),
             ("cat <<< ignored; cat .env", True),
             ("echo $((1 << 2)); cat .env", True),
+            ("((1 << 2))\ncat .env", True),
+            ("for ((i = 1; i << 2; i++)); do :; done\ncat .env", True),
             ("echo x # <<EOF\ncat .env", True),
+            ("echo x # ; cat .env", False),
             ("cat <<EOF\ntext\nEOF\ncat .env", True),
             ("cat <<A <<B\ntext\nA\ncat .env\nB", False),
         ],
@@ -989,6 +995,18 @@ class TestTerminalOutputRedaction:
     def test_heredoc_syntax_preserves_executable_commands(self, command, expected):
         from agent.redact import _command_reads_secret_file
         assert _command_reads_secret_file(command) is expected
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "FOO=bar cat .env",
+            "cat <.env",
+            "cat 0<.env",
+        ],
+    )
+    def test_reader_shell_syntax_preserves_secret_file_operands(self, command):
+        from agent.redact import _command_reads_secret_file
+        assert _command_reads_secret_file(command)
 
     def test_search_pattern_named_like_secret_file_preserves_unrelated_output(self):
         from agent.redact import redact_terminal_output

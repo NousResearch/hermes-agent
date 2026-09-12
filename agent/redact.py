@@ -761,8 +761,11 @@ _FILE_READ_COMMANDS = frozenset({
 _SHELL_SECRET_FILE_BASENAMES = frozenset({
     ".bashrc",
     ".bash_profile",
+    ".bash_login",
     ".profile",
     ".zshrc",
+    ".zshenv",
+    ".zlogin",
     ".zprofile",
 })
 
@@ -863,6 +866,8 @@ def _without_heredoc_bodies(command: str) -> str:
         if comment:
             if char in "\r\n":
                 comment = False
+            else:
+                output.pop()
             index += 1
             continue
         if char in "\"'":
@@ -875,10 +880,17 @@ def _without_heredoc_bodies(command: str) -> str:
         if quote is None and char == "#" and (
             index == 0 or command[index - 1].isspace() or command[index - 1] in ";&|"
         ):
+            output.pop()
             comment = True
             index += 1
             continue
         if quote is None and command[index:index + 3] == "$((":
+            arithmetic_depth += 1
+        elif (
+            quote is None
+            and command[index:index + 2] == "(("
+            and (index == 0 or command[index - 1].isspace() or command[index - 1] in ";&|")
+        ):
             arithmetic_depth += 1
         elif quote is None and arithmetic_depth and command[index:index + 2] == "))":
             arithmetic_depth -= 1
@@ -1052,6 +1064,12 @@ def _reader_file_operands(reader: str, args: list[str]) -> list[str]:
     return positionals if explicit_program else positionals[1:]
 
 
+def _redirection_target(operand: str) -> str:
+    """Return an attached stdin-redirection target, or the operand unchanged."""
+    match = re.fullmatch(r"\d*<([^<].*)", operand)
+    return match.group(1) if match else operand
+
+
 def _command_reads_secret_file(command: str | None) -> bool:
     """True if ``command`` reads a known secret-bearing file to stdout.
 
@@ -1062,9 +1080,12 @@ def _command_reads_secret_file(command: str | None) -> bool:
         return False
     for seg in _command_segments(command):
         tokens = _command_words(seg)
+        while tokens and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[0]):
+            tokens.pop(0)
         if not tokens or tokens[0] not in _FILE_READ_COMMANDS:
             continue
         for arg in _reader_file_operands(tokens[0], tokens[1:]):
+            arg = _redirection_target(arg)
             basename = arg.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
             if (
                 basename.lower() in _ENV_FILE_BASENAMES | _SHELL_SECRET_FILE_BASENAMES

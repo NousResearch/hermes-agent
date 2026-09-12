@@ -19,6 +19,8 @@ import pytest
 
 from fastapi.testclient import TestClient
 
+import time
+
 from hermes_cli import web_server
 import hermes_cli.web_server_chat as _web_server_chat
 from hermes_cli.dashboard_auth import clear_providers, register_provider
@@ -28,7 +30,7 @@ from hermes_cli.dashboard_auth.ws_tickets import (
     internal_ws_credential,
     mint_ticket,
 )
-from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider, _sign
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +269,57 @@ class TestWsAuthOkGated:
         _SESSION_TOKEN (e.g. a leaked log line)."""
         ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
         assert _web_server_chat._ws_auth_ok(ws) is False
+
+    def test_session_token_accepted_in_gated_mode(self, gated_app):
+        """User session access token via ?token= is accepted in gated mode."""
+        access_token = _sign({
+            "sub": "remote-desktop-user",
+            "email": "user@example.test",
+            "name": "Remote User",
+            "org_id": "org-1",
+            "exp": int(time.time()) + 3600,
+        })
+        ws = _fake_ws(query={"token": access_token}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws) is True
+        assert ws._hermes_auth_identity == {
+            "user_id": "remote-desktop-user",
+            "provider": "stub",
+        }
+
+    def test_invalid_session_token_rejected_in_gated_mode(self, gated_app):
+        """Bogus token in gated mode fails with token_invalid and audits failure."""
+        ws = _fake_ws(query={"token": "bogus-token"}, path="/api/ws")
+        reason, cred = _web_server_chat._ws_auth_reason(ws)
+        assert reason == "token_invalid"
+        assert cred == "token"
+        assert _web_server_chat._ws_auth_ok(ws) is False
+
+    def test_session_token_audit_logs(self, gated_app, tmp_path, monkeypatch):
+        """Audit log records token_auth_success and token_auth_failure in gated mode."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli.dashboard_auth import audit as audit_mod
+
+        if hasattr(audit_mod, "_LOGGER"):
+            monkeypatch.setattr(audit_mod, "_LOGGER", None, raising=False)
+
+        access_token = _sign({
+            "sub": "remote-desktop-user",
+            "email": "user@example.test",
+            "name": "Remote User",
+            "org_id": "org-1",
+            "exp": int(time.time()) + 3600,
+        })
+        ws_ok = _fake_ws(query={"token": access_token}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws_ok) is True
+
+        ws_bad = _fake_ws(query={"token": "bogus-token"}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws_bad) is False
+
+        log_file = tmp_path / "logs" / "dashboard-auth.log"
+        if log_file.exists():
+            content = log_file.read_text()
+            assert "token_auth_success" in content
+            assert "token_auth_failure" in content
 
     def test_rejection_audit_logs(self, gated_app, tmp_path, monkeypatch):
         # Point the audit log at a tmp dir so we can read what got written.

@@ -180,6 +180,14 @@ export interface PooledRemoteEntry<TConnection extends RemoteConnectionDescripto
   sharedProbeKey?: null | string
 }
 
+/** One ownership key for background observations and post-resume resets. */
+function pooledRemoteFailureKey(profile: string, entry: PooledRemoteEntry): string {
+  const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+  const sharedProbeKey = String(entry.sharedProbeKey ?? '').trim()
+
+  return sharedProbeKey ? `shared:${sharedProbeKey}:${baseUrl}` : `profile:${profile}:${baseUrl}`
+}
+
 export interface RevalidatePooledRemoteBackendsOptions<TConnection extends RemoteConnectionDescriptor> {
   entries: Iterable<[string, PooledRemoteEntry<TConnection>]>
   log: (message: string) => void
@@ -212,9 +220,7 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
   const dropped: string[] = []
 
   for (const [profile, entry] of remotes) {
-    const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
-    const sharedProbeKey = String(entry.sharedProbeKey ?? '').trim()
-    const failureKey = sharedProbeKey ? `shared:${sharedProbeKey}:${baseUrl}` : `profile:${profile}:${baseUrl}`
+    const failureKey = pooledRemoteFailureKey(profile, entry)
     const group = probeGroups.get(failureKey) ?? []
 
     group.push([profile, entry])
@@ -326,7 +332,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
 
   await Promise.all(
     remotes.map(async ([poolKey, entry]) => {
-      const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+      const failureKey = pooledRemoteFailureKey(poolKey, entry)
 
       try {
         if (!entry.connectionPromise) {
@@ -335,7 +341,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
 
         const connection = await entry.connectionPromise
         await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
-        tracker.recordSuccess(baseUrl)
+        tracker.recordSuccess(failureKey)
 
         return
       } catch (probeError) {
@@ -360,7 +366,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
       retired.push(poolKey)
       // The rebuilt tunnel must start from a clean failure state; stale
       // pre-sleep failures should not count against the fresh descriptor.
-      tracker.recordSuccess(baseUrl)
+      tracker.recordSuccess(failureKey)
 
       try {
         await rebuild(poolKey)

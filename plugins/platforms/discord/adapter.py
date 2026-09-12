@@ -2609,6 +2609,45 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             ],
         }
 
+    def _app_commands_equivalent(
+        self, existing: Dict[str, Any], desired: Dict[str, Any]
+    ) -> bool:
+        """Equality that tolerates unset installation/context fields.
+
+        discord.py's ``to_dict()`` emits ``integration_types=None`` when the
+        tree sets no installation preference, but Discord materializes its
+        default (``[0, 1]`` — guild + user install) on every stored command.
+        A plain payload compare therefore flags EVERY command as changed on
+        EVERY sync, and the reconciler delete+recreates all of them — which
+        burns Discord's small command-management rate bucket, blows the
+        600s sync timeout (130 mutations × 4.5s spacing), and exhausts the
+        200-creates/day cap (error 30034), leaving the app's commands in a
+        half-synced state forever.
+
+        ``None`` on the desired side means "no preference", so accept
+        whatever the server materialized for ``contexts`` and
+        ``integration_types``. Explicit desired values still compare
+        exactly, so a tree that pins installations keeps working.
+        """
+        if existing == desired:
+            return True
+        unset_ok_fields = ("contexts", "integration_types")
+        exact_fields = (
+            "type",
+            "name",
+            "description",
+            "default_member_permissions",
+            "dm_permission",
+            "nsfw",
+            "options",
+        )
+        return all(
+            existing.get(field) == desired.get(field) or desired.get(field) is None
+            for field in unset_ok_fields
+        ) and all(
+            existing.get(field) == desired.get(field) for field in exact_fields
+        )
+
     @staticmethod
     def _normalize_permissions(value: Any) -> Optional[str]:
         """Normalize default_member_permissions to str-or-None (Discord returns str, discord.py sets int)."""
@@ -2715,7 +2754,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             current_existing_payload = self._existing_command_to_payload(current)
             current_payload = self._canonicalize_app_command_payload(current_existing_payload)
             desired_payload = self._canonicalize_app_command_payload(desired)
-            if current_payload == desired_payload:
+            if self._app_commands_equivalent(current_payload, desired_payload):
                 summary["unchanged"] += 1
                 continue
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):

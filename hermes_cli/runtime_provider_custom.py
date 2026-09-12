@@ -107,6 +107,46 @@ def _shadowed_by_builtin(requested_norm: str) -> bool:
     return (canonical or "").strip().lower() == requested_norm
 
 
+# Provider names already checked for built-in shadowing this process — the warning below fires at
+# most once per provider so per-turn resolution doesn't spam the log.
+_shadow_warned_providers: set = set()
+
+
+def _warn_once_if_user_entry_shadowed(provider_norm: str) -> None:
+    """Warn when config defines a provider entry that a built-in shadows (#43026).
+
+    ``providers.gemini: {base_url: …/openai, api_key: …}`` is silently ignored because ``gemini``
+    is a canonical built-in — requests then go to the built-in's default endpoint with env-var
+    credentials, which looks like an auth bug on the user's endpoint. Make the ignore loud.
+
+    The config lookup is deliberately the STATIC ``PROVIDER_REGISTRY`` scan in
+    ``config.find_shadowed_builtin_provider_entries`` and not ``auth.resolve_provider``: an unknown
+    provider sends ``resolve_provider`` into ``validate_config_structure``, so a dynamic check here
+    would close a mutual-recursion loop.
+    """
+    if provider_norm in _shadow_warned_providers:
+        return
+    _shadow_warned_providers.add(provider_norm)
+    try:
+        from hermes_cli.config import find_shadowed_builtin_provider_entries
+
+        shadowed = find_shadowed_builtin_provider_entries()
+    except Exception:
+        return
+    if provider_norm not in shadowed:
+        return
+    logger.warning(
+        "config.yaml defines a providers/custom_providers entry named '%s', but "
+        "'%s' is a built-in provider — the entry's base_url/api_key are ignored "
+        "and the built-in's default endpoint + environment credentials are used "
+        "instead. Rename the entry to a non-built-in name (and set model.provider "
+        "to it), or configure the built-in via its env vars. "
+        "Run 'hermes doctor' for details.",
+        provider_norm,
+        provider_norm,
+    )
+
+
 def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Scan ``providers:`` (new-style, keyed) for ``requested_norm``."""
     from hermes_cli.config import is_provider_enabled
@@ -161,7 +201,10 @@ def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Opti
 
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
-    if not requested_norm or requested_norm == "auto" or _shadowed_by_builtin(requested_norm):
+    if not requested_norm or requested_norm == "auto":
+        return None
+    if _shadowed_by_builtin(requested_norm):
+        _warn_once_if_user_entry_shadowed(requested_norm)
         return None
     rp = _rp()
     config = rp.load_config()

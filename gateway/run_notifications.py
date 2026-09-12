@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional, cast
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionEntry, SessionSource
+from gateway.session import SessionEntry, SessionSource, is_shared_audience
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
 
 # Log-record parity with the origin module.
@@ -714,10 +714,22 @@ class GatewayNotificationsMixin:
                 for field in ("user_id", "scope_id"):
                     if data.get(field):
                         metadata[field] = str(data[field])
-            result = await transport.send(
-                platform, str(chat_id), "♻ Gateway restarted successfully. Your session continues.",
-                metadata=_non_conversational_metadata(metadata, platform=platform),
-            )
+            source = SessionSource.from_dict({**data, "chat_type": data.get("chat_type") or ""})
+            metadata = _non_conversational_metadata(metadata, platform=platform)
+            private_text = "♻ Gateway restarted successfully. Your session continues."
+            public_text = private_text
+            result = None
+            if is_shared_audience(source):
+                public_text = "♻ Gateway restarted successfully. Operational details were kept private."
+                if source.user_id and getattr(
+                        transport.adapter, "_supports_private_notice_delivery", lambda: False)():
+                    try:
+                        result = await transport.adapter.send_private_notice(
+                            str(chat_id), source.user_id, private_text, metadata=metadata)
+                    except Exception as exc:
+                        logger.warning("Private restart notification failed; using neutral fallback: %s", exc)
+            if not getattr(result, "success", False):
+                result = await transport.send(platform, str(chat_id), public_text, metadata=metadata)
             # adapter.send() catches provider errors (e.g. "Chat not found") and returns
             # SendResult(success=False) rather than raising, so inspect the result before claiming success.
             if _send_failed(result):

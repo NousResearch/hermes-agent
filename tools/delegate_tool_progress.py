@@ -174,6 +174,15 @@ def _build_child_system_prompt(
             _ctx_files = build_context_files_prompt(cwd=str(workspace_path), skip_soul=True)
         if _ctx_files.strip():
             parts.append(_CONTEXT_FILES_INTRO + _ctx_files.strip())
+        # Shared delegation notes (opt-in delegation.shared_notes): learnings recorded by prior
+        # agents in this workspace, plus the append path. Empty string when off — default path
+        # stays byte-identical. Best-effort like the context-files load above.
+        _shared_notes = ""
+        with _quiet("subagent: shared delegation notes load failed", exc_info=True):
+            from tools.delegate_tool_shared_notes import build_shared_notes_block
+            _shared_notes = build_shared_notes_block(str(workspace_path))
+        if _shared_notes.strip():
+            parts.append(_shared_notes)
     parts.append(_COMPLETION_INSTRUCTIONS)
     if role == "orchestrator":
         child_note = _LEAF_CHILDREN_NOTE if child_depth + 1 >= max_spawn_depth else _NESTED_CHILDREN_NOTE

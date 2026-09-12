@@ -583,6 +583,32 @@ directory, on docker/ssh/modal backends, or if worktree creation fails, the
 setting degrades silently to today's shared-workspace behavior — never an
 error.
 
+## Shared Delegation Notes
+
+Subagents start with clean context every time (`skip_memory=True`), so a lesson
+one child learns about a workspace — how to run its tests, a build gotcha — is
+re-discovered by the next batch. Set `delegation.shared_notes: true` to give
+children a per-workspace, append-only notes file (inspired by Cursor Projects'
+shared context):
+
+```yaml
+delegation:
+  shared_notes: true   # default: false
+```
+
+With shared notes on:
+
+- Each child whose prompt carries a workspace path gets the workspace's notes
+  file injected as **explicitly untrusted** context (hints to verify, never
+  instructions), plus the file's absolute path and an instruction to append
+  one-line durable learnings with its normal file tools.
+- The file lives under the profile home
+  (`~/.hermes/delegation_notes/<workspace>-<hash>.md`), never inside the repo,
+  so notes can't be committed and never leak between profiles.
+- Injection is capped tail-first (~10k chars) so the newest learnings survive,
+  and content passes the same prompt-injection scan as other context files.
+- Off by default; when off, child prompts are byte-identical to today's.
+
 ## Delegation vs execute_code
 
 | Factor | delegate_task | execute_code |
@@ -606,6 +632,7 @@ delegation:
   # max_concurrent_children: 10             # Parallel children per batch (default: 10)
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
+  # shared_notes: false                     # Inject a per-workspace shared notes file into child prompts (see Shared Delegation Notes below)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override

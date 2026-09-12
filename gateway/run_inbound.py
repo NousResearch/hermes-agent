@@ -18,7 +18,8 @@ import re
 import time
 from contextlib import suppress
 from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
+from gateway.platforms.base import EphemeralReply
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_common import _UNSET
 from gateway.session import (
     SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
@@ -154,11 +155,16 @@ class GatewayInboundMixin:
         # Ignored-channel guard runs FIRST — before startup-restore queueing, plugin hooks, auth,
         # and session setup — so an ignored channel can never reach pairing/auth/session state.
         _chat_id = getattr(source, "chat_id", None)
+        if not is_internal and getattr(source, "platform", None) == Platform.SLACK:
+            # The routed adapter's extra carries a secondary profile's own list; ``_config`` is the default's.
+            _slack_adapter = None
+            with suppress(Exception):
+                _slack_adapter = self._adapter_for_source(source)
         if (
             # See #51899.
             not is_internal
             and getattr(source, "platform", None) == Platform.SLACK
-            and _is_slack_ignored_channel(_config, _chat_id)
+            and _is_slack_ignored_channel(_config, _chat_id, _slack_adapter)
         ):
             logger.info("Dropping Slack message from configured ignored channel %s", _chat_id)
             return None
@@ -189,12 +195,16 @@ class GatewayInboundMixin:
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            # In DMs: offer pairing code. In groups: silently ignore.
+            # DMs get a pairing code, groups are ignored. A bot cannot pair, and answering one mid-cooldown is outbound traffic.
             if (
                 source.chat_type == "dm"
+                and not getattr(source, "is_bot", False)
                 and self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) == "pair"
             ):
                 await self._hm_offer_pairing_code(source)
+            return None
+        # The busy path charged this event on arrival; a drained follow-up must not pay twice.
+        if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
             return None
         return event, source, False
 
@@ -479,8 +489,10 @@ class GatewayInboundMixin:
             logger.debug("reaped-session staleness check failed", exc_info=True)
 
     def _hm_evict_running_agent(self, _quick_key: str, reason: str) -> None:
-        self._invalidate_session_run_generation(_quick_key, reason=reason)
-        self._release_running_agent_state(_quick_key)
+        from gateway.run import _INTERRUPT_REASON_EVICTED
+        _generation_at_interrupt = self._interrupt_running_turn(
+            _quick_key, interrupt_reason=_INTERRUPT_REASON_EVICTED, invalidation_reason=reason)
+        self._drop_turn_slot(_quick_key, run_generation=_generation_at_interrupt)
 
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
@@ -557,7 +569,7 @@ class GatewayInboundMixin:
         steered = False
         if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
             try:
-                steered = bool(running_agent.steer(steer_text))
+                steered = bool(running_agent.steer(self._steer_text_with_origin(steer_text, event)))
             except Exception as exc:
                 logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
         if steered:
@@ -576,7 +588,9 @@ class GatewayInboundMixin:
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
         if self._hm_text_only(event) and _can_redirect and hasattr(running_agent, "redirect"):
             try:
-                if running_agent.redirect((event.text or "").strip()):
+                if running_agent.redirect(
+                    self._steer_text_with_origin((event.text or "").strip(), event)
+                ):
                     logger.debug("PRIORITY redirect for session %s", _quick_key)
                     return
             except Exception as exc:
@@ -889,13 +903,13 @@ class GatewayInboundMixin:
         try:
             event.text = moa_payload
             _moa_state = self._session_state(_quick_key)
-            event._moa_restore_override = _moa_state.conversation.model_override
+            # Same one-shot snapshot `/model --once` uses, so eviction/stop/finalizer settle both alike.
+            self._claim_one_turn_restore(_quick_key)
             _moa_state.conversation.model_override = {
                 "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
                 "api_key": "moa-virtual-provider", "api_mode": "chat_completions",
             }
             self._evict_cached_agent(_quick_key)
-            event._moa_disable_after_turn = True
         except Exception:
             return True, "Failed to prepare MoA turn."
         return False, None
@@ -1181,6 +1195,14 @@ class GatewayInboundMixin:
         if _admitted is None:
             return None
         event, source, is_internal = _admitted
+        # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
+        # not on the adapter's raw inbound: profile routing, the ignored-channel
+        # guard, plugin hooks and user authorization all reject events above,
+        # and a rejected event must not be able to clear a refusal belonging to
+        # an active turn. This is also the single entry point every lane shares
+        # — Discord interaction passthrough builds its own MessageEvent and
+        # calls handle_message directly, so a teardown on the relay's inbound
+        # handler left those turns muted.
 
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:
@@ -1264,48 +1286,39 @@ class GatewayInboundMixin:
                 logger.debug("post-turn hook failed: %s", _goal_exc)
             return _agent_result
         finally:
-            # MoA one-shot restore must run on EVERY exit path (success, exception, interrupt):
-            # the restore data lives on the per-turn event and would leak permanently otherwise.
-            self._restore_moa_one_shot(event, _quick_key)
-            self._restore_pending_one_turn_model_override(_quick_key)
+            # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
+            # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
+            self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
             # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
             # recovery pass.
             await self._clear_durable_active_turn(event)
-            # Unconditional, idempotent release without a run_generation guard: evicts the zombie
-            # left when session_reset bumps the generation mid-flight (gen-N's guarded release in
-            # _run_agent returns False; a sentinel-only check would lock forever).
-            self._release_running_agent_state(_quick_key)
+            # Release only this turn's generation. Eviction may immediately admit a replacement
+            # through the cold path; an unconditional release here would then clear the replacement
+            # sentinel/agent and lease. Reset/stop release their stale slot before installing a
+            # successor, preserving reset-zombie cleanup without granting gen-N successor authority.
+            self._release_running_agent_state(_quick_key, run_generation=_run_generation)
             # Turn lease is keyed by (routing key, run generation) so this unwind can only free
             # the lease its own turn acquired, never a newer turn's.
-            # Unconditional release covers every exit path. _release_running_agent_state is idempotent
-            # (pop-on-absent is harmless) and, called without a run_generation guard, always clears the slot
-            # regardless of which generation it holds. This evicts the zombie left when session_reset bumps
-            # the generation (N -> N+1) mid-flight: gen-N's guarded release inside _run_agent returns False,
-            # and the old sentinel-only check here missed the leftover real agent — locking the session out
-            # forever (#28686).
             self._release_turn_lease(_quick_key, _run_generation)
 
-    def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
-        """Revert a ``/moa <prompt>`` one-shot model override after its turn (called from the
-        message-handling ``finally``). ``_moa_restore_override`` holds the prior per-session
-        override (``None`` = clear the MoA override outright)."""
-        if not getattr(event, "_moa_disable_after_turn", False):
-            return
-        with suppress(Exception):
-            self._session_state(quick_key).conversation.model_override = getattr(event, "_moa_restore_override", None)
-            self._evict_cached_agent(quick_key)
+    def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
+        """Restore the per-session model override captured by ``/model --once`` or ``/moa``.
 
-    def _restore_pending_one_turn_model_override(self, session_key: str) -> None:
-        """Restore a per-session model override after ``/model --once`` runs."""
+        With ``run_generation`` (the turn finalizer) the restore happens only while that generation
+        is still current; a stop/reset/eviction has already settled the snapshot itself (see
+        ``_invalidate_session_run_generation``), so the displaced finalizer finds nothing to do.
+        Without it (the settlement paths) the restore is unconditional."""
         if not session_key:
             return
         try:
             _otr_state = self._peek_session_state(session_key)
-            snapshot = _otr_state.conversation.one_turn_restore if _otr_state else None
-            if _otr_state is not None:
-                _otr_state.conversation.one_turn_restore = None
-            if snapshot:
-                self._restore_session_model_override(session_key, snapshot)
+            if _otr_state is None or not _otr_state.conversation.one_turn_restore:
+                return
+            if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
+                return
+            snapshot = _otr_state.conversation.one_turn_restore
+            _otr_state.conversation.one_turn_restore = None
+            self._restore_session_model_override(session_key, snapshot)
         except Exception:
             logger.debug("Failed to restore one-turn model override", exc_info=True)
 
@@ -1774,7 +1787,7 @@ class GatewayInboundMixin:
 
         source = dataclasses.replace(entry.origin)
         try:
-            authorized = self._is_user_authorized(source, allow_adapter_delegation=False)
+            authorized = self._is_user_authorized_for_source(source, allow_adapter_delegation=False)
         except Exception:
             logger.warning(
                 "Plugin message injection authorization check failed: plugin=%s session=%s",

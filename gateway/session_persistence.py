@@ -146,7 +146,7 @@ class SessionPersistenceMixin:
         into the ROOT store until the stale-route self-heal drops a live conversation.
 
         Background work runs unscoped while operating on every profile's keys out of the single process-wide
-        ``_entries`` dict — ``_session_expiry_watcher`` is the clearest case — so it reads and writes the
+        ``_entries`` dict — ``_session_housekeeping_watcher`` is the clearest case — so it reads and writes the
         ROOT store for rows that actually live under ``profiles/<name>/state.db``. The two writers then
         drift apart on the same logical session until the routing index disagrees with the row and the
         #54878 self-heal drops a live conversation (#66887).
@@ -156,7 +156,16 @@ class SessionPersistenceMixin:
             return pinned
         profile = self._named_profile_for_key(session_key)
         if profile is None:
-            return self._db
+            # Default-profile (``agent:main``) rows belong to the launch home, not to whichever
+            # profile's scope happens to be active: a scoped drain tick or cron mirror touching a
+            # default chat used to write its rows into the secondary's store (#102157's picture).
+            routing_home = getattr(self, "_routing_home", None)
+            if routing_home is None or not getattr(self.config, "multiplex_profiles", False):
+                return self._db
+            try:
+                return self._open_session_db_for_active_scope(db_path=routing_home / "state.db")
+            except Exception:
+                return None
         home = self._profile_home_for_key(session_key)
         if home is None:
             # Falling back to the ambient store would split ONE session identity across two

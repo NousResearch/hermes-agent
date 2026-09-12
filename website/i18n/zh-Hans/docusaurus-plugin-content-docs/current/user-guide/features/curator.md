@@ -31,7 +31,7 @@ Curator 由空闲检查触发，而非 cron 守护进程。在 CLI 会话启动�
 
 一次运行分为两个阶段：
 
-1. **自动状态转换**（确定性，无 LLM）。未使用时间超过 `stale_after_days`（30 天）的技能变为 `stale`；未使用时间超过 `archive_after_days`（90 天）的技能被移至 `~/.hermes/skills/.archive/`。
+1. **自动状态转换**（确定性，无 LLM）。未使用时间超过 `stale_after_days`（14 天）的技能变为 `stale`；未使用时间超过 `archive_after_days`（30 天）的技能被移至 `~/.hermes/skills/.archive/`。
 2. **LLM 审查**（单次辅助模型 pass，`max_iterations=8`）。派生的 agent 审查 agent 创建的技能，可通过 `skill_view` 读取任意技能，并逐技能决定是保留、修补（通过 `skill_manage`）、合并重叠项，还是通过终端工具归档。
 
 已固定（pinned）的技能对 curator 的自动状态转换和 agent 自身的 `skill_manage` 工具均不可操作。详见下方[固定技能](#pinning-a-skill)。
@@ -45,8 +45,8 @@ curator:
   enabled: true
   interval_hours: 168          # 7 days
   min_idle_hours: 2
-  stale_after_days: 30
-  archive_after_days: 90
+  stale_after_days: 14
+  archive_after_days: 30
 ```
 
 若要完全禁用，设置 `curator.enabled: false`。

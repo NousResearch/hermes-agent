@@ -30,7 +30,7 @@ export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
-const EMOJI_FRAMES = ['⚕ ', '🌀', '🤔', '✨', '🍵', '🔮']
+const EMOJI_FRAMES = ['☤ ', '🌀', '🤔', '✨', '🍵', '🔮']
 const ASCII_FRAMES = ['|', '/', '-', '\\']
 
 // Faster tick for spinner-style indicators — they read as motion only
@@ -54,7 +54,7 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
 
   if (style === 'emoji') {
     return {
-      frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '⚕ ',
+      frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '☤ ',
       intervalMs: SPINNER_TICK_MS * 6,
       showVerb: true
     }
@@ -510,6 +510,7 @@ export function StatusRule({
   t
 }: StatusRuleProps) {
   const pct = usage.context_percent
+  const contextMark = usage.context_estimated ? '~' : ''
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
 
@@ -523,8 +524,8 @@ export function StatusRule({
     ok('context_detail') || ok('context_pct')
       ? usage.context_max
         ? segs.compactCtx
-          ? `${fmtK(usage.context_used ?? 0)} tok`
-          : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+          ? `${contextMark}${fmtK(usage.context_used ?? 0)} tok`
+          : `${contextMark}${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
         : usage.total > 0
           ? `${fmtK(usage.total)} tok`
           : ''
@@ -603,7 +604,7 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
-  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
+  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${contextMark}${pct}%` : ''}`))
   const showDuration = segs.duration && ok('duration') && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
   // Idle clock — time since the last final agent response. Hidden while busy
@@ -730,7 +731,8 @@ export function StatusRule({
         {showBar ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+            <Text color={barColor}>[{bar}]</Text>{' '}
+            <Text color={barColor}>{pct != null ? `${contextMark}${pct}%` : ''}</Text>
           </Text>
         ) : null}
         {showDuration ? (

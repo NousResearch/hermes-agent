@@ -120,6 +120,7 @@ class TestUserOptOut:
 
 
 
+@pytest.mark.linux_only
 class TestPosixNoOp:
     """POSIX: zero behavior change.  We don't touch LANG, LC_*, or any
     stdio.  The goal is that Linux/macOS behave identically before and
@@ -336,6 +337,7 @@ class TestHardenImportPath:
 class TestSuppressPlatformVerConsole:
     """suppress_platform_ver_console: stub applied on Windows, no-op on POSIX."""
 
+    @pytest.mark.linux_only
     def test_noop_on_posix(self):
         import platform
         hb = _fresh_import()

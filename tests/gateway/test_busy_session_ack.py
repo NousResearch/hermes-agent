@@ -25,12 +25,11 @@ sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.platforms.base import (
-    MessageEvent,
-    MessageType,
     Platform,
     SessionSource,
     build_session_key,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +211,10 @@ class TestBusySessionAck:
             await runner._handle_active_session_busy_message(event, sk)
 
         # VERIFY: Agent was steered, NOT interrupted
-        agent.steer.assert_called_once_with("also check the tests")
+        agent.steer.assert_called_once()
+        injected = agent.steer.call_args.args[0]
+        assert injected.endswith("also check the tests")
+        assert '"chat_id": "123"' in injected
         agent.interrupt.assert_not_called()
 
         # VERIFY: No queueing — successful steer must NOT replay as next turn
@@ -256,7 +258,10 @@ class TestBusySessionAck:
         runner._enrich_message_with_transcription.assert_awaited_once_with(
             "", ["/tmp/follow-up.ogg"]
         )
-        agent.steer.assert_called_once_with('"yönü teknik mimariye çevir"')
+        agent.steer.assert_called_once()
+        injected = agent.steer.call_args.args[0]
+        assert injected.endswith('"yönü teknik mimariye çevir"')
+        assert '"chat_id": "123"' in injected
         agent.interrupt.assert_not_called()
         assert sk not in adapter._pending_messages
         content = adapter._send_with_retry.call_args.kwargs["content"]
@@ -512,5 +517,55 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
+
+    @pytest.mark.asyncio
+    async def test_restart_during_heartbeat_edit_sends_no_fallback_bubble(self, monkeypatch):
+        """The guard is rechecked after the awaited edit: a restart that begins while the edit is
+        in flight must not be followed by a fresh "Working" send when that edit fails (#10990)."""
+        import asyncio
+        from types import SimpleNamespace
+        from gateway.run import GatewayRunner
+        from gateway.turn_context import TurnContext
+
+        monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.01")
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+        runner._draining = runner._restart_requested = False
+        adapter = MagicMock()
+        first_send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="hb-1"))
+        adapter.send = first_send
+
+        async def _edit_then_restart(*a, **k):
+            runner._restart_requested = True  # restart notice goes out while the edit is awaited
+            return SimpleNamespace(success=False)
+
+        adapter.edit_message = AsyncMock(side_effect=_edit_then_restart)
+        runner._adapter_for_source = lambda source: adapter
+        runner._agent_activity_summary = staticmethod(lambda agent: None)
+        agent = MagicMock()
+        runner._running_agents["sess"] = agent
+        disp = MagicMock()
+        disp._display_surface_mode.return_value = "on"
+        disp.resolve_display_setting.return_value = False
+        ctx = TurnContext(source=SimpleNamespace(chat_id="c", platform="telegram"), session_key="sess")
+        ctx.agent_holder[0] = agent
+
+        await asyncio.wait_for(runner._run_agent_notify_long_running(disp, ctx, [None]), 5)
+
+        assert first_send.await_count == 1  # the original heartbeat only
+        adapter.edit_message.assert_awaited_once()
+
+    @pytest.mark.parametrize("flag", ["_draining", "_restart_requested"])
+    def test_notification_stops_once_shutdown_or_restart_begins(self, flag):
+        """After the restart/shutdown notice a heartbeat would contradict it (#10990)."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+        agent = MagicMock()
+        runner._running_agents["sess"] = agent
+        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is True
+        setattr(runner, flag, True)
+        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is False
 
 

@@ -18,7 +18,7 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
-from utils import base_url_hostname, base_url_origin
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import list_authenticated_providers
 
@@ -1135,19 +1135,36 @@ def _route_alias_fallback(st: _Switch, key: str) -> Optional[ModelSwitchResult]:
 
 
 def _convert_vendor_colon_slug(st: _Switch) -> None:
-    """Step c: on an aggregator, ``vendor:model`` -> ``vendor/model``. Only without a slash: with
-    one, the colon is a variant tag (:free, :extended, :fast) that must be preserved."""
+    """Step c: ``vendor:model`` -> ``vendor/model``. Only without a slash: with one, the colon is
+    a variant tag (:free, :extended, :fast) that must be preserved.
+
+    On an aggregator every ``left:right`` is a slug. Elsewhere the colon is converted only when
+    ``left`` names a provider Hermes knows, so ``/model alibaba:qwen3.6-plus`` routes like
+    ``alibaba/qwen3.6-plus`` (#9748) while Ollama-style tags (``qwen3.5:4b``) stay intact."""
     raw_input = st.raw_input
     colon_pos = raw_input.find(":")
     cur_norm = str(st.current_provider).strip().lower()
-    if (
-        colon_pos > 0 and "/" not in raw_input and is_aggregator(st.current_provider)
-        and not cur_norm.startswith("custom") and cur_norm != "ollama"):
-        left = raw_input[:colon_pos].strip().lower()
-        right = raw_input[colon_pos + 1:].strip()
-        if left and right:
-            st.new_model = f"{left}/{right}"
-            logger.debug("Converted vendor:model '%s' to aggregator slug '%s'", raw_input, st.new_model)
+    if colon_pos <= 0 or "/" in raw_input or cur_norm.startswith("custom") or cur_norm == "ollama":
+        return
+    left = raw_input[:colon_pos].strip().lower()
+    right = raw_input[colon_pos + 1:].strip()
+    if not left or not right:
+        return
+    if not is_aggregator(st.current_provider) and not _names_known_provider(left, st):
+        return
+    st.new_model = f"{left}/{right}"
+    logger.debug("Converted vendor:model '%s' to slug '%s'", raw_input, st.new_model)
+
+
+def _names_known_provider(name: str, st: _Switch) -> bool:
+    """Whether ``name`` is a built-in provider id/alias or a provider the user configured."""
+    from hermes_cli.providers import get_provider
+    if resolve_provider_full(name, st.user_providers, st.custom_providers) is not None:
+        return True
+    try:
+        return get_provider(name, allow_network=False) is not None
+    except Exception:
+        return False
 
 
 def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | bool:
@@ -1220,6 +1237,14 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     # Steps d.5 / e only apply while the request is still unrouted on the current provider.
     if st.resolved_alias or resolved_in_current_catalog or st.target_provider != current_provider:
         return None
+    if current_provider == "nous":
+        # The welcome host serves nous/welcome only; a model outside it needs an account or a key.
+        # Never hop to another provider on the user's behalf here (there is no key to hop to).
+        from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
+        if route_is_welcome_host(st.current_base_url) and st.new_model != GUEST_MODEL:
+            return st.fail(
+                f"{st.new_model} needs a Nous account or an API key. "
+                "Use /login to sign in, or /model to pick another provider.")
     config_routed = _route_configured_provider(st)  # d.5 — deliberately NOT gated on ``not is_custom``
     if isinstance(config_routed, ModelSwitchResult):
         return config_routed
@@ -1309,6 +1334,17 @@ def _creds_for_current_provider(st: _Switch) -> None:
             st.resolve_runtime(requested=st.current_provider)
         except Exception:
             pass
+        # Bare ``custom``/``local`` sessions whose base_url is session-only (not a trusted config
+        # ``model.base_url``) re-resolve to the OpenRouter DEFAULT — a host the user never picked
+        # (#74143). Keep the session endpoint + key then; a config-backed custom URL still wins so
+        # key/endpoint rotation is not pinned to a stale session.
+        if (
+            st.current_provider in {"custom", "local"} and st.current_base_url
+            and (not st.base_url or base_url_host_matches(st.base_url, "openrouter.ai"))
+            and not base_url_host_matches(st.current_base_url, "openrouter.ai")
+        ):
+            st.base_url, st.api_key = st.current_base_url, st.current_api_key
+            st.api_mode = determine_api_mode(st.current_provider, st.base_url)
 
 
 def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
@@ -1333,7 +1369,8 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
     # Fills an empty mode (alias cleared it) and overrides a STALE mode carried from previous
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com
     # would otherwise 400 on tools+reasoning).
-    mandated_mode = host_mandated_api_mode(st.base_url)
+    from hermes_cli.providers import is_actual_route
+    mandated_mode = "chat_completions" if is_actual_route(st.target_provider, st.base_url) else host_mandated_api_mode(st.base_url)
     if mandated_mode is not None:
         st.api_mode = mandated_mode
     st.api_mode = st.api_mode or determine_api_mode(st.target_provider, st.base_url)

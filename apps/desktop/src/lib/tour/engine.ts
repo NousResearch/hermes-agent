@@ -56,6 +56,10 @@ export interface TourHolder {
  *  supplies the actual navigation (see TourHost), so the engine itself stays
  *  self-contained and portable to a guest page. */
 export interface TourStep {
+  /** Draw this step accent-lit: a slowly travelling ring around the popover
+   *  instead of the usual hairline. For the moment in a run that is worth more
+   *  than a step — used sparingly, or it stops meaning anything. */
+  accent?: boolean
   navigate?: string
   pane?: string
   selector?: string
@@ -116,7 +120,7 @@ export function runTourEngine(
     step.title || step.text
       ? {
           description: step.text || '',
-          popoverClass: first ? 'tour-pop-in' : 'tour-pop-next',
+          popoverClass: (first ? 'tour-pop-in' : 'tour-pop-next') + (step.accent ? ' tour-pop-accent' : ''),
           side: step.side || undefined,
           title: step.title || ''
         }

@@ -177,6 +177,7 @@ class FakeSessionRPC:
         task: state.TaskIdentity,
         execution_generation: int,
         on_terminal,
+        member_id="",
     ):
         self._assert_lock(profile)
         params = {

@@ -130,6 +130,7 @@ export interface Translations {
     close: string
     collapse: string
     confirm: string
+    typedConfirmation: (value: string) => string
     connect: string
     connecting: string
     continue: string

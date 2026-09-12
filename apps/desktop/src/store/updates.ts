@@ -1,9 +1,9 @@
+import type { ServiceMutationRequest } from '@hermes/shared'
+import { atom } from 'nanostores'
 /**
  * Desktop self-update store. Tracks distance from the configured branch,
  * surfaces it as an ambient pill, and orchestrates the apply flow.
  */
-
-import { atom } from 'nanostores'
 
 import type {
   DesktopUpdateApplyOptions,
@@ -21,6 +21,7 @@ import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connec
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
 import { onboardingSurfaceActive } from '@/store/onboarding-presence'
+import { confirmServiceMutation } from '@/store/service-mutations'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
@@ -678,7 +679,12 @@ function legacyBackendReachedTarget(
 
 let backendUpdateInFlight: Promise<DesktopUpdateApplyResult> | null = null
 
-async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+async function runBackendUpdate(confirmedRequest?: ServiceMutationRequest): Promise<DesktopUpdateApplyResult> {
+  const request = confirmedRequest ?? (await confirmServiceMutation('update'))
+
+  if (!request) {
+    return { ok: false, error: 'cancelled' }
+  }
   dismissNotification(UPDATE_TOAST_ID)
   $backendUpdateApply.set({
     ...IDLE,
@@ -695,7 +701,7 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       ? previousStatus.targetSha.slice('backend:'.length)
       : undefined
 
-    const started = await updateHermes()
+    const started = await updateHermes(request)
     const applyStartedAtMs = Date.now()
 
     if (!started.ok) {
@@ -808,12 +814,12 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   }
 }
 
-export function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+export function applyBackendUpdate(confirmedRequest?: ServiceMutationRequest): Promise<DesktopUpdateApplyResult> {
   if (backendUpdateInFlight) {
     return backendUpdateInFlight
   }
 
-  backendUpdateInFlight = runBackendUpdate().finally(() => {
+  backendUpdateInFlight = runBackendUpdate(confirmedRequest).finally(() => {
     backendUpdateInFlight = null
   })
 
@@ -896,6 +902,11 @@ export function applyEverythingUpdate(): Promise<void> {
 }
 
 async function runEverythingUpdate(): Promise<void> {
+  const request = await confirmServiceMutation('update', translateNow('settings.connections.updateAll'))
+
+  if (!request) {
+    return
+  }
   $updateEverything.set({ running: true })
 
   // Snapshot the client status before any leg runs: the backend leg's own
@@ -912,7 +923,7 @@ async function runEverythingUpdate(): Promise<void> {
     if (isRemoteMode()) {
       $updateOverlayTarget.set('backend')
 
-      await applyBackendUpdate().catch(() => null)
+      await applyBackendUpdate(request).catch(() => null)
     }
 
     // 2. Fan out to every OTHER eligible registered connection. The active
@@ -931,7 +942,7 @@ async function runEverythingUpdate(): Promise<void> {
 
     if (bridge?.updateAll && remaining.length > 0) {
       try {
-        const { results } = await bridge.updateAll({ excludeIds })
+        const { results } = await bridge.updateAll({ excludeIds, mutation: request })
 
         for (const row of results) {
           if (row.ok) {

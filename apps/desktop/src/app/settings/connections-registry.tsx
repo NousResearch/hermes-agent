@@ -37,6 +37,7 @@ import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
+import { confirmServiceMutation } from '@/store/service-mutations'
 
 import { EmptyState, ListRow, Pill, SectionHeading, ToggleRow } from './primitives'
 
@@ -575,10 +576,15 @@ export function ConnectionsRegistrySection() {
       return
     }
 
+    const request = await confirmServiceMutation('update', s.updateAll)
+
+    if (!request) {
+      return
+    }
     setUpdatingAll(true)
 
     try {
-      const { results } = await bridge.updateAll()
+      const { results } = await bridge.updateAll({ mutation: request })
 
       for (const row of results) {
         if (row.ok) {
@@ -594,7 +600,7 @@ export function ConnectionsRegistrySection() {
     } finally {
       setUpdatingAll(false)
     }
-  }, [bridge, s.updateAllDone, s.updateAllFailed, s.updateSkippedCloud])
+  }, [bridge, s.updateAll, s.updateAllDone, s.updateAllFailed, s.updateSkippedCloud])
 
   const kindMeta: Record<DesktopConnectionKind, { label: string; desc: string }> = {
     cloud: { desc: s.kindCloudDesc, label: s.kindCloud },

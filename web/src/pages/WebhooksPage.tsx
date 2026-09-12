@@ -1,3 +1,4 @@
+import { useSystemActions } from "@/contexts/useSystemActions";
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import {
   AlertTriangle,
@@ -57,6 +58,7 @@ function CopyButton({ value }: { value: string }) {
 }
 
 export default function WebhooksPage() {
+  const { confirmMutation } = useSystemActions();
   const [data, setData] = useState<WebhooksResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [enabling, setEnabling] = useState(false);
@@ -130,9 +132,11 @@ export default function WebhooksPage() {
   }, [showToast]);
 
   const handleRestart = useCallback(async () => {
+    const request = await confirmMutation("restart");
+    if (!request) return;
     setRestarting(true);
     try {
-      await api.restartGateway();
+      await api.restartGateway(request);
       setRestartNeeded(false);
       setRestartError(null);
       setRestartMessage("Gateway restarting…");
@@ -146,7 +150,7 @@ export default function WebhooksPage() {
     } finally {
       setRestarting(false);
     }
-  }, [loadWebhooks, showToast, watchRestartOutcome]);
+  }, [confirmMutation, loadWebhooks, showToast, watchRestartOutcome]);
 
   const handleEnableWebhooks = useCallback(async () => {
     setEnabling(true);

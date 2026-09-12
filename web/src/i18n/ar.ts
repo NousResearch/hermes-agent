@@ -7,6 +7,7 @@ export const ar = defineLocale({
     cancel: "إلغاء",
     close: "إغلاق",
     confirm: "تأكيد",
+    typedConfirmation: (value: string) => `اكتب ${value} للتأكيد.`,
     delete: "حذف",
     refresh: "تحديث",
     retry: "إعادة المحاولة",

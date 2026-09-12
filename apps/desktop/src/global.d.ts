@@ -1,3 +1,4 @@
+import type { ServiceMutationRequest } from '@hermes/shared'
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
@@ -226,7 +227,8 @@ declare global {
         // cloud entries are skipped (platform-managed), each row independent.
         // excludeIds skips connections the caller updates through another
         // path (the everything-update flow's active backend + local client).
-        updateAll?: (options?: {
+        updateAll?: (options: {
+          mutation: ServiceMutationRequest
           excludeIds?: string[]
         }) => Promise<{ ok: boolean; results: DesktopConnectionUpdateResult[] }>
         // Registry lifecycle push: fired when a connection is removed or

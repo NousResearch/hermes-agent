@@ -580,7 +580,9 @@ same auth gate as the rest of `/api/`.
 | `GET /api/memory` | Active provider + available providers + built-in file sizes |
 | `PUT /api/memory/provider` | Select a provider (empty = built-in only) |
 | `POST /api/memory/reset` | Reset built-in memory. Body: `{target: all\|memory\|user}` |
-| `POST /api/gateway/start` · `/stop` · `/restart` | Gateway lifecycle (backgrounded) |
+| `POST /api/gateway/start` · `/stop` | Gateway lifecycle (backgrounded) |
+| `POST /api/gateway/restart` | Restart the gateway. Body: `{confirmation: "RESTART", idempotency_key: string}` |
+| `POST /api/hermes/update` | Update Hermes. Body: `{confirmation: "UPDATE", idempotency_key: string}` |
 | `POST /api/ops/doctor` · `/security-audit` · `/backup` · `/import` | Diagnostics & maintenance (backgrounded; tail via `/api/actions/{name}/status`) |
 | `GET /api/ops/hooks` | Configured shell hooks + allowlist status |
 | `GET /api/ops/checkpoints` · `POST .../prune` | Inspect / prune the `/rollback` store |
@@ -598,6 +600,8 @@ same auth gate as the rest of `/api/`.
 | `GET /api/sessions/{id}/export` | Export a session (metadata + messages) as JSON |
 | `POST /api/sessions/prune` | Delete ended sessions older than N days |
 | `PUT /api/cron/jobs/{id}` | Edit a cron job's prompt / schedule / name / deliver |
+
+Restart and update controls require typing the exact confirmation shown in the dialog. API clients must also send that confirmation and an `idempotency_key` of 16–128 characters, starting with a letter or digit and using only letters, digits, `.`, `_`, `:`, or `-`. Generate one key for each confirmed operation and reuse it when retrying that request. Missing or invalid fields return HTTP 400; conflicting restart/update work returns HTTP 409. An identical request reuses its running process. Keys are held only while the action is running in this dashboard process; they are not durable across dashboard restarts. The existing restart cooldown still coalesces nearby restarts after a child exits.
 
 ## Authentication (gated mode)
 

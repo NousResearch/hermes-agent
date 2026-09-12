@@ -84,6 +84,7 @@ export const en: Translations = {
     close: 'Close',
     collapse: 'Collapse',
     confirm: 'Confirm',
+    typedConfirmation: (value: string) => `Type ${value} to confirm.`,
     connect: 'Connect',
     connecting: 'Connecting',
     continue: 'Continue',

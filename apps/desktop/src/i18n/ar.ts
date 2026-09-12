@@ -68,6 +68,7 @@ export const ar = defineLocale({
     close: 'إغلاق',
     collapse: 'طي',
     confirm: 'تأكيد',
+    typedConfirmation: (value: string) => `اكتب ${value} للتأكيد.`,
     connect: 'اتصال',
     connecting: 'جار الاتصال',
     continue: 'متابعة',

@@ -48,6 +48,7 @@ export const zhHant = defineLocale({
     close: '關閉',
     collapse: '收合',
     confirm: '確認',
+    typedConfirmation: (value: string) => `輸入 ${value} 以確認。`,
     connect: '連線',
     connecting: '連線中',
     continue: '繼續',

@@ -7,6 +7,7 @@ export const it: Translations = {
     cancel: "Annulla",
     close: "Chiudi",
     confirm: "Conferma",
+    typedConfirmation: (value: string) => `Digita ${value} per confermare.`,
     delete: "Elimina",
     refresh: "Aggiorna",
     retry: "Riprova",

@@ -64,18 +64,24 @@ describe('confirm()', () => {
     expect(read()).toBe(false)
   })
 
-  it('supersedes an open request, answering the one it replaces no', async () => {
+  it('resets typed intent when a new request replaces an open prompt', async () => {
     render(<ConfirmHost />)
-
-    const first = await ask('First?')
-    const second = await act(async () => ask('Second?'))
-
-    await first.pending
-    expect(first.read()).toBe(false)
-    expect(screen.getByText('Second?')).toBeTruthy()
-
+    let first!: Promise<boolean>
+    act(() => {
+      first = confirm({ title: 'First restart', typedConfirmation: 'RESTART' })
+    })
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'RESTART' } })
+    let second!: Promise<boolean>
+    act(() => {
+      second = confirm({ title: 'Second restart', typedConfirmation: 'RESTART' })
+    })
+    expect(await first).toBe(false)
+    await screen.findByText('Second restart')
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('')
     fireEvent.click(screen.getByRole('button', { name: /confirm/i }))
-    await second.pending
-    expect(second.read()).toBe(true)
+    expect($confirmRequest.get()).not.toBeNull()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'RESTART' } })
+    fireEvent.click(screen.getByRole('button', { name: /confirm/i }))
+    expect(await second).toBe(true)
   })
 })

@@ -7,6 +7,7 @@ export const ga: Translations = {
     cancel: "Cealaigh",
     close: "Dún",
     confirm: "Deimhnigh",
+    typedConfirmation: (value: string) => `Clóscríobh ${value} chun deimhniú.`,
     delete: "Scrios",
     refresh: "Athnuaigh",
     retry: "Bain triail eile as",

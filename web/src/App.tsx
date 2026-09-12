@@ -1,3 +1,4 @@
+import { serviceMutationRequest } from "@hermes/shared";
 import {
   lazy,
   Suspense,
@@ -60,7 +61,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
-import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
@@ -1012,21 +1013,18 @@ function SidebarSystemActions({
       setUpdateConfirmOpen(true);
       return;
     }
-    void runAction(action);
-    navigate("/sessions");
-    onNavigate();
   };
 
   const confirmRestart = () => {
     setRestartConfirmOpen(false);
-    void runAction("restart");
+    void runAction("restart", serviceMutationRequest("RESTART"));
     navigate("/sessions");
     onNavigate();
   };
 
   const confirmUpdate = () => {
     setUpdateConfirmOpen(false);
-    void runAction("update");
+    void runAction("update", serviceMutationRequest("UPDATE"));
     navigate("/sessions");
     onNavigate();
   };
@@ -1082,6 +1080,7 @@ function SidebarSystemActions({
       loading={pendingAction === "restart"}
       onCancel={() => setRestartConfirmOpen(false)}
       onConfirm={confirmRestart}
+      typedConfirmation="RESTART"
       open={restartConfirmOpen}
       title={
         t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`
@@ -1097,6 +1096,7 @@ function SidebarSystemActions({
       loading={pendingAction === "update" || updateConfirmChecking}
       onCancel={() => setUpdateConfirmOpen(false)}
       onConfirm={confirmUpdate}
+      typedConfirmation="UPDATE"
       open={updateConfirmOpen}
       title={t.status.updateHermesConfirmTitle ?? `${t.status.updateHermes}?`}
     />

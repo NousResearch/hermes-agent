@@ -48,6 +48,7 @@ export const ja = defineLocale({
     close: '閉じる',
     collapse: '折りたたむ',
     confirm: '確認',
+    typedConfirmation: (value: string) => `確認するには ${value} と入力してください。`,
     connect: '接続',
     connecting: '接続中',
     continue: '続ける',

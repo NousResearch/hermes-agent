@@ -90,7 +90,11 @@ terminal:
   docker_forward_env: []  # Explicit allowlist only; empty keeps secrets out of the container
 ```
 
-Every Docker container runs with hardened settings — all Linux capabilities dropped (with a minimal add-back set), `no-new-privileges`, a process-count limit, and size-limited tmpfs mounts. With a container backend, destructive commands inside the container can't harm the host, which is why dangerous-command checks are skipped there.
+Every Docker container runs with hardened settings — all Linux capabilities dropped (with a minimal add-back set), a process-count limit, and size-limited tmpfs mounts. Hermes also enables `no-new-privileges` unless `docker_snap_compat` is enabled; that compatibility mode omits the setting because Snap-packaged Docker otherwise blocks every process from starting. With the default empty `docker_volumes` and `docker_mount_cwd_to_workspace: false`, host `config.yaml` and `.env` are not mounted into the container; selected skills, credentials, and caches are mounted read-only. Destructive commands inside that container cannot reach the host, so dangerous-command checks are skipped there.
+
+:::caution
+A host bind mount changes that boundary. Setting `docker_volumes` to a host path or enabling `docker_mount_cwd_to_workspace` exposes that path to container commands, and Hermes therefore re-enables dangerous-command checks. Those checks are still guardrails, not containment: never mount `~/.hermes` (or a parent directory containing it) into the agent container when approval policy must remain operator-owned.
+:::
 
 For `ssh`, set `terminal.backend: ssh` in `config.yaml` and provide host details via `TERMINAL_SSH_HOST`, `TERMINAL_SSH_USER`, and `TERMINAL_SSH_KEY` in `~/.hermes/.env`. See [Network Isolation](/user-guide/security#network-isolation).
 

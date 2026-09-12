@@ -6,13 +6,17 @@ bind mounts.
 """
 
 import datetime
+import errno
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -21,6 +25,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from hermes_constants import get_default_hermes_root
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE
 from tools.environments.base_output import _popen_bash
 from tools.environments.docker_egress import (
@@ -87,6 +92,7 @@ _load_hermes_env_vars = load_hermes_env_vars
 # Docker label values must match [a-zA-Z0-9_.-] and stay <=63 chars to round-trip
 # through `docker ps --filter label=key=value`.
 _LABEL_VALUE_OK_RE = re.compile(r"[^A-Za-z0-9_.-]")
+_RUNTIME_LABEL_KEY = "hermes-runtime"
 
 
 def _sanitize_label_value(value: str) -> str:
@@ -120,6 +126,202 @@ def _container_identity(shared_key: str = "") -> str:
         return _sanitize_label_value(_get_active_profile_name())
     digest = hashlib.sha256(shared_key.encode("utf-8")).hexdigest()[:12]
     return f"{_sanitize_label_value(shared_key)[:50]}-{digest}"
+
+
+_RUNTIME_REUSE_KEY_FILE = ".docker-runtime-reuse.key"
+_RUNTIME_REUSE_KEYS: dict[str, bytes] = {}
+_RUNTIME_REUSE_KEY_LOCK = threading.Lock()
+
+
+class _IncompleteRuntimeReuseKey(RuntimeError):
+    def __init__(self, message: str, *, size: int):
+        super().__init__(message)
+        self.size = size
+
+
+def _read_runtime_reuse_key(path: Path) -> bytes:
+    flags = (
+        os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    )
+    fd = os.open(path, flags)
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise RuntimeError(f"Docker runtime reuse key is not a regular file: {path}")
+        if os.name != "nt" and file_stat.st_mode & 0o077:
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            key = handle.read(33)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(key) != 32:
+        raise _IncompleteRuntimeReuseKey(
+            f"Docker runtime reuse key must contain exactly 32 bytes: {path}", size=len(key)
+        )
+    return key
+
+
+def _set_runtime_reuse_file_lock(fd: int, *, lock: bool) -> None:
+    """Acquire or release a cross-process advisory lock on an open lock file."""
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\0")
+            os.fsync(fd)
+            os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK if lock else msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
+
+
+class _RuntimeReuseFileLock:
+    def __init__(self, path: Path):
+        self.path = path
+        self.fd = -1
+
+    def __enter__(self):
+        flags = (
+            os.O_RDWR | os.O_CREAT
+            | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        self.fd = os.open(self.path, flags, 0o600)
+        try:
+            file_stat = os.fstat(self.fd)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise RuntimeError(f"Docker runtime reuse lock is not a regular file: {self.path}")
+            if os.name != "nt" and file_stat.st_mode & 0o077:
+                os.fchmod(self.fd, 0o600)
+            _set_runtime_reuse_file_lock(self.fd, lock=True)
+        except BaseException:
+            os.close(self.fd)
+            self.fd = -1
+            raise
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        fd, self.fd = self.fd, -1
+        if fd >= 0:
+            try:
+                _set_runtime_reuse_file_lock(fd, lock=False)
+            finally:
+                os.close(fd)
+
+
+def _publish_runtime_reuse_key_locked(path: Path, temp_path: Path, key: bytes) -> bytes:
+    """Atomically publish a complete key while serializing fallback publishers."""
+    lock_path = path.with_name(f".{path.name}.lock")
+    with _RuntimeReuseFileLock(lock_path):
+        try:
+            return _read_runtime_reuse_key(path)
+        except FileNotFoundError:
+            pass
+        except _IncompleteRuntimeReuseKey as exc:
+            # An empty file is crash residue from the former direct-O_EXCL
+            # fallback. Non-empty malformed keys remain a hard failure.
+            if exc.size != 0:
+                raise
+        os.replace(temp_path, path)
+        return key
+
+
+def _load_or_create_runtime_reuse_key(path: Path) -> bytes:
+    """Load or atomically create the private key used for Docker reuse labels."""
+    try:
+        return _read_runtime_reuse_key(path)
+    except _IncompleteRuntimeReuseKey:
+        # Let the serialized publisher distinguish recoverable empty crash
+        # residue from non-empty corruption.
+        pass
+    except FileNotFoundError:
+        pass
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_bytes(32)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
+    flags = (
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    fd = os.open(temp_path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(key)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            # Linking a fully written inode into place is an atomic create-if-absent.
+            # A direct O_EXCL write exposes a zero-length target to a racing reader.
+            os.link(temp_path, path)
+        except FileExistsError:
+            return _publish_runtime_reuse_key_locked(path, temp_path, key)
+        except OSError as exc:
+            unsupported = {
+                errno.EPERM,
+                errno.EACCES,
+                errno.EINVAL,
+                getattr(errno, "EOPNOTSUPP", -1),
+                getattr(errno, "ENOTSUP", -1),
+                getattr(errno, "ENOSYS", -1),
+            }
+            if exc.errno not in unsupported:
+                raise
+            # Some managed-home filesystems reject hardlinks. Serialize
+            # publishers, then atomically replace from the fully-written temp.
+            return _publish_runtime_reuse_key_locked(path, temp_path, key)
+        return key
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _runtime_reuse_key() -> bytes:
+    path = get_default_hermes_root() / _RUNTIME_REUSE_KEY_FILE
+    cache_key = str(path.expanduser().resolve(strict=False))
+    with _RUNTIME_REUSE_KEY_LOCK:
+        key = _RUNTIME_REUSE_KEYS.get(cache_key)
+        if key is None:
+            try:
+                key = _load_or_create_runtime_reuse_key(path)
+            except (OSError, RuntimeError) as exc:
+                # A missing persistent identity must disable reuse, not Docker.
+                # A process-local random key cannot match any prior process's
+                # runtime label, so this degradation fails closed for reuse.
+                key = secrets.token_bytes(32)
+                logger.warning(
+                    "Docker runtime reuse key is unavailable (%s); "
+                    "cross-process Docker reuse is disabled for this process",
+                    exc,
+                )
+            _RUNTIME_REUSE_KEYS[cache_key] = key
+        return key
+
+
+def _runtime_reuse_fingerprint(
+    image: str, run_args: list[str], run_env_values: dict[str, str],
+) -> str:
+    """Keyed label value for immutable posture, including private paths and env values."""
+    payload = json.dumps(
+        [image, run_args, run_env_values],
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hmac.new(
+        _runtime_reuse_key(), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()[:24]
 
 
 def reap_orphan_containers(
@@ -577,22 +779,30 @@ class DockerEnvironment(BaseEnvironment):
         # Labels identify hermes containers to the orphan reaper (hermes-agent=1),
         # cross-process reuse (task-id/profile) and operators. The reuse identity
         # is captured at start and never changes for the container's lifetime.
-        # Egress posture gets its own label: env/CA mounts are immutable after
-        # creation, so reusing a pre-egress container would bypass the firewall.
+        # Immutable image/run posture gets an opaque label so config changes
+        # cannot attach current policy decisions to an older container.
         profile_name = _container_identity(shared_container_key)
         task_label = _sanitize_label_value(task_id)
+        try:
+            runtime_label = _runtime_reuse_fingerprint(
+                image, all_run_args, self._run_env_values)
+        except (OSError, RuntimeError) as exc:
+            raise EnvironmentConnectionError(
+                f"Docker runtime reuse identity could not load its private key: {exc}"
+            ) from exc
         self._labels = {
             "hermes-agent": "1",
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
-            _EGRESS_LABEL_KEY: egress_label}
+            _EGRESS_LABEL_KEY: egress_label,
+            _RUNTIME_LABEL_KEY: runtime_label}
         # Saved for container recreation on "No such container" recovery.
         self._image = image
         self._image_uses_s6_init = image_uses_s6_init
         self._all_run_args = all_run_args
 
         reused = persist_across_processes and self._attach_existing_container(
-            task_label, profile_name, egress_label, network)
+            task_label, profile_name, egress_label, runtime_label, network)
         if not reused:
             self._container_id = self._docker_run(cwd)
 
@@ -714,13 +924,16 @@ class DockerEnvironment(BaseEnvironment):
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
         return volume_args, writable_args
 
-    def _attach_existing_container(self, task_label, profile_name, egress_label, network: bool) -> bool:
+    def _attach_existing_container(
+        self, task_label, profile_name, egress_label, runtime_label, network: bool,
+    ) -> bool:
         """Attach to a prior process's labeled container ("ONE long-lived container shared
         across sessions"; opt out via ``docker_persist_across_processes: false``).
         Network guard is lockdown-only: a bridge container under ``docker_network: false``
         is removed and recreated, but a ``none`` container under default config is kept so
         ``--network=none`` in extra args doesn't churn containers every startup."""
-        existing = self._find_reusable_container(task_label, profile_name, egress_label)
+        existing = self._find_reusable_container(
+            task_label, profile_name, egress_label, runtime_label)
         if existing is None:
             return False
         container_id, state = existing
@@ -883,7 +1096,8 @@ class DockerEnvironment(BaseEnvironment):
         existing = self._find_reusable_container(
             self._labels.get("hermes-task-id", ""),
             self._labels.get("hermes-profile", ""),
-            self._labels.get(_EGRESS_LABEL_KEY, "off"))
+            self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            self._labels.get(_RUNTIME_LABEL_KEY, ""))
         if existing is not None:
             cid, state = existing
             if state == "running":
@@ -964,18 +1178,20 @@ class DockerEnvironment(BaseEnvironment):
         return (result.stdout.strip() or None) if result is not None else None
 
     def _find_reusable_container(
-        self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str]]:
-        """``(container_id, state)`` of an existing container labeled for this task/profile/
-        egress posture, or ``None`` on miss or any failure. The egress posture is a label
-        FILTER for every posture, "off" included: a container built with egress on must not be
-        reused after ``hermes egress disable`` (baked-in proxy env and CA mounts), and every
-        container this class creates carries the label. The ``{{.Label "key"}}`` template
-        function is Docker-only — podman ps exits 125 on it — so the probe never uses it (#99213)."""
+        self, task_label: str, profile_label: str, egress_label: str,
+        runtime_label: str,
+    ) -> Optional[tuple[str, str]]:
+        """``(container_id, state)`` matching this task/profile and immutable posture.
+
+        Egress and runtime identities are label filters, so containers created
+        under any different posture are excluded by Docker/Podman itself.
+        """
         filters = [
             "--filter", "label=hermes-agent=1",
             "--filter", f"label=hermes-task-id={task_label}",
             "--filter", f"label=hermes-profile={profile_label}",
-            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"]
+            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}",
+            "--filter", f"label={_RUNTIME_LABEL_KEY}={runtime_label}"]
         result = _docker_query(
             [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",

@@ -1262,6 +1262,7 @@ export function useMainApp(gw: GatewayClient) {
       compIdx: composerState.compIdx,
       completions: composerState.completions,
       empty,
+      ghost: composerState.ghost,
       handleTextPaste: composerActions.handleTextPaste,
       input: composerState.input,
       inputBuf: composerState.inputBuf,

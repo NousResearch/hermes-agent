@@ -199,9 +199,9 @@ def _profile_key_for_respawn(argv: list[str], hermes_home: str | None = None) ->
     return f"profile:{_profile_flag_value(argv) or 'default'}"
 
 
-def _filter_dashboard_respawn_candidates(
+def _select_dashboard_respawn_candidates(
     candidates: list[tuple[int, list[str], str | None]], *, own_home: str | None = None
-) -> list[list[str]]:
+) -> list[tuple[int, list[str], str | None]]:
     """Select which killed manual backends ``(pid, argv, hermes_home)`` to respawn after update.
 
     Rules: never resurrect Desktop ``--port 0`` backends; never replay a backend from a
@@ -225,10 +225,10 @@ def _filter_dashboard_respawn_candidates(
         except Exception:
             own_home = ""
     own_key = _normalized_home_for_compare(own_home) if own_home else ""
-    selected: list[list[str]] = []
+    selected: list[tuple[int, list[str], str | None]] = []
     seen_cmdlines: set[tuple[str, ...]] = set()
     seen_profiles: set[str] = set()
-    for _pid, argv, hermes_home in candidates:
+    for pid, argv, hermes_home in candidates:
         if not argv or _is_ephemeral_port_zero_backend(argv):
             continue
         if own_key and hermes_home and _normalized_home_for_compare(hermes_home) != own_key:
@@ -239,8 +239,18 @@ def _filter_dashboard_respawn_candidates(
             continue
         seen_cmdlines.add(norm)
         seen_profiles.add(profile_key)
-        selected.append(list(argv))
+        selected.append((pid, list(argv), hermes_home))
     return selected
+
+
+def _filter_dashboard_respawn_candidates(
+    candidates: list[tuple[int, list[str], str | None]], *, own_home: str | None = None
+) -> list[list[str]]:
+    """Return argv for the manual backends selected for respawn after update."""
+    return [
+        argv for _pid, argv, _home in
+        _select_dashboard_respawn_candidates(candidates, own_home=own_home)
+    ]
 
 
 def _exclude_pids_from_env() -> set[int]:
@@ -347,6 +357,7 @@ def _kill_stale_dashboard_processes(
     pid_service: dict[int, str | None] = {}
     pid_cmdline: dict[int, list[str]] = {}
     pid_home: dict[int, str | None] = {}
+    pid_cwd: dict[int, str | None] = {}
     if restart_managed and sys.platform != "win32":
         for pid in pids:
             pid_cgroup[pid] = _dash._get_pid_cgroup_path(pid)
@@ -358,6 +369,7 @@ def _kill_stale_dashboard_processes(
                 # after the process is gone (#78821).
                 pid_cmdline[pid] = cmdline
                 pid_home[pid] = _hermes_home_for_pid(pid)
+                pid_cwd[pid] = _dash._dashboard_cwd_for_pid(pid)
         if already_restarted_units:
             pids = [pid for pid in pids if (pid_service.get(pid) or "").removesuffix(".service")
                     not in already_restarted_units]
@@ -372,7 +384,8 @@ def _kill_stale_dashboard_processes(
     for pid, err_msg in failed:
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
     if killed and restart_managed:
-        unrecovered = _restart_killed_backends(killed, pid_service, pid_cgroup, pid_cmdline, pid_home)
+        unrecovered = _restart_killed_backends(
+            killed, pid_service, pid_cgroup, pid_cmdline, pid_home, pid_cwd)
     else:
         unrecovered = list(killed)
         if killed:
@@ -383,7 +396,9 @@ def _kill_stale_dashboard_processes(
 
 def _restart_killed_backends(
     killed: list[int], pid_service: dict[int, str | None], pid_cgroup: dict[int, str | None],
-    pid_cmdline: dict[int, list[str]], pid_home: dict[int, str | None]) -> list[int]:
+    pid_cmdline: dict[int, list[str]], pid_home: dict[int, str | None],
+    pid_cwd: dict[int, str | None],
+) -> list[int]:
     """Update path: restart systemd units, respawn manual argv (detached, headless, logged to
     logs/dashboard-restart.log; one per profile, no ``--port 0``). Returns PIDs not brought back."""
     # Two categories: Without this, a remote backend (hermes serve) under Restart=on-failure never comes
@@ -412,8 +427,9 @@ def _restart_killed_backends(
             unrecovered.append(pid)
     for svc, err in failed_restarts:
         print(f"    ⚠ {svc}: {err}")
-    respawn_cmds = _filter_dashboard_respawn_candidates(respawn_candidates)
-    failed_cmds = _dash._respawn_dashboard_processes(respawn_cmds) if respawn_cmds else None
+    selected_candidates = _select_dashboard_respawn_candidates(respawn_candidates)
+    respawn_requests = [(command, pid_cwd.get(pid)) for pid, command, _home in selected_candidates]
+    failed_cmds = _dash._respawn_dashboard_processes(respawn_requests) if respawn_requests else None
     if failed_cmds:
         unrecovered.extend(p for p in killed if pid_cmdline.get(p) in failed_cmds)
     if failed_restarts or unrecovered:

@@ -1,6 +1,29 @@
 import { describe, expect, it } from 'vitest'
 
-import { completionRequestForInput } from '../hooks/useCompletion.js'
+import { completionRequestForInput, mergeLocalSlashItems } from '../hooks/useCompletion.js'
+
+describe('mergeLocalSlashItems', () => {
+  it('adds TUI-local commands from the dispatch registry', () => {
+    expect(mergeLocalSlashItems('/wid', []).map(item => item.text)).toContain('/widgets-reload')
+  })
+
+  it('preserves gateway entries and does not suggest commands after arguments', () => {
+    const gatewayItem = {
+      display: '/widgets-reload',
+      meta: 'gateway metadata',
+      text: '/widgets-reload'
+    }
+
+    const widgetAppItem = {
+      display: '/widget-usage',
+      meta: 'widget app metadata',
+      text: '/widget-usage'
+    }
+
+    expect(mergeLocalSlashItems('/wid', [gatewayItem, widgetAppItem])).toEqual([gatewayItem, widgetAppItem])
+    expect(mergeLocalSlashItems('/wid reload', [])).toEqual([])
+  })
+})
 
 describe('completionRequestForInput', () => {
   it('routes real slash commands to slash completion', () => {

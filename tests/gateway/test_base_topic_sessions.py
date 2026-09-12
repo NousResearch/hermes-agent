@@ -9,7 +9,12 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import (
+    PROCESSING_OUTCOME_METADATA_KEY,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+)
 from gateway.session import SessionSource, build_session_key
 
 
@@ -134,6 +139,46 @@ class TestBasePlatformTopicSessions:
         assert adapter.processing_hooks == [
             ("start", "1"),
             ("complete", "1", ProcessingOutcome.SUCCESS),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_process_message_empty_response_is_successful_noop(self):
+        adapter = DummyTelegramAdapter()
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(lambda _event: asyncio.sleep(0, result=None))
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585")
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.processing_hooks == [
+            ("start", "1"),
+            ("complete", "1", ProcessingOutcome.SUCCESS),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_process_message_honors_explicit_empty_response_failure(self):
+        adapter = DummyTelegramAdapter()
+
+        async def denied_handler(event):
+            event.metadata[PROCESSING_OUTCOME_METADATA_KEY] = ProcessingOutcome.FAILURE
+            return None
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(denied_handler)
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585")
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.processing_hooks == [
+            ("start", "1"),
+            ("complete", "1", ProcessingOutcome.FAILURE),
         ]
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from hermes_cli.plugin_validate import validate_plugin_dir
@@ -17,12 +18,13 @@ def _make_plugin(
     tmp_path: Path,
     *,
     manifest: dict,
-    init_py: str = "def register(ctx):\n    pass\n",
+    init_py: str | None = "def register(ctx):\n    pass\n",
 ) -> Path:
     d = tmp_path / manifest.get("name", "fixture-plugin")
     d.mkdir(parents=True, exist_ok=True)
     (d / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
-    (d / "__init__.py").write_text(init_py, encoding="utf-8")
+    if init_py is not None:
+        (d / "__init__.py").write_text(init_py, encoding="utf-8")
     return d
 
 
@@ -136,4 +138,98 @@ class TestRequiresHermesSpec:
         assert any(
             "requires_hermes" in f and "does not parse" in f for f in report.failures
         ), report.failures
+
+
+_MP_MANIFEST = {
+    "name": "fixture-model-provider",
+    "kind": "model-provider",
+    "version": "1.0.0",
+    "description": "A fixture model provider.",
+}
+
+_MP_REGISTERING_INIT = """\
+from providers import register_provider
+from providers.base import ProviderProfile
+
+register_provider(ProviderProfile(
+    name="fixture-mp",
+    env_vars=("FIXTURE_MP_KEY",),
+    base_url="https://example.invalid/v1",
+    auth_type="api_key",
+    api_mode="chat_completions",
+))
+"""
+
+
+class TestModelProviderProbe:
+    """kind: model-provider must prove import-time register_provider(), not register(ctx)."""
+
+    @pytest.mark.parametrize(
+        "manifest, init_py, expect_ok, fail_contains, fail_excludes, probe_ok_contains",
+        [
+            pytest.param(
+                _MP_MANIFEST, _MP_REGISTERING_INIT, True, None, None, "register_provider",
+                id="import_register_provider",
+            ),
+            pytest.param(
+                _MP_MANIFEST, "def register(ctx):\n    pass\n", False,
+                "register_provider", "no register() function", None,
+                id="shell_register_ctx",
+            ),
+            pytest.param(
+                _MP_MANIFEST, None, False, "__init__.py", None, None,
+                id="missing_init",
+            ),
+            pytest.param(
+                {**_MP_MANIFEST, "kind": "Model-Provider"}, _MP_REGISTERING_INIT, False,
+                "no register() function", None, None,
+                id="wrong_case_kind",
+            ),
+            pytest.param(
+                _MP_MANIFEST,
+                (
+                    "from providers import register_provider\n"
+                    "try:\n"
+                    "    register_provider(object())\n"
+                    "except AttributeError:\n"
+                    "    pass\n"
+                ),
+                False, "register_provider", "no register() function", None,
+                id="swallowed_failed_register_provider",
+            ),
+        ],
+    )
+    def test_model_provider_admission(
+        self, tmp_path, manifest, init_py, expect_ok, fail_contains, fail_excludes,
+        probe_ok_contains,
+    ):
+        report = validate_plugin_dir(
+            _make_plugin(tmp_path, manifest=dict(manifest), init_py=init_py)
+        )
+        if expect_ok:
+            assert report.ok, report.failures
+        else:
+            assert not report.ok
+        joined = " ".join(report.failures)
+        if fail_contains:
+            assert fail_contains in joined, report.failures
+        if fail_excludes:
+            assert fail_excludes not in joined, report.failures
+        if probe_ok_contains:
+            assert any(
+                name == "capability probe" and ok and probe_ok_contains in detail
+                for name, ok, detail in report.checks
+            ), report.checks
+        else:
+            assert not any(
+                name == "capability probe" and ok and "register_provider" in detail
+                for name, ok, detail in report.checks
+            ), report.checks
+
+    def test_generic_plugin_still_requires_register_ctx(self, tmp_path):
+        report = validate_plugin_dir(
+            _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST), init_py="# no register()\n")
+        )
+        assert not report.ok
+        assert any("no register() function" in f for f in report.failures), report.failures
 

@@ -991,7 +991,7 @@ class GatewayShutdownMixin:
         # Snapshot adapters: adapter.send() can hit a fatal path (_handle_fatal) that pops the adapter
         # from self.adapters -> ``RuntimeError: dictionary changed size during iteration``.
         for platform, adapter in list(self.adapters.items()):
-            home = self.config.get_home_channel(platform)
+            home = self._gateway_notice_channel(platform)
             if not home or not home.chat_id:
                 continue
             if not self._notice_allowed(platform, "home channel"):

@@ -33,6 +33,23 @@ logger = logging.getLogger("gateway.run")
 class GatewayBusySessionMixin:
     """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
 
+    _DRAIN_NOTICE_COOLDOWN_S = 30.0
+
+    def _should_send_drain_notice(self, source: SessionSource) -> bool:
+        """Rate-limit drain notices per routed chat without suppressing queueing."""
+        profile = str(getattr(source, "profile", None) or "main")
+        platform = source.platform.value if source.platform else "gateway"
+        chat_id = str(source.chat_id or "")
+        if not chat_id:
+            return True
+        key = (profile, platform, chat_id)
+        stamps = self.__dict__.setdefault("_drain_notice_ts", {})
+        now = time.monotonic()
+        if key in stamps and now - stamps[key] < self._DRAIN_NOTICE_COOLDOWN_S:
+            return False
+        stamps[key] = now
+        return True
+
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
         mode = busy_input_mode or self._busy_input_mode
@@ -410,7 +427,8 @@ class GatewayBusySessionMixin:
             message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
         else:
             message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
-        await self._send_busy_reply(event, adapter, message)
+        if self._should_send_drain_notice(event.source):
+            await self._send_busy_reply(event, adapter, message)
 
     # Bare-word approval replies → (verb, args) for the synthesized slash command.
     _PLAINTEXT_APPROVAL_WORDS: Dict[str, tuple] = {

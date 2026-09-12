@@ -160,6 +160,60 @@ async def test_request_restart_is_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_idle_restart_drain_queues_every_message_but_throttles_notice():
+    runner, adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "steer"
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    first = MessageEvent(
+        text="first", message_type=MessageType.TEXT, source=source, message_id="m1"
+    )
+    second = MessageEvent(
+        text="second", message_type=MessageType.TEXT, source=source, message_id="m2"
+    )
+
+    first_result = await runner._hm_dispatch_quick_and_plugin_commands(
+        first, source, session_key, None
+    )
+    second_result = await runner._hm_dispatch_quick_and_plugin_commands(
+        second, source, session_key, None
+    )
+
+    assert first_result[0] is True and "queued" in first_result[1]
+    assert second_result == (True, None, None)
+    assert adapter._pending_messages[session_key] is first
+    assert runner._session_state(session_key).conversation.queued_events == [second]
+
+
+@pytest.mark.asyncio
+async def test_busy_and_idle_restart_drain_share_chat_notice_cooldown():
+    runner, adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    idle_event = MessageEvent(
+        text="idle", message_type=MessageType.TEXT, source=source, message_id="m1"
+    )
+    busy_event = MessageEvent(
+        text="busy", message_type=MessageType.TEXT, source=source, message_id="m2"
+    )
+
+    idle_result = await runner._hm_dispatch_quick_and_plugin_commands(
+        idle_event, source, session_key, None
+    )
+    await runner._send_busy_drain_notice(busy_event, session_key, "queue")
+
+    assert "queued" in idle_result[1]
+    assert adapter.sent == []
+    assert adapter._pending_messages[session_key] is idle_event
+    assert runner._session_state(session_key).conversation.queued_events == [busy_event]
+
+
+@pytest.mark.asyncio
 async def test_request_restart_defers_stop_until_active_turn_finishes():
     """Regression for #77184: requesting turn must not enter the drain set."""
     runner, _adapter = make_restart_runner()

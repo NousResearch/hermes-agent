@@ -957,12 +957,24 @@ class GatewayInboundMixin:
             return f"Quick command error: {e}"
 
     async def _hm_dispatch_quick_and_plugin_commands(
-        self, event: "MessageEvent", source: SessionSource, command: Optional[str]
+        self, event: "MessageEvent", source: SessionSource, _quick_key: str, command: Optional[str]
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
         if self._draining:
-            return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now.", command
+            queue_during_drain = self._queue_during_drain_enabled(
+                self._effective_busy_input_mode(source)
+            )
+            if queue_during_drain:
+                self._queue_or_replace_pending_event(_quick_key, event)
+            if not self._should_send_drain_notice(source):
+                return True, None, command
+            message = (
+                f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                if queue_during_drain
+                else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+            )
+            return True, message, command
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         qcmd = self._hm_quick_commands().get(command) if command else None
@@ -1148,7 +1160,9 @@ class GatewayInboundMixin:
         if not _handled:
             _handled, _result = await self._hm_dispatch_canonical_command(event, source, _quick_key, canonical)
         if not _handled:
-            _handled, _result, command = await self._hm_dispatch_quick_and_plugin_commands(event, source, command)
+            _handled, _result, command = await self._hm_dispatch_quick_and_plugin_commands(
+                event, source, _quick_key, command
+            )
         if not _handled:
             _result = self._hm_skill_slash_rewrite(event, source, _quick_key, command)
             _handled = _result is not None

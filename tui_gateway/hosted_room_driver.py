@@ -493,7 +493,32 @@ class HostedRoomRuntime:
             # database is in its configured mode from the first connection
             # (see docstring for the DELETE-mode-keeper failure this avoids).
             from hermes_state_wal import apply_wal_with_fallback
-            apply_wal_with_fallback(conn, db_label=self.db_path.name)
+            mode = apply_wal_with_fallback(conn, db_label=self.db_path.name)
+            # Trust the file, not the verdict: the WAL-reset gate reports "wal"
+            # untouched when the on-disk probe is indeterminate, which would
+            # keep a DELETE-mode keeper held (false protection — a later flip
+            # orphans it exactly as the defect-1 shape). Verify the header.
+            from hermes_state_wal import _on_disk_journal_mode
+            actual = _on_disk_journal_mode(conn)
+            if actual != "wal":
+                # The keeper only guards WAL sidecars. When the policy leaves
+                # (or cannot prove) the file in WAL — an explicit
+                # database.journal_mode=delete, a WAL-reset-vulnerable runtime,
+                # or an indeterminate probe — holding this connection is at
+                # best useless and at worst harmful: if a later connection
+                # flips the file to WAL anyway, a DELETE-mode keeper never
+                # joins the WAL index and every ephemeral close remains a
+                # last-member close, deleting the sidecars with _wal_keeper
+                # non-null (would mask the churn behind a false sense of
+                # protection). Drop it; the next worker cycle re-probes, so a
+                # genuinely transient indeterminacy self-heals into coverage.
+                conn.close()
+                conn = None
+                self._record_error(
+                    f"wal keeper inapplicable: journal policy left {self.db_path.name} "
+                    f"in {actual!r} (policy reported {mode!r}); nothing to guard — "
+                    f"will re-probe next cycle")
+                return
             # Touch the content: merely opening an fd does not join the WAL
             # shared-memory index — SQLite registers a connection only on first
             # content access, and an untouched keeper would be invisible to

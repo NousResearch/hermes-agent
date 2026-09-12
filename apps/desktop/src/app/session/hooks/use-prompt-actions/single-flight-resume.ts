@@ -1,5 +1,7 @@
+import { type ProfileScope, profileScopeKey } from '@/api/client'
+
 /**
- * Single-flight guard for `session.resume`, keyed by STORED session id.
+ * Single-flight guard for `session.resume`, keyed by owner scope + STORED id.
  *
  * After sleep/wake or a reconnect, many independent surfaces discover the same
  * dead runtime at once — submit recovery, slash/rewind recovery, tile resumes,
@@ -23,9 +25,10 @@ const _inFlightResumeByStoredSessionId = new Map<string, SessionResumeFlight>()
 export function singleFlightSessionResume<T>(
   storedSessionId: string,
   run: () => Promise<T>,
-  options?: { requiresMessages?: boolean }
+  options?: { requiresMessages?: boolean; scope?: ProfileScope }
 ): Promise<T> {
-  const existing = _inFlightResumeByStoredSessionId.get(storedSessionId)
+  const flightKey = JSON.stringify([profileScopeKey(options?.scope), storedSessionId])
+  const existing = _inFlightResumeByStoredSessionId.get(flightKey)
 
   if (existing && (!options?.requiresMessages || existing.includesMessages)) {
     return existing.promise as Promise<T>
@@ -42,8 +45,8 @@ export function singleFlightSessionResume<T>(
   const promise = ready
     .then(run)
     .finally(() => {
-      if (_inFlightResumeByStoredSessionId.get(storedSessionId) === flight) {
-        _inFlightResumeByStoredSessionId.delete(storedSessionId)
+      if (_inFlightResumeByStoredSessionId.get(flightKey) === flight) {
+        _inFlightResumeByStoredSessionId.delete(flightKey)
       }
     })
 
@@ -52,7 +55,7 @@ export function singleFlightSessionResume<T>(
     promise
   }
 
-  _inFlightResumeByStoredSessionId.set(storedSessionId, flight)
+  _inFlightResumeByStoredSessionId.set(flightKey, flight)
 
   return promise
 }

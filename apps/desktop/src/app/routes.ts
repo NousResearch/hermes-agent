@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
+import type { Contribution } from '@/contrib/types'
 
 type NavigateLike = (to: string, options?: { replace?: boolean }) => void
 
@@ -91,9 +92,13 @@ export interface RouteContribution {
   path: string
 }
 
-export function contributedRoutes(): Array<{ key: string; path: string; title?: string; render: () => ReactNode }> {
-  return registry
-    .getArea(ROUTES_AREA)
+// React consumers must pass their `useContributions(ROUTES_AREA)` snapshot in:
+// with React Compiler enabled, an independently-called `contributedRoutes()`
+// can stay memoized across a late registration the subscription DID deliver.
+export function contributedRoutes(
+  contributions: readonly Contribution[] = registry.getArea(ROUTES_AREA)
+): Array<{ key: string; path: string; title?: string; render: () => ReactNode }> {
+  return contributions
     .map(c => ({
       key: `${c.source ?? 'core'}:${c.id}`,
       path: (c.data as RouteContribution | undefined)?.path ?? '',

@@ -922,12 +922,16 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         if tool_name == "memory" and failed and "exceed the limit" in data.get("error", ""):
             return True, " [full]"
         err = data.get("error") or data.get("message")
-        if err and (failed or "error" in data):
-            return True, f" [{_trim_error(str(err))}]"
-    # Multimodal results (dicts) are successes; failures arrive as JSON-encoded strings.
-    if isinstance(result, str) and (
-        '"error"' in result[:500].lower() or '"failed"' in result[:500].lower() or result.startswith("Error")
-    ):
+        # Check structured values explicitly: success: false OR truthy error OR positive failed count.
+        if failed or (err and str(err).strip() not in ("", "null", "None")):
+            return True, f" [{_trim_error(str(err))}]" if err else " [failed]"
+        failed_count = data.get("failed")
+        if isinstance(failed_count, (int, float)) and failed_count > 0:
+            return True, f" [failed={failed_count}]"
+        # success: true / error: null / failed: 0 are all success.
+        return False, ""
+    # Plain-text fallback (only when result isn't a parsed dict).
+    if isinstance(result, str) and result.startswith("Error"):
         return True, " [error]"
     return False, ""
 

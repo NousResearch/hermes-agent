@@ -116,3 +116,21 @@ test('reuse respects lifecycle configuration and repairs missing installed packa
   prepareNodeDependencies({ ...options, reuse: false })
   expect(readFileSync(artifact, 'utf8')).not.toBe(repaired)
 }, 30000)
+
+test('npm configuration name casing does not invalidate a completed install', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'npm_config_prefix'))
+  Object.assign(env, { npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') })
+  const prefix = join(source, 'npm-prefix')
+  const options = { source, workspaces: ['web'], reuse: true }
+  prepareNodeDependencies({ ...options, env: { ...env, npm_config_prefix: prefix } })
+  const artifact = join(source, 'node_modules/postinstall-output')
+  writeFileSync(artifact, 'built')
+  // The Windows runner sets lowercase; Python's os.environ returns uppercase.
+  prepareNodeDependencies({ ...options, env: { ...env, NPM_CONFIG_PREFIX: prefix } })
+  expect(readFileSync(artifact, 'utf8')).toBe('built')
+  // Normalize names, not values: a genuinely changed setting still reinstalls.
+  prepareNodeDependencies({ ...options, env: { ...env, NPM_CONFIG_PREFIX: join(source, 'other-prefix') } })
+  expect(existsSync(artifact)).toBe(false)
+}, 30000)

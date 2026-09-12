@@ -64,7 +64,9 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   const hiddenLock = join(source, 'node_modules/.package-lock.json')
   const inputs = createHash('sha256').update(JSON.stringify({
     node: process.versions.node, npm: npmVersion, platform: process.platform, arch: process.arch, args,
-    config: Object.entries(env).filter(([key]) => /^npm_config_/i.test(key) && !/^npm_config_(cache|offline|prefer_offline)$/i.test(key)).sort(),
+    // npm names are case-insensitive; Windows Python uppercases inherited keys.
+    config: Object.entries(env).filter(([key]) => /^npm_config_/i.test(key) && !/^npm_config_(cache|offline|prefer_offline)$/i.test(key))
+      .map(([key, value]) => [key.toLowerCase(), value]).sort(),
   }))
   const files = ['package-lock.json', '.npmrc', ...Object.keys(lock.packages)
     .filter(path => !path.split('/').includes('node_modules'))

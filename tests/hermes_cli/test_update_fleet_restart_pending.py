@@ -27,6 +27,7 @@ import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 import hermes_cli.update_cmd_fleet as update_cmd_fleet
 import hermes_cli.update_cmd_deps as update_cmd_deps
+import hermes_cli.update_receipt as update_receipt
 from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 from hermes_constants import get_hermes_home
 
@@ -609,3 +610,110 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+def _write_receipt(payload: dict) -> None:
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    (receipt_dir / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _deferred_restart_receipt(expected_sha: str, *, dashboard_outcome: str | None) -> dict:
+    """The shape a deferred gateway restart leaves behind (#107402).
+
+    ``plan.runtimes`` holds the gateway AND the managed dashboard the same run
+    restarted; the recorded ``fleet`` sample predates the deferred gateway restart.
+    """
+    outcomes = [{"kind": "gateway", "profile": "default", "pid": 42, "outcome": "restarted"}]
+    if dashboard_outcome is not None:
+        outcomes.append(
+            {"kind": "dashboard", "profile": "default", "pid": 43, "outcome": dashboard_outcome}
+        )
+    return {
+        "outcome": "partial",
+        "plan": {
+            "expected_sha": expected_sha,
+            "runtimes": [
+                {"kind": "gateway", "profile": "default", "pid": 42, "code_sha": "b" * 40},
+                {"kind": "dashboard", "profile": "default", "pid": 43, "code_sha": None},
+            ],
+        },
+        "fleet": [{"profile": "default", "pid": 42, "code_sha": "b" * 40, "state": "stale"}],
+        "runtime_outcomes": outcomes,
+    }
+
+
+def _current_fleet(expected_sha: str):
+    return lambda: [
+        {
+            "profile": "default",
+            "pid": 99,
+            "code_sha": expected_sha,
+            "state": "current",
+            "source": "socket",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("dashboard_outcome", "discharges"), [("restarted", True), (None, False)]
+)
+def test_receipt_discharge_tracks_the_non_gateway_runtime_outcome(
+    monkeypatch, dashboard_outcome, discharges
+):
+    """A same-run dashboard restart must not pin the warning — and an unproven one must still block.
+
+    The gateway is provably current on the post-pull SHA, but the receipt's own ``fleet`` sample
+    predates the deferred restart. The dashboard entry in ``plan.runtimes`` used to make
+    ``_live_fleet_covers_receipt`` return False on its own, so ``_pending_fleet_restart_needed``
+    stayed pinned with nothing left to restart; reading the receipt's own dashboard outcome
+    instead makes discharge follow that outcome in both directions. (#107402)
+    """
+    expected_sha = "a" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: expected_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: expected_sha)
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", _current_fleet(expected_sha))
+    _write_receipt(_deferred_restart_receipt(expected_sha, dashboard_outcome=dashboard_outcome))
+
+    assert update_cmd_fleet._receipt_reports_stale_runtime() is True
+    assert update_cmd_fleet._live_fleet_covers_receipt(expected_sha) is discharges
+    assert update_cmd_fleet._pending_fleet_restart_needed() is (not discharges)
+
+
+def test_receipt_fails_closed_when_duplicate_profile_runtime_stays_unaccounted(monkeypatch):
+    """One profile can run two serve/dashboard processes; PID identity decides each one.
+
+    ``runtime_outcomes`` records one row per planned runtime and carries its PID. Matching
+    the non-gateway allowance on (kind, profile) alone let a *restarted* serve vouch for a
+    second serve of the same profile whose own outcome was ``unaccounted``, clearing the
+    warning while a runtime was still unresolved.
+    """
+    expected_sha = "a" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: expected_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: expected_sha)
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", _current_fleet(expected_sha))
+    _write_receipt(
+        {
+            "outcome": "partial",
+            "plan": {
+                "expected_sha": expected_sha,
+                "runtimes": [
+                    {"kind": "gateway", "profile": "default", "pid": 42, "code_sha": "b" * 40},
+                    {"kind": "serve", "profile": "default", "pid": 70, "code_sha": None},
+                    {"kind": "serve", "profile": "default", "pid": 71, "code_sha": None},
+                ],
+            },
+            "fleet": [
+                {"profile": "default", "pid": 42, "code_sha": "b" * 40, "state": "stale"}
+            ],
+            "runtime_outcomes": [
+                {"kind": "gateway", "profile": "default", "pid": 42, "outcome": "restarted"},
+                {"kind": "serve", "profile": "default", "pid": 70, "outcome": "restarted"},
+                {"kind": "serve", "profile": "default", "pid": 71, "outcome": "unaccounted"},
+            ],
+        }
+    )
+
+    assert update_cmd_fleet._receipt_reports_stale_runtime() is True
+    assert update_cmd_fleet._live_fleet_covers_receipt(expected_sha) is False
+    assert update_cmd_fleet._pending_fleet_restart_needed() is True

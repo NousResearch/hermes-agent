@@ -48,6 +48,7 @@ def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
         model="gpt-5.6-sol",
         provider="openai-codex",
         session_id="",
+        _client_log_context=lambda: "",
     )
 
     with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
@@ -58,6 +59,7 @@ def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
     assert f"serialized_request_body_bytes={len(request_content)}" in message
     assert "stream_opened=false" in message
     assert "exception_chain=APIConnectionError <- RemoteProtocolError" in message
+    assert "attempt=2/2" in message
     assert "payload" not in message
     assert request_content.decode() not in message
     assert "example.invalid" not in message

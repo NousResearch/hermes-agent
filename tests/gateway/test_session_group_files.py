@@ -2,6 +2,7 @@
 
 import base64
 from dataclasses import replace
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -32,15 +33,19 @@ def files(tmp_path, monkeypatch):
 
 
 def share(service, actor, version):
+    from gateway.hosted_room_discussion import validate_user_payload
     from gateway.session_group_files import dispatch_group_files
     from gateway.session_hosted_attachments import append_user_event
     uploaded = dispatch_group_files(service, actor, "groups.attachment.upload", dict(
         room_id="room", upload_id=f"upload-{version}", name="report.txt", kind="file", mime="text/plain",
         data_base64=base64.b64encode(f"version {version}".encode()).decode()))
-    manifest = [{key: uploaded[key] for key in ("attachment_id", "kind", "name", "size", "mime")}]
+    # The actual client forwards the whole upload result, without projecting keys.
+    payload = validate_user_payload(dict(text="Shared", thread_id=f"thread-{version}", attachments=[uploaded]))
     gateway, epoch = service._owned_authority("room")
     append_user_event(service, room_id="room", event_id=f"event-{version}",
-                      payload=dict(text="Shared", attachments=manifest), gateway_id=gateway, epoch=epoch)
+                      payload=payload, gateway_id=gateway, epoch=epoch)
+    event = hosted_rooms.read_events(service.db_path, room_id="room")["events"][-1]
+    assert event["payload"]["attachments"] == [uploaded]
     return uploaded
 
 
@@ -62,7 +67,7 @@ def test_handlers_preserve_catalog_versions_scope_and_canonical_wire_format(file
                     authority_gateway_id=gateway, authority_epoch=1)
     data = dispatch_group_files(reopened, reader, "groups.attachment.download", selected)
     assert base64.b64decode(data["data_base64"]) == b"version 1"
-    assert data["sha256"] == first["sha256"] and data["event_id"] == "event-1"
+    assert data["sha256"] == hashlib.sha256(b"version 1").hexdigest() and data["event_id"] == "event-1"
     assert data["room_id"] == "room" and data["authority"] == page["authority"]
     # Existing clients need no new parameters or decoder to keep downloading.
     old_wire = {key: selected[key] for key in ("room_id", "event_id", "attachment_id")}

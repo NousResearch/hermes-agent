@@ -110,8 +110,9 @@ _ALWAYS_BLOCKED_IPS = frozenset(
 _ALWAYS_BLOCKED_NETWORKS = tuple(ipaddress.ip_network(n) for n in ("169.254.0.0/16", "::ffff:169.254.0.0/112"))
 
 # Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs
-# (QQ media legitimately resolves to 198.18.0.0/15 behind local proxy infra).
-_TRUSTED_PRIVATE_IP_HOSTS = frozenset({"multimedia.nt.qq.com.cn"})
+# (QQ downloads legitimately resolve to 198.18.0.0/15 behind local proxy infra:
+# multimedia.nt.qq.com.cn = media, grouptalk.c2c.qq.com = C2C file attachments).
+_TRUSTED_PRIVATE_IP_HOSTS = frozenset({"multimedia.nt.qq.com.cn", "grouptalk.c2c.qq.com"})
 _MAX_SSRF_CONNECT_IPS = 8
 
 # 100.64.0.0/10 (CGNAT, RFC 6598) is neither is_private nor is_global in

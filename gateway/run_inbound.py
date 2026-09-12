@@ -886,10 +886,11 @@ class GatewayInboundMixin:
         return False, None
 
     async def _hm_cmd_moa(self, event, source, _quick_key):
-        # /moa is one-shot sugar only: run a single prompt through the default MoA preset, then
+        # /moa is one-shot sugar only: run a single prompt through the effective MoA preset
+        # (active_preset when it names an existing preset, else default_preset — #88681), then
         # restore the prior model. To *switch* to a MoA preset for the session, pick it from the
         # model picker (MoA presets surface as a virtual "Mixture of Agents" provider).
-        from hermes_cli.moa_config import moa_usage, normalize_moa_config
+        from hermes_cli.moa_config import effective_moa_preset_name, moa_usage
         from hermes_cli.config import load_config
 
         moa_payload = event.get_command_args().strip()
@@ -897,16 +898,16 @@ class GatewayInboundMixin:
             return True, moa_usage()
         try:
             cfg = load_config()
-            moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
+            preset = effective_moa_preset_name(cfg.get("moa") if isinstance(cfg, dict) else {})
         except Exception:
-            moa_cfg = normalize_moa_config({})
+            preset = effective_moa_preset_name({})
         try:
             event.text = moa_payload
             _moa_state = self._session_state(_quick_key)
             # Same one-shot snapshot `/model --once` uses, so eviction/stop/finalizer settle both alike.
             self._claim_one_turn_restore(_quick_key)
             _moa_state.conversation.model_override = {
-                "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
+                "provider": "moa", "model": preset, "base_url": "moa://local",
                 "api_key": "moa-virtual-provider", "api_mode": "chat_completions",
             }
             self._evict_cached_agent(_quick_key)

@@ -795,17 +795,18 @@ class CLIModelSwitchMixin:
             return False
 
     def _cmd_moa(self, cmd_original: str):
-        """/moa one-shot: run one prompt through the default MoA preset, then restore the prior
+        """/moa one-shot: run one prompt through the effective MoA preset (``active_preset`` when it
+        names an existing preset, else ``default_preset`` — #88681), then restore the prior
         model (a session-long MoA switch goes through the picker's virtual MoA provider)."""
         from cli import _cprint, _slash_args
-        from hermes_cli.moa_config import moa_usage, normalize_moa_config
+        from hermes_cli.moa_config import effective_moa_preset_name, moa_usage
 
         payload = _slash_args(cmd_original)
         if not payload:
             _cprint(f"  {moa_usage()}")
             return True
         moa_cfg = self.config.get("moa") if isinstance(self.config, dict) else {}
-        preset = normalize_moa_config(moa_cfg)["default_preset"]
+        preset = effective_moa_preset_name(moa_cfg)
         self._pending_moa_restore_model = {
             key: getattr(self, key, None)
             for key in (

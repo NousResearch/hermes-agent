@@ -1383,10 +1383,11 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
     resolved_preset = str(resolved_preset or "default")
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.moa_config import normalize_moa_config
+        from hermes_cli.moa_config import effective_moa_preset_name, normalize_moa_config
         moa_cfg = normalize_moa_config(load_config().get("moa") or {})
         if resolved_preset not in (moa_cfg.get("presets") or {}):
-            resolved_preset = moa_cfg.get("default_preset") or "default"
+            # No valid preset named: run the effective one (active_preset else default_preset, #88681).
+            resolved_preset = effective_moa_preset_name(moa_cfg)
     except Exception:
         resolved_preset = "default"
     # ``agent`` lets the fan-out wait be aborted on a user interrupt.

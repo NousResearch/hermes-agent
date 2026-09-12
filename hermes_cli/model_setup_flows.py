@@ -104,7 +104,7 @@ def _model_flow_moa(config, current_model=""):
     """Mixture of Agents virtual provider: pick a preset (list always shown, even with one entry),
     persist it, print the breakdown. No credential step — presets reference configured providers."""
     from hermes_cli.auth import _save_model_choice
-    from hermes_cli.moa_config import normalize_moa_config
+    from hermes_cli.moa_config import effective_moa_preset_name, normalize_moa_config
     moa = normalize_moa_config(config.get("moa") if isinstance(config, dict) else {})
     presets = moa.get("presets") or {}
     if not presets:
@@ -112,14 +112,17 @@ def _model_flow_moa(config, current_model=""):
         return
 
     names = list(presets.keys())
-    default_name = moa.get("default_preset") or names[0]
+    active_name = moa.get("active_preset") or ""
+    # Preselect what a MoA turn actually runs: the active preset when one is set, else the
+    # default (#88681). Accepting the preselected row therefore switches to the running preset.
+    default_name = effective_moa_preset_name(config.get("moa") if isinstance(config, dict) else {})
     # Rows show the aggregator so the picker is informative before drilling in.
     rows = []
     for n in names:
         agg = presets[n].get("aggregator") or {}
         agg_label = f"{agg.get('provider')}:{agg.get('model')}" if agg else ""
         ref_count = len(presets[n].get("reference_models") or [])
-        suffix = "  ← default" if n == default_name else ""
+        suffix = f"  ← {'active' if active_name else 'default'}" if n == default_name else ""
         rows.append(f"{n}  (agg {agg_label}, {ref_count} refs){suffix}")
     default_idx = names.index(default_name) if default_name in names else 0
 

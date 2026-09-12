@@ -278,9 +278,24 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "privacy_filter": coerce_privacy_filter(raw.get("privacy_filter"))}
 
 
+def effective_moa_preset_name(config: Any) -> str:
+    """The preset that runs when the caller names none: an explicitly activated ``active_preset``
+    outranks ``default_preset`` (#88681).
+
+    ``normalize_moa_config`` already drops an ``active_preset`` that names no existing preset, so a
+    stale activation can never leave a turn running without a preset — it falls back to
+    ``default_preset``, which is always a real preset key.
+
+    Display surfaces (``hermes moa list``, the model picker) report the same name, so what the user
+    is shown and what runs cannot drift.
+    """
+    cfg = normalize_moa_config(config)
+    return cfg["active_preset"] or cfg["default_preset"] or DEFAULT_MOA_PRESET_NAME
+
+
 def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
     cfg = normalize_moa_config(config)
-    preset_name = str(name or cfg.get("default_preset") or DEFAULT_MOA_PRESET_NAME).strip()
+    preset_name = str(name or effective_moa_preset_name(cfg)).strip()
     preset = cfg["presets"].get(preset_name)
     if preset is None:
         from agent.errors import MoAPresetNotFoundError
@@ -321,7 +336,7 @@ def decode_moa_turn(message: Any) -> tuple[str, dict[str, Any] | None]:
 
 
 def moa_usage() -> str:
-    return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"
+    return "Usage: /moa <prompt>  (runs one prompt through the active MoA preset — falling back to the default — then restores your model; pick a preset from the model picker to switch for the session)"
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

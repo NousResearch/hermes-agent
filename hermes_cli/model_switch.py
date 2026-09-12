@@ -1016,11 +1016,12 @@ def _apply_direct_alias_endpoint(st: "_Switch", da: DirectAlias) -> None:
     st.api_mode = ""  # clear so determine_api_mode re-detects from URL
 
 
-def _moa_default_preset() -> str:
+def _moa_effective_preset() -> str:
+    """Preset a MoA session runs with no preset named: ``active_preset`` else ``default_preset`` (#88681)."""
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.moa_config import normalize_moa_config
-        return normalize_moa_config(load_config().get("moa") or {})["default_preset"]
+        from hermes_cli.moa_config import effective_moa_preset_name
+        return effective_moa_preset_name(load_config().get("moa") or {})
     except Exception:
         return "default"
 
@@ -1085,7 +1086,7 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
 
     st.target_provider, st.provider_label = pdef.id, pdef.name  # label is re-derived in the credential step
     if st.target_provider == "moa" and not st.new_model:
-        st.new_model = _moa_default_preset()
+        st.new_model = _moa_effective_preset()
 
     agg_err = _aggregator_alias_error(
         st.explicit_provider, st.target_provider, st.current_provider, st.user_providers, st.custom_providers)

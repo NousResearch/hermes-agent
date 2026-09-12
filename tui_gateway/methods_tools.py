@@ -576,15 +576,16 @@ _cmd_init = _prompt_builtin("hermes_cli.init_command", "build_init_prompt_for_cw
 
 
 def _cmd_moa(rid, params, session, name, arg):
-    # One prompt through the default MoA preset, then restore the prior model (whole-session
-    # switching goes through the model picker).
+    # One prompt through the effective MoA preset (active_preset when it names an existing preset,
+    # else default_preset — #88681), then restore the prior model (whole-session switching goes
+    # through the model picker).
     try:
         moa = _tools_mod("hermes_cli.moa_config")
         if not arg:
             return _err(rid, 4004, moa.moa_usage())
         if not session:
             return _err(rid, 4001, "no active session")
-        preset = moa.normalize_moa_config(_load_cfg().get("moa") or {})["default_preset"]
+        preset = moa.effective_moa_preset_name(_load_cfg().get("moa") or {})
         # Record the live identity for post-turn restore, then swap the agent's client in
         # place: session["model_override"] alone never switches an already-built agent.
         agent = session.get("agent")

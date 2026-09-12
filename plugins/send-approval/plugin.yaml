@@ -1,0 +1,6 @@
+name: send-approval
+version: "0.1.0"
+description: "Effect-class approval gate for tool calls that send to a person, spend money, or are hard to undo (Instinct safety parity). Classifies MCP piece actions (gmail_send*, slack_send*, *_send_message, stripe_*, calendar create/delete, file/repo destructive ops) and the ActivePieces action runner, and escalates flagged calls to the SAME human-approval gate as dangerous shell commands — approve over the CLI or the blocking gateway round-trip, deny refused, unattended contexts fail closed. The classifier never blocks by itself: a refusal is always the user's verdict (or the fail-closed default)."
+author: "NousResearch"
+hooks:
+  - pre_tool_call

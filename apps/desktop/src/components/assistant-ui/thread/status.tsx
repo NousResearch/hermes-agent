@@ -384,8 +384,16 @@ export const TurnActivityIndicator: FC = () => {
   // question the user is answering, and a tool call carrying its own timer.
   // A live local-model load is a named wait too — it must not wait out the
   // quiet window (the load IS the story from second one).
+  // Compression is authoritative phase state, not an inference from the tail.
+  // Its start can overtake the preceding tool.complete frame in the renderer,
+  // leaving the old tool row apparently in flight, and stale prompt chrome can
+  // briefly keep awaitingInput true. Neither generic suppression may hide the
+  // explicit compacting lifecycle.
   const active =
-    working && !awaitingInput && !toolNarrating && (Boolean(hint) || localLoad !== null || quietSince !== undefined)
+    working &&
+    (!awaitingInput || compacting) &&
+    (!toolNarrating || compacting) &&
+    (Boolean(hint) || localLoad !== null || quietSince !== undefined)
 
   // Compaction owns the whole turn, so it keeps counting from the turn's start;
   // anything else counts from the moment the turn last produced something — the

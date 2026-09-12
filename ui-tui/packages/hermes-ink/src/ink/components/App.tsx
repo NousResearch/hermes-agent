@@ -488,6 +488,15 @@ export default class App extends PureComponent<Props, State> {
           this.mouseWatchdogUnsupported = true
           logForDebugging('mouse watchdog: DECRQM unsupported, disabling')
 
+          // The DA1 reply proves the terminal already processed our query
+          // bytes. Terminals that ignore DECRQM may have echoed the query's
+          // final byte as a printable char (Apple Terminal echoes the 'p'
+          // of CSI ? 1000 $ p) — the diff engine never repaints cells it
+          // believes unchanged, so the stray char would persist until a
+          // resize. forceRedraw() is the recovery path for exactly this
+          // divergence: erase + full repaint from the model. One-shot.
+          instances.get(this.props.stdout)?.forceRedraw()
+
           return
         }
 

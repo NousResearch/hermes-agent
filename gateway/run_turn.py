@@ -3683,12 +3683,17 @@ class GatewayTurnMixin:
         elif _sc is not None:
             # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log the
             # decision inputs ("signal never set" vs "ack-pending race").
-            logger.warning(
-                "Normal final-send NOT suppressed despite active stream consumer for session %s: "
-                "streamed=%s previewed=%s content_delivered=%s transformed=%s final_len=%d — "
-                "possible duplicate send (see wecom ack-timeout RCA).",
-                _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
-            )
+            # Interim-only consumers never receive on_delta leftovers (commentary reset
+            # clears _accumulated / _message_id / _last_sent_text; finish() does not
+            # adopt). That is not an active stream — skip the WeCom warning so the
+            # normal final-send is not misdiagnosed as a duplicate (#107619).
+            if getattr(_sc, "_accumulated", None) or getattr(_sc, "_message_id", None) or getattr(_sc, "_last_sent_text", None):
+                logger.warning(
+                    "Normal final-send NOT suppressed despite active stream consumer for session %s: "
+                    "streamed=%s previewed=%s content_delivered=%s transformed=%s final_len=%d — "
+                    "possible duplicate send (see wecom ack-timeout RCA).",
+                    _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
+                )
 
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
         """Schedule deletion of tracked temporary progress bubbles after the final response lands.

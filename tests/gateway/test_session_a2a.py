@@ -20,7 +20,11 @@ async def test_forwarded_identity_survives_reconnect_without_policy_override(tmp
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
     monkeypatch.setattr(run, '_resolve_gateway_model', lambda config: 'fixture')
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(adapters={}, session_store=store, _session_db=store._db, _draining=False)
+    runner = run.GatewayRunner.__new__(run.GatewayRunner)
+    runner.adapters = {}
+    runner.session_store = store
+    runner._session_db = store._db
+    runner._draining = False
     authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
     db = authority.db
     authority._schedule = lambda ref: None
@@ -46,6 +50,10 @@ async def test_forwarded_identity_survives_reconnect_without_policy_override(tmp
     assert second['result']['session_id'] == sid
     assert second['result']['admission_id'] != first['admission_id']
     assert runner.adapters[next(iter(runner.adapters))].policies[sid] == policy
+    info = await again.dispatch({'id': 4, 'method': 'session.info', 'params': {'session_id': sid}})
+    assert info['result']['source'] == 'a2a'
+    assert info['result']['model'] == 'fixture'
+    assert info['result']['lazy'] is True
     # Source spelling alone must never grant producer policy.
     with pytest.raises(RuntimeStoreError):
         build_policy({'source': 'a2a'}, {})
@@ -65,7 +73,11 @@ async def test_forwarding_does_not_merge_lossy_context_or_peer_identity(tmp_path
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
     monkeypatch.setattr(run, '_resolve_gateway_model', lambda config: 'fixture')
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(adapters={}, session_store=store, _session_db=store._db, _draining=False)
+    runner = run.GatewayRunner.__new__(run.GatewayRunner)
+    runner.adapters = {}
+    runner.session_store = store
+    runner._session_db = store._db
+    runner._draining = False
     authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
     db = authority.db
     authority._schedule = lambda ref: None

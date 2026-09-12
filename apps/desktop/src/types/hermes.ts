@@ -798,6 +798,7 @@ export interface SessionRuntimeInfo {
   credential_warning?: string
   cwd?: string
   desktop_contract?: number
+  desktop_protocol?: string
   fast?: boolean
   install_warning?: string
   model?: string

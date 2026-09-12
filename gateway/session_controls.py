@@ -3,7 +3,8 @@ from dataclasses import asdict
 import sqlite3
 import uuid
 
-from gateway.session_contract import Principal, SessionRef, Submission
+from gateway.config import Platform
+from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -161,7 +162,7 @@ class AuthorityConnection:
         return await readiness(self.authority, self.actor, params, runtime=True)
 
     async def create(self, ref, params):
-        from gateway.session_local import create_local_session, local_session_info
+        from gateway.session_local import create_local_session
         from gateway.session_local_title import resolve_titled_session, title_new_session, validate_title
         # ``-c <title> --create-if-missing``: resolve-or-create is one owner step (no await
         # between lookup and creation), so concurrent programmatic callers converge.
@@ -171,9 +172,7 @@ class AuthorityConnection:
             ref = create_local_session(self.authority, self.actor, params)
             if title:
                 title_new_session(self.authority, ref, title)
-        result = await self.resume(ref, {})
-        result['info'] = local_session_info(self.authority, ref)
-        return result
+        return await self.resume(ref, {})
 
     async def ping(self, ref, params):
         if not self.actor.capabilities:
@@ -222,6 +221,7 @@ class AuthorityConnection:
         return {'sessions': sessions[:limit], 'scope': 'live'}
 
     async def resume(self, ref, params):
+        from gateway.session_local import local_session_info
         if 'title' in params:
             from gateway.session_local_title import resolve_titled_session
             ref = resolve_titled_session(self.authority, self.actor, params['title'])
@@ -237,6 +237,11 @@ class AuthorityConnection:
             resume_editor_mcp(self.authority, ref, params['editor'])
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
+        # Only local routes have a frozen local launch policy to project.
+        info = {'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL}
+        source = self.authority.sessions[snapshot.handle.ref.session_id].source
+        if source is not None and source.platform == Platform.LOCAL:
+            info = local_session_info(self.authority, snapshot.handle.ref)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
                 'messages': list(snapshot.history), 'message_count': len(snapshot.history),
                 'running': snapshot.handle.execution_state == 'running',
@@ -245,7 +250,7 @@ class AuthorityConnection:
                 'subscription_id': snapshot.subscription_id, 'revision': snapshot.handle.revision,
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
-                'prompts': list(snapshot.prompts), 'info': {}}
+                'prompts': list(snapshot.prompts), 'info': info}
 
     async def events_since(self, ref, params):
         self.authority.authorize(self.actor, ref, 'session:read')

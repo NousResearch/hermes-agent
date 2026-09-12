@@ -19,6 +19,7 @@ import time
 
 from gateway.hosted_room_driver import TaskIdentity
 from gateway.session_contract import Principal
+from gateway.session_authorities import owner_scope
 from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
@@ -35,6 +36,20 @@ def owner_request(home, verb, params, *, timeout=30):
     home = Path(home)
     if home != home.resolve():
         raise RuntimeStoreError('permission_denied')
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint, control_home_for
+    deadline = time.monotonic() + timeout
+    discovered = discover_gateway_endpoint(home, timeout=timeout)
+    if discovered.state != 'ready' or discovered.endpoint is None:
+        raise RuntimeStoreError('runtime_draining')
+    from hermes_constants import hermes_home_key
+    if hermes_home_key(discovered.endpoint.profile_id) != hermes_home_key(home):
+        raise RuntimeStoreError('profile_mismatch')
+    # Socket identity and logical authority identity are distinct under multiplex.
+    params = {**params, 'profile_id': discovered.endpoint.profile_id}
+    home = control_home_for(home, discovered.endpoint)
+    timeout = deadline - time.monotonic()
+    if timeout <= 0:
+        raise RuntimeStoreError('runtime_draining')
     request = json.dumps({'protocol': 1, 'id': 1, 'verb': verb, 'params': params}).encode() + b'\n'
     if len(request) > 65536:
         raise RuntimeStoreError('invalid_params')
@@ -44,7 +59,6 @@ def owner_request(home, verb, params, *, timeout=30):
     else:
         from hermes_cli.gateway_runtime_discovery import _socket_path
         from gateway.control_socket import _read_response_line
-        deadline = time.monotonic() + timeout
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
             peer.settimeout(timeout)
             peer.connect(str(_socket_path(home)))
@@ -137,20 +151,49 @@ def _principal(authority, binding):
 
 
 def install_hosted_transport(server, authority, loop, *, attest):
-    """Install private routing. attest(selector, operation, params) reads OWN state.
+    """Install profile-selected private routing over the existing authority registry.
 
     The callback must validate current room authority/member and, for submit and
     execute, exact TaskIdentity, generation and prompt against durable task data.
     It returns {'owner': durable_room_owner_subject}, never a client actor.
+    Every wire envelope names the logical profile_id, not its control socket home.
+    Reinstallation for a secondary preserves routing to all other served owners.
     """
-    def source(params, peer):
+    def select(envelope):
+        from hermes_constants import assert_named_profile_home_live
+        params = dict(envelope)
+        profile_id = params.pop('profile_id', None)
+        if not isinstance(profile_id, str) or not Path(profile_id).is_absolute():
+            raise RuntimeStoreError('profile_mismatch')
+        home = Path(profile_id)
+        if home != home.resolve():
+            raise RuntimeStoreError('profile_mismatch')
+        registry = getattr(getattr(authority, 'runner', None), 'session_authorities', None)
+        selected = registry.for_home(home) if registry is not None else authority
+        if selected is None or selected.profile_id != profile_id:
+            raise RuntimeStoreError('profile_mismatch')
+        assert_named_profile_home_live(home)
+        return selected, params
+
+    def source(envelope, peer):
+        selected, params = select(envelope)
         if set(params) != {'selector', 'operation', 'params'}:
             raise RuntimeStoreError('invalid_params')
         if params['operation'] not in _OPERATIONS | {'execute', 'attachment'}:
             raise RuntimeStoreError('invalid_params')
-        return attest(params['selector'], params['operation'], params['params'])
+        callback = attest if selected is authority else getattr(
+            getattr(selected, 'hosted_room_service', None), 'attest', None)
+        if callback is None:
+            raise RuntimeStoreError('runtime_draining')
+        with owner_scope(selected):
+            return callback(params['selector'], params['operation'], params['params'])
 
     def target(envelope, peer):
+        selected, params = select(envelope)
+        with owner_scope(selected):
+            return produce(selected, params)
+
+    def produce(authority, envelope):
         if set(envelope) != {'source_home', 'selector', 'operation', 'params'}:
             raise RuntimeStoreError('invalid_params')
         operation, params = envelope['operation'], dict(envelope['params'])
@@ -195,6 +238,11 @@ def check_remote_hosted_admission(authority, ref, row):
     fails closed on missing source, revoked membership or altered task payload.
     Call off the owner's event loop (the reverse RPC is synchronous).
     """
+    with owner_scope(authority):
+        return _check_remote_hosted_admission(authority, ref, row)
+
+
+def _check_remote_hosted_admission(authority, ref, row):
     with authority.db._read_ctx() as conn:
         stored = conn.execute('SELECT value FROM state_meta WHERE key=?',
                               (_BINDING + ref.session_id,)).fetchone()

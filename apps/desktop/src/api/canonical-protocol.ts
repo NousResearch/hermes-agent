@@ -1,6 +1,8 @@
 // Canonical local authority wire adapter. Remote legacy transports keep their
 // existing protocol; unsupported explicit semantics fail before network admission.
 
+export const CANONICAL_GATEWAY_PROTOCOL = 'hermes-gateway-v1'
+
 // Mirrors hermes_cli/gateway_mutations.slash_mutation: the typed directives
 // that are canonical mutations, not gateway-executed slash commands. Model
 // flags (--global/--once/--refresh) have no canonical mutation and stay on the

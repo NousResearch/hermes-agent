@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 import uuid
 
 from gateway.session_contract import (
-    AdmissionReceipt, PendingAdmission, Principal, SessionHandle, SessionRef, Submission,
+    CANONICAL_GATEWAY_PROTOCOL, AdmissionReceipt, PendingAdmission, Principal, SessionHandle, SessionRef, Submission,
     SubscriptionSnapshot,
 )
 from gateway.session_events import SessionEvents
@@ -159,6 +159,7 @@ class SessionAuthority:
             # prepared mutation must present.
             live.event_stream.publish(ref.session_id, {
                 'stored_session_id': ref.session_id, 'pending': pending,
+                'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,
                 'running': handle.execution_state == 'running',
                 'execution_generation': handle.execution_generation,
                 'revision': handle.revision,

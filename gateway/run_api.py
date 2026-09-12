@@ -156,6 +156,7 @@ class GatewayRuntimeAPI:
             return
         # The ticket names the served profile; this connection binds to that home's authority.
         scope['hermes.session_authority'] = authority
+        from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
         from tui_gateway.ws import handle_ws
         from gateway.session_authorities import owner_scope
         with owner_scope(authority):
@@ -163,4 +164,4 @@ class GatewayRuntimeAPI:
                                               'profile_id': grant['profile_id'],
                                               'instance_id': grant['instance_id'],
                                               'capabilities': grant['capabilities'], 'native_bootstrap': True},
-                            subprotocol='hermes-gateway-v1')
+                            subprotocol=CANONICAL_GATEWAY_PROTOCOL)

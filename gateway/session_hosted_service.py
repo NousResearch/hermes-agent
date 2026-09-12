@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from gateway.session_contract import Principal
+from gateway.session_authorities import active_authority, all_authorities, owner_scope
 from gateway.session_hosted_controls import HostedControls
 from hermes_state_runtime import RuntimeStoreError, _epoch
 from tui_gateway.hosted_room_service import HostedRoomService
@@ -28,7 +29,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         from gateway.session_authorities import served_profile_name
         home = Path(self.authority.profile_id)
         own = served_profile_name(home)
-        configured = _load_gateway_config().get('hosted_rooms', {}).get('profiles', {})
+        # The coordinator's own threads do not inherit the caller's ContextVars.
+        with owner_scope(self.authority):
+            configured = _load_gateway_config().get('hosted_rooms', {}).get('profiles', {})
         result = {own: home}
         if not isinstance(configured, dict):
             raise RuntimeStoreError('invalid_params')
@@ -201,21 +204,49 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
 
 
 async def ensure_hosted_service(runner):
-    authority = runner.session_authority
-    service = getattr(authority, 'hosted_room_service', None)
-    if service is None:
-        loop = asyncio.get_running_loop()
-        service = await asyncio.to_thread(CanonicalHostedRoomService, authority, loop)
-        authority.hosted_room_service = service
-    if not getattr(service, '_transport_installed', False):
-        from gateway.session_hosted_transport import install_hosted_transport
-        install_hosted_transport(runner.session_control_server, authority, asyncio.get_running_loop(),
-                                 attest=service.attest)
-        service._transport_installed = True
-    await asyncio.to_thread(service.start)
-    return service
+    """Prepare every transport before readiness can release any coordinator."""
+    active = active_authority(runner)
+    if active is None:
+        raise RuntimeStoreError('profile_mismatch')
+    for authority in all_authorities(runner):
+        await _ensure_hosted_service(runner, authority)
+    start_ready_hosted_services(runner)
+    return active.hosted_room_service
+
+
+async def _ensure_hosted_service(runner, authority):
+    with owner_scope(authority):
+        service = getattr(authority, 'hosted_room_service', None)
+        if service is None:
+            loop = asyncio.get_running_loop()
+            service = await asyncio.to_thread(CanonicalHostedRoomService, authority, loop)
+            authority.hosted_room_service = service
+        if not getattr(service, '_transport_installed', False):
+            from gateway.session_hosted_transport import install_hosted_transport
+            install_hosted_transport(runner.session_control_server, authority, asyncio.get_running_loop(),
+                                     attest=service.attest)
+            service._transport_installed = True
+
+
+def start_ready_hosted_services(runner):
+    """Start only a fully prepared served set behind the published ready gate."""
+    if (getattr(runner, 'session_runtime_descriptor', {}).get('state') != 'ready'
+            or getattr(runner, '_draining', False)):
+        return
+    services = [getattr(authority, 'hosted_room_service', None) for authority in all_authorities(runner)]
+    if any(service is None or not getattr(service, '_transport_installed', False) for service in services):
+        return
+    for service in services:
+        # start() only releases its thread; preparation and disk access happened above.
+        service.start()
 
 
 async def stop_hosted_service(runner, timeout=5):
-    service = getattr(runner.session_authority, 'hosted_room_service', None)
-    return True if service is None else await asyncio.to_thread(service.stop, timeout=timeout)
+    loop = asyncio.get_running_loop()
+    deadline, stopped = loop.time() + max(0, timeout), True
+    for authority in all_authorities(runner):
+        service = getattr(authority, 'hosted_room_service', None)
+        if service is not None:
+            result = await asyncio.to_thread(service.stop, timeout=max(0, deadline - loop.time()))
+            stopped = result and stopped
+    return stopped

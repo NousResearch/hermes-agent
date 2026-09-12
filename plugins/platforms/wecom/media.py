@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
+from hermes_constants import get_hermes_home
+
 from gateway.platforms.base import SendResult, cache_document_from_bytes_async, cache_image_from_bytes_async
 
 logger = logging.getLogger("plugins.platforms.wecom.adapter")
@@ -234,8 +236,15 @@ class WeComMediaMixin:
             data, headers = await self._download_remote_bytes(source, max_bytes=ABSOLUTE_MAX_BYTES)
             resolved_name = file_name or self._guess_filename(source, headers.get("content-disposition"), headers.get("content-type", ""))
             return data, self._normalize_content_type(headers.get("content-type", ""), resolved_name), resolved_name
-        local_path = Path(unquote(parsed.path) if parsed.scheme == "file" else source).expanduser()
-        local_path = local_path if local_path.is_absolute() else (Path.cwd() / local_path).resolve()
+        try:
+            cwd = Path.cwd().resolve()
+            hermes_home = get_hermes_home().resolve()
+            local_path = Path(unquote(parsed.path) if parsed.scheme == "file" else source).expanduser()
+            local_path = (cwd / local_path).resolve()
+        except Exception as exc:
+            raise ValueError(f"Refusing to serve media: unable to resolve path safely: {exc}") from exc
+        if not any(local_path != root and local_path.is_relative_to(root) for root in (cwd, hermes_home)):
+            raise ValueError(f"Media path {local_path} is outside the allowed directory")
         if not local_path.is_file():
             raise FileNotFoundError(f"Media file not found: {local_path}")
         resolved_name = file_name or local_path.name

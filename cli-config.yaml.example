@@ -1431,10 +1431,12 @@ platform_toolsets:
 # Optional per-server settings:
 #   timeout: tool call timeout in seconds (default: 120)
 #   connect_timeout: initial connection timeout (default: 60)
-#   keepalive_interval: liveness ping cadence in seconds (default: 180).
-#     Lower it below the server's session TTL for servers that expire idle
-#     sessions quickly (e.g. Unreal Engine editor MCP, ~15s), otherwise idle
-#     tool calls hit an expired session and pay a slow reconnect. Floored at 5s.
+#   keepalive_interval: liveness ping cadence in seconds (floored at 5s).
+#     HTTP servers default to 180s; lower it below the server's session TTL for
+#     servers that expire idle sessions quickly (e.g. Unreal Engine editor MCP,
+#     ~15s), otherwise idle tool calls hit an expired session and pay a slow
+#     reconnect. Stdio servers disable keepalive by default; set this explicitly
+#     to opt a stdio server in.
 #
 # mcp_servers:
 #   time:

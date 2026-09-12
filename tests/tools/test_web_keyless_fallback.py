@@ -10,7 +10,8 @@ Covers:
 """
 
 import json
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -199,12 +200,43 @@ class TestProviderRouting:
             lambda name: "sk-real" if name == "PARALLEL_API_KEY" else "",
         )
         provider = ParallelWebSearchProvider()
-        with patch.object(keyless_mcp, "parallel_search_keyless") as keyless, \
+        with patch.object(keyless_mcp, "search_with_failover") as ring, \
                 patch("plugins.web.parallel.provider._get_sync_client") as client:
-            client.return_value.beta.search.return_value.results = []
+            client.return_value.search.return_value.results = []
             out = provider.search("q")
-        keyless.assert_not_called()
+        client.return_value.search.assert_called_once_with(
+            search_queries=["q"],
+            objective="q",
+            mode="advanced",
+            advanced_settings={"max_results": 5},
+        )
+        client.return_value.beta.search.assert_not_called()
+        ring.assert_not_called()
         assert out["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_parallel_keyed_extract_skips_keyless(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.web_search_provider.get_provider_env",
+            lambda name: "sk-real" if name == "PARALLEL_API_KEY" else "",
+        )
+        provider = ParallelWebSearchProvider()
+        client = AsyncMock()
+        client.extract.return_value = SimpleNamespace(results=[], errors=[])
+        urls = ["https://example.com/article"]
+        with patch.object(keyless_mcp, "extract_with_failover") as ring, \
+                patch(
+                    "plugins.web.parallel.provider._get_async_client",
+                    return_value=client,
+                ):
+            out = await provider.extract(urls)
+        client.extract.assert_awaited_once_with(
+            urls=urls,
+            advanced_settings={"full_content": True},
+        )
+        client.beta.extract.assert_not_called()
+        ring.assert_not_called()
+        assert out == []
 
     def test_keyless_disabled_falls_through_to_key_error(self, monkeypatch):
         monkeypatch.setattr(registry, "_keyless_tier_enabled", lambda: False)
@@ -238,11 +270,20 @@ class TestProviderRouting:
     def test_tier_paid_forces_keyed_without_key(self, monkeypatch):
         monkeypatch.setattr(keyless_mcp, "provider_tier", lambda name: "paid")
         provider = ParallelWebSearchProvider()
-        with patch.object(keyless_mcp, "parallel_search_keyless") as keyless:
+        with patch.object(keyless_mcp, "search_with_failover") as ring:
             out = provider.search("q")
-        keyless.assert_not_called()
+        ring.assert_not_called()
         assert out["success"] is False
         assert "PARALLEL_API_KEY" in out["error"]
+
+    @pytest.mark.asyncio
+    async def test_tier_paid_extract_without_key_skips_keyless(self, monkeypatch):
+        monkeypatch.setattr(keyless_mcp, "provider_tier", lambda name: "paid")
+        provider = ParallelWebSearchProvider()
+        with patch.object(keyless_mcp, "extract_with_failover") as ring:
+            out = await provider.extract(["https://example.com/article"])
+        ring.assert_not_called()
+        assert "PARALLEL_API_KEY" in out[0]["error"]
 
     def test_tier_paid_disables_keyless_availability(self, monkeypatch):
         monkeypatch.setattr(keyless_mcp, "provider_tier", lambda name: "paid")

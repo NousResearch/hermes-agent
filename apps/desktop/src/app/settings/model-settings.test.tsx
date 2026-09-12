@@ -183,7 +183,7 @@ describe('ModelSettings', () => {
       getGlobalModelInfo.mockResolvedValueOnce({ provider, model: '' })
       getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
 
-      await renderModelSettings()
+      await renderModelSettings('profile-b')
 
       const providerSelect = (await screen.findAllByRole('combobox'))[0]
 
@@ -193,7 +193,7 @@ describe('ModelSettings', () => {
 
       fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
 
-      expect(startManualLocalEndpoint).toHaveBeenCalledWith(null, 'default')
+      expect(startManualLocalEndpoint).toHaveBeenCalledWith(null, 'profile-b')
       expect(startManualOnboarding).not.toHaveBeenCalled()
       expect(startManualProviderOAuth).not.toHaveBeenCalled()
     }
@@ -203,11 +203,11 @@ describe('ModelSettings', () => {
     getGlobalModelInfo.mockResolvedValueOnce({ provider: 'retired-provider', model: '' })
     getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
 
-    await renderModelSettings()
+    await renderModelSettings('profile-b')
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
 
-    expect(startManualOnboarding).toHaveBeenCalledWith(null, 'default')
+    expect(startManualOnboarding).toHaveBeenCalledWith(null, 'profile-b')
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualProviderOAuth).not.toHaveBeenCalled()
   })
@@ -226,11 +226,11 @@ describe('ModelSettings', () => {
       ]
     })
 
-    await renderModelSettings()
+    await renderModelSettings('profile-b')
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set up Anthropic' }))
 
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic', 'default')
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic', 'profile-b')
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualOnboarding).not.toHaveBeenCalled()
   })

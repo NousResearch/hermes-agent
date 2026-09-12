@@ -625,10 +625,13 @@ async def _vision_analyze_native(
 
 
 def _aux_call_kwargs(messages: list, model: Optional[str], default_timeout: float, *,
-                     min_timeout: Optional[float] = None) -> dict:
+                     min_timeout: Optional[float] = None,
+                     route_info: Optional[Dict[str, str]] = None) -> dict:
     """``async_call_llm`` kwargs with ``auxiliary.vision.timeout`` / ``.temperature`` from config.
     Local vision models (llama.cpp, ollama) can take well over 30s, hence generous defaults
-    (temperature 0.1); ``min_timeout`` lets video enforce a floor."""
+    (temperature 0.1); ``min_timeout`` lets video enforce a floor. ``route_info`` (optional,
+    mutated in place) receives the fallback notice when an explicitly configured
+    ``auxiliary.vision.provider`` was unavailable and the auto chain served the call."""
     timeout, temperature = default_timeout, 0.1
     try:
         _vision_cfg = _cfg_auxiliary("vision", default={}) or {}
@@ -639,7 +642,20 @@ def _aux_call_kwargs(messages: list, model: Optional[str], default_timeout: floa
     except Exception:
         pass
     return {"task": "vision", "messages": messages, "temperature": temperature, "timeout": timeout,
-            **({"model": model} if model else {})}
+            **({"model": model} if model else {}),
+            **({"route_info": route_info} if route_info is not None else {})}
+
+
+def _with_route_notice(analysis: str, route_info: Dict[str, str], debug_call_data: dict) -> str:
+    """Prefix the in-band fallback notice when an explicitly configured vision provider
+    was unavailable and the auto chain served the call; without it the detour is silent
+    and a sabotaged ``auxiliary.vision.provider`` negative test changes nothing (#109111)."""
+    notice = (route_info or {}).get("fallback_notice")
+    if not notice:
+        return analysis
+    debug_call_data["vision_fallback_notice"] = notice
+    logger.warning("%s", notice)
+    return f"[{notice}]\n{analysis}"
 
 
 def _media_messages(user_prompt: str, part_type: str, data_url: str) -> list:
@@ -778,7 +794,8 @@ async def vision_analyze_tool(
         debug_call_data["image_size_bytes"] = prepared.size_bytes
         messages = _media_messages(prompt, "image_url", image_data_url)
         logger.info("Processing image with vision model...")
-        call_kwargs = _aux_call_kwargs(messages, model, 120.0)
+        route_info: Dict[str, str] = {}
+        call_kwargs = _aux_call_kwargs(messages, model, 120.0, route_info=route_info)
         _load_auxiliary_client()
         try:
             response = await async_call_llm(**call_kwargs)
@@ -793,7 +810,8 @@ async def vision_analyze_tool(
             response = await async_call_llm(**call_kwargs)
         analysis = await _call_vision_llm(
             call_kwargs, "Vision LLM returned empty content, retrying once", response)
-        return analysis, _build_scale_note(_scale_info or None, prepared.crop_offset or None)
+        return _with_route_notice(analysis, route_info, debug_call_data), \
+            _build_scale_note(_scale_info or None, prepared.crop_offset or None)
     return await _run_analysis("image", image_url, user_prompt, model, stage)
 
 
@@ -998,9 +1016,10 @@ async def video_analyze_tool(
                 f"Compress or trim the video and retry.")
         debug_call_data["video_size_bytes"] = video_size_bytes
         messages = _media_messages(prompt, "video_url", video_data_url)
-        call_kwargs = _aux_call_kwargs(messages, model, 180.0, min_timeout=180.0)
+        route_info: Dict[str, str] = {}
+        call_kwargs = _aux_call_kwargs(messages, model, 180.0, min_timeout=180.0, route_info=route_info)
         analysis = await _call_vision_llm(call_kwargs, "Empty video response, retrying once")
-        return analysis, None
+        return _with_route_notice(analysis, route_info, debug_call_data), None
     return await _run_analysis("video", video_url, user_prompt, model, stage)
 
 

@@ -2849,7 +2849,7 @@ def _try_azure_foundry(
     return client, final_model
 
 
-def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
+def _try_anthropic(explicit_api_key: str = None, model: str = None) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client
         from agent.anthropic_credentials import resolve_anthropic_token
@@ -2879,7 +2879,10 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
                     base_url = cfg_base_url
     from agent.anthropic_credentials import _is_oauth_token
     is_oauth = _is_oauth_token(token)
-    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
+    # An explicit model (auxiliary.<task>.model / caller kwarg) wins over the curated
+    # default; previously the caller's model was dropped here and the client silently
+    # bound default_aux_model, which happens to equal what most users configure (#109111).
+    model = model or _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     if _aux_probe_active():
         # Probe: token + adapter import resolved; skip real client construction.
         return _AuxProbeClientStub(api_key="", base_url=base_url), model
@@ -4799,7 +4802,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     """PROVIDER_REGISTRY ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
     provider = req.provider
     if provider == "anthropic":
-        client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key)
+        client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key, model=req.model)
         return _route_or_warn(req, client, default_model,
                               "resolve_provider_client: anthropic requested but no Anthropic credentials found")
     creds = resolve_creds(provider)
@@ -5081,7 +5084,7 @@ _STRICT_VISION_BACKENDS: Dict[str, Callable[[Optional[str]], Tuple[Optional[Any]
     "openrouter": lambda model: _try_openrouter(model=model),
     "nous": lambda model: resolve_provider_client("nous", model, is_vision=True),
     "openai-codex": lambda model: resolve_provider_client("openai-codex", model, is_vision=True),
-    "anthropic": lambda model: _try_anthropic(),
+    "anthropic": lambda model: _try_anthropic(model=model),
     "deepinfra": _deepinfra_strict_vision_backend,
     "custom": lambda model: _try_custom_endpoint(),
 }
@@ -6687,6 +6690,7 @@ def _resolve_call_client(
     api_key: Optional[str], resolved_provider: str, resolved_model: Optional[str],
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], main_runtime: Optional[Dict[str, Any]], async_mode: bool,
+    route_info: Optional[Dict[str, str]] = None,
 ) -> _ResolvedAuxRoute:
     """Resolve the client for one aux call: vision chain, or cached text client with the
     explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
@@ -6703,6 +6707,13 @@ def _resolve_call_client(
             effective_provider, client, final_model = resolve_vision_provider_client(
                 provider="auto", model=resolved_model, async_mode=async_mode,
                 main_runtime=main_runtime)
+            if client is not None and route_info is not None:
+                # Surface the silent detour: an explicitly configured auxiliary.vision.provider
+                # was unavailable and auto routing served the call instead (#109111).
+                route_info["fallback_notice"] = (
+                    f"Configured vision provider '{resolved_provider}' is unavailable "
+                    f"(no credentials or backend offline); analysis ran on the auto "
+                    f"vision backend '{effective_provider or 'auto'}' instead.")
         if client is not None:
             resolved_provider = effective_provider or resolved_provider
     else:
@@ -6773,6 +6784,7 @@ def _prepare_aux_request(
         resolved_provider=resolved_provider, resolved_model=resolved_model,
         resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
+        route_info=route_info,
     )
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider

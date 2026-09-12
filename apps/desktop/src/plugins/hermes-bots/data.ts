@@ -631,82 +631,116 @@ interface UnionRoster {
   sources?: GatewaySource[]
 }
 
+/** Fetch one roster snapshot for `activeConnectionId`.
+ *
+ *  Extracted from `useRoster` so the composer surfaces can prime the same
+ *  cache entry without mounting the Bots pane — see `primeRoster`. */
+async function fetchRosterSnapshot(activeConnectionId: null | string | undefined): Promise<RosterSnapshot> {
+  // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
+  // against each bot's last local meta write, and a fetch issued before
+  // a write can only carry pre-write ui_meta. (Issue time is the
+  // conservative bound — the server answered no earlier than this.)
+  const issuedAt = Date.now()
+
+  // Rich rows (last_session, canonical_session, ui_meta, has_avatar)
+  // come from the ACTIVE gateway's profiles.list — the canonical Bot
+  // Chat is resolved server-side by NAME (the "Bot Chat" registry row),
+  // so the roster never sends session pointers.
+  // Refresh the alias identity index alongside the roster: alias routes
+  // (Desktop profile → remote backend root) are what let a backend row
+  // keep its configured friendly identity after activation (#89131).
+  // Best-effort and feature-detected — a failed read keeps the last
+  // good index rather than dropping identities mid-session.
+  if (typeof host.profileRoutes === 'function') {
+    const epoch = beginAliasRouteIndex()
+
+    try {
+      indexAliasRoutes(await host.profileRoutes(), epoch)
+    } catch {
+      /* keep the previous alias index */
+    }
+  }
+
+  // Owner routing is ambient in the SDK now (post-#92731): requestForBot
+  // resolves the active owner itself, no captured route needed here.
+  const activeBot = {
+    name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
+  }
+
+  const local = await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
+  // Newer backends inject the teammate-messaging protocol into every
+  // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
+  // carry a second copy. Older gateways lack the flag: keep appending.
+  serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
+
+  // Multi-source desktops (hermes-agent #86875) also expose the union
+  // agent roster across every registered connection. Merge agents from
+  // OTHER sources in as additional rows. Feature-detected + best-effort:
+  // an older Desktop build (no host.agents) or a roster hiccup leaves
+  // the local list exactly as it was.
+  if (typeof host.agents === 'function') {
+    try {
+      const union = await host.agents()
+      const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
+      const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
+      const sources = Array.isArray(union?.sources) ? union.sources : []
+
+      return {
+        ...merged,
+        profiles: (merged?.profiles || []).map(row => annotateBotSource(row, sources)),
+        sources,
+        fetchedAt: issuedAt
+      }
+    } catch {
+      /* older build or roster failure — single-source list stands */
+    }
+  }
+
+  return {
+    ...(local && typeof local === 'object' ? local : {}),
+    fetchedAt: issuedAt
+  }
+}
+
 export function useRoster() {
   const activeConnectionId = useValue(host.state.connectionId)
 
   return useQuery({
     queryKey: [...ROSTER_KEY, activeConnectionId],
-    queryFn: async () => {
-      // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
-      // against each bot's last local meta write, and a fetch issued before
-      // a write can only carry pre-write ui_meta. (Issue time is the
-      // conservative bound — the server answered no earlier than this.)
-      const issuedAt = Date.now()
-
-      // Rich rows (last_session, canonical_session, ui_meta, has_avatar)
-      // come from the ACTIVE gateway's profiles.list — the canonical Bot
-      // Chat is resolved server-side by NAME (the "Bot Chat" registry row),
-      // so the roster never sends session pointers.
-      // Refresh the alias identity index alongside the roster: alias routes
-      // (Desktop profile → remote backend root) are what let a backend row
-      // keep its configured friendly identity after activation (#89131).
-      // Best-effort and feature-detected — a failed read keeps the last
-      // good index rather than dropping identities mid-session.
-      if (typeof host.profileRoutes === 'function') {
-        const epoch = beginAliasRouteIndex()
-
-        try {
-          indexAliasRoutes(await host.profileRoutes(), epoch)
-        } catch {
-          /* keep the previous alias index */
-        }
-      }
-
-      // Owner routing is ambient in the SDK now (post-#92731): requestForBot
-      // resolves the active owner itself, no captured route needed here.
-      const activeBot = {
-        name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
-      }
-
-      const local = await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
-      // Newer backends inject the teammate-messaging protocol into every
-      // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
-      // carry a second copy. Older gateways lack the flag: keep appending.
-      serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
-
-      // Multi-source desktops (hermes-agent #86875) also expose the union
-      // agent roster across every registered connection. Merge agents from
-      // OTHER sources in as additional rows. Feature-detected + best-effort:
-      // an older Desktop build (no host.agents) or a roster hiccup leaves
-      // the local list exactly as it was.
-      if (typeof host.agents === 'function') {
-        try {
-          const union = await host.agents()
-          const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
-          const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
-          const sources = Array.isArray(union?.sources) ? union.sources : []
-
-          return {
-            ...merged,
-            profiles: (merged?.profiles || []).map(row => annotateBotSource(row, sources)),
-            sources,
-            fetchedAt: issuedAt
-          }
-        } catch {
-          /* older build or roster failure — single-source list stands */
-        }
-      }
-
-      return {
-        ...(local && typeof local === 'object' ? local : {}),
-        fetchedAt: issuedAt
-      }
-    },
+    queryFn: () => fetchRosterSnapshot(activeConnectionId),
     refetchInterval: 5000,
     staleTime: 5000,
     retry: ROSTER_QUERY_RETRY,
     retryDelay: attempt => Math.min(15000, 1000 * 2 ** attempt)
   })
+}
+
+/** Populate the roster cache for the live connection without mounting the
+ *  Bots pane.
+ *
+ *  `useRoster` is the only caller of `host.agents()`, and its only call site
+ *  is that pane. A launch that never opens it left the cache empty, so the
+ *  composer's `@` autocomplete and mention middleware — both synchronous
+ *  cache readers — could not see agents on other connections. The
+ *  middleware's cold fallback asks the ACTIVE gateway for `profiles.list`,
+ *  which cannot enumerate other connections, so cross-connection mentions
+ *  silently went unresolved while same-gateway ones worked.
+ *
+ *  One fetch per call, no polling: the pane still owns the 5s refresh while
+ *  it is open. Never throws — a failure leaves the cache empty and the
+ *  readers fall back exactly as before. */
+export async function primeRoster(): Promise<void> {
+  const connectionId = String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
+
+  try {
+    await queryClient.fetchQuery({
+      queryKey: [...ROSTER_KEY, connectionId],
+      queryFn: () => fetchRosterSnapshot(connectionId),
+      staleTime: 5000
+    })
+  } catch {
+    /* offline or older build — readers keep their existing fallbacks */
+  }
 }
 
 /** Synchronous union-roster read for the composer surfaces (autocomplete

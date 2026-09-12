@@ -950,8 +950,8 @@ def build_turn_context(
         restore_or_build_system_prompt(agent, system_message, conversation_history)
     active_system_prompt = agent._cached_system_prompt
 
-    # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same
-    # gate as the protocol section); gate is session-stable, so cache-safe.
+    # Bot Mode DM tool — injected only into a bot's canonical "Bot Chat" session or a Desktop
+    # chat-panel session on a managed install; gate is session-stable, so cache-safe.
     try:
         from tools.bot_mode_dm import ensure_message_agent_tool
 

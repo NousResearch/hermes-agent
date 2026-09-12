@@ -5,9 +5,10 @@ a registered peer gateway, or one on another Desktop-connected machine): the
 target is validated against the live roster, the attribution prefix is applied
 server-side, and the reply arrives later via the background-process completion
 notification (fire-and-forget). Containment: the schema is injected ONLY into a
-bot's canonical "Bot Chat" session on a Bot-Mode-managed install (same gate as
-``tools/bot_mode_probe.py``; never in the registry or any toolset), and dispatch
-re-checks that gate so a forged call returns a structured error. Transports:
+bot's canonical "Bot Chat" session or a Desktop chat-panel session (``platform ==
+"desktop"``), both on a Bot-Mode-managed install (never in the registry or any
+toolset), and dispatch re-checks that gate so a forged call returns a structured
+error. Transports:
 local → ``hermes -p <name> chat --in ~ -c "Bot Chat" --create-if-missing -Q
 --query-file <tmp>``; peer → ``hermes peer dm <peer>[/<name>] < <tmp>``; both via
 ``terminal_tool(background=True, notify_on_complete=True)``.
@@ -50,6 +51,13 @@ _LIVE_WAIT_SECONDS = 300
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
 # Same shape as ``tools.bot_relay._HANDLE_RE`` (kept local: see import note above).
 _LOCAL_TARGET_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+
+# The Desktop's @mention middleware tells the agent in ANY Desktop chat to send with
+# message_agent, so the chat panel gets the tool outside Bot Chat. ``platform`` is the
+# session's own source (``session.create {source: "desktop"}``), never a process env var:
+# the embedded terminal pane is "tui", CLI is "cli", messaging adapters carry their platform,
+# cron / kanban / subagents carry theirs — none is "desktop", so the grant stays narrow.
+DESKTOP_PLATFORM = "desktop"
 
 
 def _default_home() -> str:
@@ -110,18 +118,27 @@ def message_agent_tool_schema() -> dict:
     }
 
 
+def _session_qualifies(agent: Any) -> bool:
+    """Session half of the gate: the canonical Bot Chat, or a Desktop chat-panel session."""
+    from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+    if _session_title(agent) == BOT_CHAT_TITLE:
+        return True
+    return str(getattr(agent, "platform", "") or "").strip() == DESKTOP_PLATFORM
+
+
 def message_agent_authorized(agent: Any) -> bool:
-    """The ``message_agent`` gate: a protocol-enabled agent whose session is a managed
-    Bot-Mode canonical Bot Chat. Session-stable, so it is prompt-cache safe to re-evaluate
-    on every tool-snapshot rebuild. Never raises."""
+    """The ``message_agent`` gate: a protocol-enabled agent in a qualifying session on a
+    Bot-Mode-managed install. Session-stable (title and platform are fixed at creation), so
+    it is prompt-cache safe to re-evaluate on every tool-snapshot rebuild. Never raises."""
     try:
         if not getattr(agent, "_bot_mode_protocol", True):
             return False
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
+        from tools.bot_mode_probe import is_bot_mode_managed
 
         # Managed-install check, NOT section non-emptiness: a SOUL.md carrying the
         # legacy protocol text gets an empty section but must still get the tool.
-        return _session_title(agent) == BOT_CHAT_TITLE and is_bot_mode_managed(_agent_home(agent))
+        return _session_qualifies(agent) and is_bot_mode_managed(_agent_home(agent))
     except Exception:  # pragma: no cover — must never break a turn
         logger.debug("message_agent_authorized failed", exc_info=True)
         return False
@@ -179,14 +196,14 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     home = _agent_home(agent)
     try:
         from tools.bot_mode_probe import (
-            BOT_CHAT_TITLE, _handle, _hermes_root, _peers, _profile_name as _self_profile_name, _roster,
+            _handle, _hermes_root, _peers, _profile_name as _self_profile_name, _roster,
             is_bot_mode_managed,
         )
         from tools.bot_relay import BOT_CHAT_TURN_ARGS
 
-        if _session_title(agent) != BOT_CHAT_TITLE:
-            return _err("message_agent is only available in a Bot Mode 'Bot Chat' session. "
-                        "This session is not one; do not retry.")
+        if not _session_qualifies(agent):
+            return _err("message_agent is only available in a Bot Mode 'Bot Chat' session or a "
+                        "Desktop chat. This session is neither; do not retry.")
         if not is_bot_mode_managed(home):
             return _err("This install is not Bot-Mode-managed (no bot roster); "
                         "message_agent is unavailable. Do not retry.")

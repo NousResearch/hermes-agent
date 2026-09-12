@@ -802,6 +802,8 @@ class TestBackgroundReviewDeleteGate:
         assert result["proposal_staged"] is True
         assert result["pending_id"]
         assert "staged for your approval" in result["message"]
+        assert "replace or remove" in result["message"].lower()
+        assert "delete" not in result["message"].lower()
         # Fail-closed: the standing rule is still on disk.
         assert "never create records without permission" in store._entries_for("memory")
         # The proposal itself landed in the pending store for the user to approve or discard.
@@ -838,6 +840,25 @@ class TestBackgroundReviewDeleteGate:
         assert result["staged"] is True
         # Atomic: the batch is only a proposal — its add must not land either.
         assert "fork consolidation" not in store._entries_for("memory")
+
+    def test_bg_gate_deny_message_says_replace_or_remove(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "keep this standing rule")
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("pending store unavailable")
+
+        monkeypatch.setattr("tools.write_approval.stage_write", _boom)
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(action="remove", old_text="standing rule", store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["success"] is False
+        error = result.get("error", "")
+        assert "replace or remove" in error.lower()
+        assert "delete" not in error.lower()
+        assert "keep this standing rule" in store._entries_for("memory")
 
     def test_add_still_allowed_in_background_review(self, store):
         token = set_current_write_origin("background_review")

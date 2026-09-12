@@ -217,7 +217,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("search", "browse", "inspect", "install", "audit",
                             "pending", "approve", "reject", "diff", "approval"),
                desktop="settings"),
-    CommandDef("memory", "Review pending memory writes / toggle the approval gate",
+    CommandDef("memory", "Show effective memory approval policy and review pending writes",
                "Tools & Skills", args_hint="[pending|approve|reject|approval] [id|on|off]",
                subcommands=("pending", "approve", "reject", "approval")),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",

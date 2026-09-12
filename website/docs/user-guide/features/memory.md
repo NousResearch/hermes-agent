@@ -264,8 +264,10 @@ first, set `memory.write_approval: true`. It's a simple on/off gate applied to
 
 | `write_approval` | Behaviour |
 |------------------|-----------|
-| `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
+| `false` (default) | Write freely — the gate is off (the pre-gate behaviour). Unattended background review is the exception: `replace` or `remove` (and any batch containing either) are still staged for `/memory pending`; additions from that review may apply automatically. |
 | `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
+
+`/memory` (and `/memory approval` with no value) shows this split: the general `memory.write_approval` setting, plus the unattended-only background restriction. Attended `/refine` is not subject to that restriction — the general approval setting remains authoritative for attended operations.
 
 > To turn memory off entirely (not just gate it), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.
 

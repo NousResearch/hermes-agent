@@ -25,7 +25,9 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
-from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
+from gateway.shutdown_watchdog import (
+    DEFAULT_POST_TEARDOWN_EXIT_GRACE_S, arm_shutdown_watchdog, resolve_shutdown_watchdog_delay,
+)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -1856,6 +1858,26 @@ class GatewayShutdownMixin:
             self._update_runtime_status("stopped", self._exit_reason)
         _shutdown_gateway_health_export(self)
         logger.info("Gateway stopped (total teardown %.2fs)", ctx.elapsed())
+        # The watchdog armed at the top of _stop_impl disarms the instant this method returns, but a
+        # non-cancellable blocking call an adapter left behind (e.g. a platform SDK thread stuck in an
+        # untimed socket read) can wedge asyncio.run()'s own task-cancellation sweep afterwards, so the
+        # loop never returns and the post-asyncio.run() os._exit backstop in
+        # _exit_after_graceful_shutdown is never reached. Arm an independent backstop, with no
+        # done_event to disarm it, so a process that is somehow still alive this long after teardown
+        # itself finished gets force-exited instead of lingering for the caller's full drain budget (a
+        # `hermes update` can wait up to 1875s). Skipped under pytest like the drain-scoped watchdog
+        # above. See #108729.
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            from gateway.run import _CRON_SHUTDOWN_DRAIN_TIMEOUT, _HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT
+            # start_gateway()'s own coroutine can still be running _start_gateway_shutdown_tail's
+            # cron-ticker and housekeeping thread joins concurrently with (not after) this method —
+            # that chain isn't sequenced behind _stop_impl. Fold their full timeouts in so a
+            # slow-but-healthy drain there is never mistaken for the wedge this backstop targets.
+            arm_shutdown_watchdog(
+                _CRON_SHUTDOWN_DRAIN_TIMEOUT + _HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT
+                + DEFAULT_POST_TEARDOWN_EXIT_GRACE_S,
+                exit_code=1, name="gateway-post-teardown-exit-backstop",
+            )
 
     def _shutdown_watchdog_snapshot(self, ctx: "GatewayShutdownMixin._StopContext") -> dict:
         """State dumped by the thread-based shutdown watchdog when teardown hangs."""

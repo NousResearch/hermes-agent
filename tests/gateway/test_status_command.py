@@ -10,7 +10,13 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.session import (
+    AsyncSessionStore,
+    SessionEntry,
+    SessionSource,
+    SessionStore,
+    build_session_key,
+)
 
 
 def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
@@ -185,6 +191,56 @@ async def test_status_command_uses_most_recent_persisted_model_route(tmp_path):
 
         assert "**Model:** `upstage/solar-pro4:free` (nous)" in result
         assert "**Model:** `z-ai/glm-5.2` (nvidia)" not in result
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_status_command_prefers_rehydrated_session_model_override(tmp_path):
+    """A committed /model switch is current before the selected model records usage."""
+    source = _make_source()
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+    session_entry = store.get_or_create_session(source)
+    runner = _make_runner(session_entry)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        db.create_session(session_entry.session_id, "telegram", model="model-a")
+        db.update_token_counts(
+            session_entry.session_id,
+            model="model-a",
+            billing_provider="provider-a",
+            input_tokens=480,
+            api_call_count=48,
+        )
+        result = SimpleNamespace(
+            new_model="model-b",
+            target_provider="provider-b",
+            provider_label="Provider B",
+            api_key="secret",
+            base_url="https://b.example/v1",
+            api_mode=None,
+            request_overrides={},
+            runtime_capabilities={},
+        )
+        switch_ctx = SimpleNamespace(
+            session_key=session_entry.session_key,
+            current_model="model-a",
+            persist_global=False,
+            restore_snapshot=None,
+        )
+        await runner._record_model_switch(
+            result, switch_ctx, source=source, one_turn=False, picker=False
+        )
+        # Simulate a restart: /status must lazily recover the durable override.
+        runner._session_state(session_entry.session_key).conversation.model_override = None
+
+        status = await runner._handle_message(_make_event("/status"))
+
+        assert "**Model:** `model-b` (provider-b)" in status
+        assert "**Model:** `model-a` (provider-a)" not in status
     finally:
         db.close()
 

@@ -539,6 +539,121 @@ class TestSegmentedDispatchIntegration:
         hits = [c for c in contents if "focus on the tests" in c]
         assert len(hits) == 1
 
+    def test_steer_during_leading_parallel_segment_defers_later_segments(self, agent):
+        """A steer consumed in segment 1 must stop the WHOLE batch.
+
+        The barrier (t1) and the trailing parallel segment (s3/s4) must never be
+        invoked — before this fix the segmented dispatcher advanced through them
+        unconditionally, so the user's correction arrived only after the tools it
+        was meant to redirect had already run.
+        """
+        calls = [
+            _tc("web_search", '{"query":"a"}', call_id="s1"),
+            _tc("web_search", '{"query":"b"}', call_id="s2"),
+            _tc("terminal", '{"command":"echo hi"}', call_id="t1"),
+            _tc("web_search", '{"query":"c"}', call_id="s3"),
+            _tc("web_search", '{"query":"d"}', call_id="s4"),
+        ]
+        msg = SimpleNamespace(content="", tool_calls=calls)
+        messages = []
+        executed = []
+        lock = threading.Lock()
+
+        def fake_handle(name, args, task_id, **kwargs):
+            with lock:
+                executed.append(kwargs["tool_call_id"])
+                if kwargs["tool_call_id"] == "s1":
+                    agent.steer("stop searching, read the config instead")
+            return json.dumps({"ok": True})
+
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls(msg, messages, "task-1")
+
+        # Trailing segments never ran.
+        assert "t1" not in executed
+        assert "s3" not in executed and "s4" not in executed
+        # Exactly one result per call, in emission order, so the tool-call turn
+        # keeps its tool_call_id pairing.
+        tool_ids = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
+        assert tool_ids == ["s1", "s2", "t1", "s3", "s4"]
+        # The not-started calls read as deferred, not cancelled.
+        for m in messages:
+            if m.get("role") == "tool" and m["tool_call_id"] in {"t1", "s3", "s4"}:
+                assert "deferred" in m["content"], m["content"]
+        # And the steer still lands exactly once, after every tool result.
+        steer_rows = [m for m in messages if m.get("role") == "user" and STEER_MARKER_OPEN in m["content"]]
+        assert len(steer_rows) == 1
+        assert "stop searching, read the config instead" in steer_rows[0]["content"]
+        assert messages[-1] is steer_rows[0]
+
+    def test_steer_during_barrier_defers_trailing_parallel_segment(self, agent):
+        """Steer raised while the barrier tool runs: the leading segment and the
+        barrier keep their real results, the trailing parallel segment is deferred."""
+        calls = [
+            _tc("web_search", '{"query":"a"}', call_id="s1"),
+            _tc("web_search", '{"query":"b"}', call_id="s2"),
+            _tc("terminal", '{"command":"echo hi"}', call_id="t1"),
+            _tc("web_search", '{"query":"c"}', call_id="s3"),
+            _tc("web_search", '{"query":"d"}', call_id="s4"),
+        ]
+        msg = SimpleNamespace(content="", tool_calls=calls)
+        messages = []
+        executed = []
+        lock = threading.Lock()
+
+        def fake_handle(name, args, task_id, **kwargs):
+            with lock:
+                executed.append(kwargs["tool_call_id"])
+                if kwargs["tool_call_id"] == "t1":
+                    agent.steer("never mind, summarize what you have")
+            return json.dumps({"ok": True})
+
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls(msg, messages, "task-1")
+
+        assert "s1" in executed and "s2" in executed and "t1" in executed
+        assert "s3" not in executed and "s4" not in executed
+        tool_ids = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
+        assert tool_ids == ["s1", "s2", "t1", "s3", "s4"]
+        deferred = [m for m in messages if m.get("role") == "tool" and "deferred" in m["content"]]
+        assert [m["tool_call_id"] for m in deferred] == ["s3", "s4"]
+        steer_rows = [m for m in messages if m.get("role") == "user" and STEER_MARKER_OPEN in m["content"]]
+        assert len(steer_rows) == 1
+        assert "never mind, summarize what you have" in steer_rows[0]["content"]
+
+    def test_interrupt_supersedes_steer_across_segments(self, agent):
+        """When both land during the barrier, the trailing segment reports the
+        interrupt (cancelled), not the steer (deferred) — the more specific outcome."""
+        calls = [
+            _tc("web_search", '{"query":"a"}', call_id="s1"),
+            _tc("terminal", '{"command":"echo hi"}', call_id="t1"),
+            _tc("web_search", '{"query":"c"}', call_id="s3"),
+            _tc("web_search", '{"query":"d"}', call_id="s4"),
+        ]
+        msg = SimpleNamespace(content="", tool_calls=calls)
+        messages = []
+        executed = []
+        lock = threading.Lock()
+
+        def fake_handle(name, args, task_id, **kwargs):
+            with lock:
+                executed.append(kwargs["tool_call_id"])
+                if kwargs["tool_call_id"] == "t1":
+                    agent.steer("change of plan")
+                    agent._interrupt_requested = True
+            return json.dumps({"ok": True})
+
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls(msg, messages, "task-1")
+
+        assert "s3" not in executed and "s4" not in executed
+        tool_ids = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
+        assert tool_ids == ["s1", "t1", "s3", "s4"]
+        for m in messages:
+            if m.get("role") == "tool" and m["tool_call_id"] in {"s3", "s4"}:
+                assert "cancelled" in m["content"] or "skipped" in m["content"], m["content"]
+                assert "deferred" not in m["content"]
+
     @pytest.mark.parametrize(
         ("calls", "expected_segment_kinds"),
         [

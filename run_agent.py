@@ -1270,11 +1270,14 @@ class AIAgent(
         self._set_tool_guardrail_halt(decision)
         return toolguard_synthetic_result(decision)
 
-    def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
+    def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> bool:
         """Execute the assistant's tool calls and append results to ``messages``.
 
         The segment planner splits the batch into runs of parallel-safe calls (read-only, non-overlapping file
         targets, opted-in MCP) separated by sequential barriers, run in emission order.
+
+        Returns True when a mid-batch /steer was consumed, in which case the batch stopped
+        early and its not-started calls carry deferred placeholder results.
         """
         tool_calls = assistant_message.tool_calls
         args = (assistant_message, messages, effective_task_id, api_call_count)

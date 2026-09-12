@@ -296,6 +296,17 @@ class InterruptControlMixin:
             self._pending_redirect = None
         return text
 
+    def _has_pending_steer(self) -> bool:
+        """Whether a /steer is queued, WITHOUT draining it.
+
+        The tool-batch executors peek to decide they must stop starting new tools; the steer
+        itself stays queued so ``apply_pending_steer_to_tool_results`` can drain it once, at
+        the end of the batch, and append its user row AFTER every tool result — draining mid
+        batch would strand that row between an assistant tool-call turn and its results.
+        """
+        with _ic_lock(self, "_pending_steer_lock"):
+            return bool(_ic_slot(self, "_pending_steer_lock", "_pending_steer"))
+
     def _drain_pending_steer(self) -> Optional[str]:
         """Return the pending steer text (if any) and clear the slot; None when nothing is pending."""
         with _ic_lock(self, "_pending_steer_lock"):

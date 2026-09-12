@@ -1045,13 +1045,40 @@ def _commit_tool_result(
     return persisted_result, function_result, tool_message.get("_tool_output_risk")
 
 
-def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tools: int, budget: BudgetConfig) -> None:
+def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tools: int, budget: BudgetConfig) -> bool:
     """Per-turn aggregate budget enforcement, then /steer injection — in that order, so the
-    steer marker is never truncated/discarded when enforcement replaces a result."""
+    steer marker is never truncated/discarded when enforcement replaces a result. Returns
+    True when a steer was consumed and delivered."""
     if num_tools <= 0:
-        return
+        return False
     enforce_turn_budget(messages[-num_tools:], env=get_active_env(effective_task_id), config=budget)
-    agent._apply_pending_steer_to_tool_results(messages, num_tools)
+    return bool(agent._apply_pending_steer_to_tool_results(messages, num_tools))
+
+
+def _steer_deferred_tool_result_text(tool_name: str) -> str:
+    """Placeholder result for a call the batch stopped short of because a /steer arrived.
+
+    Shared by the sequential, concurrent and segmented paths so the model reads identical
+    wording however the batch was dispatched, and so it can tell "deferred, still worth
+    doing" apart from the interrupt path's "cancelled"."""
+    return (
+        f"[Tool execution deferred — {tool_name} was not started. "
+        "A user /steer was received; the model will process it first]"
+    )
+
+
+def _defer_remaining_for_steer(agent, messages: list, tool_calls, effective_task_id: str, *, notice: str) -> bool:
+    """Append one deferred placeholder result per not-started call, so the assistant's
+    tool-call turn keeps exactly one result per ``tool_call_id`` (role alternation) even
+    though the batch stopped early. False when a session-DB flush failed."""
+    if not tool_calls:
+        return True
+    agent._vprint(f"{agent.log_prefix}↩ Steer: deferring {len(tool_calls)} {notice}", force=True)
+    return _append_skipped_tool_results(
+        agent, messages, tool_calls, effective_task_id,
+        content=_steer_deferred_tool_result_text("{name}"),
+        flush_stage="deferred tool result",
+    )
 
 
 def _tool_progress_enabled(agent) -> bool:
@@ -1165,6 +1192,10 @@ class _ConcurrentBatch:
         self.gate = _StartOrderGate(_start_order_gate_timeout(timeout_s))
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
         self.timed_out_indices: set[int] = set()
+        # Slots whose future was cancelled before the pool picked it up because a /steer
+        # arrived mid-batch; rendered as deferred (not cancelled) in _append_batch_results.
+        self.steer_deferred_indices: set[int] = set()
+        self.steer_break_handled = False
 
     def _dispatch_worker(self, index: int, ref: _ToolCallRef, scope_block, start_gate: _WorkerStartOnce) -> Optional[_ToolOutcome]:
         """Run one call through the middleware and synthesize its slot outcome; ``None`` when
@@ -1297,6 +1328,23 @@ class _ConcurrentBatch:
                     f"{agent.log_prefix}⚡ Interrupt: cancelling {len(not_done)} pending concurrent tool(s)",
                     force=True,
                 )
+            elif not self.steer_break_handled and agent._has_pending_steer():
+                # A /steer arrived mid-batch (checked after the interrupt branch, so a hard
+                # interrupt still wins and reports the rest as cancelled). Tools already
+                # running finish normally — their results are real and the user likely still
+                # wants them — but nothing new starts: Future.cancel() succeeds only on slots
+                # the pool has not picked up yet, and those are reported as deferred. The
+                # batch is NOT abandoned, so the running remainder keeps its normal
+                # deadline/interrupt handling and the executor still joins its workers.
+                self.steer_break_handled = True
+                deferred = {future_to_index[f] for f in not_done if f in future_to_index and f.cancel()}
+                if deferred:
+                    self.steer_deferred_indices |= deferred
+                    agent._vprint(
+                        f"{agent.log_prefix}↩ Steer: deferring {len(deferred)} unstarted concurrent tool(s)",
+                        force=True,
+                    )
+                continue
             else:
                 _conc_elapsed = int(time.time() - _conc_start)
                 # Heartbeat every ~30s (6 × 5s poll intervals)
@@ -1343,15 +1391,21 @@ class _ConcurrentBatch:
             executor.shutdown(wait=not abandon_executor, cancel_futures=abandon_executor)
 
 
-def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeout_s: float | None) -> tuple[str, float, Optional[str]]:
-    """Synthesize the result for a slot no worker filled (deadline, interrupt, or a thread
-    that never returned), emit its terminal post_tool_call, and return
+def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeout_s: float | None, steer_deferred: bool = False) -> tuple[str, float, Optional[str]]:
+    """Synthesize the result for a slot no worker filled (deadline, steer, interrupt, or a
+    thread that never returned), emit its terminal post_tool_call, and return
     ``(function_result, tool_duration, effect_disposition)``."""
     if timed_out:
         suffix = f"{timeout_s:.1f}s" if timeout_s is not None else "the configured timeout"
         function_result = f"Error executing tool '{ref.name}': timed out after {suffix}"
         outcome = dict(duration_ms=int((timeout_s or 0.0) * 1000), status="timeout", error_type="tool_timeout", error_message=function_result)
         tool_duration, effect_disposition = float(timeout_s or 0.0), "unknown"
+    elif steer_deferred:
+        # Checked before the interrupt branch: this slot's future was already cancelled for
+        # the steer, so it never ran and must read as deferred even if a /stop landed after.
+        function_result = _steer_deferred_tool_result_text(ref.name)
+        outcome = dict(status="cancelled", error_type="steer_deferred", error_message="Tool deferred until the user's /steer is processed")
+        tool_duration, effect_disposition = 0.0, "none"
     elif agent._interrupt_requested:
         function_result = f"[Tool execution cancelled — {ref.name} was skipped due to user interrupt]"
         outcome = dict(status="cancelled", error_type="keyboard_interrupt", error_message="Tool execution cancelled by user interrupt")
@@ -1375,6 +1429,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             ref, is_error, blocked = pc.ref(effective_task_id), True, False
             function_result, tool_duration, effect_disposition = _unfinished_tool_result(
                 agent, ref, timed_out=i in batch.timed_out_indices, timeout_s=batch.timeout_s,
+                steer_deferred=i in batch.steer_deferred_indices,
             )
         else:
             ref, function_result, tool_duration, is_error, blocked = r.ref, r.result, r.duration, r.is_error, r.blocked
@@ -1401,10 +1456,14 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
     return True
 
 
-def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
+def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> bool:
     """Execute tool calls concurrently; results are appended in original call order.
     ``finalize=False`` skips end-of-batch budget enforcement and /steer injection (the
-    segmented dispatcher owns turn-end work)."""
+    segmented dispatcher owns turn-end work).
+
+    Returns True when a /steer stopped the batch. A steer noticed while the batch is in
+    flight cancels every not-yet-started call and renders it deferred (see
+    ``_ConcurrentBatch.await_completion``); already-running tools finish normally."""
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
@@ -1418,7 +1477,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             flush_stage="cancelled tool result",
             stop_on_flush_failure=False,
         )
-        return
+        return False
 
     parsed_calls = [_parse_tool_call(agent, tc) for tc in tool_calls]
 
@@ -1440,10 +1499,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             finished = [r for r in batch.results if r is not None]
             spinner.stop(f"⚡ {len(finished)}/{num_tools} tools completed in {sum(r.duration for r in finished):.1f}s total")
 
+    steered = bool(batch.steer_deferred_indices) or batch.steer_break_handled
     if not _append_batch_results(agent, messages, effective_task_id, batch, _tool_budget):
-        return
+        return steered
     if finalize:
-        _finalize_tool_batch(agent, messages, effective_task_id, len(parsed_calls), _tool_budget)
+        return _finalize_tool_batch(agent, messages, effective_task_id, len(parsed_calls), _tool_budget) or steered
+    return steered or agent._has_pending_steer()
 
 
 # ── Sequential dispatch ─────────────────────────────────────────────────────
@@ -1659,16 +1720,27 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     return True
 
 
-def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
+def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> bool:
     """Execute tool calls sequentially (single calls or interactive tools). ``finalize=False``
     skips end-of-batch budget enforcement and /steer injection (the segmented dispatcher
-    owns turn-end work)."""
+    owns turn-end work).
+
+    Returns True when a /steer stopped the batch. Between calls the loop peeks at the steer
+    queue and, if one is waiting, defers every not-yet-started call with a placeholder
+    result instead of running it: the user's new instruction must reach the model before
+    more tools run against the course it supersedes. With ``finalize=True`` the steer is
+    drained here and its user row lands after the deferred results; with ``finalize=False``
+    it stays queued and the True return tells the segmented dispatcher to drain later
+    segments the same way. A pending hard interrupt supersedes the steer break — the
+    interrupt branches run first and report their calls as cancelled, not deferred.
+    """
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
     tool_calls = assistant_message.tool_calls
+    steered = False
 
     for i, tool_call in enumerate(tool_calls, 1):
         if getattr(agent, "_incremental_persistence_failed", False):
-            return
+            return steered
         # Check interrupt BEFORE each tool so a "stop" during the previous one skips the rest.
         if agent._interrupt_requested:
             if not _skip_remaining_sequential(
@@ -1679,14 +1751,30 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 hook_id=lambda tc: getattr(tc, "id", "") or "",
                 flush_stage="cancelled tool result",
             ):
-                return
+                return steered
             break
 
         pc = _parse_tool_call(agent, tool_call, flatten_probe=True)
         ref = pc.ref(effective_task_id)
         if pc.parse_error is not None:
             if not _append_invalid_arguments_result(agent, messages, ref, pc.parse_error):
-                return
+                return steered
+            if agent._interrupt_requested and i < len(tool_calls):
+                if not _skip_remaining_sequential(
+                    agent, messages, tool_calls[i:], effective_task_id,
+                    notice="remaining tool call(s)",
+                    content="[Tool execution skipped — {name} was not started. User sent a new message]",
+                    flush_stage="skipped tool result",
+                ):
+                    return steered
+                break
+            if agent._has_pending_steer() and i < len(tool_calls):
+                steered = True
+                if not _defer_remaining_for_steer(
+                    agent, messages, tool_calls[i:], effective_task_id, notice="remaining tool call(s)",
+                ):
+                    return steered
+                break
             continue
 
         tool_start_time = time.time()
@@ -1700,7 +1788,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_start_time=tool_start_time,
         )
         if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i, budget=_tool_budget):
-            return
+            return steered
 
         if agent._interrupt_requested and i < len(tool_calls):
             if not _skip_remaining_sequential(
@@ -1709,19 +1797,40 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 content="[Tool execution skipped — {name} was not started. User sent a new message]",
                 flush_stage="skipped tool result",
             ):
-                return
+                return steered
+            break
+
+        # Steer break: checked after the interrupt branch above, so a hard interrupt that
+        # landed during the same tool wins and reports the rest as cancelled.
+        if agent._has_pending_steer() and i < len(tool_calls):
+            steered = True
+            if not _defer_remaining_for_steer(
+                agent, messages, tool_calls[i:], effective_task_id, notice="remaining tool call(s)",
+            ):
+                return steered
             break
 
     if finalize:
-        _finalize_tool_batch(agent, messages, effective_task_id, len(tool_calls), _tool_budget)
+        return _finalize_tool_batch(agent, messages, effective_task_id, len(tool_calls), _tool_budget) or steered
+    return steered or agent._has_pending_steer()
 
 
-def execute_tool_calls_segmented(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, segments=None) -> None:
+def execute_tool_calls_segmented(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, segments=None) -> bool:
     """Execute a mixed batch as ordered parallel/sequential segments (the ``(kind, calls)``
     plan from ``_plan_tool_batch_segments``), preserving per-call result order and barrier
     boundaries exactly as fully-sequential execution. Turn-end work (budget + /steer) runs
     once here (segments run with ``finalize=False``); each segment executor checks the
-    interrupt flag up front, so an interrupt drains later segments with one result per call."""
+    interrupt flag up front, so an interrupt drains later segments with one result per call.
+
+    A /steer is batch-wide, not segment-wide. Segments run with ``finalize=False``, so a
+    steer one of them broke out for is still queued; this loop therefore stops at the
+    segment boundary and defers every call in the LATER segments too. Without that, a steer
+    consumed in segment 1 would leave segments 2..n running against the very course the
+    user just corrected. Every deferred call still gets exactly one result, in original
+    order, so the assistant's tool-call turn keeps its ``tool_call_id`` pairing.
+
+    Returns True when a steer was consumed anywhere in the batch.
+    """
     from types import SimpleNamespace
 
     if segments is None:
@@ -1729,18 +1838,33 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
-    for kind, calls in segments:
+    steered = False
+    for seg_index, (kind, calls) in enumerate(segments):
         if getattr(agent, "_incremental_persistence_failed", False):
-            return
+            return steered
         segment_message = SimpleNamespace(tool_calls=list(calls))
         run_segment = execute_tool_calls_concurrent if kind == "parallel" else execute_tool_calls_sequential
-        run_segment(agent, segment_message, messages, effective_task_id, api_call_count, finalize=False)
+        steered = bool(run_segment(agent, segment_message, messages, effective_task_id, api_call_count, finalize=False)) or steered
         if getattr(agent, "_incremental_persistence_failed", False):
-            return
+            return steered
+
+        # Stop the whole batch on a steer the segment consumed, or one that landed while it
+        # ran. A hard interrupt supersedes: leaving the loop running lets each remaining
+        # segment executor report its calls as cancelled up front, the more specific
+        # outcome, and mirrors the sequential path's ordering of the two checks.
+        if not agent._interrupt_requested and (steered or agent._has_pending_steer()):
+            steered = True
+            remaining = [tc for _, later_calls in segments[seg_index + 1:] for tc in later_calls]
+            if not _defer_remaining_for_steer(
+                agent, messages, remaining, effective_task_id, notice="tool call(s) in later segment(s)",
+            ):
+                return steered
+            break
 
     total_tools = len(assistant_message.tool_calls)
     if total_tools > 0:
-        _finalize_tool_batch(agent, messages, effective_task_id, total_tools, _budget_for_agent(agent))
+        return _finalize_tool_batch(agent, messages, effective_task_id, total_tools, _budget_for_agent(agent)) or steered
+    return steered
 
 
 __all__ = [

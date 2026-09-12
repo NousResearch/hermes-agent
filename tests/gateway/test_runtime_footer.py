@@ -133,6 +133,166 @@ def test_build_footer_per_platform_off_suppresses():
     assert out == ""
 
 
+def test_build_footer_appends_plugin_fragments_with_sanitized_payload(monkeypatch):
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    seen = {}
+
+    def quota_fragment(**kwargs):
+        seen.update(kwargs)
+        return "5h 15% (2h51m)"
+
+    def broken_fragment(**kwargs):
+        raise RuntimeError("cache unavailable")
+
+    manager._hooks.setdefault("append_runtime_footer", []).extend([
+        lambda **kwargs: None,
+        broken_fragment,
+        quota_fragment,
+        lambda **kwargs: "resets 2",
+    ])
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["model"]}}},
+        platform_key="slack", model="openai-codex/gpt-5.6", provider="openai-codex",
+        context_tokens=16_000, context_length=100_000, cwd="/tmp", turn_seconds=12.0,
+    )
+
+    assert out == "gpt-5.6 · 5h 15% (2h51m) · resets 2"
+    assert seen == {
+        "footer": "gpt-5.6", "model": "openai-codex/gpt-5.6", "provider": "openai-codex",
+        "context_tokens": 16_000, "context_length": 100_000, "cwd": "/tmp",
+        "turn_seconds": 12.0, "platform": "slack",
+        "telemetry_schema_version": "hermes.observer.v1",
+    }
+
+
+def test_build_footer_does_not_call_plugin_when_footer_is_disabled(monkeypatch):
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    manager._hooks.setdefault("append_runtime_footer", []).append(
+        lambda **kwargs: pytest.fail("disabled footer must not invoke plugins")
+    )
+
+    assert build_footer_line(
+        user_config={}, platform_key="slack", model="gpt-5.6", provider="openai-codex",
+        context_tokens=0, context_length=None,
+    ) == ""
+
+
+def test_append_runtime_footer_hook_is_registered_and_shell_refused(caplog):
+    """This Python-only display callback must not become a shell-hook surface."""
+    import logging
+
+    from agent import shell_hooks
+    from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
+
+    assert "append_runtime_footer" in VALID_HOOKS
+    assert "append_runtime_footer" in SHELL_UNSUPPORTED_HOOKS
+    with caplog.at_level(logging.WARNING, logger=shell_hooks.logger.name):
+        specs = shell_hooks._parse_hooks_block({
+            "append_runtime_footer": [{"command": "/tmp/footer.sh"}],
+        })
+    assert specs == []
+    assert any("append_runtime_footer" in record.getMessage() for record in caplog.records)
+
+
+def test_build_footer_without_listener_keeps_builtin_footer(monkeypatch):
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+
+    assert build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["model"]}}},
+        platform_key="slack", model="openai-codex/gpt-5.6", context_tokens=0,
+        context_length=None,
+    ) == "gpt-5.6"
+
+
+def test_build_footer_skips_plugin_when_builtin_footer_is_empty(monkeypatch):
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    manager._hooks["append_runtime_footer"] = [
+        lambda **_kwargs: pytest.fail("empty built-in footer must not invoke plugins"),
+    ]
+
+    assert build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["model"]}}},
+        platform_key="slack", model=None, context_tokens=0, context_length=None,
+    ) == ""
+
+
+def test_build_footer_normalizes_and_bounds_plugin_fragments(monkeypatch):
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginManager
+    from gateway.runtime_footer import _MAX_PLUGIN_FRAGMENT_CHARS
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    manager._hooks["append_runtime_footer"] = [
+        lambda **_kwargs: None,
+        lambda **_kwargs: 42,
+        lambda **_kwargs: {"fragment": "not text"},
+        lambda **_kwargs: " \n\t ",
+        lambda **_kwargs: " quota\n resets\tsoon ",
+        lambda **_kwargs: "x" * (_MAX_PLUGIN_FRAGMENT_CHARS + 20),
+    ]
+
+    assert build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["model"]}}},
+        platform_key="slack", model="openai-codex/gpt-5.6", context_tokens=0,
+        context_length=None,
+    ) == "gpt-5.6 · quota resets soon · " + "x" * _MAX_PLUGIN_FRAGMENT_CHARS
+
+
+def test_append_runtime_footer_timeout_is_suppressed(monkeypatch):
+    """A stuck display plugin cannot delay replies or create another abandoned worker."""
+    import threading
+    import time
+
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.05)
+    release = threading.Event()
+    starts = []
+
+    def blocker(**_kwargs):
+        starts.append(1)
+        release.wait(timeout=10.0)
+        return "late"
+
+    manager._hooks["append_runtime_footer"] = [blocker]
+    kwargs = {
+        "user_config": {"display": {"runtime_footer": {"enabled": True, "fields": ["model"]}}},
+        "platform_key": "slack", "model": "openai-codex/gpt-5.6", "context_tokens": 0,
+        "context_length": None,
+    }
+    try:
+        started_at = time.monotonic()
+        assert build_footer_line(**kwargs) == "gpt-5.6"
+        assert build_footer_line(**kwargs) == "gpt-5.6"
+        assert time.monotonic() - started_at < 1.0
+        assert starts == [1]
+    finally:
+        release.set()
+
 
 # ---------------------------------------------------------------------------
 # latency — opt-in wall-clock turn duration

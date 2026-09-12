@@ -138,6 +138,84 @@ def _db_flush_seed_ids(agent) -> set:
     return seed_ids if isinstance(seed_ids, set) else set()
 
 
+def _db_flush_needs_durable_reconcile(agent, messages: List[Dict], scan_start: int, history_ids: set) -> bool:
+    """True when this flush could re-append turns the target session already stores (#104079).
+
+    Both post-compression shapes reach the flush with no usable dedup state: the tip adoption retargets a
+    session this agent never flushed into, and an in-process rebuild (serve / Desktop Bot Chat) hands over
+    fresh dicts whose ``_DB_PERSISTED_MARKER`` went with the dicts they replaced. Both show up as an
+    un-marked head that no caller vouched for — the identity-matched prefix, the caller's
+    ``conversation_history`` and the previous flush's session id are all cheap local answers, so the durable
+    read only happens when none of them applies.
+    """
+    if bool(previous := getattr(agent, "_flushed_db_message_session_id", None)) and (
+        previous != getattr(agent, "session_id", None)
+    ):
+        return True
+    head = messages[0] if messages and scan_start == 0 else None
+    return isinstance(head, dict) and not head.get(_DB_PERSISTED_MARKER) and id(head) not in history_ids
+
+
+def _durable_turn_key(msg: Dict) -> tuple:
+    """Content identity of one durable turn — the part that survives a dict rebuild, unlike ``id(msg)``."""
+    role = msg.get("role", "unknown")
+    content = _durable_content(msg.get("content"))
+    if role in ("user", "assistant") and isinstance(content, str):
+        # get_messages_as_conversation replays user/assistant rows through sanitize_context().strip().
+        content = sanitize_context(content).strip()
+    return (role, content, msg.get("tool_call_id"), msg.get("tool_name"))
+
+
+def _durable_prefix_alignment(live_keys: List[tuple], durable_keys: List[tuple]) -> int:
+    """Length of the leading run of ``live_keys`` the target session already stores.
+
+    A run counts only when it reaches the end of the durable transcript (the live list continues it) or
+    consumes the whole live list (the live list is contained in it), so a coincidental mid-transcript
+    repeat can never suppress the append of genuinely new turns. A single-message run that starts anywhere
+    but the head of the transcript is refused for the same reason: one message matching the durable tail is
+    exactly what a user repeating themselves looks like, and dropping that write would lose the turn.
+    """
+    best = 0
+    for start in range(len(durable_keys) + 1):
+        length = 0
+        while (
+            start + length < len(durable_keys) and length < len(live_keys)
+            and durable_keys[start + length] == live_keys[length]
+        ):
+            length += 1
+        if length > best and (start + length == len(durable_keys) or length == len(live_keys)) and (
+            start == 0 or length > 1
+        ):
+            best = length
+    return best
+
+
+def _stamp_durable_turns(agent, messages: List[Dict]) -> int:
+    """Stamp ``_DB_PERSISTED_MARKER`` on live messages the target session already holds; count stamped.
+
+    Without this the post-compression hand-off re-appends the carried transcript: the rebuilt dicts have
+    fresh identities, the tip adoption clears the flush cursor, and every logical turn lands a second time
+    (#104079). Reads are best-effort — a failed lookup falls back to the plain append-only flush."""
+    live_indices = [i for i, m in enumerate(messages) if isinstance(m, dict) and not _is_ephemeral_scaffolding(m)]
+    if not live_indices:
+        return 0
+    try:
+        durable = agent._session_db.get_messages_as_conversation(agent.session_id)
+    except Exception as exc:
+        logger.warning("durable transcript read failed for %s: %s", getattr(agent, "session_id", None), exc)
+        return 0
+    aligned = _durable_prefix_alignment(
+        [_durable_turn_key(messages[i]) for i in live_indices],
+        [_durable_turn_key(row) for row in durable or () if isinstance(row, dict)],
+    )
+    for idx in live_indices[:aligned]:
+        messages[idx][_DB_PERSISTED_MARKER] = True
+    if aligned:
+        logger.info("Session %s: %d already-durable message(s) will not be re-appended by this flush",
+                    getattr(agent, "session_id", None), aligned)
+    return aligned
+
+
 def _db_flush_scan_start(agent, messages: List[Dict]) -> int:
     """Skip the identity-matched, still-marked prefix of the previous flush's snapshot."""
     scan_start = 0
@@ -186,15 +264,20 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
 
 def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optional[List[Dict]]):
     """Scan for un-flushed messages; returns ``(rows, msgs)`` to write in one transaction."""
-    seed_ids = _db_flush_seed_ids(agent)
     history_ids = {id(item) for item in (conversation_history or []) if isinstance(item, dict)}
+    scan_start = _db_flush_scan_start(agent, messages)
+    # Classify BEFORE _db_flush_seed_ids rebinds _flushed_db_message_session_id.
+    reconcile = _db_flush_needs_durable_reconcile(agent, messages, scan_start, history_ids)
+    seed_ids = _db_flush_seed_ids(agent)
+    if reconcile:
+        _stamp_durable_turns(agent, messages)
     ov_idx = getattr(agent, "_persist_user_message_idx", None)
     # Also match the staged CLI dict by identity — the close safety-net may flush a shortened snapshot whose
     # turn index refers to the full history.
     pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
     batch_rows: List[Dict[str, Any]] = []
     batch_msgs: List[Dict] = []
-    for msg_idx in range(_db_flush_scan_start(agent, messages), len(messages)):
+    for msg_idx in range(scan_start, len(messages)):
         msg = messages[msg_idx]
         # Append-only flush: a mid-turn persist of scaffolding would commit a synthetic turn the end-of-turn
         # drop cannot un-write. Skip regardless of position.
@@ -240,6 +323,9 @@ def _db_flush_adopt_compression_tip(agent) -> bool:
     if tip_row is None or tip_row.get("ended_at") is not None:
         return False
     logger.warning("Adopted live compression tip %s for closed session %s; retrying flush once", tip, old_id)
+    # `_flushed_db_message_session_id` deliberately keeps the OLD id: the retried flush reads that as a
+    # session hand-off and reconciles the live list against the tip's durable rows before appending, so the
+    # turns the tip already carries are not written a second time (#104079).
     agent.session_id, agent._flushed_db_message_ids, agent._last_flushed_db_idx = tip, set(), 0
     agent._compression_adoption_failed = False
     return True

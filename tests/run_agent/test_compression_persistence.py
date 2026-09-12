@@ -330,6 +330,155 @@ class TestFlushAfterCompression:
             db.close()
 
 
+class TestPostCompressionHandoffFlush:
+    """#104079: a flush that lands on a different session than the previous one must reconcile the
+    live list against that session's durable rows.
+
+    The compression hand-off rebuilds the conversation: ``id(msg)`` dedup is gone, the tip adoption
+    clears ``_last_flushed_db_idx``, and the carried dicts hold no marker for the NEW session. Every
+    logical turn was therefore appended a second time (bit-identical pairs in state.db) on every flush
+    after compression under in-process ``hermes serve`` / Desktop Bot Chat.
+    """
+
+    def _make_agent(self, session_db, session_id):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            from run_agent import AIAgent
+            return AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                session_db=session_db,
+                session_id=session_id,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+    @staticmethod
+    def _rebuild(messages):
+        """The post-compression hand-off: fresh dicts, no flush identity carried over."""
+        rebuilt = []
+        for message in messages:
+            copied = dict(message)
+            copied.pop("_db_persisted", None)
+            rebuilt.append(copied)
+        return rebuilt
+
+    def _rotate(self, db, parent, child, handoff):
+        db.publish_compression_child(
+            parent_session_id=parent, child_session_id=child, source="test",
+            messages=handoff, model="test/model", require_compression_lease=False,
+        )
+
+    def test_compression_tip_adoption_does_not_reinsert_durable_turns(self):
+        """Adopting the live tip must append only what the tip does not already hold."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            parent, child = "20260101_000000_parent", "20260101_000100_child"
+
+            agent = self._make_agent(db, parent)
+            agent._ensure_db_session()
+            live = [
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+            ]
+            agent._flush_messages_to_session_db(live, None)
+
+            # Another in-process worker rotates the session out from under this agent: the child
+            # carries the summary plus the preserved tail, the parent is closed.
+            handoff = [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+            ]
+            self._rotate(db, parent, child, handoff)
+
+            messages = self._rebuild(handoff) + [
+                {"role": "user", "content": "q2"},
+                {"role": "assistant", "content": "a2"},
+            ]
+            agent._db_flush_scan_prefix = None
+            assert agent._flush_messages_to_session_db(messages, None) is True
+            assert agent.session_id == child
+
+            assert [row["content"] for row in db.get_messages(child)] == [
+                "[CONTEXT COMPACTION] summary", "q1", "a1", "q2", "a2",
+            ], "compression-tip adoption re-inserted turns the tip already stored (#104079)"
+            db.close()
+
+    def test_rebuilt_message_dicts_do_not_double_write_later_turns(self):
+        """Fresh ``id(msg)`` per turn (the serve rebuild) must not re-append the carried transcript."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            parent, child = "20260101_010000_parent", "20260101_010100_child"
+
+            agent = self._make_agent(db, parent)
+            agent._ensure_db_session()
+            agent._flush_messages_to_session_db(
+                [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}], None
+            )
+            handoff = [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "assistant", "content": "a1"},
+            ]
+            self._rotate(db, parent, child, handoff)
+
+            carried = handoff
+            for turn in range(3):
+                # Every turn arrives as a freshly rebuilt list, as the in-process profile serve
+                # hands it over; no dict identity and no marker survives the rebuild.
+                carried = self._rebuild(carried) + [
+                    {"role": "user", "content": f"q{turn}"},
+                    {"role": "assistant", "content": f"a{turn}"},
+                ]
+                assert all(message.get("_db_persisted") is None for message in carried)
+                agent._db_flush_scan_prefix = None
+                agent._flush_messages_to_session_db(carried, None)
+
+            rows = [row["content"] for row in db.get_messages(child)]
+            assert rows == [
+                "[CONTEXT COMPACTION] summary", "a1",
+                "q0", "a0", "q1", "a1", "q2", "a2",
+            ], f"rebuilt dicts double-wrote the carried transcript (#104079): {rows}"
+            db.close()
+
+    def test_new_turns_after_compression_persist_exactly_once(self):
+        """The reconciliation must not swallow new turns — including ones that repeat earlier text."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            parent, child = "20260101_020000_parent", "20260101_020100_child"
+
+            agent = self._make_agent(db, parent)
+            agent._ensure_db_session()
+            agent._flush_messages_to_session_db([{"role": "user", "content": "q1"}], None)
+            handoff = [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+            ]
+            self._rotate(db, parent, child, handoff)
+
+            # "q1" again after the boundary is a genuinely new turn, not the durable one.
+            messages = self._rebuild(handoff) + [
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a2"},
+            ]
+            agent._db_flush_scan_prefix = None
+            agent._flush_messages_to_session_db(messages, None)
+            # Re-flushing the same list (a second exit path) must be a no-op.
+            agent._flush_messages_to_session_db(messages, None)
+
+            assert [row["content"] for row in db.get_messages(child)] == [
+                "[CONTEXT COMPACTION] summary", "q1", "a1", "q1", "a2",
+            ], "a post-compression turn was lost or duplicated (#104079)"
+            db.close()
+
 
 # ---------------------------------------------------------------------------
 # Part 2: Gateway-side — history_offset after session split

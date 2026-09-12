@@ -1,9 +1,9 @@
 """disk_cleanup — ephemeral file cleanup library behind the disk-cleanup plugin.
 
-Rules: test files delete at task end (age >= 0); temp after 7 days; cron-output
-after 14 days; empty dirs under HERMES_HOME always. Prompt-only: research
+Rules: exact platform-temp files proven new by a successful file-tool call delete at task end;
+managed cache artifacts after 7 days; cron-output after 14 days. Prompt-only: research
 (keep 10 newest, > 30 days), chrome-profile > 14 days, any file > 500 MB.
-Scope: strictly HERMES_HOME and /tmp/hermes-*; never ~/.hermes/logs/ or system dirs.
+Arbitrary paths under HERMES_HOME are never inferred to be disposable by name.
 """
 
 from __future__ import annotations
@@ -12,16 +12,20 @@ import contextlib
 import functools
 import json
 import logging
+import os
 import shutil
+import stat
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
 _LARGE_FILE_BYTES = 500 * 1024 * 1024
+_REGISTERED_SYSTEM_TEMP_FILES: Dict[Tuple[str, str], Tuple[int, int]] = {}
 
 
 def _state_file(name: str) -> Path:
@@ -30,12 +34,19 @@ def _state_file(name: str) -> Path:
 
 
 def is_safe_path(path: Path) -> bool:
-    """Accept only paths under HERMES_HOME or ``/tmp/hermes-*`` (rejects /mnt/c etc.)."""
-    with contextlib.suppress(ValueError, OSError):
-        path.resolve().relative_to(get_hermes_home())
+    """Accept profile paths or exact temp files proven new by a tool call."""
+    try:
+        lexical = _absolute_without_symlinks(path)
+        resolved = path.resolve()
+        lexical_home = _absolute_without_symlinks(get_hermes_home())
+        resolved_home = get_hermes_home().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if _is_descendant(lexical, lexical_home):
+        return _is_descendant(resolved, resolved_home)
+    if _is_descendant(resolved, resolved_home):
         return True
-    parts = path.parts
-    return len(parts) >= 3 and parts[1] == "tmp" and parts[2].startswith("hermes-")
+    return _registered_system_temp_file(path) is not None
 
 
 def _log(message: str) -> None:
@@ -54,14 +65,17 @@ def load_tracked() -> List[Dict[str, Any]]:
     tf.parent.mkdir(parents=True, exist_ok=True)
     if not tf.exists():
         return []
-    with contextlib.suppress(ValueError):
-        return json.loads(tf.read_text(encoding="utf-8"))
+    with contextlib.suppress(ValueError, OSError):
+        data = json.loads(tf.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
     bak = tf.with_suffix(".json.bak")
     if bak.exists():
         with contextlib.suppress(Exception):
             data = json.loads(bak.read_text(encoding="utf-8"))
-            _log("WARN: tracked.json corrupted — restored from .bak")
-            return data
+            if isinstance(data, list):
+                _log("WARN: tracked.json corrupted — restored from .bak")
+                return data
     _log("WARN: tracked.json corrupted, no backup — starting fresh")
     return []
 
@@ -80,27 +94,169 @@ def save_tracked(tracked: List[Dict[str, Any]]) -> None:
 ALLOWED_CATEGORIES = {
     "temp", "test", "research", "download", "chrome-profile", "cron-output", "other"}
 
-# Top-level HERMES_HOME dirs whose empty subdirs are never swept (last row: user project trees).
-_EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
-    "logs", "memories", "sessions", "cron", "cronjobs",
-    "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
-    "hermes-agent", "backups", "profiles", ".worktrees",
-    "patches", "projects", "skins", "themes", "contributors"})
-
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
     ".git", "node_modules", "venv", ".venv", "site-packages", "__pycache__"})
 
-# Top-level HERMES_HOME entries guess_category() never auto-tracks: state, logs, memory,
-# sessions, config/secrets, and user project trees (test_* inside projects/ is not disposable).
-_NEVER_TRACK_TOP_LEVEL = frozenset({
-    "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
-    "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
-    "auth.json", "hermes-agent",
-    # User-authored project trees — never sweep empty directories inside these (#75403).
-    # User-authored and project trees — never auto-delete files inside these just because they happen to be
-    # named test_* or tmp_* (#75403, also #32164, #37721).
-    "patches", "projects", "skins", "themes", "contributors",
-    "profiles", "backups", "optional-skills"})
+_MANAGED_HERMES_ROOTS = {
+    ("cache", "vision", "temp_vision_images"): "temp",
+    ("cache", "video", "temp_video_files"): "temp",
+    ("cron", "output"): "cron-output",
+    ("cronjobs", "output"): "cron-output",
+}
+
+
+def _managed_hermes_roots() -> Dict[Path, str]:
+    home = get_hermes_home().resolve()
+    roots = {}
+    for parts, category in _MANAGED_HERMES_ROOTS.items():
+        root = home.joinpath(*parts)
+        try:
+            # The owned boundary itself and each existing ancestor beneath HOME
+            # must be real directories, never a symlink to external storage.
+            if root.resolve(strict=False) != root:
+                continue
+        except (OSError, RuntimeError):
+            continue
+        roots[root] = category
+    return roots
+
+
+def _absolute_without_symlinks(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
+def _is_descendant(path: Path, root: Path) -> bool:
+    with contextlib.suppress(ValueError):
+        return bool(path.relative_to(root).parts)
+    return False
+
+
+def _temp_roots() -> Set[Tuple[Path, Path]]:
+    roots = set()
+    candidates = [Path(tempfile.gettempdir())]
+    if os.name != "nt":
+        candidates.append(Path("/tmp"))
+    for candidate in candidates:
+        with contextlib.suppress(OSError):
+            lexical = _absolute_without_symlinks(candidate)
+            resolved = candidate.resolve()
+            roots.add((lexical, resolved))
+            roots.add((resolved, resolved))
+    return roots
+
+
+def _system_temp_file_key(path: Path) -> Optional[str]:
+    """Canonical key for a non-symlink path below a platform temp root."""
+    try:
+        lexical = _absolute_without_symlinks(path)
+        resolved = path.resolve(strict=False)
+        lexical_home = _absolute_without_symlinks(get_hermes_home())
+        resolved_home = get_hermes_home().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if _is_descendant(lexical, lexical_home) or _is_descendant(resolved, resolved_home):
+        return None
+    for lexical_temp, resolved_temp in _temp_roots():
+        try:
+            lexical_rel = lexical.relative_to(lexical_temp)
+            resolved_rel = resolved.relative_to(resolved_temp)
+        except ValueError:
+            continue
+        if not lexical_rel.parts or lexical_rel != resolved_rel:
+            continue
+        current = lexical_temp
+        try:
+            for part in lexical_rel.parts:
+                current /= part
+                if current.is_symlink():
+                    raise ValueError("system temp candidate crosses a symlink")
+        except (OSError, ValueError):
+            continue
+        return str(resolved)
+    return None
+
+
+def _register_created_system_temp_file(path: Path) -> bool:
+    """Register one temp file proven new by a matching successful Hermes file-tool call."""
+    key = _system_temp_file_key(path)
+    if key is None:
+        return False
+    try:
+        file_stat = Path(key).lstat()
+        profile_key = str(get_hermes_home().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if not stat.S_ISREG(file_stat.st_mode):
+        return False
+    _REGISTERED_SYSTEM_TEMP_FILES[(profile_key, key)] = (file_stat.st_dev, file_stat.st_ino)
+    return True
+
+
+def _registered_system_temp_file(path: Path) -> Optional[Path]:
+    """Return the still-identical exact temp file registered by this process."""
+    key = _system_temp_file_key(path)
+    if key is None:
+        return None
+    try:
+        profile_key = str(get_hermes_home().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    registration_key = (profile_key, key)
+    expected = _REGISTERED_SYSTEM_TEMP_FILES.get(registration_key)
+    if expected is None:
+        return None
+    try:
+        current = Path(key).lstat()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not stat.S_ISREG(current.st_mode):
+        _REGISTERED_SYSTEM_TEMP_FILES.pop(registration_key, None)
+        return None
+    if (current.st_dev, current.st_ino) != expected:
+        _REGISTERED_SYSTEM_TEMP_FILES.pop(registration_key, None)
+        return None
+    return Path(key)
+
+
+def _forget_registered_system_temp_file(path: Path) -> None:
+    key = _system_temp_file_key(path)
+    if key is None:
+        return
+    with contextlib.suppress(OSError, RuntimeError, ValueError):
+        profile_key = str(get_hermes_home().resolve())
+        _REGISTERED_SYSTEM_TEMP_FILES.pop((profile_key, key), None)
+
+
+def _managed_category(path: Path) -> Optional[str]:
+    try:
+        lexical = _absolute_without_symlinks(path)
+        resolved = path.resolve()
+        lexical_home = _absolute_without_symlinks(get_hermes_home())
+        resolved_home = get_hermes_home().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if _is_descendant(lexical, lexical_home) and not _is_descendant(resolved, resolved_home):
+        return None
+    for root, category in _managed_hermes_roots().items():
+        with contextlib.suppress(ValueError):
+            if resolved.relative_to(root).parts:
+                return category
+    with contextlib.suppress(ValueError):
+        resolved.relative_to(resolved_home)
+        return None
+    return "test" if _registered_system_temp_file(path) is not None else None
+
+
+def _managed_sweep_root(path: Path) -> Optional[Path]:
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    for root in _managed_hermes_roots():
+        with contextlib.suppress(ValueError):
+            if resolved.relative_to(root).parts:
+                return root
+    return None
 
 @functools.lru_cache(maxsize=8)  # keyed by home: a multiplexed process serves several profiles
 def _protected_cron_paths(home: Path) -> frozenset:
@@ -108,7 +264,9 @@ def _protected_cron_paths(home: Path) -> frozenset:
     ``jobs.json``, ``.tick.lock``) never deleted regardless of stored category (stale tracked.json).
     Never widen to everything under ``cron/output/``: run artifacts there are disposable; only
     wholesale deletion of ``output/`` is fatal."""
-    return frozenset(str(x) for parent in ("cron", "cronjobs") for base in (home / parent,)
+    home = home.resolve()
+    return frozenset(str(x.resolve()) for parent in ("cron", "cronjobs")
+                     for base in (home / parent,)
                      for x in (base, base / "output", base / "jobs.json", base / ".tick.lock"))
 
 
@@ -131,16 +289,33 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
     if category not in ALLOWED_CATEGORIES:
         _log(f"WARN: unknown category '{category}', using 'other'")
         category = "other"
-    path = Path(path_str).resolve()
-    if not path.exists():
+    try:
+        lexical_path = Path(path_str).expanduser()
+        path = lexical_path.resolve()
+        exists = path.exists()
+    except (OSError, RuntimeError, ValueError):
+        _log(f"SKIP: invalid path {path_str!r}")
+        return False
+    if not exists:
         _log(f"SKIP: {path} (does not exist)")
         return False
     if not is_safe_path(path):
         _log(f"REJECT: {path} (outside HERMES_HOME)")
         return False
-    size = path.stat().st_size if path.is_file() else 0
+    if category in {"test", "temp", "cron-output"} and guess_category(path) != category:
+        _log(f"REJECT: {path} ({category} is not owned by disk-cleanup)")
+        return False
+    try:
+        file_stat = lexical_path.lstat()
+    except OSError:
+        _log(f"SKIP: {path} (cannot stat)")
+        return False
+    if not stat.S_ISREG(file_stat.st_mode):
+        _log(f"REJECT: {path} (only regular files can be tracked)")
+        return False
+    size = file_stat.st_size
     tracked = load_tracked()
-    if any(item["path"] == str(path) for item in tracked):
+    if any(isinstance(item, dict) and item.get("path") == str(path) for item in tracked):
         return False
     tracked.append({"path": str(path), "timestamp": datetime.now(timezone.utc).isoformat(),
                     "category": category, "size": size})
@@ -155,7 +330,14 @@ def forget(path_str: str) -> int:
     """Remove a path from tracking without deleting the file."""
     p = Path(path_str).resolve()
     tracked = load_tracked()
-    kept = [i for i in tracked if Path(i["path"]).resolve() != p]
+    kept = []
+    for item in tracked:
+        try:
+            matches = Path(item["path"]).resolve() == p
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            matches = False
+        if not matches:
+            kept.append(item)
     removed = len(tracked) - len(kept)
     if removed:
         save_tracked(kept)
@@ -166,9 +348,22 @@ def forget(path_str: str) -> int:
 def _live_items(tracked: List[Dict], now: datetime, *, log_stale: bool = False) -> Iterator[Tuple[Dict, Path, int]]:
     """Yield ``(item, path, age_days)`` for entries whose path still exists."""
     for item in tracked:
-        p = Path(item["path"])
-        if p.exists():
-            yield item, p, (now - datetime.fromisoformat(item["timestamp"])).days
+        try:
+            if not isinstance(item, dict):
+                raise TypeError("entry is not an object")
+            p = Path(item["path"])
+            age = (now - datetime.fromisoformat(item["timestamp"])).days
+            category = item["category"]
+            size = item["size"]
+            if category not in ALLOWED_CATEGORIES or not isinstance(size, (int, float)) or size < 0:
+                raise ValueError("invalid category or size")
+            exists = p.exists()
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            if log_stale:
+                _log(f"SKIP malformed tracking entry: {exc}")
+            continue
+        if exists:
+            yield item, p, age
         elif log_stale:
             _log(f"STALE: {p} (removed from tracking)")
 
@@ -187,97 +382,129 @@ def _prompt_group(item: Dict, age: int) -> Optional[str]:
     return "large" if item["size"] > _LARGE_FILE_BYTES else None
 
 
-def _delete_item(item: Dict) -> Optional[str]:
-    """Delete a tracked file/dir and audit-log it. Returns an error string on OSError, else None."""
-    p = Path(item["path"])
+def _is_current_owned_file(item: Dict, path: Path) -> bool:
+    """Revalidate the complete automatic-deletion boundary for one file."""
     try:
-        if p.is_file():
-            p.unlink()
-        elif p.is_dir():
-            shutil.rmtree(p)
-    except OSError as e:
+        file_stat = path.lstat()
+        canonical = path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    try:
+        return (
+            path.is_absolute()
+            and canonical == path
+            and stat.S_ISREG(file_stat.st_mode)
+            and is_safe_path(path)
+            and guess_category(path) == item.get("category")
+            and not _is_protected_cron_path(path)
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _delete_item(item: Dict) -> Tuple[bool, Optional[str]]:
+    """Revalidate and delete one owned item. Returns ``(deleted, error)``."""
+    p = Path(str(item.get("path", "")))
+    try:
+        if not _is_current_owned_file(item, p):
+            _log(f"SKIP unmanaged path before delete: {p}")
+            return False, None
+        p.unlink()
+        _forget_registered_system_temp_file(p)
+    except (OSError, RuntimeError, ValueError) as e:
         _log(f"ERROR deleting {p}: {e}")
-        return f"{p}: {e}"
+        return False, f"{p}: {e}"
     _log(f"DELETED: {p} ({item['category']}, {fmt_size(item['size'])})")
-    return None
-
-
-# Stored categories re-validated against guess_category() before use: old tracked.json entries
-# may carry "cron-output" for control-plane files or "test" for files under protected trees.
-_STALE_SKIP_NOTE = {"cron-output": "", "test": " — under protected tree"}
+    return True, None
 
 
 def dry_run() -> Tuple[List[Dict], List[Dict]]:
     """Return (auto_delete_list, needs_prompt_list) without touching files."""
     auto, prompt = [], []
     for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc)):
-        cat = item["category"]
-        # Stale cron-output entries are skipped by quick(); omit them here too.
-        if cat == "cron-output" and guess_category(p) != "cron-output":
-            continue
+        cat = item.get("category")
         if _is_auto_delete(cat, age):
-            auto.append(item)
-        elif _prompt_group(item, age):
+            if _is_current_owned_file(item, p):
+                auto.append(item)
+        elif _prompt_group(item, age) and is_safe_path(p):
             prompt.append(item)
     return auto, prompt
 
 
-def quick() -> Dict[str, Any]:
+def quick(only_paths: Optional[Set[str]] = None) -> Dict[str, Any]:
     """Safe deterministic cleanup — no prompts. Returns ``{deleted, empty_dirs, freed, errors}``."""
     deleted = freed = 0
     new_tracked: List[Dict] = []
     errors: List[str] = []
+    selected = None if only_paths is None else {str(Path(path).resolve()) for path in only_paths}
+    sweep_roots = set(_managed_hermes_roots()) if selected is None else set()
     for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc), log_stale=True):
-        cat = item["category"]
-        if cat in _STALE_SKIP_NOTE and (re_cat := guess_category(p)) != cat:
-            # Misclassified stale entry — drop it rather than delete the file.
-            _log(f"SKIP stale {cat} entry: {p} (re-classified as {re_cat!r}{_STALE_SKIP_NOTE[cat]})")
+        try:
+            item_path = str(p.resolve())
+        except (OSError, RuntimeError):
             continue
-        # Hard safety net even if re-validation above somehow let it through.
-        if _is_protected_cron_path(p):
-            _log(f"SKIP protected cron path: {p}")
+        if selected is not None and item_path not in selected:
+            new_tracked.append(item)
             continue
+        cat = item.get("category")
         if not _is_auto_delete(cat, age):
             new_tracked.append(item)
             continue
-        err = _delete_item(item)
-        if err is None:
-            freed += item["size"]
+        if not _is_current_owned_file(item, p):
+            _log(f"SKIP stale {cat} entry: {p} (not a current owned regular file)")
+            continue
+        if root := _managed_sweep_root(p):
+            sweep_roots.add(root)
+        was_deleted, err = _delete_item(item)
+        if was_deleted:
+            freed += item.get("size", 0)
             deleted += 1
-        else:
+        elif err is not None:
             errors.append(err)
             new_tracked.append(item)
-    empty_removed = _sweep_empty_dirs(get_hermes_home())
+    empty_removed = sum(_sweep_empty_dirs(root) for root in sweep_roots)
     save_tracked(new_tracked)
     _log(f"QUICK_SUMMARY: {deleted} files, {empty_removed} dirs, {fmt_size(freed)}")
     return {"deleted": deleted, "empty_dirs": empty_removed, "freed": freed, "errors": errors}
 
 
-def _subdirs(dirpath: Path, exclude: frozenset) -> List[Path]:
+def _is_real_descendant_dir(path: Path, root: Path) -> bool:
     try:
-        return [c for c in dirpath.iterdir() if c.is_dir() and not c.is_symlink() and c.name not in exclude]
+        return path.resolve(strict=True) == path and _is_descendant(path, root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _subdirs(dirpath: Path, root: Path, exclude: frozenset) -> List[Path]:
+    try:
+        return [
+            child for child in dirpath.iterdir()
+            if child.name not in exclude and _is_real_descendant_dir(child, root)
+        ]
     except OSError:
         return []
 
 
-def _sweep_empty_dirs(hermes_home: Path) -> int:
-    """Remove empty dirs under HERMES_HOME without recursing into durable/heavy trees (a full
-    rglob over a checkout+venv under HERMES_HOME can stall the gateway loop for minutes).
-    Iterative post-order so parents emptied by child removal are caught."""
+def _sweep_empty_dirs(root: Path) -> int:
+    """Remove empty descendants of one explicitly owned ephemeral root."""
+    if root not in _managed_hermes_roots() or root.is_symlink():
+        return 0
     removed = 0
     stack: List[Tuple[Path, bool]] = [
-        (top, False) for top in _subdirs(hermes_home, _EMPTY_DIR_PROTECTED_TOP_LEVEL | _EMPTY_DIR_SWEEP_PRUNE_DIRS)]
+        (top, False) for top in _subdirs(root, root, _EMPTY_DIR_SWEEP_PRUNE_DIRS)]
     while stack:
         dirpath, visited = stack.pop()
         if visited:
             with contextlib.suppress(OSError):
-                if not any(dirpath.iterdir()):
+                if _is_real_descendant_dir(dirpath, root) and not any(dirpath.iterdir()):
                     dirpath.rmdir()
                     removed += 1
                     _log(f"DELETED: {dirpath} (empty dir)")
             continue
         stack.append((dirpath, True))
-        stack.extend((child, False) for child in _subdirs(dirpath, _EMPTY_DIR_SWEEP_PRUNE_DIRS))
+        stack.extend(
+            (child, False) for child in _subdirs(dirpath, root, _EMPTY_DIR_SWEEP_PRUNE_DIRS)
+        )
     return removed
 
 
@@ -285,13 +512,15 @@ def status() -> Dict[str, Any]:
     """Return per-category breakdown and top 10 largest tracked files."""
     tracked = load_tracked()
     cats: Dict[str, Dict] = {}
-    for item in tracked:
+    existing = []
+    valid = list(_live_items(tracked, datetime.now(timezone.utc), log_stale=True))
+    for item, p, _age in valid:
         c = cats.setdefault(item["category"], {"count": 0, "size": 0})
         c["count"] += 1
         c["size"] += item["size"]
-    existing = sorted(((i["path"], i["size"], i["category"]) for i in tracked
-                       if Path(i["path"]).exists()), key=lambda x: x[1], reverse=True)
-    return {"categories": cats, "top10": existing[:10], "total_tracked": len(tracked)}
+        existing.append((str(p), item["size"], item["category"]))
+    existing.sort(key=lambda x: x[1], reverse=True)
+    return {"categories": cats, "top10": existing[:10], "total_tracked": len(valid)}
 
 
 def format_status(s: Dict[str, Any]) -> str:
@@ -310,24 +539,6 @@ def format_status(s: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-_TEST_PATTERNS = ("test_", "tmp_")
-_TEST_SUFFIXES = (".test.py", ".test.js", ".test.ts", ".test.md")
-
-
 def guess_category(path: Path) -> Optional[str]:
-    """Category label for *path*, or None if we shouldn't track it (``post_tool_call`` hook)."""
-    if not is_safe_path(path):
-        return None
-    with contextlib.suppress(ValueError):  # not under HERMES_HOME (/tmp/hermes-*) — name rules only
-        rel = path.resolve().relative_to(get_hermes_home())
-        top = rel.parts[0] if rel.parts else ""
-        if top in _NEVER_TRACK_TOP_LEVEL:
-            return None
-        if top in ("cron", "cronjobs"):
-            # Only the disposable ``output/`` subtree; control-plane state (jobs.json,
-            # .tick.lock) must never be tracked — deleting it wipes the scheduler registry.
-            return "cron-output" if len(rel.parts) >= 3 and rel.parts[1] == "output" else None
-        if top == "cache":
-            return "temp"
-    name = path.name
-    return "test" if name.startswith(_TEST_PATTERNS) or name.endswith(_TEST_SUFFIXES) else None
+    """Return a category only when *path* belongs to an explicit ephemeral owner root."""
+    return _managed_category(path)

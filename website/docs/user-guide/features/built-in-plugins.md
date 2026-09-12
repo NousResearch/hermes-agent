@@ -71,23 +71,24 @@ Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engi
 
 ### disk-cleanup
 
-Auto-tracks and removes ephemeral files created during sessions — test scripts, temp outputs, cron logs, stale chrome profiles — without requiring the agent to remember to call a tool.
+Tracks and removes generated media caches, cron run output, and exact platform-temp files that Hermes observed as absent immediately before a tool call created them. A directory name, terminal output, manual category, or filename such as `test_*` / `tmp_*` never establishes ownership.
 
 **How it works:**
 
 | Hook | Behaviour |
 |---|---|
-| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME` or `/tmp/hermes-*`, track it silently as `test` / `temp` / `cron-output`. |
-| `on_session_end` | If any test files were auto-tracked during the turn, run the safe `quick` cleanup and log a one-line summary. Stays silent otherwise. |
+| `pre_tool_call` | Before `write_file` / `patch`, record explicit platform-temp paths that do not yet exist. |
+| `post_tool_call` | Track owned-root files, plus exact new platform-temp files after a successful matching file-tool call. Terminal text can never establish external-temp ownership. |
+| `on_session_end` | Delete only immediate-cleanup files tracked by that exact turn and log a one-line summary. Concurrent and long-running bot turns remain isolated. |
 
 **Deletion rules:**
 
 | Category | Threshold | Confirmation |
 |---|---|---|
-| `test` | every session end | Never |
+| `test` | end of the creating turn | Never |
 | `temp` | >7 days since tracked | Never |
 | `cron-output` | >14 days since tracked | Never |
-| empty dirs under HERMES_HOME | always | Never |
+| empty dirs in owned ephemeral roots | always | Never |
 | `research` | >30 days, beyond 10 newest | Always (deep only) |
 | `chrome-profile` | >14 days since tracked | Always (deep only) |
 | files >500 MB | never auto | Always (deep only) |
@@ -111,7 +112,7 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 | `tracked.json.bak` | Atomic-write backup of the above |
 | `cleanup.log` | Append-only audit trail of every track / skip / reject / delete |
 
-**Safety** — cleanup only ever touches paths under `HERMES_HOME` or `/tmp/hermes-*`. Windows mounts (`/mnt/c/...`) are rejected. Well-known top-level state dirs (`logs/`, `memories/`, `sessions/`, `cron/`, `cache/`, `skills/`, `plugins/`, `disk-cleanup/` itself) are never removed even when empty — a fresh install does not get gutted on first session end.
+**Safety** — automatic deletion requires current membership in an explicit owned root: `$HERMES_HOME/cache/vision/temp_vision_images/`, `$HERMES_HOME/cache/video/temp_video_files/`, or `$HERMES_HOME/cron/output/` (plus `cronjobs/output/`). Outside those roots, ownership is limited to the exact regular platform-temp file proven new by a matching successful `write_file` / `patch` call and bound to that file's filesystem identity; terminal text and its parent directory never grant ownership. Candidates are revalidated immediately before deletion, pre-existing/replaced files and malformed tracking records are skipped, and one turn cannot clean another active turn's files. All other workspace and Hermes paths are durable regardless of their filename.
 
 **Enabling:** `hermes plugins enable disk-cleanup` (or check the box in `hermes plugins`).
 

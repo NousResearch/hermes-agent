@@ -1,7 +1,7 @@
 """disk-cleanup plugin — auto-cleanup of ephemeral Hermes session files.
 
-``post_tool_call`` silently tracks test/temp paths created by write_file/patch/terminal;
-``on_session_end`` runs :func:`disk_cleanup.quick` when any test file was tracked this turn;
+``post_tool_call`` silently tracks paths inside Hermes-owned ephemeral roots;
+``on_session_end`` removes only immediate-cleanup paths tracked by that exact turn;
 ``/disk-cleanup`` exposes status / dry-run / quick / deep / track / forget.
 """
 
@@ -20,9 +20,10 @@ from . import disk_cleanup as dg
 logger = logging.getLogger(__name__)
 
 
-# Test files newly tracked this turn, keyed by task_id (or session_id) so on_session_end can
-# decide whether to run cleanup. Locked: post_tool_call fires concurrently on parallel calls.
+# Immediate-cleanup paths keyed by turn_id. External temp files additionally require a matching
+# pre-tool observation proving that the exact path did not exist before Hermes ran the tool.
 _recent_test_tracks: Dict[str, Set[str]] = {}
+_pending_absent_temp_paths: Dict[str, tuple[str, Set[str]]] = {}
 _lock = threading.Lock()
 
 _TERMINAL_PATH_REGEX = re.compile(r"(?:^|\s)(/[^\s'\"`]+|\~/[^\s'\"`]+)")
@@ -51,39 +52,94 @@ _PATH_EXTRACTORS: Dict[str, Callable[[Dict[str, Any], str], Set[str]]] = {
     "write_file": _extract_path_arg,
     "patch": _extract_path_arg,
     "terminal": _extract_paths_from_terminal}
+_CREATION_PROOF_TOOLS = frozenset({"write_file", "patch"})
+
+
+def _turn_key(turn_id: str, task_id: str, session_id: str) -> str:
+    return turn_id or task_id or session_id or "default"
+
+
+def _on_pre_tool_call(
+    tool_name: str = "", args: Optional[Dict[str, Any]] = None,
+    task_id: str = "", session_id: str = "", turn_id: str = "",
+    tool_call_id: str = "", **_: Any,
+) -> None:
+    """Record absent temp paths from tool arguments; never infer ownership from names."""
+    extractor = _PATH_EXTRACTORS.get(tool_name)
+    if (
+        tool_name not in _CREATION_PROOF_TOOLS
+        or not tool_call_id
+        or not isinstance(args, dict)
+        or extractor is None
+    ):
+        return
+    absent: Set[str] = set()
+    for path_str in extractor(args, ""):
+        try:
+            path = Path(path_str).expanduser()
+            key = dg._system_temp_file_key(path)
+            if key is not None and not path.exists():
+                absent.add(key)
+        except (OSError, RuntimeError, ValueError):
+            continue
+    with _lock:
+        _pending_absent_temp_paths[tool_call_id] = (
+            _turn_key(turn_id, task_id, session_id), absent
+        )
 
 
 def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, result: Any = None,
-                       task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
+                       task_id: str = "", session_id: str = "", turn_id: str = "",
+                       tool_call_id: str = "", status: str = "", **_: Any) -> None:
     """Auto-track ephemeral files created by recent tool calls. Best-effort, never raises."""
     extractor = _PATH_EXTRACTORS.get(tool_name)
     if not isinstance(args, dict) or extractor is None:
         return
-    for path_str in extractor(args, result if isinstance(result, str) else ""):
-        try:
-            p = Path(path_str).expanduser()
-        except Exception:
-            continue
-        category = dg.guess_category(p) if p.exists() else None
-        if category is not None and dg.track(str(p), category, silent=True) and category == "test":
-            with _lock:
-                _recent_test_tracks.setdefault(task_id or session_id or "default", set()).add(str(p))
+    candidates = extractor(args, result if isinstance(result, str) else "")
+    with _lock:
+        pending = _pending_absent_temp_paths.pop(tool_call_id, None) if tool_call_id else None
+        absent = (
+            pending[1]
+            if pending is not None and pending[0] == _turn_key(turn_id, task_id, session_id)
+            else set()
+        )
+        for path_str in candidates:
+            try:
+                p = Path(path_str).expanduser()
+                category = dg.guess_category(p) if p.exists() else None
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if (
+                category is None
+                and status == "ok"
+                and dg._system_temp_file_key(p) in absent
+                and dg._register_created_system_temp_file(p)
+            ):
+                category = dg.guess_category(p)
+            if category is not None:
+                tracked = dg.track(str(p), category, silent=True)
+                if tracked and category == "test":
+                    _recent_test_tracks.setdefault(
+                        _turn_key(turn_id, task_id, session_id), set()).add(str(p.resolve()))
 
 
 def _on_session_end(
-    session_id: str = "", completed: bool = True, interrupted: bool = False, **_: Any) -> None:
+    session_id: str = "", task_id: str = "", turn_id: str = "",
+    completed: bool = True, interrupted: bool = False, **_: Any) -> None:
     """Run quick cleanup if any test files were tracked during this turn."""
-    # Drain the session bucket plus every task-scoped bucket (subagents record into their own).
+    key = _turn_key(turn_id, task_id, session_id)
     with _lock:
-        had_tracks = bool(_recent_test_tracks.pop(session_id or "default", None) or _recent_test_tracks)
-        _recent_test_tracks.clear()
-    if not had_tracks:
-        return
-    try:
-        summary = dg.quick()
-    except Exception as exc:
-        logger.debug("disk-cleanup quick cleanup failed: %s", exc)
-        return
+        for call_id, (pending_key, _paths) in list(_pending_absent_temp_paths.items()):
+            if pending_key == key:
+                _pending_absent_temp_paths.pop(call_id, None)
+        paths = _recent_test_tracks.pop(key, None)
+        if not paths:
+            return
+        try:
+            summary = dg.quick(only_paths=paths)
+        except Exception as exc:
+            logger.debug("disk-cleanup quick cleanup failed: %s", exc)
+            return
     if summary["deleted"] or summary["empty_dirs"]:
         dg._log(f"AUTO_QUICK (session_end): deleted={summary['deleted']} "
                 f"dirs={summary['empty_dirs']} freed={dg.fmt_size(summary['freed'])}")
@@ -102,8 +158,10 @@ Subcommands:
 
 Categories: temp | test | research | download | chrome-profile | cron-output | other
 
-All operations are scoped to HERMES_HOME and /tmp/hermes-*.
-Test files are auto-tracked on write_file / terminal and auto-cleaned at session end.
+Automatic deletion is limited to Hermes-owned cache/cron roots and exact platform-temp
+files proven new by a matching successful write_file/patch call. Terminal text never
+grants ownership.
+Arbitrary workspace files are never classified as disposable by filename.
 """
 
 
@@ -180,6 +238,7 @@ def _handle_slash(raw_args: str) -> Optional[str]:
 
 
 def register(ctx) -> None:
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("on_session_end", _on_session_end)
     ctx.register_command("disk-cleanup", handler=_handle_slash,

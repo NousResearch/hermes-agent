@@ -827,7 +827,17 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
                 label = tier_row["name"]
             _add(slug, label, [], bool(active) and slug == active)
 
+    # A provider configured under a canonical slug is already on the menu from the
+    # rows above, so adding it again here lists it twice (#7524). Match against the
+    # slugs actually rendered rather than all of CANONICAL_PROVIDERS: a slug hidden
+    # by ``model_catalog.excluded_providers`` is not a duplicate of anything, and the
+    # saved entry is the only way left to reach it.
+    _rendered_slugs = {slug.lower() for slug in _visible_slugs}
+
     for key, provider_info in custom_provider_map.items():
+        provider_key = (provider_info.get("provider_key") or "").lower()
+        if provider_key and provider_key in _rendered_slugs:
+            continue
         saved_model = provider_info.get("model", "")
         model_hint = f" — {saved_model}" if saved_model else ""
         _add(key, f"{provider_info['name']} ({_short_url(provider_info['base_url'])}){model_hint}", [],

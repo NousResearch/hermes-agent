@@ -32,6 +32,17 @@ _DISCORD_ERROR_BODY_MAX_BYTES = 64 * 1024
 _FLAGS_GUILD_MEMBERS = (1 << 14) | (1 << 15)
 _FLAGS_MESSAGE_CONTENT = (1 << 18) | (1 << 19)
 
+# 429 handling. Discord answers a rate limit with a retry_after delay rather than a bucket
+# reservation, so the client sleeps and retries. The sleep cap keeps a long per-route cooldown
+# (e.g. the 600s bucket that governs thread renames) from silently stalling an agent turn —
+# past the cap the delay is returned as an error the model can act on.
+_DISCORD_RATE_LIMIT_MAX_RETRIES = 3
+_DISCORD_RATE_LIMIT_MAX_SLEEP = 30.0
+
+# A global 429 applies to the whole token, so it pauses every thread, not just the caller.
+_global_rate_limit_lock = threading.Lock()
+_global_rate_limit_until = [0.0]
+
 
 class DiscordAPIError(Exception):
     def __init__(self, status: int, body: str):
@@ -52,33 +63,116 @@ def _get_bot_token() -> Optional[str]:
     return (get_secret("DISCORD_BOT_TOKEN", "") or "").strip() or None
 
 
+def _parse_retry_after(headers: Any, error_body: str) -> Optional[float]:
+    """Seconds to wait from a 429, preferring the JSON body over the header.
+
+    Discord sends ``retry_after`` in both places; the JSON body is sub-second precise while
+    ``Retry-After`` is integer seconds and rounds 0.15s up to 1s. Returns None when neither
+    is parseable, which the caller treats as "not a rate limit we understand".
+    """
+    try:
+        parsed = json.loads(error_body)
+        if isinstance(parsed, dict) and parsed.get("retry_after") is not None:
+            return max(0.0, float(parsed["retry_after"]))
+    except (ValueError, TypeError):
+        pass
+    try:
+        raw = headers.get("Retry-After") if headers is not None else None
+        if raw is not None:
+            return max(0.0, float(raw))
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def _apply_global_rate_limit_pause() -> None:
+    """Block until any global 429 cooldown set by another thread has elapsed."""
+    while True:
+        with _global_rate_limit_lock:
+            remaining = _global_rate_limit_until[0] - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, _DISCORD_RATE_LIMIT_MAX_SLEEP))
+
+
+def _record_global_rate_limit(delay: float) -> None:
+    with _global_rate_limit_lock:
+        _global_rate_limit_until[0] = max(_global_rate_limit_until[0], time.monotonic() + delay)
+
+
 def _discord_request(
     method: str, path: str, token: str, params: Optional[Dict[str, str]] = None,
     body: Optional[Dict[str, Any]] = None, timeout: int = 15) -> Any:
-    """Make a request to the Discord REST API."""
+    """Make a request to the Discord REST API, retrying through 429 rate limits.
+
+    Discord returns 429 with a ``retry_after`` delay rather than a bucket reservation, so the
+    only correct client behaviour is to sleep and retry. Bounded by
+    ``_DISCORD_RATE_LIMIT_MAX_RETRIES`` attempts and ``_DISCORD_RATE_LIMIT_MAX_SLEEP`` per sleep;
+    a delay longer than the cap is surfaced as an error instead of stalling the agent turn.
+    A ``global`` 429 additionally pauses every other caller in this process.
+    """
     url = f"{DISCORD_API_BASE}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(
-        url, data=None if body is None else json.dumps(body).encode("utf-8"), method=method,
-        headers={
-            "Authorization": f"Bot {token}", "Content-Type": "application/json",
-            "User-Agent": "Hermes-Agent (https://github.com/NousResearch/hermes-agent)"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if resp.status == 204:
-                return None
-            body = _read_limited_response_body(resp, _DISCORD_RESPONSE_BODY_MAX_BYTES, label="response body")
-            return json.loads(body.decode("utf-8"))
-    except urllib.error.HTTPError as e:
+    payload = None if body is None else json.dumps(body).encode("utf-8")
+
+    for attempt in range(_DISCORD_RATE_LIMIT_MAX_RETRIES + 1):
+        _apply_global_rate_limit_pause()
+        req = urllib.request.Request(
+            url, data=payload, method=method,
+            headers={
+                "Authorization": f"Bot {token}", "Content-Type": "application/json",
+                "User-Agent": "Hermes-Agent (https://github.com/NousResearch/hermes-agent)"})
         try:
-            error_body = _read_limited_response_body(
-                e, _DISCORD_ERROR_BODY_MAX_BYTES, label="error body").decode("utf-8", errors="replace")
-        except DiscordAPIError as too_large:
-            error_body = too_large.body
-        except Exception:
-            error_body = ""
-        raise DiscordAPIError(e.code, error_body) from e
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 204:
+                    return None
+                raw = _read_limited_response_body(
+                    resp, _DISCORD_RESPONSE_BODY_MAX_BYTES, label="response body")
+                return json.loads(raw.decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            try:
+                error_body = _read_limited_response_body(
+                    e, _DISCORD_ERROR_BODY_MAX_BYTES, label="error body").decode("utf-8", errors="replace")
+            except DiscordAPIError as too_large:
+                error_body = too_large.body
+            except Exception:
+                error_body = ""
+
+            if e.code != 429:
+                raise DiscordAPIError(e.code, error_body) from e
+
+            delay = _parse_retry_after(getattr(e, "headers", None), error_body)
+            if delay is None:
+                raise DiscordAPIError(e.code, error_body or "Rate limited with no retry_after.") from e
+            if delay > _DISCORD_RATE_LIMIT_MAX_SLEEP:
+                raise DiscordAPIError(
+                    e.code,
+                    f"Rate limited for {delay:.1f}s, above the {_DISCORD_RATE_LIMIT_MAX_SLEEP}s "
+                    f"client cap; not waiting. Original body: {error_body}") from e
+            if attempt >= _DISCORD_RATE_LIMIT_MAX_RETRIES:
+                raise DiscordAPIError(
+                    e.code,
+                    f"Rate limited after {_DISCORD_RATE_LIMIT_MAX_RETRIES} retries. "
+                    f"Original body: {error_body}") from e
+
+            is_global = False
+            try:
+                parsed = json.loads(error_body)
+                is_global = bool(isinstance(parsed, dict) and parsed.get("global"))
+            except (ValueError, TypeError):
+                pass
+            if not is_global and getattr(e, "headers", None) is not None:
+                is_global = str(e.headers.get("X-RateLimit-Global", "")).lower() == "true"
+            if is_global:
+                _record_global_rate_limit(delay)
+
+            logger.info(
+                "discord: 429 on %s %s; sleeping %.2fs (attempt %d/%d, global=%s)",
+                method, path, delay, attempt + 1, _DISCORD_RATE_LIMIT_MAX_RETRIES, is_global)
+            time.sleep(delay)
+
+    raise DiscordAPIError(429, "Rate limit retry loop exhausted.")
 
 
 _CHANNEL_TYPE_NAMES = {

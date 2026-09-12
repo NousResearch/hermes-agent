@@ -19,6 +19,7 @@ import {
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
   type PairingUser,
+  type ProfileScope,
   revokePairing,
   type TelegramOnboardingApplyResponse,
   updateMessagingPlatform
@@ -30,11 +31,12 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $settingsScopeKey } from '@/store/settings-scope'
 import { $gatewayRestarting, runGatewayRestart, watchGatewayRestartOutcome } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { useSettingsOwner } from '../hooks/use-settings-owner'
 import { DetailColumn, ListColumn, MasterDetail } from '../master-detail'
 import { PageSearchShell } from '../page-search-shell'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
@@ -128,12 +130,18 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
   }
 }
 
-export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
+export function MessagingView(props: MessagingViewProps) {
+  const scopeKey = useStore($settingsScopeKey)
+
+  return <MessagingViewInner {...props} key={scopeKey} />
+}
+
+function MessagingViewInner({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
   const { t } = useI18n()
   const m = t.messaging
   // Shared settings "Applies to" scope, request-shaped (undefined → follow
   // the active profile; the API helpers treat null as "target primary").
-  const scopeProfile = useStore($settingsRequestProfile)
+  const { profile: scopeProfile, isCurrent } = useSettingsOwner()
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a
   // vanishing toast is not enough: the page keeps a banner up until a restart
@@ -158,13 +166,17 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const restartGatewayNow = useCallback(async () => {
     // runGatewayRestart never rejects: it toasts the failure and settles the
     // statusbar indicator; the banner stays if the restart did not complete.
-    const ok = await runGatewayRestart()
+    if (!isCurrent()) {
+      return
+    }
 
-    if (ok) {
+    const ok = await runGatewayRestart(scopeProfile, isCurrent)
+
+    if (ok && isCurrent()) {
       setRestartNeeded(false)
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
     }
-  }, [])
+  }, [isCurrent, scopeProfile])
 
   const refreshPlatforms = useCallback(
     async (silent = false) => {
@@ -173,8 +185,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       }
 
       try {
+        if (!isCurrent()) {
+          return
+        }
+
         const result = await getMessagingPlatforms(scopeProfile)
-        setPlatforms(result.platforms)
+
+        if (isCurrent()) {
+          setPlatforms(result.platforms)
+        }
       } catch (err) {
         if (!silent) {
           notifyError(err, m.loadFailed)
@@ -185,11 +204,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }
     },
-    [m, scopeProfile]
+    [isCurrent, m, scopeProfile]
   )
 
-  // Latest-callback ref: the deferred post-restart refresh must not capture a
-  // stale scope closure from before a profile switch.
+  // This ref belongs to one mounted owner. The refresh guard cancels a delayed
+  // post-restart callback after that owner is replaced; it never follows ambient.
   const refreshPlatformsRef = useRef(refreshPlatforms)
 
   refreshPlatformsRef.current = refreshPlatforms
@@ -201,12 +220,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // should show no rows, not an error banner over a working page.
   const refreshPairing = useCallback(async () => {
     try {
+      if (!isCurrent()) {
+        return
+      }
+
       const result = await getPairing(scopeProfile)
-      setPairing({ approved: result.approved ?? [], pending: result.pending ?? [] })
+
+      if (isCurrent()) {
+        setPairing({ approved: result.approved ?? [], pending: result.pending ?? [] })
+      }
     } catch {
       // Leave the last known rows in place rather than blanking them.
     }
-  }, [scopeProfile])
+  }, [isCurrent, scopeProfile])
 
   const refreshAll = useCallback(
     async (silent = false) => {
@@ -220,23 +246,6 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   useEffect(() => {
     void refreshAll()
   }, [refreshAll])
-
-  // Scope switch: the mounted list still shows the PREVIOUS profile's
-  // platforms/pairing while the new fetch is in flight — blank it so stale
-  // rows can't be toggled against the wrong backend.
-  const scopeSeenRef = useRef(scopeProfile)
-
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (scope-change guard)
-  useEffect(() => {
-    if (scopeSeenRef.current === scopeProfile) {
-      return
-    }
-
-    scopeSeenRef.current = scopeProfile
-    setPlatforms(null)
-    setPairing({ approved: [], pending: [] })
-    setEdits({})
-  }, [scopeProfile])
 
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const platformsChangeTick = useStore($platformsChangeTick)
@@ -320,7 +329,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`enabled:${platform.id}`)
 
     try {
+      if (!isCurrent()) {
+        return
+      }
+
       await updateMessagingPlatform(platform.id, { enabled }, scopeProfile)
+
+      if (!isCurrent()) {
+        return
+      }
+
       setPlatforms(
         current =>
           current?.map(row =>
@@ -356,7 +374,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`env:${platform.id}`)
 
     try {
+      if (!isCurrent()) {
+        return
+      }
+
       await updateMessagingPlatform(platform.id, { env }, scopeProfile)
+
+      if (!isCurrent()) {
+        return
+      }
+
       setEdits(current => ({ ...current, [platform.id]: {} }))
       await refreshPlatforms()
       setRestartNeeded(true)
@@ -376,7 +403,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`clear:${key}`)
 
     try {
+      if (!isCurrent()) {
+        return
+      }
+
       await updateMessagingPlatform(platform.id, { clear_env: [key] }, scopeProfile)
+
+      if (!isCurrent()) {
+        return
+      }
+
       setEdits(current => ({
         ...current,
         [platform.id]: {
@@ -398,12 +434,24 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // the gateway. restart_started only means the child spawned; watch its exit
   // so a failed restart lands in the banner instead of a silent "stopped".
   async function handleTelegramApplied(result: TelegramOnboardingApplyResponse) {
+    if (!isCurrent()) {
+      return
+    }
+
     await refreshPlatforms(true)
+
+    if (!isCurrent()) {
+      return
+    }
 
     if (result.restart_started) {
       notify({ kind: 'success', title: m.setupSaved('Telegram'), message: m.telegramQr.savedRestarting })
       setRestartNeeded(false)
-      const ok = await watchGatewayRestartOutcome()
+      const ok = await watchGatewayRestartOutcome(scopeProfile, isCurrent)
+
+      if (!isCurrent()) {
+        return
+      }
 
       if (!ok) {
         setRestartNeeded(true)
@@ -444,7 +492,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }))
 
     try {
+      if (!isCurrent()) {
+        return
+      }
+
       await approvePairing(user.platform, user.request_id, scopeProfile)
+
+      if (!isCurrent()) {
+        return
+      }
+
       notify({ kind: 'success', title: m.approvedUser(pairingLabel(user)), message: m.approvedHint })
       await refreshPairing()
     } catch (err) {
@@ -469,7 +526,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }))
 
     try {
+      if (!isCurrent()) {
+        return
+      }
+
       await revokePairing(user.platform, user.user_id, scopeProfile)
+
+      if (!isCurrent()) {
+        return
+      }
+
       notify({ kind: 'success', title: m.revokedUser(pairingLabel(user)), message: user.platform })
       await refreshPairing()
     } catch (err) {
@@ -657,7 +723,7 @@ function PlatformDetail({
   pending: PairingUser[]
   platform: MessagingPlatformInfo
   saving: string | null
-  scopeProfile: string | undefined
+  scopeProfile: ProfileScope
 }) {
   const { t } = useI18n()
   const m = t.messaging

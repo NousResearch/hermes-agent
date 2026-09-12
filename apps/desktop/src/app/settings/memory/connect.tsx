@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import type { ProfileScope } from '@/api/client'
+import { useSettingsOwner } from '@/app/hooks/use-settings-owner'
 import { Button } from '@/components/ui/button'
 import { getMemoryProviderOAuthStatus, startMemoryProviderOAuth } from '@/hermes'
 import { Check, ExternalLink, Loader2 } from '@/lib/icons'
@@ -12,7 +14,8 @@ const POLL_TIMEOUT_MS = 120_000
 // Small connect affordance rendered under the provider dropdown. Capability is
 // backend-driven: the status route 404s for providers without an oauth_flow
 // module, so non-OAuth providers render nothing.
-export function MemoryConnect({ profile, provider }: { profile?: string; provider: string }) {
+export function MemoryConnect({ profile, provider }: { profile?: ProfileScope; provider: string }) {
+  const { isCurrent } = useSettingsOwner(profile)
   const [capable, setCapable] = useState<'no' | 'unknown' | 'yes'>('unknown')
   const [connected, setConnected] = useState(false)
   const [auth, setAuth] = useState<MemoryProviderOAuthStatus['auth']>(null)
@@ -51,7 +54,7 @@ export function MemoryConnect({ profile, provider }: { profile?: string; provide
       active = false
       stop()
     }
-  }, [profile, provider, stop])
+  }, [isCurrent, profile, provider, stop])
 
   // An error message isn't sticky — it clears back to the steady state
   // (Connect link, plus the connected badge if a credential is stored).
@@ -81,12 +84,26 @@ export function MemoryConnect({ profile, provider }: { profile?: string; provide
       return
     }
 
+    if (!isCurrent()) {
+      return
+    }
+
     deadline.current = Date.now() + POLL_TIMEOUT_MS
     stop()
     timer.current = setInterval(() => {
       void (async () => {
         try {
+          if (!isCurrent()) {
+            stop()
+
+            return
+          }
+
           const next = await getMemoryProviderOAuthStatus(provider, profile)
+
+          if (!isCurrent()) {
+            return
+          }
 
           if (next.state === 'pending') {
             if (Date.now() > deadline.current) {
@@ -113,7 +130,7 @@ export function MemoryConnect({ profile, provider }: { profile?: string; provide
         }
       })()
     }, POLL_MS)
-  }, [profile, provider, stop])
+  }, [isCurrent, profile, provider, stop])
 
   const cancel = useCallback(() => {
     stop()

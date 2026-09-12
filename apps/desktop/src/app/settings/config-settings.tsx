@@ -6,7 +6,13 @@ import { useSearchParams } from 'react-router'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
+import {
+  getElevenLabsVoices,
+  getHermesConfigSchema,
+  type ProfileScope,
+  profileScopeKey,
+  saveHermesConfig
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { confirm } from '@/store/confirm'
@@ -22,13 +28,12 @@ import {
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
-import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $settingsRequestProfile, $settingsScopeKey } from '@/store/settings-scope'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
-import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
+import { useSettingsOwner } from '../hooks/use-settings-owner'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
@@ -54,27 +59,36 @@ export function ConfigSettings({
   activeSectionId,
   onConfigSaved,
   onMainModelChanged,
-  importInputRef
+  importInputRef,
+  profile
 }: ConfigSettingsProps) {
-  // Shared "Applies to" scope (null → the app's active profile). Remount the
-  // inner page per scope so every draft/seed/autosave ref resets wholesale
-  // when the target profile changes — the same guarantee useOnProfileSwitch
-  // provides for app-wide switches, without hand-clearing each piece.
-  const scopeProfile = useStore($settingsRequestProfile)
+  // The owner key includes the gateway and legacy ambient generation. Remount
+  // every draft/seed/autosave ref rather than reusing same-named profiles.
+  const selectedProfile = useStore($settingsRequestProfile)
+  const selectedScopeKey = useStore($settingsScopeKey)
+  const scopeProfile = profile === undefined ? selectedProfile : profile
+
+  const scopeKey =
+    profile === undefined
+      ? selectedScopeKey
+      : `${selectedScopeKey}:explicit:${profile === null ? 'primary' : profileScopeKey(profile)}`
 
   return (
     <ConfigSettingsInner
       activeSectionId={activeSectionId}
       importInputRef={importInputRef}
-      key={scopeProfile ?? '__active__'}
+      key={scopeKey}
       onConfigSaved={onConfigSaved}
       onMainModelChanged={onMainModelChanged}
+      scopeKey={scopeKey}
       scopeProfile={scopeProfile}
     />
   )
 }
 
 interface ConfigSettingsProps {
+  /** Omitted follows Settings; null explicitly targets the primary profile. */
+  profile?: ProfileScope
   activeSectionId: string
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
@@ -86,8 +100,10 @@ function ConfigSettingsInner({
   onConfigSaved,
   onMainModelChanged,
   importInputRef,
-  scopeProfile
-}: ConfigSettingsProps & { scopeProfile: string | undefined }) {
+  scopeKey: requestKey,
+  scopeProfile: requestProfile
+}: ConfigSettingsProps & { scopeKey: string; scopeProfile: ProfileScope }) {
+  const { profile: scopeProfile, scopeKey, isCurrent, isActive } = useSettingsOwner(requestProfile, requestKey)
   const { t } = useI18n()
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
@@ -96,20 +112,23 @@ function ConfigSettingsInner({
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-  const { data: loadedConfig, isError: configLoadFailed, refetch: refetchConfig } = useHermesConfigRecord(scopeProfile)
+
+  const {
+    data: loadedConfig,
+    isError: configLoadFailed,
+    refetch: refetchConfig
+  } = useHermesConfigRecord(scopeProfile, scopeKey)
+
   // Writes land on the same cache key the query above reads (base key when
   // following the active profile, suffixed when a scope override is set).
-  const writeConfigCache = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
+  const writeConfigCache = useMemo(() => hermesConfigCacheWriter(scopeProfile, scopeKey), [scopeProfile, scopeKey])
 
   const {
     data: schemaResponse,
     isError: schemaFailed,
     refetch: refetchSchema
   } = useQuery({
-    // Base key when following the active profile (matches every pre-existing
-    // consumer); suffixed only for an explicit scope override.
-    queryKey:
-      scopeProfile == null ? ['hermes-config-schema'] : ['hermes-config-schema', normalizeProfileKey(scopeProfile)],
+    queryKey: ['hermes-config-schema', scopeKey],
     queryFn: () => getHermesConfigSchema(scopeProfile),
     staleTime: 5 * 60 * 1000
   })
@@ -143,20 +162,6 @@ function ConfigSettingsInner({
       setConfig(loadedConfig)
     }
   }, [loadedConfig])
-
-  // A profile switch invalidates (but doesn't clear) the shared config query, so
-  // the local draft would otherwise keep profile A's data and autosave it into
-  // B. Drop the seed + draft (re-seeds from B's refetch) and zero saveVersion so
-  // the pending debounced autosave is cancelled by its effect cleanup.
-  useOnProfileSwitch(() => {
-    configSeeded.current = false
-    configBaselineRef.current = null
-    savedDiscoverySignatureRef.current = undefined
-    setConfig(null)
-    saveVersionRef.current = 0
-    setSaveVersion(0)
-    saveQueueRef.current = Promise.resolve()
-  })
 
   useEffect(() => {
     let cancelled = false
@@ -196,9 +201,17 @@ function ConfigSettingsInner({
       // baseline advance — each save's diff is computed once its predecessor
       // has fully resolved.
       saveQueueRef.current = saveQueueRef.current.then(async () => {
+        if (!isCurrent()) {
+          return
+        }
+
         try {
           const patch = diffConfig(configBaselineRef.current ?? {}, snapshot)
           const result = await saveHermesConfig(patch, scopeProfile)
+
+          if (!isCurrent()) {
+            return
+          }
 
           if (!result.ok) {
             throw new Error(c.autosaveFailed)
@@ -217,7 +230,7 @@ function ConfigSettingsInner({
           if (saveVersionRef.current === v) {
             // The repo-discovery scan reads the ACTIVE profile's workspace
             // policy; skip it when this page is editing another profile.
-            if (scopeProfile == null) {
+            if (isActive()) {
               const discoverySignature = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(snapshot))
 
               if (savedDiscoverySignatureRef.current !== discoverySignature) {
@@ -229,7 +242,7 @@ function ConfigSettingsInner({
             onConfigSaved?.()
           }
         } catch (err) {
-          if (saveVersionRef.current === v) {
+          if (isCurrent() && saveVersionRef.current === v) {
             notifyError(err, c.autosaveFailed)
           }
         }
@@ -254,7 +267,7 @@ function ConfigSettingsInner({
     // transition before applying it. Every other edit passes through untouched.
     if (config && clearsEnabledToolsets(config, next)) {
       void confirm({ destructive: true, title: c.toolsetsWipeConfirm }).then(ok => {
-        if (ok) {
+        if (ok && isCurrent()) {
           applyConfig(next)
         }
       })
@@ -325,6 +338,10 @@ function ConfigSettingsInner({
     const reader = new FileReader()
 
     reader.onload = () => {
+      if (!isCurrent()) {
+        return
+      }
+
       try {
         updateConfig(JSON.parse(String(reader.result)))
         notify({ kind: 'success', title: c.imported, message: t.common.saving })
@@ -341,7 +358,10 @@ function ConfigSettingsInner({
     // A failed config/schema fetch must surface a retry, not spin forever.
     if ((configLoadFailed && !config) || (schemaFailed && !schema)) {
       return (
-        <div className="flex h-full min-h-0 flex-1">
+        <div className="flex h-full min-h-0 flex-1 flex-col">
+          <SettingsContent>
+            <SettingsProfileScope className="mb-5" />
+          </SettingsContent>
           <PanelEmpty
             action={
               <Button
@@ -374,7 +394,14 @@ function ConfigSettingsInner({
       )
     }
 
-    return <SettingsSkeleton sections={[{ rows: 6 }]} />
+    return (
+      <>
+        <SettingsContent>
+          <SettingsProfileScope className="mb-5" />
+        </SettingsContent>
+        <SettingsSkeleton sections={[{ rows: 6 }]} />
+      </>
+    )
   }
 
   const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
@@ -386,7 +413,7 @@ function ConfigSettingsInner({
       <SettingsProfileScope className="mb-5" />
       {activeSectionId === 'model' && (
         <div className="mb-6">
-          <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} />
+          <ModelSettings onMainModelChanged={onMainModelChanged} scopeKey={scopeKey} scopeProfile={scopeProfile} />
         </div>
       )}
       {/* Device-local desktop prefs (not config.yaml) — they live here since

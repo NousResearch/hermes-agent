@@ -59,7 +59,8 @@ export {
   sortProviders
 } from './providers'
 
-import { requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+import { $settingsScopeKey } from '@/store/settings-scope'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -206,18 +207,43 @@ export function DesktopOnboardingOverlay({
   useStore($onboardingSurfaces)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
-  const targetProfile = onboarding.targetProfile ?? profile
+  const targetProfile = onboarding.targetProfile === undefined ? profile : onboarding.targetProfile
 
   // Async flows retain the initiating route even after the overlay closes.
-  const ctx = useMemo<OnboardingContext>(
-    () => ({
+  const ctx = useMemo<OnboardingContext>(() => {
+    const ownerKey = $settingsScopeKey.get()
+
+    return {
+      isCurrent: onboarding.manual ? () => ownerKey === $settingsScopeKey.get() : undefined,
       profile: targetProfile,
-      requestGateway: onboarding.targetProfile
-        ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
-        : requestGateway,
-      onCompleted: () => onCompletedRef.current?.()
-    }),
-    [onboarding.targetProfile, targetProfile, requestGateway]
+      requestGateway:
+        onboarding.targetProfile !== undefined
+          ? (method, params) =>
+              targetProfile && typeof targetProfile === 'object'
+                ? requestGatewayForAgent(
+                    targetProfile.connectionId ?? null,
+                    targetProfile.profile ?? 'default',
+                    method,
+                    params
+                  )
+                : requestGatewayForProfile(targetProfile ?? 'default', method, params)
+          : requestGateway,
+      onCompleted: () => {
+        if (onboarding.targetProfile === undefined) {
+          onCompletedRef.current?.()
+        }
+      }
+    }
+  }, [onboarding.manual, onboarding.targetProfile, targetProfile, requestGateway])
+
+  useEffect(
+    () =>
+      $settingsScopeKey.listen(() => {
+        if ($desktopOnboarding.get().manual) {
+          closeManualOnboarding()
+        }
+      }),
+    []
   )
 
   // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat

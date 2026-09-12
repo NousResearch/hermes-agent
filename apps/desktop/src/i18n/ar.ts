@@ -926,6 +926,7 @@ export const ar = defineLocale({
       empty: 'لا يوجد شيء مضبوط في هذه الفئة بعد.'
     },
     profileScope: {
+      activeGatewayOnly: 'متاح فقط للبوابة والملف الشخصي النشطين.',
       appliesTo: 'ينطبق على',
       editsProfile: profile => `تنطبق التغييرات في هذه الصفحة على الملف الشخصي «${profile}».`
     },

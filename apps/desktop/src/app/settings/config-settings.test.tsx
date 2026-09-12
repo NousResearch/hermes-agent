@@ -27,6 +27,8 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 // and the repo-discovery signature, neither of which this test touches.
 vi.mock('@/store/settings-scope', () => ({
   $settingsRequestProfile: atom<string | undefined>(undefined),
+  $settingsScopeKey: atom('fixture-active'),
+  $settingsScopeProfile: atom('default'),
   $settingsScopeOverride: atom<null | string>(null)
 }))
 

@@ -332,12 +332,12 @@ import {
   findRemoteOwnerProfileForSession,
   mergeProfileSessionWindow,
   type RegistrySessionSource,
-  spliceRegistrySessionRows,
-  tagRegistrySessionResponse
+  spliceRegistrySessionRows
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import { backendQuitNeedsWait, createQuitTeardownCoordinator } from './quit-teardown'
+import { createRegistryApiDispatcher } from './registry-api-dispatch'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -16597,37 +16597,12 @@ async function pooledRegistrySessionSources(): Promise<RegistrySessionSource[]> 
   return sources
 }
 
-async function dispatchRegistryApiRequest(
-  request,
-  registryConnectionId,
-  routeProfile = request?.profile,
-  requestProfile = request?.profile
-) {
-  // Claim-guarded (#90812): every registry-scoped REST call funnels through
-  // here, so it can race a renderer's own WS reconnect dial for the same
-  // (connectionId, profile) scope; coalescing avoids bootstrapping a second
-  // SSH tunnel / remote dashboard. A passive read never dials, so it stays
-  // OUT of the claim: an interactive open coalescing onto an in-flight
-  // passive read would otherwise inherit its "no warm backend" rejection.
-  const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile)
-      )
-
-  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
-
-  const response = await fetchJsonForBackend(connection, requestPath, {
-    method: request?.method,
-    body: request?.body,
-    upload: request?.upload,
-    timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-  })
-
-  return (request?.method || 'GET').toUpperCase() === 'GET'
-    ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
-    : response
-}
+const dispatchRegistryApiRequest = createRegistryApiDispatcher({
+  backendDialClaims,
+  ensureRegistryBackend,
+  fetchJsonForBackend,
+  profileRouteOptions
+})
 
 function registryConnectionKind(connectionId) {
   const registry = readDesktopConnectionsRegistry()

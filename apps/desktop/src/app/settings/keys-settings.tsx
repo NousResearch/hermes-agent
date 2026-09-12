@@ -1,8 +1,8 @@
-import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+
+import { useSettingsOwner } from '../hooks/use-settings-owner'
 
 import { CredentialKeyCard, credentialPlaceholder, credentialRowLabel } from './credential-key-ui'
 import { useEnvCredentials } from './env-credentials'
@@ -38,7 +38,7 @@ export function KeysSettings({ view }: KeysSettingsProps) {
   // env store instead of the active one (undefined → active, the default
   // path — request-shaped so the API helpers never see a primary-targeting
   // null).
-  const scopeProfile = useStore($settingsRequestProfile)
+  const { profile: scopeProfile } = useSettingsOwner()
   const { rowProps, vars } = useEnvCredentials(scopeProfile)
   const [openKey, setOpenKey] = useState<null | string>(null)
 
@@ -78,7 +78,14 @@ export function KeysSettings({ view }: KeysSettingsProps) {
   })
 
   if (!vars) {
-    return <SettingsSkeleton sections={[{ rows: 5 }]} />
+    return (
+      <>
+        <SettingsContent>
+          <SettingsProfileScope className="mb-5" />
+        </SettingsContent>
+        <SettingsSkeleton sections={[{ rows: 5 }]} />
+      </>
+    )
   }
 
   return (

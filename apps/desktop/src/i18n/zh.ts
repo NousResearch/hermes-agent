@@ -1356,6 +1356,7 @@ export const zh = defineLocale({
       pill: '搜索'
     },
     profileScope: {
+      activeGatewayOnly: '仅适用于当前活动的网关和配置文件。',
       appliesTo: '应用于',
       editsProfile: profile => `此页面的更改将应用于“${profile}”配置文件。`
     },

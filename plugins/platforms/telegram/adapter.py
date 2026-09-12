@@ -32,6 +32,23 @@ def _redact_telegram_error_text(error: object) -> str:
         return "<telegram error redacted>"
 
 
+def _decode_json_list_literal(raw):
+    """Decode a JSON-encoded allowlist written by ``hermes config set``.
+
+    String-typed defaults keep list literals verbatim on write (``allowed_chats`` is
+    declared as ``""``), so the config can hold ``'["-100","-200"]'`` as a string.
+    Malformed JSON passes through unchanged and keeps the legacy comma-split path.
+    """
+    if isinstance(raw, str) and raw.lstrip()[:1] == "[":
+        try:
+            loaded = json.loads(raw)
+        except ValueError:
+            return raw
+        if isinstance(loaded, list):
+            return loaded
+    return raw
+
+
 def _scoped_gate_env(name: str, default: str = "") -> str:
     """Per-profile TELEGRAM_*/GATEWAY_* gate env read (multiplex env is first-writer-wins).
 
@@ -5034,6 +5051,7 @@ class TelegramAdapter(BasePlatformAdapter):
         raw = self.config.extra.get(key)
         if raw is None:
             raw = _scoped_gate_env(env_name)
+        raw = _decode_json_list_literal(raw)
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -5107,6 +5125,7 @@ class TelegramAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("ignored_threads")
         if raw is None:
             raw = _scoped_gate_env("TELEGRAM_IGNORED_THREADS")
+        raw = _decode_json_list_literal(raw)
         ignored: set[int] = set()
         for value in (raw if isinstance(raw, list) else str(raw).split(",")):
             text = str(value).strip()

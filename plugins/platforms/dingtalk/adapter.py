@@ -365,7 +365,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not text and not media_urls:
             return logger.debug("[%s] Empty message, skipping", self.name)
         source = self.build_source(chat_id=chat_id, chat_name=getattr(message, "conversation_title", None), chat_type="group" if is_group else "dm",
-                                   user_id=sender_id, user_name=sender_nick, user_id_alt=sender_staff_id if sender_staff_id else None)
+                                   user_id=sender_id, user_name=sender_nick, user_id_alt=sender_staff_id if sender_staff_id else None,
+                                   message_id=msg_id)
         create_at = getattr(message, "create_at", None)
         try:
             timestamp = datetime.fromtimestamp(int(create_at) / 1000, tz=timezone.utc) if create_at else datetime.now(tz=timezone.utc)

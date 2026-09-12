@@ -32,6 +32,13 @@ def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> float | 
     primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
     if getattr(agent, "_fallback_activated", False) and not (primary_provider and current_provider == primary_provider):
         return None
+    if (
+        getattr(agent, "_fallback_activated", False) and reason == FailoverReason.upstream_rate_limit
+        and getattr(agent, "model", None) != (agent._primary_runtime or {}).get("model")
+    ):
+        # Model-scoped failure of a same-provider fallback says nothing about the
+        # primary's bucket. Account-wide rate/billing failures retain their policy.
+        return None
     deadline = getattr(agent, "_model_quota_retry_deadline", None)
     if (
         deadline is not None and reason == FailoverReason.upstream_rate_limit

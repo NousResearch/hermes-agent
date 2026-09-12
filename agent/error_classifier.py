@@ -550,6 +550,10 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
 def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     """Highest-priority provider-specific shapes that a status code would misroute."""
     msg, status = c.msg, c.status_code
+    # NIM's worker-local admission counter is shared capacity, not key credit.
+    # A generic 429 carries no such scope evidence and keeps the normal policy.
+    if status in {None, 429} and "worker local total request limit reached" in msg:
+        return _v(_R.overloaded, should_fallback=True)
     welcome = _nous_welcome_tier(c)
     if welcome is not None:
         return welcome

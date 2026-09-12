@@ -107,6 +107,7 @@ def aux_probe_mode():
 
 
 from agent.credential_pool import load_pool
+from agent.error_classifier import FailoverReason, classify_api_error
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, get_model_context_length,
     strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
@@ -3012,9 +3013,8 @@ def _contains_any(text: str, needles: Tuple[str, ...]) -> bool:
     return any(kw in text for kw in needles)
 
 
-# Billing-body markers (credit exhaustion wrapped in 402/403/404/429 bodies), plus daily/weekly quota
-# exhaustion (functionally credit exhaustion; "resource exhausted" is the Vertex/gRPC quota phrasing —
-# also serialized by SDK wrappers and NIM as RESOURCE_EXHAUSTED / ResourceExhausted / resource-exhausted).
+# Legacy access/plan messages. The shared classifier's rate/capacity verdict
+# takes precedence: generic quota wording must never arm a payment health ban.
 _PAYMENT_KEYWORDS = (
     "credits", "insufficient funds", "can only afford", "billing", "payment required",
     "out of funds", "run out of funds", "balance_depleted", "no usable credits",
@@ -3028,9 +3028,15 @@ _PAYMENT_KEYWORDS = (
 
 
 def _is_payment_error(exc: Exception) -> bool:
-    """Payment/credit/quota exhaustion: HTTP 402, or a billing/quota body on 403/404/429/no-status."""
-    status = getattr(exc, "status_code", None)
-    return status == 402 or (
+    """Shared billing/throttle verdicts, with legacy plan-access wording as a fallback."""
+    classified = classify_api_error(exc)
+    # Google includes "billing details" even in temporary quota responses; rendered
+    # guidance and RESOURCE_EXHAUSTED are not proof of a payment failure.
+    if classified.reason in {FailoverReason.rate_limit, FailoverReason.upstream_rate_limit,
+                              FailoverReason.overloaded}:
+        return False
+    status = classified.status_code
+    return classified.reason == FailoverReason.billing or status == 402 or (
         status in {403, 404, 429, None} and _contains_any(str(exc).lower(), _PAYMENT_KEYWORDS)
     )
 
@@ -3045,29 +3051,14 @@ def _nous_portal_account_has_fresh_paid_access() -> bool:
         return False
 
 
-_RATE_LIMIT_KEYWORDS = (
-    "rate limit", "rate_limit", "too many requests", "try again", "retry after", "resets in"
-)
-_RATE_LIMIT_BILLING_KEYWORDS = (
-    "credits", "insufficient funds", "billing", "payment required", "can only afford",
-    "out of funds", "run out of funds", "balance_depleted", "no usable credits",
-    "model_not_supported_on_free_tier", "not available on the free tier", "isn't available on the free tier",
-)
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """429 rate limit (not billing/quota, which _is_payment_error owns).
-
-    OpenAI's RateLimitError may omit .status_code — matched by class name. A generic 429 without
-    billing keywords counts as a rate limit.
-    """
-    # (PR #8023 pattern)
-    if type(exc).__name__ == "RateLimitError":
-        return True
-    if getattr(exc, "status_code", None) != 429:
-        return False
-    err_lower = str(exc).lower()
-    return _contains_any(err_lower, _RATE_LIMIT_KEYWORDS) or not _contains_any(err_lower, _RATE_LIMIT_BILLING_KEYWORDS)
+    """Shared quota/capacity verdict, never inferred from payment-looking guidance."""
+    classified = classify_api_error(exc)
+    return classified.reason in {FailoverReason.rate_limit, FailoverReason.upstream_rate_limit} or (
+        classified.reason == FailoverReason.overloaded and classified.status_code in {None, 429}
+    )
 
 
 def _is_timeout_error(exc: Exception) -> bool:
@@ -3375,6 +3366,10 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     another process already rotated (current() would be None).
     """
     normalized = _normalize_aux_provider(provider)
+    classified = classify_api_error(exc, provider=normalized)
+    if classified.reason in {FailoverReason.upstream_rate_limit, FailoverReason.overloaded}:
+        # Match the main agent: a model/worker failure cannot exhaust the API key.
+        return False
     try:
         pool = load_pool(normalized)
     except Exception as load_exc:
@@ -3385,12 +3380,14 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     status_code = getattr(exc, "status_code", None)
 
     def _rotate(fallback_status: int) -> bool:
-        error_context: Dict[str, Any] = {"message": str(exc)}
+        from agent.agent_runtime_helpers import extract_api_error_context
+        error_context = extract_api_error_context(exc)
         if status_code is not None:
             error_context["status_code"] = status_code
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context, api_key_hint=failed_api_key or None,
+            failure_reason=("billing_unverified" if classified.billing_unverified else classified.reason.value),
         )
         if next_entry is None:
             return False
@@ -6982,10 +6979,15 @@ def _ladder_credential_rungs(
     # process rotated the pool meanwhile (current() would be None).
     _client_api_key = str(getattr(client, "api_key", "") or "")
     if pool_provider and _credential_rung_accepts(first_err):
+        classified = classify_api_error(first_err, provider=pool_provider, model=route.final_model or "")
+        if classified.reason in {FailoverReason.upstream_rate_limit, FailoverReason.overloaded}:
+            return None, first_err
+        from agent.agent_runtime_helpers import extract_api_error_context
+        reset_at = extract_api_error_context(first_err).get("reset_at")
         recovery_err = first_err
-        # Skip the extra retry for clear payment/quota errors — the endpoint won't accept
-        # another request with the same exhausted key.
-        if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
+        # A provider minimum forbids this immediate same-key retry. Rotate eligible
+        # credentials or fall back instead; auxiliary tasks must not block on long waits.
+        if _is_rate_limit_error(first_err) and not _is_payment_error(first_err) and reset_at is None:
             resp, recovery_err = yield from _rung(
                 _LadderStep("call", (client, kwargs)), _credential_rung_accepts)
             if recovery_err is None:

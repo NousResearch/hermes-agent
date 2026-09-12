@@ -284,15 +284,15 @@ class TestClassifyApiError:
         "ResourceExhausted",
         "resource-exhausted",
     ])
-    def test_resource_exhausted_separator_variants_without_status(self, spelling):
+    def test_worker_capacity_variants_do_not_rotate_credentials(self, spelling):
         result = classify_api_error(
             Exception(f"{spelling}: Worker local total request limit reached (32/32)"),
             provider="nvidia",
             model="nvidia/nemotron-3-ultra-550b-a55b",
         )
-        assert result.reason == FailoverReason.rate_limit
+        assert result.reason == FailoverReason.overloaded
         assert result.retryable is True
-        assert result.should_rotate_credential is True
+        assert result.should_rotate_credential is False
         assert result.should_fallback is True
 
     def test_anthropic_429_usage_limit_without_reset_is_billing(self):

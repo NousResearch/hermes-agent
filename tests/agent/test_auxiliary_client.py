@@ -1397,13 +1397,13 @@ class TestIsPaymentError:
 
     @pytest.mark.parametrize("spelling", ["RESOURCE_EXHAUSTED", "ResourceExhausted", "resource-exhausted"])
     @pytest.mark.parametrize("status", [None, 429])
-    def test_resource_exhausted_separator_variants_are_payment(self, spelling, status):
-        """NIM / gRPC wrappers serialize the quota signal without the space; the fallback gate
-        must read every spelling like the literal ``resource exhausted`` (#85649)."""
+    def test_worker_capacity_separator_variants_are_not_payment(self, spelling, status):
+        """Worker saturation must reach fallback without a provider-wide payment ban."""
         exc = Exception(f"{spelling}: Worker local total request limit reached (32/32)")
         if status is not None:
             exc.status_code = status
-        assert _is_payment_error(exc) is True
+        assert _is_payment_error(exc) is False
+        assert _is_rate_limit_error(exc) is True
 
     def test_403_subscription_required_is_payment(self):
         exc = Exception(
@@ -2828,7 +2828,7 @@ class TestAuxiliaryAuthRefreshRetry:
 
 class TestAuxiliaryPoolRotationRetry:
     def test_call_llm_rotates_explicit_codex_pool_on_429(self):
-        rate_err = Exception("usage limit reached")
+        rate_err = Exception("Rate limit exceeded")
         rate_err.status_code = 429
 
         stale_client = MagicMock()

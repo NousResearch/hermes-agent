@@ -1413,6 +1413,33 @@ def _resolve_agent_platform(source: str | None) -> str:
     return _resolve_session_source(source)
 
 
+def _context_file_policy(cfg: dict, platform: str) -> tuple[bool, bool, bool]:
+    """Resolve context-file loading for a TUI/Desktop session.
+
+    ``HERMES_IGNORE_RULES`` is the explicit all-rules escape hatch: it omits
+    project context, SOUL, and memory.  The per-platform setting is narrower:
+    it skips only cwd context files while keeping the profile SOUL identity and
+    memory intact.  Match the messaging gateway's ``gateway.platforms`` shape
+    so Desktop does not inject the install tree's AGENTS.md into a profile that
+    opts out.
+    """
+    ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+    if ignore_rules:
+        return True, False, True
+
+    gateway = cfg.get("gateway") if isinstance(cfg, dict) else {}
+    platforms = gateway.get("platforms") if isinstance(gateway, dict) else {}
+    if not isinstance(platforms, dict):
+        platforms = {}
+    platform_cfg = platforms.get(platform) or {}
+    skip_context_files = (
+        bool(platform_cfg.get("skip_context_files"))
+        if isinstance(platform_cfg, dict)
+        else False
+    )
+    return skip_context_files, skip_context_files, False
+
+
 def _config_model_target() -> tuple[str, str]:
     """(model, provider) selected by config.yaml — and ONLY config: the HERMES_MODEL launch seed fed into
     the per-turn sync would be replayed as a /model switch and persisted globally, or pin the session so
@@ -2294,7 +2321,12 @@ def _make_agent(
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
-    ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+    # Per-platform context-file policy (gateway parity): a profile that opts out of
+    # cwd context files must not inherit the install tree's AGENTS.md. HERMES_IGNORE_RULES
+    # stays the stronger all-rules escape hatch.
+    skip_context_files, load_soul_identity, skip_memory = _context_file_policy(
+        cfg, platform
+    )
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
@@ -2312,7 +2344,8 @@ def _make_agent(
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
+        skip_context_files=skip_context_files, load_soul_identity=load_soul_identity,
+        skip_memory=skip_memory, fallback_model=_load_fallback_model(),
         **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
         with _sessions_lock:

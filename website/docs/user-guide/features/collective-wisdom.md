@@ -16,8 +16,13 @@ All three surfaces run the same actions:
 | Terminal | `hermes wisdom list`, `hermes wisdom install <skill-id>`, `hermes wisdom share my-skill --description "..."` |
 | In a chat | `/wisdom status`, `/wisdom show <skill-id>`, `/wisdom update` |
 | The agent | tools `wisdom_browse`, `wisdom_install`, `wisdom_share` (visible only when entitled) |
+| Desktop | **Team Skills** in the sidebar: the catalog, installed versions, pending updates, Install/Update/Remove; a status-bar count when updates are waiting |
 
-Commands: `list` (team catalog), `show <id>` (versions and Gateway checks), `status` (installed skills and pending updates), `install <id> [--version N]`, `update [id]`, `uninstall <id>`, `share <skill> --description "..."`.
+Commands: `list` (team catalog), `show <id>` (versions and Gateway checks), `status` (installed skills, pending updates, notices), `install <id> [--version N]`, `update [id]`, `uninstall <id>`, `share <skill> --description "..."`, `mute [hours]` (silence team notices; `0` unmutes).
+
+## Team notices
+
+When a teammate publishes or updates a skill, the next new conversation gets a one-line heads-up in its system prompt ("your team published deploy-checklist v2") and the agent will mention it once if relevant. The feed is polled at most every ten minutes per profile and the note is frozen into the session when it starts, so it never changes mid-conversation and never costs you a prompt-cache miss. Nothing is downloaded or installed by a notice; installing still goes through the consent flow below. Notices clear when you install or remove the skill; `hermes wisdom mute 24` (or `/wisdom mute`) silences them.
 
 Installed skills land under `~/.hermes/skills/_wisdom/<org>/<slug>/` and are indexed like any other skill. The plugin keeps a ledger of the exact version and content hash it installed, so `status` can tell you when the team has published something newer.
 
@@ -27,6 +32,7 @@ Every action that changes your machine or your team's catalog asks first, and a 
 
 - **Terminal**: a prompt showing the skill, exact version, content hash and the Gateway's security verdict.
 - **Agent tools**: the same human-approval gate used for dangerous shell commands. In the CLI you get the usual once / session / always / deny prompt; on a messaging platform it becomes an approval button; with nobody present (cron, `-q`, subagents) the action is blocked.
+- **Desktop**: Install opens a dialog with the exact version, content hash and Gateway security verdict; the backend applies only if the hash it computes at click time matches the one you saw.
 
 Sharing asks twice: once to approve the exact package (file list, byte counts, content hash, your description) before it is uploaded as an owner-private draft, and once more after the Gateway has run its security and professionalism checks, before publication. Declining the second prompt withdraws the draft. Depending on your organization's policy the result is published immediately or held for an admin's review.
 

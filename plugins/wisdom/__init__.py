@@ -13,18 +13,24 @@ import argparse
 import hashlib
 import json
 import logging
+import time
 from typing import Any, Callable
 
 from tools.registry import no_cache_check_fn, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
 
-_ctx = None  # PluginContext, set by register(); state lives in ctx.state (profile-scoped)
+
+def state():
+    """This plugin's profile-scoped JSON state (ledger, notices, feed cursor); resolved per call
+    because the multiplexed gateway serves several profiles from one process."""
+    from hermes_cli.plugins_state import PluginState
+    return PluginState("wisdom")
 
 
 def _service():
     from plugins.wisdom.service import Wisdom
-    return Wisdom(_ctx.state)
+    return Wisdom(state())
 
 
 @no_cache_check_fn
@@ -132,8 +138,17 @@ def _cmd_list(svc, a) -> Any:
                      f"security={r['security']}  {r['id']}" for r in rows)
 
 
+def _cmd_mute(svc, a) -> str:
+    from plugins.wisdom import notices
+    until = notices.mute(state(), a.hours)
+    if a.hours <= 0:
+        return "Wisdom notices unmuted."
+    return f"Wisdom notices muted until {time.strftime('%Y-%m-%d %H:%M', time.localtime(until))}."
+
+
 _COMMANDS: dict[str, Callable[[Any, argparse.Namespace], Any]] = {
     "list": _cmd_list,
+    "mute": _cmd_mute,
     "show": lambda svc, a: svc.show(a.skill_id),
     "status": lambda svc, a: svc.status(),
     "install": lambda svc, a: svc.install(a.skill_id, version=a.version, confirm=_tty_confirm),
@@ -159,6 +174,7 @@ def _setup_cli(parser: argparse.ArgumentParser) -> None:
     ins.add_argument("--version", type=int, default=None)
     subs.add_parser("update", help="Update one or all installed skills").add_argument("skill_id", nargs="?")
     subs.add_parser("uninstall", help="Remove a Wisdom-managed skill").add_argument("skill_id")
+    subs.add_parser("mute", help="Silence team notices for N hours (0 = unmute)").add_argument("hours", type=float, nargs="?", default=24)
     sh = subs.add_parser("share", help="Share a local skill with your team")
     sh.add_argument("skill_name")
     sh.add_argument("--description", required=True, help="What teammates will read (plain text)")
@@ -169,7 +185,7 @@ def _dispatch(ns: argparse.Namespace) -> str:
     from plugins.wisdom.package import PackageError
     handler = _COMMANDS.get(ns.wisdom_command or "")
     if handler is None:
-        return "usage: wisdom {list,show,status,install,update,uninstall,share}"
+        return "usage: wisdom {list,show,status,install,update,uninstall,share,mute}"
     try:
         out = handler(_service(), ns)
     except WisdomAuthError as exc:
@@ -184,7 +200,7 @@ def _slash(raw_args: str) -> str:
     try:
         ns = _parser("/wisdom").parse_args(shlex.split(raw_args or "") or ["status"])
     except SystemExit:
-        return "usage: /wisdom {list,show <id>,status,install <id> [--version N],update [id],uninstall <id>,share <name> --description ...}"
+        return "usage: /wisdom {list,show <id>,status,install <id> [--version N],update [id],uninstall <id>,share <name> --description ...,mute [hours]}"
     return _dispatch(ns)
 
 
@@ -194,8 +210,7 @@ def _cli(args: argparse.Namespace) -> int:
 
 
 def register(ctx) -> None:
-    global _ctx
-    _ctx = ctx
+    from plugins.wisdom import notices
     for name, handler, schema in _TOOLS:
         ctx.register_tool(name=name, toolset="wisdom", schema=schema, handler=handler,
                           check_fn=_available, emoji="🧭")
@@ -204,3 +219,5 @@ def register(ctx) -> None:
     ctx.register_cli_command(name="wisdom", help="Collective Wisdom team skill sharing",
                              setup_fn=_setup_cli, handler_fn=_cli,
                              description="Browse, install, update and share instruction-only skills within your Nous team.")
+    # Frozen into each NEW session's prompt (never mutated mid-conversation): what the team published.
+    ctx.register_system_prompt_section("wisdom.notices", lambda _info: notices.prompt_section(state()), max_chars=1500)

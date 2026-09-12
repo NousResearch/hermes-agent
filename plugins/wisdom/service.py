@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hermes_constants import get_skills_dir
+from plugins.wisdom import notices
 from plugins.wisdom.client import WisdomClient, WisdomError, new_installation_id
 from plugins.wisdom.package import PackageError, prepare, slug_for
 
@@ -94,51 +95,57 @@ class Wisdom:
                     updates.append({"skill_id": row["skill_id"], "slug": local["slug"],
                                     "installed": local["version"], "latest": latest,
                                     "required": row.get("update_mode") == "REQUIRED"})
-        return {"org_id": self.client.org_id, "installed": ledger, "updates": updates}
+        return {"org_id": self.client.org_id, "installed": ledger, "updates": updates, **notices.summary(self.state)}
 
     # --- install / update / uninstall -------------------------------------------------------
-    def install(self, skill_id: str, *, version: int | None, confirm: Confirm) -> dict:
+    def plan(self, skill_id: str, *, version: int | None = None) -> dict:
+        """Everything a human must see before an install: exact version, hashes, Gateway verdict."""
         detail = self.client.skill(skill_id)
         skill = detail["skill"]
         if skill.get("state") != "active":
             raise WisdomError(f"skill is {skill.get('state')}; only active skills install")
-        target_version = version or max((v["version"] for v in detail.get("versions") or []), default=None)
-        if not target_version:
+        target = version or max((v["version"] for v in detail.get("versions") or []), default=None)
+        if not target:
             raise WisdomError("skill has no published version")
-        meta = self.client.version(skill_id, target_version)
-        v = meta["version"]
-        security = (v.get("security_check") or {})
+        v = self.client.version(skill_id, target)["version"]
+        security = v.get("security_check") or {}
         if security.get("status") == "blocked":
             raise WisdomError("Gateway security check blocked this version")
         slug = skill.get("slug") or skill_id
-        title = f"Install Wisdom skill {slug} v{target_version}"
-        detail_text = _text({"skill": skill_id, "version": target_version, "content_hash": v.get("content_hash"),
-                             "security": f"{security.get('status')} — {security.get('summary', '')}",
-                             "author": v.get("author_description"), "explanation": v.get("explanation"),
-                             "target": self._root() / slug})
-        if not confirm(title, detail_text):
+        return {"skill_id": skill_id, "slug": slug, "version": target, "content_hash": v.get("content_hash"),
+                "takedown_generation": int(skill.get("takedown_generation", 0)),
+                "security": f"{security.get('status')} — {security.get('summary', '')}",
+                "author": v.get("author_description"), "explanation": v.get("explanation"),
+                "target": str(self._root() / slug)}
+
+    def install(self, skill_id: str, *, version: int | None, confirm: Confirm) -> dict:
+        p = self.plan(skill_id, version=version)
+        title = f"Install Wisdom skill {p['slug']} v{p['version']}"
+        shown = {k: p[k] for k in ("skill_id", "version", "content_hash", "security", "author", "explanation", "target")}
+        if not confirm(title, _text(shown)):
             raise NotConfirmed("install not confirmed")
         ident = self.installation_id()
-        generation = int(skill.get("takedown_generation", 0))
-        chash, files = self.client.content(skill_id, target_version, installation_id=ident, takedown_generation=generation)
-        if chash != v.get("content_hash"):
+        chash, files = self.client.content(skill_id, p["version"], installation_id=ident,
+                                           takedown_generation=p["takedown_generation"])
+        if chash != p["content_hash"]:
             raise PackageError("downloaded content does not match the version the user reviewed")
-        dest = self._root() / slug
+        dest = Path(p["target"])
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = Path(tempfile.mkdtemp(prefix=".wisdom-", dir=str(dest.parent)))
         for rel, _, body in files:
             (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
             (tmp / rel).write_bytes(body)
-        record = self.client.record_install(skill_id=skill_id, installation_id=ident, version=target_version,
-                                            takedown_generation=generation)
+        record = self.client.record_install(skill_id=skill_id, installation_id=ident, version=p["version"],
+                                            takedown_generation=p["takedown_generation"])
         if dest.exists():
             shutil.rmtree(dest)
         tmp.rename(dest)
         ledger = self._ledger()
-        ledger[skill_id] = {"slug": slug, "version": target_version, "content_hash": chash, "path": str(dest),
+        ledger[skill_id] = {"slug": p["slug"], "version": p["version"], "content_hash": chash, "path": str(dest),
                             "update_mode": record.get("effective_update_mode")}
         self.state.set("installed", ledger)
-        return {"installed": skill_id, "slug": slug, "version": target_version, "path": str(dest)}
+        notices.dismiss(self.state, skill_id)
+        return {"installed": skill_id, "slug": p["slug"], "version": p["version"], "path": str(dest)}
 
     def update(self, skill_id: str | None, *, confirm: Confirm) -> list[dict]:
         pending = self.status()["updates"]
@@ -161,6 +168,7 @@ class Wisdom:
         shutil.rmtree(path, ignore_errors=True)
         del ledger[key]
         self.state.set("installed", ledger)
+        notices.dismiss(self.state, key)
         return {"uninstalled": key, "slug": entry["slug"]}
 
     # --- share -------------------------------------------------------------------------------

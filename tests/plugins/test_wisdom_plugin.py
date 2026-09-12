@@ -117,3 +117,60 @@ def test_bundled_plugin_loads_and_gates_tools_on_entitlement(tmp_path, monkeypat
     assert entry.check_fn() is False  # no Nous token in a temp HERMES_HOME
     monkeypatch.setattr("plugins.wisdom.client.entitlement", lambda: {"org_id": "o", "scopes": ("wisdom:read",)})
     assert entry.check_fn() is True
+
+
+def test_notices_diff_feed_against_ledger_and_freeze_into_prompt(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from plugins.wisdom import notices
+    monkeypatch.setattr("plugins.wisdom.client.entitled", lambda scope="wisdom:read": True)
+    state = _State(installed={"sk1": {"slug": "a", "version": 2}})
+    feed = {"events": [
+        {"kind": "updated", "skill_id": "sk1", "version": 2},   # already have it -> no notice
+        {"kind": "updated", "skill_id": "sk1", "version": 3},   # newer -> notice
+        {"kind": "new", "skill_id": "sk2", "version": 1},       # not installed -> notice
+        {"kind": "new", "skill_id": "sk3", "version": 1},
+        {"kind": "taken_down", "skill_id": "sk3"},              # retracted -> dropped
+    ], "next_cursor": "c9"}
+
+    class Client:
+        calls = 0
+        def feed(self, cursor=None):
+            Client.calls += 1
+            return feed
+
+    pending = notices.refresh(state, now=1000.0, client=Client())
+    assert {(n["skill_id"], n["version"], n["installed"]) for n in pending} == {("sk1", 3, 2), ("sk2", 1, None)}
+    assert state["feed_cursor"] == "c9"
+    # Within the poll interval nothing is fetched again; the section text is stable for the session.
+    assert notices.refresh(state, now=1100.0, client=Client()) == pending and Client.calls == 1
+    text = notices.prompt_section(state)
+    assert "sk1 v3" in text and "you have v2" in text and "sk2 v1" in text
+    notices.dismiss(state, "sk1")
+    assert [n["skill_id"] for n in state["notices"]] == ["sk2"]
+    notices.mute(state, 1)
+    assert notices.refresh(state, now=1100.0, client=Client()) == [] and notices.prompt_section(state) == ""
+
+
+def test_desktop_router_install_is_bound_to_the_planned_hash(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plugins.wisdom.dashboard import plugin_api
+    import plugins.wisdom.service as service_mod
+    client = _FakeClient()
+    monkeypatch.setattr(service_mod, "WisdomClient", lambda: client)
+    monkeypatch.setattr(plugin_api, "entitlement", lambda: {"org_id": "org-test", "scopes": ("wisdom:read",)})
+    monkeypatch.setattr(plugin_api, "state", lambda: _STATE)
+    app = FastAPI()
+    app.include_router(plugin_api.router)
+    http = TestClient(app)
+
+    plan = http.post("/plan", json={"skill_id": "sk1"}).json()
+    assert plan["version"] == 1 and plan["content_hash"] == VECTORS["content_hash"]
+    stale = http.post("/install", json={"skill_id": "sk1", "version": 1, "content_hash": "sha256:" + "0" * 64})
+    assert stale.status_code == 409 and client.recorded == []
+    ok = http.post("/install", json={"skill_id": "sk1", "version": 1, "content_hash": plan["content_hash"]})
+    assert ok.status_code == 200 and Path(ok.json()["path"]).joinpath("SKILL.md").exists()
+
+
+_STATE = _State()

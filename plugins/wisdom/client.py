@@ -153,6 +153,9 @@ class WisdomClient:
     def installations(self, installation_id: str) -> list[dict]:
         return self._request("GET", f"installations/{quote(installation_id, safe='')}").get("installations") or []
 
+    def feed(self, cursor: str | None = None) -> dict:
+        return self._request("GET", "feed", params={"cursor": cursor} if cursor else None)
+
     def deactivate(self, installation_id: str, skill_id: str) -> None:
         self._request("DELETE", f"installations/{quote(installation_id, safe='')}/skills/{quote(skill_id, safe='')}")
 

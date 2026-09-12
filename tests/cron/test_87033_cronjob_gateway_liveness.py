@@ -19,6 +19,8 @@ Contract pinned here:
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 
 import pytest
 
@@ -55,6 +57,18 @@ def _create_job() -> dict:
             deliver="local",
         )
     )
+
+
+def _hold_gateway_runtime_lock(home: str, ready, release) -> None:
+    """Hold a real gateway lock in another process until the test releases it."""
+    os.environ["HERMES_HOME"] = home
+    from gateway import status as gateway_status
+
+    acquired = gateway_status.acquire_gateway_runtime_lock()
+    ready.send(acquired)
+    if acquired:
+        release.wait(timeout=30)
+        gateway_status.release_gateway_runtime_lock()
 
 
 class TestCreateSurfacesGatewayLiveness:
@@ -242,6 +256,71 @@ class TestRuntimeLockFirstLiveness:
         assert result["success"] is True
         assert result["gateway_running"] is True
         assert "warning" not in result
+
+    @pytest.mark.parametrize(
+        ("action", "process_home"),
+        (("create", None), ("list", "mismatched")),
+    )
+    def test_live_context_home_lock_propagates_without_warning(
+        self, hermes_env, monkeypatch, action, process_home
+    ):
+        """A request-local profile must probe its own live gateway lock (#109360)."""
+        from unittest.mock import patch
+
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from tools.cronjob_tools import cronjob
+
+        context_home = hermes_env / "profiles" / "request-local"
+        context_home.mkdir(parents=True)
+        token = set_hermes_home_override(context_home)
+        process_context = multiprocessing.get_context("spawn")
+        ready, child_ready = process_context.Pipe(duplex=False)
+        release = process_context.Event()
+        lock_owner = process_context.Process(
+            target=_hold_gateway_runtime_lock,
+            args=(str(context_home), child_ready, release),
+        )
+        try:
+            lock_owner.start()
+            child_ready.close()
+            assert ready.poll(10), "child gateway lock owner did not start"
+            assert ready.recv() is True
+            try:
+                if process_home is None:
+                    monkeypatch.delenv("HERMES_HOME")
+                else:
+                    monkeypatch.setenv("HERMES_HOME", str(hermes_env / process_home))
+
+                with (
+                    patch(
+                        "hermes_cli.cron._active_cron_provider_name",
+                        return_value="builtin",
+                    ),
+                    patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+                    patch(
+                        "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                        return_value=False,
+                    ),
+                ):
+                    if action == "create":
+                        result = _create_job()
+                    else:
+                        _create_job()
+                        result = json.loads(cronjob(action="list"))
+
+                assert result["success"] is True
+                assert result["gateway_running"] is True
+                assert "warning" not in result
+            finally:
+                release.set()
+                lock_owner.join(timeout=10)
+                assert lock_owner.exitcode == 0
+        finally:
+            ready.close()
+            reset_hermes_home_override(token)
 
     def test_lock_inactive_falls_back_to_pid_scan(self):
         from unittest.mock import patch

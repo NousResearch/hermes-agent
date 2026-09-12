@@ -57,7 +57,10 @@ def _builtin_gateway_liveness() -> Optional[bool]:
         # inside the gateway it must never say "not running"). A crashing probe is "unknown".
         with contextlib.suppress(Exception):
             from gateway.status import is_gateway_runtime_lock_active
-            if is_gateway_runtime_lock_active():
+            from hermes_constants import get_hermes_home
+
+            gateway_lock = get_hermes_home() / "gateway.lock"
+            if is_gateway_runtime_lock_active(gateway_lock):
                 return True
         from hermes_cli.gateway import (
             find_gateway_pids, named_profile_served_by_running_multiplexer)

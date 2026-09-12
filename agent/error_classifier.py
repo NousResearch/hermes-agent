@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence
@@ -133,11 +134,22 @@ _OVERLOADED_PATTERNS = (
 
 # Usage-limit patterns that need disambiguation (billing OR rate_limit), and
 # the signals that mark such a limit as transient (periodic quota, not billing).
-_USAGE_LIMIT_PATTERNS = ("usage limit", "quota", "limit exceeded", "key limit exceeded")
+_USAGE_LIMIT_PATTERNS = ("usage limit", "quota", "limit exceeded", "key limit exceeded", "session limit")
 _USAGE_LIMIT_TRANSIENT_SIGNALS = (
     "try again", "retry", "resets at", "reset in", "resets in", "reset after", "available in",
     "wait", "requests remaining", "periodic", "window", "per minute", "per second",
 )
+
+
+# A bare "resets" is prose unless followed by a concrete time-like token.
+_USAGE_LIMIT_TRANSIENT_RESETS_RE = re.compile(r"\bresets?\s+(?:at\s+)?\d", re.IGNORECASE)
+
+
+def _msg_has_usage_limit_transient_signal(error_msg: str) -> bool:
+    return any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS) or bool(
+        _USAGE_LIMIT_TRANSIENT_RESETS_RE.search(error_msg)
+    )
+
 
 # 413 detected from message text (proxies embed the status or re-wrap
 # Anthropic's "request_too_large" type without one).
@@ -758,9 +770,7 @@ def _status_5xx(c: _Ctx) -> Verdict:
 
 def _classify_402(error_msg: str, result_fn: Callable[..., Any]) -> Any:
     """Disambiguate 402: "usage limit, try again in 5 minutes" is a periodic quota, not billing."""
-    transient = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS) and any(
-        p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
-    )
+    transient = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS) and _msg_has_usage_limit_transient_signal(error_msg)
     return result_fn(**(_V_RATE_LIMIT if transient else _V_BILLING))
 
 
@@ -841,7 +851,7 @@ _RESET_HEADERS = ("retry-after", "Retry-After", "x-ratelimit-reset", "X-RateLimi
 
 def _has_usage_limit_transient_signal(error_msg: str, body: dict, response_headers) -> bool:
     """Whether a usage-limit response identifies a reset window (message, body fields, or headers)."""
-    if any(pattern in error_msg for pattern in _USAGE_LIMIT_TRANSIENT_SIGNALS):
+    if _msg_has_usage_limit_transient_signal(error_msg):
         return True
     payloads = [p for p in (body, _error_obj(body)) if isinstance(p, dict)]
     if any(payload.get(f) not in (None, "") for payload in payloads for f in _RESET_FIELDS):

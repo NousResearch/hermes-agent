@@ -782,8 +782,98 @@ def _is_hermes_config_path(path: str) -> bool:
     )
 
 
+def _heredoc_marker(command: str, start: int) -> tuple[str, bool] | None:
+    """Return the delimiter following an unquoted ``<<`` redirection."""
+    cursor = start + 2
+    if cursor < len(command) and command[cursor] == "<":
+        return None  # here-string, not a heredoc
+    strip_tabs = cursor < len(command) and command[cursor] == "-"
+    if strip_tabs:
+        cursor += 1
+    while cursor < len(command) and command[cursor] in " \t":
+        cursor += 1
+    word_start = cursor
+    quote: str | None = None
+    escaped = False
+    while cursor < len(command):
+        char = command[cursor]
+        if escaped:
+            escaped = False
+            cursor += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            cursor += 1
+            continue
+        if char in "\"'":
+            if quote == char:
+                quote = None
+            elif quote is None:
+                quote = char
+            cursor += 1
+            continue
+        if quote is None and (char.isspace() or char in "|;&<>"):
+            break
+        cursor += 1
+    raw_word = command[word_start:cursor]
+    if not raw_word or quote is not None:
+        return None
+    try:
+        words = shlex.split(raw_word)
+    except ValueError:
+        return None
+    return (words[0], strip_tabs) if words else None
+
+
+def _without_heredoc_bodies(command: str) -> str:
+    """Remove heredoc payload lines before classifying executable commands."""
+    output: list[str] = []
+    pending: list[tuple[str, bool]] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        if pending:
+            line_end = command.find("\n", index)
+            if line_end < 0:
+                line_end = len(command)
+            line = command[index:line_end].removesuffix("\r")
+            delimiter, strip_tabs = pending[0]
+            if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                pending.pop(0)
+            if line_end < len(command):
+                output.append("\n")
+            index = line_end + 1
+            continue
+
+        char = command[index]
+        output.append(char)
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if char in "\"'":
+            if quote == char:
+                quote = None
+            elif quote is None:
+                quote = char
+            index += 1
+            continue
+        if quote is None and char == "<" and command[index:index + 2] == "<<":
+            marker = _heredoc_marker(command, index)
+            if marker is not None:
+                pending.append(marker)
+        index += 1
+    return "".join(output)
+
+
 def _command_segments(command: str) -> list[str]:
     """Shell command segments, split only at unquoted operators."""
+    command = _without_heredoc_bodies(command)
     segments: list[str] = []
     start = 0
     quote: str | None = None

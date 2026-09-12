@@ -961,6 +961,20 @@ class TestTerminalOutputRedaction:
         from agent.redact import _command_reads_secret_file
         assert not _command_reads_secret_file(command)
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "cat .env",
+            "cat $HERMES_HOME/config.yaml",
+            "cat ~/.bashrc",
+        ],
+    )
+    def test_heredoc_payloads_do_not_become_commands(self, body):
+        from agent.redact import redact_terminal_output
+        secret = "H" * 40
+        command = f"cat <<'EOF'\n{body}\nFOO_TOKEN={secret}\nEOF"
+        assert secret in redact_terminal_output(f"FOO_TOKEN={secret}", command)
+
     def test_search_pattern_named_like_secret_file_preserves_unrelated_output(self):
         from agent.redact import redact_terminal_output
         secret = "E" * 40

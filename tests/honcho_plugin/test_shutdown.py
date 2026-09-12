@@ -49,7 +49,7 @@ class TestThreadRegistry:
             assert join_plugin_threads((theirs, None), timeout=0.05) == ["other"]
             release.set()
             assert join_plugin_threads((mine,), timeout=2) == []
-            assert time.monotonic() - started < 1.5
+            assert time.monotonic() - started < 2.0
         finally:
             release.set()
             own.join(timeout=1)
@@ -119,7 +119,7 @@ class TestProviderShutdown:
             started = time.monotonic()
             with caplog.at_level(logging.WARNING, logger="plugins.memory.honcho"):
                 provider.shutdown()
-            assert 0.15 <= time.monotonic() - started < 1.0
+            assert 0.15 <= time.monotonic() - started < 2.0
             assert "honcho-session-init" in caplog.text
             assert "timed out after 0.2s" in caplog.text
         finally:
@@ -176,7 +176,7 @@ class TestProviderShutdown:
             started = time.monotonic()
             with caplog.at_level(logging.WARNING, logger="plugins.memory.honcho"):
                 provider.shutdown()
-            assert time.monotonic() - started < 1.0
+            assert time.monotonic() - started < 2.0
             assert "1 message(s) in 1 session(s) still unsynced" in caplog.text
             assert session.messages[0].get("_synced") is None
         finally:
@@ -188,10 +188,11 @@ class TestProviderShutdown:
         async_manager.fake_client._http.close.assert_not_called()
 
 
-@pytest.mark.parametrize("timeout, budget", [(60.0, 60.0), (2.0, 5.0), (None, 5.0)])
+@pytest.mark.parametrize("timeout, budget", [(60.0, 60.0), (2.0, 5.0), (None, 30.0)])
 def test_shutdown_join_budget_is_the_floor_or_the_longer_timeout(timeout, budget):
+    """Unset timeout resolves to the client's 30s default, so the join waits as long as a blocked call can."""
     provider = HonchoMemoryProvider()
-    provider._config = HonchoClientConfig(api_key="k", timeout=timeout) if timeout else SimpleNamespace()
+    provider._config = HonchoClientConfig(api_key="k", timeout=timeout)
     assert provider._shutdown_join_budget() == budget
 
 

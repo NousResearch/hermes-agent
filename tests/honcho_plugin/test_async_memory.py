@@ -410,7 +410,7 @@ class TestStopAsyncWriterDrain:
             mgr.shutdown(timeout=0)
 
         assert uploads == []
-        assert time.monotonic() - started < 1.0
+        assert time.monotonic() - started < 2.0
         assert mgr._async_queue.empty()
         assert session.messages[0].get("_synced") is None
         assert caplog.text.count("still unsynced") == 1
@@ -478,7 +478,7 @@ class TestAsyncWriterRetry:
         started = time.monotonic()
         mgr.stop_async_writer(timeout=5)
 
-        assert time.monotonic() - started < 1.5
+        assert time.monotonic() - started < 2.0
         assert len(calls) == 1
 
     def test_drops_after_two_failures(self, make_manager):

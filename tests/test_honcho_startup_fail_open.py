@@ -13,6 +13,9 @@ from plugins.memory.honcho import HonchoMemoryProvider
 
 
 class _FakeHonchoConfig(SimpleNamespace):
+    raw: dict = {}
+    host: str = "hermes"
+
     def resolve_session_name(self, **kwargs):
         return "test-session"
 

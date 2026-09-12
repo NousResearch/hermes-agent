@@ -813,6 +813,38 @@ class TestSessionRetirement:
         assert r.should_retire is False
         assert r.interrupted is False
 
+    def test_post_tool_watchdog_resets_on_reasoning_or_progress_notification(self):
+        """Reasoning or progress notifications (empty projection) after a tool completion must reset the watchdog (#107028)."""
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "commandExecution", "id": "ex1",
+                "command": "echo hi", "cwd": "/tmp",
+                "status": "completed", "aggregatedOutput": "hi",
+                "exitCode": 0, "commandActions": [],
+            },
+            threadId="t", turnId="tu1",
+        )
+        # Reasoning item notification (empty transcript projection) immediately after — resets watchdog.
+        client.queue_notification(
+            "item/started",
+            item={"type": "reasoning", "id": "r1"},
+            threadId="t", turnId="tu1",
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client)
+        r = s.run_turn(
+            "tool then reasoning", turn_timeout=2.0,
+            notification_poll_timeout=0.01,
+            post_tool_quiet_timeout=0.05,
+        )
+        assert r.should_retire is False
+        assert r.interrupted is False
+
 
 
 

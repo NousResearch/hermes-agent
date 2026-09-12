@@ -313,7 +313,16 @@ function isLastShownInGroup(paneId: string): boolean {
     return false
   }
 
-  const hidden = $hiddenTreePanes.get()
+  // Both the persisted hide-only set and the ephemeral chrome-hidden set can
+  // strand a zone — check their union so the guard survives hydration drift
+  // and covers the persisted-only path that survives a reload (#108105).
+  const hiddenTree = $hiddenTreePanes.get()
+  const hiddenStrip = $hiddenStripTabs.get()
+
+  const hidden: ReadonlySet<string> =
+    hiddenTree === hiddenStrip
+      ? hiddenTree
+      : new Set([...hiddenTree, ...hiddenStrip])
 
   return !group.panes.some(id => id !== paneId && !hidden.has(id))
 }
@@ -347,6 +356,43 @@ export function setStripTabHidden(paneId: string, hidden: boolean): boolean {
 // the strips render from ($hiddenTreePanes starts empty every launch).
 for (const paneId of $hiddenStripTabs.get()) {
   setTreePaneHidden(paneId, true)
+}
+
+// Self-heal persisted hide-only tabs that would strand a zone with no visible
+// tab (the guard in setStripTabHidden refused them at write time, but a
+// layout change or an older build can leave a persisted set that strands — and
+// that state survives Ctrl+R / reload, trapping Windows users behind an empty
+// strip with no right-click target). Healing here makes a reload a real escape
+// hatch (#108105, #107927, #107196 sibling).
+{
+  const tree = $layoutTree.get()
+
+  if (tree) {
+    const toHeal: string[] = []
+
+    for (const paneId of $hiddenStripTabs.get()) {
+      const group = findGroupOfPane(tree, paneId)
+
+      if (!group) {continue}
+
+      const wouldBeEmptyIfKeptHidden = !group.panes.some(
+        id => id !== paneId && !$hiddenStripTabs.get().has(id)
+      )
+
+      if (wouldBeEmptyIfKeptHidden) {
+        toHeal.push(paneId)
+      }
+    }
+
+    for (const paneId of toHeal) {
+      const healed = toggledSet($hiddenStripTabs.get(), paneId, false)
+
+      if (healed) {
+        saveHiddenStripTabs(healed)
+        setTreePaneHidden(paneId, false)
+      }
+    }
+  }
 }
 
 const paneClosers: Record<string, () => void> = {}

@@ -64,6 +64,7 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
+import { $sessionTranscriptViewGates, clearTranscriptViewGate, clearTranscriptViewGates } from './session-transcript-view'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -514,6 +515,14 @@ export function publishSessionState(runtimeId: string, state: ClientSessionState
   }
 
   $sessionStates.set({ ...current, [runtimeId]: state })
+
+  // A resume may reuse a runtime with an old durable binding. Only retire a
+  // previous binding's gate, not the hold already protecting the new target.
+  if (prev?.storedSessionId && prev.storedSessionId !== state.storedSessionId &&
+    $sessionTranscriptViewGates.get()[runtimeId]?.storedSessionId !== state.storedSessionId) {
+    clearTranscriptViewGate(runtimeId)
+  }
+
   handleTransition(prev, state, runtimeId)
 }
 
@@ -523,6 +532,8 @@ export function releaseSessionTranscript(runtimeId: string, state?: ClientSessio
   const current = $sessionStates.get()
 
   if (!(runtimeId in current)) {
+    clearTranscriptViewGate(runtimeId)
+
     return
   }
 
@@ -539,6 +550,7 @@ export function releaseSessionTranscript(runtimeId: string, state?: ClientSessio
     Array.isArray(retained.messages) && retained.messages.length === 0 ? retained : { ...retained, messages: [] }
 
   $sessionStates.set({ ...current, [runtimeId]: lightweight })
+  clearTranscriptViewGate(runtimeId)
 }
 
 export function dropSessionState(runtimeId: string) {
@@ -555,11 +567,14 @@ export function dropSessionState(runtimeId: string) {
   setSessionStalled(current[runtimeId]?.storedSessionId, false)
 
   if (!(runtimeId in current)) {
+    clearTranscriptViewGate(runtimeId)
+
     return
   }
 
   const { [runtimeId]: _dropped, ...rest } = current
   $sessionStates.set(rest)
+  clearTranscriptViewGate(runtimeId)
 }
 
 /** Drop every cached session state — used on soft gateway-mode apply so the
@@ -579,6 +594,7 @@ export function clearAllSessionStates() {
   sessionOwnerByRuntimeId.clear()
   $stalledSessionIds.set([])
   $sessionStates.set({})
+  clearTranscriptViewGates()
 }
 
 /** Downgrade cached busy/awaiting states after a gateway reconnect.

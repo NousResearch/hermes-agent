@@ -17,6 +17,7 @@ import {
   $turnStartedAt
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import { transcriptMessagesForView } from '@/store/session-transcript-view'
 
 import { lastVisibleMessageIsUser } from './thread-loading'
 
@@ -79,7 +80,14 @@ function primaryField<T>(select: (state: ClientSessionState) => T, $draft: Reada
   return $field
 }
 
-const $primaryMessages = primaryField<ChatMessage[]>(state => state.messages, $messages)
+const NO_MESSAGES: ChatMessage[] = []
+
+const $primaryMessages = transcriptMessagesForView(
+  $activeSessionId,
+  computed([$activeSessionId, $primaryState, $messages], (runtimeId, state, draft) =>
+    runtimeId ? state?.messages ?? NO_MESSAGES : draft
+  )
+)
 
 /**
  * Turn-busy for the workspace pane. A selected stored session that has no

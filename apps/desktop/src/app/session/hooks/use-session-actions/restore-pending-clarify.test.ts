@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type * as clarifyStore from '@/store/clarify'
 
 const { setClarifyRequestMock, clearClarifyRequestMock } = vi.hoisted(() => ({
@@ -12,14 +13,14 @@ vi.mock('@/store/clarify', async importOriginal => {
 
   return {
     ...actual,
-    clearClarifyRequest: clearClarifyRequestMock,
-    setClarifyRequest: setClarifyRequestMock
+    clearClarifyRequest: clearClarifyRequestMock.mockImplementation(actual.clearClarifyRequest),
+    setClarifyRequest: setClarifyRequestMock.mockImplementation(actual.setClarifyRequest)
   }
 })
 
-import { $clarifyRequests } from '@/store/clarify'
+import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 
-import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
+import { observeClarifySnapshot, pendingClarifyToolPayload, restorePendingClarifyFromSnapshot, settleSupersededClarifyProjection } from './restore-pending-clarify'
 
 const resumeStartedAt = 1_700_000_000
 
@@ -114,6 +115,21 @@ describe('restorePendingClarifyFromSnapshot', () => {
     expect(setClarifyRequestMock).not.toHaveBeenCalled()
   })
 
+  it('keeps a request received after activation began when an older pending snapshot arrives', () => {
+    const current = { choices: null, multiSelect: false, question: 'New?', receivedAt: resumeStartedAt + 1,
+      requestId: 'new', sessionId: 'sess' }
+
+    $clarifyRequests.set({ sess: current })
+
+    const state = restorePendingClarifyFromSnapshot(
+      { pending_clarify: { request_id: 'old', question: 'Old?' } }, 'sess', resumeStartedAt, 'old'
+    )
+
+    expect(state.request).toBe(current)
+    expect(setClarifyRequestMock).not.toHaveBeenCalled()
+    expect(clearClarifyRequestMock).not.toHaveBeenCalled()
+  })
+
   it('rejects a payload with no request id', () => {
     const state = restorePendingClarifyFromSnapshot(
       { pending_clarify: { question: 'Orphaned prompt' } },
@@ -181,4 +197,76 @@ describe('pendingClarifyToolPayload', () => {
       tool_id: 'rid'
     })
   })
+})
+
+describe('superseded clarify projection', () => {
+  it.each(['old', 'provider-tool-id'])('settles the old %s projection and preserves an already rendered newer call', oldToolId => {
+    const previous = { requestId: 'old', sessionId: 'sess', question: 'Old?', choices: null, multiSelect: false }
+    const current = { ...previous, requestId: 'new', question: 'New?' }
+    const oldPart = { type: 'tool-call' as const, toolName: 'clarify', toolCallId: oldToolId, args: { question: 'Old?' }, argsText: '' }
+    const newPart = { ...oldPart, toolCallId: 'new', args: { question: 'New?' } }
+    const messages = [{ id: 'row', role: 'assistant' as const, pending: true, parts: [oldPart, newPart] }]
+    const settled = settleSupersededClarifyProjection(messages, previous, current, true)
+    expect(settled[0].parts[0]).toHaveProperty('result')
+    expect(settled[0].parts[1]).toBe(newPart)
+    expect(settleSupersededClarifyProjection(messages, previous, previous, true)).toBe(messages)
+    expect(settleSupersededClarifyProjection(messages, previous, undefined, true)).toBe(messages)
+    const onlyNew = [{ ...messages[0], parts: [newPart] }]
+    expect(settleSupersededClarifyProjection(onlyNew, previous, current, true)[0]).toBe(onlyNew[0])
+  })
+})
+
+it.each([true, false])('F2 preserves a changed request identity without receivedAt (pending snapshot: %s)', pending => {
+  const current = { requestId: 'new', sessionId: 'sess', question: 'New?', choices: null, multiSelect: false }
+  $clarifyRequests.set({ sess: current })
+
+  const state = restorePendingClarifyFromSnapshot(
+    pending ? { pending_clarify: { request_id: 'old', question: 'Old?' } } : {}, 'sess', resumeStartedAt, 'old'
+  )
+
+  expect(state.request).toBe(pending ? current : null)
+  expect($clarifyRequests.get().sess).toBe(current)
+})
+
+it('F5 full settle and restore chain reuses the sole same-question provider row', () => {
+  const previous = { requestId: 'old', sessionId: 'sess', question: 'Same?', choices: null, multiSelect: false }
+  const current = { ...previous, requestId: 'new' }
+
+  const messages = [{ id: 'row', role: 'assistant' as const, pending: true, parts: [
+    { type: 'tool-call' as const, toolName: 'clarify', toolCallId: 'provider-1', args: { question: 'Same?' }, argsText: '' }
+  ] }]
+
+  const settled = settleSupersededClarifyProjection(messages, previous, current, true)
+  const restored = restorePendingClarifyToolCall(settled, pendingClarifyToolPayload(current)).messages
+
+  const open = restored.flatMap(message => message.parts).filter(part =>
+    part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)
+
+  expect(open).toHaveLength(1)
+  expect(restored).toHaveLength(1)
+})
+
+it('F1 observation is session-scoped and released after the restore attempt', () => {
+  $clarifyRequests.set({})
+  const observation = observeClarifySnapshot()
+  const request = { requestId: 'R', sessionId: 'origin', question: 'Question?', choices: null, multiSelect: false }
+  setClarifyRequest(request)
+  clearClarifyRequest('R', 'origin')
+  const response = { pending_clarify: { request_id: 'R', question: 'Question?' } }
+  expect(restorePendingClarifyFromSnapshot(response, 'origin', resumeStartedAt, undefined, observation).request).toBeNull()
+  expect($clarifyRequests.get().origin).toBeUndefined()
+  expect(restorePendingClarifyFromSnapshot(response, 'other', resumeStartedAt, undefined, observation).request?.sessionId).toBe('other')
+  observation.dispose()
+  clearClarifyRequest('R', 'other')
+  expect(observation.changedSessions.has('other')).toBe(true)
+  setClarifyRequest({ ...request, sessionId: 'after-dispose' })
+  expect(observation.changedSessions.has('after-dispose')).toBe(false)
+  const nextAttempt = observeClarifySnapshot()
+
+  try {
+    expect(restorePendingClarifyFromSnapshot(response, 'origin', resumeStartedAt, undefined, nextAttempt).request?.requestId).toBe('R')
+  } finally {
+    nextAttempt.dispose()
+    clearClarifyRequest()
+  }
 })

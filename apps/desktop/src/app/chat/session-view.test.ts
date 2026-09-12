@@ -84,6 +84,12 @@ describe('primary session view reads its own session slice', () => {
     expect(PRIMARY_SESSION_VIEW.$busy.get()).toBe(false)
   })
 
+  it('does not inherit the global mirror while a bound runtime has no slice', () => {
+    $messages.set([message('other', 'other session')])
+    $activeSessionId.set('runtime-missing')
+    expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([])
+  })
+
   it('returns to the draft atoms when the active session state is dropped', () => {
     publishSessionState('runtime-a', stateWith('runtime-a', 'session A turn', true))
     $activeSessionId.set('runtime-a')

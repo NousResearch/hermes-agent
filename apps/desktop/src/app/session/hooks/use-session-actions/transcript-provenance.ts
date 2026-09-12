@@ -1,4 +1,9 @@
+import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
+import { $clarifyRequests } from '@/store/clarify'
+
 import type { ClientSessionState, PersistedDisplayTranscriptProvenance } from '../../../types'
+
+import { pendingClarifyToolPayload } from './restore-pending-clarify'
 
 export type TranscriptProvenanceScope =
   string | null | undefined | { connectionId?: string | null; profile?: string | null }
@@ -60,10 +65,26 @@ export function invalidatePersistedDisplayTranscriptAuthority(state: ClientSessi
   }
 }
 
-export function suppressTranscriptForView(state: ClientSessionState, suppress: boolean): ClientSessionState {
-  if (!suppress || state.messages.length === 0) {
+export function suppressTranscriptForView(
+  state: ClientSessionState,
+  suppress: boolean,
+  runtimeId?: string
+): ClientSessionState {
+  if (!suppress) {
     return state
   }
 
-  return { ...state, messages: [] }
+  const request = runtimeId ? $clarifyRequests.get()[runtimeId] : undefined
+
+  // A request is live authority for its questions, never for cached commentary.
+  // Seed an empty row so no text or tool arguments can escape the history gate.
+  const messages = request && request.sessionId === runtimeId
+    ? restorePendingClarifyToolCall(
+        [{ id: `pending-clarify:${runtimeId}:${request.requestId}`, role: 'assistant', parts: [] }],
+        pendingClarifyToolPayload(request),
+        request.receivedAt ?? 0
+      ).messages
+    : []
+
+  return { ...state, messages }
 }

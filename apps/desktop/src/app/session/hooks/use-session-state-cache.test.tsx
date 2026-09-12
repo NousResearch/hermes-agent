@@ -2,7 +2,9 @@ import { act, cleanup, render } from '@testing-library/react'
 import { type MutableRefObject, useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import {
   $activeSessionStoredIdRotation,
   $currentFastMode,
@@ -688,5 +690,54 @@ describe('useSessionStateCache — reconnect busy reconcile (#93059)', () => {
     expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.busy).toBe(false)
     expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.awaitingResponse).toBe(false)
     expect($sessionStates.get()['runtime-1']?.busy).toBe(false)
+  })
+})
+
+describe('useSessionStateCache held clarify view', () => {
+  afterEach(() => {
+    cleanup()
+    clearClarifyRequest()
+    $messages.set([])
+    $sessionStates.set({})
+  })
+
+  it('flushes only the owned current question through the gate and retains the raw history', () => {
+    let cache!: Cache
+    setActiveSessionId('thread-A')
+    render(<ViewHarness activeSessionId="thread-A" onReady={value => { cache = value }} />)
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, messages: [assistantError('error', 'old error')] }))
+    })
+    const release = cache.holdSessionTranscriptView('thread-A')
+    const history = [assistantText('untrusted', 'UNVERIFIED')]
+    act(() => {
+      setClarifyRequest({ requestId: 'first', sessionId: 'thread-A', question: 'First?', choices: ['Yes'], multiSelect: false })
+      cache.updateSessionState('thread-A', state => ({ ...state, busy: true, needsInput: true, messages: history }))
+    })
+    expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual($messages.get())
+    expect($messages.get()).toHaveLength(1)
+    expect($messages.get()[0].parts).toEqual([expect.objectContaining({ toolCallId: 'first', args: { question: 'First?', choices: ['Yes'] } })])
+    expect(cache.sessionStateByRuntimeIdRef.current.get('thread-A')?.messages).toBe(history)
+    const ownedView = $messages.get()
+    act(() => {
+      setClarifyRequest({ requestId: 'other', sessionId: 'thread-B', question: 'Other?', choices: null, multiSelect: false })
+      cache.updateSessionState('thread-B', state => ({ ...state, busy: true, needsInput: true }))
+    })
+    expect($messages.get()).toBe(ownedView)
+    act(() => {
+      clearClarifyRequest('first', 'thread-A')
+      cache.updateSessionState('thread-A', state => ({ ...state, needsInput: false, busy: false }))
+    })
+    expect($messages.get()).toEqual([])
+    const releaseNewAttempt = cache.holdSessionTranscriptView('thread-A')
+    release()
+    expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([])
+    const authoritative = [assistantText('verified', 'Verified history')]
+    act(() => cache.updateSessionState('thread-A', state => ({ ...state, messages: authoritative })))
+    expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([])
+    releaseNewAttempt()
+    expect(PRIMARY_SESSION_VIEW.$messages.get()).toBe(authoritative)
+    act(() => cache.syncSessionStateToView('thread-A', cache.sessionStateByRuntimeIdRef.current.get('thread-A')!))
+    expect($messages.get()).toEqual(authoritative)
   })
 })

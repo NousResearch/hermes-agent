@@ -30,7 +30,8 @@ def _no_aws(monkeypatch):
 
 def _clear_provider_env(monkeypatch):
     for var in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "GLM_API_KEY", "ZAI_API_KEY",
-                "KIMI_API_KEY", "MINIMAX_API_KEY", "HERMES_INFERENCE_PROVIDER"):
+                "KIMI_API_KEY", "MINIMAX_API_KEY", "CUSTOM_BASE_URL", "CUSTOM_API_KEY",
+                "HERMES_INFERENCE_PROVIDER"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -69,6 +70,16 @@ class TestProviderPrecedence:
         )
 
         assert resolve_provider("auto", skip_free_tier=True) == "custom:llama-local"
+
+    def test_custom_base_url_env_counts_as_inference_route(self, monkeypatch):
+        """Bootstrap and runtime accept the same scoped bare-custom endpoint source."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(monkeypatch, {"provider": "custom", "default": "local-model"})
+        monkeypatch.setenv("CUSTOM_BASE_URL", "http://127.0.0.1:8080/v1")
+
+        assert resolve_provider("auto", skip_free_tier=True) == "custom"
 
     @pytest.mark.parametrize("model_cfg", [
         {"provider": "custom", "default": "local-model"},

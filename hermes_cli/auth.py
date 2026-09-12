@@ -1411,8 +1411,10 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
             resolved = resolve_provider(provider)
         except AuthError:
             return model_cfg, None
-        if resolved == "custom" and not _optional_base_url(model_cfg.get("base_url")):
-            return model_cfg, None
+        if resolved == "custom":
+            custom_base_url = _scoped_key_env_reader()("CUSTOM_BASE_URL")
+            if not (_optional_base_url(model_cfg.get("base_url")) or _optional_base_url(custom_base_url)):
+                return model_cfg, None
         return model_cfg, (provider if is_runtime_provider_routable(provider) else None)
     except Exception as e:
         logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)

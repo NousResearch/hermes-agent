@@ -18,6 +18,9 @@ from agent.message_content import flatten_message_text
 
 logger = logging.getLogger(__name__)
 
+_title_in_flight: set[str] = set()
+_title_in_flight_lock = threading.Lock()
+
 # (task_name, exception) -> None; surfaces auxiliary failures so silent drops don't pile up as NULL titles.
 FailureCallback = Callable[[str, BaseException], None]
 # (title, source) -> None; source is the persisted provenance (``derived`` / ``llm``). Consumers paying a
@@ -437,10 +440,35 @@ def maybe_auto_title(
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
     apply_instant_title(session_db, session_id, user_message, title_callback)
-    threading.Thread(
-        target=auto_title_session,
-        args=(session_db, session_id, user_message),
-        kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback, runtime_validator=runtime_validator),
-        daemon=True,
-        name="auto-title",
-    ).start()
+
+    with _title_in_flight_lock:
+        if session_id in _title_in_flight:
+            return
+        _title_in_flight.add(session_id)
+
+    def _run() -> None:
+        try:
+            auto_title_session(
+                session_db,
+                session_id,
+                user_message,
+                failure_callback=failure_callback,
+                main_runtime=main_runtime,
+                title_callback=title_callback,
+                runtime_validator=runtime_validator,
+            )
+        finally:
+            with _title_in_flight_lock:
+                _title_in_flight.discard(session_id)
+
+    try:
+        thread = threading.Thread(
+            target=_run,
+            daemon=True,
+            name="auto-title",
+        )
+        thread.start()
+    except Exception:
+        with _title_in_flight_lock:
+            _title_in_flight.discard(session_id)
+        raise

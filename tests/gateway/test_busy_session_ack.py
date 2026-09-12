@@ -519,3 +519,152 @@ class TestLongRunningNotificationOwnership:
         ) is False
 
 
+# ---------------------------------------------------------------------------
+# SMS busy-ack suppression (#107430)
+# ---------------------------------------------------------------------------
+
+_BUSY_ACK_REDIRECT_HEAD = "↪ Redirected current run"
+_BUSY_ACK_REDIRECT_TAIL = "I'll adjust using your correction"
+
+
+def _platform_event(platform, text="please also cancel"):
+    """Build a MessageEvent with a real Platform enum (not a fresh MagicMock)."""
+    source = SessionSource(
+        platform=platform,
+        chat_id="123",
+        chat_type="private",
+        user_id="user1",
+    )
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg1",
+    )
+
+
+def _redirect_agent():
+    agent = MagicMock()
+    agent._supports_active_turn_redirect = True
+    agent.redirect = MagicMock(return_value=True)
+    agent._active_children = []
+    agent.get_activity_summary.return_value = {
+        "api_call_count": 3,
+        "max_iterations": 60,
+        "current_tool": None,
+        "last_activity_ts": time.time(),
+        "last_activity_desc": "api",
+        "seconds_since_activity": 0.1,
+    }
+    return agent
+
+
+def _sent_ack_content(adapter):
+    call_kwargs = adapter._send_with_retry.call_args
+    return call_kwargs.kwargs.get("content") or (call_kwargs[1].get("content", "") if call_kwargs[1] else "")
+
+
+async def _run_busy_redirect(runner, platform, monkeypatch, tmp_path, config=None):
+    import gateway.run as _gr
+
+    monkeypatch.delenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", raising=False)
+    monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+    monkeypatch.setattr(_gr, "_load_gateway_config", lambda: config if config is not None else {})
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter(platform_val=platform.value)
+    event = _platform_event(platform)
+    sk = build_session_key(event.source)
+    runner.adapters[platform] = adapter
+    agent = _redirect_agent()
+    runner._running_agents[sk] = agent
+    runner._running_agents_ts[sk] = time.time() - 5
+    result = await runner._handle_active_session_busy_message(event, sk)
+    return result, adapter, agent
+
+
+class TestSmsBusyAckSuppression:
+    """Second inbound SMS during a live turn must not send the busy-ack bubble."""
+
+    @pytest.mark.asyncio
+    async def test_sms_redirect_busy_ack_not_sent_to_customer(self, monkeypatch, tmp_path):
+        """SMS + interrupt/redirect processes the input but does not send the ack."""
+        runner, _sentinel = _make_runner()
+        result, adapter, agent = await _run_busy_redirect(
+            runner, Platform.SMS, monkeypatch, tmp_path,
+        )
+
+        assert result is True
+        agent.redirect.assert_called_once()
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sms_busy_ack_telegram_still_sends_redirect(self, monkeypatch, tmp_path):
+        """CONTROL: Telegram + interrupt/redirect still sends the redirect ack."""
+        runner, _sentinel = _make_runner()
+        result, adapter, agent = await _run_busy_redirect(
+            runner, Platform.TELEGRAM, monkeypatch, tmp_path,
+        )
+
+        assert result is True
+        agent.redirect.assert_called_once()
+        adapter._send_with_retry.assert_called_once()
+        content = _sent_ack_content(adapter)
+        assert _BUSY_ACK_REDIRECT_HEAD in content
+        assert _BUSY_ACK_REDIRECT_TAIL in content
+
+    @pytest.mark.asyncio
+    async def test_sms_busy_ack_enabled_override_still_sends(self, monkeypatch, tmp_path):
+        """Fail-open: explicit display.platforms.sms.busy_ack_enabled=true still sends."""
+        runner, _sentinel = _make_runner()
+        result, adapter, agent = await _run_busy_redirect(
+            runner,
+            Platform.SMS,
+            monkeypatch,
+            tmp_path,
+            config={"display": {"platforms": {"sms": {"busy_ack_enabled": True}}}},
+        )
+
+        assert result is True
+        agent.redirect.assert_called_once()
+        adapter._send_with_retry.assert_called_once()
+        content = _sent_ack_content(adapter)
+        assert _BUSY_ACK_REDIRECT_HEAD in content
+        assert _BUSY_ACK_REDIRECT_TAIL in content
+
+    @pytest.mark.asyncio
+    async def test_sms_busy_ack_interrupt_without_redirect_also_suppressed(self, monkeypatch, tmp_path):
+        """SMS interrupt (no redirect) also suppresses the interrupting-task ack."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._queued_events = {}
+        adapter = _make_adapter(platform_val=Platform.SMS.value)
+        event = _platform_event(Platform.SMS, text="stop that")
+        sk = build_session_key(event.source)
+        runner.adapters[Platform.SMS] = adapter
+
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = False
+        agent._active_children = []
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 3,
+            "max_iterations": 60,
+            "current_tool": None,
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "api",
+            "seconds_since_activity": 0.1,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 5
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.interrupt.assert_called_once()
+        adapter._send_with_retry.assert_not_called()
+
+

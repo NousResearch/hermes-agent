@@ -28,6 +28,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agent import auxiliary_client as aux
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.conversation_compression import (
     CompressionCommitFence,
@@ -68,6 +69,178 @@ def _messages():
 
 
 class TestWorkerTeardownOnCeiling:
+    def test_passive_deadline_waits_for_host_cancellation(
+        self, tmp_path: Path
+    ) -> None:
+        """Deadline observation alone must not impersonate a host cancellation."""
+        _db, agent = _build_agent(tmp_path, "PASSIVE_DEADLINE")
+        original = _messages()
+        fence = CompressionCommitFence(total_ceiling_seconds=0.05)
+        provider_started = threading.Event()
+        release_provider = threading.Event()
+        provider_done = threading.Event()
+        owner_done = threading.Event()
+
+        def _provider(_kwargs):
+            provider_started.set()
+            try:
+                assert release_provider.wait(2)
+                return [{"role": "assistant", "content": "late"}]
+            finally:
+                provider_done.set()
+
+        agent.context_compressor.compress = lambda *_a, **_kw: (
+            aux._run_protected_sync_provider_call(_provider, {})
+        )
+
+        def _owner():
+            try:
+                agent._compress_context(
+                    original,
+                    "sys",
+                    approx_tokens=500_000,
+                    commit_fence=fence,
+                )
+            finally:
+                owner_done.set()
+
+        owner = threading.Thread(target=_owner, daemon=True)
+        owner.start()
+        try:
+            assert provider_started.wait(1)
+            assert not owner_done.wait(0.15), (
+                "passive deadline cancelled the auxiliary owner before the host "
+                "won fence cancellation"
+            )
+            assert fence.cancel_before_commit() is True
+            assert owner_done.wait(0.5)
+            assert not provider_done.is_set()
+            assert fence.route_deadline_aborted
+        finally:
+            release_provider.set()
+            assert provider_done.wait(2)
+            owner.join(2)
+
+    def test_completed_future_after_deadline_is_classified_as_total_timeout(
+        self, monkeypatch
+    ) -> None:
+        """A no-commit result at the deadline must still run timeout bookkeeping."""
+        original = _messages()
+        causes = []
+        timeouts = []
+
+        class _DoneFuture:
+            def __init__(self, result):
+                self._result = result
+
+            def add_done_callback(self, callback):
+                callback(self)
+
+            def cancel(self):
+                return False
+
+            def result(self, timeout=None):
+                return self._result
+
+        class _InlineExecutor:
+            def submit(self, fn, worker_fence):
+                return _DoneFuture(fn(worker_fence))
+
+        monkeypatch.setattr(
+            "agent.conversation_compression._get_compress_timeout_executor",
+            lambda: _InlineExecutor(),
+        )
+        monkeypatch.setattr(
+            "agent.conversation_compression._try_admit_compression_job",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "agent.conversation_compression._release_compression_admission",
+            lambda *_args: None,
+        )
+
+        def _worker(worker_fence: CompressionCommitFence):
+            worker_fence._deadline = time.monotonic() - 1
+            return [{"role": "assistant", "content": "too late"}], "late"
+
+        returned, prompt = run_compress_context_with_progress_timeout(
+            worker=_worker,
+            messages=original,
+            system_prompt_fallback="fallback",
+            idle_timeout_seconds=1,
+            total_ceiling_seconds=1,
+            on_timeout_cause=lambda total, progress: causes.append(
+                (total, progress)
+            ),
+            on_timeout=lambda idle, waited, since_progress: timeouts.append(
+                (idle, waited, since_progress)
+            ),
+            stall_fallback=False,
+        )
+
+        assert returned is original
+        assert prompt == "fallback"
+        assert causes == [(True, False)]
+        assert len(timeouts) == 1
+
+    def test_worker_deadline_preserves_adopted_transcript_if_fallback_unavailable(
+        self, monkeypatch
+    ) -> None:
+        """A worker-side deadline no-op must not discard its newer durable snapshot."""
+        original = _messages()
+        adopted = [*original, {"role": "user", "content": "concurrent tail"}]
+
+        class _DoneFuture:
+            def __init__(self, result):
+                self._result = result
+
+            def add_done_callback(self, callback):
+                callback(self)
+
+            def cancel(self):
+                return False
+
+            def result(self, timeout=None):
+                return self._result
+
+        class _InlineExecutor:
+            def submit(self, fn, worker_fence):
+                return _DoneFuture(fn(worker_fence))
+
+        monkeypatch.setattr(
+            "agent.conversation_compression._get_compress_timeout_executor",
+            lambda: _InlineExecutor(),
+        )
+        monkeypatch.setattr(
+            "agent.conversation_compression._try_admit_compression_job",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "agent.conversation_compression._release_compression_admission",
+            lambda *_args: None,
+        )
+        monkeypatch.setattr(
+            "agent.conversation_compression.resolve_compression_fallback_route",
+            lambda: None,
+        )
+
+        def _worker(worker_fence: CompressionCommitFence):
+            worker_fence.mark_route_deadline_abort()
+            worker_fence._deadline = time.monotonic() - 1
+            return adopted, "adopted prompt"
+
+        returned, prompt = run_compress_context_with_progress_timeout(
+            worker=_worker,
+            messages=original,
+            system_prompt_fallback="fallback",
+            idle_timeout_seconds=1,
+            total_ceiling_seconds=1,
+            stall_fallback=True,
+        )
+
+        assert returned is adopted
+        assert prompt == "adopted prompt"
+
     def test_cooperative_worker_joined_within_grace(self):
         """A worker that exits promptly after cancel is joined on the
         total-ceiling path; the lease is released normally (no retention) —

@@ -137,3 +137,61 @@ def test_helper_detects_prefix_metadata_and_merged_forms():
     )
     assert not is_compaction_summary_message(_user(DECISION_MSG))
     assert not is_compaction_summary_message(_user(""))
+
+
+# ---------------------------------------------------------------------------
+# Derived facts — extractions store a fact built from the regex capture,
+# not the raw chat message (#22907)
+# ---------------------------------------------------------------------------
+
+
+def test_auto_extract_saves_preference_fact_not_raw_message(tmp_path):
+    provider = _make_provider(tmp_path, auto_extract=True)
+    message = "Hey, for future work I prefer concise PR comments with no hype."
+
+    provider.on_session_end([_user(message)])
+
+    facts = _fact_contents(provider)
+    assert facts == ["User prefers concise PR comments with no hype."]
+    assert facts[0] != message
+    provider.shutdown()
+
+
+def test_auto_extract_retains_default_preference_subject(tmp_path):
+    """'my default shell is zsh' must keep what the value applies to."""
+    provider = _make_provider(tmp_path, auto_extract=True)
+
+    provider.on_session_end([_user("By the way, my default shell is zsh.")])
+
+    assert _fact_contents(provider) == ["User's default shell is zsh."]
+    provider.shutdown()
+
+
+def test_auto_extract_retains_multiword_favorite_subject(tmp_path):
+    provider = _make_provider(tmp_path, auto_extract=True)
+
+    provider.on_session_end([_user("For reference, my favorite text editor is Neovim")])
+
+    assert _fact_contents(provider) == ["User's favorite text editor is Neovim."]
+    provider.shutdown()
+
+
+def test_auto_extract_retains_preferred_subject_case(tmp_path):
+    provider = _make_provider(tmp_path, auto_extract=True)
+
+    provider.on_session_end([_user("My Preferred IDE is VS Code.")])
+
+    assert _fact_contents(provider) == ["User's preferred IDE is VS Code."]
+    provider.shutdown()
+
+
+def test_auto_extract_saves_project_decision_fact_not_raw_message(tmp_path):
+    provider = _make_provider(tmp_path, auto_extract=True)
+    message = "After the spike, we decided to keep the browser worker site-agnostic."
+
+    provider.on_session_end([_user(message)])
+
+    facts = _fact_contents(provider)
+    assert facts == ["Project decision: keep the browser worker site-agnostic."]
+    assert facts[0] != message
+    provider.shutdown()

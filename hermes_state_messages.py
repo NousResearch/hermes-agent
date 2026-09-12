@@ -1025,12 +1025,35 @@ class SessionMessagesMixin:
             return [session_id], "active = 1"
         return self._resume_lineage_ids(session_id), "(active = 1 OR compacted = 1)"
 
+    def _count_resume_scope_messages(
+        self, session_ids: List[str], active_clause: str, *, tip_only: bool,
+        limit: Optional[int] = None,
+    ) -> int:
+        """Count the rows a resume in this scope would materialize.
+
+        Full-lineage matches ``_dedupe_display_generations``' stored 6-tuple so
+        in-place compaction copies of the protected tail count once. ``tip_only``
+        stays a raw ``active = 1`` count. ``limit`` is the guard's
+        ``max_messages+1`` SQL short-circuit — do not pull the full row set.
+        """
+        placeholders = _placeholders(session_ids)
+        group_by = "" if tip_only else (
+            " GROUP BY role, content, timestamp, tool_call_id, tool_calls, tool_name")
+        limit_sql = ""
+        params: Tuple[Any, ...] = tuple(session_ids)
+        if limit is not None:
+            limit_sql = " LIMIT ?"
+            params = (*params, limit)
+        return int(self._read_one(
+            "SELECT COUNT(*) FROM ("
+            f"SELECT 1 FROM messages WHERE session_id IN ({placeholders}) "
+            f"AND {active_clause}{group_by}{limit_sql})",
+            params)[0])
+
     def get_resume_message_count(self, session_id: str, *, tip_only: bool = False) -> int:
         """Count the rows a resume would materialize (see ``_resume_count_scope``)."""
         session_ids, active_clause = self._resume_count_scope(session_id, tip_only)
-        return int(self._read_one(
-            f"SELECT COUNT(*) FROM messages WHERE session_id IN ({_placeholders(session_ids)}) AND {active_clause}",
-            tuple(session_ids))[0])
+        return self._count_resume_scope_messages(session_ids, active_clause, tip_only=tip_only)
 
     def assert_resume_safe(self, session_id: str, max_messages: Optional[int] = None, *, tip_only: bool = False) -> int:
         """Resume row count, or raise ``SessionResumeTooLargeError``. ``max_messages=None`` reads config; 0
@@ -1044,9 +1067,8 @@ class SessionMessagesMixin:
         if max_messages == 0:
             return 0
         session_ids, active_clause = self._resume_count_scope(session_id, tip_only)
-        message_count = int(self._read_one("SELECT COUNT(*) FROM ("
-            f"SELECT 1 FROM messages WHERE session_id IN ({_placeholders(session_ids)}) "
-            f"AND {active_clause} LIMIT ?)", (*session_ids, max_messages + 1))[0])
+        message_count = self._count_resume_scope_messages(
+            session_ids, active_clause, tip_only=tip_only, limit=max_messages + 1)
         if message_count > max_messages:
             raise SessionResumeTooLargeError(
                 message_count, max_messages, scope="in its tip segment" if tip_only else "across its lineage")

@@ -261,11 +261,59 @@ def _validate_model_config(config_path, issues: list) -> None:
 
 
 @doctor_check()
+def _check_config_parse_failure(f: Finding) -> bool:
+    """Flag an unparseable config.yaml as a blocking doctor failure (#102945).
+
+    ``load_config()`` falls back to ``DEFAULT_CONFIG`` on YAML errors, so
+    every user override is silently ignored and the startup stderr warning
+    scrolls away. Doctor is the persistent surface: a red ``✗`` plus a
+    manual action item. Corrupt files cannot be auto-fixed (hermes never
+    silently rewrites user config) — but the load path already snapshots
+    the broken file to a timestamped ``config.yaml.corrupt.<ts>.bak`` next
+    to it. True when a failure is active (callers skip downstream checks
+    that would all read defaults).
+    """
+    try:
+        from hermes_cli.config import (
+            get_active_config_parse_failure,
+            get_config_path,
+            load_config,
+        )
+        try:
+            # Guarantees the failure record exists however doctor reached
+            # this check (mtime-keyed cache makes a repeat load cheap).
+            load_config()
+        except Exception:
+            pass
+        err = get_active_config_parse_failure()
+        if not err:
+            return False
+        first_line = str(err).splitlines()[0] if str(err).splitlines() else str(err)
+        try:
+            path = str(get_config_path())
+        except Exception:
+            path = "config.yaml"
+        _fail_and_issue(
+            "config.yaml failed to parse — running on defaults, all overrides IGNORED",
+            f"({path}: {first_line})",
+            f"Fix the YAML syntax in {path} (parse error in `hermes logs --level WARNING`), "
+            "then restart. A timestamped .bak copy of the broken file was saved next to it.",
+            f.issues,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _check_config_file(should_fix: bool, f: Finding) -> None:
     """config.yaml presence (project cli-config.yaml as fallback); model/provider validation."""
     from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT, _DHH
     config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():
+        # A corrupt config.yaml poisons every downstream check (they all read
+        # defaults) — surface it first as a blocking failure (#102945).
+        if _check_config_parse_failure(f):
+            return
         check_ok(f"{_DHH}/config.yaml exists")
         with warn_on_error("Could not validate model/provider config"):
             _validate_model_config(config_path, f.issues)

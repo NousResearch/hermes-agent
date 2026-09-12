@@ -1054,6 +1054,14 @@ def check_all_command_guards(command: str, env_type: str,
     )
 
 
+def check_unconditional_command_floors(command: str, env_type: str,
+                                       has_host_access: bool = False) -> dict:
+    """Run only command guards that explicit approval must never bypass."""
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
+        return _user_deny_block(command) or _approved()
+    return _floor_block(command, sudo_guard=True) or _approved()
+
+
 _EXECUTE_CODE_DESCRIPTION = (
     "execute_code script execution. The script can spawn subprocesses or "
     "mutate files without passing through terminal command approval; approval is one-shot for this run."

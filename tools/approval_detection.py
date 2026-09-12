@@ -1192,36 +1192,89 @@ def _shell_command_segment(command: str, start: int) -> str:
 _HERMES_HOME_DESTRUCTION_DESCRIPTION = "destructive operation on Hermes data directory"
 _HERMES_HOME_ROOTS = ("~/.hermes", "$hermes_home", "${hermes_home}", "$home/.hermes", "${home}/.hermes")
 _HERMES_DESTRUCTIVE_SQL_RE = re.compile(r"\b(?:delete\s+from|drop\s+(?:table|database))\b", re.IGNORECASE)
-_HERMES_DESTRUCTIVE_NAMES = frozenset({"rm", "mv", "truncate", "shred", "unlink", "tee", "cp", "sqlite3"})
+_HERMES_DESTRUCTIVE_NAMES = frozenset({
+    "rm", "mv", "truncate", "shred", "unlink", "tee", "cp", "install", "sqlite3",
+})
 _HERMES_OPTIONS_WITH_ARG = {
     "mv": {"-S", "--suffix", "-t", "--target-directory"},
     "cp": {"-S", "--suffix", "-t", "--target-directory"},
+    "install": {
+        "-g", "--group", "-m", "--mode", "-o", "--owner", "-S", "--suffix",
+        "--strip-program", "-t", "--target-directory",
+    },
     "truncate": {"-o", "--io-blocks", "-r", "--reference", "-s", "--size"},
     "shred": {"-n", "--iterations", "-s", "--size", "--random-source"},
     "sqlite3": {"-cmd", "-init", "-newline", "-nullvalue", "-separator"},
 }
+_HERMES_PARAMETER_VALUE_RE = re.compile(
+    r"^\$\{(?P<name>hermes_home|home)(?::?[?=-][^}]*)?\}", re.IGNORECASE,
+)
 
 
 def _is_hermes_managed_path(word: str) -> bool:
     path = word.lower().replace("\\", "/").rstrip("/")
+    path = _HERMES_PARAMETER_VALUE_RE.sub(
+        lambda match: "$hermes_home" if match.group("name").lower() == "hermes_home" else "$home",
+        path,
+    )
     return any(path == root or path.startswith(root + "/") for root in _HERMES_HOME_ROOTS)
 
 
-def _command_operands(argv: list[str], command_name: str) -> list[str]:
-    """Return positional operands while skipping the destructive command's value-taking options."""
-    operands, skip_next, options = [], False, True
+def _command_operands(argv: list[str], command_name: str) -> tuple[list[str], dict[str, list[str]]]:
+    """Return positional operands and values owned by relevant command options."""
+    operands, option_values, pending_option, options = [], {}, None, True
     with_arg = _HERMES_OPTIONS_WITH_ARG.get(command_name, set())
     for arg in argv[1:]:
-        if skip_next:
-            skip_next = False
+        if pending_option:
+            option_values.setdefault(pending_option, []).append(arg)
+            pending_option = None
         elif options and arg == "--":
             options = False
         elif options and arg.startswith("-") and arg != "-":
-            option = arg.split("=", 1)[0]
-            skip_next = "=" not in arg and option in with_arg
+            option, separator, value = arg.partition("=")
+            if option in with_arg:
+                if separator:
+                    option_values.setdefault(option, []).append(value)
+                else:
+                    pending_option = option
+            elif len(arg) > 2 and arg[:2] in with_arg:
+                option_values.setdefault(arg[:2], []).append(arg[2:])
         else:
             operands.append(arg)
-    return operands
+    return operands, option_values
+
+
+_INERT_HEREDOC_CONSUMERS = frozenset({"cat", "tee"})
+_QUOTED_HEREDOC_RE = re.compile(r"<<(?P<tabs>-?)[ \t]*(?P<quote>['\"])(?P<delimiter>[^'\"\n]+)(?P=quote)")
+
+
+def _strip_inert_heredoc_bodies(command: str) -> str:
+    """Mask quoted cat/tee heredoc data so its lines are not treated as commands."""
+    lines = command.splitlines(keepends=True)
+    index = 0
+    while index < len(lines):
+        match = _QUOTED_HEREDOC_RE.search(lines[index])
+        if not match:
+            index += 1
+            continue
+        commands = list(_iter_shell_command_word_spans(lines[index][:match.start()]))
+        name = (
+            os.path.basename(_deobfuscate_shell_word_for_detection(commands[-1][2])).lower()
+            if commands else ""
+        )
+        delimiter = match.group("delimiter")
+        strip_tabs = bool(match.group("tabs"))
+        body_index = index + 1
+        while body_index < len(lines):
+            candidate = lines[body_index].rstrip("\r\n")
+            if (candidate.lstrip("\t") if strip_tabs else candidate) == delimiter:
+                break
+            if name in _INERT_HEREDOC_CONSUMERS:
+                ending = lines[body_index][len(lines[body_index].rstrip("\r\n")):]
+                lines[body_index] = ending
+            body_index += 1
+        index = body_index + 1
+    return "".join(lines)
 
 
 def _has_hermes_redirect(command: str) -> bool:
@@ -1243,6 +1296,7 @@ def _has_hermes_redirect(command: str) -> bool:
 
 def _detect_hermes_home_destruction(command: str) -> bool:
     """Hard-block destructive verbs only when they target Hermes-managed state."""
+    command = _strip_inert_heredoc_bodies(command)
     if _has_hermes_redirect(command):
         return True
     for word_start, _, word in _iter_shell_command_word_spans(command):
@@ -1253,19 +1307,25 @@ def _detect_hermes_home_destruction(command: str) -> bool:
             argv = shlex.split(_shell_command_segment(command, word_start), posix=True)
         except ValueError:
             continue
-        operands = _command_operands(argv, name)
+        operands, option_values = _command_operands(argv, name)
         if name in {"rm", "truncate", "shred", "unlink", "tee"}:
             if any(_is_hermes_managed_path(arg) for arg in operands):
                 return True
         elif name == "mv":
             sources = operands if len(operands) == 1 else operands[:-1]
-            if any(_is_hermes_managed_path(arg) for arg in sources):
+            targets = option_values.get("-t", []) + option_values.get("--target-directory", [])
+            if (any(_is_hermes_managed_path(arg) for arg in sources)
+                    or any(_is_hermes_managed_path(arg) for arg in targets)
+                    or (len(operands) >= 2 and _is_hermes_managed_path(operands[-1]))):
                 return True
-        elif name == "cp" and len(operands) >= 2:
-            if operands[0] in {"/dev/null", "/dev/zero"} and _is_hermes_managed_path(operands[-1]):
+        elif name in {"cp", "install"}:
+            targets = option_values.get("-t", []) + option_values.get("--target-directory", [])
+            if (any(_is_hermes_managed_path(arg) for arg in targets)
+                    or (len(operands) >= 2 and _is_hermes_managed_path(operands[-1]))):
                 return True
         elif name == "sqlite3" and operands and _is_hermes_managed_path(operands[0]):
-            if _HERMES_DESTRUCTIVE_SQL_RE.search(" ".join(operands[1:])):
+            sql = operands[1:] + option_values.get("-cmd", [])
+            if _HERMES_DESTRUCTIVE_SQL_RE.search(" ".join(sql)):
                 return True
     return False
 

@@ -1,5 +1,6 @@
 """Tests for the dangerous command approval module."""
 
+import json
 import os
 import threading
 import time
@@ -12,6 +13,7 @@ import pytest
 import tools.approval as approval_module
 from tools import approval_context
 from tools import approval_smart
+from tools import terminal_tool as terminal_module
 from hermes_constants import get_hermes_home
 from tools.approval import approve_session, detect_dangerous_command, detect_hardline_command, is_approved, load_permanent, prompt_dangerous_approval
 from tools.approval_context import _get_approval_mode
@@ -362,7 +364,14 @@ class TestHermesHomeHardline:
             "unlink $HOME/.hermes/state.db",
             "tee $HERMES_HOME/state.db </dev/null",
             "cp /dev/null $HERMES_HOME/state.db",
+            "cp /tmp/replacement $HERMES_HOME/state.db",
+            "install -m 600 /tmp/replacement $HERMES_HOME/state.db",
+            "mv /tmp/replacement $HERMES_HOME/state.db",
+            "mv -t /tmp /tmp/safe $HERMES_HOME/state.db",
+            "cp /dev/null -t $HERMES_HOME",
             "sqlite3 $HERMES_HOME/state.db 'delete from messages where 1=1'",
+            "sqlite3 -cmd 'DELETE FROM messages' $HERMES_HOME/state.db",
+            "rm -rf ${HERMES_HOME:?}/state.db",
         )
         for command in commands:
             blocked, description = detect_hardline_command(command)
@@ -379,12 +388,25 @@ class TestHermesHomeHardline:
         for command in (
             f"cat {home / 'state.db'}",
             f"cp {home / 'state.db'} /tmp/state.db.backup",
-            f"mv /tmp/state.db {home / 'state.db'}",
             "rm /tmp/state.db",
             "truncate -s0 /tmp/state.db",
             'git commit -m "do not rm $HERMES_HOME/state.db"',
+            "cat > /tmp/notes.txt <<'EOF'\nrm $HERMES_HOME/state.db\nEOF",
         ):
             assert detect_hardline_command(command) == (False, None), command
+
+    def test_full_guard_floor_survives_yolo_and_force(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        command = "rm $HERMES_HOME/state.db"
+
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+        result = approval_module.check_all_command_guards(command, "local")
+        assert result["approved"] is False
+        assert result.get("outcome") == "blocked"
+
+        replay = json.loads(terminal_module.terminal_tool(command=command, force=True))
+        assert replay["status"] == "blocked"
+        assert replay["exit_code"] == 1
 
 
 class TestFindExecFullPathRm:

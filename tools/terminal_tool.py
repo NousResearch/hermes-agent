@@ -120,6 +120,7 @@ def _current_session_profile() -> str:
 
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
+    check_unconditional_command_floors as _check_unconditional_floors_impl,
 )
 
 
@@ -149,6 +150,13 @@ def _check_all_guards(command: str, env_type: str,
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_get_approval_callback(),
                                   has_host_access=has_host_access)
+
+
+def _check_unconditional_floors(command: str, env_type: str,
+                                has_host_access: bool = False) -> dict:
+    return _check_unconditional_floors_impl(
+        command, env_type, has_host_access=has_host_access,
+    )
 
 
 from tools.environments.base import EnvironmentConnectionError
@@ -835,12 +843,15 @@ class _ApprovalVerdict:
 
 
 def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
-    """Run tirith + dangerous-command guards; ``force`` skips them entirely.
+    """Run command guards; ``force`` skips only the user-approved layer.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
-    if force:
-        return _ApprovalVerdict(approved_run=True)
-    approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
+    host_access = _docker_has_host_access(config)
+    approval = (
+        _check_unconditional_floors(command, env_type, has_host_access=host_access)
+        if force else
+        _check_all_guards(command, env_type, has_host_access=host_access)
+    )
     if not approval["approved"]:
         if approval.get("status") == "pending_approval":  # gateway ask mode
             raise _Rejected(_error_json(
@@ -858,6 +869,8 @@ def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *,
             "Use the approval prompt to allow it, or rephrase the command."
         )
         raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked"))
+    if force:
+        return _ApprovalVerdict(approved_run=True)
     desc = approval.get("description", "flagged as dangerous")
     if approval.get("user_approved"):
         return _ApprovalVerdict(

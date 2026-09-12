@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
 from tools.skills_guard import (
-    Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
+    Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict,
+    format_scan_report as _format_scan_report,
     scan_file)
 
 PLUGIN_SCANNER_VERSION = "plugin-guard-v1"
@@ -76,6 +77,14 @@ def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
         f.severity = SEVERITY_REMAP.get(f.pattern_id) or f.severity
         out.append(f)
     return out
+
+
+def _dangerous_findings_summary(findings: List[Finding]) -> str:
+    """Describe the critical findings that made a plugin install dangerous."""
+    critical = [finding for finding in findings if finding.severity == "critical"]
+    pattern_ids = sorted({finding.pattern_id for finding in critical})
+    names = f" ({', '.join(pattern_ids)})" if pattern_ids else ""
+    return f"{len(critical)} critical of {len(findings)} findings{names}"
 
 
 def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
@@ -155,8 +164,13 @@ def should_allow_plugin_install(
             return True, f"Force-installed despite caution verdict ({n} findings)"
         return None, f"Requires confirmation (caution verdict, {n} findings)"
     return False, (
-        f"Blocked (dangerous verdict, {n} findings). "
+        f"Blocked (dangerous verdict, {_dangerous_findings_summary(result.findings)}). "
         f"--force does not override a dangerous verdict.")
+
+
+def format_scan_report(result: ScanResult, force: bool = False) -> str:
+    """Format a plugin report using the plugin-specific install policy."""
+    return _format_scan_report(result, decision_fn=should_allow_plugin_install, force=force)
 
 
 __all__ = [

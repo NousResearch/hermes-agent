@@ -15,7 +15,7 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 
 SCANNER_VERSION = "skills-guard-v2"
@@ -511,8 +511,14 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
     return False, blocked + ("--force does not override a dangerous verdict." if hard_block else "Use --force to override.")
 
 
-def format_scan_report(result: ScanResult) -> str:
-    """Compact multi-line report for CLI/chat display; findings sorted critical → low."""
+def format_scan_report(
+    result: ScanResult, *, decision_fn: Callable | None = None, force: bool = False,
+) -> str:
+    """Compact multi-line report for CLI/chat display; findings sorted critical → low.
+
+    ``decision_fn`` lets a scanner keep its own install policy while reusing this
+    formatter; the skills policy remains the default.
+    """
     lines = [f"Scan: {result.skill_name} ({result.source}/{result.trust_level})  Verdict: {result.verdict.upper()}"]
     if result.findings:
         order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -520,7 +526,7 @@ def format_scan_report(result: ScanResult) -> str:
             lines.append(f"  {f.severity.upper().ljust(8)} {f.category.ljust(14)} "
                          f"{f'{f.file}:{f.line}'.ljust(30)} \"{f.match[:60]}\"")
         lines.append("")
-    allowed, reason = should_allow_install(result)
+    allowed, reason = (decision_fn or should_allow_install)(result, force=force)
     status = "ALLOWED" if allowed is True else "NEEDS CONFIRMATION" if allowed is None else "BLOCKED"
     return "\n".join(lines + [f"Decision: {status} — {reason}"])
 

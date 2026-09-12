@@ -538,3 +538,34 @@ def test_requeue_unstarted_rolls_back_an_uncharged_attempt(tmp_path):
     assert rolled_back["attempts"] == 0
     untouched = q.requeue_unstarted(tmp_path, _did(1))
     assert untouched["status"] == "queued" and untouched["attempts"] == 0
+
+
+# ── D6: the refusal detail names the cap that fired ────────────────────────────
+
+def test_queue_full_envelope_names_the_cap_that_fired():
+    """D6: a per-sender refusal must not be reported as the per-profile cap."""
+    base = {
+        "delivery_id": _did(1),
+        "idempotency_key": "peer-1",
+        "target_profile": "bravo",
+        "sender_profile": "alpha",
+        "status": q.STATUS_FAILED,
+        "reason": "queue_full",
+        "created_at": time.time_ns(),
+        "updated_at": time.time_ns(),
+    }
+
+    per_sender = q.build_envelope(
+        {**base, "limit_kind": q.LIMIT_PER_SENDER, "limit": 8})
+    assert per_sender["result"] == q.RESULT_FAILED
+    assert per_sender["retryable"] is True
+    assert "8 pending from this sender" in per_sender["detail"]
+    assert "per profile" not in per_sender["detail"]
+
+    per_profile = q.build_envelope(
+        {**base, "limit_kind": q.LIMIT_PER_PROFILE, "limit": q.max_per_profile()})
+    assert f"{q.max_per_profile()} per profile" in per_profile["detail"]
+
+    # A row that lost the fired cap (an older record) reads as it always did.
+    legacy = q.build_envelope(base)
+    assert f"{q.max_per_profile()} per profile" in legacy["detail"]

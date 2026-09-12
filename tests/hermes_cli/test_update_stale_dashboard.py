@@ -627,6 +627,24 @@ class TestManualBackendRespawn:
 
         respawn.assert_called_once_with([(argv, "/install/first")])
 
+    def test_duplicate_argv_uses_selected_own_home_candidate_cwd(self, tmp_path, monkeypatch):
+        from hermes_cli.dashboard_procs import _restart_killed_backends
+
+        own_home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", own_home)
+        argv = ["./venv/bin/hermes", "dashboard", "--port", "8300"]
+        with patch.object(main_dashboard, "_respawn_dashboard_processes", return_value=[]) as respawn:
+            _restart_killed_backends(
+                [101, 202],
+                {101: None, 202: None},
+                {101: None, 202: None},
+                {101: argv, 202: argv},
+                {101: str(tmp_path / "foreign"), 202: own_home},
+                {101: "/foreign/install", 202: "/own/install"},
+            )
+
+        respawn.assert_called_once_with([(argv, "/own/install")])
+
 
 class TestFilterDashboardRespawnCandidates:
     """Unit tests for respawn filtering / dedupe / orphan skip (#78821)."""

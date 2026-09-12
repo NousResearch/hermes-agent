@@ -513,3 +513,33 @@ KANBAN_LINK_SCHEMA = _schema(
     },
     ["parent_id", "child_id"],
 )
+
+FLEET_POLICY_ROLLOUT_SCHEMA = _schema(
+    "fleet_policy_rollout",
+    (
+        "Roll out an already-built Fleet Policy release bundle to the "
+        "fixed ten-profile fleet in one atomic step. Orchestrator/"
+        "operator only — hidden from task workers and refused for "
+        "delegate children. Verifies the release bundle against its "
+        "manifest, checks the declared version, enforces the "
+        "independent evidence gates on the target task, backs up every "
+        "existing install, installs the plugin payload on all ten "
+        "profiles, and rolls every profile back on the first mismatch. "
+        "Returns a JSON receipt. Paths are never accepted: the bundle "
+        "is read from releases/<version> under the Hermes root."
+    ),
+    {
+        "task_id": _prop("string", (
+                "Fleet-ops task carrying the release evidence gates; "
+                "its comment thread must contain the exact gate "
+                "markers from the allowed roles.")),
+        "release_sha": _prop("string", (
+                "64-hex git sha of the release commit the bundle was "
+                "built from (recorded in the receipt).")),
+        "version": _prop("string", (
+                "Release version, e.g. 1.2.18. Selects "
+                "releases/<version> under the Hermes root and must "
+                "match the bundle's plugin.yaml version.")),
+    },
+    ["task_id", "release_sha", "version"],
+)

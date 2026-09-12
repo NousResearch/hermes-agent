@@ -18,8 +18,10 @@ from typing import Any, Callable, Optional
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
+from tools.fleet_policy_rollout import handle_fleet_policy_rollout
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
+    FLEET_POLICY_ROLLOUT_SCHEMA,
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
@@ -968,8 +970,10 @@ def _handle_link(args: dict, **kw) -> str:
 
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# kanban_list / kanban_unblock route the board and are hidden from task
+# workers; fleet_policy_rollout is operator-only (it additionally refuses
+# delegate children and dispatcher workers in-process).
+_ORCHESTRATOR_TOOLS = {"kanban_list", "kanban_unblock", "fleet_policy_rollout"}
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -984,7 +988,8 @@ _TOOLS = (
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
-    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
+    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"),
+    ("fleet_policy_rollout", FLEET_POLICY_ROLLOUT_SCHEMA, handle_fleet_policy_rollout, "🚀"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode

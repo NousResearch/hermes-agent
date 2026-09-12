@@ -66,6 +66,43 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
     return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
 
 
+async def _unarchive_session_on_activity(session_db: Any, session_id: str) -> bool:
+    """Resurface an archived session when real user activity arrives (#89325).
+
+    Archiving is a soft hide: the session row keeps every message and inbound
+    delivery still routes to it, but the archived flag hides it from the
+    default session list on every surface (desktop sidebar, TUI, CLI). A
+    conversation that receives a real user message from ANY platform channel
+    must come back — otherwise a chat you are actively using on WhatsApp,
+    BlueBubbles, Photon, Telegram, ... stays hidden on the desktop UI forever
+    while messages pile up invisibly.
+
+    The caller gates this on real (non-internal) inbound only: cron
+    deliveries, background-process completions, and startup-restore replays
+    are system traffic, not user activity, and must not un-archive a session
+    the user deliberately hid. ``unarchive_if_archived`` is the right door here
+    rather than ``unarchive_recoverable_session``: that helper deliberately
+    resurrects only rows archived by a recoverable *accident*
+    (``ws_orphan_reap`` / ``agent_close``) and returns False for a user's own
+    archive — which is precisely the archive this feature is about, since the
+    conversation is no longer dormant once a new message lands in it.
+
+    One statement, no read: this runs on every inbound turn from every
+    platform, so a read to check ``archived`` first would double the cost of
+    the common (nothing-archived) case. ``session_db`` is the async session DB
+    door (``AsyncSessionDB``), which offloads the call to a thread so the event
+    loop never blocks on SQLite. Returns True when the session was archived and
+    is now visible again.
+    """
+    if session_db is None or not session_id:
+        return False
+    try:
+        return bool(await session_db.unarchive_if_archived(session_id))
+    except Exception:
+        logger.debug("auto-unarchive: failed for %s", session_id, exc_info=True)
+        return False
+
+
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
@@ -1883,6 +1920,13 @@ class GatewayTurnMixin:
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
+        # Auto-unarchive on real user activity (#89325): archiving is a soft hide, so a conversation
+        # that receives a message from any channel (WhatsApp, BlueBubbles, Photon, Telegram, ...) must
+        # resurface in the default session list. Internal/system events (cron deliveries,
+        # background-process completions, startup-restore replays) are not user activity — they keep
+        # the archive flag, matching the touch_activity gate used at session resolution above.
+        if not getattr(event, "internal", False):
+            await _unarchive_session_on_activity(self._session_db, session_entry.session_id)
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)

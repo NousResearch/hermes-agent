@@ -835,6 +835,50 @@ class SessionSessionsMixin:
         """Soft-hide (or unhide) a session and its compression lineage; messages are kept."""
         return self._set_lineage_column("archived", session_id, int(archived))
 
+    def unarchive_if_archived(self, session_id: str) -> bool:
+        """Clear ``archived`` across the lineage in ONE statement, and only when it is set.
+
+        Purpose-built for the inbound-activity path (#89325): un-hiding a deliberately
+        archived conversation there must not cost a read *plus* a write on every inbound
+        turn — the caller would have to read the row to check first — and an unconditional
+        lineage update would write on every message even when nothing is archived.
+        Returns True only when an archived row was actually made visible again.
+        """
+        if not session_id:
+            return False
+        return self._write_rowcount(
+            """
+            WITH RECURSIVE
+              ancestors(id) AS (
+                SELECT ?
+                UNION
+                SELECT parent.id
+                FROM ancestors a
+                JOIN sessions child ON child.id = a.id
+                JOIN sessions parent ON parent.id = child.parent_session_id
+                WHERE parent.end_reason = 'compression'
+              ),
+              descendants(id) AS (
+                SELECT ?
+                UNION
+                SELECT child.id
+                FROM descendants d
+                JOIN sessions parent ON parent.id = d.id
+                JOIN sessions child ON child.parent_session_id = parent.id
+                WHERE parent.end_reason = 'compression'
+              ),
+              lineage(id) AS (
+                SELECT id FROM ancestors
+                UNION
+                SELECT id FROM descendants
+              )
+            UPDATE sessions
+            SET archived = 0
+            WHERE id IN (SELECT id FROM lineage) AND archived != 0
+            """,
+            (session_id, session_id),
+        ) > 0
+
     # Accidental end reasons recovery treats as resumable (also interpolated into
     # the recovery/promotion SQL so literals cannot drift).
     RECOVERABLE_END_REASONS = _RECOVERABLE_END_REASONS

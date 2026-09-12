@@ -6,13 +6,13 @@ import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { adoptSpokenReplySession, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
-import { toLiveHistory } from '@/lib/voice-live'
+import { resolveVoiceConversationStart, toLiveHistory } from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $voiceLiveStatus, refreshVoiceLiveStatus, selectedVoiceChatMode } from '@/store/voice-live'
+import { refreshVoiceLiveStatus } from '@/store/voice-live'
 import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { resumeWakeAfterVoice } from '@/store/wake-word'
 
@@ -216,25 +216,25 @@ export function useComposerVoice({
   /** Turn the conversation on with the engine `voice.voice_chat_mode` selects,
    *  decided in the same state batch so the other engine never sees a frame of
    *  `enabled`. gpt-live selected but not startable (no OpenAI key on the
-   *  gateway) falls back to chained with a notice rather than a dead button. */
-  const activateConversation = useCallback(() => {
-    const status = $voiceLiveStatus.get()
-    let live = false
+   *  gateway) falls back to chained with a notice only for API mode. Explicit
+   *  subscription mode refuses to activate a different billed engine. */
+  const activateConversation = useCallback(async () => {
+    try {
+      const { mode, fallbackReason } = await resolveVoiceConversationStart()
 
-    if (selectedVoiceChatMode(status) === 'gpt-live') {
-      if (status?.available) {
-        live = true
-      } else {
+      if (fallbackReason) {
         notify({
           id: 'voice-live-unavailable',
           kind: 'warning',
-          message: t.notifications.voice.liveUnavailable(status?.reason ?? 'not configured')
+          message: t.notifications.voice.liveUnavailable(fallbackReason)
         })
       }
-    }
 
-    setLiveEngineActive(live)
-    setVoiceConversationActive(true)
+      setLiveEngineActive(mode === 'gpt-live')
+      setVoiceConversationActive(true)
+    } catch (error) {
+      notifyError(error)
+    }
   }, [t])
 
   useEffect(() => {

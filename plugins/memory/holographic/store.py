@@ -72,9 +72,50 @@ CREATE TABLE IF NOT EXISTS memory_banks (
 
 _HELPFUL_DELTA, _UNHELPFUL_DELTA = 0.05, -0.10
 
-# Entity extraction patterns, applied in order: capitalized multi-word phrases ("John Doe"), double-quoted terms,
-# single-quoted terms, then "X aka Y" (both sides).
-_RE_SINGLE_ENTITY = (re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'), re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'"))
+# Entity extraction patterns, applied in order: capitalized multi-word phrases ("John Doe"), hyphenated names
+# ("Pi-hole"), single capitalized words ("Alice"), double-quoted terms, single-quoted terms, then "X aka Y"
+# (both sides). Words are matched as Unicode letter runs and shape-checked in Python (_is_name_word), because
+# re cannot express "initial capital, lowercase rest" for any script. Single words shorter than three
+# characters are ignored, as are the function words below. Quoted terms are capped at 48 characters: longer
+# than that is a pasted paragraph, not a name (with no bound the pattern stored entire passages as entities -
+# 31 such rows in one live store, the worst 426 characters).
+_RE_MULTI_CAP = re.compile(r'\b([^\W\d_]+(?:\s+[^\W\d_]+)+)\b')
+_RE_HYPHENATED = re.compile(r'\b([^\W\d_]{2,}(?:-[^\W\d_]+)+)\b')
+_RE_SINGLE_CAP = re.compile(r'\b([^\W\d_]{3,})\b')
+_RE_QUOTED = (re.compile(r'"([^"]{2,48})"'), re.compile(r"'([^']{2,48})'"))
+# Function words, pronouns and sentence-starters that are capitalized like a proper noun but carry no
+# entity meaning. Conservative by design: a missed name costs recall, a stored non-name adds a noise
+# component to every bundle that mentions it. Shared with the local backfill script - keep one list.
+_ENTITY_STOPLIST = frozenset("""
+    A An The This That These Those It He She They We You I Me Us Him Her Them
+    Is Are Was Were Be Been Has Have Had Do Does Did Will Would Can Could Should May Might
+    Not No Yes But And Or Nor If In On At To For With From By As Of Into Over
+    True False None
+    All Any Some Each Both Few Many Most Other Such Only Own Same So Than Too Very Just
+    Now Then Also Even Still Yet Like Get Got One Two Three First Last New Old More Less
+    After Before During Since Until While About Above Across Again Against Along Among Around
+    Here There Where When Why How What Which Who
+    However Therefore Because Although Though Unless Whether""".split())
+# Words dropped from the FRONT of a multi-word match ("The Thursday deployment" -> "Thursday").
+# Deliberately much smaller than the list above: stripping every function word mangles real names that
+# merely start with one ("One Page Rules" -> "Page Rules", "Old Fire Station" -> "Fire Station"), and a
+# renamed entity is worse than a junk one because probing the real name then finds nothing.
+_PHRASE_LEAD_STOPWORDS = frozenset(("A", "An", "The", "This", "That", "These", "Those"))
+# Tokenizer for a matched phrase: offsets are taken from the match itself, so arbitrary whitespace
+# between the words (double spaces, newlines) cannot shift a claimed span.
+_RE_WORD = re.compile(r'[^\W\d_]+')
+
+
+def _is_name_word(word: str) -> bool:
+    """One initial capital then lowercase letters (Alice, Jozsef, Ivan) - excludes acronyms like BDFL."""
+    return len(word) > 1 and word[0].isupper() and word[1:].islower()
+
+
+def _is_hyphenated_name(name: str) -> bool:
+    """First part a name word, later parts letter-initial and otherwise lowercase (Pi-hole, Foo-Bar-Baz)."""
+    parts = name.split("-")
+    return _is_name_word(parts[0]) and all(
+        p[:1].isalpha() and (len(p) == 1 or p[1:].islower()) for p in parts[1:])
 _RE_AKA = re.compile(r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)', re.IGNORECASE)
 _ENTITY_NAMES_SQL = "SELECT e.name FROM entities e JOIN fact_entities fe ON fe.entity_id = e.entity_id WHERE fe.fact_id = ?"
 # Entity lookup order: exact name, then aliases (comma-separated; wrapped in commas for whole-alias matching).
@@ -213,14 +254,67 @@ class MemoryStore:
             return {"fact_id": fact_id, "old_trust": old_trust, "new_trust": new_trust, "helpful_count": row["helpful_count"] + increment}
 
     def _extract_entities(self, text: str) -> list[str]:
-        """Regex entity candidates (see the pattern table), deduplicated case-insensitively in first-seen order."""
-        raw = [m.group(1) for pattern in _RE_SINGLE_ENTITY for m in pattern.finditer(text)]
+        """Regex entity candidates (see the pattern table), deduplicated case-insensitively in first-seen order.
+
+        Two de-overlap rules keep one phrase from yielding several entities: a leading determiner is dropped
+        from a multi-word match ("The Thursday deployment" -> "Thursday"), and a single capitalized word
+        covered by a multi-word or hyphenated match is suppressed ("Acme Corporation" does not also bind
+        "Acme" and "Corporation"; "Pi-hole" does not bind "Pi"). Only determiners are trimmed from the front
+        of a phrase - see _PHRASE_LEAD_STOPWORDS. Names are matched as Unicode letter runs plus a shape check,
+        so accented and non-Latin names extract the way ASCII ones do; scripts with no letter case at all
+        (CJK) yield nothing, which no capitalisation rule can fix.
+        """
+        phrases = [p for m in _RE_MULTI_CAP.finditer(text) for p in self._phrase_entities(m)]
+        hyphenated = [(m.group(1), m.span(1)) for m in _RE_HYPHENATED.finditer(text)
+                      if _is_hyphenated_name(m.group(1))]
+        claimed = [span for _, span in phrases + hyphenated]  # character ranges already bound as one entity
+
+        def _covered(start: int, end: int) -> bool:
+            return any(s <= start and end <= e for s, e in claimed)
+
+        raw = [name for name, _ in phrases]
+        raw += [name for name, _ in hyphenated]
+        raw += [m.group(1) for m in _RE_SINGLE_CAP.finditer(text)
+                if _is_name_word(m.group(1)) and m.group(1) not in _ENTITY_STOPLIST and not _covered(*m.span(1))]
+        # A quoted term must carry a letter: "1234" or a run of punctuation is not an entity.
+        for pattern in _RE_QUOTED:
+            raw += [m.group(1).strip() for m in pattern.finditer(text) if any(c.isalpha() for c in m.group(1))]
         for m in _RE_AKA.finditer(text):
             raw += [m.group(1), m.group(2)]
         uniq: dict[str, str] = {}  # lower-cased key -> first-seen spelling, insertion-ordered
         for name in filter(None, (n.strip() for n in raw)):
             uniq.setdefault(name.lower(), name)
         return list(uniq.values())
+
+    @staticmethod
+    def _phrase_entities(match: "re.Match[str]") -> list[tuple[str, tuple[int, int]]]:
+        """Every run of two or more capitalized words in a word run, minus any determiner prefix, plus spans.
+
+        The pattern matches whole word runs because re cannot say "capitalized" for every script, so the runs
+        are located here: "Alice works at Acme Corporation" yields "Acme Corporation" and "One Horse Town is a
+        phrase" yields "One Horse Town" - the phrase is not required to start the sentence.
+        """
+        phrases: list[tuple[str, tuple[int, int]]] = []
+        tokens = list(_RE_WORD.finditer(match.group(1)))
+        index = 0
+        while index < len(tokens):
+            if not _is_name_word(tokens[index].group(0)):
+                index += 1
+                continue
+            start = index
+            while index < len(tokens) and _is_name_word(tokens[index].group(0)):
+                index += 1
+            run = tokens[start:index]
+            if len(run) < 2:
+                continue  # a lone capitalized word belongs to the single-word rule
+            first = 0
+            while first < len(run) and run[first].group(0) in _PHRASE_LEAD_STOPWORDS:
+                first += 1
+            if first >= len(run):
+                continue
+            name = " ".join(t.group(0) for t in run[first:])  # normalises the whitespace between words
+            phrases.append((name, (match.start(1) + run[first].start(), match.start(1) + run[-1].end())))
+        return phrases
 
     def _link_entities(self, fact_id: int, content: str) -> None:
         """Extract entities from content, resolve/create them, and link each to the fact."""

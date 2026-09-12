@@ -545,8 +545,6 @@ if __name__ == "__main__":  # pragma: no cover
 # The whole block is removed by reverting the commit that added it.
 from dataclasses import field  # noqa: F401,E402
 from dataclasses import dataclass  # noqa: F401,E402
-from dataclasses import dataclass  # noqa: F401,E402
-from dataclasses import field  # noqa: F401,E402
 
 @dataclass
 class SpikeAgent:

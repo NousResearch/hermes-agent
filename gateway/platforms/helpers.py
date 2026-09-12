@@ -520,7 +520,6 @@ def _chunk_newline_preferred(text, limit, len_fn):
 from typing import Dict  # noqa: F401,E402
 from typing import TYPE_CHECKING  # noqa: F401,E402
 import asyncio  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
 
 class TextBatchAggregator:
     """Aggregates rapid-fire text events into single messages.

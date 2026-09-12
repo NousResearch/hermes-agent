@@ -154,11 +154,40 @@ def _xai_prefers_native_web_search() -> bool:
         return True
 
 
-def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_responses: bool) -> tuple[Any, dict[str, str]]:
+def _openai_prefers_native_web_search() -> bool:
+    """True when the active web-search backend selects OpenAI's server-side ``web_search``.
+
+    Same contract as :func:`_xai_prefers_native_web_search` with one deliberate
+    difference: it fails CLOSED (False). A resolution failure must leave the client-side
+    Hermes tool in place rather than swap in a built-in the endpoint might reject.
+
+    Only consulted for the Codex backend (``chatgpt.com/backend-api/codex``); a custom
+    OpenAI-compatible endpoint does not implement the server-side tool.
+    """
+    try:
+        from agent.web_search_registry import get_active_search_provider
+
+        provider = get_active_search_provider()
+        if provider is not None:
+            return getattr(provider, "name", None) == "openai-native"
+
+        from tools.web_tools import _get_search_backend
+
+        return (_get_search_backend() or "").strip().lower() == "openai-native"
+    except Exception:  # noqa: BLE001 — a probe failure must not change the request shape
+        return False
+
+
+def _alias_wire_tools(
+    response_tools: Any, params: dict[str, Any], is_xai_responses: bool, is_codex_backend: bool = False,
+) -> tuple[Any, dict[str, str]]:
     """Apply provider-reserved tool-name aliasing; returns ``(tools, {alias: original})`` for THIS request.
 
     xAI: a client ``web_search`` collides with Grok's native search — native mode
     swaps it 1:1 for the built-in, client mode keeps Hermes dispatch under an alias.
+
+    OpenAI Codex: the Responses endpoint carries the same collision, so the backend
+    selection drives the same 1:1 swap (``web.search_backend: openai-native``).
     """
     wire_aliases: dict[str, str] = {}
 
@@ -173,6 +202,13 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
                 {**t, "name": _XAI_CLIENT_WEB_SEARCH_ALIAS} if is_client_web_search(t) else t for t in response_tools
             ]
             wire_aliases[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
+    # OpenAI Codex: the Responses endpoint exposes the same server-executed ``web_search``,
+    # and a client-side function of that name collides with it the same way. Unlike xAI there
+    # is no alias fallback: when the user has not selected ``openai-native`` we leave the
+    # client tool untouched, so an endpoint that cannot host the built-in never breaks.
+    if is_codex_backend and response_tools and any(is_client_web_search(t) for t in response_tools):
+        if _openai_prefers_native_web_search():
+            response_tools = [t for t in response_tools if not is_client_web_search(t)] + [{"type": "web_search"}]
     # OpenCode Responses backends reserve web_search / search_files as function names (HTTP 400 "custom
     # function name 'X' is reserved", #85589). Alias them on the wire; normalize_response maps them back.
     if response_tools and _is_opencode_responses_backend(params):
@@ -576,7 +612,9 @@ class ResponsesApiTransport(ProviderTransport):
         native_compaction_active = _native_compaction_active(context_management)
 
         reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
-        response_tools, self._last_wire_aliases = _alias_wire_tools(self.convert_tools(tools), params, is_xai_responses)
+        response_tools, self._last_wire_aliases = _alias_wire_tools(
+            self.convert_tools(tools), params, is_xai_responses, is_codex_backend,
+        )
 
         # Lazy: provider plugins import this transport during model_metadata init.
         from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant

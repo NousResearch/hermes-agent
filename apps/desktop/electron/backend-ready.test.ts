@@ -23,6 +23,7 @@ import {
   DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
   MIN_PORT_ANNOUNCE_TIMEOUT_MS,
   readDashboardReadyFile,
+  readDashboardReadyPayload,
   resolvePortAnnounceTimeoutMs,
   waitForDashboardPort,
   waitForDashboardPortAnnouncement,
@@ -164,6 +165,31 @@ test('readDashboardReadyFile returns a valid port from JSON', () => {
   }
 })
 
+test('readDashboardReadyPayload returns the backend-resolved session token', () => {
+  const tmp = mkTmpReadyFile()
+
+  try {
+    fs.writeFileSync(tmp.file, JSON.stringify({ port: 4567, session_token: 'resolved-by-backend' }))
+    assert.deepEqual(readDashboardReadyPayload(tmp.file), {
+      port: 4567,
+      sessionToken: 'resolved-by-backend'
+    })
+  } finally {
+    tmp.cleanup()
+  }
+})
+
+test('readDashboardReadyPayload accepts the old port-only ready-file format', () => {
+  const tmp = mkTmpReadyFile()
+
+  try {
+    fs.writeFileSync(tmp.file, JSON.stringify({ port: 4567 }))
+    assert.deepEqual(readDashboardReadyPayload(tmp.file), { port: 4567, sessionToken: null })
+  } finally {
+    tmp.cleanup()
+  }
+})
+
 test('readDashboardReadyFile ignores missing, malformed, or invalid files', () => {
   const tmp = mkTmpReadyFile()
 
@@ -198,6 +224,19 @@ test('waitForDashboardPortAnnouncement uses ready file when provided', async () 
   try {
     const p = waitForDashboardPortAnnouncement(child, { readyFile: tmp.file, timeoutMs: 1000 })
     setTimeout(() => fs.writeFileSync(tmp.file, JSON.stringify({ port: 9876 })), 20)
+    assert.equal(await p, 9876)
+  } finally {
+    tmp.cleanup()
+  }
+})
+
+test('waitForDashboardPortAnnouncement falls back to stdout for an older backend', async () => {
+  const tmp = mkTmpReadyFile()
+  const child = makeFakeChild()
+
+  try {
+    const p = waitForDashboardPortAnnouncement(child, { readyFile: tmp.file, timeoutMs: 1000 })
+    child.stdout.emit('data', 'HERMES_BACKEND_READY port=9876\n')
     assert.equal(await p, 9876)
   } finally {
     tmp.cleanup()

@@ -524,6 +524,19 @@ export interface GatewayEventHandlerContext {
   }
 }
 
+/**
+ * What a slash command's composer held at submit time. A skill or alias
+ * eventually sends ordinary user text, so the staged image descriptors and the
+ * token expander travel with the command instead of dying with the cleared
+ * composer.
+ */
+export interface SlashSubmission {
+  attachments: Array<{ path: string; mime: string }>
+  expand: (text: string) => string
+}
+
+export type SlashHandler = (cmd: string, submission?: SlashSubmission) => boolean
+
 export interface SlashHandlerContext {
   composer: {
     attachClipboardImage: () => void
@@ -558,7 +571,8 @@ export interface SlashHandlerContext {
   transcript: {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
-    send: (text: string, showUserMessage?: boolean, displayText?: string) => void
+    send: (text: string, showUserMessage?: boolean, displayText?: string, expandOverride?: (value: string) => string,
+      submitOpts?: { attachments?: Array<{ path: string; mime: string }> }) => void
     setHistoryItems: StateSetter<Msg[]>
     sys: (text: string) => void
     trimLastExchange: (items: Msg[]) => Msg[]

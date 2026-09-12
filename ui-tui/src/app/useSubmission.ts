@@ -11,7 +11,7 @@ import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
-import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
+import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
@@ -333,7 +333,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
           if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
           sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
         } else {
-          slashRef.current(slash.command)
+          // Image tokens are labels in the command; the descriptors and their
+          // expander ride along so a skill/alias send still carries the image.
+          slashRef.current(slash.command, { attachments: submission.attachments, expand: expandTokens(submissionTokens) })
         }
 
         return
@@ -499,7 +501,7 @@ export interface UseSubmissionOptions {
   composerState: ComposerState
   gw: GatewayClient
   setLastUserMsg: (value: string) => void
-  slashRef: MutableRefObject<(cmd: string) => boolean>
+  slashRef: MutableRefObject<SlashHandler>
   submitRef: MutableRefObject<(value: string) => void>
   sys: (text: string) => void
 }

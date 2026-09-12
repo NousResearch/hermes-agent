@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useRef, useState } from 'react'
 
+import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   ContextMenu,
@@ -10,9 +11,11 @@ import {
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 import { translateNow, useI18n } from '@/i18n'
+import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
+import { addComposerAttachment } from '@/store/composer'
 import {
   $fileActionDialog,
   beginInlineRename,
@@ -54,6 +57,25 @@ interface FileEntryContextMenuProps {
   relativeTo?: null | string
 }
 
+/** Stage a file or folder as a composer attachment chip. Mirrors the
+ *  drag-drop attach paths (`attachContextFilePath` / `attachContextFolderPath`):
+ *  both kinds carry `refText` so the chip contributes an `@file:` / `@folder:`
+ *  reference to the submitted prompt, and `detail` shows the cwd-relative path.
+ *  Files additionally get their ref re-derived by the submit-time upload; a
+ *  folder is never uploaded, so the ref set here is the ONLY one it gets. */
+export function attachFileAsContext(path: string, isDirectory: boolean, relativeTo?: null | string): void {
+  const rel = contextPath(path, relativeTo ?? '')
+
+  addComposerAttachment({
+    id: attachmentId(isDirectory ? 'folder' : 'file', path),
+    kind: isDirectory ? 'folder' : 'file',
+    label: pathLabel(path),
+    detail: rel,
+    refText: `@${isDirectory ? 'folder' : 'file'}:${formatRefValue(rel)}`,
+    path,
+  })
+}
+
 /** Right-click menu shared by both file trees (browser + review/git). */
 export function FileEntryContextMenu({ children, isDirectory, name, path, relativeTo }: FileEntryContextMenuProps) {
   const { t } = useI18n()
@@ -84,6 +106,10 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
             {m.copyRelativePath}
           </ContextMenuItem>
         )}
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => attachFileAsContext(path, isDirectory, relativeTo)}>
+          {t.common.addAsContext}
+        </ContextMenuItem>
         {remoteDownload && (
           <>
             <ContextMenuSeparator />

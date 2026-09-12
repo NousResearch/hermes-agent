@@ -5,11 +5,11 @@ import { triggerHaptic } from '@/lib/haptics'
 
 export interface ComposerAttachment {
   id: string
+  kind: 'file' | 'folder' | 'image' | 'review' | 'terminal' | 'url' | 'text'
   /** Renderer-lifetime identity for one attachment occurrence. Unlike `id`,
    * which is content/path-derived, this survives draft cloning but changes
    * when the user removes and re-adds the same attachment. */
   occurrenceId?: string
-  kind: 'file' | 'folder' | 'image' | 'review' | 'terminal' | 'url'
   label: string
   detail?: string
   refText?: string
@@ -24,6 +24,10 @@ export interface ComposerAttachment {
    * workspace (remote upload or local stage), and 'error' if that failed.
    * Drives the spinner / error state on the composer attachment card. */
   uploadState?: 'uploading' | 'error'
+  /** For 'text' kind: the selected message text. */
+  textContent?: string
+  /** For 'text' kind: which message it came from (for display). */
+  sourceMessageId?: string
 }
 
 export type ComposerAttachmentPatch = Partial<Omit<ComposerAttachment, 'id' | 'occurrenceId'>>
@@ -473,6 +477,25 @@ export function clearComposerDraft() {
 // Main-scope conveniences — the names the app has always used.
 export const addComposerAttachment = (attachment: ComposerAttachment) => mainComposerScope.add(attachment)
 export const removeComposerAttachment = (id: string) => mainComposerScope.remove(id)
+
+/** Stage a text snippet from a message as a composer attachment chip.
+ *  Pass the ambient scope so the chip lands in the composer that owns the
+ *  message's surface (a session tile's, not the main chat's); the default
+ *  keeps the main-composer routing for existing callers. */
+export function addComposerTextAttachment(
+  text: string,
+  sourceMessageId?: string,
+  scope: ComposerAttachmentScope = mainComposerScope
+): void {
+  const preview = text.length > 100 ? text.slice(0, 100) + '\u2026' : text
+  scope.add({
+    id: `text:${sourceMessageId ?? 'selection'}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    kind: 'text',
+    label: preview,
+    textContent: text,
+    sourceMessageId,
+  })
+}
 
 /** Replace an existing attachment in place by id. No-op (returns false) when the
  * id is gone — e.g. the user removed the chip while an eager upload was still in

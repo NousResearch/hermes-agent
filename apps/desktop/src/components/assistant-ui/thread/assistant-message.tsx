@@ -18,6 +18,7 @@ import {
   messageContentText,
   pickPrimaryPreviewTarget
 } from '@/components/assistant-ui/thread/content'
+import { MessageContextMenu } from '@/components/assistant-ui/thread/message-context-menu'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
@@ -231,6 +232,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
     >
       {collapsedNotice ?? (
         <>
+          <MessageContextMenu messageId={messageId}>
           <div
             className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
             data-slot="aui_assistant-message-content"
@@ -264,6 +266,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
               </ErrorPrimitive.Root>
             </MessagePrimitive.Error>
           </div>
+          </MessageContextMenu>
           <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
           {hasVisibleText && !isInterim && (
             <AssistantFooter
@@ -452,8 +455,7 @@ const StreamingMarker: FC = () => {
       className="hidden"
       data-message-streaming={isRunning ? 'true' : undefined}
       data-slot="aui_message-streaming-marker"
-    />
-  )
+    />  )
 }
 
 // ── Layered error card pieces ────────────────────────────────────────────

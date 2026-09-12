@@ -119,8 +119,10 @@ export interface Translations {
     importError: string
   }
   common: {
+    addAsContext: string
     apply: string
     back: string
+    pasteAsText: string
     save: string
     saving: string
     cancel: string
@@ -151,6 +153,7 @@ export interface Translations {
     replace: string
     retry: string
     run: string
+    selectAll: string
     send: string
     set: string
     skip: string

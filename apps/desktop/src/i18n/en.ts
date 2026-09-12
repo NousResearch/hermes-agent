@@ -73,6 +73,7 @@ export const en: Translations = {
     importError: 'Could not import this conversation.'
   },
   common: {
+    addAsContext: 'Add as context',
     apply: 'Apply',
     back: 'Back',
     save: 'Save',
@@ -105,13 +106,15 @@ export const en: Translations = {
     replace: 'Replace',
     retry: 'Retry',
     run: 'Run',
+    selectAll: 'Select All',
     send: 'Send',
     set: 'Set',
     skip: 'Skip',
     update: 'Update',
     tryHint: term => `Try “${term}”`,
     on: 'On',
-    off: 'Off'
+    off: 'Off',
+    pasteAsText: 'Paste as text'
   },
 
   fileMenu: {

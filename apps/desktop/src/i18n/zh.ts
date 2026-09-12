@@ -66,6 +66,7 @@ export const zh = defineLocale({
     importError: '无法导入此对话。'
   },
   common: {
+    addAsContext: '添加为上下文',
     apply: '应用',
     back: '返回',
     save: '保存',
@@ -98,13 +99,15 @@ export const zh = defineLocale({
     replace: '替换',
     retry: '重试',
     run: '运行',
+    selectAll: '全选',
     send: '发送',
     set: '设置',
     skip: '跳过',
     update: '更新',
     tryHint: term => `试试“${term}”`,
     on: '开',
-    off: '关'
+    off: '关',
+    pasteAsText: '粘贴为文本'
   },
 
   fileMenu: {

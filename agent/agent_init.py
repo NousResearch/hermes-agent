@@ -306,6 +306,67 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _custom_provider_reasoning_replay_field_for_agent(
+    *,
+    provider: str,
+    model: str,
+    base_url: str,
+    custom_providers: List[Dict[str, Any]],
+) -> Optional[str]:
+    """Resolve an explicitly configured structured-reasoning replay field."""
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm != "custom" and not provider_norm.startswith("custom:"):
+        return None
+    provider_key_filter = provider_norm.partition(":")[2].strip()
+    target_url = _normalized_custom_base_url(base_url)
+    if not target_url:
+        return None
+
+    fallback: Optional[str] = None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        if provider_key_filter:
+            entry_keys = {
+                str(entry.get("provider_key", "") or "").strip().lower(),
+                str(entry.get("name", "") or "").strip().lower(),
+            }
+            if provider_key_filter not in entry_keys:
+                continue
+        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+            continue
+        replay_field = entry.get("reasoning_replay_field")
+        if isinstance(replay_field, str):
+            replay_field = replay_field.strip().lower()
+        if replay_field not in {
+            "auto",
+            "reasoning",
+            "reasoning_content",
+            "none",
+        }:
+            continue
+        if _custom_provider_model_matches(model, entry):
+            if entry.get("model") or entry.get("models"):
+                return replay_field
+            if fallback is None:
+                fallback = replay_field
+
+    return fallback
+
+
+def _configure_custom_provider_reasoning_replay(
+    agent, custom_providers: List[Dict[str, Any]]
+) -> None:
+    replay_field = _custom_provider_reasoning_replay_field_for_agent(
+        provider=agent.provider,
+        model=agent.model,
+        base_url=agent.base_url,
+        custom_providers=custom_providers,
+    )
+    if replay_field is not None:
+        agent._reasoning_replay_field = replay_field
+
+
 def _normalize_run_budget_seconds(value) -> Optional[float]:
     """Positive float or None (feature off). ``bool`` rejected: YAML ``true`` → 1s budget."""
     if value is None or isinstance(value, bool):
@@ -1713,6 +1774,7 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
     # Reused by _check_compression_model_feasibility (aux compression model detection).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
+    _configure_custom_provider_reasoning_replay(agent, _custom_providers)
 
     if _config_context_length is None and _custom_providers:
         with suppress(Exception):
@@ -1849,6 +1911,9 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
+            replay_historical_reasoning=bool(
+                agent._reasoning_replay_field_for_api()
+            ),
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
@@ -2092,6 +2157,7 @@ def _snapshot_primary_runtime(agent):
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        "reasoning_replay_field": getattr(agent, "_reasoning_replay_field", None),
         # Engine state _try_activate_fallback() overwrites (getattr: plugin engines may lack them).
         "compressor_model": getattr(_cc, "model", agent.model),
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url),
@@ -2270,6 +2336,9 @@ def init_agent(
 
     # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+    # Structured reasoning replay is route-scoped and opt-in on a matching
+    # custom provider (or fallback entry), never a global model toggle.
+    agent._reasoning_replay_field = None
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False

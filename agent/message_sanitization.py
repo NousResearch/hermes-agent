@@ -23,6 +23,36 @@ _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 # Keys handled explicitly by _sanitize_messages; every OTHER key is swept generically.
 _MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role"})
 
+# Provider-native replay state is opaque, may contain hidden or signed reasoning,
+# and must never survive a route/provider boundary without matching provenance.
+REASONING_REPLAY_SIDECAR_FIELDS = (
+    "anthropic_content_blocks",
+    "bedrock_content_blocks",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
+REASONING_REPLAY_SIDECAR_API_MODES = {
+    "anthropic_content_blocks": "anthropic_messages",
+    "bedrock_content_blocks": "bedrock_converse",
+    "codex_reasoning_items": "codex_responses",
+    "codex_message_items": "codex_responses",
+}
+REASONING_REPLAY_HIDDEN_FIELDS = (
+    "_reasoning_route",
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    *REASONING_REPLAY_SIDECAR_FIELDS,
+)
+
+
+def strip_non_assistant_reasoning_replay_fields(message: dict) -> None:
+    """Remove assistant-only hidden replay state from a non-assistant message."""
+    if message.get("role") == "assistant":
+        return
+    for field in REASONING_REPLAY_HIDDEN_FIELDS:
+        message.pop(field, None)
+
 
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD; no-op when none present."""
@@ -460,7 +490,92 @@ def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
     return reasoning_echo_family(provider, model, base_url) is not None
 
 
-def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_url: Any) -> bool:
+# Named local/self-hosted providers that may opt into soft historical replay.
+# ``custom`` / ``custom:<key>`` are handled separately by prefix.
+_SELF_HOSTED_REASONING_REPLAY_PROVIDERS = frozenset(
+    {"local", "llamacpp", "lm-studio", "ollama", "vllm"}
+)
+
+
+def _is_self_hosted_reasoning_replay_provider(provider: Any) -> bool:
+    provider_lower = str(provider or "").strip().lower()
+    return (
+        provider_lower == "custom"
+        or provider_lower.startswith("custom:")
+        or provider_lower in _SELF_HOSTED_REASONING_REPLAY_PROVIDERS
+    )
+
+
+# Loopback classification and its edge-case policy are adapted from PR #87123
+# by glitchbunny0.  Automatic carrier selection remains narrower here: server
+# identity alone is not enough except for llama.cpp's demonstrated
+# --reasoning-preserve / reasoning_content contract.
+def _is_loopback_reasoning_route(base_url: Any) -> bool:
+    import ipaddress
+
+    from utils import base_url_hostname
+
+    host = base_url_hostname(base_url)
+    if not host:
+        return False
+    host = host.strip().lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(
+        address.is_loopback
+        or address.is_unspecified
+        or (mapped is not None and (mapped.is_loopback or mapped.is_unspecified))
+    )
+
+
+def resolve_reasoning_replay_field(
+    configured_mode: Any,
+    *,
+    provider: Any,
+    model: Any,
+    base_url: Any,
+    api_mode: Any,
+    detected_server_type: Any = None,
+) -> "str | None":
+    """Resolve the soft-replay wire carrier for one provider route.
+
+    Explicit carriers work on custom/self-hosted Chat Completions routes,
+    including remote endpoints.  Omission is ``auto`` and enables only a
+    directly evidenced loopback llama.cpp contract.  ``none`` and ambiguous
+    routes fail closed.  Require-side echo protocols are handled separately.
+    """
+    mode = configured_mode.strip().lower() if isinstance(configured_mode, str) else "auto"
+    transport = str(api_mode or "").strip().lower()
+    if transport not in {"", "chat_completions", "openai"}:
+        return None
+    if needs_reasoning_echo(provider, model, base_url):
+        return None
+    if mode == "none":
+        return None
+    if not _is_self_hosted_reasoning_replay_provider(provider):
+        return None
+    if mode in {"reasoning", "reasoning_content"}:
+        return mode
+    if mode != "auto" or not _is_loopback_reasoning_route(base_url):
+        return None
+    if str(detected_server_type or "").strip().lower() == "llamacpp":
+        return "reasoning_content"
+    return None
+
+
+def stale_thinking_reaches_wire(
+    api_mode: Any,
+    provider: Any,
+    model: Any,
+    base_url: Any,
+    *,
+    reasoning_replay_field: Any = None,
+) -> bool:
     """True when stale assistant reasoning text is actually replayed on the wire for the route.
 
     The single wire-truth predicate the compaction TRIGGER estimator and the tail-budget
@@ -468,14 +583,65 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     to preflight yet fully tail-protected to the walk — an infinite compaction loop.
     ``codex_responses`` never reads the text keys (continuity rides the encrypted sidecar).
     """
-    return (api_mode or "") != "codex_responses" and needs_reasoning_echo(provider, model, base_url)
+    if (api_mode or "") == "codex_responses":
+        return False
+    return (
+        needs_reasoning_echo(provider, model, base_url)
+        or reasoning_replay_field in {"reasoning", "reasoning_content"}
+    )
 
 
-def apply_reasoning_content_policy(source_msg: dict, api_msg: dict, needs_thinking_pad: bool) -> None:
-    """Copy provider-facing reasoning fields onto an API replay message (mutates ``api_msg``).
-    ``needs_thinking_pad`` is the require-side flag (``needs_reasoning_echo``)."""
+def apply_reasoning_content_policy(
+    source_msg: dict,
+    api_msg: dict,
+    needs_thinking_pad: bool,
+    reasoning_replay_field: str | None = None,
+) -> None:
+    """Copy provider-facing reasoning fields onto an API replay message.
+
+    ``needs_thinking_pad`` is the require-side flag (see
+    ``needs_reasoning_echo`` / the agent's cached
+    ``_needs_thinking_reasoning_pad``). ``reasoning_replay_field`` selects an
+    opt-in soft replay carrier for endpoints that consume historical reasoning
+    without requiring fabricated pads. Mutates ``api_msg`` in place.
+    """
     if source_msg.get("role") != "assistant":
         return
+
+    if reasoning_replay_field == "reasoning_content":
+        normalized_reasoning = source_msg.get("reasoning")
+        existing = source_msg.get("reasoning_content")
+        replay = (
+            existing
+            if isinstance(existing, str) and existing.strip()
+            else normalized_reasoning
+            if isinstance(normalized_reasoning, str) and normalized_reasoning.strip()
+            else None
+        )
+        api_msg.pop("reasoning", None)
+        if replay is None:
+            api_msg.pop("reasoning_content", None)
+        else:
+            api_msg["reasoning_content"] = replay
+        return
+
+    if reasoning_replay_field == "reasoning":
+        normalized_reasoning = source_msg.get("reasoning")
+        existing = source_msg.get("reasoning_content")
+        replay = (
+            normalized_reasoning
+            if isinstance(normalized_reasoning, str) and normalized_reasoning.strip()
+            else existing
+            if isinstance(existing, str) and existing.strip()
+            else None
+        )
+        api_msg.pop("reasoning_content", None)
+        if replay is None:
+            api_msg.pop("reasoning", None)
+        else:
+            api_msg["reasoning"] = replay
+        return
+
     if not needs_thinking_pad:
         # Strict side: never carry the field — a reasoning primary pads history with " ",
         # then a fallback to Mistral/Cerebras/Groq replays the pad and 422s. Also drops a
@@ -506,34 +672,58 @@ def apply_reasoning_content_policy(source_msg: dict, api_msg: dict, needs_thinki
         api_msg["reasoning_content"] = " "
 
 
-def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
-    """Re-pad (or strip) assistant turns' reasoning_content for the ACTIVE provider.
+def reapply_reasoning_echo(
+    api_messages: list,
+    needs_thinking_pad: bool,
+    reasoning_replay_field: str | None = None,
+    provider_boundary: bool = False,
+) -> int:
+    """Reconcile provider-facing reasoning fields for the active provider.
 
-    ``api_messages`` is built once under the primary provider; a mid-conversation fallback
-    can switch providers, so baked-in fields must be reconciled: TO a require-side provider
-    re-applies the pad (else 400), TO a strict one strips it (else 422). Idempotent.
-    Returns the number of assistant turns changed.
+    ``api_messages`` is built once before the retry loop. Canonical source
+    history is intentionally not imported here: a fallback may target a
+    different provider/model, and forwarding another model's hidden trace would
+    be a cross-provider privacy leak. Primary restoration rebuilds a fresh wire
+    message list from canonical history on the next request instead. The
+    ``provider_boundary`` means the already-built messages came from a different
+    provider. In that case structured carriers and provider-specific hidden
+    blocks are discarded before the destination policy is applied, so one
+    provider's hidden trace cannot be forwarded to another opt-in replay route.
+    The operation is idempotent and returns the number of assistant turns
+    changed.
     """
     changed = 0
     for api_msg in api_messages:
-        if api_msg.get("role") != "assistant":
+        if not isinstance(api_msg, dict) or api_msg.get("role") != "assistant":
             continue
-        # 3. Healthy session: promote 'reasoning' field to 'reasoning_content' for providers that use the
-        #   internal 'reasoning' key. This must happen before the unconditional empty-string fallback so
-        #   genuine reasoning content is not overwritten (#15812 regression in PR #15478). Only promote for
-        #   providers that enforce echo-back — strict providers reject the field (refs #45655).
-        # 4. DeepSeek / Kimi thinking mode: all assistant messages need reasoning_content. Inject a single
-        #   space to satisfy the provider's requirement when no explicit reasoning content is present.
-        #   Covers both tool-call turns (already-poisoned history with no reasoning at all) and plain text
-        #   turns. Space (not "") because DeepSeek V4 Pro tightened validation and rejects empty string with
-        #   HTTP 400 ("The reasoning content in the thinking mode must be passed back to the API"). Refs
-        #   #17341.
-        if needs_thinking_pad:
-            if not api_msg.get("reasoning_content"):
-                apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad)
-                changed += 1 if api_msg.get("reasoning_content") else 0
-        elif "reasoning_content" in api_msg:
+        before = dict(api_msg)
+        if provider_boundary:
             api_msg.pop("reasoning_content", None)
+            api_msg.pop("reasoning", None)
+            api_msg.pop("reasoning_details", None)
+            for field in REASONING_REPLAY_SIDECAR_FIELDS:
+                api_msg.pop(field, None)
+        source_msg = api_msg
+        if provider_boundary and needs_thinking_pad:
+            apply_reasoning_content_policy(
+                source_msg, api_msg, needs_thinking_pad=True
+            )
+        elif reasoning_replay_field in {"reasoning", "reasoning_content"}:
+            apply_reasoning_content_policy(
+                source_msg,
+                api_msg,
+                needs_thinking_pad=False,
+                reasoning_replay_field=reasoning_replay_field,
+            )
+        elif needs_thinking_pad:
+            if not api_msg.get("reasoning_content"):
+                apply_reasoning_content_policy(
+                    api_msg, api_msg, needs_thinking_pad
+                )
+        else:
+            api_msg.pop("reasoning_content", None)
+            api_msg.pop("reasoning", None)
+        if api_msg != before:
             changed += 1
     return changed
 

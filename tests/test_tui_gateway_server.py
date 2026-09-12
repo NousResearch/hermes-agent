@@ -15767,7 +15767,18 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
 
     seeded = [
         {"role": "user", "content": "hello from parent"},
-        {"role": "assistant", "content": "parent reply"},
+        {
+            "role": "assistant",
+            "content": "parent reply",
+            "reasoning": BRANCH_REASONING,
+            "reasoning_content": BRANCH_REASONING_CONTENT,
+            "reasoning_details": BRANCH_REASONING_DETAILS,
+            "_reasoning_route": BRANCH_REASONING_ROUTE,
+            "anthropic_content_blocks": BRANCH_ANTHROPIC_CONTENT_BLOCKS,
+            "bedrock_content_blocks": BRANCH_BEDROCK_CONTENT_BLOCKS,
+            "codex_reasoning_items": BRANCH_CODEX_REASONING_ITEMS,
+            "codex_message_items": BRANCH_CODEX_MESSAGE_ITEMS,
+        },
     ]
 
     resp = server.handle_request(
@@ -15797,6 +15808,14 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     # defer_history hydration both find it immediately.
     assert len(seen.get("messages") or []) == 2
     assert seen["messages"][0]["content"] == "hello from parent"
+    assert seen["messages"][1]["reasoning"] == BRANCH_REASONING
+    assert seen["messages"][1]["reasoning_content"] == BRANCH_REASONING_CONTENT
+    assert seen["messages"][1]["reasoning_details"] == BRANCH_REASONING_DETAILS
+    assert seen["messages"][1]["_reasoning_route"] == BRANCH_REASONING_ROUTE
+    assert seen["messages"][1]["anthropic_content_blocks"] == BRANCH_ANTHROPIC_CONTENT_BLOCKS
+    assert seen["messages"][1]["bedrock_content_blocks"] == BRANCH_BEDROCK_CONTENT_BLOCKS
+    assert seen["messages"][1]["codex_reasoning_items"] == BRANCH_CODEX_REASONING_ITEMS
+    assert seen["messages"][1]["codex_message_items"] == BRANCH_CODEX_MESSAGE_ITEMS
 
     # The live record no longer queues the title — the DB already holds it.
     runtime_sid = resp["result"]["session_id"]
@@ -20928,6 +20947,9 @@ def test_fallback_session_info_always_emits_branch(monkeypatch):
 
 BRANCH_REASONING = "the parent's chain of thought"
 BRANCH_REASONING_CONTENT = "the parent's reasoning content"
+BRANCH_REASONING_ROUTE = "same-route-provenance"
+BRANCH_ANTHROPIC_CONTENT_BLOCKS = [{"type": "thinking", "signature": "signed"}]
+BRANCH_BEDROCK_CONTENT_BLOCKS = [{"reasoningContent": "signed"}]
 BRANCH_REASONING_DETAILS = [
     {"type": "reasoning.text", "text": "keep the parent's plan", "format": "unknown"}
 ]
@@ -20953,6 +20975,9 @@ def _branch_history():
             "reasoning": BRANCH_REASONING,
             "reasoning_content": BRANCH_REASONING_CONTENT,
             "reasoning_details": BRANCH_REASONING_DETAILS,
+            "_reasoning_route": BRANCH_REASONING_ROUTE,
+            "anthropic_content_blocks": BRANCH_ANTHROPIC_CONTENT_BLOCKS,
+            "bedrock_content_blocks": BRANCH_BEDROCK_CONTENT_BLOCKS,
             "codex_reasoning_items": BRANCH_CODEX_REASONING_ITEMS,
             "codex_message_items": BRANCH_CODEX_MESSAGE_ITEMS,
         },
@@ -21013,6 +21038,9 @@ def test_persist_branch_seed_keeps_reasoning_fields(monkeypatch, tmp_path):
         assert assistant["reasoning"] == BRANCH_REASONING
         assert assistant["reasoning_content"] == BRANCH_REASONING_CONTENT
         assert assistant["reasoning_details"] == BRANCH_REASONING_DETAILS
+        assert assistant["_reasoning_route"] == BRANCH_REASONING_ROUTE
+        assert assistant["anthropic_content_blocks"] == BRANCH_ANTHROPIC_CONTENT_BLOCKS
+        assert assistant["bedrock_content_blocks"] == BRANCH_BEDROCK_CONTENT_BLOCKS
         assert assistant["codex_reasoning_items"] == BRANCH_CODEX_REASONING_ITEMS
         assert assistant["codex_message_items"] == BRANCH_CODEX_MESSAGE_ITEMS
         marker = _branched_marker(db, "branch-key")
@@ -21060,8 +21088,15 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
         assert assistant["reasoning"] == BRANCH_REASONING
         assert assistant["reasoning_content"] == BRANCH_REASONING_CONTENT
         assert assistant["reasoning_details"] == BRANCH_REASONING_DETAILS
+        assert assistant["_reasoning_route"] == BRANCH_REASONING_ROUTE
+        assert assistant["anthropic_content_blocks"] == BRANCH_ANTHROPIC_CONTENT_BLOCKS
+        assert assistant["bedrock_content_blocks"] == BRANCH_BEDROCK_CONTENT_BLOCKS
         assert assistant["codex_reasoning_items"] == BRANCH_CODEX_REASONING_ITEMS
         assert assistant["codex_message_items"] == BRANCH_CODEX_MESSAGE_ITEMS
+        response_assistant = next(
+            msg for msg in resp["result"]["messages"] if msg["role"] == "assistant"
+        )
+        assert response_assistant["_reasoning_route"] == BRANCH_REASONING_ROUTE
         marker = _branched_marker(db, "branch-key")
         assert marker is not None, (
             "session.branch dropped display_kind: the marker re-entered the "

@@ -268,7 +268,8 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
                 return
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
-                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(), compensate=True)
+                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
+                            copy_fields=_BRANCH_COPY_FIELDS, compensate=True)
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
@@ -1928,7 +1929,9 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
 
 
 _BRANCH_COPY_FIELDS = (
-    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items",
+    "reasoning", "reasoning_content", "reasoning_details", "_reasoning_route",
+    "anthropic_content_blocks", "bedrock_content_blocks",
+    "codex_reasoning_items", "codex_message_items",
     # Timeline markers ride as role=user; untagged they become bare user turns after a restart, corrupting
     # the truncate ordinal address space.
     "display_kind", "display_metadata",

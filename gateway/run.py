@@ -1094,9 +1094,13 @@ def _prepare_resume_pending_message(
 # ``codex_message_items``: exact assistant message items with ``phase``. OpenAI docs: "preserve and resend
 # phase on all assistant messages — dropping it can degrade performance."  Required for prefix cache hits. *
 # ``finish_reason``: informational; cheap to keep so transcripts replay identically across CLI and gateway.
+# * ``_reasoning_route``: internal SHA-256 provenance preventing hidden reasoning from
+# crossing provider routes; transport removes it.
 _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
-    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items",
-    "finish_reason")
+    "reasoning", "reasoning_content", "reasoning_details",
+    "anthropic_content_blocks", "bedrock_content_blocks",
+    "codex_reasoning_items", "codex_message_items",
+    "finish_reason", "_reasoning_route")
 
 
 def _build_replay_entry(

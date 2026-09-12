@@ -784,6 +784,13 @@ class TestMessageStorage:
             content=None,
             tool_calls=[{"function": {"name": "cronjob", "arguments": "{}"}, "id": "c1", "type": "function"}],
             reasoning="I should call the cronjob tool to schedule this.",
+            reasoning_route="a" * 64,
+            anthropic_content_blocks=[
+                {"type": "thinking", "thinking": "signed", "signature": "sig"}
+            ],
+            bedrock_content_blocks=[
+                {"reasoningContent": {"reasoningText": {"text": "signed"}}}
+            ],
         )
         db.append_message("s1", role="tool", content='{"job_id": "abc"}', tool_call_id="c1")
 
@@ -793,6 +800,13 @@ class TestMessageStorage:
         assistant = conv[1]
         assert assistant["role"] == "assistant"
         assert assistant.get("reasoning") == "I should call the cronjob tool to schedule this."
+        assert assistant.get("_reasoning_route") == "a" * 64
+        assert assistant.get("anthropic_content_blocks") == [
+            {"type": "thinking", "thinking": "signed", "signature": "sig"}
+        ]
+        assert assistant.get("bedrock_content_blocks") == [
+            {"reasoningContent": {"reasoningText": {"text": "signed"}}}
+        ]
         # user and tool messages must NOT carry reasoning
         assert "reasoning" not in conv[0]
         assert "reasoning" not in conv[2]
@@ -1200,6 +1214,28 @@ class TestDeleteAndExport:
 
     def test_export_nonexistent(self, db):
         assert db.export_session("nope") is None
+
+    def test_export_import_preserves_native_reasoning_sidecars(self, db, tmp_path):
+        anthropic_blocks = [{"type": "thinking", "signature": "sig"}]
+        bedrock_blocks = [{"reasoningContent": "signed"}]
+        db.create_session(session_id="native-sidecars", source="cli")
+        db.append_message(
+            "native-sidecars",
+            role="assistant",
+            content="visible",
+            reasoning_route="same-route",
+            anthropic_content_blocks=anthropic_blocks,
+            bedrock_content_blocks=bedrock_blocks,
+        )
+
+        exported = db.export_session("native-sidecars")
+        with SessionDB(tmp_path / "imported.db") as imported_db:
+            result = imported_db.import_sessions([exported])
+            assert result["ok"] is True
+            [message] = imported_db.get_messages_as_conversation("native-sidecars")
+            assert message["_reasoning_route"] == "same-route"
+            assert message["anthropic_content_blocks"] == anthropic_blocks
+            assert message["bedrock_content_blocks"] == bedrock_blocks
 
 
 

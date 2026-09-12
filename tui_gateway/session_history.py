@@ -172,6 +172,9 @@ _HISTORY_ASSISTANT_DETAIL_KEYS = (
     "reasoning",
     "reasoning_content",
     "reasoning_details",
+    "_reasoning_route",
+    "anthropic_content_blocks",
+    "bedrock_content_blocks",
     "codex_reasoning_items",
     "codex_message_items",
 )
@@ -243,6 +246,13 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
     return messages
 
 
+_SEED_ASSISTANT_FIELDS = (
+    "reasoning", "reasoning_content", "reasoning_details", "_reasoning_route",
+    "anthropic_content_blocks", "bedrock_content_blocks",
+    "codex_reasoning_items", "codex_message_items",
+)
+
+
 def _coerce_seed_history(value: Any) -> list[dict]:
     history = []
     for item in value if isinstance(value, list) else ():
@@ -256,6 +266,12 @@ def _coerce_seed_history(value: Any) -> list[dict]:
             # at turn time, so it is not accepted from the wire.
             if item.get("display_kind") == "hidden":
                 row["display_kind"] = "hidden"
+            if item["role"] == "assistant":
+                row.update(
+                    (field, item[field])
+                    for field in _SEED_ASSISTANT_FIELDS
+                    if item.get(field) is not None
+                )
             history.append(row)
     return history
 

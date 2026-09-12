@@ -115,6 +115,26 @@ def test_flush_persist_override_replaces_api_local_multimodal_note(agent):
     assert api_content[0]["text"] == "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"
 
 
+def test_flush_preserves_native_reasoning_sidecars(agent):
+    agent._session_db = MagicMock()
+    agent._session_db_created = True
+    agent.session_id = "session-123"
+    agent._last_flushed_db_idx = 0
+    message = {
+        "role": "assistant",
+        "content": "visible",
+        "_reasoning_route": "same-route",
+        "anthropic_content_blocks": [{"type": "thinking", "signature": "sig"}],
+        "bedrock_content_blocks": [{"reasoningContent": "signed"}],
+    }
+
+    agent._flush_messages_to_session_db([message], [])
+
+    [row] = agent._session_db.append_messages_batch.call_args.kwargs["messages"]
+    assert row["anthropic_content_blocks"] == message["anthropic_content_blocks"]
+    assert row["bedrock_content_blocks"] == message["bedrock_content_blocks"]
+
+
 def test_direct_session_db_flushes_share_marker_claim(agent):
     """A direct flush cannot interleave its marker check with `_persist_session`."""
     class _BarrierDB:
@@ -1525,6 +1545,8 @@ class TestBuildAssistantMessage:
         assert result["finish_reason"] == "stop"
 
     def test_native_checkpoint_arms_real_usage_preflight_deferral(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
         checkpoint = {
             "type": "compaction",
             "encrypted_content": "opaque-checkpoint",
@@ -1538,6 +1560,9 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "stop")
 
         assert result["codex_reasoning_items"] == [checkpoint]
+        assert result["_reasoning_route"] == reasoning_route_fingerprint(
+            agent.provider, agent.model, agent.base_url, agent.api_mode
+        )
         agent.context_compressor.note_native_compaction_checkpoint.assert_called_once_with()
 
     def test_native_checkpoint_remains_compatible_with_plugin_context_engine(self, agent):
@@ -2824,7 +2849,7 @@ class TestHandleMaxIterations:
             {"role": "user", "content": "do stuff", "name": "sylvain"},
             {
                 "role": "assistant",
-                "tool_calls": [{"id": "call_1", "function": {"name": "execute_code", "arguments": "{}"}}],
+                "tool_calls": [{"id": "call_1", "function": {"name": "", "arguments": "{}"}}],
                 "codex_reasoning_items": [{"id": "rs_1"}],
             },
             {
@@ -2856,6 +2881,223 @@ class TestHandleMaxIterations:
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[2]["name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
+        assert messages[1]["tool_calls"][0]["function"]["name"] == ""
+        sent_tool_call = next(m for m in sent_msgs if m.get("tool_calls"))
+        assert sent_tool_call["tool_calls"][0]["function"]["name"] == "invalid_tool_call"
+
+    def test_summary_preserves_configured_reasoning_replay_field(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        agent.provider = "custom"
+        agent.model = "Qwen/Qwen3.8-27B"
+        agent.base_url = "http://127.0.0.1:18080/v1"
+        agent._reasoning_replay_field = "reasoning"
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {
+                "role": "assistant",
+                "content": "Visible result.",
+                "reasoning": "SYNTHETIC_REASONING_MARKER",
+                "anthropic_content_blocks": [
+                    {
+                        "type": "thinking",
+                        "thinking": "ANTHROPIC_PRIVATE_TRACE",
+                        "signature": "ANTHROPIC_SIGNATURE",
+                    }
+                ],
+                "_reasoning_route": reasoning_route_fingerprint(
+                    agent.provider, agent.model, agent.base_url, agent.api_mode
+                ),
+            },
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get(
+            "messages", []
+        )
+        replayed_assistant = next(
+            msg for msg in sent_msgs if msg.get("role") == "assistant"
+        )
+        assert replayed_assistant["reasoning"] == "SYNTHETIC_REASONING_MARKER"
+        assert "anthropic_content_blocks" not in replayed_assistant
+
+    def test_summary_strips_reasoning_from_non_assistant_history(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        agent.provider = "custom"
+        agent.model = "Qwen/Qwen3.8-27B"
+        agent.base_url = "http://127.0.0.1:18080/v1"
+        agent.api_mode = "chat_completions"
+        agent._reasoning_replay_field = "reasoning"
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        route = reasoning_route_fingerprint(
+            agent.provider, agent.model, agent.base_url, agent.api_mode
+        )
+        messages = [{
+            "role": "user", "content": "visible user text",
+            "reasoning": "USER_PRIVATE_TRACE",
+            "reasoning_content": "USER_PRIVATE_CONTENT",
+            "reasoning_details": [{"text": "USER_PRIVATE_DETAILS"}],
+            "anthropic_content_blocks": [{"type": "thinking", "signature": "PRIVATE"}],
+            "bedrock_content_blocks": [{"reasoningContent": "PRIVATE"}],
+            "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "PRIVATE"}],
+            "codex_message_items": [{"type": "message", "content": "PRIVATE"}],
+            "_reasoning_route": route,
+        }]
+
+        assert agent._handle_max_iterations(messages, 60) == "Summary"
+
+        sent_user = next(
+            msg for msg in agent.client.chat.completions.create.call_args.kwargs["messages"]
+            if msg.get("role") == "user"
+        )
+        assert "reasoning" not in sent_user
+        assert "reasoning_content" not in sent_user
+        assert "reasoning_details" not in sent_user
+        assert "anthropic_content_blocks" not in sent_user
+        assert "bedrock_content_blocks" not in sent_user
+        assert "codex_reasoning_items" not in sent_user
+        assert "codex_message_items" not in sent_user
+        assert "_reasoning_route" not in sent_user
+
+    def test_summary_strips_reasoning_from_non_assistant_prefill(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        agent.provider = "custom"
+        agent.model = "Qwen/Qwen3.8-27B"
+        agent.base_url = "http://127.0.0.1:18080/v1"
+        agent.api_mode = "chat_completions"
+        agent._reasoning_replay_field = "reasoning"
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        agent.prefill_messages = [{
+            "role": "user", "content": "visible prefill text",
+            "reasoning": "PREFILL_PRIVATE_TRACE",
+            "reasoning_content": "PREFILL_PRIVATE_CONTENT",
+            "reasoning_details": [{"text": "PREFILL_PRIVATE_DETAILS"}],
+            "anthropic_content_blocks": [{"type": "thinking", "signature": "PRIVATE"}],
+            "bedrock_content_blocks": [{"reasoningContent": "PRIVATE"}],
+            "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "PRIVATE"}],
+            "codex_message_items": [{"type": "message", "content": "PRIVATE"}],
+            "_reasoning_route": reasoning_route_fingerprint(
+                agent.provider, agent.model, agent.base_url, agent.api_mode
+            ),
+        }]
+
+        assert agent._handle_max_iterations(
+            [{"role": "assistant", "content": "prior answer"}], 60
+        ) == "Summary"
+
+        sent_prefill = next(
+            msg for msg in agent.client.chat.completions.create.call_args.kwargs["messages"]
+            if msg.get("content") == "visible prefill text"
+        )
+        assert "reasoning" not in sent_prefill
+        assert "reasoning_content" not in sent_prefill
+        assert "reasoning_details" not in sent_prefill
+        assert "anthropic_content_blocks" not in sent_prefill
+        assert "bedrock_content_blocks" not in sent_prefill
+        assert "codex_reasoning_items" not in sent_prefill
+        assert "codex_message_items" not in sent_prefill
+        assert "_reasoning_route" not in sent_prefill
+
+    def test_summary_sanitizes_prefill_sidecar_without_mutating_source(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        agent.provider = "custom"
+        agent.model = "Qwen/Qwen3.8-27B"
+        agent.base_url = "http://127.0.0.1:18080/v1"
+        agent.api_mode = "chat_completions"
+        agent._reasoning_replay_field = "reasoning"
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Summary"
+        )
+        agent._cached_system_prompt = "You are helpful."
+        hidden_blocks = [
+            {
+                "type": "thinking",
+                "thinking": "ANTHROPIC_PRIVATE_PREFILL_TRACE",
+                "signature": "ANTHROPIC_PREFILL_SIGNATURE",
+            }
+        ]
+        agent.prefill_messages = [
+            {
+                "role": "assistant",
+                "content": "Prefill visible result.",
+                "tool_calls": [
+                    {
+                        "id": "call_prefill",
+                        "type": "function",
+                        "function": {"name": "", "arguments": "{}"},
+                    }
+                ],
+                "anthropic_content_blocks": hidden_blocks,
+                "_reasoning_route": reasoning_route_fingerprint(
+                    agent.provider, agent.model, agent.base_url, agent.api_mode
+                ),
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_prefill",
+                "content": "prefill tool result",
+            },
+        ]
+
+        assert agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}], 60
+        ) == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get(
+            "messages", []
+        )
+        sent_prefill = next(
+            msg for msg in sent_msgs if msg.get("content") == "Prefill visible result."
+        )
+        assert "anthropic_content_blocks" not in sent_prefill
+        assert sent_prefill["tool_calls"][0]["function"]["name"] == "invalid_tool_call"
+        assert agent.prefill_messages[0]["anthropic_content_blocks"] == hidden_blocks
+        assert agent.prefill_messages[0]["tool_calls"][0]["function"]["name"] == ""
+
+    def test_summary_drops_foreign_provider_reasoning(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        agent.provider = "custom:fallback"
+        agent.model = "fallback-model"
+        agent.base_url = "https://fallback.example/v1"
+        agent._fallback_activated = True
+        agent._reasoning_replay_field = "reasoning_content"
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {
+                "role": "assistant",
+                "content": "Visible result.",
+                "reasoning": "PRIMARY_PRIVATE_TRACE",
+                "reasoning_details": [
+                    {"type": "reasoning.summary", "summary": "PRIVATE"}
+                ],
+                "_reasoning_route": reasoning_route_fingerprint(
+                    "custom:primary", "primary-model", "https://primary.example/v1"
+                ),
+            },
+        ]
+
+        assert agent._handle_max_iterations(messages, 60) == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get(
+            "messages", []
+        )
+        replayed_assistant = next(
+            msg for msg in sent_msgs if msg.get("role") == "assistant"
+        )
+        assert "reasoning" not in replayed_assistant
+        assert "reasoning_content" not in replayed_assistant
+        assert "reasoning_details" not in replayed_assistant
+        assert not any(key.startswith("_reasoning_") for key in replayed_assistant)
 
 
 
@@ -6895,6 +7137,8 @@ class TestReasoningReplayForStrictProviders:
         assert replayed_assistant["reasoning_content"] == " "
 
     def test_explicit_reasoning_content_beats_normalized_reasoning_on_replay(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
         self._setup_agent(agent)
         # Precedence (explicit reasoning_content wins over the 'reasoning'
         # field) only matters on a provider that echoes reasoning_content
@@ -6915,6 +7159,9 @@ class TestReasoningReplayForStrictProviders:
             ],
             "reasoning": "summary reasoning",
             "reasoning_content": "provider-native scratchpad",
+            "_reasoning_route": reasoning_route_fingerprint(
+                agent.provider, agent.model, agent.base_url, agent.api_mode
+            ),
         }
         tool_result = {"role": "tool", "tool_call_id": "c1", "content": "ok"}
         final_resp = _mock_response(content="done", finish_reason="stop")
@@ -6935,6 +7182,180 @@ class TestReasoningReplayForStrictProviders:
         replayed_assistant = next(msg for msg in sent_messages if msg.get("role") == "assistant")
         assert replayed_assistant["reasoning_content"] == "provider-native scratchpad"
 
+    def test_context_selection_cannot_reintroduce_unprovenanced_reasoning(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "custom"
+        agent.model = "Qwen/Qwen3.8-27B"
+        agent.base_url = "http://127.0.0.1:18080/v1"
+        agent._reasoning_replay_field = "reasoning"
+        agent.context_compressor.select_context = MagicMock(
+            return_value=[
+                {"role": "system", "content": "system"},
+                {
+                    "role": "assistant",
+                    "content": "visible answer",
+                    "reasoning": "UNKNOWN_ORIGIN_PRIVATE_TRACE",
+                    "reasoning_content": "UNKNOWN_ORIGIN_ALIAS",
+                    "reasoning_details": [{"text": "UNKNOWN_ORIGIN_DETAILS"}],
+                    "anthropic_content_blocks": [
+                        {
+                            "type": "thinking",
+                            "thinking": "UNKNOWN_ANTHROPIC_PRIVATE_TRACE",
+                            "signature": "signed",
+                        }
+                    ],
+                    "bedrock_content_blocks": [
+                        {"reasoningContent": "UNKNOWN_BEDROCK_PRIVATE_TRACE"}
+                    ],
+                    "codex_reasoning_items": [
+                        {"type": "reasoning", "encrypted_content": "UNKNOWN_CODEX_PRIVATE_TRACE"}
+                    ],
+                    "codex_message_items": [
+                        {"type": "message", "role": "assistant", "id": "UNKNOWN_CODEX_MESSAGE"}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": "continue",
+                    "_reasoning_route": "ATTACKER_CONTROLLED",
+                    "reasoning": "USER_PRIVATE_TRACE",
+                    "reasoning_content": "USER_PRIVATE_ALIAS",
+                    "reasoning_details": [{"text": "USER_PRIVATE_DETAILS"}],
+                    "anthropic_content_blocks": [
+                        {
+                            "type": "thinking",
+                            "thinking": "USER_ANTHROPIC_PRIVATE_TRACE",
+                            "signature": "signed",
+                        }
+                    ],
+                    "bedrock_content_blocks": [
+                        {"reasoningContent": "USER_BEDROCK_PRIVATE_TRACE"}
+                    ],
+                    "codex_reasoning_items": [
+                        {"type": "reasoning", "encrypted_content": "USER_CODEX_PRIVATE_TRACE"}
+                    ],
+                    "codex_message_items": [
+                        {"type": "message", "role": "assistant", "id": "USER_CODEX_MESSAGE"}
+                    ],
+                },
+            ]
+        )
+        captured = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        agent.client.chat.completions.create.side_effect = _capture_create
+
+        agent.run_conversation([{"role": "user", "content": "continue"}])
+
+        selected_assistant = next(
+            message for message in captured["messages"] if message["role"] == "assistant"
+        )
+        assert "reasoning" not in selected_assistant
+        assert "reasoning_content" not in selected_assistant
+        assert "reasoning_details" not in selected_assistant
+        assert "anthropic_content_blocks" not in selected_assistant
+        assert "bedrock_content_blocks" not in selected_assistant
+        assert "codex_reasoning_items" not in selected_assistant
+        assert "codex_message_items" not in selected_assistant
+        assert "_reasoning_route" not in selected_assistant
+        assert all("_reasoning_route" not in message for message in captured["messages"])
+        selected_user = next(
+            message for message in captured["messages"] if message["role"] == "user"
+        )
+        assert "reasoning" not in selected_user
+        assert "reasoning_content" not in selected_user
+        assert "reasoning_details" not in selected_user
+        assert "anthropic_content_blocks" not in selected_user
+        assert "bedrock_content_blocks" not in selected_user
+        assert "codex_reasoning_items" not in selected_user
+        assert "codex_message_items" not in selected_user
+
+    def test_context_selection_preserves_matching_reasoning_and_strips_marker(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        self._setup_agent(agent)
+        agent.provider = "custom"
+        agent.model = "Qwen/Qwen3.8-27B"
+        agent.base_url = "http://127.0.0.1:18080/v1"
+        agent._reasoning_replay_field = "reasoning"
+        agent.context_compressor.select_context = MagicMock(
+            return_value=[
+                {"role": "system", "content": "system"},
+                {
+                    "role": "assistant",
+                    "content": "visible answer",
+                    "reasoning": "CURRENT_ROUTE_TRACE",
+                    "_reasoning_route": reasoning_route_fingerprint(
+                        agent.provider, agent.model, agent.base_url, agent.api_mode
+                    ),
+                },
+                {"role": "user", "content": "continue"},
+            ]
+        )
+        captured = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        agent.client.chat.completions.create.side_effect = _capture_create
+
+        agent.run_conversation([{"role": "user", "content": "continue"}])
+
+        selected_assistant = next(
+            message for message in captured["messages"] if message["role"] == "assistant"
+        )
+        assert selected_assistant["reasoning"] == "CURRENT_ROUTE_TRACE"
+        assert "_reasoning_route" not in selected_assistant
+
+    def test_custom_provider_replays_configured_reasoning_field(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        self._setup_agent(agent)
+        agent.provider = "custom"
+        agent.model = "Qwen/Qwen3.8-27B"
+        agent.base_url = "http://127.0.0.1:18080/v1"
+        agent._reasoning_replay_field = "reasoning"
+        prior_assistant = {
+            "role": "assistant",
+            "content": "The visible answer.",
+            "reasoning": "SYNTHETIC_REASONING_MARKER",
+            "_reasoning_route": reasoning_route_fingerprint(
+                agent.provider, agent.model, agent.base_url, agent.api_mode
+            ),
+        }
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="done", finish_reason="stop", reasoning="CURRENT_ROUTE_TRACE"
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "next step",
+                conversation_history=[prior_assistant],
+            )
+
+        assert result["completed"] is True
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        replayed_assistant = next(
+            msg for msg in sent_messages if msg.get("role") == "assistant"
+        )
+        assert replayed_assistant["reasoning"] == "SYNTHETIC_REASONING_MARKER"
+        assert "reasoning_content" not in replayed_assistant
+        final_assistant = result["messages"][-1]
+
+        assert final_assistant["_reasoning_route"] == reasoning_route_fingerprint(
+            "custom",
+            "Qwen/Qwen3.8-27B",
+            "http://127.0.0.1:18080/v1",
+            agent.api_mode,
+        )
 
 
 # ---------------------------------------------------------------------------

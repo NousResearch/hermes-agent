@@ -69,10 +69,12 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
     """Whether the active route replays stale thinking text; ``True`` (conservative full
     charge) when route facts are unavailable."""
     try:
+        from agent.agent_runtime_helpers import reasoning_replay_field_for_api
         from agent.message_sanitization import stale_thinking_reaches_wire
 
         return stale_thinking_reaches_wire(
-            *(_str_attr(agent, k) for k in ("api_mode", "provider", "model", "base_url"))
+            *(_str_attr(agent, k) for k in ("api_mode", "provider", "model", "base_url")),
+            reasoning_replay_field=reasoning_replay_field_for_api(agent),
         )
     except Exception:
         return True
@@ -1085,11 +1087,17 @@ def build_api_messages(
             api_msg["content"] = _api_content
 
         # Pass reasoning back to the API for ALL assistant messages so multi-turn
-        # reasoning context is preserved.
-        agent._copy_reasoning_content_for_api(msg, api_msg)
-        # 'reasoning' is trajectory-only (copied to 'reasoning_content' above);
-        # finish_reason is rejected by strict APIs (e.g. Mistral).
-        api_msg.pop("reasoning", None)
+        # reasoning context is preserved. Keep the internal provenance marker
+        # until after the optional context-selection hook, which may replace
+        # this request with raw canonical messages. The final pass validates
+        # and strips it.
+        agent._copy_reasoning_content_for_api(
+            msg, api_msg, retain_route_provenance=True
+        )
+        # ``reasoning`` is normally trajectory-only. An explicitly
+        # configured replay provider may consume it as a wire field.
+        if agent._reasoning_replay_field_for_api() != "reasoning":
+            api_msg.pop("reasoning", None)
         api_msg.pop("finish_reason", None)
         # Fill empty non-final user/assistant wire copies so the pre-call sanitizer
         # stops re-healing and flooding errors.log; durable history is untouched.

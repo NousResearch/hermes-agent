@@ -15,6 +15,10 @@ TIMEOUT_RESPONSE = ("The user did not provide a response within the time limit. 
 # Applied to the first choice here (not per-surface) so every adapter renders it identically.
 RECOMMENDED_LABEL = "(Recommended)"
 _UNAVAILABLE = "Clarify tool is not available in this execution context."
+INVALID_CHOICES_ERROR = (
+    "choices contained no non-empty options; resend with meaningful labels "
+    "or omit choices for an open-ended question."
+)
 
 
 def _flatten_choice(c) -> str:
@@ -216,7 +220,10 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
+        choices_were_provided = bool(choices)
         choices = _clean_choices(choices)
+        if choices_were_provided and choices is None:
+            return tool_error(INVALID_CHOICES_ERROR)
     if callback is None:
         return tool_error(_UNAVAILABLE)
     # The bare list goes back to the agent; the "(Recommended)" label is presentation only.

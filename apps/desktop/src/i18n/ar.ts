@@ -2859,6 +2859,7 @@ export const ar = defineLocale({
       gatewayDisconnected: 'البوابة غير متصلة',
       sendFailed: 'فشل الإرسال',
       loadingQuestion: 'جار تحميل السؤال...',
+      invalidChoices: 'لا يحتوي طلب التوضيح هذا على خيارات صالحة. تخطّه ليتمكن الوكيل من إعادة المحاولة.',
       other: 'غير ذلك',
       placeholder: 'اكتب إجابتك...',
       skip: 'تخطي',

@@ -262,7 +262,9 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     mode, dm_file, transport_argv = _runner_parts(command)
     assert mode == "query-file"
     assert transport_argv == [
-        "hermes",
+        sys.executable,
+        "-m",
+        "hermes_cli.main",
         "-p",
         "researcher",
         "chat",
@@ -311,7 +313,16 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     assert mode == "stdin"
     # The registry the tool validated against is the machine root's — the
     # default profile's home — so the CLI runs there, not in reviewer.
-    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
+    assert transport_argv == [
+        sys.executable,
+        "-m",
+        "hermes_cli.main",
+        "-p",
+        "default",
+        "peer",
+        "dm",
+        "spark",
+    ]
 
 
 def test_peer_delivery_command(tmp_path, monkeypatch):
@@ -327,7 +338,16 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     assert "spark" in result["to"]
     mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
     assert mode == "stdin"
-    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark/researcher"]
+    assert transport_argv == [
+        sys.executable,
+        "-m",
+        "hermes_cli.main",
+        "-p",
+        "default",
+        "peer",
+        "dm",
+        "spark/researcher",
+    ]
     # the peer child reads the author from its env and forwards it in the request body
     assert _runner_author(calls[0]["command"]) == {"id": "bot:eri-mac.local/default", "name": "hermes", "is_bot": True}
 
@@ -338,7 +358,16 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     assert result2["status"] == "sent"
     mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
-    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
+    assert transport_argv == [
+        sys.executable,
+        "-m",
+        "hermes_cli.main",
+        "-p",
+        "default",
+        "peer",
+        "dm",
+        "spark",
+    ]
 
 
 def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(tmp_path, monkeypatch):

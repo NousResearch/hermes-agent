@@ -120,6 +120,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
+from gateway.platforms import api_server_bot_delivery as _bot_delivery
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.base import (
@@ -3257,6 +3258,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "reply": projection.get("reply") or None,
             "error": projection.get("error") or None,
             "reason": projection.get("reason") or None,
+            # Which cap refused the send, for the envelope's queue_full detail
+            # (VERIFICATION D6). Absent, the detail defaults to the per-profile cap.
+            "limit_kind": projection.get("limit_kind"),
+            "limit": projection.get("limit"),
             "sequence": 0,
         }
 
@@ -3278,7 +3283,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             error=error if error is not None else (record.get("error") or ""),
             reason=record.get("reason") or "",
             session_id=record.get("target_session_id"),
-            retention_until=0)
+            retention_until=self._bot_send_retention_until())
 
     @staticmethod
     def _bot_send_json(envelope: Dict[str, Any]) -> "web.Response":
@@ -3290,14 +3295,41 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "Idempotency-Key is already used for a different message on this peer.",
             409, code="idempotency_key_conflict")
 
+    def _bot_send_retention_until(self) -> float:
+        """Registry retention for a delivery row (VERIFICATION D4).
+
+        Every other run row carries the requesting room's retention; delivery rows
+        were reserved with ``retention_until=0``, which does not pin them to that
+        window: the store reaps them on the default age window (``updated_at < now
+        - RETENTION_SECONDS``) and a zero value is never extended by a later write,
+        so a sender still polling ``hermes peer status <delivery_id>`` could get 404
+        "Run not found" for a delivery the receiver had accepted. Pinning the row to
+        the registry's own window -- extended on every status write -- makes the
+        delivery handle live exactly as long as any other run handle.
+        """
+        return time.time() + RunIdempotencyStore.RETENTION_SECONDS
+
     def _bot_send_receipt(self, delivery_id: str, record: Dict[str, Any], *,
                           waited: float, home: Any) -> "web.Response":
         """Hand back the acceptance receipt for a still-queued delivery (§3.2)."""
         from tools import bot_delivery_queue as delivery_queue
 
+        observed = delivery_queue.STATUS_DETAIL_TARGET_BUSY
         if record.get("status") == delivery_queue.STATUS_QUEUED:
-            record = delivery_queue.mark_contended(home, delivery_id) or record
-        envelope = delivery_queue.build_receipt(record, waited_seconds=waited)
+            # Report the slot state OBSERVED here, not the one assumed on admission
+            # (VERIFICATION D2). With the slot free the honest cause is "queued
+            # behind earlier deliveries"; claiming "target busy" would be a claim
+            # the sender can disprove from the same second, and it is the claim
+            # that made a 53-deep backlog look like one busy turn.
+            target_profile = str(
+                record.get("target_profile") or self._bot_send_target_profile(home))
+            observed = delivery_queue.observed_detail(home, target_profile)
+            record = delivery_queue.mark_contended(
+                home, delivery_id, status_detail=observed) or record
+        envelope = delivery_queue.build_receipt(
+            record,
+            busy=observed == delivery_queue.STATUS_DETAIL_TARGET_BUSY,
+            waited_seconds=waited)
         self._bot_send_record_status(delivery_id, record,
                                      result=delivery_queue.RESULT_RECEIPT)
         return self._bot_send_json(envelope)
@@ -3373,11 +3405,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         try:
             delivery_queue.check_capacity(
                 home, target_profile=target_profile, sender_profile=sender_profile)
-        except delivery_queue.QueueFullError:
+        except delivery_queue.QueueFullError as exc:
             return self._bot_send_json(delivery_queue.build_envelope(
                 self._bot_send_status_record(
                     {"delivery_status": delivery_queue.STATUS_FAILED,
-                     "reason": "queue_full", "created_at": time.time()},
+                     "reason": "queue_full", "created_at": time.time(),
+                     # VERIFICATION D6: name the cap that actually fired (per-sender
+                     # vs per-profile), not the historical per-profile default.
+                     "limit_kind": getattr(exc, "limit_kind", None),
+                     "limit": getattr(exc, "limit", None)},
                     delivery_id=delivery_id, idempotency_key=idempotency_key,
                     target_profile=target_profile, sender_profile=sender_profile,
                     session_id=session_id)))
@@ -3389,15 +3425,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             delivery_id, run_status_for(delivery_queue.STATUS_QUEUED),
             kind="bot_send", created_at=time.time(),
             delivery_status=delivery_queue.STATUS_QUEUED,
-            status_detail=delivery_queue.STATUS_DETAIL_TARGET_BUSY,
+            # The slot state OBSERVED at admission (VERIFICATION D2): the receipt the
+            # sender gets carries this value, so it is measured, never assumed -- a
+            # default of "target busy" is what dressed a queue backlog up as one
+            # busy turn.
+            status_detail=delivery_queue.observed_detail(home, target_profile),
             result=delivery_queue.RESULT_RECEIPT, attempts=0, queued_seconds=0.0,
             reply="", error="", reason="", session_id=session_id,
             model=self._model_name, ttl_seconds=delivery_queue.queue_ttl_seconds(),
-            retention_until=0)
+            retention_until=self._bot_send_retention_until())
         outcome, stored = store.reserve(
             scope, idempotency_key, fingerprint, delivery_id, reservation,
             owner_pid=getattr(self, "_run_owner_pid", 0),
-            owner_started=getattr(self, "_run_owner_started", 0), retention_until=0)
+            owner_started=getattr(self, "_run_owner_started", 0),
+            retention_until=self._bot_send_retention_until())
         if outcome == "conflict":
             return self._bot_send_conflict()
         if outcome == "reused":
@@ -3419,13 +3460,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 home, sender_profile=sender_profile, target_profile=target_profile,
                 target_session_id=session_id, idempotency_key=idempotency_key,
                 fingerprint=fingerprint, delivery_id=delivery_id, message=message)
-        except delivery_queue.QueueFullError:
+        except delivery_queue.QueueFullError as exc:
             # Lost the 3 -> 5 race: the row stays `receipt`-shaped and a same-key retry
             # re-admits it under the same delivery_id (rule 1), so nothing is stranded.
             return self._bot_send_json(delivery_queue.build_envelope(
                 self._bot_send_status_record(
                     {"delivery_status": delivery_queue.STATUS_FAILED,
-                     "reason": "queue_full", "created_at": time.time()},
+                     "reason": "queue_full", "created_at": time.time(),
+                     # VERIFICATION D6: name the cap that actually fired (per-sender
+                     # vs per-profile), not the historical per-profile default.
+                     "limit_kind": getattr(exc, "limit_kind", None),
+                     "limit": getattr(exc, "limit", None)},
                     delivery_id=delivery_id, idempotency_key=idempotency_key,
                     target_profile=target_profile, sender_profile=sender_profile,
                     session_id=session_id)))
@@ -3456,9 +3501,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         while True:
             try:
                 with acquire_turn_lock(root, target_profile, timeout_seconds=0):
-                    return await self._bot_send_turn(
-                        request, ctx, home=home, delivery_id=delivery_id,
-                        target_profile=target_profile, session_id=str(ctx["session_id"]),
+                    # Under the lock we hold, drain the queue HEAD-FIRST
+                    # (VERIFICATION D1): a foreign head is RUN, never handed back.
+                    # Handing it back is what left the live backlog ownerless -- the
+                    # request that admitted a record is long gone by the time the
+                    # slot frees, so only a queue drainer can finish it.
+                    return await _bot_delivery.drain_under_lock(
+                        self, home=home, target_profile=target_profile,
+                        delivery_id=delivery_id, ctx=ctx,
                         waited=time.monotonic() - started)
             except TurnBusyError:
                 pass
@@ -3478,59 +3528,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self, request: "web.Request", ctx: Dict[str, Any], *, home: Path,
         delivery_id: str, target_profile: str, session_id: str, waited: float,
     ) -> "web.Response":
-        """Run this delivery's turn under the turn lock, or receipt it honestly."""
-        from tools import bot_delivery_queue as delivery_queue
-        from tools import bot_failure_reasons
+        """Run this delivery's turn under the turn lock, or receipt it honestly.
 
-        record = delivery_queue.claim_next(
-            home, target_profile=target_profile, lease_ok=True)
-        if record is None or record.get("delivery_id") != delivery_id:
-            if record is not None:
-                # An older delivery owns the slot: draining it here would run the
-                # wrong payload, so it goes back for the drainer and this caller gets
-                # a receipt for its own delivery.
-                delivery_queue.requeue(home, record["delivery_id"])
-            current = delivery_queue.read_record(home, delivery_id)
-            if current is None:  # pragma: no cover -- the drainer owns it now
-                return _error_response("Delivery is already being handled.", 409,
-                                       code="delivery_in_progress")
-            return self._bot_send_receipt(delivery_id, current, waited=waited, home=home)
-
-        history = await self._conversation_history_for_session(session_id)
-        try:
-            result, _usage = await self._run_agent(
-                conversation_history=history,
-                lease_wait_seconds=delivery_queue.lease_probe_seconds(),
-                **ctx["run_kwargs"])
-        except Exception as exc:
-            logger.exception("[api_server] peer delivery turn failed: %s", delivery_id)
-            settled = delivery_queue.settle(
-                home, delivery_id, status=delivery_queue.STATUS_FAILED,
-                reply=None, error=str(exc) or exc.__class__.__name__,
-                reason=bot_failure_reasons.classify_agent_error(str(exc)))
-            self._bot_send_record_status(
-                delivery_id, settled, result=delivery_queue.RESULT_FAILED)
-            return self._bot_send_json(delivery_queue.build_envelope(settled))
-
-        if isinstance(result, dict) and result.get("failed") and str(
-                result.get("error") or "").startswith("session_turn_lease_timeout"):
-            # D1: a contended session lease is never shown to a sender. The record
-            # returns to `queued` with the un-started attempt rolled back (§2.7 step
-            # 2) and the caller gets a receipt; the delivery runs once the other
-            # process frees the session.
-            delivery_queue.requeue_unstarted(home, delivery_id)
-            current = delivery_queue.read_record(home, delivery_id) or record
-            return self._bot_send_receipt(delivery_id, current, waited=waited, home=home)
-
-        reply = ""
-        if isinstance(result, dict):
-            reply = _resolve_media_to_data_urls(result.get("final_response", "") or "")
-        settled = delivery_queue.settle(
-            home, delivery_id, status=delivery_queue.STATUS_DELIVERED, reply=reply)
-        self._bot_send_record_status(
-            delivery_id, settled, result=delivery_queue.RESULT_DELIVERED, reply=reply)
-        return self._bot_send_json(
-            delivery_queue.build_envelope(settled, waited_seconds=waited))
+        Kept as the in-call entry point, but the work is the shared drainer
+        (VERIFICATION D1). One code path runs a delivery whether it was admitted a
+        second ago or has been waiting in the queue since yesterday, so an accepted
+        record can never be left without a runner.
+        """
+        del request, session_id
+        return await _bot_delivery.drain_under_lock(
+            self, home=home, target_profile=target_profile,
+            delivery_id=delivery_id, ctx=ctx, waited=waited)
 
     @staticmethod
     def _session_headers(session_id: str, gateway_session_key: Optional[str]) -> Dict[str, str]:
@@ -4588,6 +4596,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if self.gateway_runner is not None:
                 self._app["gateway_runner"] = self.gateway_runner
             self._track_background_task(asyncio.create_task(self._sweep_orphaned_runs()))
+            # Trigger 3 for peer deliveries (VERIFICATION D1): every 30s, recover
+            # orphaned claims / expire over-age records and drain any slot that is
+            # free. A slot held by anyone else is never fought for -- that holder
+            # drains when it releases.
+            self._track_background_task(
+                asyncio.create_task(_bot_delivery.sweep_loop(self)))
             # Network-accessible + unsandboxed local terminal backend = host-user RCE surface;
             # warn, don't refuse (the operator may have a firewall / strong key).
             if is_network_accessible(self._host):

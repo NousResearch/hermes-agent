@@ -11,39 +11,34 @@ The CDP supervisor closes two long-standing gaps in Hermes' browser tooling:
 1. **Native JS dialogs** (`alert`/`confirm`/`prompt`/`beforeunload`) block the
    page's JS thread. Without supervision, the agent has no way to know a
    dialog is open — subsequent tool calls hang or throw opaque errors.
-2. **Cross-origin iframes (OOPIFs)** are invisible to top-level
-   `Runtime.evaluate`. The agent can see iframe nodes in the DOM snapshot but
-   can't click, type, or eval inside them without a CDP session attached to
-   the child target.
+2. **Cross-origin iframes (OOPIFs)** need an attached CDP session for
+   supervisor observation. Hermes exposes their structure in snapshots but
+   deliberately does not expose a raw-CDP or JavaScript-evaluation path.
 
-The supervisor solves both by holding a persistent WebSocket to the backend's
-CDP endpoint per browser task, surfacing pending dialogs and frame structure
-into `browser_snapshot`, and exposing a `browser_dialog` tool for explicit
-responses.
+The supervisor holds a persistent WebSocket for any browser task with an
+attached CDP URL and surfaces pending dialogs and frame structure into
+`browser_snapshot`. `browser_dialog` and the read-only `browser_cdp` tool
+register only for an explicit `/browser connect` or `browser.cdp_url` override;
+that endpoint may be cloud-hosted. A provider-managed per-session CDP URL is not
+automatically surfaced as that override.
 
 ## Backend support
 
-| Backend | Dialog detect | Dialog respond | Frame tree | OOPIF `Runtime.evaluate` via `browser_cdp(frame_id=...)` |
+| Backend | Dialog detect | Dialog respond | Frame tree | Raw-CDP / eval exposure |
 |---|---|---|---|---|
-| Local Chrome (`--remote-debugging-port`) / `/browser connect` | ✓ | ✓ full workflow | ✓ | ✓ |
-| Browserbase | ✓ (via bridge) | ✓ full workflow (via bridge) | ✓ | ✓ |
-| Camofox | ✗ no CDP (REST-only) | ✗ | partial via DOM snapshot | ✗ |
+| Explicit `/browser connect` or `browser.cdp_url` override (local or cloud-hosted) | ✓ | ✓ full workflow | ✓ | read-only browser inspection only |
+| Provider-managed Browserbase, Browser Use, Firecrawl session CDP | ✓ when attached | ✗ not registered automatically | ✓ when attached | ✗ |
+| Camofox / default local agent-browser | ✗ no CDP endpoint | ✗ | partial via DOM snapshot | ✗ |
 
-**Browserbase quirk.** Browserbase's CDP proxy uses Playwright internally and
-auto-dismisses native dialogs within ~10ms, so `Page.handleJavaScriptDialog`
-can't keep up. The supervisor injects a bridge script via
-`Page.addScriptToEvaluateOnNewDocument` that overrides
-`window.alert`/`confirm`/`prompt` with a synchronous XHR to a magic host
-(`hermes-dialog-bridge.invalid`). `Fetch.enable` intercepts those XHRs before
-they touch the network — the dialog becomes a `Fetch.requestPaused` event the
-supervisor captures, and `respond_to_dialog` fulfills via
-`Fetch.fulfillRequest` with a JSON body the injected script decodes.
+The read-only direct inspection path is for explicitly configured CDP
+transport only. Browser-controller protocols never negotiate or dispatch raw CDP
+or arbitrary evaluation, including in Developer Mode.
 
-From the page's perspective, `prompt()` still returns the agent-supplied
-string. From the agent's perspective, it's the same `browser_dialog(action=...)`
-API either way.
-
-Camofox is unsupported — no CDP surface, REST-only.
+**Cloud-session boundary.** A cloud provider's per-session CDP URL can attach a
+supervisor and add snapshot fields, but it does not automatically register the
+direct tools. Explicitly configure that URL through `/browser connect` or
+`browser.cdp_url` to opt into the read-only inspection and dialog-response
+tools. Camofox has no CDP endpoint.
 
 ## Architecture
 
@@ -53,7 +48,7 @@ One `asyncio.Task` running in a background daemon thread per Hermes `task_id`.
 Holds a persistent WebSocket to the backend's CDP endpoint. Maintains:
 
 - **Dialog queue** — `List[PendingDialog]` with `{id, type, message, default_prompt, session_id, opened_at}`
-- **Frame tree** — `Dict[frame_id, FrameInfo]` with parent relationships, URL, origin, whether cross-origin child session
+- **Frame tree** — `Dict[frame_id, FrameInfo]` with parent relationships, URL, origin, whether a cross-origin child session exists for supervisor observation
 - **Session map** — `Dict[session_id, SessionInfo]` so interaction tools can route to the right attached session for OOPIF operations
 - **Recent console errors** — ring buffer of the last 50 for diagnostics
 
@@ -68,8 +63,8 @@ frozen snapshot without awaiting.
 
 ### Lifecycle
 
-- **Start:** `SupervisorRegistry.get_or_start(task_id, cdp_url)` — called by
-  `browser_navigate`, Browserbase session create, `/browser connect`.
+- **Start:** `SupervisorRegistry.get_or_start(task_id, cdp_url)` — called when
+  a task has an attached explicit override or provider session CDP URL.
   Idempotent.
 - **Stop:** session teardown or `/browser disconnect`. Cancels the asyncio
   task, closes the WebSocket, discards state.
@@ -133,43 +128,38 @@ is attached:
 ```
 
 - **`pending_dialogs`** — dialogs currently blocking the page's JS thread.
-  The agent must call `browser_dialog(action=...)` to respond. Empty on
-  Browserbase because their CDP proxy auto-dismisses within ~10ms.
+  The agent must call `browser_dialog(action=...)` to respond.
 
 - **`recent_dialogs`** — ring buffer of up to 20 recently-closed dialogs with
   a `closed_by` tag: `"agent"` (we responded), `"auto_policy"` (local
   auto_dismiss/auto_accept), `"watchdog"` (must_respond timeout hit), or
-  `"remote"` (browser/backend closed it on us, e.g. Browserbase). This is
-  how agents on Browserbase still get visibility into what happened.
+  `"remote"` (browser/backend closed it).
 
 - **`frame_tree`** — frame structure including cross-origin (OOPIF) children.
   Capped at 30 entries + OOPIF depth 2 to bound snapshot size on ad-heavy
   pages. `truncated: true` surfaces when limits were hit; agents needing
-  the full tree can use `browser_cdp` with `Page.getFrameTree`.
+  use snapshots and dedicated browser actions for further interaction.
 
 No new tool schema surface for any of these — the agent reads the snapshot it
 already requests.
 
 ### Availability gating
 
-Both surfaces gate on `_browser_cdp_check` (supervisor can only run when a CDP
-endpoint is reachable). On Camofox / no-backend sessions, the dialog tool is
-hidden and the snapshot omits the new fields — no schema bloat.
+`browser_cdp` and `browser_dialog` gate on `_browser_cdp_check`: they register
+only when an explicit CDP override was configured at session start via
+`/browser connect` or `browser.cdp_url`, including a cloud-hosted endpoint. A
+provider-managed session URL alone does not register them. Separately, any
+attached CDP session can start the supervisor, so its snapshot fields may appear
+for cloud sessions; Camofox and the default local agent-browser omit them.
 
-## Cross-origin iframe interaction
+## Cross-origin iframe boundary
 
-`browser_cdp(frame_id=...)` routes CDP calls (notably `Runtime.evaluate`)
-through the supervisor's already-connected WebSocket using the OOPIF's child
-`sessionId`. Agents pick frame_ids out of
-`browser_snapshot.frame_tree.children[]` where `is_oopif=true` and pass them
-to `browser_cdp`. For same-origin iframes (no dedicated CDP session), the
-agent uses `contentWindow`/`contentDocument` from a top-level
-`Runtime.evaluate` instead — the supervisor surfaces an error pointing at that
-fallback when `frame_id` belongs to a non-OOPIF.
-
-On Browserbase, this is the only reliable path for iframe interaction —
-stateless CDP connections (opened per `browser_cdp` call) hit signed-URL
-expiry, while the supervisor's long-lived connection keeps a valid session.
+The supervisor keeps child CDP sessions to observe dialogs and frame structure,
+not to provide an evaluation transport. `browser_cdp` accepts only the narrow
+read-only browser-level allowlist (`Browser.getVersion`, `Target.getTargets`)
+and rejects targets and `frame_id`. `browser_console(expression=...)` is also
+disabled. This prevents an attached or hostile page from using iframe routing
+to execute code, access credentials, or reach internal services.
 
 ## File layout
 
@@ -185,14 +175,15 @@ expiry, while the supervisor's long-lived connection keeps a valid session.
 - Streaming dialog/frame events live to the user (would require gateway hooks)
 - Persisting dialog history across sessions (in-memory only)
 - Per-iframe dialog policies (agent can express this via `dialog_id`)
-- Replacing `browser_cdp` — it stays as the escape hatch for the long tail (cookies, viewport, network throttling)
+- Expanding `browser_cdp` beyond its read-only browser-level allowlist
 
 ## Testing
 
 Unit tests (`tests/tools/test_browser_supervisor.py`) use an asyncio mock CDP
 server that speaks enough of the protocol to exercise all state transitions:
 attach, enable, navigate, dialog fire, dialog dismiss, frame attach/detach,
-child target attach, session teardown. Real-backend E2E (Browserbase + local
-Chromium-family browser) is manual — exercise via `/browser connect` to a
-live Chromium-family browser and run the dialog/frame test cases described
-above.
+child target attach, session teardown. Manual end-to-end coverage uses
+`/browser connect` with a live Chromium-family browser and the dialog/frame
+test cases described above. Provider-managed cloud CDP is covered separately as
+a snapshot-supervisor path; an explicitly configured cloud endpoint follows the
+same direct-tool boundary as a local endpoint.

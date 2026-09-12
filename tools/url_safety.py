@@ -160,16 +160,74 @@ def _reset_allow_private_cache() -> None:
     _allow_private_resolved = _cached_allow_private = False
 
 
+def _canonicalize_http_backslashes(url: str) -> str:
+    """Match Chromium's HTTP(S) slash normalization before parsing an authority."""
+    if not isinstance(url, str):
+        return url
+    match = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*:)[/\\]+", url.strip())
+    if not match or match.group(1)[:-1].lower() not in _HTTP_SCHEMES:
+        return url
+    return match.group(1) + "//" + url.strip()[match.end():].replace("\\", "/")
+
+
 def _normalize_hostname(host: Optional[str]) -> str:
-    return (host or "").strip().lower().rstrip(".")
+    hostname = (host or "").strip().lower().rstrip(".")
+    if "%" not in hostname or len(hostname) > 1024:
+        return hostname
+    try:
+        decoded = unquote(hostname, encoding="utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return hostname
+    return decoded.lower().rstrip(".") if len(decoded) <= 255 else hostname
+
+
+def _parse_chromium_ipv4(hostname: str) -> Optional[ipaddress.IPv4Address]:
+    """Parse Chromium's legacy numeric IPv4 spellings without consulting DNS.
+
+    Chromium accepts one to four numeric components: a leading ``0x`` component
+    is hexadecimal, a leading zero component is octal, and the final component
+    may consume all remaining address bits. Keep this parser deliberately narrow:
+    invalid digits, empty parts, five-part hosts, and values outside 32 bits are
+    hostnames rather than aliases.
+    """
+    parts = hostname.split(".")
+    if not 1 <= len(parts) <= 4 or any(not part for part in parts):
+        return None
+    values: list[int] = []
+    for part in parts:
+        base = 10
+        digits = part
+        if part.lower().startswith("0x"):
+            base, digits = 16, part[2:]
+            if not digits or any(char not in "0123456789abcdefABCDEF" for char in digits):
+                return None
+        elif len(part) > 1 and part.startswith("0"):
+            base = 8
+            if any(char not in "01234567" for char in part):
+                return None
+        elif not part.isdecimal():
+            return None
+        try:
+            values.append(int(digits, base))
+        except ValueError:
+            return None
+    if any(value > 255 for value in values[:-1]):
+        return None
+    final_bits = 8 * (5 - len(values))
+    if values[-1] >= 1 << final_bits:
+        return None
+    numeric = values[-1]
+    for index, value in enumerate(values[:-1]):
+        numeric |= value << (8 * (3 - index))
+    return ipaddress.IPv4Address(numeric)
 
 
 def _parse_ip(hostname: str) -> Optional[_IPAddress]:
-    """IP object for a literal-IP hostname, else None."""
+    """IP object for literal IPv4/IPv6 hostnames, including Chromium IPv4 aliases."""
     try:
         return ipaddress.ip_address(hostname)
     except ValueError:
-        return None
+        return _parse_chromium_ipv4(hostname)
 
 
 def _iter_resolved_ips(addr_info: Any):
@@ -205,7 +263,7 @@ def is_always_blocked_url(url: str) -> bool:
     sidecar) but must still enforce the floor. False for ordinary private/loopback URLs, DNS
     failures and parse errors (the caller's ordinary fail-closed path handles those)."""
     try:
-        hostname = _normalize_hostname(urlparse(url).hostname)
+        hostname = _normalize_hostname(urlparse(_canonicalize_http_backslashes(url)).hostname)
         if not hostname:
             return False
         if hostname in _BLOCKED_HOSTNAMES:
@@ -257,7 +315,7 @@ def is_safe_url(url: str) -> bool:
     every answer; fails closed on DNS errors and unexpected exceptions. ``allow_private_urls``
     skips private-IP blocking, but cloud metadata endpoints remain blocked regardless."""
     try:
-        parsed = urlparse(url)
+        parsed = urlparse(_canonicalize_http_backslashes(url))
         hostname = _normalize_hostname(parsed.hostname)
         scheme = (parsed.scheme or "").strip().lower()
         if scheme not in _HTTP_SCHEMES:

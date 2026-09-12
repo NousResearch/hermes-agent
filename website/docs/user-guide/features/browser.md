@@ -696,62 +696,31 @@ Check the browser console for any JavaScript errors
 
 Use `clear=True` to clear the console after reading, so subsequent calls only show new messages.
 
-`browser_console` also evaluates JavaScript when called with an `expression` argument — same shape as DevTools console, the result comes back parsed (JSON-serialized objects become dicts; primitive values stay primitive).
-
-```
-browser_console(expression="document.querySelector('h1').textContent")
-browser_console(expression="JSON.stringify(performance.timing)")
-```
-
-When a CDP supervisor is active for the current session (typical for any session that's run `browser_navigate` against a CDP-capable backend), evaluation runs over the supervisor's persistent WebSocket — no subprocess startup cost. Falls through to the standard agent-browser CLI path otherwise. Behaviour is identical either way; only latency changes.
-
-Evaluation is unrestricted by default — the agent can use `fetch`, read storage, query form values, and run any DOM extraction. Requests targeting private/internal addresses are still blocked on non-local backends (the SSRF guard is independent of this setting). If you browse hostile pages with a logged-in profile and want a strict denylist over sensitive JS primitives (cookies, storage, clipboard, network calls, form values), opt in with `browser.restrict_evaluate: true` in `config.yaml`. Note the denylist matches primitive *names*, so it also blocks legitimate expressions that merely contain words like `fetch` or `cookie`.
+The `expression` parameter is retained only for compatibility and is always rejected. Arbitrary page JavaScript can read logged-in credentials or make requests to internal services, so use `browser_snapshot`, `browser_get_images`, `browser_vision`, and the dedicated navigation and interaction tools instead.
 
 ### `browser_cdp`
 
-Raw Chrome DevTools Protocol passthrough — the escape hatch for browser operations not covered by the other tools. Use for native dialog handling, iframe-scoped evaluation, cookie/network control, or any CDP verb the agent needs.
+Read-only Chrome DevTools Protocol inspection. This is not a raw CDP passthrough: only parameterless browser-level `Browser.getVersion` and `Target.getTargets` are allowed. Page targeting, frame routing, scripting/evaluation, navigation, DOM, cookie, and network commands are rejected. This narrow boundary prevents attached pages from using Hermes to execute code or reach internal services.
 
-**Only available when a CDP endpoint is reachable at session start** — meaning `/browser connect` has attached to a running Chrome, Brave, Chromium, or Edge browser, or `browser.cdp_url` is set in `config.yaml`. The default local agent-browser mode, Camofox, and cloud providers (Browserbase, Browser Use, Firecrawl) do not currently expose CDP to this tool — cloud providers have per-session CDP URLs but live-session routing is a follow-up.
+This direct inspection path requires an explicitly configured CDP endpoint;
+it is not available through browser-extension/controller negotiation, including
+Developer Mode. Arbitrary browser evaluation is retired.
 
-**CDP method reference:** https://chromedevtools.github.io/devtools-protocol/ — the agent can `web_extract` a specific method's page to look up parameters and return shape.
+**Only available when an explicit CDP override is configured at session start** — through `/browser connect` or `browser.cdp_url` in `config.yaml`. The endpoint can be a running local Chrome, Brave, Chromium, or Edge browser, or a cloud-hosted endpoint. The default local agent-browser mode and Camofox have no override. A cloud provider's managed per-session CDP URL is not automatically surfaced to `browser_cdp` or `browser_dialog`; explicitly configure that URL to use the read-only direct tools.
 
-Common patterns:
+Allowed patterns:
 
 ```
 # List tabs (browser-level, no target_id)
 browser_cdp(method="Target.getTargets")
 
-# Handle a native JS dialog on a tab
-browser_cdp(method="Page.handleJavaScriptDialog",
-            params={"accept": true, "promptText": ""},
-            target_id="<tabId>")
-
-# Evaluate JS in a specific tab
-browser_cdp(method="Runtime.evaluate",
-            params={"expression": "document.title", "returnByValue": true},
-            target_id="<tabId>")
-
-# Get all cookies
-browser_cdp(method="Network.getAllCookies")
+# Inspect the attached browser build
+browser_cdp(method="Browser.getVersion")
 ```
-
-Browser-level methods (`Target.*`, `Browser.*`, `Storage.*`) omit `target_id`. Page-level methods (`Page.*`, `Runtime.*`, `DOM.*`, `Emulation.*`) require a `target_id` from `Target.getTargets`. Each stateless call is independent — sessions do not persist between calls.
-
-**Cross-origin iframes:** pass `frame_id` (from `browser_snapshot.frame_tree.children[]` where `is_oopif=true`) to route the CDP call through the supervisor's live session for that iframe. This is how `Runtime.evaluate` inside a cross-origin iframe works on Browserbase, where stateless CDP connections would hit signed-URL expiry. Example:
-
-```
-browser_cdp(
-  method="Runtime.evaluate",
-  params={"expression": "document.title", "returnByValue": True},
-  frame_id="<frame_id from browser_snapshot>",
-)
-```
-
-Same-origin iframes don't need `frame_id` — use `document.querySelector('iframe').contentDocument` from a top-level `Runtime.evaluate` instead.
 
 ### `browser_dialog`
 
-Responds to a native JS dialog (`alert` / `confirm` / `prompt` / `beforeunload`). Before this tool existed, dialogs would silently block the page's JavaScript thread and subsequent `browser_*` calls would hang or throw; now the agent sees pending dialogs in `browser_snapshot` output and responds explicitly.
+Responds to a native JS dialog (`alert` / `confirm` / `prompt` / `beforeunload`) on a browser attached through an explicit CDP override. Before this tool existed, dialogs would silently block the page's JavaScript thread and subsequent `browser_*` calls would hang or throw; now the agent sees pending dialogs in `browser_snapshot` output and responds explicitly.
 
 **Workflow:**
 1. Call `browser_snapshot`. If a dialog is blocking the page, it shows up as `pending_dialogs: [{"id": "d-1", "type": "alert", "message": "..."}]`.
@@ -764,11 +733,11 @@ Responds to a native JS dialog (`alert` / `confirm` / `prompt` / `beforeunload`)
 
 | Backend | Detection via `pending_dialogs` | Response (`browser_dialog` tool) |
 |---|---|---|
-| Local Chrome via `/browser connect` or `browser.cdp_url` | ✓ | ✓ full workflow |
-| Browserbase | ✓ | ✓ full workflow (via injected XHR bridge) |
-| Camofox / default local agent-browser | ✗ | ✗ (no CDP endpoint) |
+| Explicit `/browser connect` or `browser.cdp_url` override (local or cloud-hosted) | ✓ | ✓ full workflow |
+| Provider-managed Browserbase, Browser Use, or Firecrawl session CDP | May appear in snapshots when the supervisor attaches | ✗ not registered automatically |
+| Camofox / default local agent-browser | ✗ | ✗ (no CDP override) |
 
-**How it works on Browserbase.** Browserbase's CDP proxy auto-dismisses real native dialogs server-side within ~10ms, so we can't use `Page.handleJavaScriptDialog`. The supervisor injects a small script via `Page.addScriptToEvaluateOnNewDocument` that overrides `window.alert`/`confirm`/`prompt` with a synchronous XHR. We intercept those XHRs via `Fetch.enable` — the page's JS thread stays blocked on the XHR until we call `Fetch.fulfillRequest` with the agent's response. `prompt()` return values round-trip back into page JS unchanged.
+**Cloud CDP note.** A provider-managed session URL is not automatically registered as a direct CDP override, but it can be explicitly configured through `/browser connect` or `browser.cdp_url`. That enables only the same read-only `browser_cdp` allowlist and response-only `browser_dialog` workflow; it never adds eval or controller CDP capabilities.
 
 **Dialog policy** is configured in `config.yaml` under `browser.dialog_policy`:
 
@@ -778,7 +747,7 @@ Responds to a native JS dialog (`alert` / `confirm` / `prompt` / `beforeunload`)
 | `auto_dismiss` | Capture, dismiss immediately. Agent still sees the dialog in `browser_state` history but doesn't have to act. |
 | `auto_accept` | Capture, accept immediately. Useful when navigating pages with aggressive `beforeunload` prompts. |
 
-**Frame tree** inside `browser_snapshot.frame_tree` is capped to 30 frames and OOPIF depth 2 to keep payloads bounded on ad-heavy pages. A `truncated: true` flag surfaces when limits were hit; agents needing the full tree can use `browser_cdp` with `Page.getFrameTree`.
+**Frame tree** inside `browser_snapshot.frame_tree` is capped to 30 frames and OOPIF depth 2 to keep payloads bounded on ad-heavy pages. A `truncated: true` flag surfaces when limits are hit; use the snapshot and browser interaction tools rather than raw CDP to work with visible frames.
 
 ## Practical Examples
 

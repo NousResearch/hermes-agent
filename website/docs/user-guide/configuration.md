@@ -2533,8 +2533,8 @@ browser:
   # Chromium-family browser (via /browser connect) rather than starting a headless browser.
   cdp_url: ""
   # Dialog supervisor — controls how native JS dialogs (alert / confirm / prompt)
-  # are handled when a CDP backend is attached (Browserbase, local Chromium-family
-  # browser via /browser connect). Ignored on Camofox and default local agent-browser mode.
+  # are handled whenever the supervisor has an attached CDP session. browser_dialog registers only
+  # with an explicit /browser connect or browser.cdp_url override (which may be cloud-hosted).
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)
   camofox:
@@ -2550,7 +2550,7 @@ browser:
 - `auto_dismiss` — capture, dismiss immediately. The agent still sees the dialog record in `browser_snapshot.recent_dialogs` with `closed_by="auto_policy"` after the fact.
 - `auto_accept` — capture, accept immediately. Useful for pages with aggressive `beforeunload` prompts.
 
-See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
+These policies apply whenever a CDP supervisor is attached. `browser_dialog` itself registers only through an explicit `/browser connect` or `browser.cdp_url` override, which may be cloud-hosted; a provider-managed per-session CDP URL alone does not register it. See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
 
 The browser toolset supports multiple providers. See the [Browser feature page](/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chromium-family CDP setup.
 

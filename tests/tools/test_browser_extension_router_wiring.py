@@ -86,7 +86,7 @@ def test_browser_navigate_forwards_raw_args_and_identity(_route_spy):
 
 def test_browser_cdp_handler_routes_through_wrapper(_route_spy):
     handler = registry.get_entry("browser_cdp").handler
-    args = {"method": "Target.getTargets", "params": {"filter": []}}
+    args = {"method": "Target.getTargets", "params": {}}
     result = handler(dict(args), task_id="task-fixture", session_id="session-fixture")
     assert result == "legacy-cdp"
     route = _route_spy[0]
@@ -94,3 +94,20 @@ def test_browser_cdp_handler_routes_through_wrapper(_route_spy):
     assert route["args"] == args
     assert route["task_id"] == "task-fixture"
     assert route["session_id"] == "session-fixture"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"method": "Runtime.evaluate", "params": {"expression": "fetch('http://169.254.169.254/latest/meta-data/')"}},
+        {"method": "Runtime.evaluate", "params": {"expression": "document.title"}, "frame_id": "oopif-1"},
+    ],
+)
+def test_browser_cdp_rejects_unsafe_requests_before_controller_route(_route_spy, args):
+    """Developer-Mode controllers cannot turn the extension route into raw CDP."""
+    handler = registry.get_entry("browser_cdp").handler
+
+    result = handler(dict(args), task_id="task-fixture", session_id="session-fixture")
+
+    assert "Blocked: browser_cdp only permits read-only inspection methods" in result
+    assert _route_spy == []

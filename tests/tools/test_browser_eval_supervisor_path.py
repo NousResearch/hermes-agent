@@ -24,8 +24,12 @@ def _disable_camofox(monkeypatch):
     """Force the non-camofox path so our supervisor branch is reached."""
     import tools.browser_tool as bt
 
+    from tools import browser_tool_eval_policy as policy
+
     monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
     monkeypatch.setattr(bt, "_last_session_key", lambda task_id: "test-task")
+    monkeypatch.setattr(policy, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(policy, "_current_page_blocked_url", lambda task_id, *, include_private: None)
 
 
 def _patch_supervisor(monkeypatch, supervisor):
@@ -58,10 +62,23 @@ class TestBrowserEvalSupervisorPath:
         )
 
         out = json.loads(bt._browser_eval("1 + 41"))
-        assert out["success"] is True
-        assert out["result"] == 42
-        assert out["method"] == "cdp_supervisor"
-        sup.evaluate_runtime.assert_called_once_with("1 + 41")
+        assert out["success"] is False
+        assert out["error"] == bt.BROWSER_EVALUATION_DISABLED_ERROR
+        sup.evaluate_runtime.assert_not_called()
+
+    def test_blocks_dynamic_fetch_when_private_guard_is_disabled(self, monkeypatch):
+        import tools.browser_tool as bt
+        from tools import browser_tool_eval_policy as policy
+
+        sup = MagicMock()
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setattr(policy, "_eval_ssrf_guard_active", lambda task_id: False)
+
+        out = json.loads(bt._browser_eval("fetch('http://' + '169.254.169.254/latest/meta-data/')"))
+
+        assert out["success"] is False
+        assert out["error"] == bt.BROWSER_EVALUATION_DISABLED_ERROR
+        sup.evaluate_runtime.assert_not_called()
 
     def test_json_string_result_is_parsed(self, monkeypatch):
         """Match agent-browser semantics: JSON-string results get parsed."""
@@ -80,10 +97,9 @@ class TestBrowserEvalSupervisorPath:
         )
 
         out = json.loads(bt._browser_eval('JSON.stringify({a:1,b:[2,3]})'))
-        assert out["success"] is True
-        assert out["result"] == {"a": 1, "b": [2, 3]}
-        # result_type reflects the parsed Python type, not the raw JS type.
-        assert out["result_type"] == "dict"
+        assert out["success"] is False
+        assert out["error"] == bt.BROWSER_EVALUATION_DISABLED_ERROR
+        sup.evaluate_runtime.assert_not_called()
 
 
     def test_subprocess_reference_chain_error_becomes_guidance(self, monkeypatch):
@@ -106,11 +122,7 @@ class TestBrowserEvalSupervisorPath:
 
         out = json.loads(bt._browser_eval("document.body"))
         assert out["success"] is False
-        # Raw protocol error must NOT leak through.
-        assert "reference chain" not in out["error"].lower()
-        # Actionable guidance instead.
-        assert "primitive" in out["error"].lower()
-        assert "DOM node" in out["error"] or "dom node" in out["error"].lower()
+        assert out["error"] == bt.BROWSER_EVALUATION_DISABLED_ERROR
 
 
 # ---------------------------------------------------------------------------

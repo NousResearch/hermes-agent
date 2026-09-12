@@ -429,15 +429,15 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
 def _camofox_private_page_block(session: Dict[str, Any], task_id: Optional[str], action: str) -> Optional[str]:
     """Blocked payload when the current page is private/internal, else None.
 
-    Mirrors the ``_camofox_eval`` guard in browser_tool.py: page-state reads on a non-local
-    backend can leak an intranet/metadata page the terminal can't reach. Only active when
-    the SSRF guard applies (non-local backend, not a local sidecar, ``allow_private_urls``
-    unset); fail-open on probe failure like sibling guards. Lazy import (cycle).
+    Mirrors the browser page guard: cloud metadata is always blocked; ordinary private
+    pages are blocked only when the SSRF guard applies. Probes fail open. Lazy import (cycle).
     """
-    from tools.browser_tool_eval_policy import _camofox_current_page_private_url, _eval_ssrf_guard_active
-    if not _eval_ssrf_guard_active(task_id or "default"):
-        return None
-    blocked_url = _camofox_current_page_private_url(session["tab_id"], session["user_id"])
+    from tools.browser_tool_eval_policy import _camofox_current_page_blocked_url, _eval_ssrf_guard_active
+    blocked_url = _camofox_current_page_blocked_url(
+        session["tab_id"],
+        session["user_id"],
+        include_private=_eval_ssrf_guard_active(task_id or "default"),
+    )
     if not blocked_url:
         return None
     return json.dumps({"success": False, "error": (

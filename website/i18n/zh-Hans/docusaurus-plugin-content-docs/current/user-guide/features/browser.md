@@ -475,62 +475,29 @@ Check the browser console for any JavaScript errors
 
 使用 `clear=True` 可在读取后清空控制台，使后续调用只显示新消息。
 
-`browser_console` 在带有 `expression` 参数调用时也可执行 JavaScript — 与 DevTools 控制台形式相同，结果以解析后的形式返回（JSON 序列化的对象变为 dict；原始值保持原始类型）。
-
-```
-browser_console(expression="document.querySelector('h1').textContent")
-browser_console(expression="JSON.stringify(performance.timing)")
-```
-
-当当前会话存在活跃的 CDP 监督器时（通常适用于任何对 CDP 兼容后端运行过 `browser_navigate` 的会话），执行通过监督器的持久 WebSocket 进行 — 无子进程启动开销。否则回退到标准 agent-browser CLI 路径。两种方式行为完全相同，仅延迟有差异。
-
-默认情况下执行不受限制 — 代理可以使用 `fetch`、读取存储、查询表单值并执行任何 DOM 提取。针对私有/内部地址的请求在非本地后端上仍会被拦截（SSRF 防护与此设置无关）。如果你在已登录的浏览器配置文件中浏览不可信页面，希望对敏感 JS 原语（Cookie、存储、剪贴板、网络调用、表单值）启用严格的黑名单，可在 `config.yaml` 中设置 `browser.restrict_evaluate: true`。注意该黑名单按原语*名称*匹配，因此也会拦截仅包含 `fetch` 或 `cookie` 等词的合法表达式。
+`expression` 参数仅为兼容性而保留，始终会被拒绝。任意页面 JavaScript 可能读取已登录凭据或请求内部服务，因此请使用 `browser_snapshot`、`browser_get_images`、`browser_vision` 以及专用的导航和交互工具。
 
 ### `browser_cdp`
 
-原始 Chrome DevTools Protocol 直通 — 用于其他工具未覆盖的浏览器操作的逃生舱口。适用于原生对话框处理、iframe 范围内的执行、Cookie/网络控制，或 Agent 需要的任何 CDP 命令。
+只读 Chrome DevTools Protocol 检查。这不是原始 CDP 直通：仅允许无参数、浏览器级的 `Browser.getVersion` 和 `Target.getTargets`。页面定位、帧路由、脚本/执行、导航、DOM、Cookie 和网络命令均会被拒绝。这个狭窄边界避免附加页面借助 Hermes 执行代码或访问内部服务。
 
-**仅在会话启动时 CDP 端点可访问的情况下可用** — 即 `/browser connect` 已连接到运行中的 Chrome、Brave、Chromium 或 Edge 浏览器，或 `config.yaml` 中设置了 `browser.cdp_url`。默认本地 agent-browser 模式、Camofox 和云端提供商（Browserbase、Browser Use、Firecrawl）目前不向此工具暴露 CDP — 云端提供商有每会话 CDP URL，但实时会话路由是后续功能。
+此直接检查路径需要显式配置的 CDP 端点；浏览器扩展/控制器协商（包括开发者模式）不能使用它。任意浏览器求值已退役。
 
-**CDP 方法参考：** https://chromedevtools.github.io/devtools-protocol/ — Agent 可通过 `web_extract` 访问特定方法页面以查阅参数和返回结构。
+**仅在会话启动时配置显式 CDP 覆盖时可用** — 即通过 `/browser connect` 或在 `config.yaml` 中设置 `browser.cdp_url`。端点可以是运行中的本地 Chrome、Brave、Chromium 或 Edge，也可以托管在云端。默认本地 agent-browser 模式和 Camofox 没有此覆盖。云端 provider 托管的每会话 CDP URL 不会自动暴露给 `browser_cdp` 或 `browser_dialog`；显式配置该 URL 才能使用只读直接工具。
 
-常见用法：
+允许的用法：
 
 ```
 # List tabs (browser-level, no target_id)
 browser_cdp(method="Target.getTargets")
 
-# Handle a native JS dialog on a tab
-browser_cdp(method="Page.handleJavaScriptDialog",
-            params={"accept": true, "promptText": ""},
-            target_id="<tabId>")
-
-# Evaluate JS in a specific tab
-browser_cdp(method="Runtime.evaluate",
-            params={"expression": "document.title", "returnByValue": true},
-            target_id="<tabId>")
-
-# Get all cookies
-browser_cdp(method="Network.getAllCookies")
+# Inspect the attached browser build
+browser_cdp(method="Browser.getVersion")
 ```
-
-浏览器级方法（`Target.*`、`Browser.*`、`Storage.*`）省略 `target_id`。页面级方法（`Page.*`、`Runtime.*`、`DOM.*`、`Emulation.*`）需要来自 `Target.getTargets` 的 `target_id`。每次无状态调用相互独立 — 调用间不保留会话状态。
-
-**跨域 iframe：** 传入 `frame_id`（来自 `browser_snapshot.frame_tree.children[]` 中 `is_oopif=true` 的条目）可通过监督器的实时会话路由该 iframe 的 CDP 调用。这是在 Browserbase 上对跨域 iframe 执行 `Runtime.evaluate` 的方式，避免无状态 CDP 连接遭遇签名 URL 过期问题。示例：
-
-```
-browser_cdp(
-  method="Runtime.evaluate",
-  params={"expression": "document.title", "returnByValue": True},
-  frame_id="<frame_id from browser_snapshot>",
-)
-```
-
-同域 iframe 无需 `frame_id` — 在顶层 `Runtime.evaluate` 中使用 `document.querySelector('iframe').contentDocument` 即可。
 
 ### `browser_dialog`
 
-响应原生 JS 对话框（`alert` / `confirm` / `prompt` / `beforeunload`）。在此工具出现之前，对话框会静默阻塞页面的 JavaScript 线程，后续 `browser_*` 调用会挂起或抛出异常；现在 Agent 可在 `browser_snapshot` 输出中看到待处理对话框并显式响应。
+响应附加到显式 CDP 覆盖的浏览器上的原生 JS 对话框（`alert` / `confirm` / `prompt` / `beforeunload`）。在此工具出现之前，对话框会静默阻塞页面的 JavaScript 线程，后续 `browser_*` 调用会挂起或抛出异常；现在 Agent 可在 `browser_snapshot` 输出中看到待处理对话框并显式响应。
 
 **工作流程：**
 1. 调用 `browser_snapshot`。若对话框正在阻塞页面，将显示为 `pending_dialogs: [{"id": "d-1", "type": "alert", "message": "..."}]`。
@@ -543,11 +510,11 @@ browser_cdp(
 
 | 后端 | 通过 `pending_dialogs` 检测 | 响应（`browser_dialog` 工具） |
 |---|---|---|
-| 通过 `/browser connect` 或 `browser.cdp_url` 连接的本地 Chrome | ✓ | ✓ 完整工作流 |
-| Browserbase | ✓ | ✓ 完整工作流（通过注入的 XHR 桥接） |
-| Camofox / 默认本地 agent-browser | ✗ | ✗（无 CDP 端点） |
+| 显式 `/browser connect` 或 `browser.cdp_url` 覆盖（本地或云端托管） | ✓ | ✓ 完整工作流 |
+| provider 托管的 Browserbase、Browser Use 或 Firecrawl 会话 CDP | supervisor 附加时可能出现在快照中 | ✗ 不会自动注册 |
+| Camofox / 默认本地 agent-browser | ✗ | ✗（无 CDP 覆盖） |
 
-**在 Browserbase 上的工作原理。** Browserbase 的 CDP 代理会在约 10ms 内在服务端自动关闭真实的原生对话框，因此无法使用 `Page.handleJavaScriptDialog`。监督器通过 `Page.addScriptToEvaluateOnNewDocument` 注入一段小脚本，将 `window.alert`/`confirm`/`prompt` 替换为同步 XHR。我们通过 `Fetch.enable` 拦截这些 XHR — 页面 JS 线程在 XHR 上保持阻塞，直到我们用 Agent 的响应调用 `Fetch.fulfillRequest`。`prompt()` 的返回值原样传回页面 JS。
+**云端 CDP 说明。** provider 托管的会话 URL 不会自动注册为直接 CDP 覆盖，但可通过 `/browser connect` 或 `browser.cdp_url` 显式配置。这样只会启用相同的只读 `browser_cdp` 允许列表和仅响应的 `browser_dialog` 工作流；绝不会增加 eval 或控制器 CDP 能力。
 
 **对话框策略**在 `config.yaml` 的 `browser.dialog_policy` 下配置：
 
@@ -557,7 +524,7 @@ browser_cdp(
 | `auto_dismiss` | 捕获，立即关闭。Agent 仍可在 `browser_state` 历史中看到对话框，但无需操作。 |
 | `auto_accept` | 捕获，立即接受。适用于导航带有频繁 `beforeunload` 提示的页面。 |
 
-`browser_snapshot.frame_tree` 中的**帧树**上限为 30 帧、OOPIF 深度 2，以控制广告密集页面的负载大小。达到限制时会显示 `truncated: true` 标志；需要完整帧树的 Agent 可使用 `browser_cdp` 配合 `Page.getFrameTree`。
+`browser_snapshot.frame_tree` 中的**帧树**上限为 30 帧、OOPIF 深度 2，以控制广告密集页面的负载大小。达到限制时会显示 `truncated: true` 标志；应使用快照和浏览器交互工具处理可见帧，而不是原始 CDP。
 
 ## 实际示例
 

@@ -126,7 +126,7 @@ TIPS = [
     "read_file suggests similar filenames when a file isn't found.",
     "read_file auto-deduplicates — re-reading an unchanged file returns a lightweight stub.",
     "browser_vision takes a screenshot and analyzes it with AI — works for CAPTCHAs and visual content.",
-    "browser_console can evaluate JavaScript expressions in the page context.",
+    "browser_console reads console output and errors; JavaScript expressions are intentionally disabled.",
     "image_generate creates images with FLUX 2 Pro and automatic 2x upscaling.",
     "text_to_speech converts text to audio — plays as voice bubbles on Telegram.",
     "send_message can reach any connected messaging platform from within a session.",

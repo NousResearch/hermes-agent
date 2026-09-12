@@ -37,7 +37,7 @@ def _mock_run_success(monkeypatch):
 def test_blocks_images_on_private_page(monkeypatch):
     _mock_run_success(monkeypatch)
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda tid: True)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda tid: PRIVATE_URL)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_blocked_url", lambda tid, *, include_private: PRIVATE_URL)
 
     result = json.loads(browser_tool.browser_get_images(task_id="test"))
     assert result["success"] is False
@@ -48,7 +48,7 @@ def test_blocks_images_on_private_page(monkeypatch):
 def test_allows_images_on_public_page(monkeypatch):
     _mock_run_success(monkeypatch)
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda tid: True)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda tid: None)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_blocked_url", lambda tid, *, include_private: None)
 
     result = json.loads(browser_tool.browser_get_images(task_id="test"))
     assert result["success"] is True

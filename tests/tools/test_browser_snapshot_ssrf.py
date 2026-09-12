@@ -13,6 +13,7 @@ import pytest
 
 from tools import browser_tool
 from tools import browser_tool_cloud as bt_cloud
+from tools import browser_tool_eval_policy as bt_eval_policy
 from tools import browser_tool_session as bt_session
 
 
@@ -380,3 +381,146 @@ class TestBrowserVisionPrivateNetworkGuard:
         result_raw = browser_browser_vision(question="what", task_id="test")
         result = json.loads(result_raw)
         assert "private or internal address" not in result.get("error", "")
+
+
+# Behavioral metadata: both content-returning entry points must use the same
+# guard/probe contract while preserving the legacy error envelope.
+@pytest.mark.parametrize(
+    ("entrypoint", "kwargs"),
+    [
+        pytest.param(browser_browser_snapshot, {"task_id": "shared"}, id="snapshot"),
+        pytest.param(
+            browser_browser_vision,
+            {"question": "what do you see", "task_id": "shared"},
+            id="vision",
+        ),
+    ],
+)
+def test_content_entrypoints_share_private_page_helpers(monkeypatch, entrypoint, kwargs):
+    """Snapshot and vision block via the shared SSRF helpers with the old payload."""
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "_last_session_key", lambda key: key)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(
+        bt_eval_policy,
+        "_current_page_blocked_url",
+        lambda task_id, *, include_private: "http://127.0.0.1:8080/secret",
+    )
+
+    result = json.loads(entrypoint(**kwargs))
+
+    assert result == {
+        "success": False,
+        "error": (
+            "Blocked: page URL targets a private or internal address "
+            "(http://127.0.0.1:8080/secret). This may have been caused by a "
+            "JavaScript navigation via browser_console."
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "kwargs"),
+    [
+        pytest.param(browser_browser_snapshot, {"task_id": "metadata"}, id="snapshot"),
+        pytest.param(
+            browser_browser_vision,
+            {"question": "what do you see", "task_id": "metadata"},
+            id="vision",
+        ),
+    ],
+)
+@pytest.mark.parametrize("guard_active", [True, False], ids=["guard-active", "allow-private"])
+def test_content_entrypoints_always_block_metadata_with_one_shared_probe(
+    monkeypatch, entrypoint, kwargs, guard_active
+):
+    """Metadata remains blocked even when normal private-URL blocking is disabled."""
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "_last_session_key", lambda key: key)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: guard_active)
+    probes = []
+
+    def blocked_url(task_id, *, include_private):
+        probes.append((task_id, include_private))
+        return "http://169.254.169.254/latest/meta-data/"
+
+    monkeypatch.setattr(
+        bt_eval_policy, "_current_page_blocked_url", blocked_url, raising=False
+    )
+
+    result = json.loads(entrypoint(**kwargs))
+
+    assert result["success"] is False
+    assert "169.254.169.254" in result["error"]
+    assert probes == [("metadata", guard_active)]
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "kwargs"),
+    [
+        pytest.param(browser_browser_snapshot, {"task_id": "private"}, id="snapshot"),
+        pytest.param(
+            browser_browser_vision,
+            {"question": "what do you see", "task_id": "private"},
+            id="vision",
+        ),
+    ],
+)
+def test_content_entrypoints_allow_ordinary_private_pages_when_guard_is_disabled(
+    monkeypatch, entrypoint, kwargs
+):
+    """The metadata floor does not override the intentional ordinary-private opt-out."""
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "_last_session_key", lambda key: key)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
+    probes = []
+
+    def blocked_url(task_id, *, include_private):
+        probes.append((task_id, include_private))
+        return None
+
+    monkeypatch.setattr(
+        bt_eval_policy, "_current_page_blocked_url", blocked_url, raising=False
+    )
+    monkeypatch.setattr(
+        bt_session,
+        "_run_browser_command",
+        lambda task_id, command, *args, **kwargs: (
+            _make_snapshot_result() if command == "snapshot" else _make_screenshot_result()
+        ),
+    )
+
+    result = json.loads(entrypoint(**kwargs))
+
+    assert "private or internal address" not in result.get("error", "")
+    assert probes == [("private", False)]
+
+
+@pytest.mark.parametrize(
+    ("url", "include_private", "expected"),
+    [
+        ("http://169.254.169.254/latest/meta-data/", False, True),
+        ("http://127.0.0.1:8080/secret", False, False),
+        ("http://127.0.0.1:8080/secret", True, True),
+    ],
+)
+def test_current_page_blocked_url_keeps_metadata_floor_separate_from_private_policy(
+    monkeypatch, url, include_private, expected
+):
+    monkeypatch.setattr(
+        bt_session,
+        "_run_browser_command",
+        lambda *args, **kwargs: _make_eval_result(url),
+    )
+    monkeypatch.setattr(
+        browser_tool,
+        "_is_always_blocked_url",
+        lambda candidate: candidate == "http://169.254.169.254/latest/meta-data/",
+    )
+    monkeypatch.setattr(browser_tool, "_is_safe_url", lambda candidate: False)
+
+    blocked = bt_eval_policy._current_page_blocked_url(
+        "policy", include_private=include_private
+    )
+
+    assert (blocked == url) is expected

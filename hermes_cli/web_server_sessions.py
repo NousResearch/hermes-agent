@@ -219,7 +219,9 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         _last_auto_archive_check[key] = now
 
         from hermes_cli.config import load_config as _load_full_config
-        cfg = (_load_full_config().get("sessions") or {})
+        from hermes_cli.web_server_profiles import _config_profile_scope
+        with _config_profile_scope(profile):
+            cfg = (_load_full_config().get("sessions") or {})
         if not cfg.get("auto_archive", False):
             return
         db = _open_session_db_for_profile(profile, read_only=False)

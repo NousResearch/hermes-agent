@@ -623,35 +623,43 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
     exec_start = time.monotonic()
-    try:
-        py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15)
-        if "OK" not in py_check.get("output", ""):
-            return _error_result(f"Python 3 is not available in the {env_type} terminal "
-                                 "environment. Install Python to use execute_code with remote backends.")
-        # Session-kernel path: one persistent kernel per owner on the
-        # run-to-completion transport. Spawn failure falls OPEN to the per-call
-        # path below so a degraded remote host never blocks execution.
+    # A script that outlives terminal.lifetime_seconds must not have its sandbox reaped
+    # mid-run: the only activity stamp on this path is the one _get_or_create_env just made.
+    # That stamp lands under the COLLAPSED registry key (``default`` / ``profile:…`` /
+    # ``session:…``), which is what _get_or_create_env resolves internally — ``effective_task_id``
+    # here is only ``task_id or "default"``, so marking it alone leaves a shared environment
+    # unprotected. Resolve the same way and hold the key the stamp actually used.
+    from tools.terminal_tool import _call_in_flight, _resolve_container_task_id
+    with _call_in_flight(_resolve_container_task_id(effective_task_id), effective_task_id, task_id):
         try:
-            # --- Session-kernel path (hermes-agent#96873) ------------------- Same always-on model as
-            # local: one persistent kernel per owner, rebuilt on the run-to-completion transport (detached
-            # runner + file cell protocol).
-            from tools.code_kernel_remote import execute_in_remote_kernel
-            kernel_result = execute_in_remote_kernel(
-                code, env=env, env_type=env_type, task_env_id=effective_task_id,
-                sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
-                max_tool_calls=max_tool_calls, reset=bool(reset),
-                idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
-            )
-        except Exception:
-            logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
-            kernel_result = None
-        if kernel_result is not None:
-            return _finish_remote_kernel_result(kernel_result, timeout=timeout, exec_start=exec_start)
-        logger.info("remote session kernel unavailable on %s; using per-call path", env_type)
-    except Exception as exc:
-        return _remote_failure(exc, exec_start, 0)
-    return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
-                                timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start)
+            py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15)
+            if "OK" not in py_check.get("output", ""):
+                return _error_result(f"Python 3 is not available in the {env_type} terminal "
+                                     "environment. Install Python to use execute_code with remote backends.")
+            # Session-kernel path: one persistent kernel per owner on the
+            # run-to-completion transport. Spawn failure falls OPEN to the per-call
+            # path below so a degraded remote host never blocks execution.
+            try:
+                # --- Session-kernel path (hermes-agent#96873) ------------------- Same always-on model as
+                # local: one persistent kernel per owner, rebuilt on the run-to-completion transport (detached
+                # runner + file cell protocol).
+                from tools.code_kernel_remote import execute_in_remote_kernel
+                kernel_result = execute_in_remote_kernel(
+                    code, env=env, env_type=env_type, task_env_id=effective_task_id,
+                    sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
+                    max_tool_calls=max_tool_calls, reset=bool(reset),
+                    idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
+                )
+            except Exception:
+                logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
+                kernel_result = None
+            if kernel_result is not None:
+                return _finish_remote_kernel_result(kernel_result, timeout=timeout, exec_start=exec_start)
+            logger.info("remote session kernel unavailable on %s; using per-call path", env_type)
+        except Exception as exc:
+            return _remote_failure(exc, exec_start, 0)
+        return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
+                                    timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start)
 
 
 # ---- Main entry point ----

@@ -143,7 +143,7 @@ def _unregister_env(task_id: str):
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     """Clean up environments that have been inactive for longer than lifetime_seconds."""
     from tools.terminal_tool import (
-        _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
+        _active_environments, _calls_in_flight, _creation_locks, _creation_locks_lock, _env_lock,
         _last_activity,
     )
     current_time = time.time()
@@ -160,6 +160,12 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     # Phase 1: unregister stale entries atomically under the lock; phase 2:
     # stop them outside it (see _unregister_env for why).
     with _env_lock:
+        # A task with a call in flight is busy, not idle: its _last_activity was stamped when the
+        # call started and does not move again until it returns, so without this refresh a call
+        # longer than lifetime_seconds reaps the environment out from under itself.
+        for task_id in list(_calls_in_flight):
+            if task_id in _last_activity:
+                _last_activity[task_id] = current_time
         stale = [t for t, last in list(_last_activity.items()) if current_time - last > lifetime_seconds]
         envs_to_stop = [(t, _active_environments.pop(t, None)) for t in stale]
         for t in stale:

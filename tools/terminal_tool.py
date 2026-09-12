@@ -25,6 +25,7 @@ import sys
 import time
 import threading
 import atexit
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 
@@ -169,6 +170,12 @@ PTY: pty=true + background=true for interactive CLIs (they hang without a termin
 # Environment lifecycle state.
 _active_environments: Dict[str, Any] = {}
 _last_activity: Dict[str, float] = {}
+# Tool calls currently holding an environment, refcounted per task_id. ``_last_activity`` is only
+# stamped at call boundaries, so a foreground call that outlives ``lifetime_seconds`` — a long
+# build, or the approval gate waiting on a human — reads as idle to ``_cleanup_inactive_envs`` and
+# has its sandbox reaped mid-call. Background processes already get this exemption through the
+# process registry; this is the same exemption for the calling thread.
+_calls_in_flight: Dict[str, int] = {}
 _env_lock = threading.Lock()
 _creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
@@ -491,6 +498,38 @@ def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
             _last_activity[key] = time.time()
             return _active_environments[key]
     return None
+
+
+@contextmanager
+def _call_in_flight(*task_ids: Optional[str]):
+    """Hold *task_ids* against the idle reaper for the body of a tool call.
+
+    Every id is registered because the acquisition paths stamp ``_last_activity`` under whichever
+    of the collapsed container id and the raw task_id already owns an env (see
+    ``_lookup_active_env``), and only the stamped one needs the exemption. Refcounted: parallel
+    tool calls in one session share a task_id, so the last one out clears the mark. On exit the
+    activity stamp is refreshed so the idle countdown starts when the call ENDS — otherwise an
+    hour-long call would leave its env eligible for reaping on the very next sweep.
+
+    Must not be entered or exited while holding ``_env_lock``.
+    """
+    keys = tuple(k for k in dict.fromkeys(task_ids) if k)
+    with _env_lock:
+        for key in keys:
+            _calls_in_flight[key] = _calls_in_flight.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        now = time.time()
+        with _env_lock:
+            for key in keys:
+                remaining = _calls_in_flight.get(key, 0) - 1
+                if remaining > 0:
+                    _calls_in_flight[key] = remaining
+                else:
+                    _calls_in_flight.pop(key, None)
+                if key in _last_activity:
+                    _last_activity[key] = now
 
 
 def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
@@ -1211,41 +1250,45 @@ def terminal_tool(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
         )
         env = _acquire_env(plan, task_id)
-        env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
+        # From here on this task holds an environment. The mark covers the approval gate as
+        # well as execution: a flagged command can sit in the approval wait for minutes
+        # before env.execute is reached, which is long enough to be reaped.
+        with _call_in_flight(plan.effective_task_id, task_id):
+            env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
-        # Session key for cwd records: the contextvar doesn't cross tool-worker
-        # threads, so fall back to the raw task_id (the top-level agent's
-        # session_key) as a stable anchor.
-        from tools.approval import get_current_session_key
+            # Session key for cwd records: the contextvar doesn't cross tool-worker
+            # threads, so fall back to the raw task_id (the top-level agent's
+            # session_key) as a stable anchor.
+            from tools.approval import get_current_session_key
 
-        session_key = get_current_session_key(default="") or (task_id or "")
+            session_key = get_current_session_key(default="") or (task_id or "")
 
-        _pre_exec_block(command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key)
-        # Pre-exec security checks (tirith + dangerous command detection);
-        # force=True means the user already confirmed.
-        verdict = _run_approval_guards(command, env_type, plan.config, force=force)
+            _pre_exec_block(command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key)
+            # Pre-exec security checks (tirith + dangerous command detection);
+            # force=True means the user already confirmed.
+            verdict = _run_approval_guards(command, env_type, plan.config, force=force)
 
-        pty_disabled = pty and _command_requires_pipe_stdin(command)
-        if plan.promoted_from_foreground_timeout is not None:
-            # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
-            # caller could not have meant for a foreground call, and the two are exclusive anyway.
-            background, notify_on_complete, watch_patterns = True, True, None
-        if background:
-            result = spawn_background_process(
-                command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
-                task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
-                effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
-                watch_patterns=watch_patterns, approval_note=verdict.note,
-                pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
-            )
+            pty_disabled = pty and _command_requires_pipe_stdin(command)
             if plan.promoted_from_foreground_timeout is not None:
-                result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
-            return result
-        return _run_foreground(
-            command, env, plan,
-            task_id=task_id, session_id=session_id, session_key=session_key,
-            workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
-        )
+                # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
+                # caller could not have meant for a foreground call, and the two are exclusive anyway.
+                background, notify_on_complete, watch_patterns = True, True, None
+            if background:
+                result = spawn_background_process(
+                    command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
+                    task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
+                    effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
+                    watch_patterns=watch_patterns, approval_note=verdict.note,
+                    pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
+                )
+                if plan.promoted_from_foreground_timeout is not None:
+                    result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
+                return result
+            return _run_foreground(
+                command, env, plan,
+                task_id=task_id, session_id=session_id, session_key=session_key,
+                workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
+            )
     except _Rejected as r:
         return r.result_json
     except EnvironmentConnectionError as e:

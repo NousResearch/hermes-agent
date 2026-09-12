@@ -149,15 +149,8 @@ class TestGetProcessHermesHome:
 
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
 class TestNodeToolRunnable:
-    """node_tool_runnable() rejects broken Hermes-managed npm/node wrappers."""
-
-    def _stub(self, tmp_path, name, body, mode=0o755):
-        path = tmp_path / name
-        path.write_text(body)
-        path.chmod(mode)
-        return path
+    """Empty executable paths cannot be probed."""
 
     def test_none_and_empty_rejected(self):
         assert node_tool_runnable(None) is False
@@ -509,6 +502,9 @@ class TestAgentBrowserRunnable:
     def test_none_and_empty_rejected(self):
         assert agent_browser_runnable(None) is False
         assert agent_browser_runnable("") is False
+
+    def test_install_command_is_not_a_runnable_browser(self):
+        assert agent_browser_runnable("npx agent-browser") is False
 
     def test_dangling_symlink_rejected(self, tmp_path):
         link = tmp_path / "agent-browser"

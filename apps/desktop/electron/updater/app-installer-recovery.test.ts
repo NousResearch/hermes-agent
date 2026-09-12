@@ -55,13 +55,13 @@ for (const failureAt of ['prepare', 'register', 'teardown', 'open', 'none']) {
 
     try {
       if (failureAt === 'none') {
-        const result = await new AppInstallerStrategy(deps).apply({})
+        const result = await new AppInstallerStrategy(deps).apply()
         assert.equal(result.ok, true)
         assert.equal(result.handedOff, true, 'keep backend restart blocked until the quitting app exits')
         assert.deepEqual(calls, ['prepare', 'register', 'teardown', 'open', 'quit'])
         assert.equal(fs.existsSync(marker), true)
       } else {
-        await assert.rejects(new AppInstallerStrategy(deps).apply({}), error => error === failure)
+        await assert.rejects(new AppInstallerStrategy(deps).apply(), error => error === failure)
         assert.equal(running, true)
         assert.equal(calls.includes('quit'), false)
         assert.equal(calls.includes('restore'), ['teardown', 'open'].includes(failureAt))
@@ -96,7 +96,7 @@ test('handoff errors retain cleanup failures while still restoring the backend',
   }
 
   try {
-    await assert.rejects(new AppInstallerStrategy(deps).apply({}), error => {
+    await assert.rejects(new AppInstallerStrategy(deps).apply(), error => {
       assert.ok(error instanceof AggregateError)
       assert.equal(error.cause, original)
       assert.equal(error.errors[0], original)

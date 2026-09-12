@@ -921,7 +921,7 @@ class TestWebServerEndpoints:
 
 
 
-    def test_post_memory_provider_setup_routes_pip_through_pm(self, monkeypatch):
+    def test_post_memory_provider_setup_routes_pip_through_pm(self, monkeypatch, tmp_path):
         """NS-605 lineage: dashboard pip installs must route through pm
         (venv sync of the owning extra), never a direct
         `pip install --python sys.executable`."""
@@ -930,11 +930,12 @@ class TestWebServerEndpoints:
         import hermes_cli.web_server as web_server
         import pm
 
-        # Force a provider with declared legacy dependencies and an owned extra.
-        manifest = {"pip_dependencies": ["honcho-ai"], "extra": "honcho"}
-        monkeypatch.setattr("hermes_cli.web_server_memory._memory_provider_manifest", lambda name: manifest)
-        monkeypatch.setattr("hermes_cli.web_routers.memory_providers._memory_provider_manifest", lambda name: manifest)
-        monkeypatch.setattr("hermes_cli.web_routers.memory_providers._dependency_importable", lambda dep: False)
+        # Read the real declaration through the same candidate path as the CLI.
+        provider = tmp_path / "honcho-provider"
+        provider.mkdir()
+        (provider / "plugin.yaml").write_text("name: honcho\nextra: honcho\n")
+        monkeypatch.setattr("plugins.memory.find_provider_dir", lambda name: provider)
+        monkeypatch.setattr("hermes_cli.web_routers.memory_providers._discover_memory_provider_statuses", lambda: [])
 
         installed = []
 
@@ -968,9 +969,11 @@ class TestWebServerEndpoints:
 
 
 
-    def test_put_memory_provider_config_writes_config_and_secret(self):
+    def test_put_memory_provider_config_writes_config_and_secret(self, monkeypatch):
         from hermes_constants import get_hermes_home
         from hermes_cli.config import load_config, load_env
+
+        monkeypatch.setattr("pm.venv_is_current", lambda **kwargs: True)
 
         resp = self.client.put(
             "/api/memory/providers/hindsight/config",

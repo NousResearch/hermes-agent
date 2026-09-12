@@ -300,7 +300,7 @@ this Hermes understands still loads with a warning.
 | `manifest_version` | int | Manifest **file-format** version. Absent = `1`. Current max: `2`. Independent from `api_version`. |
 | `api_version` | int | Runtime **plugin API generation** the plugin targets (ctx surface / hook signatures). Deliberately a separate axis from `manifest_version` — an `api_version: 1` plugin can use a v2 manifest. |
 | `requires_plugins` | list | Inter-plugin dependencies: `- id: other-plugin` with optional `version_range: ">=1.0,<2"`. **Advisory**: a missing dependency logs a clear warning but the plugin still loads — probe at runtime with `ctx.has_plugin("other-plugin")`. Load **order** honors these edges: when A requires B, B's `register()` runs before A's (topological sort, alphabetical tiebreak; cycles warn and fall back to alphabetical order). |
-| `python_dependencies` | list of str | Declared pip requirements (e.g. `"requests>=2.0,<3"`). **Declaration seam only** — Hermes validates them, and `hermes plugins install` / `hermes plugins doctor` surface missing ones with a `pip install` hint, but Hermes **never auto-installs** them. Pin upper bounds. |
+| `python_dependencies` | list of str | Declared Python requirements (e.g. `"requests>=2.0,<3"`). Installation requests consent; enabling admits the candidate through PM with the existing core, extras, and enabled-plugin union. Successful preparation publishes the environment and configuration transactionally; failure preserves the previous selection and enabled set. Declining leaves the installed plugin disabled. Pin upper bounds. |
 | `config_schema` | mapping | JSON-schema-ish description of keys under `plugins.entries.<id>.settings`: `api_url: {type: str, default: "", description: "...", required: false}`. Validated at load; mismatches log actionable warnings naming the key and expected type — never load failures. Types: `str`, `int`, `float`, `bool`, `list`, `dict` (plus JSON-schema aliases). |
 | `license` | str | SPDX-style license id (e.g. `MIT`). |
 | `homepage` | str | Project URL. |
@@ -1696,10 +1696,13 @@ For sharing plugins publicly, add an entry point to your Python package:
 my-plugin = "my_plugin_package"
 ```
 
-```bash
-pip install hermes-plugin-calculator
-# Plugin auto-discovered on next hermes startup
-```
+Entry-point discovery remains supported when the distribution is present in the
+environment supplied by the installation owner (for example, a Nix derivation).
+It is discovery, not permission to inject packages into a PM-selected generation.
+For managed installs, distribute a directory plugin with `pyproject.toml` or
+manifest Python requirements and use `hermes plugins install` / `enable` so PM
+can admit it transactionally. Restart Hermes after a new environment is selected.
+`hermes pm install` accepts managed tool names, not arbitrary PyPI packages.
 
 ## Distribute for NixOS
 

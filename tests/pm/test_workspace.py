@@ -11,6 +11,10 @@ core + plugin deps into ONE lock; conflict = loud refusal.
 from __future__ import annotations
 
 import os
+import subprocess
+import json
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +31,15 @@ def isolated_machine_home(tmp_path, monkeypatch):
 @pytest.fixture
 def layout(tmp_path, monkeypatch):
     """A fake install: core repo with pyproject, plugin dirs, store."""
+    from tests.pm.test_workspace_build_inputs import _wheel
+
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _wheel(wheels, "httpx", "0.28.1")
+    _wheel(wheels, "rich", "13.9.4")
+    uv = shutil.which("uv")
+    assert uv
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     core = tmp_path / "core"
     core.mkdir()
     (core / "pyproject.toml").write_text(
@@ -34,7 +47,9 @@ def layout(tmp_path, monkeypatch):
         'name = "hermes-agent"\n'
         'version = "0.1.0"\n'
         'requires-python = ">=3.11"\n'
-        'dependencies = ["httpx==0.28.1"]\n',
+        'dependencies = ["httpx==0.28.1"]\n'
+        '[tool.uv]\npackage=false\nno-index=true\n'
+        f'find-links=[{json.dumps(wheels.as_posix())}]\n',
         encoding="utf-8",
     )
     plugins = tmp_path / "home" / "plugins"
@@ -62,7 +77,8 @@ def test_workspace_root_is_per_install_not_in_the_store(layout):
 
 def test_build_writes_core_pyproject_verbatim(layout):
     _, core, plug_a, _ = layout
-    root = ws.build_root([plug_a])
+    root = ws.workspace_root()
+    ws.lock_and_sync([plug_a], root=root, venv_dir=root.parent / "env")
     text = (root / "pyproject.toml").read_text(encoding="utf-8")
     core_text = (core / "pyproject.toml").read_text(encoding="utf-8")
     # core's project table is carried verbatim (name, deps, requires-python)
@@ -78,7 +94,8 @@ def test_members_keep_their_source_with_the_generation(layout):
     import tomllib
 
     _, _, plug_a, _ = layout
-    root = ws.build_root([plug_a])
+    root = ws.workspace_root()
+    ws.lock_and_sync([plug_a], root=root, venv_dir=root.parent / "env")
     document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     [relative] = document["tool"]["uv"]["workspace"]["members"]
     copied = root / relative / "pyproject.toml"
@@ -91,16 +108,18 @@ def test_members_keep_their_source_with_the_generation(layout):
 
 def test_build_is_idempotent(layout):
     _, _, plug_a, _ = layout
-    ws.build_root([plug_a])
+    root = ws.workspace_root()
+    ws.lock_and_sync([plug_a], root=root, venv_dir=root.parent / "env")
     first = (ws.workspace_root() / "pyproject.toml").read_text(encoding="utf-8")
-    ws.build_root([plug_a])
+    ws.lock_and_sync([plug_a], root=root, venv_dir=root.parent / "env")
     second = (ws.workspace_root() / "pyproject.toml").read_text(encoding="utf-8")
     assert first == second
 
 
 def test_zero_plugins_still_builds_a_root_with_no_members(layout):
     _, _, _, _ = layout
-    root = ws.build_root([])
+    root = ws.workspace_root()
+    ws.lock_and_sync([], root=root, venv_dir=root.parent / "env")
     text = (root / "pyproject.toml").read_text(encoding="utf-8")
     assert 'name = "hermes-agent"' in text
     assert "[tool.uv.workspace]" not in text or "members = []" in text
@@ -175,7 +194,7 @@ def test_enabled_member_dirs_finds_enabled_dep_plugins(tmp_path, monkeypatch):
     (orphan / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
 
     # enabled order = enable recency (legacy enabled first/older, modern
-    # newest LAST) — order must carry through for the bisect tiebreak.
+    # newest LAST) — discovery preserves the configured order.
     monkeypatch.setattr(
         "pm.plugins_state.enabled_plugins_ordered",
         lambda: {plugins: ["legacy-plug", "modern-plug", "plain-plug"]},
@@ -197,24 +216,6 @@ def test_enabled_member_dirs_empty_when_nothing_enabled(tmp_path, monkeypatch):
         "pm.plugins_state.enabled_plugins_ordered", lambda: {}
     )
     assert ws.enabled_member_dirs() == []
-
-
-def test_scan_plugin_classifies_dep_surfaces(tmp_path):
-    full = tmp_path / "full-plug"
-    full.mkdir()
-    for name in ("pyproject.toml", "package.json", "packages.py", "plugin.yaml"):
-        (full / name).write_text("x\n", encoding="utf-8")
-    scan = ws.scan_plugin(full)
-    assert scan["pyproject"] and scan["package_json"] and scan["packages_py"]
-    assert not scan["legacy_deps"]
-
-    legacy = tmp_path / "legacy-plug"
-    legacy.mkdir()
-    (legacy / "plugin.yaml").write_text(
-        "name: legacy\npip_dependencies:\n  - \"x>=1\"\n", encoding="utf-8"
-    )
-    scan = ws.scan_plugin(legacy)
-    assert scan["legacy_deps"] and not scan["pyproject"]
 
 
 def test_enabled_member_dirs_ignores_non_profile_entries(tmp_path, monkeypatch):
@@ -280,7 +281,7 @@ def test_sync_failure_is_never_a_conflict(tmp_path, monkeypatch):
         captured["cmd"] = cmd
         return FakeProc()
 
-    monkeypatch.setattr(ws.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(InstallError) as excinfo:
         ws.lock_and_sync([], [], venv_dir=tmp_path / "candidate")
     assert not isinstance(excinfo.value, ResolutionConflict)
@@ -308,7 +309,7 @@ def test_staging_root_and_env_are_honored_without_live_mutation(monkeypatch, tmp
     monkeypatch.setattr(ws, "_generate_pyproject", lambda *a, **k: (staging, False))
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path("uv"), Path("pm-python")))
     monkeypatch.setattr("pm.packages.uv_cache_dir", lambda: tmp_path / "cache")
-    monkeypatch.setattr(ws.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
     live_key = "PM_WORKSPACE_TEST_SENTINEL"
     os.environ[live_key] = "live"
@@ -343,7 +344,7 @@ def test_changed_root_seeds_from_committed_lock_unchanged_keeps_extended(
         stdout = ""
 
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path("uv"), Path("pm-python")))
-    monkeypatch.setattr(ws.subprocess, "run", lambda cmd, **k: FakeProc())
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: FakeProc())
 
     root = ws.workspace_root()
     venv = tmp_path / "venv"

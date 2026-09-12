@@ -43,7 +43,7 @@ describe('AppInstallerStrategy.apply', () => {
   it('writes the relaunch marker before teardown, trigger, and quit — order is the contract', async () => {
     const { deps, calls } = makeDeps()
     const strategy = new AppInstallerStrategy(deps)
-    const result = await strategy.apply({})
+    const result = await strategy.apply()
 
     expect(result).toEqual({ ok: true, manual: false, bundled: true, handedOff: true, mechanism: 'app-installer' })
     expect(calls).toEqual(['prepare', 'relaunch-marker', 'teardown', 'open', 'quit'])
@@ -57,7 +57,7 @@ describe('AppInstallerStrategy.apply', () => {
       emitUpdateProgress: event => { progress.push(event.message) }
     })
 
-    const result = await new AppInstallerStrategy(deps).apply({})
+    const result = await new AppInstallerStrategy(deps).apply()
     expect(result.ok).toBe(true)
     expect(calls).toContain('quit')
     expect(progress.some(message => message.includes('Reopen Hermes'))).toBe(true)
@@ -77,14 +77,14 @@ describe('AppInstallerStrategy.apply', () => {
       }
     })
 
-    expect((await new AppInstallerStrategy(deps).apply({})).manual).toBe(false)
+    expect((await new AppInstallerStrategy(deps).apply()).manual).toBe(false)
     expect(prepared).toEqual(['https://registered.example/channel.appinstaller'])
     expect(calls).toEqual(['relaunch-marker', 'teardown', 'quit'])
   })
 
   it('no feed URL → manual card, no teardown, no quit', async () => {
     const { deps, calls } = makeDeps({ feedBaseUrl: '' })
-    const result = await new AppInstallerStrategy(deps).apply({})
+    const result = await new AppInstallerStrategy(deps).apply()
     expect(result).toEqual({ ok: true, manual: true, bundled: true, mechanism: 'app-installer' })
     expect(calls).toEqual([])
   })

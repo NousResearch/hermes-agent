@@ -1,14 +1,13 @@
-"""Update markers, Windows launcher recovery and subprocess handoff."""
+"""Historical update markers and interrupted Windows launcher recovery."""
 
-import contextlib
 import logging
 import os
 import shutil
-import subprocess
 import sys
 import time as _time
 
 from pathlib import Path
+from typing import NoReturn
 from hermes_cli import _early_recovery as _early_recovery_mod
 
 # Log-record parity with the origin module.
@@ -77,123 +76,14 @@ def _clear_lazy_refresh_incomplete_marker() -> None:
     _clear_marker_file(_lazy_refresh_marker_path(), label="lazy-refresh-incomplete")
 
 
-def _norm_exe_path(path) -> str:
-    """Case-folded resolved path, for comparing executables on Windows."""
-    try:
-        return str(Path(path).resolve()).lower()
-    except OSError:
-        return str(path).lower()
-
-
-def _windows_shim_in_process_chain() -> Path | None:
-    """The venv console shim this process runs from or under, if any.
-
-    ``venv\\Scripts\\hermes.exe`` holds itself open (no ``FILE_SHARE_DELETE``) for the whole
-    process lifetime, so an editable install run from one can never rewrite it. Two probes, since
-    either can come up empty: own launch paths (argv[0], ``__main__`` file/spec origin — runpy/
-    zipapp puts ``<shim>\\__main__.py`` there) and psutil ancestry. Candidates are intersected
-    with the project venv's own shims so a foreign ``hermes.exe`` never matches.
-
-    See #88838, #89599.
-    """
-    if not _is_windows():
-        return None
-    scripts_dir = _venv_scripts_dir()
-    if scripts_dir is None:
-        return None
-    shims = {_norm_exe_path(shim): shim for shim in _hermes_exe_shims(scripts_dir)}
-    if not shims:
-        return None
-
-    def _match(candidate) -> Path | None:
-        path = Path(candidate)
-        if path.name.lower() == "__main__.py":
-            path = path.parent
-        return shims.get(_norm_exe_path(path))
-
-    main_mod = sys.modules.get("__main__")
-    candidates = [*sys.argv[:1], *filter(None, (
-        getattr(main_mod, "__file__", None),
-        getattr(getattr(main_mod, "__spec__", None), "origin", None)))]
-    for candidate in candidates:
-        matched = _match(candidate)
-        if matched is not None:
-            return matched
-
-    with contextlib.suppress(Exception):
-        import psutil
-        me = psutil.Process()
-        for proc in [me] + list(me.parents()):
-            try:
-                matched = _match(proc.exe())
-            except Exception:
-                continue
-            if matched is not None:
-                return matched
-    return None
-
-
-def _windows_running_hermes_launcher_locked() -> bool:
-    """True when a venv ``hermes*.exe`` shim is this process or an ancestor (best-effort)."""
-    return _windows_shim_in_process_chain() is not None
-
-
-# Set on the re-exec'd child so it can never spawn another one.
+# Frozen old-updater import; current updates never detach dependency work.
 _UPDATE_REEXEC_ENV = "HERMES_UPDATE_REEXEC"
 
 
-def _reexec_dependency_sync_off_windows_shim() -> bool:
-    """Hand the dependency sync to the venv interpreter, off the console shim.
-
-    Returns True when a child was spawned and the caller must exit at once (releasing the
-    shim before the child reaches ``pip install -e .``); False to continue in-process.
-
-    Called at the dependency-sync boundary, NOT at the top of the command: by then the code swap
-    is done and every interactive question has been answered; only the venv rewrite — the one
-    step that cannot run inside the shim — remains. Earlier would detach every run (even the
-    ``Already up to date!`` no-op) and take the prompts along. Waiting on the child deadlocks
-    (we hold the handle it needs) and Windows has no exec, so the shell returns; the child keeps
-    the console, prints its own result, and ``--gateway`` writes the true exit code to
-    ``.update_exit_code``. The child re-runs ``hermes update`` so the sync and its tail happen
-    exactly once; ``_UPDATE_REEXEC_ENV`` stops it spawning again and stops the "already up to
-    date" early return from swallowing the sync. ``.update-incomplete`` is already written, so
-    a child that dies mid-install is finished by the next launch's recovery.
-
-    Called at the dependency-sync boundary, NOT at the top of the command — the same placement rule as the
-    native-module deferral beside it, and for the same reason (#86735): a hand-off that fires before the
-    fetch detaches every run, including the ``Already up to date!`` no-op that never touches the venv at
-    all, and it takes the interactive prompts with it. By the time we reach here the code swap is done and
-    every question — stash, branch switch, config migration — has already been asked and answered in the
-    user's own console.
-    ``venv\\Scripts\\hermes.exe`` is a launcher that runs the interpreter with the shim as its script and
-    holds it open without ``FILE_SHARE_DELETE`` for the whole command, so the quarantine rename is refused
-    and uv fails to replace it with os error 32 (#88838, #89599).
-    """
-    if os.environ.get(_UPDATE_REEXEC_ENV) == "1":
-        return False
-    shim = _windows_shim_in_process_chain()
-    if shim is None:
-        return False
-    from hermes_constants import venv_python_path
-    python_exe = venv_python_path(shim.parent.parent, windows=True)
-    cmd = [str(python_exe), "-m", "hermes_cli.main", *sys.argv[1:]]
-    if python_exe.is_file():
-        try:
-            subprocess.Popen(
-                cmd, env={**os.environ, _UPDATE_REEXEC_ENV: "1"}, stdin=subprocess.DEVNULL)
-            print(
-                f"→ Windows: {shim.name} cannot replace itself while it runs; "
-                "finishing the dependency install under the venv Python.")
-            print(
-                "  The code update is already applied. The install continues "
-                "below and this shell returns right away.")
-            return True
-        except OSError as exc:
-            logger.debug("Dependency-sync hand-off via %s failed: %s", python_exe, exc)
-        print(f"  ⚠ Could not hand the dependency install off {shim.name}.")
-        print("    Continuing in-process; if it cannot replace the shim, run:")
-        print(f"    {subprocess.list2cmdline(cmd)}")
-    return False
+def _reexec_dependency_sync_off_windows_shim() -> NoReturn:
+    """Stop a mixed old-code/new-files updater at the retired sync boundary."""
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch()
 
 
 def _is_windows() -> bool:

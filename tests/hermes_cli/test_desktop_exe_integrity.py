@@ -246,9 +246,7 @@ def test_gate_fails_clearly_without_backup(tmp_path, capsys):
     fake.parent.mkdir(parents=True)
     fake.write_bytes(b"<html>proxy error</html>" + b" " * 600)
 
-    with patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]), \
-         patch("hermes_cli.main_desktop._desktop_stamp_path", return_value=tmp_path / "stamp.json"):
-        verified, rolled_back = main_desktop._ensure_desktop_exe_launchable(desktop_dir, exe)
+    verified, rolled_back = main_desktop._ensure_desktop_exe_launchable(desktop_dir, exe)
 
     assert verified is None
     assert rolled_back is False
@@ -302,6 +300,8 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
 
     def pack_into_staging(cmd, *args, **kwargs):
+        if cmd[1:3] != ["run", "builder"]:
+            return subprocess.CompletedProcess(list(cmd), 0)
         # electron-builder honours -c.directories.output=<staging>; emulate a
         # pack that "succeeds" but writes a truncated exe there.
         out_flag = next((a for a in cmd if str(a).startswith("-c.directories.output=")), None)
@@ -311,13 +311,10 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
         return subprocess.CompletedProcess(list(cmd), 0)
 
     with patch("hermes_cli.main_desktop.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="npm.cmd"), \
-         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.source_build.source_build_env", return_value={"PATH": "/usr/bin"}), \
+         patch("hermes_cli.source_build.prepare_source_dependencies"), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._stop_desktop_processes_locking_build", return_value=[]), \
-         patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]), \
-         patch("hermes_cli.main_desktop._desktop_stamp_path", return_value=tmp_path / "stamp.json"), \
-         patch("hermes_cli.main_desktop._write_desktop_build_stamp") as mock_stamp, \
          patch("hermes_cli.main_desktop._windows_native_machine", return_value="AMD64"), \
          patch("hermes_cli.main_desktop.subprocess.run", side_effect=pack_into_staging), \
          pytest.raises(SystemExit) as exc:
@@ -329,7 +326,6 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     assert main_desktop._parse_pe_machine(live_exe) == PE_AMD64
     # ...the staged corrupt tree was discarded...
     assert not list((desktop_dir / "release").glob(".staging-*"))
-    # ...and the poisoned build was never stamped as good.
-    mock_stamp.assert_not_called()
+
     out = capsys.readouterr().out
     assert "integrity check" in out

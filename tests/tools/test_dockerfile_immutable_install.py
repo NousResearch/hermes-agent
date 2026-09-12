@@ -1,4 +1,8 @@
-"""Contract tests for the Docker image's immutable /opt/hermes install tree."""
+"""Packaging guards not yet covered by the image-runtime suite.
+
+Write permissions and lazy-install policy are exercised by tests/docker.
+Keep stamp placement and Photon preparation until those image checks exist.
+"""
 from __future__ import annotations
 
 import re
@@ -10,33 +14,6 @@ DOCKERFILE = REPO_ROOT / "Dockerfile"
 
 def _dockerfile_text() -> str:
     return DOCKERFILE.read_text()
-
-
-def test_dockerfile_makes_opt_hermes_readonly_for_hermes_user() -> None:
-    text = _dockerfile_text()
-
-    # --chmod on the source COPY bakes read-only perms at copy time instead
-    # of a separate chmod -R pass (which walked ~30k files — #49113).
-    assert "COPY --link --chmod=a+rX,go-w . ." in text
-    # The old tree-walking passes must not be present.
-    assert "chown -R root:root /opt/hermes" not in text
-    assert "chmod -R a+rX /opt/hermes" not in text
-    assert "chmod -R a-w /opt/hermes" not in text
-
-
-def test_dockerfile_does_not_chown_install_trees_to_hermes() -> None:
-    text = _dockerfile_text()
-    forbidden_patterns = (
-        r"chown\s+-R\s+hermes:hermes\s+/opt/hermes/\.venv",
-        r"chown\s+-R\s+hermes:hermes\s+/opt/hermes/ui-tui",
-        r"chown\s+-R\s+hermes:hermes\s+/opt/hermes/gateway",
-        r"chown\s+-R\s+hermes:hermes\s+/opt/hermes/node_modules",
-    )
-    for pattern in forbidden_patterns:
-        assert not re.search(pattern, text), (
-            "runtime install trees under /opt/hermes must stay immutable; "
-            f"found forbidden pattern {pattern!r}"
-        )
 
 
 def test_dockerfile_bakes_code_scoped_install_method_stamp() -> None:
@@ -60,15 +37,6 @@ def test_dockerfile_bakes_code_scoped_install_method_stamp() -> None:
         text,
     )
     assert shim_block, "install-method stamp must be in the shim-wiring RUN block"
-
-
-def test_dockerfile_disables_lazy_installs() -> None:
-    """The published image fully disables runtime lazy installs so nothing
-    can mutate the sealed venv (the old durable-target redirect machinery is
-    gone — no code reads HERMES_LAZY_INSTALL_TARGET anymore).
-    """
-    assert "ENV HERMES_DISABLE_LAZY_INSTALLS=1" in _dockerfile_text()
-    assert "HERMES_LAZY_INSTALL_TARGET" not in _dockerfile_text()
 
 
 def test_dockerfile_bakes_photon_sidecar_deps() -> None:

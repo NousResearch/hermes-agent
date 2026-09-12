@@ -756,7 +756,12 @@ class Ripgrep(BinaryPackage):
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True
-    binary_rel = {"win32": "cua-driver.exe", "posix": "cua-driver"}
+    binary_rel = {
+        "darwin-arm64": "CuaDriver.app/Contents/MacOS/cua-driver",
+        "darwin-x64": "CuaDriver.app/Contents/MacOS/cua-driver",
+        "win32": "cua-driver.exe",
+        "posix": "cua-driver",
+    }
 
     def fetch_url(self, version: str, target: str) -> str:
         arch = {
@@ -768,9 +773,13 @@ class CuaDriver(BinaryPackage):
             "win32-arm64": "windows-arm64",
         }[target]
         ext = "zip" if target.startswith("win32") else "tar.gz"
+        # Only the directory archive contains the signed macOS app identity
+        # needed by TCC and private sessions. Other targets' binary archives
+        # already carry their runtime helpers (including Windows UIAccess).
+        variant = "" if target.startswith("darwin") else "-binary"
         return (
             f"https://github.com/trycua/cua/releases/download/cua-driver-rs-v{version}/"
-            f"cua-driver-rs-{version}-{arch}-binary.{ext}"
+            f"cua-driver-rs-{version}-{arch}{variant}.{ext}"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:

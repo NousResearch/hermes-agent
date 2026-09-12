@@ -114,16 +114,22 @@ def activate_dependencies(project_root: Path) -> None:
     import sys
 
     state = install_state_dir(project_root)
-    if not state.is_dir():
-        return
-    from hermes_cli.runtime_state import runtime_lock, recover_publication, lease_generation
-    with runtime_lock(project_root):
-        recover_publication(project_root)
-        if not runtime_facts_path(project_root).is_file():
-            return
-        environment = selected_venv(project_root)
-        lease_generation(environment)
+    if state.is_dir():
+        from hermes_cli.runtime_state import runtime_lock, recover_publication, lease_generation
+        with runtime_lock(project_root):
+            recover_publication(project_root)
+            environment = selected_venv(project_root)
+            lease_generation(environment)
+            selected = site_packages(environment)
+            if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
+                return
+    else:
+        # Older installs and sealed payloads still select once, before imports.
+        # Never consult VIRTUAL_ENV: it can describe the invoking shell's Python.
+        environment = base_venv(project_root)
         selected = site_packages(environment)
+        if not selected.is_dir():
+            return  # External/Nix interpreter owns its original sys.path.
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
     import site
@@ -136,6 +142,10 @@ def activate_dependencies(project_root: Path) -> None:
     sys.path[:] = [str(project_root.resolve()), str(selected),
                    *[entry for entry in sys.path if Path(entry).resolve() != selected.resolve()]]
     os.environ["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
+    os.environ.pop("VIRTUAL_ENV", None)
+    executable_dir = environment / ("Scripts" if os.name == "nt" else "bin")
+    if executable_dir.is_dir():
+        os.environ["PATH"] = os.pathsep.join([str(executable_dir), os.environ.get("PATH", "")])
 
 
 def activation_environment(project_root: Path) -> dict[str, str]:

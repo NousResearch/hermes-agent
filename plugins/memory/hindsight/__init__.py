@@ -41,7 +41,7 @@ from .embedded import (
 from .embedded_runtime import ensure_daemon_and_url as _start_sideenv_daemon
 from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
-    _DEFAULT_TIMEOUT, _HINDSIGHT_GLYPH, _MIN_CLIENT_VERSION, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
+    _DEFAULT_TIMEOUT, _HINDSIGHT_GLYPH, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
     _PROVIDER_DEFAULT_MODELS, _VALID_BUDGETS, _daemon_llm_provider,
     _normalize_observation_scopes, _normalize_retain_tags, _parse_int_setting,
     _resolve_bank_id_template,
@@ -66,23 +66,6 @@ def _ensure_client_dependency() -> None:
 
 def _cloud_api_key(config: dict) -> str:
     return config.get("apiKey") or config.get("api_key") or get_secret("HINDSIGHT_API_KEY", "")
-
-
-def _maybe_upgrade_client() -> None:
-    """Auto-upgrade an outdated hindsight-client via pm's venv sync (uv.lock owns the pin)."""
-    try:
-        from importlib.metadata import version as pkg_version
-        from packaging.version import Version
-        installed = pkg_version("hindsight-client")
-        if Version(installed) < Version(_MIN_CLIENT_VERSION):
-            logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
-                           installed, _MIN_CLIENT_VERSION)
-            import pm
-
-            pm.sync_venv(["hindsight"])
-            logger.info("hindsight-client resynced against uv.lock")
-    except Exception as exc:
-        logger.warning("Auto-upgrade unavailable: %s. Run: hermes pm install", exc)
 
 
 # update_mode='append' capability (Hindsight >= 0.5.0), cached per (API URL, key fingerprint)
@@ -697,7 +680,6 @@ class HindsightMemoryProvider(MemoryProvider):
             self._status_callback = kwargs["status_callback"]
         # session_id stays in tags so processes for one session remain filterable together.
         self._document_id = _mint_document_id(self._session_id)
-        _maybe_upgrade_client()
 
         self._config = cfg = _load_config()
         for name in _SESSION_KWARGS:

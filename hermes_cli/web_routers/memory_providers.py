@@ -36,7 +36,6 @@ get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 save_env_value = late("save_env_value", "hermes_cli.config")
-_dependency_importable = late("_dependency_importable", "hermes_cli.web_server_memory")
 load_env = late("load_env", "hermes_cli.config")
 # Sentinel: remove this key so it falls back to the host or built-in default.
 _UNSET: Any = object()
@@ -329,45 +328,15 @@ def _command_result(
     }
 
 
-def _install_memory_provider_pip_dependencies(name: str, dependencies: List[str]) -> List[Dict[str, Any]]:
-    import pm
+def _install_memory_provider_python_dependencies(name: str) -> List[Dict[str, Any]]:
+    from hermes_cli.memory_setup import prepare_memory_provider_dependencies
 
-    manifest = _memory_provider_manifest(name)
-    extra = str(manifest.get("extra") or "").strip()
-    if not dependencies and not extra:
-        return []
-    missing = [dep for dep in dependencies if not _dependency_importable(dep)]
-    if not missing and (not extra or pm.available(extra)):
-        if not dependencies:
-            return []
-        return [_command_result(kind="pip", name=", ".join(dependencies), status="already_installed")]
-    # Setup precedes config selection. Include the candidate without dropping
-    # active providers; PM resolves legacy declarations and pyprojects alike.
-    target = ", ".join(missing) or extra
     command = "hermes pm install"
     try:
-        from hermes_cli.plugins_admission import candidate_member_dirs
-        from pm.workspace import _is_member_candidate
-        from plugins.memory import find_provider_dir
-
-        plugin_dir = find_provider_dir(name)
-        member = plugin_dir is not None and _is_member_candidate(plugin_dir)
-        if not extra and not member:
-            return [_command_result(
-                kind="pip", name=target, status="failed", command=command,
-                error="no declared extra and no plugin directory to materialize declared dependencies from",
-            )]
-        inputs = {"plugin_dirs": lambda: candidate_member_dirs((), extra_dirs=[plugin_dir])} if member else {}
-        pm.sync_venv([extra] if extra else None, explicit=True, **inputs)
+        _manifest, status = prepare_memory_provider_dependencies(name)
     except Exception as exc:
-        return [_command_result(kind="pip", name=target, status="failed", command=command, error=str(exc))]
-    still_missing = [dep for dep in missing if not _dependency_importable(dep)]
-    if still_missing or (extra and not pm.available(extra)):
-        # The environment is selected at boot: a sync that succeeded outside
-        # this interpreter's sight is NOT immediate import success — report
-        # the truth instead of stamping installed without the deps visible.
-        return [_command_result(kind="pip", name=target, status="restart_required", command=command)]
-    return [_command_result(kind="pip", name=target, status="installed", command=command)]
+        return [_command_result(kind="pip", name=name, status="failed", command=command, error=str(exc))]
+    return [_command_result(kind="pip", name=name, status=status, command=command)] if status else []
 
 
 def _run_setup_step(results: list, kind: str, name: str, command: str, status_of, **kwargs) -> Optional[int]:
@@ -410,8 +379,12 @@ def _install_memory_provider_setup(name: str) -> Dict[str, Any]:
     manifest = _memory_provider_manifest(name)
     if provider is None and not manifest:
         raise _unknown_provider(name)
-    setup = _memory_provider_setup_manifest(name)
-    results = _install_memory_provider_pip_dependencies(name, setup["pip_dependencies"])
+    results = _install_memory_provider_python_dependencies(name)
+    try:
+        setup, _inputs = _memory_provider_setup_manifest(name)
+    except Exception as exc:
+        results.append(_command_result(kind="setup", name=name, status="failed", error=str(exc)))
+        setup = {"external_dependencies": []}
     results.extend(_install_memory_provider_external_dependencies(setup["external_dependencies"]))
     if not results:
         results.append(_command_result(kind="setup", name=name, status="no_declared_steps"))

@@ -295,7 +295,8 @@ assert_checkout() {
   got="$(git -C "$INSTALL_DIR" rev-parse HEAD)"
   [ "$got" = "$1" ] || fail "installed checkout is $got, expected $2 ($1)"
   ok "checkout is $2 ($1)"
-  local hermes="$INSTALL_DIR/venv/bin/hermes"
+  local hermes="$INSTALL_DIR/.hermes/bin/hermes"
+  case "$1" in "$OLD_SHA"|old) hermes="$INSTALL_DIR/venv/bin/hermes" ;; esac
   [ -x "$hermes" ] || fail "no hermes console script at $hermes"
   "$hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-$2.log" \
     || fail "hermes --version failed after $2; log in $LOG_DIR/version-$2.log"
@@ -310,9 +311,19 @@ smoke_desktop() {
   # INSTALLED hermes for the flag rather than assuming this checkout's
   # surface: sampled OLD releases may predate `hermes desktop` or
   # --build-only entirely, and for them the phase skips, loudly.
-  local hermes="$INSTALL_DIR/venv/bin/hermes"
-  if ! "$hermes" desktop --help 2>/dev/null | grep -qF -- --build-only; then
-    ok "hermes desktop --build-only not supported at $1; skipping desktop smoke"
+  local hermes="$INSTALL_DIR/.hermes/bin/hermes"
+  case "$1" in "$OLD_SHA"|old) hermes="$INSTALL_DIR/venv/bin/hermes" ;; esac
+  local help
+  if ! help="$("$hermes" desktop --help 2>&1)"; then
+    if [ "$1" = old ] && printf '%s' "$help" | grep -q 'invalid choice.*desktop'; then
+      ok "old release predates desktop; skipping desktop smoke"
+      return 0
+    fi
+    fail "desktop help failed at $1: $help"
+  fi
+  if ! printf '%s' "$help" | grep -qF -- --build-only; then
+    [ "$1" = old ] || fail "TARGET is missing desktop --build-only"
+    ok "old release predates --build-only; skipping desktop smoke"
     return 0
   fi
   local rc=0

@@ -343,35 +343,36 @@ For docs-only examples, the exact file set may differ. The point is to cover:
 - provider:model parsing
 - any adapter-specific message conversion
 
-Run the targeted tests (or use `scripts/run_tests.sh`, which runs each file in its own subprocess):
+Prepare the [independent test environment](/developer-guide/contributing#manual-development-and-test-environment),
+then use the canonical runner, which isolates each file and scrubs credentials:
 
 ```bash
-source venv/bin/activate
-python -m pytest tests/hermes_cli/test_runtime_provider_resolution.py tests/cli/test_cli_provider_resolution.py tests/hermes_cli/test_setup_model_provider.py tests/run_agent/test_provider_parity.py -q
+scripts/run_tests.sh tests/hermes_cli/test_runtime_provider_resolution.py tests/cli/test_cli_provider_resolution.py tests/hermes_cli/test_setup_model_provider.py tests/run_agent/test_provider_parity.py -q
 ```
 
 For deeper changes, run the full suite before pushing:
 
 ```bash
-source venv/bin/activate
-python -m pytest tests/ -n0 -q
+scripts/run_tests.sh tests/ -q
 ```
 
 ## Step 9: Live verification
 
-After tests, run a real smoke test.
+After tests, run a real smoke test from the checkout using the
+[PM developer workflow](/reference/package-management#developer-workflow) and
+its isolated development home. Leave any test venv before PM activation.
 
 ```bash
-source venv/bin/activate
-python -m hermes_cli.main chat -q "Say hello" --provider your-provider --model your-model
+source ./activate
+python hermes chat -q "Say hello" --provider your-provider --model your-model
 ```
 
 Also test the interactive flows if you changed menus:
 
 ```bash
-source venv/bin/activate
-python -m hermes_cli.main model
-python -m hermes_cli.main setup
+source ./activate
+python hermes model
+python hermes setup
 ```
 
 For native providers, verify at least one tool call too, not just a plain text response.

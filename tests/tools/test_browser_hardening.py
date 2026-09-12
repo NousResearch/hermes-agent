@@ -17,8 +17,6 @@ from tools import browser_tool_lifecycle as bt_lifecycle
 def _reset_caches():
     """Reset all module-level caches so tests start clean."""
     import tools.browser_tool as bt
-    bt._cached_agent_browser = None
-    bt._agent_browser_resolved = False
     bt._cached_command_timeout = None
     bt._command_timeout_resolved = False
     # lru_cache for _discover_homebrew_node_dirs
@@ -49,42 +47,6 @@ class TestDeadCodeRemoval:
         names = [s["name"] for s in BROWSER_TOOL_SCHEMAS]
         assert "browser_close" not in names
 
-
-# ---------------------------------------------------------------------------
-# Caching: _find_agent_browser
-# ---------------------------------------------------------------------------
-
-class TestFindAgentBrowserCache:
-
-    def test_cached_after_first_call(self):
-        import tools.browser_tool as bt
-        with patch("shutil.which", return_value="/usr/bin/agent-browser"), \
-             patch("tools.browser_tool_install.agent_browser_runnable", return_value=True):
-            result1 = bt_install._find_agent_browser()
-            result2 = bt_install._find_agent_browser()
-        assert result1 == result2 == "/usr/bin/agent-browser"
-        assert bt._agent_browser_resolved is True
-
-
-    def test_not_found_cached_raises_on_subsequent(self):
-        """After FileNotFoundError, subsequent calls should raise from cache."""
-        from pathlib import Path
-
-        original_exists = Path.exists
-
-        def mock_exists(self):
-            if "node_modules" in str(self) and "agent-browser" in str(self):
-                return False
-            return original_exists(self)
-
-        with patch("shutil.which", return_value=None), \
-             patch("os.path.isdir", return_value=False), \
-             patch.object(Path, "exists", mock_exists):
-            with pytest.raises(FileNotFoundError):
-                bt_install._find_agent_browser()
-        # Second call should also raise (from cache)
-        with pytest.raises(FileNotFoundError, match="cached"):
-            bt_install._find_agent_browser()
 
 
 # ---------------------------------------------------------------------------

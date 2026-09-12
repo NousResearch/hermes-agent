@@ -5,15 +5,10 @@ are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
 import logging
-import contextlib
-import hashlib
-import json
-import os
 import subprocess
 import sys
 
 from pathlib import Path
-from typing import Callable
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")
@@ -85,110 +80,16 @@ def _web_dist_dir(web_dir: Path) -> Path:
     return _web_project_root(web_dir) / "hermes_cli" / "web_dist"
 
 
-def _hash_source_tree(project_root: Path, tree_dir: Path) -> str:
-    """SHA-256 over *tree_dir* plus the root ``package.json`` / ``package-lock.json``.
-
-    Ignored paths (``node_modules/``, ``dist/``, ``*.pyc``, ...) are skipped via
-    the repo-root ``.gitignore`` (pathspec) so build output never feeds back into
-    its own staleness check. Filenames are sorted for a deterministic digest.
-    """
-    h = hashlib.sha256()
-
-    def _hash_file(path: Path) -> None:
-        h.update(str(path.relative_to(project_root)).encode())
-        h.update(b"\0")
-        with contextlib.suppress(OSError):
-            with open(path, "rb") as f:
-                for chunk in iter(lambda: f.read(65536), b""):
-                    h.update(chunk)
-        h.update(b"\0")
-
-    from pathspec import PathSpec
-    gitignore = project_root / ".gitignore"
-    lines = gitignore.read_text(encoding="utf-8-sig").splitlines() if gitignore.is_file() else []
-    spec = PathSpec.from_lines("gitignore", lines)
-
-    def _ignored(path: Path) -> bool:
-        return spec.match_file(str(path.relative_to(project_root)))
-
-    for name in ("package.json", "package-lock.json"):
-        p = project_root / name
-        if p.is_file() and not _ignored(p):
-            _hash_file(p)
-
-    # Prune ignored directories in place so we never descend into them.
-    for dirpath, dirnames, filenames in os.walk(tree_dir, topdown=True):
-        dirnames[:] = [d for d in dirnames if not _ignored(Path(dirpath) / d)]
-        for fn in sorted(filenames):
-            fp = Path(dirpath) / fn
-            if not _ignored(fp):
-                _hash_file(fp)
-
-    return h.hexdigest()
-
-
-def _stamp_is_current(stamp_file: Path, current_hash: Callable[[], str], **expect) -> bool:
-    """True when *stamp_file* parses, every ``expect`` key matches, and the hash matches.
-
-    ``current_hash`` is only evaluated once the cheaper checks pass (it walks the
-    source tree).
-    """
-    if not stamp_file.is_file():
-        return False
-    try:
-        stamp_data = json.loads(stamp_file.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(stamp_data, dict):
-        return False
-    if any(stamp_data.get(k) != v for k, v in expect.items()):
-        return False
-    saved_hash = stamp_data.get("contentHash")
-    return bool(saved_hash) and current_hash() == saved_hash
-
-
-def _write_build_stamp(stamp_file: Path, label: str, current_hash: Callable[[], str], **extra) -> None:
-    """Write ``{contentHash, **extra, builtAt}``; never lets stamp-writing fail a build."""
-    try:
-        stamp_file.parent.mkdir(parents=True, exist_ok=True)
-        content_hash = current_hash()
-        from datetime import datetime, timezone
-        stamp_data = {"contentHash": content_hash, **extra, "builtAt": datetime.now(timezone.utc).isoformat()}
-        stamp_file.write_text(json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8")
-    except Exception as exc:
-        logger.debug("Failed to write %s build stamp: %s", label, exc)
-
-
 def _web_ui_build_needed(web_dir: Path) -> bool:
-    """True if the web UI dist is missing or its source content changed.
+    from hermes_cli.source_build import source_product_current
 
-    Content hash, NOT mtime: ``git checkout`` / ``hermes update`` rewrite source
-    mtimes without changing content, which made an mtime check unreliable in
-    both directions.
-    """
-    project_root = _web_project_root(web_dir)
-    dist_dir = _web_dist_dir(web_dir)
-    if not any(p.exists() for p in (dist_dir / ".vite" / "manifest.json", dist_dir / "index.html")):
-        return True
-    return not _stamp_is_current(
-        _web_ui_stamp_path(), lambda: _compute_web_ui_content_hash(project_root, web_dir))
-
-
-def _compute_web_ui_content_hash(project_root: Path, web_dir: Path) -> str:
-    """SHA-256 of the web UI source tree plus root workspace config."""
-    return _hash_source_tree(project_root, web_dir)
-
-
-def _web_ui_stamp_path() -> Path:
-    """Path of the web UI build stamp under $HERMES_HOME."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "web-ui-build-stamp.json"
+    return not source_product_current(_web_project_root(web_dir), "web", _web_dist_dir(web_dir))
 
 
 def _write_web_ui_build_stamp(project_root: Path, web_dir: Path) -> None:
-    """Write the web UI build stamp after a successful build."""
-    _write_build_stamp(
-        _web_ui_stamp_path(), "web UI", lambda: _compute_web_ui_content_hash(project_root, web_dir))
+    """Historical updater entrypoint; current builders publish their own receipts."""
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch()
 
 
 def _console_print(text: str) -> None:

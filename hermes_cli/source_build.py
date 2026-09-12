@@ -7,7 +7,26 @@ import subprocess
 import sys
 
 
-def source_build_env(base_env: dict | None = None) -> dict[str, str]:
+def source_product_current(project_root: Path, product: str, out: Path) -> bool:
+    """Read the compiler's receipt without acquiring tools or dependencies."""
+    from pm import env_for
+
+    env = env_for("node")
+    node = shutil.which("node", path=env.get("PATH", ""))
+    if not node:
+        return False
+    try:
+        result = subprocess.run(
+            [node, str(project_root / "scripts/build/freshness.mjs"),
+             "--source", str(project_root), "--product", product, "--out", str(out)],
+            cwd=project_root, env=env, capture_output=True, text=True, check=True,
+        )
+        return result.stdout.strip() == "true"
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def source_build_env(base_env: dict | None = None, *, explicit: bool = False) -> dict[str, str]:
     from pm import ensure
     from hermes_constants import get_hermes_home
 
@@ -17,7 +36,7 @@ def source_build_env(base_env: dict | None = None) -> dict[str, str]:
     npmrc = get_hermes_home() / "npmrc"
     if npmrc.is_file():
         env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
-    return ensure("npm", base_env=env, explicit=True).env
+    return ensure("npm", base_env=env, explicit=explicit).env
 
 
 def run_source_script(project_root: Path, script: str, *args: str, env: dict) -> None:
@@ -27,9 +46,13 @@ def run_source_script(project_root: Path, script: str, *args: str, env: dict) ->
     )
 
 
-def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...], *, env: dict) -> None:
+def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...], *, env: dict,
+                                explicit: bool = False) -> None:
+    from pm import lazy_installs_allowed
+
     run_source_script(
         project_root, "scripts/build/node-deps.mjs", "--source", str(project_root), "--reuse",
+        *(() if explicit or lazy_installs_allowed() else ("--no-install",)),
         *(arg for workspace in workspaces for arg in ("--workspace", workspace)), env=env,
     )
 
@@ -48,27 +71,28 @@ def build_source_tui(project_root: Path, *, env: dict) -> None:
     run_source_script(project_root, "scripts/build/tui.mjs", env=env)
 
 
-def build_source_web(project_root: Path, *, env: dict) -> None:
-    from hermes_cli.main_web_build import _write_web_ui_build_stamp
-
-    run_source_script(project_root, "scripts/generate-icons.mjs", env=env)
-    run_source_script(project_root, "scripts/build/web.mjs", env=env)
-    _write_web_ui_build_stamp(project_root, project_root / "web")
+def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None,
+                     explicit: bool = False) -> None:
+    if icons is None:
+        icons = project_root
+        run_source_script(project_root, "scripts/generate-icons.mjs", *(() if explicit else ("--on-demand",)), env=env)
+    run_source_script(project_root, "scripts/build/web.mjs", "--source", str(project_root),
+                      "--icons", str(icons), "--out", str(project_root / "hermes_cli/web_dist"), env=env)
 
 
 def build_update_products(project_root: Path, *, desktop: bool) -> None:
     """Prepare the selected union once; a failed product aborts the update."""
-    env = source_build_env()
+    env = source_build_env(explicit=True)
     workspaces = ("ui-tui", "web") + (("apps/desktop",) if desktop else ())
-    prepare_source_dependencies(project_root, workspaces, env=env)
+    prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
     build_source_tui(project_root, env=env)
-    build_source_web(project_root, env=env)
+    build_source_web(project_root, env=env, explicit=True)
     if desktop:
         from hermes_cli.main_desktop import build_prepared_desktop
 
         build_prepared_desktop(
             project_root / "apps/desktop", source_mode=False,
-            npm=shutil.which("npm", path=env["PATH"]), env=env,
+            npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root, explicit=True,
         )
 
 

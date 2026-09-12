@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_constants import find_node_executable
+from hermes_constants import find_node_executable, with_hermes_node_path
 
 logger = logging.getLogger("agent.lsp.install")
 
@@ -184,8 +184,6 @@ def _link_into_bin(target: Path) -> str:
 
 def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> Optional[str]:
     """``npm install --prefix <staging>`` then link ``node_modules/.bin/<bin_name>`` into ``lsp/bin/``."""
-    # Managed npm first: $HERMES_HOME/node isn't on an arbitrary process's
-    # PATH, so a bare which() would miss the Node that Hermes installed.
     npm = find_node_executable("npm")
     if npm is None:
         logger.info("[install] cannot install %s: no usable npm found", pkg)
@@ -194,7 +192,7 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
     install_targets = [pkg] + list(extra_pkgs or [])
     logger.info("[install] npm install --prefix %s %s", staging, " ".join(install_targets))
     cmd = [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets]
-    if not _run_installer("npm", pkg, cmd, timeout=300):
+    if not _run_installer("npm", pkg, cmd, timeout=300, env=with_hermes_node_path()):
         return None
     found = _first_existing(staging / "node_modules" / ".bin" / bin_name)
     if found is not None:

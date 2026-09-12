@@ -32,6 +32,21 @@ function fixture() {
   return root
 }
 
+test('read-only dependency preparation reuses complete receipts but refuses missing inputs', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const options = { source, workspaces: ['web'], reuse: true,
+    env: { ...process.env, npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') } }
+  expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
+  expect(existsSync(join(source, 'node_modules'))).toBe(false)
+  prepareNodeDependencies(options)
+  const receipt = readFileSync(join(source, 'node_modules/.hermes-node-deps'))
+  prepareNodeDependencies({ ...options, install: false })
+  rmSync(join(source, 'node_modules/web-only'), { recursive: true })
+  expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
+  expect(readFileSync(join(source, 'node_modules/.hermes-node-deps'))).toEqual(receipt)
+}, 30000)
+
 test('one locked preparation retains the requested union without provisioning desktop', async () => {
   const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
   const source = fixture()

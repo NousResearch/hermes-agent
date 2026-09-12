@@ -170,6 +170,17 @@ class TestRunJobScript:
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+        # The supplied payload launcher is older than the committed extension
+        # generation. It must not override the installation's current selection.
+        from hermes_cli.runtime_paths import install_state_dir, site_packages as dependency_site
+        repo = Path(sched_script.__file__).resolve().parents[1]
+        state = install_state_dir(repo)
+        selected = state / "environments" / "selected" / "venv"
+        site_packages = dependency_site(selected)
+        site_packages.mkdir(parents=True)
+        (selected / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
+        (state / "facts.json").write_text(
+            json.dumps({"packages": {"venv": {"environment": str(selected)}}}), encoding="utf-8")
         # No ambient VIRTUAL_ENV anywhere: resolution must come from pm.
         monkeypatch.delenv("VIRTUAL_ENV", raising=False)
 

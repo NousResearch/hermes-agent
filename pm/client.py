@@ -302,13 +302,16 @@ def ensure_python_tool(
     }))
 
 
-def venv_is_current(*, project_root: Path | None = None) -> bool:
+def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None,
+                    project_root: Path | None = None) -> bool:
     """Check through a ready PM, never bootstrap dependencies for a probe."""
     if is_runtime() and (project_root is None or Path(project_root).resolve() == paths.repo_root().resolve()):
         from pm.ensure import venv_is_current as direct
-        return direct(project_root=project_root)
+        return direct(extras=extras, plugin_dirs=plugin_dirs, project_root=project_root)
+    members = plugin_dirs() if callable(plugin_dirs) else plugin_dirs
     try:
-        return bool(_request("venv_is_current", {}, project_root=project_root))
+        return bool(_request("venv_is_current", {"extras": extras, "plugin_dirs": _members(members)},
+                             project_root=project_root))
     except InstallError as exc:
         if exc.package == "pm-runtime":
             return False  # Without its checker, currency cannot be established.

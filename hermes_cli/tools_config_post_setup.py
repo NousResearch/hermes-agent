@@ -2,25 +2,17 @@
 
 from __future__ import annotations
 
-import logging
 import os
+import shlex
 import shutil
-import subprocess
 import sys
-from pathlib import Path
 from typing import Set
 
 from hermes_cli.cli_output import (
     print_error as _print_error, print_info as _print_info, print_success as _print_success,
     print_warning as _print_warning)
 from hermes_cli.config import get_env_value
-from hermes_cli.tools_config_cua import (
-    _cua_driver_install_ready, _post_setup_no_window_flags, _run_text, install_cua_driver,
-)
-
-logger = logging.getLogger("hermes_cli.tools_config")
-
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+from hermes_cli.tools_config_cua import _cua_driver_install_ready, install_cua_driver
 
 
 def _info_lines(*lines: str) -> None:
@@ -66,126 +58,63 @@ def _post_setup_lightpanda() -> None:
             _print_info("    Lightpanda has no native Windows build; run Hermes under WSL2.")
 
 
-def _install_chromium() -> None:
-    """Install the managed full Chromium package, without a second headless shell."""
-    _print_info("    Installing pinned Chromium...")
-    try:
-        import pm
-        pm.ensure("chromium", explicit=True)
-        _print_success("    Chromium installed")
-        # Invalidate the cached "missing" flag so later check_browser_requirements() calls see the install.
-        import tools.browser_tool as _bt
-        _bt._cached_chromium_installed = None
-    except Exception as exc:
-        _print_warning(f"    Chromium install failed: {exc}")
-        _print_info("    Run manually: hermes pm install chromium")
-        return
-
-    # Preserve --with-deps on apt-based Linux without invoking a browser downloader.
-    if sys.platform != "linux" or not shutil.which("apt-get"):
-        return
-    try:
-        from tools.browser_tool_install import _resolve_npx_bin
-        npx_bin = _resolve_npx_bin()
-        if not npx_bin:
-            _print_warning("    npx not found - Chromium system dependencies were not installed")
-        else:
-            from tools.browser_tool import _build_browser_env
-
-            env = _build_browser_env()
-            env["PATH"] = f"{Path(npx_bin).parent}{os.pathsep}{env.get('PATH', '')}"
-            _print_info("    Installing Chromium system dependencies...")
-            result = _run_text(
-                [npx_bin, "--ignore-scripts", "-y", "playwright@1.62.1", "install-deps", "chromium"],
-                cwd=str(PROJECT_ROOT), timeout=600,
-                env=env,
-                creationflags=_post_setup_no_window_flags())
-            if result.returncode == 0:
-                return
-            _print_warning("    Chromium system dependency install failed:")
-            for line in (result.stderr or result.stdout or "").strip().splitlines()[-3:]:
-                _print_info(f"      {line[:200]}")
-    except Exception as exc:
-        _print_warning(f"    Chromium system dependency install failed: {exc}")
-    _print_info("    Run manually: npx playwright install-deps chromium")
-
-
 def _post_setup_agent_browser(post_setup_key: str) -> None:
-    """``agent_browser`` (local Chromium) and ``browserbase`` (cloud rows) hooks.
-    agent-browser is not a root package.json dependency — it resolves lazily via npx (or a
-    global/Hermes-managed install), so there is no ``npm install`` step here."""
+    """PM owns the driver and Chromium; Termux and Docker own their native payloads."""
     # Every non-Camofox backend drives through the Browser Use CLI — install it here too.
     _ensure_browser_use_cli()
     try:
-        # Lazy import so the tools_config UI doesn't pull in browser_tool at import time.
-        # agent-browser resolves lazily via npx on the default install (#43564), invisible to the
-        # PATH/node_modules probes above. Mirror the rung hermes_cli.doctor uses so this probe can't diverge
-        # from it, including the Termux carve-out (bare npx is too fragile to advertise as ready there — see
-        # check_browser_requirements).
-        # agent-browser is no longer a root package.json dependency (#43564) — it resolves lazily via npx
-        # for most installs, which a bare PATH + node_modules probe can't see. Mirror the local-CLI tail of
-        # :func:`tools.browser_tool_install.check_browser_requirements` (same cascade, same Termux carve-out) so the
-        # setup/status surfaces can't diverge from what browser tools actually find at runtime;
-        # validate=False keeps this a cheap existence check with no subprocess spawn.
-        # agent-browser is no longer a root package.json dependency (#43564) — it resolves lazily via npx
-        # (or a global/Hermes-managed install) instead of a local `npm install`, so there's no node_modules/
-        # population step here anymore.
         from tools.browser_tool_install import (
-            _chromium_installed, _running_in_docker, _find_agent_browser)
+            _browser_install_hint, _chromium_installed, _running_in_docker, _find_agent_browser)
+        from hermes_constants import is_termux
     except Exception as exc:  # pragma: no cover — defensive
         _print_warning(f"    Could not check Chromium status: {exc}")
         return
 
-    # Reuse the runtime resolution cascade (PATH -> Homebrew/Hermes-managed node -> npx) rather than
-    # a bare shutil.which — Hermes-managed-Node-only setups resolve agent-browser/npx only that way.
+    termux = is_termux()
+    docker = _running_in_docker()
+    if termux or docker:
+        try:
+            _find_agent_browser(validate=False)
+        except FileNotFoundError:
+            _print_warning(f"    agent-browser is missing. Install it explicitly: {_browser_install_hint()}")
+            return
+        if docker and post_setup_key == "agent_browser" and not _chromium_installed():
+            _print_warning("    Chromium is missing but you're running in Docker.")
+            _info_lines("Pull the latest image to get the bundled Chromium:",
+                        "  docker pull ghcr.io/nousresearch/hermes-agent:latest")
+        return
+
     try:
-        _find_agent_browser(validate=False)
-    except FileNotFoundError:
-        _print_warning("    npx not found - browser tools require Node.js: https://nodejs.org")
+        import pm
+        # Chromium is a declared dependency; do not acquire it a second time.
+        pm.ensure("agent-browser", explicit=True)
+    except Exception as exc:
+        _print_warning(f"    agent-browser install failed: {exc}")
+        _info_lines("Retry with: hermes tools post-setup " + post_setup_key)
         return
+    _print_success("    Managed agent-browser and Chromium are ready")
 
-    # Only the local provider needs Chromium on disk; cloud providers host their own.
-    if post_setup_key != "agent_browser":
-        return
-
-    # Without Chromium the CLI hangs on first use until the command timeout fires. Skip inside
-    # Docker — the image bakes Chromium in, and runtime users usually can't write PLAYWRIGHT_BROWSERS_PATH.
-    if _chromium_installed():
-        _print_success("    Chromium browser already installed, nothing to do")
-        return
-
-    if _running_in_docker():
-        _print_warning("    Chromium is missing but you're running in Docker.")
-        _info_lines("Pull the latest image to get the bundled Chromium:",
-                    "  docker pull ghcr.io/nousresearch/hermes-agent:latest")
-        return
-
-    _install_chromium()
+    # OS libraries are host-owned. Never download another package manager to install them.
+    if post_setup_key == "agent_browser" and sys.platform == "linux":
+        _info_lines("Chromium also needs system libraries supplied by your distribution.")
+        if shutil.which("apt-get") and _module_installed("playwright"):
+            command = shlex.join([sys.executable, "-m", "playwright", "install-deps", "chromium"])
+            _info_lines(f"Install missing system libraries with: {command}")
+        else:
+            _info_lines("System dependency installation guide:",
+                        "  https://playwright.dev/python/docs/browsers#install-system-dependencies")
 
 
 def _post_setup_camofox() -> None:
-    from hermes_constants import find_node_executable
+    from tools.browser_camofox import check_camofox_available
 
-    camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
-    _npm_bin = find_node_executable("npm")
-    if camofox_dir.exists():
-        _print_success("    Camofox already installed, nothing to do")
-    elif _npm_bin:
-        _print_info("    Installing Camofox browser server...")
-        # Absolute npm path so the .cmd shim executes on Windows; --workspaces=false avoids resolving apps/desktop.
-        result = _run_text([_npm_bin, "install", "--silent", "--workspaces=false"], timeout=None,
-                           cwd=str(PROJECT_ROOT), creationflags=_post_setup_no_window_flags())
-        if result.returncode == 0:
-            _print_success("    Camofox installed")
-        else:
-            _print_warning("    npm install failed - run manually: npm install --workspaces=false")
-    if camofox_dir.exists():
-        _info_lines("Start the Camofox server:", "  npx @askjo/camofox-browser",
-                    "First run downloads the Camoufox engine (~300MB)",
-                    "Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
-    elif not _npm_bin:
-        _print_warning("    Node.js not found. Install Camofox via Docker:")
-        _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
+    _info_lines("Camofox is an externally managed server; Hermes does not install or start it.")
+    if check_camofox_available():
+        _print_success("    Configured Camofox server is reachable")
+        return
+    _print_warning("    Camofox server is not reachable. Start your server and check CAMOFOX_URL.")
+    _info_lines("Server setup: https://github.com/jo-inc/camofox-browser",
+                "Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 
 
 # The hook key is the UI provider identifier; extra names belong to pyproject.toml.
@@ -214,33 +143,20 @@ _PYTHON_POST_SETUP_HOOKS: dict = {
                 "Pair with an extract provider if you also need web_extract."))}
 
 
-def _importable(module: str) -> bool:
-    try:
-        __import__(module)
-        return True
-    except ImportError:
-        return False
-
-
 def _post_setup_python(spec: dict) -> None:
     """Enable one Python provider through the application dependency transaction."""
     import pm
 
     label = spec["label"]
-    lines = list(spec["always"])
-    if _importable(spec["module"]):
-        _print_success(f"    {label} is already installed")
-    else:
-        _print_info(f"    {spec['installing']}")
-        try:
-            pm.sync_venv([spec["extra"]], explicit=True)
-        except (pm.InstallError, OSError, ValueError) as exc:
-            _print_warning(f"    {label} install failed: {exc}")
-            _info_lines("Retry with: hermes tools")
-            return
-        _print_success(f"    {label} installed. Restart Hermes to use it.")
-        lines = list(spec["on_install"]) + lines
-    _info_lines(*lines)
+    _print_info(f"    {spec['installing']}")
+    try:
+        pm.sync_venv([spec["extra"]], explicit=True)
+    except (pm.InstallError, OSError, ValueError) as exc:
+        _print_warning(f"    {label} install failed: {exc}")
+        _info_lines("Retry with: hermes tools")
+        return
+    _print_success(f"    {label} dependencies ready. Restart Hermes to use them.")
+    _info_lines(*spec["on_install"], *spec["always"])
 
 
 def _post_setup_spotify() -> None:
@@ -268,31 +184,23 @@ def _post_setup_spotify() -> None:
 
 
 def _post_setup_langfuse() -> None:
-    if _importable("langfuse"):
-        _print_success("    langfuse SDK already installed")
-    else:
-        _print_info("    Installing langfuse SDK...")
-        import pm
-        try:
-            pm.sync_venv(["langfuse"], explicit=True)
-        except (pm.InstallError, OSError, ValueError) as exc:
-            _print_warning(f"    langfuse SDK install failed: {exc}")
-            _info_lines("Retry with: hermes tools")
-            return
-        _print_success("    langfuse SDK installed. Restart Hermes to use it.")
-    # The bundled observability/langfuse plugin is opt-in (standalone plugins don't load until enabled).
+    import pm
+
+    # The bundled plugin has no dependency member; its SDK is an application extra.
+    _print_info("    Preparing langfuse SDK...")
     try:
-        from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
-        enabled = _get_enabled_set()
-        if "observability/langfuse" in enabled or "langfuse" in enabled:
-            _print_success("    Plugin observability/langfuse already enabled")
-        else:
-            enabled.add("observability/langfuse")
-            _save_enabled_set(enabled)
-            _print_success("    Plugin observability/langfuse enabled")
-    except Exception as exc:
+        pm.sync_venv(["langfuse"], explicit=True)
+    except (pm.InstallError, OSError, ValueError) as exc:
+        _print_warning(f"    langfuse SDK install failed: {exc}")
+        _info_lines("Retry with: hermes tools")
+        return
+    try:
+        from hermes_cli.plugins_cmd import cmd_enable
+        cmd_enable("observability/langfuse")
+    except (Exception, SystemExit) as exc:
         _print_warning(f"    Could not enable plugin automatically: {exc}")
         _info_lines("Run manually: hermes plugins enable observability/langfuse")
+        return
     _info_lines("Restart Hermes for tracing to take effect.", "Verify: hermes plugins list")
 
 
@@ -436,16 +344,13 @@ def _agent_browser_installed() -> bool:
     setup" flips to installed only when re-running it would be a no-op."""
     from hermes_cli.nous_subscription import _local_browser_runnable
 
-    # The hook runs in a spawned process; this probe runs in the long-lived web-server/CLI process whose
-    # browser_tool may have cached a stale "Chromium missing" result. Drop the cache so the pill flips to Ready.
-    if (bt := sys.modules.get("tools.browser_tool")) is not None:
-        bt._cached_chromium_installed = None
     return _local_browser_runnable()
 
 
 def _camofox_installed() -> bool:
-    """True when the Camofox npm package ``_run_post_setup("camofox")`` installs is in node_modules."""
-    return (PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser").exists()
+    """Readiness belongs to the configured external server, not root node_modules."""
+    from tools.browser_camofox import check_camofox_available
+    return check_camofox_available()
 
 
 def _lightpanda_installed() -> bool:

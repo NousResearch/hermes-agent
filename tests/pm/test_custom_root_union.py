@@ -4,10 +4,8 @@ plugin-deps union the same as standard ~/.hermes ones.
 get_default_hermes_root() is the ONE authority: HERMES_HOME outside the
 default (e.g. /opt/data in Docker) → that root directly; profile-mode
 HERMES_HOME (<root>/profiles/<name>) → <root>. The union's profile scan
-and the bisect disable write-back must both flow through it — the bug
-this guards: hardcoded Path.home()/.hermes/profiles silently omitted
-custom-root profiles (enabled dep plugins never joined the union; disable
-decisions never wrote back).
+must flow through it: hardcoded Path.home()/.hermes/profiles silently
+omitted custom-root profiles and their enabled dependency plugins.
 """
 
 from __future__ import annotations
@@ -66,31 +64,6 @@ def test_custom_hermes_home_profile_joins_union(tmp_path, monkeypatch):
     # ordered enabled reads see it too
     ordered = pstate.enabled_plugins_ordered()
     assert ordered.get(profile_home / "plugins") == ["dep-plug"]
-
-
-def test_custom_hermes_home_disable_writes_back(tmp_path, monkeypatch):
-    """Bisect disable decisions must write back to the CUSTOM-root
-    profile's config — the resolver disabling a plugin there updates
-    that profile's enabled list."""
-    custom_root = tmp_path / "opt-data"
-    profile_home = custom_root / "profiles" / "worker"
-    _write_enabled(profile_home, ["bad-plug", "keep-plug"])
-    _make_dep_plugin(profile_home / "plugins", "bad-plug")
-    _make_dep_plugin(profile_home / "plugins", "keep-plug")
-
-    monkeypatch.setenv("HERMES_HOME", str(custom_root))
-
-    removed = pstate.disable_plugins(["bad-plug"])
-    assert removed[str(profile_home)] == ["bad-plug"]
-
-    # the profile's config reflects the removal
-    with (profile_home / "config.yaml").open(encoding="utf-8-sig") as f:
-        cfg = yaml.safe_load(f)
-    assert cfg["plugins"]["enabled"] == ["keep-plug"]
-
-    # and the union no longer sees the disabled member
-    members = ws.enabled_member_dirs()
-    assert [p.name for p in members] == ["keep-plug"]
 
 
 def test_standard_layout_still_works(tmp_path, monkeypatch):

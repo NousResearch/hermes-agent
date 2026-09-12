@@ -50,18 +50,15 @@ def test_begin_record_finalize_roundtrip(homed):
     receipt.begin("sync")
     receipt.record_step("uv-lock", True)
     receipt.record_venv_rebuild(True)
-    receipt.record_bisect(
-        [{"plugin": "bad", "action": "disabled", "reason": "conflict"}]
-    )
     receipt.record_feature_list(["web", "acp"])
-    path = receipt.finalize("bisected")
+    path = receipt.finalize("ok")
     assert path is not None and path.is_file()
 
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     assert data["kind"] == "sync"
-    assert data["outcome"] == "bisected"
+    assert data["outcome"] == "ok"
     assert data["venv_rebuild"] == {"ok": True, "reason": ""}
-    assert data["plugin_bisect"][0]["plugin"] == "bad"
+    assert data["steps"][0]["name"] == "uv-lock"
     assert data["feature_list"] == ["web", "acp"]
 
 
@@ -253,10 +250,10 @@ def test_copied_context_finalize_does_not_finish_parent(homed):
 
 def test_recorded_values_are_not_mutable_through_the_input():
     receipt.begin("sync")
-    decisions = [{"plugin": "a", "action": "kept"}]
-    receipt.record_bisect(decisions)
-    decisions[0]["action"] = "disabled"
-    assert receipt.snapshot()["plugin_bisect"][0]["action"] == "kept"
+    checks = [{"plugin": "a", "result": {"compatible": True}}]
+    receipt.record_plugin_checks(checks)
+    checks[0]["result"]["compatible"] = False
+    assert receipt.snapshot()["plugin_checks"][0]["result"]["compatible"] is True
 
 
 def test_snapshot_returns_a_copy():

@@ -62,6 +62,25 @@ def test_read_git_head_branch_ref(repo):
     assert read_git_head(repo) == _head_sha(repo)
 
 
+def test_git_selection_uses_pm_public_package_reader(repo, monkeypatch):
+    from types import SimpleNamespace
+    import pm
+
+    command = shutil.which("git")
+    assert command is not None
+    binary = Path(command)
+    requests = []
+
+    def installed(name):
+        requests.append(name)
+        return SimpleNamespace(binary=binary)
+
+    monkeypatch.setattr(pm, "installed_package", installed)
+
+    assert read_git_head(repo) == _head_sha(repo)
+    assert requests == ["git"]
+
+
 def test_read_git_head_detached(repo):
     sha = _head_sha(repo)
     _git(["checkout", "--detach", sha], repo)

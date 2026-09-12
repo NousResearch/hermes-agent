@@ -121,11 +121,16 @@ def lazy_installs_allowed() -> bool:
     ):
         return False
     try:
-        from hermes_cli.config import get_config_value
+        from hermes_cli.config import cfg_get, load_config_readonly, require_readable_config_before_write
+    except ModuleNotFoundError as exc:
+        return exc.name in {"hermes_cli", "hermes_cli.config"}
     except ImportError:
-        return True
+        return False
     try:
-        return bool(get_config_value("security.allow_lazy_installs", True))
+        # The normal loader falls back to defaults on invalid YAML. A broken
+        # security policy must not grant permission to acquire dependencies.
+        require_readable_config_before_write()
+        return cfg_get(load_config_readonly(), "security", "allow_lazy_installs", default=True) is True
     except Exception:
         return False
 
@@ -506,8 +511,9 @@ def _runtime_state_matches(fact: dict, stamp: str, *, project_root: Path | None 
     return (environment / "pyvenv.cfg").is_file()
 
 
-def venv_is_current(*, project_root: Path | None = None) -> bool:
-    """Use recorded inputs without starting PM or downloading prerequisites."""
+def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None,
+                    project_root: Path | None = None) -> bool:
+    """Probe the requested union without changing recorded dependency state."""
     from hermes_cli.runtime_paths import runtime_facts_path
     from pm.packages import Venv
 
@@ -522,7 +528,11 @@ def venv_is_current(*, project_root: Path | None = None) -> bool:
             or not isinstance(fact.get("extras"), list)
             or any(not isinstance(extra, str) for extra in fact["extras"])):
         raise ValueError("invalid recorded dependency state")
-    return _runtime_state_matches(fact, package.expected_stamp(fact["extras"]), project_root=root)
+    enabled = sorted(set(fact["extras"]) | set(extras or []))
+    members = plugin_dirs() if callable(plugin_dirs) else plugin_dirs
+    inputs = {} if members is None else {"plugin_dirs": members}
+    stamp = package.expected_stamp(enabled, **inputs)
+    return _runtime_state_matches(fact, stamp, project_root=root)
 
 
 def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plugin_dirs=None, before_publish=None, repair: bool = False) -> None:

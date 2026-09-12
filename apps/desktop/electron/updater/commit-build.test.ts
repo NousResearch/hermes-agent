@@ -21,9 +21,9 @@ describe('one-commit artifacts', (): void => {
     expect(await strategy.check({ force: true })).toMatchObject({
       supported: false, mechanism: 'external', reason: 'commit-build', message
     })
-    expect(await strategy.apply({ stopSafeBlockers: true })).toMatchObject({
+    expect(await strategy.apply()).toMatchObject({
       ok: false, mechanism: 'external', error: 'commit-build', message
     })
-    expect(await strategy.apply({})).not.toHaveProperty('command')
+    expect(await strategy.apply()).not.toHaveProperty('command')
   })
 })

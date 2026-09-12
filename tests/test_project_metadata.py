@@ -10,13 +10,6 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
-def _load_package_data():
-    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    with pyproject_path.open("rb") as handle:
-        tool = tomllib.load(handle)["tool"]
-    return tool["setuptools"]["package-data"]
-
-
 def test_wake_dependencies_and_runtime_gate_agree_on_supported_targets():
     from packaging.markers import Marker, default_environment
     from packaging.requirements import Requirement
@@ -196,30 +189,3 @@ def test_dingtalk_extra_includes_qrcode_for_qr_auth():
 
     dingtalk_extra = optional_dependencies["dingtalk"]
     assert any(dep.startswith("qrcode") for dep in dingtalk_extra)
-
-
-
-
-
-
-def _uv_lock_version(package: str) -> str:
-    """Resolved version of ``package`` in uv.lock, or fail loudly."""
-    versions = _uv_lock_versions(package)
-    assert versions, f"{package} not found in uv.lock"
-    assert len(versions) == 1, f"{package} resolves to multiple versions in uv.lock: {versions}"
-    return next(iter(versions))
-
-
-def _uv_lock_versions(package: str) -> set[str]:
-    """All resolved versions of ``package`` in uv.lock (normally 0 or 1)."""
-    import re
-
-    lock_path = Path(__file__).resolve().parents[1] / "uv.lock"
-    lock = lock_path.read_text(encoding="utf-8-sig")
-    return {
-        m.group(1)
-        for m in re.finditer(
-            rf'\[\[package\]\]\nname = "{re.escape(package)}"\nversion = "([^"]+)"',
-            lock,
-        )
-    }

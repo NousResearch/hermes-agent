@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-import subprocess
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -181,14 +181,6 @@ def _generate_pyproject(plugin_dirs: list[Path], root: Optional[Path] = None, *,
     return root, changed
 
 
-def build_root(plugin_dirs: list[Path], root: Optional[Path] = None) -> Path:
-    """(Re)generate the workspace root's pyproject.toml. ``root`` pins a
-    parent-supplied STAGING workspace (tests, staged syncs); default is
-    the per-install generated root beside the byte store."""
-    generated, _changed = _generate_pyproject(plugin_dirs, root)
-    return generated
-
-
 def _seed_lock(root: Path, seed_lock: Optional[Path] = None, *, source: Optional[Path] = None) -> None:
     """Seed the generated root's uv.lock with the CURRENT resolution.
 
@@ -336,53 +328,38 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path | None = N
     return member
 
 
-def scan_plugin(plugin_dir: Path) -> dict:
-    """Auto-pickup scan of one plugin dir: which dep surfaces it declares.
-    Priority (settled): pyproject (python), package.json (node sidecar),
-    packages.py (pm store binaries), legacy manifest deps (bridge)."""
-    found: dict = {
-        "pyproject": (plugin_dir / "pyproject.toml").is_file(),
-        "package_json": (plugin_dir / "package.json").is_file(),
-        "packages_py": (plugin_dir / "packages.py").is_file(),
-        "legacy_deps": _is_member_candidate(plugin_dir)
-        and not (plugin_dir / "pyproject.toml").is_file(),
-        "dir": plugin_dir,
-    }
-    return found
-
-
 def install_node_sidecar(
     plugin_dir: Path,
     *,
-    npm_bin: Optional[str] = None,
-    runner=subprocess.run,
+    explicit: bool = False,
 ) -> Optional[str]:
-    """`npm ci` the plugin's package.json into ITS OWN node_modules —
-    the declared sidecar install (plugin-deps plan §B item 2; wired here).
+    """Install plugin-local dependencies using PM's paired npm/Node context.
 
-    Plugin-local (never a global npm prefix), pm's pinned npm when the
-    store has one (ambient PATH npm otherwise), gated by the lazy-install
-    policy, receipt-noted. Returns None on success, else why not.
+    Explicit user consent permits acquisition even when on-demand installs
+    are disabled. Returns None on success, otherwise a diagnostic.
     """
     package_json = plugin_dir / "package.json"
     if not package_json.is_file():
         return None  # nothing to install
 
+    import pm
     from pm.ensure import lazy_installs_allowed
 
-    if not lazy_installs_allowed():
-        return "lazy installs are disabled — run `hermes pm install` after enabling"
+    # Tool availability does not authorize mutation of the sidecar itself.
+    if not explicit and not lazy_installs_allowed():
+        return "lazy installs are disabled — run `hermes plugins install` and approve Node dependencies"
 
     # a lockfile means reproducible `npm ci`; plain `npm install` otherwise
     install_cmd = ["ci"] if (plugin_dir / "package-lock.json").is_file() else ["install"]
-    if npm_bin is None:
-        npm_bin = _node_npm_binary("npm")
-    if npm_bin is None:
-        return "npm not found (pm store or PATH)"
-
     try:
-        proc = runner(
-            [npm_bin, *install_cmd, "--no-audit", "--no-fund"],
+        runner = pm.ensure("npm", explicit=explicit)
+        # Resolve inside the composed context, including npm.cmd on Windows;
+        # CreateProcess does not search a child's replacement PATH itself.
+        npm = shutil.which("npm", path=runner.env.get("PATH", ""))
+        if npm is None:
+            return "npm is missing from the prepared PM environment"
+        proc = runner.run(
+            [npm, *install_cmd, "--no-audit", "--no-fund"],
             cwd=str(plugin_dir),
             capture_output=True,
             text=True,
@@ -396,28 +373,6 @@ def install_node_sidecar(
         tail = (proc.stderr or proc.stdout or "").strip()[-300:]
         return f"npm {install_cmd[0]} exited {proc.returncode}: {tail}"
     return None
-
-
-def _node_npm_binary(name: str) -> Optional[str]:
-    """pm's pinned npm from the store (store-first), PATH second."""
-    from pm.ensure import env_for
-
-    try:
-        env = env_for("npm")
-    except Exception:
-        env = None
-    if env:
-        path_value = env.get("PATH", "")
-        import shutil as _shutil
-
-        for d in path_value.split(os.pathsep):
-            if d:
-                candidate = Path(d) / ("npm.cmd" if os.name == "nt" else name)
-                if candidate.is_file():
-                    return str(candidate)
-    import shutil as _shutil
-
-    return _shutil.which(name)
 
 
 def lock_and_sync(

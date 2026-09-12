@@ -21,7 +21,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 
 export function generateIcons(args = [], { root = repoRoot, run = spawnSync, env = process.env } = {}) {
   const { values } = parseArgs({ args, options: {
-    source: { type: 'string' }, out: { type: 'string' }, check: { type: 'boolean' }
+    source: { type: 'string' }, out: { type: 'string' }, check: { type: 'boolean' },
+    'on-demand': { type: 'boolean' },
   } })
   const source = path.resolve(values.source ?? root)
   const out = path.resolve(values.out ?? source)
@@ -31,7 +32,7 @@ export function generateIcons(args = [], { root = repoRoot, run = spawnSync, env
   delete childEnv.PYTHONHOME
   const result = run(env.HERMES_PYTHON || 'python', [
     path.join(root, 'scripts', 'build', 'icon_environment.py'), '--source', source, '--out', out,
-    ...(values.check ? ['--check'] : [])
+    ...(values.check ? ['--check'] : []), ...(values['on-demand'] ? ['--on-demand'] : [])
   ], { cwd: source, stdio: 'inherit', windowsHide: true, env: childEnv })
   if (result.error) {
     console.error('[generate-icons] failed to launch icon generator:', result.error.message)

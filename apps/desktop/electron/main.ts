@@ -212,7 +212,7 @@ import {
   resolveGatewayFileBackend,
   writeBufferToFile
 } from './gateway-file-download'
-import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
+import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
@@ -414,11 +414,13 @@ import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from '
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   resolveUpdaterMechanism,
+  type UpdaterApplyResultWire,
   type UpdaterStatusWire,
   type UpdaterStrategy
 } from './updater'
 import {
   observeUpdaterHandoff,
+  resolveInstallationLauncher,
   resolveStagedUpdaterBinary,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker
@@ -733,12 +735,6 @@ const HERMES_HOME: string = resolveDesktopHermesHome({
   readWindowsHome: (): string | null => readWindowsUserEnvVar('HERMES_HOME')
 })
 
-// The spawned `hermes update` / updater children compose managed-tool env
-// (node, git, uv) in-process via pm. Electron only prepends the explicit
-// entries the caller names (the venv bin for the hermes shim itself).
-function pathWithVenvBin(...entries) {
-  return [...entries, process.env.PATH].filter(Boolean).join(path.delimiter)
-}
 
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
 // install.ps1 / install.sh use, so a desktop-only user and a CLI-only user end
@@ -3213,13 +3209,11 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
     isGitCheckout,
     updateCheckCachePath: path.join(app.getPath('userData'), 'update-check-cache.json'),
     writeFileAtomic,
-    pathWithVenvBin,
-    venvHermesShimPath,
+
     emitUpdateProgress,
     rememberLog,
     startHermes,
-    startGatewaysAfterUpdateAbort,
-    releaseBackendLockForUpdate,
+    stopBackendsForUpdate,
     repairMacUpdaterHelper,
     preflightStateDb,
     runningAppBundle,
@@ -3397,8 +3391,8 @@ function isShimLocked(shimPath) {
 // exe under venv\Scripts AND cmdline referencing hindsight_api.main). The
 // daemon is spawned DETACHED, so it outlives the backend tree-kill and keeps
 // venv files mapped. External holders (a user terminal running `hermes`,
-// unrelated scripts) are NOT killed — scanVenvBlockers reports them and the
-// hand-off aborts, per existing design. Selection lives in the pure
+// unrelated scripts) are NOT killed. The uninstall lock probe refuses a
+// held installation. Selection lives in the pure
 // venv-holder-select module (ordinal path-prefix, no PowerShell -like
 // wildcard hazards) so it's testable without Electron.
 function killHermesOwnedVenvDaemons(updateRoot) {
@@ -3427,7 +3421,7 @@ function killHermesOwnedVenvDaemons(updateRoot) {
       isHermesOwnedVenvDaemon(p?.ExecutablePath, p?.CommandLine, scriptsDir)
     )
   } catch {
-    // Best-effort: the venv-blocker scan downstream is the real backstop.
+    // Best-effort: the uninstall lock probe remains the backstop.
     return
   }
 
@@ -3740,36 +3734,20 @@ function reapOrphanedBackendsOnce() {
   return backendOrphanReapPromise
 }
 
-// Before handing off the update on Windows, the desktop MUST stop every backend
-// it spawned and WAIT for the venv shim to actually unlock. The old code did
-// `hermesProcess.kill('SIGTERM')` + `app.quit()` fire-and-forget: SIGTERM on
-// Windows doesn't reap the backend's grandchildren, and quit didn't wait for
-// teardown, so the updater raced a still-locked `hermes.exe`, the quarantine
-// rename failed, uv's `pip install` hit "Access is denied", and the git path
-// bailed into a full ZIP re-download that ALSO couldn't write the locked shim —
-// a half-applied install (ryanc's update.log). Here we tree-kill the primary +
-// pool backends and poll the shim until it's writable (or a bounded timeout),
-// so by the time we spawn the updater the lock is genuinely gone.
-//
-// Windows-only: the venv-shim mandatory lock is a Windows phenomenon. On
-// macOS/Linux there's no REPLACE-on-running-exe block, the existing before-quit
-// SIGTERM + app.quit() teardown already works (the macOS path is flawless), and
-// aggressively SIGKILL-ing the backend here would be an untested behavior change
-// for no benefit. So we no-op off Windows and leave that path exactly as it was.
-async function releaseBackendLockForUpdate(updateRoot) {
-  return releaseBackendLock(updateRoot, 'updates')
+// Stop app-owned Windows backends before replacing application outputs.
+// PM generations can retain live readers. Gateway draining/restart belongs to
+// `hermes update`; neither venv scans nor a second fleet stop belong here.
+async function stopBackendsForUpdate(): Promise<void> {
+  if (IS_WINDOWS) {
+    stopBackendTreesForUpdate(backendConnectionState.getProcess(), {
+      forceKillProcessTree,
+      stopAllPoolBackends
+    })
+  }
 }
 
-// Shared backend teardown + venv-shim unlock wait. Used by BOTH the self-update
-// hand-off and the desktop uninstaller — they have the identical Windows
-// problem: the desktop's backend (and the grandchildren IT spawned — a hermes
-// REPL, a pty terminal, the gateway) keep `hermes.exe` and other files in the
-// venv mandatory-locked, so any in-place replace/delete of the install tree
-// races a live handle and half-fails (#37532). We tree-kill every backend PID
-// the desktop owns, then poll the shim until it's genuinely writable.
-//
-// `tag` only flavors the log lines. No-op off Windows (POSIX has no mandatory
-// locks — the before-quit SIGTERM + the cleanup script's own PID-wait suffice).
+// Uninstall still deletes the installation and its historical venv. Unlike
+// generation updates, deletion must wait for those old files to be released.
 async function releaseBackendLock(updateRoot, tag) {
   if (!IS_WINDOWS) {
     return { unlocked: true }
@@ -3800,18 +3778,8 @@ async function releaseBackendLock(updateRoot, tag) {
     stopAllPoolBackends
   })
 
-  // Stop separately-running messaging gateways (all profiles) BEFORE the
-  // release gate. The gateway is launched by the gateway-launcher desktop
-  // plugin via /api/gateway/start and is NOT in backendConnectionState or
-  // backendPool, so the tree-kills above never see it — on Windows its
-  // launcher (venv\Scripts\python.exe) keeps the venv mandatory-locked and
-  // the 15s gate aborts the hand-off before the venv-blocker scan's
-  // pausable-gateway exemption ever gets a chance (#70337). Delegate to
-  // `hermes gateway stop --all`: the CLI discovers every profile's gateway
-  // (launcher + worker — gateway.pid records only the uv WORKER, and
-  // taskkill /T from the worker never reaches its parent), drains in-flight
-  // agents, and force-kills survivors. Best-effort; abort paths restore via
-  // startGatewaysAfterUpdateAbort. No-op off Windows.
+  // Uninstall deletes the whole runtime. Drain separately-running gateways
+  // through the CLI, rather than targeting a gateway worker by PID.
   stopGatewayBeforeUpdate(venvHermesShimPath(updateRoot), HERMES_HOME)
 
   // Reap Hermes-OWNED venv daemons the tree-kill above cannot reach: the
@@ -3881,7 +3849,7 @@ async function releaseBackendLock(updateRoot, tag) {
 //
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
-async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
+async function applyUpdates(): Promise<UpdaterApplyResultWire> {
   if (updateInFlight) {
     throw new Error('An update is already in progress.')
   }
@@ -3891,7 +3859,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
   let handedOff = false
 
   try {
-    const result = await strategy.apply(opts)
+    const result: UpdaterApplyResultWire = await strategy.apply()
     handedOff = result.handedOff === true
 
     return result
@@ -3947,33 +3915,19 @@ async function handOffWindowsBootstrapRecovery(reason) {
     ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     : configuredBranch || DEFAULT_UPDATE_BRANCH
 
-  const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
-  const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
-  const venvPython = path.join(venvBin, IS_WINDOWS ? 'python.exe' : 'python')
-
-  // The updater invokes the venv's Hermes launcher, which in turn requires the
-  // venv interpreter. A bootstrap-complete marker proves only that setup once
-  // finished; it can outlive a manually removed or quarantined venv. Sending a
-  // marker-only install through --update dead-ends at "Could not find the hermes
-  // CLI" instead of rebuilding the runtime, so only a runnable pair gets the
-  // gentle update path. Partial or missing runtimes go through full repair.
-  const updaterArgs = chooseUpdaterArgs(
-    {
-      hasBootstrapMarker: fileExists(path.join(updateRoot, '.hermes-bootstrap-complete')),
-      hasVenvHermes: fileExists(venvHermes),
-      hasVenvPython: fileExists(venvPython)
-    },
+  const updaterArgs: string[] = chooseUpdaterArgs(
+    { runtimeUsable: isSourceRuntimeUsable(updateRoot) },
     branch
   )
 
-  await releaseBackendLockForUpdate(updateRoot)
+  await stopBackendsForUpdate()
 
   const child = spawnUpdaterProcess(updater, updaterArgs, {
     cwd: HERMES_HOME,
     env: {
       ...process.env,
       HERMES_HOME,
-      PATH: pathWithVenvBin(venvBin)
+      HERMES_INSTALL_ROOT: updateRoot
     },
     detached: true,
     stdio: 'ignore'
@@ -4160,17 +4114,17 @@ function readBootstrapMarker() {
 // or a DMG launch over a prior CLI install satisfies this WITHOUT the desktop
 // ever having written the bootstrap marker -- so we must be able to recognise
 // "already installed" off the filesystem alone, not just the marker.
-function isActiveRuntimeUsable() {
-  const venvPython = getVenvPython(VENV_ROOT)
+function isSourceRuntimeUsable(root: string): boolean {
+  const launcher: string | null = resolveInstallationLauncher(root, IS_WINDOWS, HERMES_HOME)
 
-  return (
-    isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
-    fileExists(venvPython) &&
-    canImportHermesCli(venvPython, {
-      cwd: ACTIVE_HERMES_ROOT,
-      env: { HERMES_HOME }
-    })
+  return isHermesSourceRoot(root) && launcher !== null && verifyHermesCli(
+    isCommandScript(launcher) ? `"${launcher}"` : launcher,
+    { shell: isCommandScript(launcher) }
   )
+}
+
+function isActiveRuntimeUsable(): boolean {
+  return isSourceRuntimeUsable(ACTIVE_HERMES_ROOT)
 }
 
 function activeRuntimeState() {
@@ -15510,7 +15464,7 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
           if (connection.kind === 'local') {
             // The app-managed runtime updates through the same pipeline as the
             // Settings → Updates button (marker + venv gate + relaunch flow).
-            const result: any = await applyUpdates({})
+            const result: any = await applyUpdates()
 
             return { ...base, ok: result?.ok !== false, detail: result?.message || 'update started' }
           }
@@ -17183,7 +17137,7 @@ ipcMain.handle('hermes:updates:check', async (_event: Electron.IpcMainInvokeEven
 )
 
 ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
-  applyUpdates(payload || {}).catch(error => ({
+  applyUpdates().catch(error => ({
     ok: false,
     error: 'apply-failed',
     message: error?.message || String(error)

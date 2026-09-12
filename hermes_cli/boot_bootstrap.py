@@ -103,17 +103,11 @@ def _git_binary() -> str | None:
     boot import graph for a lookup most platforms answer from PATH.
     """
     try:
-        from pm.ensure import _facts, _store
-        from pm.registry import get_package
-        from pm.store import current_target
+        from pm import installed_package
 
-        fact = _facts().get("git")
-        if fact is not None:
-            binary = get_package("git").binary(
-                _store().entry(fact["entry"]), current_target()
-            )
-            if binary is not None and binary.is_file():
-                return str(binary)
+        installed = installed_package("git")
+        if installed is not None and installed.binary is not None:
+            return str(installed.binary)
     except Exception as exc:  # noqa: BLE001 — boot must not die on a lookup
         logger.debug("pm git lookup failed: %s", exc)
     import shutil

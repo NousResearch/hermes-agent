@@ -9,7 +9,7 @@ every surface: a failed venv rebuild is as reportable as a failed
 update.
 
 The in-flight receipt lives in a ContextVar, not a module global: the
-sync cadence and an ensure bisect can overlap across threads, and a
+sync cadence and dependency preparation can overlap across threads, and a
 shared global lets one run's begin/finalize clobber another's record.
 
 Two hazards of ContextVar state are handled explicitly:
@@ -146,7 +146,6 @@ def begin(kind: str) -> contextvars.Token:
             "started_at": _utc_now_iso(),
             "steps": [],
             "venv_rebuild": None,
-            "plugin_bisect": [],
             "feature_list": None,
             "platform": None,
             "outcome": None,
@@ -174,10 +173,6 @@ def record_step(name: str, ok: bool, detail: str = "") -> None:
 
 def record_venv_rebuild(ok: bool, reason: str = "") -> None:
     _record(lambda r: r.__setitem__("venv_rebuild", {"ok": ok, "reason": reason}))
-
-
-def record_bisect(decisions: list[dict]) -> None:
-    _record(lambda r: r.__setitem__("plugin_bisect", decisions))
 
 
 def record_feature_list(extras: Optional[list[str]]) -> None:

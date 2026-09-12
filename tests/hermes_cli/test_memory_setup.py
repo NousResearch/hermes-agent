@@ -60,9 +60,8 @@ def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
 
 
 
-def test_install_dependencies_force_resyncs_declared_extra(tmp_path, monkeypatch):
-    """force=True re-syncs the provider's extra even when it imports fine,
-    so a downgraded/stripped bridge package is restored on hermes update."""
+def test_install_dependencies_prepares_declared_extra_even_if_importable(tmp_path, monkeypatch):
+    """PM, not ambient importability, decides whether constraints are current."""
     import hermes_yaml as _yaml
 
     plugin_dir = tmp_path / "mem0"
@@ -84,7 +83,7 @@ def test_install_dependencies_force_resyncs_declared_extra(tmp_path, monkeypatch
         lambda extras=None, explicit=False: synced.append((list(extras or []), explicit)),
     )
 
-    memory_setup._install_dependencies("mem0", force=True)
+    memory_setup._install_dependencies("mem0")
 
     assert synced == [(["mem0"], True)]
 

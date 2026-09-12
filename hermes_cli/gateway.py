@@ -879,11 +879,12 @@ def find_windows_gateway_services(
 
 
 def _gateway_run_args_for_profile(profile: str) -> list[str]:
-    args = [get_python_path(), "-m", "hermes_cli.main"]
+    from hermes_cli._launchers import runtime_command
+    args = []
     if profile != "default":
         args.extend(["--profile", profile])
     args.extend(["gateway", "run", "--replace"])
-    return args
+    return runtime_command(PROJECT_ROOT, args)
 
 
 def _capture_gateway_argv(pid: int) -> list[str] | None:
@@ -2646,39 +2647,10 @@ def launchd_gateway_labels_for_install() -> list[str]:
     return root_label + sorted(profile_labels)
 
 
-def _detect_venv_dir() -> Path | None:
-    """Active virtualenv dir: pm-provisioned runtime venv first (facts + store
-    layout — the authority under no-boot-through-venv, where ``sys.prefix`` no
-    longer distinguishes and bundled installs carry no ``VIRTUAL_ENV``), then
-    ``sys.prefix`` / ``VIRTUAL_ENV`` / .venv/venv under PROJECT_ROOT."""
-    pm_venv = _pm_runtime_venv_dir()
-    if pm_venv is not None:
-        return pm_venv
-    candidates: list[Path] = []
-    if sys.prefix != sys.base_prefix:
-        candidates.append(Path(sys.prefix))
-    if os.environ.get("VIRTUAL_ENV"):
-        candidates.append(Path(os.environ["VIRTUAL_ENV"]))
-    candidates += [PROJECT_ROOT / ".venv", PROJECT_ROOT / "venv"]
-    return next((venv for venv in candidates if venv.is_dir()), None)
-
-
 def get_python_path() -> str:
-    venv = _detect_venv_dir()
-    if venv is not None:
-        try:
-            from hermes_constants import venv_python_path
-        except ImportError:
-            # Update-boundary: a gateway restarted mid-update can hold a stale hermes_constants
-            # without this symbol; reload its definitions from the updated checkout.
-            import importlib
-            import hermes_constants
-            venv_python_path = importlib.reload(hermes_constants).venv_python_path
+    from hermes_cli._launchers import resolve_store_python
 
-        venv_python = venv_python_path(venv, windows=is_windows())
-        if venv_python.exists():
-            return str(venv_python)
-    return sys.executable
+    return str(resolve_store_python(PROJECT_ROOT) or sys.executable)
 
 
 # =============================================================================
@@ -2768,20 +2740,7 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
             return False
 
     candidates = []
-    # pm-provisioned runtime venv first — the same authority _detect_venv_dir()
-    # trusts: under no-boot-through-venv sys.prefix equals base_prefix and the
-    # committed environment is the only record of which venv serves this install.
-    pm_venv = _pm_runtime_venv_dir(project_root)
-    if pm_venv is not None:
-        pm_bin = pm_venv / ("Scripts" if is_windows() else "bin")
-        if _is_dir(pm_bin):
-            candidates.append(str(pm_bin))
-    if not candidates:
-        venv_bin = project_root / "venv" / "bin"
-        if _is_dir(venv_bin):
-            candidates.append(str(venv_bin))
-        elif sys.prefix != sys.base_prefix:
-            candidates.append(str(Path(sys.prefix) / "bin"))
+    # Python and dependency executable paths are selected at boot, not persisted.
 
     hermes_home = get_hermes_home()
     extras = (project_root / "node_modules" / ".bin", hermes_home / "node" / "bin", hermes_home / "node_modules" / ".bin")
@@ -2886,16 +2845,48 @@ def _append_node_dir_for_service(path_entries: list[str], hermes_root: Path | No
         path_entries.append(resolved_node_dir)
 
 
-def _service_venv_dir() -> str:
-    """VIRTUAL_ENV baked into service definitions: detected venv, else ``PROJECT_ROOT/venv``."""
-    detected_venv = _detect_venv_dir()
-    return str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+def _systemd_command(argv: list[str]) -> str:
+    """Quote argv for systemd, including its non-shell specifier expansion."""
+    return " ".join('"' + part.replace("\\", "\\\\").replace('"', '\\"')
+                    .replace("%", "%%").replace("$", "$$") + '"' for part in argv)
+
+
+def _prepare_service_launcher(*, system: bool = False, run_as_user: str | None = None) -> None:
+    """Publish the source command before a service definition references it."""
+    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, resolve_store_python
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    root, home = PROJECT_ROOT, get_hermes_home()
+    owner = None
+    if system:
+        username, _group, home_dir, uid = _system_service_identity(run_as_user)
+        root = Path(_remap_path_for_user(str(root), home_dir))
+        home = Path(_hermes_home_for_target_user(home_dir))
+        owner = (uid, username)
+    token = set_hermes_home_override(home)
+    try:
+        if resolve_store_python(root) is None:
+            return  # Externally owned Nix/developer runtime.
+        local = root / ".hermes" / "bin"
+        paths = ensure_install_launchers(root, local)
+        if len(paths) != len(ENTRY_POINTS):
+            raise RuntimeError("Could not publish the gateway installation launcher")
+        if owner is not None:
+            import pwd
+            uid, username = owner
+            gid = pwd.getpwnam(username).pw_gid
+            for path in (local.parent, local, *map(Path, paths)):
+                os.chown(path, uid, gid)
+    finally:
+        reset_hermes_home_override(token)
 
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
+    from hermes_cli._launchers import installation_command
+
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
-    venv_dir = _service_venv_dir()
+    project_root = PROJECT_ROOT
 
     path_entries = _build_service_path_dirs()
     if not system:
@@ -2918,7 +2909,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         # Remap paths under the calling user's home (/root/) to the target user's so the service can read them.
         python_path = _remap_path_for_user(python_path, home_dir)
         working_dir = str(hermes_home) if hermes_home else _remap_path_for_user(working_dir, home_dir)
-        venv_dir = _remap_path_for_user(venv_dir, home_dir)
+        project_root = Path(_remap_path_for_user(str(project_root), home_dir))
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         # Managed Node for the TARGET user's tree, prepended so it outranks remapped shell-PATH entries.
         _target_node_entries: list[str] = []
@@ -2951,6 +2942,10 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
     sane_path = ":".join(path_entries)
+    start = installation_command(project_root, [*shlex.split(profile_arg), "gateway", "run"],
+                            python=python_path, home=hermes_home)
+    cleanup = installation_command(project_root, module="gateway.cgroup_cleanup",
+                              python=python_path, home=hermes_home)
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2959,10 +2954,10 @@ Wants=network-online.target
 
 [Service]
 Type={systemd_type}
-{systemd_watchdog_directives}{identity_lines}ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
+{systemd_watchdog_directives}{identity_lines}ExecStart={_systemd_command(start)}
 WorkingDirectory={working_dir}
 {env_lines}Environment="PATH={sane_path}"
-Environment="VIRTUAL_ENV={venv_dir}"
+
 Environment="HERMES_HOME={hermes_home}"
 Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
@@ -2973,7 +2968,7 @@ RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
-ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
+ExecStopPost=-{_systemd_command(cleanup)}
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
@@ -3086,6 +3081,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     if _refuse_temp_home_service_write(new_unit, "systemd unit"):
         return False
 
+    _prepare_service_launcher(system=system, run_as_user=expected_user)
     unit_path.write_text(new_unit, encoding="utf-8")
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     print(f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install")
@@ -3295,6 +3291,7 @@ def systemd_install(
     if _refuse_temp_home_service_write(new_unit, "systemd unit"):
         return
     print(f"Installing {scope_label} systemd service to: {unit_path}")
+    _prepare_service_launcher(system=system, run_as_user=run_as_user)
     unit_path.write_text(new_unit, encoding="utf-8")
 
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
@@ -3772,8 +3769,9 @@ def _launchd_unsupported_marker_exists() -> bool:
 
 
 def _gateway_run_command() -> list[str]:
-    """Build ``python -m hermes_cli.main [--profile X] gateway run --replace``, honoring the active profile."""
-    return [get_python_path(), "-m", "hermes_cli.main", *_profile_arg().split(), "gateway", "run", "--replace"]
+    from hermes_cli._launchers import runtime_command
+    return runtime_command(PROJECT_ROOT, [*shlex.split(_profile_arg()), "gateway", "run", "--replace"],
+                           python=get_python_path())
 
 
 def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor: bool = False) -> list[str]:
@@ -3793,12 +3791,17 @@ def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor:
     bootout+bootstrap in install/refresh), which run before supervision resumes. Mirrors
     ``generate_systemd_unit``, whose ExecStart also runs ``gateway run`` without ``--replace``.
     """
+    from hermes_cli._launchers import installation_command, runtime_command
     inner = _gateway_run_command()
     if external_supervisor:
+        inner = installation_command(PROJECT_ROOT, [*shlex.split(_profile_arg()), "gateway", "run"],
+                                     python=get_python_path())
         inner = [part for part in inner if part != "--replace"]
         if "--external-supervisor" not in inner:
             inner.append("--external-supervisor")
-    return [get_python_path(), "-m", "hermes_cli.stderr_timestamp", "--error-log", str(error_log), "--", *inner]
+    command = installation_command if external_supervisor else runtime_command
+    return command(PROJECT_ROOT, ["--error-log", str(error_log), "--", *inner],
+                           module="hermes_cli.stderr_timestamp", python=get_python_path())
 
 
 def _spawn_detached_gateway() -> bool:
@@ -3852,13 +3855,14 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
 
 
 def generate_launchd_plist() -> str:
+    from html import escape
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
     working_dir = _stable_service_working_dir()
     hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
-    venv_dir = _service_venv_dir()
+
     # launchd's default PATH misses Homebrew, nvm, cargo…; prepend venv/bin + node dirs (as in the
     # systemd unit) so node stays resolvable even if the shell PATH changes, then the shell PATH.
     priority_dirs = _build_service_path_dirs()
@@ -3867,7 +3871,7 @@ def generate_launchd_plist() -> str:
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping stderr.
     prog_args_xml = "\n        ".join(
-        f"<string>{part}</string>"
+        f"<string>{escape(part)}</string>"
         for part in _timestamped_stderr_gateway_command(log_dir / "gateway.error.log", external_supervisor=True)
     )
 
@@ -3907,8 +3911,7 @@ def generate_launchd_plist() -> str:
     <dict>
         <key>PATH</key>
         <string>{sane_path}</string>
-        <key>VIRTUAL_ENV</key>
-        <string>{venv_dir}</string>
+
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
         <key>HERMES_SUPERVISED_CHILD</key>
@@ -4036,6 +4039,7 @@ def refresh_launchd_plist_if_needed() -> bool:
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
 
+    _prepare_service_launcher()
     plist_path.write_text(new_plist, encoding="utf-8")
     label = get_launchd_label()
     domain = _launchd_domain()
@@ -4106,6 +4110,7 @@ def launchd_install(force: bool = False):
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
+    _prepare_service_launcher()
     plist_path.write_text(new_plist, encoding="utf-8")
 
     try:
@@ -4147,6 +4152,7 @@ def launchd_start():
             sys.exit(1)
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
+        _prepare_service_launcher()
         plist_path.write_text(new_plist, encoding="utf-8")
         if _launchd_bootstrap_and_kickstart(plist_path, label):
             _launchd_ok("✓ Service started")

@@ -9,7 +9,6 @@ import { promisify } from 'node:util'
 import { expect, it, vi } from 'vitest'
 
 import * as updaterProcess from '../updater-process'
-import * as blockers from '../venv-blocker-scan'
 
 import { type CheckoutStrategyDeps, createCheckoutStrategy } from './checkout'
 import { readSourceUpdate, type SourceUpdate } from './checkout-source'
@@ -168,13 +167,12 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
       directoryExists: fs.existsSync,
       resolveUpdaterBinary: (): null => null,
       firstLine: (text: string): string => text.split('\n')[0],
-      pathWithVenvBin: (): string => process.env.PATH ?? '',
-      venvHermesShimPath: (): string => '',
+
       emitUpdateProgress: vi.fn(),
       rememberLog: vi.fn(),
       startHermes: async (): Promise<void> => {},
-      startGatewaysAfterUpdateAbort: (): void => {},
-      releaseBackendLockForUpdate: vi.fn(async (): Promise<{ unlocked: boolean }> => ({ unlocked: true })),
+
+      stopBackendsForUpdate: vi.fn(async (): Promise<void> => {}),
       repairMacUpdaterHelper: (): void => {},
       preflightStateDb: (): void => {},
       runningAppBundle: (): null => null,
@@ -191,14 +189,13 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
         return { unref: (): void => {} }
       }
     )
-    vi.spyOn(blockers, 'scanVenvBlockers').mockResolvedValue({
-      kind: 'clear',
-      result: { blocked: false, processes: [] }
-    })
+
     const scriptDirectory: string = path.join(root, 'scripts', 'desktop-update')
     const script: string = path.join(scriptDirectory, process.platform === 'win32' ? 'windows.ps1' : 'posix.sh')
-    fs.mkdirSync(path.join(root, 'venv', 'Scripts'), { recursive: true })
-    fs.writeFileSync(path.join(root, 'venv', 'Scripts', 'python.exe'), '')
+    fs.mkdirSync(scriptDirectory, { recursive: true })
+    fs.writeFileSync(path.join(scriptDirectory, 'runtime.ps1'), '')
+    fs.mkdirSync(path.join(root, '.hermes', 'bin'), { recursive: true })
+    fs.writeFileSync(path.join(root, '.hermes', 'bin', 'hermes.exe'), '')
 
     for (const channel of ['stable', 'canary'] as const) {
       await setChannel(channel)
@@ -213,13 +210,13 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
         updateAvailable: true
       })
       fs.rmSync(scriptDirectory, { recursive: true, force: true })
-      expect(await strategy.apply({})).toMatchObject({ manual: true, command: `hermes update --channel ${channel}` })
+      expect(await strategy.apply()).toMatchObject({ manual: true, command: `hermes update --channel ${channel}` })
       deps.resolveUpdaterBinary = (): string => path.join(temporary, 'frozen-updater')
-      expect(await strategy.apply({})).toMatchObject({ manual: true, command: `hermes update --channel ${channel}` })
+      expect(await strategy.apply()).toMatchObject({ manual: true, command: `hermes update --channel ${channel}` })
       expect(spawned).toHaveLength(0)
       fs.mkdirSync(scriptDirectory, { recursive: true })
       fs.writeFileSync(script, '')
-      expect(await strategy.apply({})).toMatchObject({ ok: true, handedOff: true })
+      expect(await strategy.apply()).toMatchObject({ ok: true, handedOff: true })
       const handoff: (typeof spawned)[number] | undefined = spawned.pop()
       expect(handoff?.args).toContain(script)
       expect(handoff?.args).toContain(channel)
@@ -244,9 +241,9 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
       draft: true,
       prerelease: true
     })
-    vi.mocked(deps.releaseBackendLockForUpdate).mockClear()
-    expect(await strategy.apply({})).toMatchObject({ ok: false, error: 'release-unavailable' })
-    expect(deps.releaseBackendLockForUpdate).not.toHaveBeenCalled()
+    vi.mocked(deps.stopBackendsForUpdate).mockClear()
+    expect(await strategy.apply()).toMatchObject({ ok: false, error: 'release-unavailable' })
+    expect(deps.stopBackendsForUpdate).not.toHaveBeenCalled()
     expect(spawned).toHaveLength(0)
     await setChannel('main')
     expect(await readSourceUpdate({ python, git: 'git', updateRoot: root, hermesHome: home })).toEqual({
@@ -258,12 +255,12 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
       targetSha: commits[3],
       updateAvailable: false
     })
-    expect(await strategy.apply({})).toMatchObject({ ok: true, handedOff: true })
+    expect(await strategy.apply()).toMatchObject({ ok: true, handedOff: true })
     expect(spawned.pop()?.args).toEqual(
       expect.arrayContaining([process.platform === 'win32' ? '-Branch' : '--branch', 'feature/gui'])
     )
     fs.rmSync(scriptDirectory, { recursive: true, force: true })
-    expect(await strategy.apply({})).toMatchObject({ manual: true, command: 'hermes update --branch feature/gui' })
+    expect(await strategy.apply()).toMatchObject({ manual: true, command: 'hermes update --branch feature/gui' })
     expect(requests).toHaveLength(count)
   } finally {
     vi.restoreAllMocks()

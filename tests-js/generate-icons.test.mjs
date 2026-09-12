@@ -28,6 +28,12 @@ test('icon preparation passes explicit source and independent output roots', () 
   expect(options.cwd).toBe(source)
 })
 
+test('on-demand icon preparation preserves admission intent at the PM boundary', () => {
+  const run = vi.fn(() => ({ status: 0 }))
+  expect(generateIcons(['--on-demand'], { run, env: {} })).toBe(0)
+  expect(run.mock.calls[0][1]).toContain('--on-demand')
+})
+
 test('the PM driver owns a temporary group-only environment and preserves generator argv and status', () => {
   const result = spawnSync(process.env.HERMES_PYTHON || 'python', ['-c', `
 from pathlib import Path
@@ -42,12 +48,13 @@ with TemporaryDirectory() as directory:
     source.mkdir()
     argv = ['--source', str(source), '--out', str(Path(directory) / 'icon outputs'), '--check']
     outputs = []
+    explicit = True
     def build(**options):
         output = options.pop('out')
         assert output.parent.is_dir() and not output.exists()
         assert output.name == 'venv'
         assert options == dict(source=source, groups=['icon-build'], only_groups=True,
-                               explicit=True, cache=source / '.cache/icon-build')
+                               explicit=explicit, cache=source / '.cache/icon-build')
         outputs.append(output)
         return Path(sys.executable)
     def generate(command, **options):
@@ -59,6 +66,9 @@ with TemporaryDirectory() as directory:
         assert icon_environment.main(argv) == 7
         prepare.assert_called_once()
         run.assert_called_once()
+        explicit = False
+        outputs.clear()
+        assert icon_environment.main([*argv, '--on-demand']) == 7
     assert not outputs[0].parent.exists()
 `], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' })
   expect(result.error).toBeUndefined()

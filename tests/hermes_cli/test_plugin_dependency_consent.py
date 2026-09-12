@@ -55,12 +55,12 @@ def test_node_sidecar_question_stays_independent(tmp_path, monkeypatch):
     monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: True)
     monkeypatch.setattr(plugins_cmd.sys.stdout, 'isatty', lambda: True)
     monkeypatch.setattr('builtins.input', lambda prompt: prompts.append(prompt) or 'yes')
-    monkeypatch.setattr(workspace, 'install_node_sidecar', lambda path: installs.append(path))
+    monkeypatch.setattr(workspace, 'install_node_sidecar', lambda path, **kwargs: installs.append((path, kwargs)))
     from types import SimpleNamespace
 
     result = plugins_cmd._install_plugin_python_deps(
         {'name': 'sidecar'}, target, SimpleNamespace(print=lambda *args, **kwargs: lines.extend(args)))
     assert result == (True, None)
-    assert installs == [target]
+    assert installs == [(target, {'explicit': True})]
     assert len(prompts) == 1 and 'node_modules' in prompts[0]
     assert not any('Python dependencies' in str(line) for line in lines)

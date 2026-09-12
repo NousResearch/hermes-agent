@@ -441,11 +441,13 @@ Run `hermes setup` to see which web backend is detected:
 ✅ Web Search & Extract (searxng)
 ```
 
-Or check via the CLI:
+For a source checkout, you can also check the module after
+[PM activation](/reference/package-management#developer-workflow). Use the home
+whose web configuration you intend to inspect:
 
 ```bash
-# Activate the venv and run the web tools module directly
-source ~/.hermes/hermes-agent/.venv/bin/activate
+# From the Hermes source checkout, in a clean shell
+source ./activate
 python -m tools.web_tools
 ```
 

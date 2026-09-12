@@ -242,9 +242,8 @@ class TestCmdGuiOnABundle:
 
         from hermes_cli import main_desktop, source_build
         monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
-        monkeypatch.setattr(source_build, "source_build_env", lambda env: dict(env))
+        monkeypatch.setattr(source_build, "source_build_env", lambda env, **kwargs: dict(env))
         monkeypatch.setattr(main_desktop, "_desktop_build_needed", lambda *a, **k: True)
-        monkeypatch.setattr(main_desktop, "_write_desktop_build_stamp", lambda *a, **k: None)
         monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda *a, **k: [])
         monkeypatch.setattr(main_desktop, "_desktop_linux_sandbox_fixup", lambda *a, **k: launcher_ok)
         monkeypatch.setattr(main_desktop, "_desktop_linux_needs_no_sandbox", lambda: not launcher_ok)

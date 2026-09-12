@@ -88,5 +88,5 @@ export interface UpdaterApplyResultWire {
 export interface UpdaterStrategy {
   readonly mechanism: UpdaterMechanism
   check(opts?: { force?: boolean }): Promise<UpdaterStatusWire>
-  apply(opts: { stopSafeBlockers?: boolean }): Promise<UpdaterApplyResultWire>
+  apply(): Promise<UpdaterApplyResultWire>
 }

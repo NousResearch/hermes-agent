@@ -28,6 +28,9 @@ import json
 
 import pytest
 
+# Real launcher serialization is host-dependent, despite injectable registry I/O.
+pytestmark = pytest.mark.platforms("windows")
+
 from hermes_cli._install_repair import (
     _WINDOWS_BIN_LAUNCHERS,
     _normalize_windows_path,
@@ -99,26 +102,19 @@ def _assert_boot_is_store_not_venv(launcher: Path, root: Path, store: Path):
 @pytest.fixture
 def managed_install(tmp_path, monkeypatch):
     home, root = _make_managed(tmp_path, monkeypatch)
-    # Keep every test off the real machine store by default.
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "empty-store"))
+    _make_store(tmp_path, monkeypatch)
     return home, root
 
 
-def test_no_store_python_yet_stages_runtime_resolving_cmd(managed_install):
-    """A fresh install (store not materialized) still gets working launchers
-    — they resolve the store python AT BOOT and say so when it is absent."""
+def test_no_store_python_refuses_publication(managed_install, tmp_path, monkeypatch):
+    """Repair cannot publish a usable launcher before PM commits Python."""
     home, root = managed_install
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "empty-store"))
 
     restored = ensure_windows_bin_launchers(root, windows=True, user_path_entries=[])
 
-    assert len(restored) == len(_WINDOWS_BIN_LAUNCHERS)
-    for name in _WINDOWS_BIN_LAUNCHERS:
-        body = (home / "bin" / f"{name}.cmd").read_text(encoding="utf-8")
-        assert "python-*" in body
-        assert "pm install" in body
-        # Never a venv interpreter anywhere in the boot path.
-        assert "venv\\Scripts\\python" not in body
-        assert str(root / "venv") not in body.split("PYTHONPATH")[0]
+    assert restored == []
+    assert not list((home / "bin").glob("hermes*"))
 
 
 def test_store_python_launcher_boot_the_store_not_the_venv(tmp_path, monkeypatch):
@@ -165,10 +161,13 @@ def test_healthy_store_launcher_is_a_noop(tmp_path, monkeypatch):
     store, _entry = _make_store(tmp_path, monkeypatch)
     bin_dir = home / "bin"
     bin_dir.mkdir()
+    local = root / ".hermes" / "bin"
+    local.mkdir(parents=True)
     for name in _WINDOWS_BIN_LAUNCHERS:
         # A launcher that does NOT embed the venv interpreter counts as
         # present, whatever wrote it.
         (bin_dir / f"{name}.exe").write_bytes(b"MZ already-staged launcher")
+        (local / f"{name}.exe").write_bytes(b"MZ already-staged launcher")
 
     assert ensure_windows_bin_launchers(root, windows=True, user_path_entries=[]) == []
     for name in _WINDOWS_BIN_LAUNCHERS:
@@ -206,8 +205,8 @@ def test_legacy_bin_restaged_only_while_on_user_path(managed_install):
     stems = {Path(p).stem for p in map(Path, restored)}
     assert set(_WINDOWS_BIN_LAUNCHERS) <= stems
     for name in _WINDOWS_BIN_LAUNCHERS:
-        assert (legacy / f"{name}.cmd").is_file()          # legacy consent honored
-        assert (home / "bin" / f"{name}.cmd").is_file()    # canonical healed too
+        assert _launcher_files(legacy, name)
+        assert _launcher_files(home / "bin", name)
 
 
 def test_legacy_bin_not_restaged_without_path_consent(managed_install):
@@ -247,13 +246,13 @@ def test_profile_session_still_heals_the_shared_bin(tmp_path, monkeypatch):
     root = home / "hermes-agent"
     (root / "venv" / "Scripts").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home / "profiles" / "work"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "empty-store"))
+    _make_store(tmp_path, monkeypatch)
 
     restored = ensure_windows_bin_launchers(root, windows=True, user_path_entries=[])
 
     assert len(restored) == len(_WINDOWS_BIN_LAUNCHERS)
     for name in _WINDOWS_BIN_LAUNCHERS:
-        assert (home / "bin" / f"{name}.cmd").is_file()
+        assert _launcher_files(home / "bin", name)
     assert not (home / "profiles" / "work" / "bin").exists()
 
 
@@ -309,7 +308,7 @@ def test_migration_moves_path_to_home_bin_and_strips_legacy(managed_install):
     assert _normalize_windows_path(legacy_scripts) not in keys
     assert _normalize_windows_path(r"C:\Windows\system32") in keys  # untouched
     for name in _WINDOWS_BIN_LAUNCHERS:
-        assert (home / "bin" / f"{name}.cmd").is_file()
+        assert _launcher_files(home / "bin", name)
     # Legacy FILES stay: editor/ACP configs holding absolute launcher paths
     # keep working. Only the PATH entry (the sweepable resolution route) goes.
     assert (root / "bin" / "hermes.cmd").exists()
@@ -317,7 +316,7 @@ def test_migration_moves_path_to_home_bin_and_strips_legacy(managed_install):
 
 def test_migration_works_when_only_legacy_copy_exists(tmp_path, monkeypatch):
     home, root = _make_managed(tmp_path, monkeypatch)
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "empty-store"))
+    _make_store(tmp_path, monkeypatch)
     state, read, write = _fake_registry([str(root / "bin")])
 
     ok = migrate_windows_bin_path(
@@ -326,7 +325,7 @@ def test_migration_works_when_only_legacy_copy_exists(tmp_path, monkeypatch):
 
     assert ok
     for name in _WINDOWS_BIN_LAUNCHERS:
-        assert (home / "bin" / f"{name}.cmd").is_file()
+        assert _launcher_files(home / "bin", name)
     keys = [_normalize_windows_path(e) for e in state["entries"]]
     assert _normalize_windows_path(home / "bin") in keys
 
@@ -348,11 +347,8 @@ def test_migration_is_idempotent(managed_install):
     assert state["writes"] == first_writes  # no redundant registry write
 
 
-def test_migration_works_with_empty_store(tmp_path, monkeypatch):
-    """Staging no longer depends on venv console scripts: even with an EMPTY
-    pm store (no python staged yet) the runtime-resolving delegators stage,
-    so the PATH migration completes; the cmd boot path is what instructs
-    the user to run `hermes pm install`."""
+def test_migration_refuses_empty_store_without_changing_path(tmp_path, monkeypatch):
+    """Never point PATH at commands that cannot start."""
     home = tmp_path / "hermes"
     root = home / "hermes-agent"
     (root / "venv" / "Scripts").mkdir(parents=True)
@@ -365,11 +361,8 @@ def test_migration_works_with_empty_store(tmp_path, monkeypatch):
         root, windows=True, read_user_path=read, write_user_path=write
     )
 
-    assert ok
-    for name in _WINDOWS_BIN_LAUNCHERS:
-        body = (home / "bin" / f"{name}.cmd").read_text(encoding="utf-8")
-        assert "pm install" in body
-    assert state["writes"] == 1
+    assert not ok
+    assert state["writes"] == 0
 
 
 def test_migration_skips_source_checkouts(tmp_path, monkeypatch):

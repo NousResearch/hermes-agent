@@ -97,9 +97,7 @@ assets/*
 !assets/nous-girl-black.svg
 !assets/nous-girl-white.svg
 !assets/backgrounds/
-assets/backgrounds/*
-!assets/backgrounds/squircle-light.svg
-!assets/backgrounds/squircle-dark.svg
+!assets/backgrounds/**
 infographic/
 
 # Plugin-level docs (hermes-achievements ships docs/ but the runtime doesn't read them)

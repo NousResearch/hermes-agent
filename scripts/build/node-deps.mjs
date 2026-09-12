@@ -30,7 +30,7 @@ export function npmCommand({ env = process.env } = {}) {
 }
 
 /** Install the full requested workspace union in one strict, locked operation. */
-export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false }) {
+export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true }) {
   source = resolve(source)
   if (!Array.isArray(workspaces) || workspaces.length === 0) {
     throw new Error('Select at least one workspace; implicit all-workspace installation is not allowed')
@@ -84,6 +84,7 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
       return { source, workspaces: selected }
     }
   }
+  if (!install) throw new Error('Workspace dependencies are stale or missing and lazy installs are disabled; run an explicit build/update')
   // npm can fail during validation before deleting node_modules. Invalidate first.
   rmSync(receipt, { force: true })
   execFileSync(node, [npm, ...args], { cwd: source, env, stdio: 'inherit' })
@@ -97,7 +98,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const { values } = parseArgs({ options: {
     source: { type: 'string' }, workspace: { type: 'string', multiple: true },
     reuse: { type: 'boolean', default: false },
+    'no-install': { type: 'boolean', default: false },
   } })
   if (!values.source) throw new Error('--source is required')
-  prepareNodeDependencies({ source: values.source, workspaces: values.workspace, reuse: values.reuse })
+  prepareNodeDependencies({ source: values.source, workspaces: values.workspace, reuse: values.reuse, install: !values['no-install'] })
 }

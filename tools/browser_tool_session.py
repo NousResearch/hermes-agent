@@ -95,16 +95,7 @@ def _format_browser_timeout_error(
 
 
 def _agent_browser_argv(browser_cmd: str) -> list:
-    """Command prefix to invoke agent-browser (concrete binary, or the npx sentinel expanded).
-
-    npx is resolved through the same PATH cascade as ``_find_agent_browser`` (a bare
-    ``which("npx")`` would let a broken system npx shadow a healthy managed one); if
-    absent the bare name gives a readable ``FileNotFoundError``. ``--ignore-scripts``:
-    the spec is a floating range — a compromised future patch must not run install scripts.
-    """
-    if _install._is_npx_agent_browser_sentinel(browser_cmd):
-        _npx_bin = _install._resolve_npx_bin() or "npx"
-        return [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", _bt.AGENT_BROWSER_NPX_SPEC]
+    """Keep the selected executable, including spaces, as one argv entry."""
     return [browser_cmd]
 
 
@@ -122,13 +113,16 @@ def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
     """Credential-scrubbed env for one command: PATH fallbacks, the session socket dir, and
     daemon-side idle self-termination (agent-browser 0.24+) mirroring the Python janitor
     unless the user set ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` explicitly."""
+    from pm import env_for
+
     env = _bt._build_browser_env()
+    env["PATH"] = _install._merge_browser_path(env.get("PATH", ""))
+    env = env_for("agent-browser", base_env=env)
     from hermes_cli.browser_runtime import chromium_executable
 
     executable = chromium_executable()
     if executable:
         env["AGENT_BROWSER_EXECUTABLE_PATH"] = executable
-    env["PATH"] = _install._merge_browser_path(env.get("PATH", ""))
     env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:
         env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(_bt.BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
@@ -486,11 +480,6 @@ def _browser_command_preflight() -> Dict[str, Any]:
     except FileNotFoundError as e:
         _bt.logger.warning("agent-browser CLI not found: %s", e)
         return {"success": False, "error": str(e)}
-
-    if _install._requires_real_termux_browser_install(browser_cmd):
-        error = _install._termux_browser_install_error()
-        _bt.logger.warning("browser command blocked on Termux: %s", error)
-        return {"success": False, "error": error}
 
     # Skip when engine=lightpanda — LP doesn't need Chromium for navigation.
     if (

@@ -139,9 +139,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
         # A packaged caller may hand us the old venv launcher; select bytes
         # from the install record rather than interpreting relocated pyvenv.cfg.
         dependencies = dependency_site(selected_venv(repo))
-        payload_dependencies = venv_dir / "Lib" / "site-packages"
-        if (venv_dir.parent / "manifest.json").is_file() and payload_dependencies.is_dir():
-            dependencies = payload_dependencies
+
         return str(managed_python), {"PYTHONPATH": os.pathsep.join([str(repo), str(dependencies)])}
 
     cfg = _read_windows_pyvenv_cfg(venv_dir)

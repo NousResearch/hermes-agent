@@ -389,18 +389,18 @@ stage_config() {
 
 stage_setup() {
     if [ "$NON_INTERACTIVE" = true ]; then return 0; fi
-    "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/hermes" setup || true
+    "$INSTALL_DIR/.hermes/bin/hermes" setup || fail "setup failed"
 }
 
 stage_gateway() {
     if [ "$NON_INTERACTIVE" = true ]; then return 0; fi
-    "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/hermes" gateway install || true
+    "$INSTALL_DIR/.hermes/bin/hermes" gateway install || fail "gateway installation failed"
 }
 
 stage_desktop() {
     # `hermes desktop --build-only` is the current authority (same path as
     # `hermes gui` / the update flow); no installer-local node/electron code.
-    "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/hermes" desktop --build-only || fail "desktop build failed"
+    "$INSTALL_DIR/.hermes/bin/hermes" desktop --build-only || fail "desktop build failed"
 }
 
 stage_complete() {

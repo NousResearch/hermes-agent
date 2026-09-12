@@ -65,14 +65,138 @@ def source_launch(tmp_path, monkeypatch, isolated_python):
     )
     pm.lock_project(root, offline=True, explicit=True)
 
-    # Exercise the launcher's real store lookup without fabricating tool facts.
-    # This is a real executable, not a fake installer or successful shell stub.
-    store_python = tmp_path / "store" / "python-test" / "bin" / "python3"
+    # Acquisition uses the real host interpreter; publish its installed fact
+    # through PM too. Unrecorded store bytes are deliberately not launchable.
+    from pm.store import current_target, tree_digest
+
+    store = paths.store_root()
+    entry = store / "python-test"
+    store_python = entry / "bin" / "python3"
     store_python.parent.mkdir(parents=True)
-    # A Nix Python wrapper resets sys.executable to its own path. PM installs
-    # an actual interpreter, so use the underlying binary rather than a wrapper.
+    # A Nix wrapper resets sys.executable; use the underlying binary instead.
     store_python.symlink_to(sys._base_executable)
+    Facts(paths.facts_path()).record(
+        "python", "test", entry.name, {"PATH": [str(store_python.parent)]}, store,
+        target=current_target(), digest=tree_digest(entry),
+    )
     return root, store_python, command
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("update", ["launch", "sync", "checkout", "pm-update"])
+def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monkeypatch, update):
+    from hermes_cli import _launchers, update_cmd_maint
+    from pm.cli import cmd_gc
+    from pm.lock import Lockfile
+    from pm.store import current_target, tree_digest
+    from tests.hermes_cli.test_source_launcher_publication import BOOT_FILES
+
+    root, old_python, _ = source_launch
+    repository = Path(__file__).resolve().parents[2]
+    for relative in BOOT_FILES:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repository / relative, destination)
+    (root / "source_probe.py").write_text(
+        "import json, sys, selected_probe\n"
+        "print(json.dumps({'executable': sys.executable, 'value': selected_probe.VALUE}))\n",
+        encoding="utf-8",
+    )
+    pin = Lockfile(paths.lockfile_path())
+    pin.set_pin("python", "A", {})
+    pin.save()
+    pm.sync_venv(explicit=True, project_root=root)
+    # Initial installation is allowed to publish. No explicit writer is called
+    # after replacement: the source-update owner must refresh this same command.
+    _launchers.ensure_install_launchers(root, root / ".hermes" / "bin")
+    command = _launchers.installation_command(root, module="source_probe")
+    (site_packages(selected_venv(root)) / "selected_probe.py").write_text("VALUE = 'A'\n")
+    child_env = {**os.environ, "HERMES_DISABLE_LAZY_INSTALLS": "1"}
+    before = subprocess.run(command, env=child_env, capture_output=True, text=True, timeout=30)
+    assert before.returncode == 0, before.stderr
+    assert json.loads(before.stdout)["executable"] == str(old_python)
+
+    # Only acquisition is substituted. This is a new real interpreter entry,
+    # a changed tool pin and a real Facts publication, not a launcher rewrite.
+    store = paths.store_root()
+    new_python = store / "python-B" / "bin" / "python3"
+    new_python.parent.mkdir(parents=True)
+    new_python.symlink_to(sys._base_executable)
+    Facts(paths.facts_path()).record(
+        "python", "B", "python-B", {"PATH": [str(new_python.parent)]}, store,
+        target=current_target(), digest=tree_digest(new_python.parent.parent),
+    )
+    if update != "pm-update":
+        pin.set_pin("python", "B", {})
+        pin.save()
+        assert not pm.venv_is_current(project_root=root)
+    previous = selected_venv(root)
+    if update == "launch":
+        assert venv_sync.prepare_launch(root, []) == new_python
+    elif update == "sync":
+        assert venv_sync.sync(root) == {"state": "synced", "ok": True}
+    elif update == "checkout":
+        # Frontend compilation is not part of the dependency/launcher contract.
+        with monkeypatch.context() as build:
+            build.setattr(update_cmd_maint.subprocess, "run", lambda *args, **kwargs: None)
+            # PM's worker uses Popen, so its transaction still runs unchanged.
+            update_cmd_maint._prepare_updated_checkout(root, desktop=False)
+    else:
+        from types import SimpleNamespace
+        from pm import cli
+        from pm.update import Resolved
+
+        monkeypatch.setattr(paths, "repo_root", lambda: root)
+        monkeypatch.setattr(cli, "repo_root", lambda: root)
+        # The latest release and artifact acquisition are fixture inputs; the
+        # CLI must still pin, ensure, synchronize and publish through its owners.
+        monkeypatch.setattr(cli, "resolve_package", lambda *a, **k: Resolved("python", "A", "semver", "B"))
+        monkeypatch.setattr(cli, "_pin_artifacts", lambda *a: {})
+        monkeypatch.setattr(importlib.import_module("pm.ensure"), "sync_venv", pm.sync_venv)
+        assert cli.cmd_update(SimpleNamespace(names=["python"], target=None, check=False, uv=False, npm=False)) == 0
+        assert Lockfile(paths.lockfile_path()).version("python") == "B"
+    assert pm.venv_is_current(project_root=root)
+    assert selected_venv(root) != previous
+    (site_packages(selected_venv(root)) / "selected_probe.py").write_text("VALUE = 'B'\n")
+    monkeypatch.setattr(paths, "repo_root", lambda: root)
+    assert cmd_gc(None) == 0
+    assert not old_python.exists(), "real PM GC did not remove the superseded Python"
+    assert new_python.is_file()
+    after = subprocess.run(command, env=child_env, capture_output=True, text=True, timeout=30)
+    assert after.returncode == 0, after.stderr
+    assert json.loads(after.stdout) == {"executable": str(new_python), "value": "B"}
+
+
+@pytest.mark.platforms("posix")
+def test_launcher_publication_failure_retries_without_rebuilding_dependencies(source_launch, monkeypatch):
+    from hermes_cli import _launchers
+
+    root, store_python, _ = source_launch
+    with monkeypatch.context() as failed_publication:
+        failed_publication.setattr(_launchers, "ensure_install_launchers", lambda *a: [])
+        result = venv_sync.sync(root)
+    assert not result["ok"] and "launcher publication failed" in result["detail"]
+    assert pm.venv_is_current(project_root=root)
+    committed = runtime_facts_path(root).read_bytes()
+    assert venv_sync.prepare_launch(root, []) == store_python
+    assert runtime_facts_path(root).read_bytes() == committed
+    assert (root / ".hermes" / "bin" / "hermes").is_file()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("checkout", [False, True])
+def test_source_publication_leaves_external_install_launchers_alone(source_launch, checkout):
+    root, _, _ = source_launch
+    (root / "install-stamp.json").write_text(
+        json.dumps({"updateMechanism": "external", "distribution": "nix"}), encoding="utf-8",
+    )
+    if not checkout:
+        (root / ".git").rmdir()
+    launcher = root / ".hermes" / "bin" / "hermes"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("externally owned launcher\n", encoding="utf-8")
+    assert venv_sync.sync(root)["ok"]
+    assert launcher.read_text(encoding="utf-8") == "externally owned launcher\n"
 
 
 def _fact(root):

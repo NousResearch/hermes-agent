@@ -119,6 +119,15 @@ def _provider_for_mode(tmp_path, monkeypatch, mode: str):
     return provider
 
 
+def test_initialize_does_not_upgrade_an_old_client(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr("importlib.metadata.version", lambda name: "0.0.1")
+    monkeypatch.setattr("pm.sync_venv", lambda *args, **kwargs: calls.append((args, kwargs)))
+    provider = _provider_for_mode(tmp_path, monkeypatch, "cloud")
+    assert provider._session_id == "test-session"
+    assert calls == [], "provider initialization must not replace the process dependency generation"
+
+
 def _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, mode: str):
     """Cloud/local-external clients must ensure lazy deps before importing."""
     import builtins
@@ -1591,69 +1600,6 @@ class TestPostSetupEnvEncoding:
         assert "HINDSIGHT_API_KEY=sk-new" in content
         assert "old" not in content
         assert "﻿" not in content
-
-
-class TestClientAutoUpgradeRoutesThroughPm:
-    """The initialize()-time hindsight-client auto-upgrade must go through
-    pm.sync_venv (uv.lock owns the pin) — never a direct
-    `uv pip install --python sys.executable` subprocess, which fails with
-    EROFS/EACCES on immutable images (NS-605)."""
-
-    def _init_with_outdated_client(self, tmp_path, monkeypatch, error=None):
-        import importlib.metadata as md
-        import subprocess as subprocess_mod
-        import pm
-
-        config_path = tmp_path / "hindsight" / "config.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps({"mode": "cloud"}))
-        monkeypatch.setattr(
-            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
-        )
-
-        # Simulate an installed-but-outdated client.
-        monkeypatch.setattr(md, "version", lambda name: "0.0.1")
-
-        calls = []
-
-        def fake_sync(extras=None, **kw):
-            calls.append(tuple(extras or ()))
-            if error is not None:
-                raise error
-
-        monkeypatch.setattr(pm, "sync_venv", fake_sync)
-
-        # Regression guard: no direct pip subprocess may run.
-        def _no_subprocess(*a, **kw):  # pragma: no cover - fails loudly
-            raise AssertionError(f"unexpected subprocess.run during auto-upgrade: {a}")
-        monkeypatch.setattr(subprocess_mod, "run", _no_subprocess)
-
-        provider = HindsightMemoryProvider()
-        provider.initialize(session_id="s", hermes_home=str(tmp_path), platform="cli")
-        return calls
-
-    def test_upgrade_syncs_extra_not_subprocess(self, tmp_path, monkeypatch):
-        calls = self._init_with_outdated_client(tmp_path, monkeypatch)
-        assert calls == [("hindsight",)]
-
-    def test_blocked_upgrade_is_nonfatal_and_surfaces_reason(
-        self, tmp_path, monkeypatch, caplog
-    ):
-        import logging
-
-        import pm as pm_pkg
-
-        with caplog.at_level(logging.WARNING):
-            calls = self._init_with_outdated_client(
-                tmp_path, monkeypatch,
-                error=pm_pkg.InstallError(
-                    "venv", "runtime installs are disabled on this deployment"
-                ),
-            )
-        assert len(calls) == 1  # attempted exactly once, init still completed
-        assert any("runtime installs are disabled" in r.getMessage()
-                   for r in caplog.records)
-
 
 
 class TestMultiplexBackgroundScope:

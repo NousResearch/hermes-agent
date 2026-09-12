@@ -20,8 +20,60 @@ from pathlib import Path
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from hermes_constants import get_hermes_home, project_venv_dir
-from hermes_cli.runtime_paths import site_packages, store_root
+from hermes_constants import get_hermes_home
+from hermes_cli.runtime_paths import store_root
+
+
+def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",
+                    code: str | None = None, python: str | Path | None = None,
+                    home: str | Path | None = None) -> list[str]:
+    """An installation-bound command, safe to persist across dependency GC.
+
+    Store Python owns the ABI; bootstrap selects and leases dependencies at
+    child start. Nix and developer interpreters retain their external owner.
+    No selected generation or ambient PYTHONPATH is captured in the command.
+    """
+    root = Path(repo_root).resolve()
+    python = python or resolve_store_python(root) or Path(sys.executable)
+    entry = f"exec({code!r})" if code is not None else (
+        f"runpy.run_module({module!r}, run_name='__main__', alter_sys=True)")
+    bootstrap = (
+        "import os, sys, runpy; "
+        f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {str(home or get_hermes_home())!r}; "
+        "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
+        "os.environ.pop('VIRTUAL_ENV', None); "
+        f"sys.path.insert(0, {str(root)!r}); "
+        "import hermes_bootstrap; "
+        + entry
+    )
+    return [str(python), "-I", "-c", bootstrap, *args]
+
+
+def print_runtime_command(repo_root: Path, argv: list[str]) -> None:
+    """Machine boundary for consumers holding the exact published launcher."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Resolve this installation's launch command.")
+    parser.add_argument("--module", default="hermes_cli.main")
+    parser.add_argument("args", nargs=argparse.REMAINDER)
+    options = parser.parse_args(argv)
+    args = options.args[1:] if options.args[:1] == ["--"] else options.args
+    print(json.dumps(runtime_command(repo_root, args, module=options.module)))
+
+
+def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",
+                         python: str | Path | None = None, home: str | Path | None = None) -> list[str]:
+    """Persist a source launcher, never the versioned tool it currently uses.
+
+    External/Nix installs retain their externally owned interpreter contract.
+    Source installation/update publication refreshes the local launcher when
+    the managed Python pin changes.
+    """
+    root = Path(repo_root)
+    if resolve_store_python(root) is None:
+        return runtime_command(root, args, module=module, python=python, home=home)
+    prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
+    return [str(root / ".hermes" / "bin" / "hermes"), *prefix, *args]
 
 #: Launcher command names — keep in lockstep with scripts/install.ps1
 #: Stage-Path and hermes_cli/_install_repair.py.
@@ -40,9 +92,7 @@ def _is_windows() -> bool:
 
 
 def resolve_store_python(repo_root: Path) -> Path | None:
-    """The interpreter the store installed from the ``python`` package
-    (facts.json entry first, newest ``python-*`` entry as fallback), or
-    None when `hermes pm install` has not materialized one yet."""
+    """Read PM's committed Python tool, without adopting unrecorded bytes."""
     runtime = store_root(repo_root)
     rel = "python.exe" if _is_windows() else "bin/python3"
 
@@ -60,10 +110,6 @@ def resolve_store_python(repo_root: Path) -> Path | None:
             if candidate.is_file():
                 return candidate
 
-    for entry_dir in sorted(runtime.glob("python-*"), key=lambda p: p.name):
-        candidate = entry_dir / rel
-        if candidate.is_file():
-            return candidate
     return None
 
 
@@ -182,8 +228,19 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
         "os.environ.pop('PYTHONHOME', None)\n"
         "os.environ.pop('PYTHONPATH', None)\n"
         f"sys.path.insert(0, {str(repo_root.resolve())!r})\n"
-        + (f"sys.path.append({str(dependencies)!r})\n" if dependencies else "")
-        + "import hermes_bootstrap\n"
+        "if sys.argv[1:2] == ['--print-runtime-command']:\n"
+        "    from pathlib import Path\n"
+        "    from hermes_cli._launchers import print_runtime_command\n"
+        f"    print_runtime_command(Path({str(repo_root.resolve())!r}), sys.argv[2:])\n"
+        "    sys.exit(0)\n"
+        "import hermes_bootstrap\n"
+        "if sys.argv[1:2] == ['--run-module']:\n"
+        "    import runpy\n"
+        "    if len(sys.argv) < 3: sys.exit('hermes: --run-module needs a module')\n"
+        "    module = sys.argv.pop(2)\n"
+        "    del sys.argv[1]\n"
+        "    runpy.run_module(module, run_name='__main__', alter_sys=True)\n"
+        "    sys.exit(0)\n"
         f"from {module} import {func}\n"
         "sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\n"
         f"sys.exit({func}())\n"
@@ -201,82 +258,48 @@ def _mint_shell_launcher(name: str, out_dir: Path, python_exe: Path, script: str
 
 
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
-    """Publish one launcher bound to the current store interpreter.
-
-    Windows repair retains a command-file fallback when the store is absent.
-    The standalone install writer refuses that incomplete state.
-    """
+    """Publish one launcher bound to store Python, or refuse missing tools."""
     repo_root = Path(repo_root)
-    venv_dir = project_venv_dir(repo_root)
-    dependencies = site_packages(venv_dir) if venv_dir else None
     store_python = resolve_store_python(repo_root)
     if store_python is not None:
-        path = mint_launcher(name, repo_root, out_dir, store_python, dependencies)
-        if path is not None:
-            return path
-    if not _is_windows():
-        return None
-    return _write_runtime_cmd(name, repo_root, dependencies, out_dir)
+        path = mint_launcher(name, repo_root, out_dir, store_python, None)
+        if path is not None and path.suffix == ".cmd":
+            # cmd.exe prefers .exe. An older launcher must not shadow the
+            # newly published command when distlib is unavailable.
+            try:
+                (Path(out_dir) / f"{name}.exe").unlink(missing_ok=True)
+            except OSError:
+                return None
+        return path
+    return None
 
 
 def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
-    """Stage/refresh every launcher in WINDOWS_BIN_LAUNCHERS — see
-    :func:`stage_launcher` for the per-name contract."""
+    """Publish exact-install commands and their user-bin conveniences.
+
+    Installers/updaters use the local command, since a shared HOME/bin may
+    have been repointed to another checkout. Return the requested outputs.
+    """
     repo_root = Path(repo_root)
+    local = repo_root / ".hermes" / "bin"
+    local.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
     for name in WINDOWS_BIN_LAUNCHERS:
+        if Path(out_dir).resolve() != local.resolve():
+            if stage_launcher(name, repo_root, local) is None:
+                continue
         path = stage_launcher(name, repo_root, Path(out_dir))
         if path is not None:
             written.append(str(path))
     return written
 
 
-def _write_runtime_cmd(
-    name: str,
-    repo_root: Path,
-    site_packages: Path | None,
-    out_dir: Path,
-) -> Path | None:
-    """The boot-time-resolving .cmd fallback (fresh install, no store
-    interpreter yet): glob ``<runtime>\\python-*`` for the store python at
-    boot, compose PYTHONPATH, and fail with a clear message when the store
-    is empty. Never references the venv interpreter. The ``endlocal & set``
-    idiom hoists the boot-resolved interpreter and PYTHONPATH out of the
-    setlocal scope (percent expansion happens while setlocal is still
-    active, before endlocal executes)."""
-    module, func = ENTRY_POINTS[name]
-    site = ""
-    if site_packages is not None:
-        site = (
-            ";%HERMES_REPO%\\"
-            + str(site_packages.relative_to(repo_root)).replace("/", "\\")
-        )
-    body = (
-        "@echo off\r\n"
-        "chcp 65001 >nul\r\n"
-        "setlocal\r\n"
-        f'set "HERMES_REPO={repo_root}"\r\n'
-        'set "PM_RT=%HERMES_RUNTIME_DIR%"\r\n'
-        'if not defined PM_RT set "PM_RT=%LOCALAPPDATA%\\hermes\\tools"\r\n'
-        'set "PM_PY="\r\n'
-        'for /d %%D in ("%PM_RT%\\python-*") do if exist "%%D\\python.exe" set "PM_PY=%%D\\python.exe"\r\n'
-        'if not defined PM_PY (\r\n'
-        "  echo hermes: no pm store interpreter under %PM_RT% - run \"hermes pm install\" first 1>&2\r\n"
-        "  exit /b 1\r\n"
-        ")\r\n"
-        f'endlocal & set "PYTHONPATH=%HERMES_REPO%{site}" & set "PM_PY=%PM_PY%"\r\n'
-        'set "PYTHONHOME="\r\n'
-        f'set "PM_ENTRY=import sys; import hermes_bootstrap; from {module} import {func}; sys.exit({func}())"\r\n'
-        '"%PM_PY%" -c "%PM_ENTRY%" %*\r\n'
-    )
-    return _write_atomic(
-        Path(out_dir) / f"{name}.cmd",
-        lambda p: p.write_text(body, encoding="utf-8"),
-    )
-
-
 if __name__ == "__main__":
     import argparse
+
+    if sys.argv[1:2] == ["--print-runtime-command"]:
+        print_runtime_command(Path(__file__).resolve().parents[1], sys.argv[2:])
+        raise SystemExit(0)
 
     parser = argparse.ArgumentParser(description="Publish source-install launchers.")
     parser.add_argument("out_dir", type=Path)

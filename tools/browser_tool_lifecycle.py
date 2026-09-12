@@ -688,13 +688,12 @@ def cleanup_all_browsers() -> None:
         pass
 
     _install._discover_homebrew_node_dirs.cache_clear()
+    _bt._chromium_autoinstall_attempted = False
     # Each resolved flag flips BEFORE its cache is nulled so a concurrent reader never
     # sees ``resolved=True`` with ``cache=None``.
     for flag, cache in (
-        ("_agent_browser_resolved", "_cached_agent_browser"),
         ("_command_timeout_resolved", "_cached_command_timeout"),
         ("_snapshot_threshold_resolved", "_cached_snapshot_threshold"),
-        ("_chromium_autoinstall_attempted", "_cached_chromium_installed"),
         ("_browser_engine_resolved", "_cached_browser_engine"),
     ):
         setattr(_bt, flag, False)

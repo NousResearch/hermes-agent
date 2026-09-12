@@ -1275,19 +1275,11 @@ class GatewayShutdownMixin:
         # The watcher runs sys.executable (console python) under the CREATE_NO_WINDOW detach kwargs below:
         # it owns one hidden console, inherited by the `hermes gateway restart` child, so nothing flashes.
         # See #54220, #56747.
-        watcher_python = sys.executable
-        venv_dir = Path(watcher_env.get("VIRTUAL_ENV") or project_root / "venv")
-        site_packages = venv_dir / "Lib" / "site-packages"
-        if site_packages.exists():
-            watcher_env["VIRTUAL_ENV"] = str(venv_dir)
-            pythonpath = [str(project_root), str(site_packages)]
-            if watcher_env.get("PYTHONPATH"):
-                pythonpath.append(watcher_env["PYTHONPATH"])
-            watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
-        watcher_argv = [
-            watcher_python, "-c", _WINDOWS_RESTART_WATCHER,
-            str(current_pid), str(restart_after_s), *hermes_cmd, "gateway", "restart",
-        ]
+        from hermes_cli._launchers import runtime_command
+        watcher_argv = runtime_command(project_root,
+            [str(current_pid), str(restart_after_s), *hermes_cmd, "gateway", "restart"],
+            code=_WINDOWS_RESTART_WATCHER)
+        watcher_python = watcher_argv[0]
         popen_kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=watcher_env)
         # Break away from the parent CLI's job object or be reaped when the CLI exits; a job without
         # BREAKAWAY_OK rejects CREATE_BREAKAWAY_FROM_JOB (OSError) — retry once without the bit.

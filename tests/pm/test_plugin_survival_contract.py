@@ -87,8 +87,6 @@ def test_sidecar_no_root_pyproject_excludes_nested_and_external(tmp_path, monkey
     assert ws._is_member_candidate(wrapper) is False, (
         "a wrapper root without pyproject/dep keys must never be a member candidate"
     )
-    scan = ws.scan_plugin(wrapper)
-    assert scan["pyproject"] is False and scan["legacy_deps"] is False
 
     members = ws.enabled_member_dirs()
     member_names = [p.name for p in members]

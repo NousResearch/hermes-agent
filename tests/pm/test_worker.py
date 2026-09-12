@@ -127,6 +127,77 @@ def _current_environment(tmp_path, monkeypatch, members):
     return repo
 
 
+@pytest.mark.parametrize("member_shape", ["paths", "sources"])
+@pytest.mark.parametrize("route", ["worker", "direct", "foreign-runtime"])
+def test_currency_probe_preserves_union_and_candidate_inputs(client, tmp_path, monkeypatch, isolated_python,
+                                                            member_shape, route):
+    import json
+    from hermes_cli.runtime_paths import runtime_facts_path, selected_venv
+    from pm.lock import Facts
+    from pm.packages import Venv
+
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    manifest = candidate / "plugin.yaml"
+    manifest.write_text('name: candidate\npython_dependencies: ["candidate-dep==1"]\n')
+    members = [candidate] if member_shape == "paths" else {tmp_path / "installed": candidate}
+    repo = _current_environment(tmp_path, monkeypatch, members)
+    environment = selected_venv(repo)
+    recorded = ["incumbent-extra", "provider-extra"]
+    facts_path = runtime_facts_path(repo)
+    Facts(facts_path).record_state(
+        "venv", Venv(repo).expected_stamp(recorded, plugin_dirs=members), recorded,
+        environment=environment,
+    )
+    monkeypatch.setattr(client, "is_runtime", lambda: route != "worker")
+    if route == "foreign-runtime":
+        monkeypatch.setattr(paths, "repo_root", lambda: tmp_path / "other-project")
+    root_args = {"project_root": repo} if route != "worker" else {}
+    acquisitions = []
+
+    def ready_runtime(*, bootstrap):
+        assert bootstrap is False, "currency probe attempted to bootstrap PM"
+        acquisitions.append(bootstrap)
+        return isolated_python
+
+    monkeypatch.setattr("pm.runtime.runtime_python", ready_runtime)
+    if route != "direct":
+        engine = importlib.import_module("pm.ensure")
+        monkeypatch.setattr(engine, "venv_is_current", lambda **kw: pytest.fail("probe ran in caller"))
+    callbacks = []
+
+    def select():
+        callbacks.append("selected")
+        return members
+
+    def snapshot():
+        return {path.relative_to(tmp_path): (path.read_bytes() if path.is_file() else None)
+                for path in tmp_path.rglob("*")}
+
+    before = snapshot()
+    assert client.venv_is_current(extras=["provider-extra"], plugin_dirs=select, **root_args)
+    assert callbacks == ["selected"]
+    assert client.venv_is_current(extras=[], plugin_dirs=members, **root_args)
+    assert not client.venv_is_current(extras=["new-extra"], plugin_dirs=members, **root_args)
+    assert not client.venv_is_current(extras=recorded, plugin_dirs=[], **root_args)
+    assert snapshot() == before, "currency queries changed dependency state"
+    assert bool(acquisitions) is (route != "direct")
+
+    manifest.write_text('name: candidate\npython_dependencies: ["candidate-dep==2"]\n')
+    changed = snapshot()
+    assert not client.venv_is_current(extras=["provider-extra"], plugin_dirs=select, **root_args)
+    assert snapshot() == changed
+    assert selected_venv(repo) == environment
+    # Corruption must not be mistaken for a missing or current environment.
+    data = json.loads(facts_path.read_text())
+    data["packages"]["venv"]["extras"] = "provider-extra"
+    facts_path.write_text(json.dumps(data))
+    malformed = snapshot()
+    with pytest.raises(ValueError, match="invalid recorded dependency state"):
+        client.venv_is_current(extras=[], plugin_dirs=members, **root_args)
+    assert snapshot() == malformed
+
+
 def _assert_worker_holds_lock(repo):
     from hermes_cli.runtime_paths import install_state_dir
     from hermes_cli.runtime_state import _lock

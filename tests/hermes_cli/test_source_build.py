@@ -19,6 +19,50 @@ import pm
 from pm.package import Runner
 
 
+def copy_freshness_scripts(root):
+    repository = Path(__file__).resolve().parents[2]
+    scripts = root / "scripts/build"
+    scripts.mkdir(parents=True, exist_ok=True)
+    for name in ("freshness.mjs", "frontend-common.mjs"):
+        shutil.copy2(repository / "scripts/build" / name, scripts / name)
+
+
+def stamp_product(root, product, out):
+    script = (root / "scripts/build/freshness.mjs").as_uri()
+    subprocess.run([shutil.which("node"), "--input-type=module", "-e",
+                    f"import {{recordProduct, buildInputs}} from {json.dumps(script)};"
+                    "const [source, product, out] = process.argv.slice(1);"
+                    "recordProduct({source, product, out, inputs: buildInputs(source, product)});",
+                    str(root), product, str(out)], check=True)
+
+
+def test_automatic_build_preserves_pm_admission_intent(monkeypatch):
+    from hermes_cli.source_build import source_build_env
+
+    intent = []
+    def acquire(name, *, base_env, explicit):
+        intent.append(explicit)
+        return Runner(name, base_env)
+    monkeypatch.setattr(pm, "ensure", acquire)
+    source_build_env()
+    assert intent == [False]
+
+
+def test_installed_npm_does_not_authorize_missing_workspace_dependencies(source_checkout, monkeypatch):
+    from hermes_cli.source_build import prepare_source_dependencies, source_build_env
+
+    root, _ = source_checkout
+    env = source_build_env()
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    with pytest.raises(subprocess.CalledProcessError):
+        prepare_source_dependencies(root, ("ui-tui", "web"), env=env)
+    assert _events(root) == []
+    prepare_source_dependencies(root, ("ui-tui", "web"), env=env, explicit=True)
+    events = _events(root)
+    prepare_source_dependencies(root, ("ui-tui", "web"), env=env)
+    assert _events(root) == events
+
+
 @pytest.fixture
 def source_checkout(tmp_path, monkeypatch):
     node, npm = shutil.which("node"), shutil.which("npm")
@@ -27,6 +71,7 @@ def source_checkout(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "0")
     monkeypatch.setenv("npm_config_cache", str(tmp_path / "npm-cache"))
     monkeypatch.setenv("ESBUILD_BINARY_PATH", "/wrong/esbuild")
     monkeypatch.setenv("HERMES_PYTHON", "/wrong/python")
@@ -37,9 +82,9 @@ def source_checkout(tmp_path, monkeypatch):
     def acquire(name, *, base_env=None, explicit=False):
         acquired.append(name)
         assert name == "npm"
-        assert explicit
+
         return Runner(name, {**(base_env or os.environ), "PATH": os.pathsep.join(
-            [str(Path(node).parent), str(Path(npm).parent), os.environ["PATH"]])})
+            [str(Path(npm).parent), str(Path(node).parent), os.environ["PATH"]])})
 
     monkeypatch.setattr(pm, "ensure", acquire)
     root = tmp_path / "source with spaces"
@@ -53,7 +98,8 @@ def source_checkout(tmp_path, monkeypatch):
         directory.mkdir(parents=True)
         (directory / "package.json").write_text(json.dumps({
             "name": workspace.replace("/", "-"), "version": "1.0.0",
-            "scripts": {"pack": "node ../../scripts/build/package-desktop.mjs"}
+            "scripts": {"build": "node ../../scripts/build/build-desktop.mjs",
+                        "builder": "node ../../scripts/build/package-desktop.mjs"}
             if workspace == "apps/desktop" else {},
         }), encoding="utf-8")
     (root / "log.mjs").write_text(
@@ -69,7 +115,8 @@ def source_checkout(tmp_path, monkeypatch):
     scripts = root / "scripts" / "build"
     scripts.mkdir(parents=True)
     repository = Path(__file__).resolve().parents[2]
-    shutil.copy2(repository / "scripts/build/node-deps.mjs", scripts / "node-deps.mjs")
+    for name in ("node-deps.mjs", "freshness.mjs", "frontend-common.mjs"):
+        shutil.copy2(repository / "scripts/build" / name, scripts / name)
     (root / ".gitignore").write_text("node_modules/\n**/dist/\n", encoding="utf-8")
     return root, acquired
 
@@ -81,6 +128,7 @@ def source_products(source_checkout):
         "import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';\n"
         "import { dirname, join } from 'node:path';\n"
         "import { fileURLToPath } from 'node:url';\n"
+        "import { recordProduct, buildInputs } from './scripts/build/freshness.mjs';\n"
         "const root = dirname(fileURLToPath(import.meta.url));\n"
         "export function build(step, output) {\n"
         "  appendFileSync(join(root, 'events.jsonl'), JSON.stringify({step}) + '\\n');\n"
@@ -88,6 +136,12 @@ def source_products(source_checkout):
         "  if (step === 'web' && !existsSync(join(root, 'web/public/favicon.ico'))) throw new Error('icons missing');\n"
         "  const path = join(root, output); mkdirSync(dirname(path), { recursive: true });\n"
         "  writeFileSync(path, step);\n"
+        "  if (step !== 'icons') {\n"
+        "    let out = dirname(path);\n"
+        "    if (step === 'desktop') { out = join(out, 'resources/app.asar.unpacked/dist');\n"
+        "      mkdirSync(out, {recursive: true}); writeFileSync(join(out, 'index.html'), 'renderer'); }\n"
+        "    recordProduct({source: root, product: step, out, inputs: buildInputs(root, step)});\n"
+        "  }\n"
         "}\n",
         encoding="utf-8",
     )
@@ -107,6 +161,10 @@ def source_products(source_checkout):
         "const flag = '-c.directories.output=';\n"
         "const staging = process.argv.find(arg => arg.startsWith(flag)).slice(flag.length);\n"
         "build('desktop', relative('../..', staging) + '/linux-unpacked/hermes');\n",
+        encoding="utf-8",
+    )
+    (root / "scripts/build/build-desktop.mjs").write_text(
+        "if (!process.argv.includes('--icons')) await import('../generate-icons.mjs');\n",
         encoding="utf-8",
     )
     return root, acquired

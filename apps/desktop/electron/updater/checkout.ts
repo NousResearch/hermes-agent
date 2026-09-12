@@ -1,11 +1,13 @@
 // Checkout update policy and handoff execution. The shell supplies process and UI dependencies.
 
+import { existsSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { updateHandoffConflict, writeUpdateMarker } from '../update-marker'
 import {
   collectRelaunchArgs,
   observeUpdaterHandoff,
+  resolveInstallationLauncher,
   resolvePosixScriptHandoff,
   resolveUpdateScriptHandoff,
   sandboxFallbackFromEnv,
@@ -14,7 +16,6 @@ import {
   windowsUpdatePrerequisiteError,
   wrapHandoffForDetachedConsole
 } from '../updater-process'
-import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers, stopSafeVenvBlockers } from '../venv-blocker-scan'
 
 import { checkCheckoutUpdates, type CheckoutCheckDeps } from './checkout-check'
 import { sourceUpdateEnvironment } from './checkout-source'
@@ -34,13 +35,11 @@ export interface CheckoutStrategyDeps extends CheckoutCheckDeps {
   directoryExists: (filePath: string) => boolean
   resolveUpdaterBinary: () => string | null
   firstLine: (text: string) => string
-  pathWithVenvBin: (...entries: string[]) => string
-  venvHermesShimPath: (updateRoot: string) => string
+
   emitUpdateProgress: (payload: { stage: string; message: string; percent: number | null }) => void
   rememberLog: (chunk: unknown) => void
   startHermes: () => Promise<unknown>
-  startGatewaysAfterUpdateAbort: (shimPath: string) => boolean | void | Promise<boolean | void>
-  releaseBackendLockForUpdate: (updateRoot: string) => Promise<{ unlocked: boolean }>
+  stopBackendsForUpdate: () => Promise<void>
   repairMacUpdaterHelper: (updater: string) => void | Promise<void>
   preflightStateDb: (hermesHome: string, rememberLog: (chunk: string) => void) => void
   runningAppBundle: () => string | null
@@ -75,8 +74,8 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     return status
   }
 
-  async function apply(opts: { stopSafeBlockers?: boolean }): Promise<UpdaterApplyResultWire> {
-    const result = await applyBody(opts)
+  async function apply(): Promise<UpdaterApplyResultWire> {
+    const result: UpdaterApplyResultWire = await applyBody()
     result.mechanism = mechanism
 
     return result
@@ -84,7 +83,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
 
   return { mechanism, check, apply }
 
-  async function applyBody(opts: { stopSafeBlockers?: boolean } = {}): Promise<UpdaterApplyResultWire> {
+  async function applyBody(): Promise<UpdaterApplyResultWire> {
     const status: UpdaterStatusWire = await checkCheckoutUpdates(deps, { force: true })
 
     if (status.reason === 'source-probe-unavailable') {
@@ -100,6 +99,23 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     const targetLabel: string = status.channel ?? branch
     const manualCommand: string = status.channel ? `hermes update --channel ${status.channel}` : buildManualUpdateCommand(branch)
     const updater: string | null = deps.resolveUpdaterBinary()
+    const root: string = deps.resolveUpdateRoot()
+
+    // Earlier PM scripts still demand checkout/venv. Do not invoke that known
+    // incompatible handoff: one exact-install CLI update obtains the new scripts.
+    if (existsSync(path.join(root, 'pm')) && !existsSync(path.join(root, 'scripts', 'desktop-update', 'runtime.ps1'))) {
+      const launcher: string | null = resolveInstallationLauncher(root, deps.isWindows, deps.hermesHome)
+
+      if (!launcher) { return { ok: false, error: 'installation-launcher-missing' } }
+
+      const quote = (value: string): string => deps.isWindows
+        ? `'${value.replace(/'/g, "''")}'`
+        : `'${value.replace(/'/g, "'\\''")}'`
+
+      const command: string = `${deps.isWindows ? '& ' : ''}${quote(launcher)} update ${targetArgs.map(quote).join(' ')}`
+
+      return { ok: true, manual: true, command, hermesRoot: root }
+    }
 
     if (!deps.isWindows && (!updater || status.channel)) {
       // macOS/Linux: hand off to the repo-owned posix script — same shape as
@@ -165,7 +181,6 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       updaterArgs.push('--target-app', targetApp)
     }
 
-    const venvBin = path.join(updateRoot, 'venv', deps.isWindows ? 'Scripts' : 'bin')
 
     // ── Pre-flight state.db integrity guard (#68474) ─────────────────
     // Emergency backup and header verification before the update touches
@@ -173,7 +188,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     deps.preflightStateDb(deps.hermesHome, deps.rememberLog)
 
     if (deps.isWindows && resolveUpdateScriptHandoff(updateRoot)) {
-      const message = windowsUpdatePrerequisiteError(updateRoot)
+      const message = windowsUpdatePrerequisiteError(updateRoot, deps.hermesHome)
 
       if (message) {
         deps.emitUpdateProgress({ stage: 'error', message, percent: null })
@@ -182,102 +197,12 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       }
     }
 
-    // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
-    // spawn the updater. Without this the updater races a still-locked
-    // hermes.exe (held by the backend child / its grandchildren) and the update
-    // bricks. See releaseBackendLockForUpdate for the full failure analysis.
-    const lock = await deps.releaseBackendLockForUpdate(updateRoot)
+    // Release app-owned backends for output replacement. PM publishes a new
+    // dependency generation; old Python readers are not update blockers.
+    // The CLI owns gateway draining and restart, including failure recovery.
+    await deps.stopBackendsForUpdate()
 
-    if (!lock.unlocked) {
-      // Something OUTSIDE this app holds the venv (a second window, a user
-      // terminal running hermes, an unkillable child). Handing off anyway
-      // guarantees a half-updated venv — abort loudly instead and let the
-      // user close the holder and retry. Restart our own backend so the app
-      // keeps working after the failed attempt.
-      const message =
-        'Update aborted: another process is holding the Hermes install open ' +
-        '(a second Hermes window or a terminal running hermes?). Close it and retry.'
-
-      deps.emitUpdateProgress({ stage: 'error', message, percent: null })
-      deps.startHermes().catch(() => {})
-
-      if (deps.isWindows) {
-        // The pre-gate `gateway stop --all` (#70337) took every profile's
-        // gateway down for an update that never happened — bring them back.
-        deps.startGatewaysAfterUpdateAbort(deps.venvHermesShimPath(updateRoot))
-      }
-
-      return { ok: false, error: message }
-    }
-
-    // Preflight: after releasing our own backends, check for remaining
-    // Hermes processes running from this venv.  The updater normally refuses
-    // when it detects a holder, but because the updater is spawned detached
-    // with stdio:ignore, the user never sees that refusal and the update
-    // silently fails.  This preflight detects holders early and gives the
-    // user an actionable error.  Windows-only; the .pyd lock hazard is a
-    // Windows phenomenon.  ALL failures (blocked, missing python, timeout,
-    // malformed output, missing psutil) abort the handoff — never proceed
-    // to the detached updater when the venv state is unknown.
-    if (deps.isWindows) {
-      let scanOutcome = await scanVenvBlockers(updateRoot)
-
-      if (scanOutcome.kind === 'blocked' && opts.stopSafeBlockers) {
-        const stopResult = await stopSafeVenvBlockers(updateRoot, scanOutcome.result)
-        deps.rememberLog(
-          `[updates] user-approved blocker cleanup: stopped=${stopResult.stopped.join(',') || 'none'} failed=${stopResult.failed.join(',') || 'none'}`
-        )
-        // Let verified process-tree termination finish unwinding wrapper shells,
-        // then make the scanner — not the stale renderer payload — authoritative.
-        await new Promise(resolve => setTimeout(resolve, 300))
-        scanOutcome = await scanVenvBlockers(updateRoot)
-      }
-
-      // Re-scan before aborting on 'blocked' (#74805). Process-table teardown
-      // is asynchronous on Windows: even after releaseBackendLock's PID-exit
-      // wait, a grandchild the desktop never tracked (or a process an AV /
-      // NTFS filter driver is holding in teardown) can stay enumerable for a
-      // few more seconds and read as a holder. Each scan already costs
-      // seconds (spawns a venv python + psutil sweep), so two retries with a
-      // short dwell give the table time to settle without meaningfully
-      // delaying the abort path when a REAL holder (a user terminal, second
-      // window) is present — that holder is still there on the third scan.
-      for (let attempt = 0; scanOutcome.kind === 'blocked' && attempt < 2; attempt++) {
-        deps.rememberLog(
-          `[updates] venv-blocker scan reported ${scanOutcome.result.processes.length} holder(s); re-scanning after settle (attempt ${attempt + 2}/3)`
-        )
-        await new Promise(resolve => setTimeout(resolve, 1500))
-        scanOutcome = await scanVenvBlockers(updateRoot)
-      }
-
-      if (scanOutcome.kind === 'blocked') {
-        const message = formatBlockerMessage(scanOutcome.result)
-
-        deps.rememberLog(`[updates] venv-blocked: ${scanOutcome.result.processes.length} process(es) hold the install`)
-        deps.emitUpdateProgress({ stage: 'error', message, percent: null })
-        deps.startHermes().catch(() => {})
-        // Restore the gateways the pre-gate stop took down (#70337 drain
-        // semantics): the update aborted, so nothing else will relaunch them.
-        deps.startGatewaysAfterUpdateAbort(deps.venvHermesShimPath(updateRoot))
-
-        return { ok: false, error: 'venv-blocked', message, blockers: scanOutcome.result.processes }
-      }
-
-      if (scanOutcome.kind === 'probe-failure') {
-        const message = formatProbeFailedMessage(scanOutcome.error)
-
-        deps.rememberLog(`[updates] venv-blocker probe failed: ${scanOutcome.error}`)
-        deps.emitUpdateProgress({ stage: 'error', message, percent: null })
-        deps.startHermes().catch(() => {})
-        // Same drain-semantics restore as the venv-blocked abort above.
-        deps.startGatewaysAfterUpdateAbort(deps.venvHermesShimPath(updateRoot))
-
-        return { ok: false, error: 'venv-probe-failed', message }
-      }
-    }
-
-    // Detached so the updater outlives this process — it needs us GONE before
-    // `hermes update` will run (the venv shim is locked while we live).
+    // Detached so app replacement can outlive this process.
     //
     // Prefer the repo-owned hand-off script over the staged Tauri binary.
     // The staged binary is frozen (no self-update path) and historically runs
@@ -314,8 +239,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
         cwd: deps.hermesHome,
         env: {
           ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
-          HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
-          PATH: deps.pathWithVenvBin(venvBin)
+          HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
         },
         detached: true,
         stdio: 'ignore'
@@ -333,14 +257,13 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       }
 
       deps.rememberLog(
-        `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (${targetLabel}); exiting desktop to release venv shim`
+        `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (${targetLabel}); exiting desktop for application replacement`
       )
     } else {
       child = spawnUpdaterProcess(updater, updaterArgs, {
         cwd: deps.hermesHome,
         env: {
-          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
-          PATH: deps.pathWithVenvBin(venvBin)
+          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome)
         },
         detached: true,
         stdio: 'ignore'
@@ -349,8 +272,8 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
       // quit dwell. The Tauri updater won't write its own marker for several
       // seconds (window init + manifest), and during that gap our renderer
-      // can reconnect and spawn a fresh backend that re-locks .pyd files in
-      // the venv. By writing the marker ourselves the renderer's
+      // can reconnect into an update still replacing application files.
+      // By writing the marker ourselves the renderer's
       // waitForUpdateToFinish() gate sees a live update and parks instead.
       // The updater overwrites this with its own PID later; same format.
       //
@@ -370,13 +293,13 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       }
 
       deps.rememberLog(
-        `[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`
+        `[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop for application replacement`
       )
     }
 
     // Linger on the "updating — don't reopen" overlay long enough for the user
     // to actually read it (and to bridge the gap until the updater's own window
-    // appears), THEN quit to release the venv shim. The updater rebuilds and
+    // appears), THEN quit for application replacement. The updater rebuilds and
     // relaunches us when it's done. (#50419 — a 600ms quit looked like a crash
     // and lured users into the #50238 relaunch loop.)
     //
@@ -396,10 +319,6 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       deps.emitUpdateProgress({ stage: 'error', message, percent: null })
       deps.startHermes().catch(() => {})
 
-      if (deps.isWindows) {
-        // Same drain-semantics restore as the earlier abort paths (#70337).
-        deps.startGatewaysAfterUpdateAbort(deps.venvHermesShimPath(updateRoot))
-      }
 
       return { ok: false, error: 'updater-spawn-failed', message }
     }
@@ -472,8 +391,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     cwd: deps.hermesHome,
     env: {
       ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
-      HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
-      PATH: deps.pathWithVenvBin(path.join(updateRoot, 'venv', 'bin'))
+      HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
     },
     detached: true,
     stdio: 'ignore'

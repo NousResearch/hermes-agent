@@ -600,14 +600,22 @@ function Stage-Config {
     Log "config prepared in $HermesHome"
 }
 
+function Invoke-InstalledHermes([string[]]$CommandArgs) {
+    . (Join-Path $InstallDir 'scripts/desktop-update/runtime.ps1')
+    $command = @(Get-HermesRuntimeCommand -InstallRoot $InstallDir)
+    $runtimeArgs = @($command | Select-Object -Skip 1) + $CommandArgs
+    & $command[0] @runtimeArgs
+    if ($LASTEXITCODE) { Fail "hermes $($CommandArgs -join ' ') failed (exit $LASTEXITCODE)" }
+}
+
 function Stage-Setup {
     if ($NonInteractive) { return }
-    & (Join-Path $InstallDir "venv\Scripts\python.exe") (Join-Path $InstallDir "hermes") setup
+    Invoke-InstalledHermes @('setup')
 }
 
 function Stage-Gateway {
     if ($NonInteractive) { return }
-    & (Join-Path $InstallDir "venv\Scripts\python.exe") (Join-Path $InstallDir "hermes") gateway install
+    Invoke-InstalledHermes @('gateway', 'install')
 }
 
 function Stage-Desktop {
@@ -617,17 +625,16 @@ function Stage-Desktop {
     # The build is `hermes desktop --build-only`, the same authority as
     # `hermes gui` and the update flow; the deleted installer-local
     # npm/Electron helpers must not reappear here.
-    $venvPython = Join-Path $InstallDir "venv\Scripts\python.exe"
-    if (-not (Test-Path $venvPython)) { Fail "venv python missing at $venvPython" }
+    $bootPy = Get-BootstrapPython
     Push-Location $InstallDir
     try {
         Log "ensuring desktop voice/wake dependencies via pm venv sync"
-        & $venvPython -c "from pm.ensure import sync_venv; sync_venv(['wake', 'voice'], explicit=True)"
+        & $bootPy -I -c "import sys; sys.path.insert(0, sys.argv[1]); from pm import sync_venv; sync_venv(['wake', 'voice'], explicit=True)" $InstallDir
         if ($LASTEXITCODE) {
             Write-Host "[hermes] voice/wake dependency sync failed (exit $LASTEXITCODE) -- they will lazy-install at first use" -ForegroundColor Yellow
         }
         Log "building desktop app (hermes desktop --build-only)"
-        & $venvPython (Join-Path $InstallDir "hermes") desktop --build-only
+        Invoke-InstalledHermes @('desktop', '--build-only')
         $code = $LASTEXITCODE
         if ($code) { Fail "desktop build failed (hermes desktop --build-only exited $code)" }
 

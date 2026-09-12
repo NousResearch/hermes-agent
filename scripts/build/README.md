@@ -56,6 +56,9 @@ Node/npm versions, OS/architecture, and exact workspace union. It also checks
 npm's installed-tree lock and the presence of its recorded package directories.
 A missing or mismatched receipt runs a clean `npm ci`; failed installs cannot
 leave a reusable receipt. Omit `--reuse` to force a clean dependency install.
+Source launchers add `--no-install` when PM's lazy-install policy is disabled.
+That mode still reuses a matching completed receipt, but rejects stale or missing
+dependencies before mutating the tree. Explicit build/update operations may install.
 The receipt does not validate arbitrary edits inside installed packages and
 never skips product compilation. CI saves the prepared tree before packaging
 can mutate it, and before unrelated build/signing failures can discard it.
@@ -79,8 +82,31 @@ node scripts/build/desktop.mjs --source /work/source \
 
 Each output is the product directory itself. The desktop output is a `dist`
 directory, not an application package. The exported functions are `buildTui`,
-`buildWeb`, and `buildDesktop`. They return output paths, not a new provenance
-manifest.
+`buildWeb`, and `buildDesktop`. They return output paths and publish the build-input
+receipt described below.
+
+Each compiler publishes `hermes-build.json` inside its output (inside `dist/`
+for TUI). `freshness.mjs` owns this receipt and all source input selection.
+It records product/host identity, content hashes of workspace/shared sources and
+build inputs, and the exact supplied icon directory, desktop install stamp, and
+native-dependency tree. Inputs are checked again before publication: a concurrent
+input change fails the build and preserves the previous output. Output validation
+checks renderer/main/preload/public bytes and the native file inventory; native
+bytes may change through signing after compilation. Native ABI verification remains
+with the native provider and desktop compiler.
+
+Source launchers query this owner without provisioning tools:
+
+```sh
+node scripts/build/freshness.mjs --source /work/source --product web --out /work/products/web
+node scripts/build/freshness.mjs --source /work/source --product tui --out /work/products/tui/dist
+```
+
+The result is a JSON boolean. Missing receipts, changed inputs (including supplied
+inputs outside source), missing prepared trees, or damaged outputs are stale.
+Receipts describe a source build, not a portable dependency cache; immutable
+distributions use their existing prebuilt launch path instead. They replace the
+old Python per-profile hashes and TUI mtime lists, not PM's dependency receipts.
 
 The compilers resolve modules from the supplied workspace. They do not run
 npm, uv, PM installation, or icon preparation. TypeScript/Vite scratch files
@@ -124,7 +150,9 @@ node scripts/generate-icons.mjs --source /work/source --out /work/products/icons
 ```
 
 It uses the isolated `icon-build` dependency group and
-`SOURCE/.cache/icon-build`. Both icon commands accept `--check`. Without
+`SOURCE/.cache/icon-build`. Both icon commands accept `--check`. The convenience
+wrapper also accepts `--on-demand`, which preserves PM's lazy-install admission
+policy rather than treating an automatic stale build as explicit installation. Without
 explicit paths, they use the source checkout as the output root.
 
 The desktop native tree contains prepared packages, including `node-pty` with
@@ -153,6 +181,12 @@ npm run build --workspace apps/desktop
 | TUI build | `ui-tui/dist/entry.js` | Existing installed workspace dependencies |
 | Web build | `hermes_cli/web_dist/` | npm `prebuild` prepares icons |
 | Desktop build | `apps/desktop/dist/` | Icons, root-install assertion, install stamp, and native-dependency staging |
+
+Compositions prepare icons once and pass `npm run build -- --icons /prepared/root`
+to the desktop's source-development driver. It copies prepared packaging artwork
+and passes the same root to the compiler. A standalone `npm run build` still
+prepares its own icons. Source desktop launch runs the already-prepared Electron
+binary directly; `--skip-build` does not provision Node, npm, or Electron.
 
 TUI and web scripts support a no-argument development mode. Explicit product
 mode requires the arguments in the earlier table. The desktop product script

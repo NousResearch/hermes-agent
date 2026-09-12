@@ -50,17 +50,20 @@ def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
 def test_source_refresh_does_not_need_metadata_change_and_refuses_live_root(tmp_path, monkeypatch):
     core = tmp_path / "core"
     core.mkdir()
-    (core / "pyproject.toml").write_text('[project]\nname="x"\nversion="1"\n')
+    (core / "pyproject.toml").write_text('[project]\nname="x"\nversion="1"\nrequires-python=">=3.14"\n[tool.uv]\npackage=false\nno-index=true\n')
     (core / "code.py").write_text("VALUE = 1\n")
     monkeypatch.setattr(workspace.paths, "repo_root", lambda: core)
     staged = tmp_path / "staged"
-    workspace.build_root([], root=staged)
+    uv = shutil.which("uv")
+    assert uv
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
+    workspace.lock_and_sync([], root=staged, venv_dir=tmp_path / "env")
     (core / "code.py").write_text("VALUE = 2\n")
-    workspace.build_root([], root=staged)
+    workspace.lock_and_sync([], root=staged, venv_dir=tmp_path / "env")
     assert (staged / "code.py").read_text() == "VALUE = 2\n"
     before = (core / "code.py").read_bytes()
     with pytest.raises(workspace.InstallError, match="source"):
-        workspace.build_root([], root=core)
+        workspace.lock_and_sync([], root=core, venv_dir=tmp_path / "env")
     assert (core / "code.py").read_bytes() == before
 
 
@@ -68,12 +71,22 @@ def test_legacy_member_is_generated_only_inside_workspace(tmp_path, monkeypatch)
     import tomllib
     core, plugin = tmp_path / "core", tmp_path / "readonly-plugin"
     core.mkdir(); plugin.mkdir()
-    (core / "pyproject.toml").write_text('[project]\nname="core"\nversion="1"\n')
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _wheel(wheels, "example", "1.0")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.14"\n'
+        '[tool.uv]\npackage=false\nno-index=true\n'
+        f'find-links=[{json.dumps(wheels.as_posix())}]\n')
     manifest = plugin / "plugin.yaml"
     manifest.write_text('name: legacy\npython_dependencies: ["example>=1,<2"]\n')
     monkeypatch.setattr(workspace.paths, "repo_root", lambda: core)
     stamp = workspace.members_stamp([plugin])
-    generated = workspace.build_root([plugin], tmp_path / "stage")
+    uv = shutil.which("uv")
+    assert uv
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
+    generated = tmp_path / "stage"
+    workspace.lock_and_sync([plugin], root=generated, venv_dir=tmp_path / "env")
     metadata = tomllib.loads((generated / "pyproject.toml").read_text())
     member = (generated / metadata["tool"]["uv"]["workspace"]["members"][0]).resolve()
     assert member.is_relative_to(generated)

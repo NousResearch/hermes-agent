@@ -1,11 +1,9 @@
 """Source import-integrity checks for update and stash restoration."""
 
-from contextlib import suppress
 import json
 import subprocess
-import sys
 from pathlib import Path
-from hermes_constants import venv_python_path
+from hermes_cli._launchers import runtime_command
 
 # Modules imported on every startup. Unlike _UPDATE_CRITICAL_FILES (only parsed) these are
 # *imported*, catching cross-module breakage (a name pulled from a sibling no longer exists).
@@ -17,11 +15,11 @@ def _critical_module_import_failures(
     """Import each ``_UPDATE_CRITICAL_MODULES`` entry in a subprocess; return failures in probe order.
 
     Syntax validation only *parses*: a partially-updated tree (Windows ZIP copy loop) parses yet
-    dies with ``ImportError: cannot import name``. The subprocess (venv interpreter when present —
-    the updater may run under another Python) keeps import side effects out of our ``sys.modules``.
+    dies with ``ImportError: cannot import name``. The boot-selected subprocess
+    keeps import side effects out of the updater's ``sys.modules``.
     Generic import-time exceptions are tolerated unless ``report_runtime_errors=True``.
     """
-    from hermes_cli.update_cmd import _UPDATE_CRITICAL_MODULES, _m
+    from hermes_cli.update_cmd import _UPDATE_CRITICAL_MODULES
     from hermes_constants import FIRST_PARTY_MODULE_ROOTS
     import secrets
     marker = f"__HERMES_IMPORT_HEALTH_{secrets.token_hex(16)}__"
@@ -48,13 +46,8 @@ def _critical_module_import_failures(
         % (_UPDATE_CRITICAL_MODULES, tuple(sorted(FIRST_PARTY_MODULE_ROOTS)), report_runtime_errors,
            report_runtime_errors, marker))
     try:
-        interpreter = sys.executable
-        with suppress(Exception):
-            venv_python = venv_python_path(Path(root) / "venv", windows=_m()._is_windows())
-            if venv_python.exists():
-                interpreter = str(venv_python)
         result = subprocess.run(
-            [interpreter, "-c", probe], cwd=str(root), capture_output=True, text=True,
+            runtime_command(Path(root), code=probe), cwd=str(root), capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=120)
     except subprocess.TimeoutExpired:
         return _probe_failure("TimeoutExpired", "timed out before reporting import health")

@@ -33,12 +33,14 @@ def no_external_work(monkeypatch):
     assert {p: p.read_bytes() for p in home.rglob("*") if p.is_file()} == before_files
 
 
-@pytest.mark.parametrize("command", ["", "hermes -p ops gateway run", "hermes --profile=ops gateway run"])
-def test_retired_profile_probe_returns_unknown(command, no_external_work):
+@pytest.mark.parametrize("command,profile", [
+    ("", None), ("hermes -p ops gateway run", "ops"), ("hermes --profile=ops gateway run", "ops"),
+])
+def test_live_profile_parser_does_no_external_work(command, profile, no_external_work):
     from gateway.status import profile_flag_value
 
-    # The old scanner compares this value to a profile before selecting a PID.
-    assert profile_flag_value(command) is None
+    # This classifier still protects current gateway identity checks.
+    assert profile_flag_value(command) == profile
 
 
 @pytest.mark.parametrize("refresh", [False, True])
@@ -68,7 +70,7 @@ def test_retired_constants_reload_stops_old_gateway_recovery(no_external_work, m
             venv_python_path = _reload_hermes_constants().venv_python_path
         pytest.fail(f"old recovery continued with {venv_python_path}")
     assert exc.value.code == 0
-    assert "relaunch" in capsys.readouterr().err.lower()
+    assert "run `hermes` again" in capsys.readouterr().err.lower()
     assert vars(hermes_constants) == before
 
 
@@ -80,7 +82,7 @@ def test_retired_pip_install_stops_before_reporting_success(kwargs, no_external_
         result = _pip_install(["--quiet", "honcho-ai"], **kwargs)
         pytest.fail(f"retired installer returned a result: {result}")
     assert exc.value.code == 0
-    assert "relaunch" in capsys.readouterr().err.lower()
+    assert "run `hermes` again" in capsys.readouterr().err.lower()
 
 
 def test_retired_root_stops_before_inventing_portable_git_path(no_external_work, capsys):
@@ -89,7 +91,7 @@ def test_retired_root_stops_before_inventing_portable_git_path(no_external_work,
     with pytest.raises(SystemExit) as exc:
         get_default_hermes_root() / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
     assert exc.value.code == 0
-    assert "relaunch" in capsys.readouterr().err.lower()
+    assert "run `hermes` again" in capsys.readouterr().err.lower()
 
 
 @pytest.mark.parametrize("prompt", [True, False])
@@ -125,7 +127,7 @@ def test_retired_install_specs_stops_before_reporting_success(specs, no_external
         result = install_specs(specs, timeout=120)
         pytest.fail(f"retired installer returned a result: {result}")
     assert exc.value.code == 0
-    assert "relaunch" in capsys.readouterr().err.lower()
+    assert "run `hermes` again" in capsys.readouterr().err.lower()
 
 
 def test_retired_subprocess_run_stops_powershell_installer(no_external_work, capsys):
@@ -137,4 +139,4 @@ def test_retired_subprocess_run_stops_powershell_installer(no_external_work, cap
             env=dict(os.environ), check=True, capture_output=True,
         )
     assert exc.value.code == 0
-    assert "relaunch" in capsys.readouterr().err.lower()
+    assert "run `hermes` again" in capsys.readouterr().err.lower()

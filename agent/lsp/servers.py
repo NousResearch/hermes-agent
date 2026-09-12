@@ -133,8 +133,12 @@ def _find_binary(ctx: ServerContext, server_id: str, which: Sequence[str], insta
 
 def _make_spec(root: str, ctx: ServerContext, server_id: str, command: List[str],
                base_init: Optional[Dict[str, Any]] = None, seed: bool = False) -> SpawnSpec:
+    from pm import env_for
+
     init = ctx.init_overrides.get(server_id, {}) if base_init is None else {**base_init, **ctx.init_overrides.get(server_id, {})}
-    return SpawnSpec(command, root, root, env=ctx.env_overrides.get(server_id, {}),
+    env = env_for("node")
+    env.update(ctx.env_overrides.get(server_id, {}))
+    return SpawnSpec(command, root, root, env=env,
                      initialization_options=init, seed_diagnostics_on_first_push=seed)
 
 
@@ -164,29 +168,17 @@ def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     return _make_spec(root, ctx, "pyright", [bin_path, "--stdio"], {"python": {"pythonPath": py}} if py else {})
 
 
-def _pm_store_python() -> Optional[str]:
-    """The PM interpreter used when the analyzed project has no environment."""
-    try:
-        from pm import paths
-        from pm.lock import Facts
-    except Exception:
-        return None
-    try:
-        fact = Facts(paths.facts_path()).get("python")
-        if not fact or "entry" not in fact:
-            return None
-        entry = paths.store_root() / fact["entry"]
-        exe = entry / ("python.exe" if os.name == "nt" else "bin/python3")
-        return str(exe) if exe.exists() else None
-    except Exception:
-        return None
-
-
 def _detect_python(root: str) -> Optional[str]:
     # Pyright needs the project's dependencies, not Hermes's runtime packages.
     venvs = [v for v in (os.environ.get("VIRTUAL_ENV"), os.path.join(root, ".venv"), os.path.join(root, "venv")) if v]
     paths = (os.path.join(v, sub) for v in venvs for sub in ("bin/python", "bin/python3", "Scripts/python.exe"))
-    return next((p for p in paths if os.path.exists(p)), None) or _pm_store_python()
+    project_python = next((p for p in paths if os.path.exists(p)), None)
+    if project_python is not None:
+        return project_python
+    from pm import installed_package
+
+    installed = installed_package("python")
+    return str(installed.binary) if installed is not None and installed.binary is not None else None
 
 
 _warned_once: set = set()

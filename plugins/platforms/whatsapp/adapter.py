@@ -213,38 +213,20 @@ def _file_content_hash(path: Path) -> str:
         return ""
 
 
-def _pm_ensure_node(command: str) -> str | None:
-    """Lazily provision node/npm through the pm store, then re-resolve.
-
-    ``find_node_executable`` prefers the pm store's pinned Node but never
-    installs it. Node/npm ship as pm packages, so when the store is empty
-    this is the pm.ensure wiring the pm-unified-toolchain plan asks for:
-    install (respecting the lazy-install policy — raises InstallError and
-    returns None when lazy installs are refused) and re-resolve.
-    """
-    try:
-        import pm
-
-        pm.ensure("node" if command == "npm" else command)
-        return find_node_executable(command)
-    except Exception:
-        return None
-
-
 def check_whatsapp_requirements() -> bool:
     """
     Check if WhatsApp dependencies are available.
 
     WhatsApp requires a Node.js bridge for most implementations.
     """
-    # Prefer Hermes-managed Node/npm so Windows installs are not broken by a
-    # bad or elevation-triggering system Node on PATH. When the pm store has
-    # no Node yet, pm.ensure lazily provisions it (policy permitting).
-    _node = find_node_executable("node") or _pm_ensure_node("node")
+    _node = find_node_executable("node")
     if not _node:
-        return False
+        from pm import lazy_installs_allowed
+
+        # Let connect prepare a missing runtime, but never install during discovery.
+        return lazy_installs_allowed()
     try:
-        return bool(_node) and subprocess.run([_node, "--version"], timeout=5, **_RUN_TEXT).returncode == 0
+        return subprocess.run([_node, "--version"], timeout=5, env=with_hermes_node_path(), **_RUN_TEXT).returncode == 0
     except Exception:
         return False
 
@@ -356,13 +338,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except OSError:
             pass
         print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
-        # Hermes-managed portable Node's npm.cmd first (Windows), then PATH.
-        # MERGE-CHECK: pm.ensure provisioning kept from ours (pm store PATH wiring).
-        _npm_bin = find_node_executable("npm") or _pm_ensure_node("npm") or "npm"
         detail = ""
         try:  # Default 300s accommodates slow systems like an Unraid NAS.
+            import pm
+
+            _npm_bin = find_node_executable("npm")
+            env = with_hermes_node_path()
+            if _npm_bin is None:
+                env = pm.ensure("npm").env
+                installed = pm.installed_package("npm")
+                assert installed is not None and installed.binary is not None
+                _npm_bin = str(installed.binary)
             install_result = subprocess.run([_npm_bin, "install", "--silent"], cwd=str(bridge_dir), timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
-                                            env=with_hermes_node_path(), **_RUN_TEXT)
+                                            env=env, **_RUN_TEXT)
             if install_result.returncode == 0:
                 print(f"[{self.name}] Dependencies installed")
                 with suppress(OSError):  # Stamp is an optimization; install still succeeded
@@ -370,11 +358,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         _dep_stamp.write_text(_pkg_hash, encoding="utf-8")
                 return True
             print(f"[{self.name}] npm install failed: {install_result.stderr}")
+            detail = f" ({install_result.stderr.strip()[-500:]})" if install_result.stderr else ""
         except Exception as e:
             print(f"[{self.name}] Failed to install dependencies: {e}")
             detail = f" ({e})"
-        self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge npm install failed{detail}. Run `cd {bridge_dir} && {_npm_bin} install` "
-                              "manually, then restart `hermes gateway`.", retryable=False)
+        self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge npm install failed{detail}. "
+                              "Run `hermes whatsapp`, then restart `hermes gateway`.", retryable=False)
         return False
 
     def _attach_to_bridge(self, managed_process) -> None:
@@ -489,6 +478,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start (or adopt) the Node.js bridge and wait for it to be ready."""
+        if find_node_executable("node") is None:
+            import pm
+
+            try:
+                await asyncio.to_thread(pm.ensure, "node")
+            except pm.InstallError as exc:
+                self._set_fatal_error("whatsapp_node_missing", str(exc), retryable=False)
+                return False
         if not self._preflight():
             return False
         bridge_path = Path(self._bridge_script)
@@ -511,8 +508,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"
             self._bridge_log_fh = bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
+            node = find_node_executable("node")
+            if node is None:
+                raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
             self._bridge_process = subprocess.Popen(
-                [find_node_executable("node") or "node", str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
+                [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
                  "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             if not await self._wait_for_bridge():

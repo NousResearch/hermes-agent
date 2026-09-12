@@ -18,12 +18,15 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--source", type=Path, default=ROOT)
+    parser.add_argument("--on-demand", action="store_true")
     args, _ = parser.parse_known_args(argv)
+    if args.on_demand:
+        argv.remove("--on-demand")
     source = args.source.resolve()
     with TemporaryDirectory(prefix="hermes-icon-build-") as temporary:
         python = pm.build_environment(
             source=source, out=Path(temporary) / "venv",
-            groups=["icon-build"], only_groups=True, explicit=True,
+            groups=["icon-build"], only_groups=True, explicit=not args.on_demand,
             cache=source / ".cache/icon-build",
         )
         return subprocess.run(

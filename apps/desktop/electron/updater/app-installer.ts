@@ -81,7 +81,7 @@ export class AppInstallerStrategy {
     return appInstallerCheckToStatus(check, this.deps.appVersion)
   }
 
-  async apply(_opts: { stopSafeBlockers?: boolean }): Promise<UpdaterApplyResultWire> {
+  async apply(): Promise<UpdaterApplyResultWire> {
     const feedBaseUrl = this.deps.feedBaseUrl
     let sourceUri: string | undefined
 

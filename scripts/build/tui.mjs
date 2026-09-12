@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { frontendArgs, isMain, productOutput, publishDirectory, repoRoot, withProduct, workspaceTool } from './frontend-common.mjs'
+import { recordProduct, buildInputs } from './freshness.mjs'
 
 // `react-devtools-core` is only imported when DEV=true at runtime (Ink dev
 // mode). Stub it out so the bundle doesn't carry the dep.
@@ -26,6 +27,7 @@ export async function buildTui(options) {
   const { source, out: destination } = productOutput(options.source, options.out, ['ui-tui', 'apps/shared', 'node_modules'])
   const { build } = await import(pathToFileURL(workspaceTool(source, 'ui-tui', 'esbuild')).href)
   const root = join(source, 'ui-tui')
+  const inputs = buildInputs(source, 'tui')
   await withProduct(destination, async product => {
     const out = join(product, 'dist/entry.js')
     await build({
@@ -66,6 +68,7 @@ export async function buildTui(options) {
       writeFileSync(out, body.slice(body.indexOf('\n') + 1))
     }
     writeFileSync(join(product, 'package.json'), JSON.stringify({ type: 'module' }) + '\n')
+    recordProduct({ source, product: 'tui', out: join(product, 'dist'), inputs })
   })
   return { out: destination, entry: join(destination, 'dist/entry.js') }
 }

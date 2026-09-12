@@ -19,8 +19,6 @@ import time as _time_mod
 
 from pathlib import Path
 from typing import Optional
-from hermes_cli.main_web_build import (
-    _hash_source_tree, _stamp_is_current, _write_build_stamp)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")
@@ -31,17 +29,6 @@ _PREVIOUS_APP_KEPT = "  ↩ The previous desktop app was left untouched and stil
 def _desktop_dist_exists(desktop_dir: Path) -> bool:
     """Return True when a local desktop renderer build is present."""
     return (desktop_dir / "dist" / "index.html").exists()
-
-
-def _compute_desktop_content_hash(project_root: Path) -> str:
-    """SHA-256 of ``apps/desktop/`` (minus .gitignore matches) plus root workspace config."""
-    return _hash_source_tree(project_root, project_root / "apps" / "desktop")
-
-
-def _desktop_stamp_path() -> Path:
-    """Path of the desktop build stamp under $HERMES_HOME."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "desktop-build-stamp.json"
 
 
 def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Path]:
@@ -108,16 +95,9 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
         print(f"  ⚠ A previous update left the desktop bundle incomplete ({dist_dir}); rebuilding it")
         return True
 
-    return not _stamp_is_current(
-        _desktop_stamp_path(), lambda: _compute_desktop_content_hash(project_root), sourceMode=source_mode
-    )
+    from hermes_cli.source_build import source_product_current
 
-
-def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None:
-    """Write the desktop build stamp after a successful build."""
-    _write_build_stamp(
-        _desktop_stamp_path(), "desktop",
-        lambda: _compute_desktop_content_hash(project_root), sourceMode=source_mode)
+    return dist_dir is None or not source_product_current(project_root, "desktop", dist_dir)
 
 
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
@@ -452,7 +432,7 @@ def _rollback_desktop_from_backup(packaged_executable: Path) -> Optional[Path]:
 def _ensure_desktop_exe_launchable(desktop_dir: Path, packaged_executable: Optional[Path]) -> tuple:
     """Windows post-build integrity gate → ``(verified_exe_or_None, rolled_back)``: pass →
     ``(exe, False)``; corrupt with backup restored → ``(old_exe, True)``; nothing restorable →
-    ``(None, False)``. Failure purges the cached zip + stamp so the retry re-downloads.
+    ``(None, False)``. Corrupt staged output never replaces the running app.
 
     See #69179.
     """
@@ -465,14 +445,6 @@ def _ensure_desktop_exe_launchable(desktop_dir: Path, packaged_executable: Optio
 
     print(f"✗ The built Hermes.exe failed its integrity check: {error}\n    at: {packaged_executable}")
 
-    # Only the exe's OWN output dir is purged (a staging dir), never the live
-    # release/ tree that still holds the last working app.
-    # Self-heal setup for the retry: drop the (likely corrupt) cached Electron zip and the content stamp so
-    # the next rebuild is a genuine re-download + re-stage rather than a replay of the same broken
-    # extraction. See #86443.
-    _purge_electron_build_cache(desktop_dir, release_dir=packaged_executable.parent.parent)
-    with contextlib.suppress(OSError):
-        _desktop_stamp_path().unlink()
 
     restored = _rollback_desktop_from_backup(packaged_executable)
     if restored is not None:
@@ -1136,30 +1108,33 @@ def _promote_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Path:
     return packaged_executable
 
 
-def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict) -> Optional[Path]:
+def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
+                           icons: Path | None = None, explicit: bool = False) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
-    project_root = desktop_dir.parent.parent
     build_label = "source build" if source_mode else "packaged app"
     print(f"→ Building desktop {build_label}...")
     build_env = dict(env)
     if _force_adhoc_macos_signing(build_env, source_mode=source_mode):
         print("  → No Developer ID configured; ad-hoc signing this local rebuild "
               "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
-    build_cmd = [npm, "run", "build" if source_mode else "pack"]
+    build_args = (["--icons", str(icons)] if icons else []) + ([] if explicit else ["--on-demand"])
+    build_cmd = [npm, "run", "build", "--", *build_args]
     staging_dir = None if source_mode else _desktop_staging_dir(desktop_dir)
     if staging_dir is not None:
         # electron-builder packs in place; only the verified staging tree may
         # replace the running app, never a failed or incomplete build.
-        build_cmd += ["--", f"-c.directories.output={staging_dir}"]
+
         stopped = _stop_desktop_processes_locking_build(desktop_dir)
         if stopped:
             print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
     try:
         subprocess.run(build_cmd, cwd=desktop_dir, env=build_env, check=True)
+        if staging_dir is not None:
+            subprocess.run([npm, "run", "builder", "--", "--dir", "--publish", "never",
+                            f"-c.directories.output={staging_dir}"], cwd=desktop_dir, env=build_env, check=True)
         packaged_executable = (
             _promote_staged_desktop_app(desktop_dir, staging_dir) if staging_dir is not None else None
         )
-        _write_desktop_build_stamp(project_root, source_mode=source_mode)
         return packaged_executable
     finally:
         if staging_dir is not None:
@@ -1303,8 +1278,8 @@ def cmd_gui(args: argparse.Namespace):
     )
     npm = None
     try:
-        if source_mode or needs_build:
-            build_env = source_build_env(env)
+        if needs_build:
+            build_env = source_build_env(env, explicit=force_build or getattr(args, "build_only", False))
             npm = shutil.which("npm", path=build_env["PATH"])
             env["PATH"] = build_env["PATH"]
         if skip_build:
@@ -1312,8 +1287,10 @@ def cmd_gui(args: argparse.Namespace):
                 desktop_dir, PROJECT_ROOT, source_mode=source_mode, packaged_executable=packaged_executable
             )
         elif needs_build:
-            prepare_source_dependencies(PROJECT_ROOT, ("ui-tui", "web", "apps/desktop"), env=build_env)
-            built = build_prepared_desktop(desktop_dir, source_mode=source_mode, npm=npm, env=build_env)
+            prepare_source_dependencies(PROJECT_ROOT, ("ui-tui", "web", "apps/desktop"), env=build_env,
+                                        explicit=force_build or getattr(args, "build_only", False))
+            built = build_prepared_desktop(desktop_dir, source_mode=source_mode, npm=npm, env=build_env,
+                                           explicit=force_build or getattr(args, "build_only", False))
             if not source_mode:
                 packaged_executable = built
         else:
@@ -1347,7 +1324,17 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        launch_command = [npm, "exec", "--", "electron", "."]
+        # Launch only the prepared runtime. npm exec can provision a missing
+        # Electron package, including when --skip-build was requested.
+        electron = _electron_dir(PROJECT_ROOT)
+        try:
+            executable = electron / "dist" / (electron / "path.txt").read_text(encoding="utf-8").strip()
+            if not executable.is_file():
+                raise FileNotFoundError(executable)
+        except OSError as exc:
+            print(f"✗ Prepared Electron runtime is missing: {exc}")
+            raise SystemExit(1) from exc
+        launch_command = [str(executable), "."]
     else:
         if packaged_executable is None:
             print(f"✗ Desktop package build completed but no launchable app was found at: {desktop_dir / 'release'}")

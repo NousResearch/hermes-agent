@@ -238,6 +238,7 @@ class TestRealProfileCdpLaunch:
     def test_snapshot_failure_fails_closed(self):
         self._reset()
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
+             patch.object(bt_real_profile, "_agent_browser_get_cdp", return_value=None), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
              patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")):
             cdp, err = bt_real_profile._real_profile_cdp()

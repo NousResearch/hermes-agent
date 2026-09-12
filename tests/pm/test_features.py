@@ -95,16 +95,29 @@ def test_sync_venv_allows_frozen_extras_when_lazy_off(rooted, monkeypatch):
     feats.write_features(["web"])
 
     import sys
+    from pm import paths
+    from pm.lock import Facts
+    from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path
 
     ensure_mod = sys.modules["pm.ensure"]
 
-    # lazy off, request within the frozen set: passes the gate (may still
-    # no-op on the stamp — we only assert no refusal here, by making the
-    # stamp match so sync_venv returns early)
+    # Matching stamp alone cannot certify a vanished environment. Reuse only
+    # the recorded selection while retaining the disabled acquisition policy.
+    repo = rooted / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(paths, "repo_root", lambda: repo)
+    environment = install_state_dir(repo) / "environments" / "frozen" / "venv"
+    environment.mkdir(parents=True)
+    (environment / "pyvenv.cfg").write_text("home = fixture\n")
+    Facts(runtime_facts_path(repo)).record_state("venv", "stamp", ["web"], environment=environment)
     monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: False)
     venv_pkg = ensure_mod.get_package("venv")
     monkeypatch.setattr(
         venv_pkg, "expected_stamp", lambda extras: "stamp"
     )
-    monkeypatch.setattr(ensure_mod, "_facts", lambda: {"venv": {"stamp": "stamp", "extras": ["web"]}})
-    ensure_mod.sync_venv(["web"])  # no raise
+    monkeypatch.setattr(venv_pkg, "apply", lambda *args, **kwargs: pytest.fail("current frozen environment rebuilt"))
+    ensure_mod.sync_venv(["web"])
+    (environment / "pyvenv.cfg").unlink()
+    from pm.package import InstallError
+    with pytest.raises(InstallError, match="lazy installs are disabled"):
+        ensure_mod.sync_venv(["web"])

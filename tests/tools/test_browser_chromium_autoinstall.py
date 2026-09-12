@@ -9,10 +9,8 @@ from tools import browser_tool_install as bt_install
 @pytest.fixture(autouse=True)
 def reset_state():
     bt._chromium_autoinstall_attempted = False
-    bt._cached_chromium_installed = None
     yield
     bt._chromium_autoinstall_attempted = False
-    bt._cached_chromium_installed = None
 
 
 def test_install_uses_pm_once_and_preserves_failure(monkeypatch):

@@ -1,11 +1,6 @@
-"""Which plugins are enabled, per profile — pm's read of the plugins
-config (order-preserving for the incumbent-wins tiebreak).
+"""Read every profile's enabled plugins in config order for the shared union.
 
-pm needs two things the plugins_cmd helpers don't give: EVERY profile's
-enabled list (the union is per-install, cross-profile) and the list
-ORDER (config order = enable recency; enabling appends). Writes go
-through the same config.yaml the plugins CLI owns — pm never invents a
-second authority for enabled state.
+Plugin admission owns writes; discovery never edits a profile's selection.
 """
 
 from __future__ import annotations
@@ -140,45 +135,3 @@ def _provider_from_config(home: Path, config: dict[str, Any]) -> Optional[str]:
         return None
     name = provider.strip()
     return name if _is_directory(home / "plugins" / name) else None
-
-
-def disable_plugins(names: list[str]) -> dict[str, list[str]]:
-    """Remove names from EVERY home's enabled list (an operator or
-    caller decision names the plugin, not the profile — disable where
-    it's enabled). There is NO automatic bisect in pm today; this is
-    the explicit write-back path. Returns per-home what was removed.
-
-    Writes go through utils.atomic_roundtrip_yaml_update — the same
-    atomic, comment-preserving round-trip writer the plugins CLI's
-    config path uses — pointed at that home's config.yaml (explicit
-    home scope; pm never derives the target from ambient state). A
-    write failure RAISES: a disable that didn't land must never be
-    reported as removed. An EXISTING home config that can't be parsed
-    also raises — silently skipping it would report success while the
-    plugin stays enabled in that home.
-    """
-    removed: dict[str, list[str]] = {}
-    if not names:
-        return removed
-    name_set = set(names)
-
-    for home in _all_homes():
-        config_path = home / "config.yaml"
-        config = _read_home_config(home)
-        if config is None:
-            continue
-        plugins_cfg = config.get("plugins")
-        if not isinstance(plugins_cfg, dict):
-            continue
-        enabled = plugins_cfg.get("enabled")
-        if not isinstance(enabled, list):
-            continue
-        hit = [n for n in enabled if isinstance(n, str) and n in name_set]
-        if not hit:
-            continue
-        kept = [n for n in enabled if not (isinstance(n, str) and n in name_set)]
-        import utils
-
-        utils.atomic_roundtrip_yaml_update(config_path, "plugins.enabled", kept)
-        removed[str(home)] = hit
-    return removed

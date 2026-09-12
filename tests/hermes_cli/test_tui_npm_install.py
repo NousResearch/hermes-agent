@@ -23,7 +23,7 @@ def test_need_rebuild_when_tui_bundle_missing(tmp_path: Path) -> None:
     assert main_tui_launch._tui_need_rebuild(tmp_path) is True
 
 
-def test_no_rebuild_when_tui_bundle_newer_than_inputs(tmp_path: Path) -> None:
+def test_unreceipted_bundle_is_stale_even_when_newer(tmp_path: Path) -> None:
     _touch_tui_entry(tmp_path)
     src = tmp_path / "src"
     src.mkdir()
@@ -31,7 +31,7 @@ def test_no_rebuild_when_tui_bundle_newer_than_inputs(tmp_path: Path) -> None:
     os.utime(src / "entry.tsx", (100, 100))
     os.utime(tmp_path / "dist" / "entry.js", (200, 200))
 
-    assert main_tui_launch._tui_need_rebuild(tmp_path) is False
+    assert main_tui_launch._tui_need_rebuild(tmp_path) is True
 
 
 def test_rebuild_when_tui_source_newer_than_bundle(tmp_path: Path) -> None:
@@ -85,6 +85,8 @@ def test_source_compile_failure_stops_launch_without_reinstall(tui_source):
 def test_fresh_bundle_does_not_prepare_or_compile(tui_source, monkeypatch, termux):
     root, acquired = tui_source
     _touch_tui_entry(root / "ui-tui")
+    from tests.hermes_cli.test_source_build import stamp_product
+    stamp_product(root, "tui", root / "ui-tui/dist")
     if termux:
         monkeypatch.setenv("TERMUX_VERSION", "test")
     argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)

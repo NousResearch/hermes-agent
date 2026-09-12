@@ -49,10 +49,6 @@ jobs:
         with:
           fetch-depth: 0 # need the merge-base to diff changed catalog files
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.11"
-
       - name: Find changed catalog entries
         id: changed
         run: |
@@ -71,11 +67,12 @@ jobs:
             echo '__EOF__'
           } >> "$GITHUB_OUTPUT"
 
-      - name: Install hermes-agent from the PR's own checkout
+      - name: Prepare Hermes from the PR's own checkout
         if: steps.changed.outputs.files != ''
-        uses: ./.github/actions/retry
+        uses: ./.github/actions/setup-pm
         with:
-          command: pip install -e .
+          toolchain: python
+          extras: '[]'
 
       - name: Clone each entry at its pinned sha and validate
         if: steps.changed.outputs.files != ''

@@ -484,6 +484,8 @@ def my_tool_handler(args, **kwargs):
 目录插件通过 `pyproject.toml` 的 `[project].dependencies` 声明自己的依赖。
 `plugin.yaml` 中的旧式 `pip_dependencies` 和 `python_dependencies` 列表也会加入 PM 工作区。
 PM 在启用插件前统一准备核心依赖和插件依赖，不改写已发布的源码或锁文件。
+安装流程会请求依赖安装许可；拒绝时保留已安装但未启用的插件。
+成功准备后，环境选择与启用配置通过同一准入事务发布；失败保留原选择和启用列表。
 解析冲突会拒绝准入并保留原环境，不会自动禁用其他插件。
 手动 pip 安装不等于持久的 PM 依赖声明，后续环境替换不保证保留它们。
 详见[包管理](/reference/package-management)。
@@ -1068,10 +1070,11 @@ tts:
 my-plugin = "my_plugin_package"
 ```
 
-```bash
-pip install hermes-plugin-calculator
-# 下次 hermes 启动时自动发现插件
-```
+当安装所有者提供的环境中包含该发行包时（例如 Nix 派生），entry-point 发现仍受支持。
+发现机制不代表可以向 PM 选中的环境直接注入 pip 包。对于 PM 管理的安装，
+请分发带有 `pyproject.toml` 或清单 Python 依赖声明的目录插件，并使用
+`hermes plugins install` / `enable` 进行事务式准入。新环境选定后重启 Hermes。
+`hermes pm install` 接受托管工具名称，不接受任意 PyPI 包名。
 
 ## 为 NixOS 分发
 

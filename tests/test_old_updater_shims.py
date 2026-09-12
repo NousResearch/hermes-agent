@@ -85,6 +85,8 @@ def test_ensure_uv_stops_both_historical_return_contracts(unpack, no_external_wo
         ("hermes_cli.update_cmd", "_pip_install_prefix", (None,), {}),
         ("hermes_cli.update_cmd", "_pip_install_prefix", ("uv",), {}),
         ("hermes_cli.update_cmd", "_refuse_update_for_contended_shims", (RuntimeError("locked"),), {}),
+        ("hermes_cli.tools_config", "install_cua_driver", (),
+         {"upgrade": True, "require_confirmed_update": True, "show_installer_progress": False}),
     ],
 )
 def test_other_dependency_entrypoints_stop_cleanly(module, name, args, kwargs, no_external_work, capsys):

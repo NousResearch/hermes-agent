@@ -47,6 +47,7 @@ from .auth import load_project_credentials
 # mirror files. Tests monkeypatch sidecar_paths._SIDECAR_DIR.
 from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _lock_newer_than_install, _npm_error_log, _sidecar_dir
 from .sidecar_paths import dir_writable as _dir_writable
+from hermes_constants import find_node_executable, with_hermes_node_path
 import contextlib
 
 logger = logging.getLogger(__name__)
@@ -212,49 +213,16 @@ def _first_set(*vals: Any) -> Any:
     return next((val for val in vals if val is not None), None)
 
 
-def _node_command(command: str) -> Optional[str]:
-    """Resolve a Node toolchain binary (node/npm), pm store first.
-
-    Photon's sidecar is Node/TypeScript, so the gateway runs node/npm on
-    the host. Resolution goes through ``hermes_constants.find_node_executable``
-    — the pm store's pinned node/npm wins whenever it is installed, with
-    PATH (Windows shim ordering) as the fallback — never a bare PATH
-    probe, which would miss the managed install (or resolve a system copy
-    Hermes does not own). Returns None when the binary is nowhere.
-    """
-    try:
-        from hermes_constants import find_node_executable
-
-        resolved = find_node_executable(command)
-        if resolved:
-            return resolved
-    except Exception:  # pragma: no cover — hermes_constants is always present
-        pass
-    # pm.ensure wiring: the store's pinned node/npm is the first choice, but
-    # when it has never been installed, lazily provision it (respecting the
-    # lazy-install policy — InstallError is swallowed and PATH is tried) so
-    # the sidecar works on a fresh install without a manual `hermes pm
-    # install node`.
-    try:
-        import pm
-
-        pm.ensure("node")
-        from hermes_constants import find_node_executable as _fne
-
-        resolved = _fne(command)
-        if resolved:
-            return resolved
-    except Exception:
-        pass
-    return shutil.which(command)
-
 
 def check_requirements() -> bool:
-    """Return True when both Python deps and the Node sidecar are available."""
+    """Report readiness or permission to prepare at connect; never provision here."""
+    from pm import lazy_installs_allowed
+
+    can_prepare = lazy_installs_allowed()
     if not HTTPX_AVAILABLE:
         logger.warning("photon: httpx not installed — pip install httpx")
         return False
-    if not (_get_scoped_secret("PHOTON_NODE_BIN") or _node_command("node")):
+    if not (_get_scoped_secret("PHOTON_NODE_BIN") or find_node_executable("node") or can_prepare):
         logger.warning("photon: node binary not found on PATH, in the pm store, or via PHOTON_NODE_BIN")
         return False
     if not sidecar_deps_installed():
@@ -272,7 +240,7 @@ def check_requirements() -> bool:
         # user has no CLI to run `hermes photon setup`, so the connect path
         # must self-heal). Otherwise keep returning False so
         # `hermes setup` / status surface the missing-deps state.
-        if bool(_node_command("npm")) and _dir_writable(_sidecar_dir()):
+        if (find_node_executable("npm") or can_prepare) and _dir_writable(_sidecar_dir()):
             return True
         # DEBUG, not WARNING: normal pre-setup state, and check_fn is polled from hot paths.
         npm_error = ""
@@ -310,16 +278,25 @@ def _reinstall_sidecar_deps() -> None:
     Best-effort — a failure here just leaves the (stale) deps in place and the
     normal ``_start_sidecar`` readiness check reports the real error.
     """
-    npm = _node_command("npm")
-    if not npm:
-        logger.warning("[photon] cannot reinstall stale sidecar deps: npm not available (pm store or PATH)")
+    import pm
+
+    try:
+        npm = find_node_executable("npm")
+        env = with_hermes_node_path()
+        if npm is None:
+            env = pm.ensure("npm").env
+            installed = pm.installed_package("npm")
+            assert installed is not None and installed.binary is not None
+            npm = str(installed.binary)
+    except pm.InstallError as exc:
+        logger.warning("[photon] cannot prepare sidecar dependencies: %s", exc)
         return
     from hermes_cli._subprocess_compat import windows_hide_flags  # no console flash on Windows
 
     def _run(verb: str) -> subprocess.CompletedProcess:
         return subprocess.run(  # noqa: S603
             [npm, verb], cwd=str(_sidecar_dir()), capture_output=True, text=True, encoding="utf-8",
-            errors="replace", check=False, timeout=_NPM_REINSTALL_TIMEOUT, creationflags=windows_hide_flags())
+            errors="replace", check=False, env=env, timeout=_NPM_REINSTALL_TIMEOUT, creationflags=windows_hide_flags())
     try:
         result = _run("ci")
         if result.returncode != 0:
@@ -564,7 +541,7 @@ class PhotonAdapter(BasePlatformAdapter):
         self._autostart_sidecar = str(
             _get_scoped_secret("PHOTON_SIDECAR_AUTOSTART", "true")
         ).lower() not in ("0", "false", "no")
-        self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or _node_command("node") or "node"
+        self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or find_node_executable("node")
 
         # Presence watchdog. spectrum-ts only reconnects when its inbound
         # iterator throws or ends; a half-open ("zombie") gRPC socket makes the
@@ -1019,7 +996,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 subprocess.run,  # noqa: S603
                 [self._node_bin, str(_sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"), str(_sidecar_dir())],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, check=False,
-                creationflags=hide_flags)
+                creationflags=hide_flags, env=with_hermes_node_path())
             if patch.returncode != 0:
                 raise RuntimeError((patch.stderr or patch.stdout or "").strip())
             if patch.stderr.strip():
@@ -1028,9 +1005,19 @@ class PhotonAdapter(BasePlatformAdapter):
             logger.warning("[photon] failed to apply Spectrum mixed attachment patch: %s", exc)
 
     async def _start_sidecar(self) -> None:
+        if self._node_bin is None:
+            import pm
+
+            try:
+                await asyncio.to_thread(pm.ensure, "node")
+                installed = pm.installed_package("node")
+                assert installed is not None and installed.binary is not None
+                self._node_bin = str(installed.binary)
+            except pm.InstallError as exc:
+                raise PhotonSidecarStartupError(str(exc), code="SIDECAR_NODE_MISSING", retryable=False) from exc
         await self._ensure_sidecar_deps()
         await self._reap_stale_sidecar()
-        env = os.environ.copy()
+        env = with_hermes_node_path()
         env.update({
             "PHOTON_PROJECT_ID": self._project_id, "PHOTON_PROJECT_SECRET": self._project_secret,
             "PHOTON_SIDECAR_PORT": str(self._sidecar_port), "PHOTON_SIDECAR_BIND": self._sidecar_bind,

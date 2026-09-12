@@ -55,7 +55,7 @@ class TestInstallDependenciesRunner:
 
         assert synced == [(["mem0"], True)]
 
-    def test_noop_when_extra_available(self, tmp_path):
+    def test_available_extra_still_goes_through_pm_currency_check(self, tmp_path):
         (tmp_path / "plugin.yaml").write_text("extra: mem0\n", encoding="utf-8")
         synced = []
 
@@ -69,4 +69,4 @@ class TestInstallDependenciesRunner:
              ):
             memory_setup._install_dependencies("x")
 
-        assert synced == []
+        assert synced == [["mem0"]]

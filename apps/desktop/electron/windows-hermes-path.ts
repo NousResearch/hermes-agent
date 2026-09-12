@@ -68,15 +68,11 @@ export function buildPathExtCandidates(pathext: string | undefined, isWindows: b
  * @returns {string[]} updater argv, e.g. ['--update', '--branch', 'main'].
  */
 export interface BootstrapRecoverySignals {
-  hasBootstrapMarker: boolean
-  hasVenvHermes: boolean
-  hasVenvPython: boolean
+  runtimeUsable: boolean
 }
 
 export function chooseUpdaterArgs(signals: BootstrapRecoverySignals, branch: string): string[] {
-  const canRunUpdater = signals.hasVenvHermes && signals.hasVenvPython
-
-  return canRunUpdater ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+  return signals.runtimeUsable ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 }
 
 export interface ResolveVenvHermesCommandDeps {

@@ -23,14 +23,10 @@ function dependencies(): CheckoutStrategyDeps {
     getOriginUrl: async () => '',
     runGit: vi.fn(async () => { throw new Error('unexpected git invocation') }),
     firstLine: text => text.split('\n')[0],
-
-    pathWithVenvBin: () => '',
-    venvHermesShimPath: () => '',
     emitUpdateProgress: vi.fn(),
     rememberLog: vi.fn(),
     startHermes: vi.fn(async () => {}),
-    startGatewaysAfterUpdateAbort: vi.fn(),
-    releaseBackendLockForUpdate: vi.fn(async () => ({ unlocked: true })),
+    stopBackendsForUpdate: vi.fn(async (): Promise<void> => {}),
     repairMacUpdaterHelper: vi.fn(),
     preflightStateDb: vi.fn(),
     runningAppBundle: () => null,
@@ -47,11 +43,11 @@ describe('checkout update admission', () => {
     const result = await strategy.check()
 
     expect(result.supported).toBe(false)
-    expect(await strategy.apply({})).toMatchObject({ ok: false })
+    expect(await strategy.apply()).toMatchObject({ ok: false })
     expect(deps.readSourceUpdate).not.toHaveBeenCalled()
     expect(result.mechanism).toBe(strategy.mechanism)
     expect(deps.runGit).not.toHaveBeenCalled()
-    expect(deps.releaseBackendLockForUpdate).not.toHaveBeenCalled()
+    expect(deps.stopBackendsForUpdate).not.toHaveBeenCalled()
     expect(deps.quit).not.toHaveBeenCalled()
   })
 

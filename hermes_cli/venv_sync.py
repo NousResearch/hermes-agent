@@ -49,6 +49,22 @@ def _is_sealed(project_root: Path) -> bool:
     return True
 
 
+def publish_launchers(project_root: Path) -> None:
+    """Refresh the durable source command before an old Python can be collected."""
+    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, resolve_store_python
+    from hermes_cli.steward import read_install_stamp
+
+    root = Path(project_root)
+    if (_is_sealed(root) or read_install_stamp(root).get("updateMechanism") == "external"
+            or resolve_store_python(root) is None):
+        return  # Sealed and external/Nix interpreters retain their own launchers.
+    written = ensure_install_launchers(root, root / ".hermes" / "bin")
+    if len(written) != len(ENTRY_POINTS):
+        from pm.package import InstallError
+
+        raise InstallError("launchers", "source launcher publication failed", "retry the source update")
+
+
 def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
     """Report or sync dependencies. A malformed install stamp is a build error."""
     root = Path(project_root) if project_root is not None else _project_root()
@@ -60,10 +76,13 @@ def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
         import pm
 
         if pm.venv_is_current(project_root=root):
+            if not check:
+                publish_launchers(root)
             return {"state": "current", "ok": True}
         if check:
             return {"state": "would-sync", "ok": True}
         pm.sync_venv(explicit=True, project_root=root)
+        publish_launchers(root)
         return {"state": "synced", "ok": True}
     except Exception as exc:
         return {"state": "failed", "ok": False, "detail": str(exc)}
@@ -123,6 +142,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     if python is None:
         raise RuntimeError("source update has no managed Python; run `hermes pm install`")
     if not current or python.absolute() != Path(sys.executable).absolute():
+        publish_launchers(root)
         return python
     return None
 

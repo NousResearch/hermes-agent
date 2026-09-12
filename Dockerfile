@@ -40,14 +40,6 @@ RUN apt-get -o Acquire::Retries=3 update && \
     make -j"$(nproc)" && \
     make install
 
-# Node 26 source stage. Debian trixie's bundled nodejs is pinned to 20.x
-# which reached EOL in April 2026 — we copy node + npm from the upstream
-# node:26 image instead (Hermes pins its toolchain to Node 26 everywhere).
-# Bookworm-based slim image used so the produced binary links
-# against glibc 2.36, which runs cleanly on our Debian 13 (trixie, glibc
-# 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
-# #4977.
-FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS node_source
 FROM debian:13.4 AS runtime_base
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
@@ -160,20 +152,6 @@ COPY --chmod=0755 docker/tini-shim.sh /usr/bin/tini
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
 RUN useradd -u 10000 -m -d /opt/data hermes
 
-# Node 26: copy the node binary plus the bundled npm JS install from the
-# upstream image.  npm and npx are recreated as symlinks because they're
-# symlinks in the source image (and need to live on PATH).
-#
-# No corepack: Node unbundled it upstream, so node:26 ships only npm in
-# /usr/local/lib/node_modules.  Nothing here needs it — no package.json
-# declares a `packageManager`, and no build step shells out to yarn or pnpm.
-#
-# See node_source stage at the top of the file for the version-bump
-# rationale (#4977).
-COPY --chmod=0755 --from=node_source /usr/local/bin/node /usr/local/bin/
-COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
-RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
-    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 WORKDIR /opt/hermes
 
@@ -209,9 +187,11 @@ COPY hermes_constants.py hermes_constants.py
 COPY hermes_cli/__init__.py hermes_cli/runtime_paths.py hermes_cli/runtime_state.py hermes_cli/
 COPY scripts/bundles/payload.py scripts/bundles/payload.py
 RUN set -eu; \
-    python3 -c 'from pm.ensure import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium")]'; \
-    python3 -c 'from pathlib import Path; from pm.lock import Facts; from pm.registry import get_package; from pm.store import current_target; root = Path("/opt/hermes/tools"); fact = Facts(root / "facts.json").get("python"); binary = get_package("python").binary(root / fact["entry"], current_target()); Path("/usr/local/bin/python3").symlink_to(binary)'; \
-    browser_bin="$(find /opt/hermes/tools/chromium-* -type f \( -name chrome -o -name chromium \) -print -quit)"; \
+    python3 -c 'from pm.ensure import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium", "npm")]'; \
+    python3 -c 'from pathlib import Path; from pm import installed_package; [Path("/usr/local/bin", command).symlink_to(installed_package(package).binary) for command, package in (("python3", "python"), ("node", "node"), ("npm", "npm"))]'; \
+    python3 -c 'import shutil; from pathlib import Path; from pm import env_for; Path("/usr/local/bin/npx").symlink_to(shutil.which("npx", path=env_for("npm", base_env={})["PATH"]))'; \
+    node --version; npm --version; \
+    browser_bin="$(python3 -c 'from pm import installed_package; print(installed_package("chromium").binary)')"; \
     test -n "$browser_bin"; \
     "$browser_bin" --version; \
     mkdir -p /etc/hermes; \
@@ -242,6 +222,7 @@ COPY pyproject.toml uv.lock ./
 COPY web/ web/
 COPY ui-tui/ ui-tui/
 COPY scripts/build/*.mjs scripts/build/
+COPY scripts/build/icon_environment.py scripts/build/icon_environment.py
 COPY scripts/generate-icons.mjs scripts/generate_icons.py scripts/
 COPY assets/ assets/
 RUN node scripts/generate-icons.mjs --source /opt/hermes --out /tmp/hermes-icons && \

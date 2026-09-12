@@ -57,29 +57,11 @@ def _http_get(url: str, headers: Optional[dict] = None, timeout: Optional[float]
 
 def _browser_available() -> bool:
     """Is the local browser automation backend (agent-browser) installed?"""
-    import shutil
-    if shutil.which("agent-browser"):
-        return True
     try:
-        from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT
-        if (PROJECT_ROOT / "node_modules" / "agent-browser").exists():
-            return True
-        for candidate in (HERMES_HOME / "node" / "bin", HERMES_HOME / "node", HERMES_HOME / "node_modules" / ".bin"):
-            if shutil.which("agent-browser", path=str(candidate)):
-                return True
-    except Exception:
-        pass
-    # agent-browser resolves lazily via npx on the default install (#43564),
-    # invisible to the PATH/node_modules probes above. Mirror the rung
-    # hermes_cli.doctor uses so this probe can't diverge from it.
-    # MERGE-CHECK: upstream moved these fns to tools.browser_tool_install; termux
-    # carve-out (_requires_real_termux_browser_install) dropped per merge brief.
-    try:
-        from tools.browser_tool_install import _find_agent_browser, _is_npx_agent_browser_sentinel
-        browser_cmd = _find_agent_browser(validate=False)
+        from tools.browser_tool_install import _find_agent_browser
+        return bool(_find_agent_browser(validate=False))
     except Exception:
         return False
-    return _is_npx_agent_browser_sentinel(browser_cmd)
 
 
 def _launch_browser_probe(timeout: float) -> tuple:

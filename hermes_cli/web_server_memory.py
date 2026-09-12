@@ -4,24 +4,14 @@
 import logging
 import json
 import os
-import re
 import shlex
 import subprocess
-import hermes_yaml as yaml
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
-
-_MEMORY_PROVIDER_IMPORT_NAMES = {
-    "honcho-ai": "honcho",
-    "mem0ai": "mem0",
-    "hindsight-client": "hindsight_client",
-    "hindsight-all": "hindsight",
-}
-
 
 def _normalize_memory_provider_name(name: Any) -> str:
     provider = str(name or "").strip()
@@ -40,17 +30,10 @@ def _load_memory_provider(name: str):
 
 def _memory_provider_manifest(name: str) -> Dict[str, Any]:
     try:
-        from plugins.memory import find_provider_dir
+        from hermes_cli.memory_setup import memory_provider_dependency_inputs
 
-        provider_dir = find_provider_dir(name)
-        if provider_dir is None:
-            return {}
-        manifest_path = provider_dir / "plugin.yaml"
-        if not manifest_path.exists():
-            return {}
-        with manifest_path.open(encoding="utf-8-sig") as handle:
-            manifest = yaml.safe_load(handle) or {}
-        return manifest if isinstance(manifest, dict) else {}
+        manifest, _inputs = memory_provider_dependency_inputs(name)
+        return manifest
     except Exception:
         _log.debug("Failed to read memory provider manifest for %s", name, exc_info=True)
         return {}
@@ -62,8 +45,10 @@ def _string_list(value: Any) -> List[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _memory_provider_setup_manifest(name: str) -> Dict[str, Any]:
-    manifest = _memory_provider_manifest(name)
+def _memory_provider_setup_manifest(name: str) -> tuple[dict, dict]:
+    from hermes_cli.memory_setup import memory_provider_dependency_inputs
+
+    manifest, inputs = memory_provider_dependency_inputs(name)
     external_dependencies: List[Dict[str, str]] = []
     for raw in manifest.get("external_dependencies") or []:
         if not isinstance(raw, dict):
@@ -72,33 +57,31 @@ def _memory_provider_setup_manifest(name: str) -> Dict[str, Any]:
         if any(dep.values()):
             external_dependencies.append(dep)
     return {
-        "pip_dependencies": _string_list(manifest.get("pip_dependencies")),
+        # Display only; neither import names nor these labels determine readiness.
+        "pip_dependencies": list(dict.fromkeys(
+            _string_list(manifest.get("pip_dependencies")) + _string_list(manifest.get("python_dependencies")))),
+        "python_dependencies_declared": bool(inputs),
         "external_dependencies": external_dependencies,
         "required_env": _string_list(manifest.get("requires_env")),
-    }
+    }, inputs
 
 
 def _memory_provider_setup_info(name: str) -> Dict[str, Any]:
-    setup = _memory_provider_setup_manifest(name)
-    setup["dependencies_installed"] = _memory_provider_dependencies_installed(setup)
-    return setup
+    import pm
 
-
-def _memory_provider_dependency_package(dep: str) -> str:
-    return re.split(r"[\[<>=!~;]", dep, maxsplit=1)[0].strip()
-
-
-def _memory_provider_import_name(dep: str) -> str:
-    package = _memory_provider_dependency_package(dep)
-    return _MEMORY_PROVIDER_IMPORT_NAMES.get(package, package.replace("-", "_"))
-
-
-def _dependency_importable(dep: str) -> bool:
-    import_name = _memory_provider_import_name(dep)
     try:
-        return bool(import_name) and __import__(import_name) is not None
-    except ImportError:
-        return False
+        setup, inputs = _memory_provider_setup_manifest(name)
+    except Exception:
+        _log.debug("Invalid dependency declaration for %s", name, exc_info=True)
+        return {"pip_dependencies": [], "python_dependencies_declared": True,
+                "external_dependencies": [], "required_env": [], "dependencies_installed": False}
+    try:
+        python_ready = not inputs or pm.venv_is_current(**inputs)
+    except Exception:
+        _log.debug("Could not read dependency state for %s", name, exc_info=True)
+        python_ready = False
+    setup["dependencies_installed"] = python_ready and _memory_provider_external_dependencies_installed(setup)
+    return setup
 
 
 def _memory_provider_setup_env() -> Dict[str, str]:
@@ -135,8 +118,7 @@ def _run_setup_command(
     )
 
 
-def _memory_provider_dependencies_installed(setup: Dict[str, Any]) -> bool:
-    pip_ok = all(_dependency_importable(dep) for dep in _string_list(setup.get("pip_dependencies")))
+def _memory_provider_external_dependencies_installed(setup: Dict[str, Any]) -> bool:
     external_ok = True
     for dep in setup.get("external_dependencies") or []:
         if not isinstance(dep, dict):
@@ -153,7 +135,7 @@ def _memory_provider_dependencies_installed(setup: Dict[str, Any]) -> bool:
             continue
         if completed.returncode != 0:
             external_ok = False
-    return pip_ok and external_ok
+    return external_ok
 
 
 def _schema_field_kind(raw: Dict[str, Any], choices: list) -> str:
@@ -335,7 +317,7 @@ def _memory_provider_is_configured(name: str, provider: Any) -> bool:
 def _memory_provider_status(row: Dict[str, Any], setup: Dict[str, Any], configured: bool, schema_fields: list) -> str:
     if row["missing"]:
         return "missing"
-    if not row["available"] and not setup.get("dependencies_installed", True):
+    if not setup.get("dependencies_installed", True):
         return "unavailable"
     if not configured or (not row["available"] and schema_fields):
         return "needs_config"

@@ -1233,82 +1233,10 @@ def _seed_pm_environment(tmp_path, monkeypatch, with_venv_fact=True):
     return project_root, environment
 
 
-class TestDetectVenvDir:
-    """Tests for _detect_venv_dir() virtualenv detection.
-
-    pm's committed-environment resolution (runtime_paths.selected_venv) is
-    the primary source; each legacy-probe test isolates it
-    (``_pm_runtime_venv_dir`` patched to None) so the fallbacks are exercised
-    deterministically regardless of whether the host checkout has
-    pm-provisioned a venv.
-    """
-
-    def test_resolves_pm_provisioned_venv_without_virtual_env(self, tmp_path, monkeypatch):
-        """No sys.prefix venv, no VIRTUAL_ENV anywhere — the pm-committed
-        environment (venv fact + selected_venv contract) is the answer."""
-        monkeypatch.setattr("sys.prefix", "/usr")
-        monkeypatch.setattr("sys.base_prefix", "/usr")
-        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
-        project_root, environment = _seed_pm_environment(tmp_path, monkeypatch)
-        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", project_root)
-
-        assert gateway_cli._detect_venv_dir() == environment
-
-    def test_pm_resolution_none_without_venv_fact(self, tmp_path, monkeypatch):
-        """A committed state without a venv fact does not vouch — no pm answer."""
-        monkeypatch.setattr("sys.prefix", "/usr")
-        monkeypatch.setattr("sys.base_prefix", "/usr")
-        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        project_root, _ = _seed_pm_environment(
-            tmp_path, monkeypatch, with_venv_fact=False
-        )
-        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", project_root)
-
-        assert gateway_cli._detect_venv_dir() is None
-
-    def test_detects_active_virtualenv_via_sys_prefix(self, tmp_path, monkeypatch):
-        # Legacy probe (pre-pm environments): isolated from pm resolution.
-        monkeypatch.setattr(gateway_cli, "_pm_runtime_venv_dir", lambda: None)
-        venv_path = tmp_path / "my-custom-venv"
-        venv_path.mkdir()
-        monkeypatch.setattr("sys.prefix", str(venv_path))
-        monkeypatch.setattr("sys.base_prefix", "/usr")
-
-        result = gateway_cli._detect_venv_dir()
-        assert result == venv_path
-
-    def test_falls_back_to_dot_venv_directory(self, tmp_path, monkeypatch):
-        # Not inside a virtualenv
-        monkeypatch.setattr(gateway_cli, "_pm_runtime_venv_dir", lambda: None)
-        monkeypatch.setattr("sys.prefix", "/usr")
-        monkeypatch.setattr("sys.base_prefix", "/usr")
-        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
-
-        dot_venv = tmp_path / ".venv"
-        dot_venv.mkdir()
-
-        result = gateway_cli._detect_venv_dir()
-        assert result == dot_venv
-
-    def test_returns_none_when_no_virtualenv(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gateway_cli, "_pm_runtime_venv_dir", lambda: None)
-        monkeypatch.setattr("sys.prefix", "/usr")
-        monkeypatch.setattr("sys.base_prefix", "/usr")
-        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
-
-        result = gateway_cli._detect_venv_dir()
-        assert result is None
-
-
 class TestServicePathDirsPmVenv:
-    """_build_service_path_dirs() must derive the venv bin dir from pm's
-    facts/store resolution, not from sys.prefix sniffing (which degrades
-    under no-boot-through-venv, where sys.prefix == sys.base_prefix)."""
+    """Service PATH cannot retain a garbage-collectable dependency generation."""
 
-    def test_includes_pm_venv_bin_without_sys_prefix_venv(self, tmp_path, monkeypatch):
+    def test_does_not_persist_disposable_generation_bin(self, tmp_path, monkeypatch):
         monkeypatch.setattr("sys.prefix", "/usr")
         monkeypatch.setattr("sys.base_prefix", "/usr")
         monkeypatch.delenv("VIRTUAL_ENV", raising=False)
@@ -1321,7 +1249,7 @@ class TestServicePathDirsPmVenv:
 
         dirs = gateway_cli._build_service_path_dirs(project_root=project_root)
 
-        assert str(venv_bin) in dirs
+        assert str(venv_bin) not in dirs
 
 
 def _seed_pm_node_facts(hermes_root):
@@ -1627,27 +1555,12 @@ class TestHermesHomeForTargetUser:
         assert result == "/home/alice/.hermes"
 
 
-class TestGeneratedUnitUsesDetectedVenv:
-    def test_systemd_unit_uses_dot_venv_when_detected(self, tmp_path, monkeypatch):
-        dot_venv = tmp_path / ".venv"
-        dot_venv.mkdir()
-        (dot_venv / "bin").mkdir()
-
-        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: dot_venv)
-        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(dot_venv / "bin" / "python"))
-
-        unit = gateway_cli.generate_systemd_unit(system=False)
-
-        assert f"VIRTUAL_ENV={dot_venv}" in unit
-        assert f"{dot_venv}/bin" in unit
-        # Must NOT contain a hardcoded /venv/ path
-        assert "/venv/" not in unit or "/.venv/" in unit
-
-
 class TestGeneratedUnitIncludesLocalBin:
     """~/.local/bin must be in PATH so uvx/pipx tools are discoverable."""
 
-    def test_system_unit_includes_local_bin_in_path(self, monkeypatch):
+    def test_system_unit_includes_local_bin_in_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(gateway_cli, "_system_service_identity",
+                            lambda run_as_user=None: ("alice", "alice", str(tmp_path), 1001))
         monkeypatch.setattr(
             gateway_cli,
             "_build_user_local_paths",
@@ -1818,7 +1731,10 @@ class TestProfileArg:
         unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
         assert "ExecStart=" in unit
-        assert "--profile mybot gateway run" in unit
+        import shlex
+        command = shlex.split(next(line.split("=", 1)[1] for line in unit.splitlines()
+                                   if line.startswith("ExecStart=")))
+        assert command[-4:] == ["--profile", "mybot", "gateway", "run"]
         assert f'HERMES_HOME={target_home / ".hermes" / "profiles" / "mybot"}' in unit
 
     def test_launchd_plist_wraps_gateway_stderr_with_timestamps(self, tmp_path, monkeypatch):
@@ -1832,22 +1748,11 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
 
-        assert program_args == [
-            "/usr/bin/python3",
-            "-m",
-            "hermes_cli.stderr_timestamp",
-            "--error-log",
-            str(profile_dir / "logs" / "gateway.error.log"),
-            "--",
-            "/usr/bin/python3",
-            "-m",
-            "hermes_cli.main",
-            "--profile",
-            "mybot",
-            "gateway",
-            "run",
-            "--external-supervisor",
-        ]
+        assert program_args[0] == "/usr/bin/python3"
+        assert program_args[-5:] == ["--profile", "mybot", "gateway", "run", "--external-supervisor"]
+        separator = program_args.index("--")
+        assert program_args[separator - 2:separator] == ["--error-log", str(profile_dir / "logs" / "gateway.error.log")]
+        assert "--replace" not in program_args
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
@@ -1898,7 +1803,7 @@ class TestSystemUnitPathRemapping:
         monkeypatch.setenv("HERMES_HOME", str(root_home / ".hermes"))
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_home / ".hermes")
         monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", project)
-        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: project / "venv")
+
         monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(venv_bin / "python"))
         monkeypatch.setattr(
             gateway_cli, "_system_service_identity",

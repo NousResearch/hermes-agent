@@ -375,7 +375,7 @@ def _install_plugin_python_deps(
         if node_answer in {"y", "yes"}:
             from pm.workspace import install_node_sidecar
 
-            node_reason = install_node_sidecar(target)
+            node_reason = install_node_sidecar(target, explicit=True)
             if node_reason:
                 console.print(f"[yellow]⚠[/yellow] Node deps: {node_reason}")
         else:

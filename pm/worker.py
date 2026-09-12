@@ -122,6 +122,8 @@ def main():
                           "ensure_environment": python.ensure_environment,
                           "ensure_python_tool": python.ensure_python_tool}
             arguments = request["arguments"]
+            if request["operation"] == "venv_is_current":
+                arguments["plugin_dirs"] = _members(arguments.get("plugin_dirs"))
             if request["operation"] == "ensure":
                 arguments["pause_event"] = pause
             for name in ("progress", "download_progress"):

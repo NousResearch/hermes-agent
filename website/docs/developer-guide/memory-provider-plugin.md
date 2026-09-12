@@ -21,7 +21,7 @@ Hermes discovers memory providers from four sources, in this precedence order:
 | Bundled | `plugins/memory/<name>/` | Ships with Hermes. Closed to new providers — see [CONTRIBUTING](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md). |
 | User | `$HERMES_HOME/plugins/<name>/` | Dropped in by the user, per profile. |
 | Project | `./.hermes/plugins/<name>/` | Opt-in via `HERMES_ENABLE_PROJECT_PLUGINS=1`. |
-| Package | `hermes_agent.memory_providers` entry point | `pip install`, nothing to copy. |
+| Package | `hermes_agent.memory_providers` entry point | Distribution supplied by the installation owner; nothing to copy. |
 
 Earlier sources win on a name collision, so a directory dropped into a working
 tree can never shadow a shipped provider.
@@ -34,6 +34,20 @@ silently redirect the agent's memory rather than merely override a tool.
 
 Discovery only *enumerates* — it never imports a provider. Nothing runs until
 `memory.provider` names it.
+
+Entry-point discovery does not install packages. Do not inject a provider into
+Hermes's selected environment with pip. On PM-managed installations, ship a
+directory provider with declared Python dependencies; plugin admission and
+`hermes memory setup` prepare them through PM before use. Owner-managed builds
+(such as Nix) can include an entry-point distribution declaratively.
+
+CLI and dashboard setup share candidate preparation. PM includes the provider's
+`pyproject.toml` or legacy `pip_dependencies` / `python_dependencies` alongside
+the active plugin union; an importable module does not bypass declared version
+constraints. Dashboard readiness checks the same inputs without installing
+anything. A successful preparation may require restarting Hermes before the
+running process can use the selected dependency generation. External sidecar
+checks and setup commands remain separate from the Python union.
 
 ### Directory Provider
 

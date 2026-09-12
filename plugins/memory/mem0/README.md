@@ -4,7 +4,7 @@ Server-side LLM fact extraction with semantic search and hybrid multi-signal ret
 
 ## Requirements
 
-- `pip install mem0ai`
+- The `mem0ai` SDK, prepared through PM by `hermes memory setup` when you select Mem0. Restart Hermes after preparation; do not install into its selected environment with pip.
 - Mem0 API key from [app.mem0.ai](https://app.mem0.ai)
 
 ## Setup

@@ -51,15 +51,8 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
     return val or (default or "")
 
 
-def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
-    """Prepare provider dependencies without narrowing the active plugin union.
-
-    A new provider is not selected in config yet. Include its directory with
-    every active member, and propagate failure before setup saves it.
-    """
-    import subprocess
-
-    import pm
+def memory_provider_dependency_inputs(provider_name: str) -> tuple[dict, dict]:
+    """Read one candidate declaration for preparation and passive readiness."""
     from hermes_cli.plugins_admission import candidate_member_dirs
     from hermes_cli.plugins_cmd import PluginOperationError, _read_manifest_for_install
     from pm.package import InstallError
@@ -68,7 +61,7 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
 
     plugin_dir = find_provider_dir(provider_name)
     if not plugin_dir:
-        return
+        return {}, {}
     try:
         meta = _read_manifest_for_install(plugin_dir)
         member = _is_member_candidate(plugin_dir)
@@ -77,15 +70,39 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
 
     extra = meta.get("extra")
     extras = [extra] if isinstance(extra, str) and extra else []
-    missing = [e for e in extras if force or not pm.available(e)]
-    if not missing and not member:
-        return
+    if not extras and not member:
+        return meta, {}
 
-    print(f"\n  Preparing dependencies for {provider_name}")
     # Without a proposed home, selection retains every configured member.
     inputs = {"plugin_dirs": lambda: candidate_member_dirs((), extra_dirs=[plugin_dir])} if member else {}
-    pm.sync_venv(missing, explicit=True, **inputs)
-    print(f"  ✓ Dependencies prepared for {provider_name}")
+    return meta, {"extras": extras, **inputs}
+
+
+def prepare_memory_provider_dependencies(provider_name: str) -> tuple[dict, str | None]:
+    """Prepare the candidate union; PM owns constraint and currency checks."""
+    import pm
+
+    meta, inputs = memory_provider_dependency_inputs(provider_name)
+    if not inputs:
+        return meta, None
+    pm.sync_venv(explicit=True, **inputs)
+    from hermes_cli.runtime_paths import selected_venv, site_packages
+    from pm.paths import repo_root
+
+    selected = site_packages(selected_venv(repo_root())).resolve()
+    active = {Path(entry).resolve() for entry in sys.path}
+    return meta, "installed" if selected in active else "restart_required"
+
+
+def _install_dependencies(provider_name: str) -> None:
+    """Render CLI preparation and external-sidecar guidance."""
+    import subprocess
+
+    meta, status = prepare_memory_provider_dependencies(provider_name)
+    if status:
+        print(f"  ✓ Dependencies prepared for {provider_name}")
+        if status == "restart_required":
+            print("  Restart Hermes to use the prepared dependencies.")
 
     # Also show external (non-pip) dependencies that are missing.
     for dep in meta.get("external_dependencies", []):

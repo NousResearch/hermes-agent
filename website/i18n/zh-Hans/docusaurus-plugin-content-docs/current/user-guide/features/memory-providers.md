@@ -47,7 +47,7 @@ AI 原生的跨会话用户建模，具备辩证推理、会话范围上下文�
 | | |
 |---|---|
 | **适合场景** | 具有跨会话上下文的多 Agent 系统、用户-Agent 对齐 |
-| **依赖** | `pip install honcho-ai` + [API key](https://app.honcho.dev) 或自托管实例 |
+| **依赖** | `hermes memory setup` 通过 PM 准备 Honcho SDK；[API key](https://app.honcho.dev) 或自托管实例 |
 | **数据存储** | Honcho Cloud 或自托管 |
 | **费用** | Honcho 定价（云端）/ 免费（自托管） |
 
@@ -267,7 +267,7 @@ hermes honcho sync
 | | |
 |---|---|
 | **适合场景** | 具有结构化浏览功能的自托管知识管理 |
-| **依赖** | `pip install openviking` + 运行中的服务器 |
+| **依赖** | 独立部署的 OpenViking 服务器；通过 `hermes memory setup` 准备 Hermes 端依赖 |
 | **数据存储** | 自托管（本地或云端） |
 | **费用** | 免费（开源，AGPL-3.0） |
 
@@ -275,8 +275,9 @@ hermes honcho sync
 
 **安装：**
 ```bash
-# 先启动 OpenViking 服务器
-pip install openviking
+# 使用独立部署的 OpenViking 服务器，不要安装到 Hermes 的依赖环境
+openviking-server init
+openviking-server doctor
 openviking-server
 
 # 然后配置 Hermes
@@ -300,7 +301,7 @@ echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
 | | |
 |---|---|
 | **适合场景** | 免维护的记忆管理——Mem0 自动处理提取 |
-| **依赖** | `pip install mem0ai` + API key |
+| **依赖** | `hermes memory setup` 通过 PM 准备 Mem0 SDK；API key 或自托管/OSS 服务配置 |
 | **数据存储** | Mem0 Cloud |
 | **费用** | Mem0 定价 |
 
@@ -470,7 +471,7 @@ hermes config set memory.provider byterover
 | | |
 |---|---|
 | **适合场景** | 带用户 profile 和会话级图谱构建的语义召回 |
-| **依赖** | `pip install supermemory` + [云端 API key](http://app.supermemory.ai/integrations?connect=hermes)，或[自托管服务器](https://supermemory.ai/docs/self-hosting/overview) |
+| **依赖** | `hermes memory setup` 通过 PM 准备 Supermemory SDK；[云端 API key](http://app.supermemory.ai/integrations?connect=hermes)，或[自托管服务器](https://supermemory.ai/docs/self-hosting/overview) |
 | **数据存储** | Supermemory 云端或自托管 |
 | **费用** | 云端按 Supermemory 定价 / 自托管免费 |
 

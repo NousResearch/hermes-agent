@@ -73,61 +73,11 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
     )
 
 
-_TUI_BUILD_INPUT_DIRS = ("src", "packages/hermes-ink/src", "../apps/shared")
-
-_TUI_BUILD_INPUT_FILES = (
-    "package.json",
-    "package-lock.json",
-    "../package.json",
-    "../package-lock.json",
-    "tsconfig.json",
-    "tsconfig.build.json",
-    "babel.compiler.config.cjs",
-    "../scripts/build/tui.mjs",
-    "../scripts/build/frontend-common.mjs",
-    "packages/hermes-ink/package.json",
-    "packages/hermes-ink/index.js",
-    "packages/hermes-ink/text-input.js",
-)
-
-_TUI_BUILD_INPUT_SUFFIXES = frozenset({".cjs", ".js", ".jsx", ".json", ".mjs", ".ts", ".tsx"})
-
-
-def _iter_tui_build_inputs(root: Path):
-    """Yield source/config files that affect ``ui-tui/dist/entry.js``."""
-    for rel in _TUI_BUILD_INPUT_FILES:
-        path = root / rel
-        if path.is_file():
-            yield path
-
-    for rel in _TUI_BUILD_INPUT_DIRS:
-        base = root / rel
-        if not base.is_dir():
-            continue
-        for path in base.rglob("*"):
-            if path.is_file() and path.suffix in _TUI_BUILD_INPUT_SUFFIXES:
-                yield path
-
-
 def _tui_need_rebuild(root: Path) -> bool:
-    """True when ``dist/entry.js`` is missing or older than TUI inputs (Termux cold-start saver);
-    ``HERMES_TUI_FORCE_BUILD=1`` forces a rebuild."""
+    from hermes_cli.source_build import source_product_current
+
     force = (os.environ.get("HERMES_TUI_FORCE_BUILD") or "").strip().lower()
-    if force in {"1", "true", "yes", "on"}:
-        return True
-
-    try:
-        output_mtime = (root / "dist" / "entry.js").stat().st_mtime
-    except OSError:
-        return True
-
-    for path in _iter_tui_build_inputs(root):
-        try:
-            if path.stat().st_mtime > output_mtime:
-                return True
-        except OSError:
-            return True
-    return False
+    return force in {"1", "true", "yes", "on"} or not source_product_current(root.parent, "tui", root / "dist")
 
 
 def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:

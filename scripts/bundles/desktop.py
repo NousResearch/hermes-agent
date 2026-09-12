@@ -105,11 +105,13 @@ def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],
     run([node, "scripts/build/node-deps.mjs", "--source", str(repo), "--reuse",
          *[arg for workspace in workspaces for arg in ("--workspace", workspace)]], cwd=repo, env=env)
     payload = repo / "apps/desktop/build/agent-payload"
+    products = repo / "apps/desktop/build/products"
+    icons = products / "icons"
+    run([node, "scripts/generate-icons.mjs", "--source", str(repo), "--out", str(icons)], cwd=repo, env=env)
     if variant == "light":
         shutil.rmtree(payload, ignore_errors=True)
     else:
-        products = repo / "apps/desktop/build/products"
-        run([node, "scripts/generate-icons.mjs", "--source", str(repo), "--out", str(products / "icons")], cwd=repo, env=env)
+
         run([node, "scripts/build/tui.mjs", "--source", str(repo), "--out", str(products / "tui")], cwd=repo, env=env)
         run([node, "scripts/build/web.mjs", "--source", str(repo), "--icons", str(products / "icons"),
              "--out", str(products / "web")], cwd=repo, env=env)
@@ -131,7 +133,7 @@ def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],
         if metadata["file"]:
             version_args = [f'-c.extraMetadata.shortVersion={metadata["file"]}', f'-c.extraMetadata.shortVersionWindows={metadata["file"]}']
     targets = {"win32": ["--win", "msix"], "darwin": ["--mac", "dmg", "zip"], "linux": ["--linux", "AppImage"]}[sys.platform]
-    run([*npm, "run", "build"], cwd=desktop, env=env)
+    run([*npm, "run", "build", "--", "--icons", str(icons)], cwd=desktop, env=env)
     run([*npm, "run", "builder", "--", *targets, f"-c.extraMetadata.version={version}", *version_args, *builder_args], cwd=desktop, env=env)
 
 

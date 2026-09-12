@@ -15,7 +15,7 @@ Boundary: the test generates a PowerShell wrapper that defines stub
 functions (New-Object intercepting WScript.Shell, icacls, ie4uinit.exe)
 and then DOT-SOURCES the real install.ps1 with -Stage desktop — the full
 stage runs in one real PowerShell process against a temp home/install
-dir, with every external effect either fake (compiled fake venv python)
+dir, with every external effect either fake (compiled external bootstrap python)
 or logged instead of written. Nothing touches the user's known folders.
 If the artifact check fails, the assertion message carries the fake
 python's actual logged arguments for debugging.
@@ -30,6 +30,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.installation_launcher_fixture import publish_fixture_launcher
 
 pytestmark = pytest.mark.platforms("windows")
 
@@ -126,6 +128,7 @@ function ie4uinit.exe {
 
 # Load the definitions, then execute the real stage dispatcher.
 . $InstallerPath -InstallDir $InstallDir -HermesHome $HermesHome
+function Get-BootstrapPython { return $env:FAKE_BOOT_PY }
 Invoke-StageByName 'desktop'
 exit $LASTEXITCODE
 '''
@@ -214,7 +217,7 @@ def test_complete_stage_writes_pinned_install_marker(tmp_path: Path) -> None:
 def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
     """-Stage desktop (without -IncludeDesktop — the standalone contract)
     runs the CURRENT paths: pm's venv sync for wake/voice, then
-    `hermes desktop --build-only` through the venv python; the produced
+    `hermes desktop --build-only` through the published installation launcher; the produced
     artifact is probed, ACL-granted, and shortcut-ed — with icacls,
     ie4uinit.exe, and WScript.Shell intercepted in the wrapper boundary so
     nothing outside the temp dirs is touched."""
@@ -223,7 +226,7 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
         pytest.skip("Windows PowerShell is required")
 
     install_dir = tmp_path / "install"
-    scripts = install_dir / "venv" / "Scripts"
+    scripts = tmp_path / "store" / "python"
     scripts.mkdir(parents=True)
     py_log = tmp_path / "fake-python.log"
     wsh_log = tmp_path / "wsh.log"
@@ -231,7 +234,10 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
     fake_python = scripts / "python.exe"
     _compile_fake_python(powershell, fake_python)
 
-    (install_dir / "hermes").write_text("# python entry shim\n", encoding="ascii")
+    publish_fixture_launcher(install_dir, "import os, subprocess, sys\ndef main():\n    return subprocess.call([os.environ['FAKE_BOOT_PY'], *sys.argv[1:]])\nif __name__ == '__main__': sys.exit(main())\n")
+    runtime_dir = install_dir / "scripts" / "desktop-update"
+    runtime_dir.mkdir(parents=True)
+    shutil.copyfile(REPO_ROOT / "scripts/desktop-update/runtime.ps1", runtime_dir / "runtime.ps1")
 
     wrapper = tmp_path / "boundary-wrapper.ps1"
     wrapper.write_text(_WRAPPER, encoding="utf-8-sig")
@@ -239,6 +245,8 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
         **os.environ,
         "PATHEXT": ";".join(dict.fromkeys([*os.environ.get("PATHEXT", "").split(";"), ".EXE"])),
         "FAKE_PY_LOG": str(py_log),
+        "FAKE_BOOT_PY": str(fake_python),
+        "HERMES_RUNTIME_DIR": str(tmp_path / "empty-store"),
         "FAKE_INSTALL_DIR": str(install_dir),
         "WSH_LOG": str(wsh_log),
         "ICACLS_LOG": str(icacls_log),
@@ -259,8 +267,8 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
     assert isinstance(calls, list)
     # 1. wake/voice extras via pm's venv sync (the pm-owned path).
     assert any(
-        len(c) >= 2 and c[0] == "-c" and "sync_venv" in c[1]
-        and "'wake'" in c[1] and "'voice'" in c[1] and "explicit=True" in c[1]
+        len(c) >= 3 and c[:2] == ["-I", "-c"] and "from pm import sync_venv" in c[2]
+        and "'wake'" in c[2] and "'voice'" in c[2] and "explicit=True" in c[2]
         for c in calls
     ), calls
     # 2. the build through the parsed product CLI (never a `build` subcommand

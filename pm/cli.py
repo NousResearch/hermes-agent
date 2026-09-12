@@ -94,6 +94,10 @@ def _install_names(names: list[str], target: str | None = None) -> int:
                 print(f"✓ {name} (staged for {target}: {entry.name})")
             else:
                 ensure(name, explicit=True, progress=_live_progress(name))
+                if name == "python":
+                    from hermes_cli.venv_sync import publish_launchers
+
+                    publish_launchers(repo_root())
                 print(f"✓ {name}", flush=True)
         except InstallError as e:
             print(f"✗ {e}", flush=True)

@@ -124,45 +124,45 @@ def ensure_windows_bin_launchers(
     def _launcher_present(target: Path, name: str) -> bool:
         return (target / f"{name}.exe").exists() or (target / f"{name}.cmd").exists()
 
-    # Launchers boot the pm STORE python with PYTHONPATH=repo;site-packages
-    # — never the venv interpreter (no boot through the venv; pyvenv.cfg is
-    # inert dead config). mint_launcher prefers a distlib exe trampoline
-    # bound to the store python; a runtime-resolving .cmd is written when
-    # the store has not materialized a python yet, and the repair upgrades
-    # it (and any legacy copied-venv trampoline) to the exe once the store
-    # python exists. See hermes_cli/_launchers.py.
+    # Only the launch producer knows the executable/boot contract. Old venv
+    # paths below identify obsolete artifacts; they never select dependencies.
     from hermes_cli._launchers import (
+        ensure_install_launchers,
         exe_is_venv_bound,
-        mint_launcher,
-        resolve_store_python,
         stage_launcher,
     )
 
     from hermes_constants import project_venv_dir
 
     venv_dir = project_venv_dir(root)
-    from hermes_cli.runtime_paths import site_packages as dependency_site
-
-    site_packages = dependency_site(venv_dir) if venv_dir else None
-
-    store_python = resolve_store_python(root)
 
     def _needs_attention(target: Path, name: str) -> bool:
         """Missing, a placeholder .cmd, or a launcher that still boots the
         venv interpreter — anything the store-python launcher should replace."""
         exe = target / f"{name}.exe"
         if not exe.exists():
-            return True
+            return not ((target / f"{name}.cmd").is_file()
+                        and _launcher_present(root / ".hermes" / "bin", name))
         return exe_is_venv_bound(exe, venv_dir)
 
     targets: list[Path] = []
+    restored: list[str] = []
 
     # Canonical target — gate on the managed-clone shape. This runs at
     # every hermes_cli.main process start (right after the profile
     # override), so the healthy path must stay at a couple of stat calls.
     if _normalize_windows_path(root.parent) == _normalize_windows_path(home):
         canonical = home / "bin"
-        if any(
+        local = root / ".hermes" / "bin"
+        if any(not _launcher_present(local, name) for name in _WINDOWS_BIN_LAUNCHERS):
+            # Upgrade existing PM installs too: their healthy external launcher
+            # predates the exact-install command and may lack the runtime query.
+            try:
+                canonical.mkdir(parents=True, exist_ok=True)
+                restored.extend(ensure_install_launchers(root, canonical))
+            except OSError:
+                return []
+        if not restored and any(
             _needs_attention(canonical, name) for name in _WINDOWS_BIN_LAUNCHERS
         ):
             targets.append(canonical)
@@ -182,9 +182,8 @@ def ensure_windows_bin_launchers(
             targets.append(legacy)
 
     if not targets:
-        return []
+        return restored
 
-    restored: list[str] = []
     for target in targets:
         try:
             target.mkdir(parents=True, exist_ok=True)
@@ -195,10 +194,7 @@ def ensure_windows_bin_launchers(
                 # Already a store-python launcher (or a form this heal does
                 # not understand but that does not boot the venv): leave it.
                 continue
-            if store_python is not None:
-                final = mint_launcher(name, root, target, store_python, site_packages)
-            else:
-                final = stage_launcher(name, root, target)
+            final = stage_launcher(name, root, target)
             if final is not None:
                 # Windows resolves .exe before .cmd. A surviving venv-bound
                 # launcher would shadow the successfully staged fallback.

@@ -33,10 +33,9 @@ it('offers manual recovery only for a missing source probe, never for a broken p
     runGit: async (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => ({
       code: 0, stdout: args.includes('--abbrev-ref') ? 'feature/work' : args.includes('HEAD') ? 'a'.repeat(40) : '', stderr: ''
     }),
-    firstLine: (text: string): string => text.split('\n')[0], pathWithVenvBin: (): string => '',
-    venvHermesShimPath: (): string => '', emitUpdateProgress: vi.fn(), rememberLog: vi.fn(),
-    startHermes: vi.fn(async (): Promise<void> => {}), startGatewaysAfterUpdateAbort: vi.fn(),
-    releaseBackendLockForUpdate: vi.fn(async (): Promise<{ unlocked: boolean }> => ({ unlocked: true })),
+    firstLine: (text: string): string => text.split('\n')[0], emitUpdateProgress: vi.fn(), rememberLog: vi.fn(),
+    startHermes: vi.fn(async (): Promise<void> => {}),
+    stopBackendsForUpdate: vi.fn(async (): Promise<void> => {}),
     repairMacUpdaterHelper: vi.fn(), preflightStateDb: vi.fn(), runningAppBundle: (): null => null,
     markQuittingForHandoff: vi.fn(), quit: vi.fn()
   }
@@ -49,21 +48,21 @@ it('offers manual recovery only for a missing source probe, never for a broken p
       else { fs.rmSync(modulePath) }
 
       expect(await strategy.check()).toMatchObject({ supported: false, reason: 'source-probe-unavailable' })
-      const result: Awaited<ReturnType<typeof strategy.apply>> = await strategy.apply({})
+      const result: Awaited<ReturnType<typeof strategy.apply>> = await strategy.apply()
       expect(result).toMatchObject({ manual: true, command: 'hermes update --help' })
       expect(result.message).toContain('branch or channel')
       expect(result.command).not.toContain('--branch')
-      expect(deps.releaseBackendLockForUpdate).not.toHaveBeenCalled()
+      expect(deps.stopBackendsForUpdate).not.toHaveBeenCalled()
       expect(deps.resolveUpdaterBinary).not.toHaveBeenCalled()
       expect(deps.fetchGitHubApi).not.toHaveBeenCalled()
       expect(deps.quit).not.toHaveBeenCalled()
     }
 
     fs.writeFileSync(modulePath, 'def main():\n    raise RuntimeError("invalid channel configuration")\n')
-    await expect(strategy.apply({})).rejects.toThrow('invalid channel configuration')
+    await expect(strategy.apply()).rejects.toThrow('invalid channel configuration')
     fs.writeFileSync(modulePath, 'import missing_probe_dependency\n')
     await expect(probe()).rejects.toThrow('missing_probe_dependency')
-    expect(deps.releaseBackendLockForUpdate).not.toHaveBeenCalled()
+    expect(deps.stopBackendsForUpdate).not.toHaveBeenCalled()
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

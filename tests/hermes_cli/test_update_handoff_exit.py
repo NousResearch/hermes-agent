@@ -1,18 +1,4 @@
-"""Windows hand-off child must hard-exit once the update is durably done (#93581).
-
-The re-exec'd venv child (spawned by
-``_reexec_dependency_sync_off_windows_shim`` with ``HERMES_UPDATE_REEXEC=1``)
-completes all update work — the receipt records ``success`` / ``completed at
-command boundary`` — but then hangs in interpreter shutdown on a leftover
-non-daemon thread, freezing the PowerShell window for minutes. The fix: on
-the hand-off path only, after the receipt is finalized, the lock released,
-and stdio restored, flush and ``os._exit(code)`` instead of unwinding.
-
-These tests pin: the hard exit fires (with the right code) only when the
-re-exec marker env is set, it happens after lock release + stdio restore,
-early ``SystemExit`` codes propagate to it, and real exceptions keep the
-normal raise path (traceback intact, no hard exit).
-"""
+"""Historical handoff markers cannot bypass normal update cleanup or exits."""
 
 from __future__ import annotations
 
@@ -87,12 +73,12 @@ def _noop_impl(args, gateway_mode=False):
     return None
 
 
-def test_handoff_child_hard_exits_zero_after_success(monkeypatch):
+def test_historical_handoff_marker_does_not_bypass_normal_shutdown(monkeypatch):
     events = _run_cmd_update(monkeypatch, _noop_impl, reexec=True)
-    assert events["exit_codes"] == [0]
+    assert events["exit_codes"] == []
     assert events["receipts"] == [(0, COMMAND_BOUNDARY_STOP_REASON)]
-    # The hard exit is the last thing, after lock release and stdio restore.
-    assert events["order"] == ["acquire", "impl", "release", "restore-stdio", "hard-exit"]
+    # Cleanup remains ordered even if an old parent supplied its handoff marker.
+    assert events["order"] == ["acquire", "impl", "release", "restore-stdio"]
 
 
 def test_non_handoff_run_never_hard_exits(monkeypatch):
@@ -109,9 +95,8 @@ def test_handoff_child_propagates_early_systemexit_code(monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
         _run_cmd_update(monkeypatch, early_refusal, reexec=True)
     assert excinfo.value.code == 3
-    # The finally-block hard exit ran (before the re-raise propagated)
-    # and carried the early exit's code, not a blanket 0.
-    assert _LAST["exit_codes"] == [3]
+    # The original exception propagates after normal cleanup.
+    assert _LAST["exit_codes"] == []
 
 
 def test_handoff_child_systemexit_none_means_zero(monkeypatch):
@@ -120,7 +105,7 @@ def test_handoff_child_systemexit_none_means_zero(monkeypatch):
 
     with pytest.raises(SystemExit):
         _run_cmd_update(monkeypatch, bare_exit, reexec=True)
-    assert _LAST["exit_codes"] == [0]
+    assert _LAST["exit_codes"] == []
 
 
 def test_unhandled_exception_keeps_raise_path_no_hard_exit(monkeypatch):

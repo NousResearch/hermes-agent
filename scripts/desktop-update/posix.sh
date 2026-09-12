@@ -741,25 +741,42 @@ fi
 sleep 1
 start_ui
 
-HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
-[ -x "$HERMES_BIN" ] || { FINAL_CODE=3 FINAL_MSG="Update aborted: $HERMES_BIN is missing. The install needs repair (run the Hermes installer or hermes doctor)."; log "$FINAL_MSG"; exit 3; }
-
-# Heal a venv the reverted TCC anchor left bricked BEFORE invoking the CLI:
-# venv/bin/hermes execs venv/bin/python3, so a dead alias kills every attempt
-# and its retry identically (#95759). macOS-only artifact; probe is cheap.
-if [ "$(uname)" = "Darwin" ]; then
-  if tcc_anchor_heal "$INSTALL_ROOT/venv/bin"; then
-    case "$TCC_HEAL_STATE" in
-      healed-*) log "TCC anchor self-heal repaired the venv interpreter ($TCC_HEAL_STATE)" ;;
-    esac
-  else
-    log "TCC anchor self-heal could not repair the venv ($TCC_HEAL_STATE)"
+# Current installs publish an installation-bound launcher. Only pre-PM
+# checkouts use the old shim/TCC rescue; a damaged PM install must not retarget.
+LEGACY_INSTALL=0
+[ -d "$INSTALL_ROOT/pm" ] || LEGACY_INSTALL=1
+select_update_invoke() {
+  HERMES_BIN="$INSTALL_ROOT/.hermes/bin/hermes"
+  if [ -x "$HERMES_BIN" ]; then
+    UPDATE_INVOKE=("$HERMES_BIN")
+    return 0
   fi
-fi
-tcc_pick_update_invoke "$INSTALL_ROOT/venv/bin"
-if [ "${UPDATE_INVOKE[0]}" != "$HERMES_BIN" ]; then
-  log "venv/bin/python3 still unbootable; invoking the update via ${UPDATE_INVOKE[*]}"
-fi
+  if [ -f "$INSTALL_ROOT/hermes_cli/_launchers.py" ]; then
+    local candidate version reported expected
+    expected="$(cd "$INSTALL_ROOT" && pwd -P)" || return 1
+    for candidate in "$HOME/.local/bin/hermes" "$HERMES_HOME/bin/hermes"; do
+      [ -x "$candidate" ] || continue
+      version="$("$candidate" --version 2>/dev/null)" || continue
+      reported="$(printf '%s\n' "$version" | sed -n 's/^Install directory: //p')"
+      [ -d "$reported" ] || continue
+      [ "$(cd "$reported" && pwd -P)" = "$expected" ] || continue
+      HERMES_BIN="$candidate"
+      UPDATE_INVOKE=("$candidate")
+      return 0
+    done
+  fi
+  if [ "$LEGACY_INSTALL" -eq 1 ] && [ ! -d "$INSTALL_ROOT/pm" ]; then
+    HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
+    [ -x "$HERMES_BIN" ] || return 1
+    if [ "$(uname)" = Darwin ]; then
+      tcc_anchor_heal "$INSTALL_ROOT/venv/bin" || log "TCC anchor rescue failed ($TCC_HEAL_STATE)"
+    fi
+    tcc_pick_update_invoke "$INSTALL_ROOT/venv/bin"
+    return 0
+  fi
+  return 1
+}
+select_update_invoke || { FINAL_CODE=3 FINAL_MSG="Update aborted: the installation launcher at $HERMES_BIN is missing. Repair this installation."; log "$FINAL_MSG"; exit 3; }
 
 # Run FROM the install root: `hermes update` resolves the tree it mutates
 # from the working directory, and we inherit the Desktop's cwd (which can be
@@ -788,7 +805,7 @@ OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH "${TARGET_ARGS[@
 printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
 log "hermes update exit code: $CODE"
 
-if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
+if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   # Retry once: update-boundary class (fresh code on disk, stale in memory).
   # Exit 2 ("close all Hermes windows") is not retryable.
   #
@@ -806,16 +823,16 @@ if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   fi
   log "retrying once (freshly pulled fix loads on the second run)"
   publish_stage "Retrying update"
+  select_update_invoke || { FINAL_CODE=3 FINAL_MSG="Updated installation launcher is missing; repair this installation."; exit 3; }
   OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
   printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
   log "retry exit code: $CODE"
 fi
 trap 'on_signal TERM' TERM
 
-# Truthful completion: `hermes update` calls a GUI build failure non-fatal
-# (exit 0). For a Desktop-driven update that would relaunch the OLD build
-# and call it success -- retry the build once, propagate honestly.
-if [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
+# Pre-PM update code could report a failed desktop build with exit zero.
+# Current composition propagates failure and never enters this legacy repair.
+if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
   log "desktop build failed inside hermes update; retrying build"
   publish_stage "Rebuilding Desktop"
   "${UPDATE_INVOKE[@]}" desktop --force-build --build-only >> "$LOG" 2>&1 || {
@@ -830,7 +847,7 @@ else
   # The bricked-venv class is fixable and must not read as a generic exit 1:
   # a dead interpreter with a failed/impossible heal means retrying can never
   # succeed — tell the user what is actually wrong (#95759).
-  if ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python3" \
+  if [ "$LEGACY_INSTALL" -eq 1 ] && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python3" \
       && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python"; then
     FINAL_MSG="Update failed: the Python interpreter inside $INSTALL_ROOT/venv cannot start (heal state: $TCC_HEAL_STATE). Reinstall the runtime with the Hermes installer, or run hermes doctor --fix from a terminal if any hermes command still works."
   fi

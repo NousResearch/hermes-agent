@@ -8,6 +8,20 @@ import { stageGetWindows, stageNodePtyInto } from '../apps/desktop/scripts/stage
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const roots = []
+
+test('desktop development composition reuses prepared icon pixels instead of provisioning them again', async () => {
+  const { buildSourceDesktop } = await import('../apps/desktop/scripts/build.mjs')
+  const input = fixture()
+  put(join(input.icons, 'apps/desktop/assets/icon.ico'), 'prepared packaging icon')
+  const commands = []
+  buildSourceDesktop({ source: input.source, icons: input.icons,
+    generate: () => { throw new Error('prepared icons must not regenerate') },
+    run: (command, args) => commands.push([command, ...args]),
+  })
+  expect(readFileSync(join(input.source, 'apps/desktop/assets/icon.ico'), 'utf8')).toBe('prepared packaging icon')
+  const compile = commands.find(command => command.some(arg => arg.endsWith('/scripts/build/desktop.mjs')))
+  expect(compile[compile.indexOf('--icons') + 1]).toBe(input.icons)
+})
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function put(path, text) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text) }
 function fixture() {
@@ -47,6 +61,20 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   const input = fixture()
   const before = files(input.source)
   await buildDesktop(input)
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+  for (const file of [join(input.icons, 'apps/desktop/public/apple-touch-icon.png'), input.stamp,
+    join(input.nativeDeps, 'node-pty/package.json')]) {
+    const original = readFileSync(file)
+    put(file, 'changed prepared input')
+    expect(productCurrent({ ...input, product: 'desktop' }), file).toBe(false)
+    writeFileSync(file, original)
+    expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+  }
+  put(join(input.source, 'apps/shared/src/client.ts'), 'export const shared = true')
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(false)
+  rmSync(join(input.source, 'apps/shared'), { recursive: true })
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
   expect(files(input.source)).toEqual(before)
   expect(readFileSync(join(input.out, 'apple-touch-icon.png'), 'utf8')).toBe('fresh icon')
   expect(existsSync(join(input.out, 'assets'))).toBe(true)
@@ -68,6 +96,22 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   expect(files(input.out)).toEqual(built)
   expect(files(input.source).some(([name]) => name.includes('.vite') || name.endsWith('tsbuildinfo'))).toBe(false)
 }, 60000)
+
+test('a prepared input changing during desktop compilation cannot publish a current receipt', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = fixture()
+  await buildDesktop(input)
+  const previous = files(input.out)
+  const changedStamp = { ...JSON.parse(readFileSync(input.stamp, 'utf8')), commit: 'c'.repeat(40) }
+  put(join(input.source, 'apps/desktop/vite.config.mjs'), `
+    import { writeFileSync } from 'node:fs';
+    export default { plugins: [{ name: 'change-prepared-input', buildStart() {
+      writeFileSync(${JSON.stringify(input.stamp)}, ${JSON.stringify(JSON.stringify(changedStamp))})
+    }}] }
+  `)
+  await expect(buildDesktop(input)).rejects.toThrow(/inputs changed/)
+  expect(files(input.out)).toEqual(previous)
+}, 30000)
 
 test('native preparation stages the selected source into an explicit tree before compilation', async () => {
   const { prepareDesktopNativeDependencies } = await import('../apps/desktop/scripts/stage-native-deps.mjs')

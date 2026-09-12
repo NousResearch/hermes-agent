@@ -73,11 +73,11 @@ if __name__ == "__main__":
     cli.run()
 ```
 
-运行：
+按照 [PM 开发流程](/reference/package-management#developer-workflow)选择独立开发数据目录，
+然后从源码检出运行：
 
 ```bash
-cd ~/.hermes/hermes-agent
-source .venv/bin/activate
+source ./activate
 python my_cli.py
 ```
 

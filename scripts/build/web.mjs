@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { frontendArgs, isMain, productOutput, repoRoot, withProduct, workspaceTool } from './frontend-common.mjs'
+import { recordProduct, buildInputs } from './freshness.mjs'
 
 function typecheck(ts, root, scratch) {
   const diagnostics = []
@@ -36,6 +37,7 @@ export async function buildWeb(options) {
   // Icon inputs can be outside source but are still read-only build inputs.
   productOutput(options.icons, out, ['web/public'])
   const root = path.join(source, 'web')
+  const inputs = buildInputs(source, 'web', { icons: publicIcons })
   const tsModule = await import(pathToFileURL(workspaceTool(source, 'web', 'typescript')).href)
   const { build } = await import(pathToFileURL(workspaceTool(source, 'web', 'vite')).href)
   await withProduct(out, async (product, scratch) => {
@@ -54,6 +56,7 @@ export async function buildWeb(options) {
       build: { outDir: product, emptyOutDir: true }
     })
     if (!existsSync(path.join(product, 'index.html'))) throw new Error('Web build did not produce index.html')
+    recordProduct({ source, product: 'web', out: product, inputs })
   }, { source })
   return { out, index: path.join(out, 'index.html') }
 }

@@ -191,10 +191,10 @@ def test_import_guard_rejects_malformed_health_payload(monkeypatch, tmp_path):
         stdout = ""
 
     def malformed(cmd, **_kwargs):
-        marker = cmd[-1].split("sys.stdout.write('\\n", 1)[1].split("'", 1)[0]
-        Result.stdout = f"{marker}{{}}"
+        Result.stdout = "__HERMES_IMPORT_HEALTH_fixture__{}"
         return Result()
 
+    monkeypatch.setattr("secrets.token_hex", lambda size: "fixture")
     monkeypatch.setattr(update_cmd.subprocess, "run", malformed)
 
     ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
@@ -268,38 +268,6 @@ def test_hint_stays_silent_for_unrelated_failures(exc):
     if isinstance(exc, ImportError) and not isinstance(exc, ModuleNotFoundError):
         exc.name = "requests"
     assert partial_update_hint(exc) == []
-
-
-def test_import_guard_prefers_the_project_venv_interpreter(monkeypatch, tmp_path):
-    """``hermes update`` can run under a different Python than the install's.
-
-    Probing ``sys.executable`` would then validate a tree the user never
-    actually runs.
-    On Windows (the platform this guard exists for) the driving interpreter
-    and the venv interpreter routinely differ.
-    """
-    bin_dir = "Scripts" if update_cmd._m()._is_windows() else "bin"
-    name = "python.exe" if update_cmd._m()._is_windows() else "python"
-    venv_python = tmp_path / "venv" / bin_dir / name
-    venv_python.parent.mkdir(parents=True)
-    venv_python.write_text("")
-
-    seen: dict = {}
-
-    def fake_run(cmd, **kwargs):
-        seen["interpreter"] = cmd[0]
-
-        class R:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return R()
-
-    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
-    update_cmd._validate_critical_modules_import(tmp_path)
-
-    assert seen["interpreter"] == str(venv_python)
 
 
 def test_import_guard_ignores_missing_third_party_dependency(monkeypatch, tmp_path):

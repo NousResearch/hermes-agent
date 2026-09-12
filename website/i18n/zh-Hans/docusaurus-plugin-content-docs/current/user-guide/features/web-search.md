@@ -358,11 +358,12 @@ xAI Web Search **不在**自动检测链中——设置了 `XAI_API_KEY`（或�
 ✅ Web Search & Extract (searxng)
 ```
 
-或通过 CLI 检查：
+源码检出也可以在 [PM 激活](/reference/package-management#developer-workflow)后检查模块。
+使用你打算检查网页配置的 Hermes 数据目录：
 
 ```bash
-# 激活 venv 并直接运行网页工具模块
-source ~/.hermes/hermes-agent/.venv/bin/activate
+# 从 Hermes 源码目录的干净 shell 运行
+source ./activate
 python -m tools.web_tools
 ```
 

@@ -359,22 +359,27 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
 
     from hermes_constants import find_node_executable, with_hermes_node_path
     from utils import env_int
+    import pm
 
     npm = find_node_executable("npm")
-    if not npm:
-        raise HTTPException(status_code=500, detail="npm was not found. WhatsApp setup needs Node.js and npm.")
 
     try:
+        env = with_hermes_node_path()
+        if npm is None:
+            env = pm.ensure("npm", explicit=True).env
+            installed = pm.installed_package("npm")
+            assert installed is not None and installed.binary is not None
+            npm = str(installed.binary)
         # npm output is UTF-8; encoding= guards the Windows ANSI-code-page
         # default against undefined bytes crashing the reader thread.
         result = subprocess.run(
             [npm, "install", "--silent"], cwd=str(bridge_dir), capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
-            env=with_hermes_node_path(), creationflags=windows_hide_flags(),
+            env=env, creationflags=windows_hide_flags(),
         )
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=500, detail="Installing WhatsApp bridge dependencies timed out.") from exc
-    except OSError as exc:
+    except (pm.InstallError, OSError) as exc:
         raise HTTPException(status_code=500, detail=f"Failed to install WhatsApp bridge dependencies: {exc}") from exc
 
     if result.returncode != 0:
@@ -390,11 +395,18 @@ def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess
     bridge_script = bridge_dir / "bridge.js"
     if not bridge_script.exists():
         raise HTTPException(status_code=500, detail=f"WhatsApp bridge script was not found at {bridge_script}.")
+    _ensure_whatsapp_bridge_dependencies(bridge_dir)
     node = find_node_executable("node")
     if not node:
-        raise HTTPException(status_code=500, detail="Node.js was not found. WhatsApp setup needs Node.js.")
+        import pm
 
-    _ensure_whatsapp_bridge_dependencies(bridge_dir)
+        try:
+            pm.ensure("node", explicit=True)
+            installed = pm.installed_package("node")
+            assert installed is not None and installed.binary is not None
+            node = str(installed.binary)
+        except pm.InstallError as exc:
+            raise HTTPException(status_code=500, detail=f"Node.js preparation failed: {exc}") from exc
     session_path.mkdir(parents=True, exist_ok=True)
 
     env = with_hermes_node_path()

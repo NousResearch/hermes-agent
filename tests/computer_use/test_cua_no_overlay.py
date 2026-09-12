@@ -227,7 +227,10 @@ class TestMcpArgsOverlayFlag:
 
 
 class TestEmbeddedDaemonOverlayFlag:
+    @pytest.mark.platforms("not macos")
     def test_serve_process_disables_overlay_when_policy_requires_it(self):
+        from tools.computer_use import cua_backend_daemon
+
         daemon = cua_backend._EmbeddedCuaDaemon("/usr/bin/cua-driver", "unrestricted")
         process = MagicMock()
         process.poll.return_value = None
@@ -245,7 +248,7 @@ class TestEmbeddedDaemonOverlayFlag:
             cua_backend.subprocess, "Popen", return_value=process,
         ) as popen, patch.object(
             cua_backend.subprocess, "run", return_value=status,
-        ), patch.object(cua_backend.threading, "Thread"):
+        ), patch.object(cua_backend_daemon.threading, "Thread"):
             daemon.start()
 
         command = popen.call_args.args[0]

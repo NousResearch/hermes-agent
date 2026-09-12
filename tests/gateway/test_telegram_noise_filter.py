@@ -255,20 +255,29 @@ def test_chat_gateways_drop_interrupt_sentinel(platform):
     assert _sanitize_gateway_final_response("local", sentinel) == sentinel
 
 
-def test_telegram_status_sanitizes_raw_provider_security_errors():
-    """Provider policy/security bodies should be replaced before chat delivery."""
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_chat_gateways_suppress_provider_error_status(platform):
+    """Provider-error statuses must not double up with the final response.
+
+    The failed turn's final response is rewritten to the same user-safe text
+    by `_sanitize_gateway_final_response`, so a status copy here would land as
+    a second identical persistent message (#72131). Suppression also keeps the
+    raw body (request ids, policy text) out of chat — nothing is delivered on
+    this path at all.
+    """
     raw = (
         "❌ API failed after 3 retries — HTTP 400: request blocked because "
         "Operation contains cybersecurity risk. request_id=req_123"
     )
 
-    sanitized = _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", raw)
+    assert _prepare_gateway_status_message(platform, "lifecycle", raw) is None
 
-    assert sanitized is not None
-    assert "provider rejected" in sanitized.lower()
-    assert "cybersecurity risk" not in sanitized.lower()
-    assert "HTTP 400" not in sanitized
-    assert "req_123" not in sanitized
+
+def test_local_status_keeps_raw_provider_errors():
+    """Local/CLI surfaces keep the raw diagnostic stream on the status path."""
+    raw = "API call failed after 3 retries: HTTP 429 Too Many Requests"
+
+    assert _prepare_gateway_status_message("local", "warn", raw) == raw
 
 
 def test_telegram_final_response_sanitizes_raw_provider_errors():

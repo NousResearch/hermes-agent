@@ -19,8 +19,8 @@ def _login(monkeypatch, provider_id):
                         lambda p: {"logged_in": p == provider_id})
 
 
-def _config(monkeypatch, model_cfg):
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": model_cfg})
+def _config(monkeypatch, model_cfg, **extra):
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": model_cfg, **extra})
 
 
 def _no_aws(monkeypatch):
@@ -42,6 +42,63 @@ class TestProviderPrecedence:
         _login(monkeypatch, "anthropic")           # stale OAuth login
         _config(monkeypatch, {"provider": "zai", "default": "glm-4.6"})
         assert resolve_provider("auto") == "zai"
+
+    def test_config_runtime_provider_counts_as_inference_route(self, monkeypatch):
+        """Dashboard readiness accepts custom routes but keeps the auto sentinel unresolved."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(monkeypatch, {
+            "provider": "custom", "default": "local-model", "base_url": "http://127.0.0.1:8080/v1",
+        })
+        assert resolve_provider("auto", skip_free_tier=True) == "custom"
+
+        _config(
+            monkeypatch,
+            {"provider": "custom:llama-local", "default": "local-model"},
+            providers={"llama-local": {"base_url": "http://127.0.0.1:8080/v1"}},
+        )
+        assert resolve_provider("auto", skip_free_tier=True) == "custom:llama-local"
+
+        _login(monkeypatch, "anthropic")
+        _config(monkeypatch, {"provider": "auto", "default": "some-model"})
+        assert resolve_provider("auto") == "anthropic"
+
+    @pytest.mark.parametrize("model_cfg", [
+        {"provider": "custom", "default": "local-model"},
+        {"provider": "custom:missing", "default": "local-model"},
+    ])
+    def test_incomplete_custom_provider_is_not_an_inference_route(self, monkeypatch, model_cfg):
+        """Bootstrap readiness rejects custom identities that runtime resolution cannot build."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(monkeypatch, model_cfg, providers={})
+
+        with pytest.raises(AuthError, match="No inference provider configured"):
+            resolve_provider("auto", skip_free_tier=True)
+
+    @pytest.mark.parametrize(("route_available", "enabled"), [(True, True), (False, False)])
+    def test_managed_llamacpp_route_controls_readiness(self, monkeypatch, route_available, enabled):
+        """A base-URL-free llamacpp alias is ready exactly when its managed route is available."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(
+            monkeypatch,
+            {"provider": "llamacpp", "default": "local-model"},
+            local_runtime={"enabled": enabled},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.local_runtime.endpoint.llamacpp_route_available",
+            lambda config: route_available,
+        )
+
+        if route_available:
+            assert resolve_provider("auto", skip_free_tier=True) == "llamacpp"
+        else:
+            with pytest.raises(AuthError, match="No inference provider configured"):
+                resolve_provider("auto", skip_free_tier=True)
 
     def test_env_key_beats_stale_oauth(self, monkeypatch):
         """An exported provider API key wins over a logged-in OAuth active_provider."""

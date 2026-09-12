@@ -331,6 +331,13 @@ export async function extractBridgeEvent({
   const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
   const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
   const hasQuotedMessage = !!contextInfo?.quotedMessage;
+  // Explicit transport-neutral ownership signal. Compare against every bot ID
+  // supplied by the socket (phone JID and LID) here, so the Python gateway does
+  // not need to reconstruct WhatsApp identity aliases later.
+  const quotedFromMe = Boolean(
+    quotedParticipant
+    && botIds.map(normalizeWhatsAppId).filter(Boolean).includes(quotedParticipant)
+  );
   const quotedText = textFromQuotedMessage(contextInfo?.quotedMessage);
 
   let body = '';
@@ -499,6 +506,7 @@ export async function extractBridgeEvent({
     quotedRemoteJid,
     quotedText,
     hasQuotedMessage,
+    quotedFromMe,
     botIds,
     readReceiptKey: {
       remoteJid: msg.key.remoteJid || chatId,

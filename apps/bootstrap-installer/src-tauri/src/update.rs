@@ -41,6 +41,14 @@ use crate::powershell::{pump_child, DRAIN_GRACE};
 /// hermes_cli/main.py (sys.exit(2)). We surface a targeted message for this.
 const UPDATE_EXIT_CONCURRENT: i32 = 2;
 
+/// GNU `timeout` convention exit code. `hermes update` returns this when an
+/// idle subprocess (the web UI build, or the process tree itself when the
+/// desktop hand-off shim's 60s idle watchdog fires) is terminated. A timeout
+/// means the process was killed by an external watchdog — the code was already
+/// updated and re-running would hang (see #96205), so the auto-retry must skip
+/// it.
+const UPDATE_EXIT_TIMEOUT: i32 = 124;
+
 /// How long to wait for the old desktop process to release files under the
 /// install tree before giving up and letting `hermes update`'s own guard decide.
 const DESKTOP_EXIT_WAIT: Duration = Duration::from_secs(20);
@@ -438,8 +446,13 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // from the start. Rather than make the parked user click Update twice (and
     // stare at a scary crash first), retry once automatically. Skip the retry
     // for the concurrent-instance guard (exit 2) — that's a "close Hermes" state
-    // a retry can't fix.
-    if !matches!(update.exit_code, Some(0) | Some(UPDATE_EXIT_CONCURRENT)) {
+    // a retry can't fix — and for exit 124 (timeout), where the process was
+    // killed by an external idle watchdog after the code already updated, so a
+    // retry would just hang again (see #96205).
+    if !matches!(
+        update.exit_code,
+        Some(0) | Some(UPDATE_EXIT_CONCURRENT) | Some(UPDATE_EXIT_TIMEOUT)
+    ) {
         emit_log(
             &app,
             Some("update"),
@@ -926,9 +939,11 @@ fn is_locked(path: &Path) -> bool {
 /// Whether the `desktop --build-only` rebuild should be retried once. Any
 /// non-success exit qualifies: the common cause is a transient first-attempt
 /// failure (still-settling tree / self-healed Electron download) that a clean
-/// second run resolves.
+/// second run resolves. Exit 124 (timeout) is excluded — an idle watchdog kill
+/// after the code already updated will not be fixed by an immediate retry
+/// (#96205).
 fn rebuild_needs_retry(exit_code: Option<i32>) -> bool {
-    exit_code != Some(0)
+    matches!(exit_code, Some(code) if code != 0 && code != UPDATE_EXIT_TIMEOUT) || exit_code.is_none()
 }
 
 /// Spawn `hermes <args>` from `cwd`, stream stdout/stderr as Log events on the
@@ -1797,6 +1812,10 @@ mod tests {
         assert!(
             rebuild_needs_retry(None),
             "a killed/signalled rebuild (no exit code) retries once"
+        );
+        assert!(
+            !rebuild_needs_retry(Some(UPDATE_EXIT_TIMEOUT)),
+            "a timeout-killed rebuild (exit 124) must not retry — code already updated (#96205)"
         );
     }
 

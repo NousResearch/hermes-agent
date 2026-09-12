@@ -60,21 +60,33 @@ async def execute_admission(authority, ref, row):
     from gateway.session_api_turn import api_execution, prepare_api_execution
     from gateway.session_results import execution_result
     is_api = live.source.platform == Platform.API_SERVER
-    prepared = prepare_api_execution(authority, ref, row['payload']) if is_api else None
-    if is_api:
-        if isinstance(event.text, list):
-            event.text = '\n'.join(part['text'] for part in event.text if part.get('type') == 'text')
-        event.allow_gateway_control = False
-        event.internal = True  # trust comes from the private binding and preclaim, never client JSON
     author_token = admission_author.set(event.metadata.get('turn_author'))
-    api_token = api_execution.set(prepared)
+    api_token = api_execution.set(None)
     captured = {}
     result_token = execution_result.set(captured)
     token = executing_admission.set(True)
     try:
         with scope:
+            if is_api:
+                # Committed media resolves under the owning profile's home, like admission did.
+                prepared = prepare_api_execution(authority, ref, row['payload'])
+                api_execution.set(prepared)
+                if isinstance(event.text, list):
+                    # The durable transcript keeps the committed media references (the same
+                    # ``[Image attached ...]`` hints native transports persist), not only the caption.
+                    event.text = '\n'.join(part['text'] for part in prepared['content'] if part.get('type') == 'text')
+                event.allow_gateway_control = False
+                event.internal = True  # trust comes from the private binding and preclaim, never client JSON
             response = await authority.runner._handle_message(event)
-            result = captured.get('result') or {'final_response': response or '', 'messages': []}
+            result = captured.get('result')
+            if result is None:
+                # No TurnRunner result means the handler answered without executing the turn
+                # (agent initialization failure, refusal notice). An API caller asked for work,
+                # so its receipt is a failure, never a completed turn with an apology as output.
+                result = {'final_response': response or '', 'messages': []}
+                if is_api:
+                    result = {'final_response': '', 'messages': [], 'failed': True, 'completed': False,
+                              'error': response or 'The admitted turn failed.'}
             # The drain commits this under the stream lock so no viewer reads `terminal`
             # before the completion event exists in the replay ring.
             authority.pending_results[row['admission_id']] = {'result': result, 'usage': captured.get('usage', {})}

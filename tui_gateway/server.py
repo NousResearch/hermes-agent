@@ -3040,6 +3040,7 @@ def _start_usage_ticker(sid: str, agent, interval: float = 1.0) -> tuple[threadi
     return stop, thread
 
 
+
 # ── Methods: respond ─────────────────────────────────────────────────
 
 

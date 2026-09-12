@@ -123,3 +123,47 @@ def test_format_turn_completion_locked_still_advises_retry():
     )
     assert "busy" in explanation
     assert "send it again" in explanation
+
+
+def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):
+    """#105887: every `hermes ...` command in the recovery guidance (turn explainer, gateway
+    home-channel notice, exhausted-repair diagnostic) carries the active profile selector and
+    names that profile's state.db. A bare `hermes` follows the sticky ``active_profile`` file,
+    so with another profile active the operator would repair the wrong database."""
+    import asyncio
+
+    import gateway.run as gateway_run
+    from hermes_state import _default_db_path
+    from hermes_state_repair import _persistent_repair_exhausted_error
+    from run_agent import AIAgent
+
+    root = tmp_path / "hermes"
+    home = root / "profiles" / "research"
+    home.mkdir(parents=True)
+    (root / "config.yaml").write_text("")
+    (root / "active_profile").write_text("other\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    explanation = AIAgent._format_turn_completion_explanation("session_persistence_failed", "corrupt")
+    commands = [line.strip() for line in explanation.splitlines() if "hermes " in line]
+    assert commands and all("hermes -p research " in line for line in commands), commands
+    # The conftest pins hermes_state.DEFAULT_DB_PATH, so the store named is whatever the
+    # process resolves — the contract is "the same path the runtime would open".
+    assert f"--source {_default_db_path()} " in explanation
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._session_db_init_error = "database disk image is malformed"
+    sent = []
+    monkeypatch.setattr(runner, "_home_channel_transports", lambda: [("telegram", {}, "home-chat", object())])
+
+    async def _capture_send(_platform, _home, _transport, message, _log_fmt):
+        sent.append(message)
+
+    monkeypatch.setattr(runner, "_send_home_channel_message", _capture_send)
+    asyncio.run(runner._send_session_db_warning_notifications())
+    notice_commands = [line.strip() for line in sent[0].splitlines() if "hermes " in line]
+    assert notice_commands and all("hermes -p research " in line for line in notice_commands), notice_commands
+    assert f"--source {_default_db_path()} " in sent[0]
+
+    exhausted = _persistent_repair_exhausted_error(home / "state.db")
+    assert "`hermes -p research sessions recover --source" in exhausted

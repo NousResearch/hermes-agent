@@ -28,7 +28,13 @@ function loadGate(): OnboardingGateState {
 
   const phase = isOnboardingEnabled() && isOnboardingPhase(saved) ? saved : 'idle'
 
-  return { phase, guideQueued: phase === 'cinematic' && hasSeenIntroReveal() }
+  // Two phases owe a kickoff at boot. `cinematic` with the film already seen
+  // is the film-to-guide seam. `guided` is a relaunch mid-guide: without a
+  // kickoff the normal app boots around the persisted solo layout — the
+  // connected splash, the stock composer and model picker, a small window
+  // whose sidebars cannot open — while the gate still says the guide is on.
+  // The kickoff adopts the existing guide chat by title, so nothing is lost.
+  return { phase, guideQueued: (phase === 'cinematic' && hasSeenIntroReveal()) || phase === 'guided' }
 }
 
 export const $onboardingGate = atom<OnboardingGateState>(loadGate())
@@ -38,6 +44,16 @@ let guideKickoff: GuideKickoff = { status: 'idle' }
 function setPhase(phase: OnboardingPhase): void {
   writeKey(PHASE_KEY, phase === 'idle' ? null : phase)
   $onboardingGate.set({ phase, guideQueued: false })
+}
+
+/** The guided first launch is on screen or mid-handoff. Ambient chrome that
+ *  would send the user elsewhere (the provider picker, the free-tier chip)
+ *  yields to it: the free tier IS the provider for those phases, and the
+ *  guide's ready screen is where sign-in is offered. */
+export function guidedOnboardingActive(): boolean {
+  const { phase } = $onboardingGate.get()
+
+  return isOnboardingEnabled() && (phase === 'cinematic' || phase === 'guided' || phase === 'handoff')
 }
 
 export function beginOnboardingFlow(): void {

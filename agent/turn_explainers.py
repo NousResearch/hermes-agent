@@ -139,10 +139,10 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "reported structural corruption (the transcript would "
         "have been lost on restart). Freeing disk space will "
         "not help. Recovery options:\n"
-        "1. Run `hermes doctor --fix`\n"
+        "1. Run `hermes {profile_arg}doctor --fix`\n"
         "2. Stop the gateway, then recover with:\n"
-        "   hermes sessions recover --source {db_path} --inspect-only\n"
-        "   (if it reports recoverable) hermes sessions recover "
+        "   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n"
+        "   (if it reports recoverable) hermes {profile_arg}sessions recover "
         "--source {db_path} --output recovered-state.db\n"
         "   — recovery snapshots the damaged file first; do NOT "
         "run `sqlite3 ... \".recover\"` against the live "
@@ -150,6 +150,16 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "further\n"
         "3. Restore from a backup in {backups_dir}/\n"
         "Then send your message again."
+    ),
+    # SQLite scoped the corruption to the FTS index and the derived indexes could not be
+    # detached, so this write did not land; the message store itself is intact (#97794).
+    "fts_index": (
+        "the turn was stopped because the session search index (FTS5) "
+        "is corrupt and could not be detached, so this message was not "
+        "saved. The message store itself is not damaged: do not run "
+        "recovery tools or restore a backup. Run `hermes {profile_arg}doctor --fix` "
+        "(or restart Hermes, which repairs the index on open), then "
+        "send your message again."
     ),
     "disk": (
         "the turn was stopped because session storage could not "
@@ -318,14 +328,14 @@ class TurnExplainersMixin:
             body = _PERSISTENCE_CAUSE_EXPLANATIONS.get(
                 persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
             )
-            if persistence_cause == "corrupt":
-                # Copy-pasteable, so name the store that actually failed: the agent's own
-                # SessionDB. A multi-profile backend (Desktop serve) hosts sessions whose
-                # state.db is NOT the process default, so the default would send the operator
-                # to inspect/repair the wrong profile's database (#105887).
-                from hermes_constants import get_default_hermes_root
+            if persistence_cause in ("corrupt", "fts_index"):
+                # Copy-pasteable, so name the store that actually failed and pin the profile:
+                # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT
+                # the process default, and a bare `hermes` follows active_profile (#105887).
+                from hermes_constants import get_default_hermes_root, profile_cli_selector
                 from hermes_state import _default_db_path
 
+                body = body.replace("{profile_arg}", profile_cli_selector())
                 body = body.replace("{db_path}", str(db_path or _default_db_path()))
                 body = body.replace(
                     "{backups_dir}", str(get_default_hermes_root() / "backups")

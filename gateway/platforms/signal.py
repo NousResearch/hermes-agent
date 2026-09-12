@@ -192,7 +192,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.group_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_GROUP_ALLOWED_USERS", "")))
         _rm_cfg = extra.get("require_mention")
         self.require_mention = (bool(_rm_cfg) if _rm_cfg is not None
-                                else os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in TRUTHY_STRINGS)
+                                else (_sig_secret("SIGNAL_REQUIRE_MENTION", "false") or "false").lower() in TRUTHY_STRINGS)
         self.dm_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_ALLOWED_USERS", "*")))
         self.client: Optional[httpx.AsyncClient] = None
         self._sse_task: Optional[asyncio.Task] = None

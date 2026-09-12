@@ -67,6 +67,36 @@ class TestSessionKeyNamespacedWhenOn:
 class TestMultiplexConfigFlag:
     """gateway.multiplex_profiles defaults off and round-trips."""
 
+    def test_cron_shared_adapter_owner_is_the_launch_profile(self, monkeypatch, tmp_path):
+        """A ``--profile rex`` multiplexer owns ``runner.adapters``; its ticker must name rex (not the
+        literal ``default``) as the shared-adapter owner or rex's own jobs fall to the fail-closed map."""
+        import asyncio
+        from types import SimpleNamespace
+        from gateway import run as run_mod
+        from cron.scheduler_provider import InProcessCronScheduler
+
+        captured = {}
+
+        class _Ticker(InProcessCronScheduler):
+            def start(self, stop_event, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: _Ticker())
+        monkeypatch.setattr(run_mod, "_cron_tick_profile_homes", lambda cfg: [("rex", tmp_path)])
+        monkeypatch.setattr(run_mod, "_start_gateway_housekeeping", lambda *a, **k: None)
+        runner = SimpleNamespace(
+            config=GatewayConfig(multiplex_profiles=True), adapters={}, _profile_adapters={},
+            _primary_profile_name="rex", _draining=False, _external_drain_active=False)
+
+        async def _go():
+            return run_mod._start_gateway_start_cron_and_housekeeping(runner)
+
+        cron_stop, _provider, cron_thread, hk = asyncio.run(_go())
+        cron_stop.set()
+        cron_thread.join(timeout=5)
+        hk.join(timeout=5)
+        assert captured["default_profile"] == "rex"
+
     def test_default_is_false(self):
         assert GatewayConfig().multiplex_profiles is False
 

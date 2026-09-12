@@ -238,9 +238,7 @@ class CLIInfoMixin:
     def _command_available(self, slash_command: str) -> bool:
         if slash_command == "/fast":
             return self._fast_command_available()
-        from hermes_cli.commands import command_available, resolve_command
-        command = resolve_command(slash_command)
-        return command is None or command_available(command)
+        return True
 
     def show_help(self, arg: str = ""):
         """Display help. Bare /help shows categorized core commands with the skill list collapsed

@@ -1357,35 +1357,6 @@ DEFAULT_CONFIG = {
         "ledger": True,
     },
 
-    # Collective Wisdom — local qualification plus owner-consented sharing.
-    # The sync.base_url transport and existing Nous OAuth token are reused;
-    # no Gateway secret or URL is exposed to renderer clients.
-    "wisdom": {
-        "enabled": False,
-        "portal_url": "https://portal.nousresearch.com",
-        "request_timeout": 30,
-        "notifications": {
-            "delivery_mode": "agent",  # Use fixed to opt out of agent-written advice.
-            "decisions": "immediate",
-            "installed_updates": "immediate",
-            "new_skills": "daily",
-        },
-        # Agent-led sharing: a weekly agent review of real 7-day usage
-        # proposes at most a few bespoke skills to share, with fixed copy and
-        # native buttons. When disabled, only the deterministic qualification
-        # triggers (consecutive-day / refinement) surface candidates.
-        # Active only with notifications.delivery_mode: agent. Server policy
-        # controls eligibility and frequency, never the local rollout choice.
-        "agent_led": {
-            "window_days": 7,
-            "min_aggregate_count": 3,
-            "max_candidates": 3,
-            "dismiss_suppression_days": 30,
-            "popular_install_threshold": 10,
-            "review_interval_hours": 24 * 7,
-        },
-    },
-
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks
     # long-unused skills stale, archives (never deletes) obsolete ones, optionally consolidates
     # overlaps via a forked aux-model agent. Inactivity-triggered from session start, no cron

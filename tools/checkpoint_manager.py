@@ -71,6 +71,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 CHECKPOINT_BASE = get_hermes_home() / "checkpoints"
+_CHECKPOINT_BASE_AT_IMPORT = CHECKPOINT_BASE
+
+
+def _resolve_checkpoint_base() -> Path:
+    """Active profile's checkpoint root at call time: the patched ``CHECKPOINT_BASE`` when a test
+    changed it, else live profile-scoped HERMES_HOME — under the multiplexed gateway one process
+    serves every profile, so the import-time constant would write every profile's code-edit
+    checkpoints into the launch profile's store."""
+    return CHECKPOINT_BASE if CHECKPOINT_BASE != _CHECKPOINT_BASE_AT_IMPORT else get_hermes_home() / "checkpoints"
 
 # Single shared store directory under CHECKPOINT_BASE.
 _STORE_DIRNAME = "store"
@@ -211,7 +220,7 @@ def _project_hash(working_dir: str) -> str:
 
 def _store_path(base: Optional[Path] = None) -> Path:
     """Return the single shared shadow store path."""
-    return (base or CHECKPOINT_BASE) / _STORE_DIRNAME
+    return (base or _resolve_checkpoint_base()) / _STORE_DIRNAME
 
 
 def _index_path(store: Path, dir_hash: str) -> Path:
@@ -805,9 +814,9 @@ class CheckpointManager:
             digest = _hash_file(path)
             if digest is None:
                 return
-            with store_lock(CHECKPOINT_BASE):
+            with store_lock(_resolve_checkpoint_base()):
                 working_dir = self.get_working_dir_for_path(str(path))
-                store = _store_path(CHECKPOINT_BASE)
+                store = _store_path()
                 dir_hash = _project_hash(working_dir)
                 ledger = _load_ledger(store, dir_hash)
                 ledger[str(path)] = {"sha256": digest, "ts": time.time()}
@@ -829,7 +838,7 @@ class CheckpointManager:
             return {"success": False, "error": hash_err}
 
         abs_dir = str(_normalize_path(working_dir))
-        store = _store_path(CHECKPOINT_BASE)
+        store = _store_path()
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
@@ -910,7 +919,7 @@ class CheckpointManager:
         try:
             from tools.checkpoint_pruning import store_lock
 
-            with store_lock(CHECKPOINT_BASE):
+            with store_lock(_resolve_checkpoint_base()):
                 return self._take(abs_dir, reason)
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
@@ -919,7 +928,7 @@ class CheckpointManager:
     def list_checkpoints(self, working_dir: str) -> List[Dict]:
         """List available checkpoints for a directory (most recent first)."""
         abs_dir = str(_normalize_path(working_dir))
-        store = _store_path(CHECKPOINT_BASE)
+        store = _store_path()
 
         if not (store / "HEAD").exists():
             return []
@@ -966,8 +975,8 @@ class CheckpointManager:
         entry carries the extra ``workdir`` key so callers can label which
         project a checkpoint belongs to.
         """
-        store = _store_path(CHECKPOINT_BASE)
-        if not (store / "HEAD").exists():
+        store = _store_path()
+        if not _store_has_head(store):
             return []
         results: List[Dict] = []
         for meta in _list_projects(store):
@@ -998,7 +1007,7 @@ class CheckpointManager:
         from tools.checkpoint_pruning import PruneError, store_lock
 
         try:
-            with store_lock(CHECKPOINT_BASE):
+            with store_lock(_resolve_checkpoint_base()):
                 return self._diff(working_dir, commit_hash)
         except (PruneError, OSError) as exc:
             return {"success": False, "error": str(exc)}
@@ -1009,7 +1018,7 @@ class CheckpointManager:
             return {"success": False, "error": hash_err}
 
         abs_dir = str(_normalize_path(working_dir))
-        store = _store_path(CHECKPOINT_BASE)
+        store = _store_path()
 
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
@@ -1104,7 +1113,7 @@ class CheckpointManager:
         from tools.checkpoint_pruning import PruneError, store_lock
 
         try:
-            with store_lock(CHECKPOINT_BASE):
+            with store_lock(_resolve_checkpoint_base()):
                 return self._restore(working_dir, commit_hash, file_path, safe)
         except (PruneError, OSError) as exc:
             return {"success": False, "error": str(exc)}
@@ -1121,7 +1130,7 @@ class CheckpointManager:
             if path_err:
                 return {"success": False, "error": path_err}
 
-        store = _store_path(CHECKPOINT_BASE)
+        store = _store_path()
 
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
@@ -1282,7 +1291,7 @@ class CheckpointManager:
 
     def _take(self, working_dir: str, reason: str, *, prune: bool = True) -> bool:
         """Take a snapshot.  Returns True on success."""
-        store = _store_path(CHECKPOINT_BASE)
+        store = _store_path()
 
         err = _init_store(store, working_dir)
         if err:
@@ -1680,7 +1689,7 @@ def prune_checkpoints(
 
     Never raises — maintenance must never block interactive startup.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     result = {
         "scanned": 0,
         "deleted_orphan": 0,
@@ -1862,6 +1871,31 @@ def _prune_checkpoints(
     delta = size_before - size_after
     result["bytes_freed"] = max(result["bytes_freed"], delta)
 
+def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, checkpoint_base: Optional[Path] = None,
+                      max_total_size_mb: int = 0, orphan_allowlist: Optional[set] = None) -> Dict[str, int]:
+    """Delete stale/orphan checkpoints and reclaim store space.  Never raises.  Deleted when
+    ``delete_orphans`` and the workdir is observably gone, OR last touch predates ``retention_days``
+    (``<= 0`` disables).  ``orphan_allowlist`` (v2 ``_hash`` strings and/or pre-v2 repo paths as
+    ``str``) binds orphan deletion to exactly what a ``store_status()`` preview showed — a project
+    orphaned after the preview is skipped; ``None`` deletes every current orphan (``--force``,
+    unattended).  ``max_total_size_mb > 0`` drops the oldest commit per project until the store fits."""
+    base = checkpoint_base or _resolve_checkpoint_base()
+    result = _empty_prune_result()
+    if not base.exists():
+        return result
+    size_before = _dir_size_bytes(base)
+    cutoff = time.time() - retention_days * 86400 if retention_days > 0 else 0.0
+    _prune_legacy_archives(base, cutoff, result)
+    _prune_pre_v2_repos(base, cutoff, delete_orphans, orphan_allowlist, result)
+    store = _store_path(base)
+    if _store_has_head(store):
+        _prune_v2_projects(store, cutoff, delete_orphans, orphan_allowlist, result)
+        _gc_store(store, str(base))
+        if max_total_size_mb > 0:
+            _shrink_store_to_cap(store, str(base), max_total_size_mb * _MB)
+            _gc_store(store, str(base))
+
+    result["bytes_freed"] = max(result["bytes_freed"], size_before - _dir_size_bytes(base))
     return result
 
 
@@ -1880,7 +1914,7 @@ def maybe_auto_prune_checkpoints(
     Returns ``{"skipped": bool, "result": prune_checkpoints-dict,
     "error": optional str}``.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     out: Dict[str, object] = {"skipped": False}
 
     try:
@@ -1950,7 +1984,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     ``pre_v2_projects``, since ``prune_checkpoints`` deletes orphans from
     both layouts.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     out: Dict = {
         "base": str(base),
         "store_size_bytes": 0,
@@ -2031,7 +2065,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
 
     Returns ``{"bytes_freed": N, "deleted": bool}``.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     out = {"bytes_freed": 0, "deleted": False}
     if not base.exists():
         return out
@@ -2053,7 +2087,7 @@ def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
 
     Returns ``{"bytes_freed": N, "deleted": count}``.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     out = {"bytes_freed": 0, "deleted": 0}
     if not base.exists():
         return out

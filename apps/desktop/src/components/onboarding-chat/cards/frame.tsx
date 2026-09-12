@@ -5,12 +5,12 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { $onboardingAnswers, markStepCommitted } from '@/store/onboarding-answers'
 
 export interface CardProps {
   /** The directive's raw attrs — the model-written payload. */
@@ -19,17 +19,20 @@ export interface CardProps {
   locked: boolean
 }
 
-export function useCardCommit() {
+/** `step` names the card so Done survives the card remounting: the hidden
+ *  submit and the turn-end hydrate both rebuild the transcript, and a flag in
+ *  component state came back false each time. */
+export function useCardCommit(step: string) {
   const view = useSessionView()
   const storedId = useStore(view.$storedId)
   const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
-  const [done, setDone] = useState(false)
+  const done = useStore($onboardingAnswers).committed.includes(step)
 
   const commit = (summary: string): boolean => {
     const sent = requestComposerSubmit(`[setup] ${summary}`, { displayKind: 'hidden', target })
 
     if (sent) {
-      setDone(true)
+      markStepCommitted(step)
     }
 
     return sent
@@ -43,12 +46,16 @@ export function useCardCommit() {
  *  read as a form. */
 export function CardFrame({
   children,
+  continueLabel = 'Continue',
   disabled = false,
   done,
   locked = false,
   onContinue
 }: {
   children: React.ReactNode
+  /** The action, named for what it does when the default reads as a shrug —
+   *  "Continue with 2" tells them the picks registered. */
+  continueLabel?: string
   disabled?: boolean
   done: boolean
   locked?: boolean
@@ -71,7 +78,7 @@ export function CardFrame({
           onClick={onContinue}
           size="sm"
         >
-          {done ? '✓ Done' : 'Continue'}
+          {done ? '✓ Done' : continueLabel}
         </Button>
       </div>
     </div>

@@ -7,7 +7,7 @@
 
 import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
@@ -27,8 +27,10 @@ import {
   SETUP_PROFILE
 } from '@/components/onboarding-chat/setup-profile'
 import { Button } from '@/components/ui/button'
+import { answeredAfter } from '@/lib/chat-messages/parts'
 import { segmentTranscriptDirectives } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
+import { $onboardingAnswers, markStepCommitted } from '@/store/onboarding-answers'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
 
@@ -46,7 +48,16 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
   const view = useSessionView()
   const storedId = useStore(view.$storedId)
   const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
-  const [picked, setPicked] = useState<null | string>(null)
+  // The pick lives with the other answers, not in component state: the
+  // visible submit rebuilds the transcript and a local flag came back null,
+  // leaving every chip clickable after one had already been sent. A typed
+  // reply in the composer closes the card the same way a chip does.
+  const messageId = useAuiState(state => state.message.id)
+
+  const answeredInComposer = answeredAfter(useStore(view.$messages), messageId)
+
+  const committed = useStore($onboardingAnswers).committed.find(step => step.startsWith('first:'))?.slice(6) ?? null
+  const picked = committed ?? (answeredInComposer ? '' : null)
 
   // Parse + validate the model's options: up to 4, each short enough to sit on
   // a chip, deduped case-insensitively (models repeat themselves). Garbage in
@@ -73,12 +84,12 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
   const options = parsed.length < 2 ? [FALLBACK_OPTION] : parsed
 
   const pick = (option: string) => {
-    if (picked || locked) {
+    if (picked !== null || locked) {
       return
     }
 
     if (requestComposerSubmit(option, { target })) {
-      setPicked(option)
+      markStepCommitted(`first:${option}`)
     }
   }
 

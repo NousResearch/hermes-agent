@@ -327,16 +327,6 @@ class GatewayTurnMixin:
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
-        if not bool(getattr(event, "internal", False)):
-            try:
-                from gateway.wisdom_mediation import schedule as observe_wisdom_session
-
-                await observe_wisdom_session(
-                    self, self._adapter_for_source(source), source,
-                    str(session_entry.session_id), observe_only=True,
-                )
-            except Exception:
-                logger.debug("Wisdom session activity unavailable", exc_info=True)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
         from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
@@ -2362,9 +2352,16 @@ class GatewayTurnMixin:
             return t("gateway.reload_mcp.failed", error=e)
 
     def _get_proxy_url(self) -> Optional[str]:
-        """Proxy URL if proxy mode is configured (GATEWAY_PROXY_URL env wins over ``gateway.proxy_url``)."""
+        """Proxy URL if proxy mode is configured (GATEWAY_PROXY_URL env wins over ``gateway.proxy_url``).
+        Per-profile like GATEWAY_PROXY_KEY: under multiplex a raw environ read would ship a secondary's
+        turns (authenticated with ITS scoped key) to the default profile's proxy. Same fallback shape as
+        the key — only ``UnscopedSecretError`` (the unscoped default-profile path) reads the env."""
         from gateway.run import _load_gateway_config
-        url = os.getenv("GATEWAY_PROXY_URL", "").strip()
+        from agent.secret_scope import UnscopedSecretError, get_secret
+        try:
+            url = (get_secret("GATEWAY_PROXY_URL") or "").strip()
+        except UnscopedSecretError:
+            url = os.getenv("GATEWAY_PROXY_URL", "").strip()
         if not url:
             url = ((_load_gateway_config().get("gateway") or {}).get("proxy_url") or "").strip()
         return url.rstrip("/") if url else None

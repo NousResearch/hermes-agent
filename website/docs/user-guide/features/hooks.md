@@ -1633,11 +1633,14 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
   "tool_input":      {"command": "rm -rf /"},
   "session_id":      "sess_abc123",
   "cwd":             "/home/user/project",
+  "profile":         "default",
   "extra":           {"task_id": "...", "tool_call_id": "..."}
 }
 ```
 
-`tool_name` and `tool_input` are `null` for non-tool events (`pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted.
+`profile` names the Hermes profile that fired the hook (`"default"` outside profiles), so one
+script can serve every profile behind a multiplexed gateway; the subprocess also runs with that
+profile's `HERMES_HOME`. `tool_name` and `tool_input` are `null` for non-tool events (`pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted.
 
 **stdout — optional response:**
 

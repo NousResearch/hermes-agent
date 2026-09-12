@@ -89,8 +89,32 @@ def test_default_when_nothing_set(monkeypatch):
     monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
     # Force config lookup to return None -- patch the cached reader.
     i18n.reset_language_cache()
-    monkeypatch.setattr(i18n, "_config_language_cached", lambda: None)
+    monkeypatch.setattr(i18n, "_config_language", lambda: None)
     assert i18n.get_language() == "en"
+
+
+def test_language_is_per_profile_under_multiplex(monkeypatch, tmp_path):
+    """HERMES_LANGUAGE in the DEFAULT profile's environ must not leak into a secondary profile's
+    turn, and the config-language cache must not freeze one profile's ``display.language`` for all."""
+    from agent import secret_scope
+
+    default_home = tmp_path / "default"; default_home.mkdir()
+    prof_b = tmp_path / "b"; prof_b.mkdir()
+    (default_home / "config.yaml").write_text("display:\n  language: fr\n")
+    (prof_b / "config.yaml").write_text("display:\n  language: de\n")
+    monkeypatch.setenv("HERMES_LANGUAGE", "zh")  # default profile's .env, bridged into environ
+    i18n.reset_language_cache()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({})
+    try:
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        assert i18n.get_language() == "fr"  # scoped miss: env ignored, this profile's config wins
+        monkeypatch.setenv("HERMES_HOME", str(prof_b))
+        assert i18n.get_language() == "de"  # not the first profile's cached "fr"
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(False)
+        i18n.reset_language_cache()
 
 
 # ---------------------------------------------------------------------------

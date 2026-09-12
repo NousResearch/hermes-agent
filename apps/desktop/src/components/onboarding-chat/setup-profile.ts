@@ -187,7 +187,7 @@ export function buildFirstTaskRunbook(
       ? `They already said what they are working on: ${context}. Let it shape your choices without re-asking.`
       : '',
     tools.length
-      ? `Tools they use day to day: ${tools.join(', ')} — none are connected yet; never require one for this first build.`
+      ? `Apps they said they use: ${tools.join(', ')}. Some may already be connected from onboarding; check with manage_connections action="status" before assuming either way, and never require an unconnected one for this first build.`
       : '',
     'Their next message is the go signal: really begin the work — plan briefly, then build (scaffold, research, first artifact).',
     "As you start, tell them in one short sentence: you'll ask for permissions as you go, and they can say no to anything or redirect you.",
@@ -202,7 +202,7 @@ export function buildFirstTaskRunbook(
 }
 
 const NO_AUTH_RULE =
-  'CRITICAL: this first build must need NO external account or OAuth (no Gmail, no Slack, no Google sign-in) — connectors are optional and get wired only with their consent. Everything else is fair game and the more visible the better: web research with the browser shown to the user as you work, scripts, computer use, a small app, a file-based tracker, a scheduled reminder, a generated page. If the idea needs an account, build the no-auth core first and say the connection is a later step.'
+  'CRITICAL: this first build must be finishable with NO external account or OAuth (no Gmail, no Slack, no Google sign-in) — connectors get wired only with their consent, and an app that is already connected may be used, one that is not may be offered. Everything else is fair game and the more visible the better: web research with the browser shown to the user as you work, scripts, computer use, a small app, a file-based tracker, a scheduled reminder, a generated page. If the idea needs an account that is not connected, build the no-auth core first and offer the connection as the next step. NEVER route around a connector: an unconnected Gmail is not a cue to install an IMAP client, ask for an app password, or find another way into the same account. The connector IS the way in; if they decline it, the app is out of this build.'
 
 /** The picks invite an optional connection, not a claim that an account is already linked. */
 function connectorRunbook(picks: string[]): string[] {
@@ -211,9 +211,9 @@ function connectorRunbook(picks: string[]): string[] {
   }
 
   return [
-    `The user said they use these apps: ${picks.join(', ')}. Offer to connect the ones useful for this task, but keep the no-auth core moving and never require sign-in to finish it.`,
-    'When they want a connection, use manage_connections action="status" first. Match against the returned catalog; never invent a connector slug or claim an unavailable app is supported. Ask for consent before reading private data. For apps they agree to connect, make one batched action="connect" request and show its real authorization links labelled with each app’s name.',
-    'After the user has seen and approved those links, use manage_connections action="wait" for the same slugs; only a confirmed connected result permits tool use. A timeout, declined consent or gateway outage means not connected, never an empty inbox. Say which apps remain unavailable and offer to continue without them. Never describe a gateway error as proof they need another Nous login.',
+    `The user said they use these apps: ${picks.join(', ')}. These are real connector slugs. Offer to connect the ones useful for this task BEFORE the build starts, in your first turn, so the work can use them from the beginning — but keep the no-auth core moving and never require sign-in to finish it. If none of them help this task, say so in one line and move on; do not describe the catalog.`,
+    'Before you mention connecting anything, use manage_connections action="status" once. Anything already connected is yours to use for the task, with consent before reading private data. Match the rest against the returned catalog; never invent a connector slug or claim an unavailable app is supported. For the apps they agree to connect, make ONE action="connect" call carrying every slug at once (connectors=["gmail","googlecalendar"]) — the app renders one Connect card per app, side by side, and the user works through them; one call per app strands them clicking through a queue. Do not paste the authorization links into prose. Never call connect a second time for an app that already has a card: a new link cancels the one they are signing in with.',
+    'THE CARD IS THE ASK. After a status that shows an app unconnected, or after a connect, write ONE short line and END YOUR TURN — the user answers with the card’s buttons, not with text. Do not start work, do not call other tools, do not decide for them. Their click arrives as a hidden [connectors] message telling you exactly which manage_connections call to make next; follow it. When it says to wait, call action="wait" for that slug and hold: wait blocks until the authorization lands, so you never guess whether they are done. A timeout, declined consent or gateway outage means not connected, never an empty inbox. Say which apps remain unavailable and offer to continue without them. Never describe a gateway error as proof they need another Nous login.',
     'Discover the connected app’s relevant tools with tool_search and use real results for the requested task. Never fabricate sample account data as if it came from a connector. Reading is separate from sending, deleting or scheduling: ask before those actions. No automatic daily brief or recurring job unless that is what the user asked for.'
   ]
 }

@@ -129,6 +129,13 @@ Config file: `~/.hermes/hindsight/config.json`
 
 The LLM API key is stored in `~/.hermes/.env` as `HINDSIGHT_LLM_API_KEY`.
 
+The embedded daemon is a subprocess that cannot see the per-turn secret
+scope, so it reads the key from `~/.hindsight/profiles/<profile>.env`
+(materialized owner-only at setup and on config change). Key resolution
+order is explicit config → secret scope → the on-disk profile env, and the
+rewrite path is fail-closed: a build with no key never clobbers a profile
+file that already holds one.
+
 ## Tools
 
 Available in `hybrid` and `tools` memory modes:

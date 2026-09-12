@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from agent.secret_scope import get_secret
+from agent.secret_scope import UnscopedSecretError, get_secret
 
 from .settings import _DEFAULT_IDLE_TIMEOUT, _daemon_llm_provider, _parse_int_setting
 
@@ -68,8 +68,54 @@ def _embedded_profile_env_path(config: dict[str, Any]) -> Path:
     return Path.home() / ".hindsight" / "profiles" / f"{profile}.env"
 
 
+def _on_disk_llm_api_key(config: dict[str, Any]) -> str:
+    """The key currently persisted in the profile env file ("" when absent)."""
+    with contextlib.suppress(Exception):
+        return _load_simple_env(_embedded_profile_env_path(config)).get("HINDSIGHT_API_LLM_API_KEY", "") or ""
+    return ""
+
+
 def _embedded_llm_api_key(config: dict[str, Any]) -> str:
-    return config.get("llmApiKey") or config.get("llm_api_key") or get_secret("HINDSIGHT_LLM_API_KEY", "")
+    """Resolve the LLM API key: explicit config first, then the profile secret
+    scope, then the on-disk profile env as a last resort.
+
+    The disk fallback is the durability core: the background daemon-start
+    worker usually runs with no secret scope, and without it the client would
+    be built keyless — its ``ensure_running(config)`` merge would then
+    overwrite the file's good key with emptiness inside the upstream manager
+    (``_register_profile`` → ``create_profile`` rewrite). Falling back to the
+    persisted key keeps the in-process client, the file compare, and the
+    daemon subprocess all keyed from the same surviving copy.
+    """
+    if config.get("llmApiKey") or config.get("llm_api_key"):
+        return config.get("llmApiKey") or config.get("llm_api_key")
+    # NOTE: the vault item is named HINDSIGHT_API_LLM_API_KEY (matching the
+    # daemon's env var), not HINDSIGHT_LLM_API_KEY (the setup-wizard name).
+    # Accept both so vault-fed scopes resolve regardless of which name the
+    # secret source carries.
+    try:
+        scoped = get_secret("HINDSIGHT_API_LLM_API_KEY", "") or get_secret("HINDSIGHT_LLM_API_KEY", "")
+    except UnscopedSecretError:
+        # Multiplexed gateway with no profile scope on this thread: never let
+        # a missing scope read os.environ (another profile's key may live
+        # there). Fall through to the on-disk copy below.
+        scoped = ""
+    if scoped:
+        return scoped
+    return _on_disk_llm_api_key(config)
+
+
+def _may_rewrite_profile_env(config: dict[str, Any]) -> bool:
+    """Whether rewriting the profile env file is safe right now.
+
+    False exactly when the build has no key (no scope, no config key) but the
+    file holds one: a rewrite would clobber live credentials with emptiness.
+    All other mismatches (model/provider/base-url/idle-timeout drift, missing
+    file, key rotation to a new non-empty value) remain writable.
+    """
+    if _build_embedded_profile_env(config).get("HINDSIGHT_API_LLM_API_KEY"):
+        return True
+    return not _on_disk_llm_api_key(config)
 
 
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
@@ -82,7 +128,14 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         "HINDSIGHT_API_LLM_MODEL": str(config.get("llm_model", "")),
         "HINDSIGHT_API_LOG_LEVEL": "info",
     }
-    base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+    # Base URL is per-profile like the key beside it (the scoped key must not go to the default's host);
+    # on the scopeless daemon worker a miss is a miss, never os.environ (same rule as the key above).
+    base_url = config.get("llm_base_url")
+    if not base_url:
+        try:
+            base_url = get_secret("HINDSIGHT_API_LLM_BASE_URL", "") or ""
+        except UnscopedSecretError:
+            base_url = ""
     if base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(base_url)
     if (idle_timeout := config.get("idle_timeout")) is None:

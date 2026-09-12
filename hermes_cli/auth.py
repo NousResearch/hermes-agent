@@ -1222,13 +1222,7 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
             cleared = True
         if cleared:
             _save_auth_store(auth_store)
-    if target == "nous":
-        from hermes_wisdom.account_session import sign_out
-
-        # Also retire queued work if credentials were already removed. Do this
-        # outside the auth lock: Wisdom workers can resolve auth during DB work.
-        cleared = sign_out() or cleared
-    return cleared
+        return cleared
 
 
 def deactivate_provider() -> None:

@@ -727,17 +727,12 @@ class TestConfigOverride(unittest.TestCase):
 
     def setUp(self):
         _read_tracker.clear()
-        # Reset the cached value so each test gets a fresh lookup
-        import tools.file_tools as _ft
-        _ft._max_read_chars_cached = None
 
     def tearDown(self):
         _read_tracker.clear()
-        import tools.file_tools as _ft
-        _ft._max_read_chars_cached = None
 
     @patch("tools.file_tools._get_file_ops")
-    @patch("hermes_cli.config.load_config", return_value={"file_read_max_chars": 50})
+    @patch("hermes_cli.config.load_config_readonly", return_value={"file_read_max_chars": 50})
     def test_custom_config_lowers_limit(self, _mock_cfg, mock_ops):
         """A config value of 50 should trigger truncation for reads over 50 chars,
         with the configured limit reflected in the continuation hint."""
@@ -750,7 +745,7 @@ class TestConfigOverride(unittest.TestCase):
         self.assertLessEqual(len(result["content"]), 50)
 
     @patch("tools.file_tools._get_file_ops")
-    @patch("hermes_cli.config.load_config", return_value={"file_read_max_chars": 500_000})
+    @patch("hermes_cli.config.load_config_readonly", return_value={"file_read_max_chars": 500_000})
     def test_custom_config_raises_limit(self, _mock_cfg, mock_ops):
         """A config value of 500K should allow reads up to 500K chars."""
         # 200K chars would be rejected at the default 100K but passes at 500K

@@ -8,6 +8,13 @@ from typing import Callable
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
 
 
+# `start`/`restart` on a named profile refuse while the default multiplexer serves it (a second gateway
+# would double-bind its platforms); `gateway run` carries its own broader --force text.
+_FORCE_SERVED_PROFILE_HELP = (
+    "Start a separate gateway for this profile even when the default multiplexer already serves it "
+    "(not recommended: two pollers on one bot token, port conflicts)")
+
+
 def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
 
@@ -86,6 +93,7 @@ def build_gateway_parser(
     _add_system_flag(gateway_start)
     _flag(gateway_start, "--all",
         help="Kill ALL stale gateway processes across all profiles before starting")
+    _flag(gateway_start, "--force", help=_FORCE_SERVED_PROFILE_HELP)
     _add_compat_platform_flag(gateway_start)
 
     gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
@@ -96,6 +104,7 @@ def build_gateway_parser(
     _add_system_flag(gateway_restart)
     _flag(gateway_restart, "--all",
         help="Kill ALL gateway processes across all profiles before restarting")
+    _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)
     _add_compat_platform_flag(gateway_restart)
 
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
@@ -108,7 +117,8 @@ def build_gateway_parser(
     # gateway install
     gateway_install = gateway_subparsers.add_parser(
         "install", help="Install gateway as a systemd/launchd background service")
-    _flag(gateway_install, "--force", help="Force reinstall")
+    _flag(gateway_install, "--force",
+        help="Force reinstall, and install even when the default multiplexer already serves this profile")
     _flag(gateway_install, "--system",
         help="Install as a Linux system-level service (starts at boot)")
     gateway_install.add_argument("--run-as-user", dest="run_as_user",

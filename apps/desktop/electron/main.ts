@@ -215,7 +215,7 @@ import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gatewa
 import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
-import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
+import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -279,6 +279,8 @@ import {
   resolveOauthRestAuth,
   resolveReadinessProbeAuth
 } from './native-auth-decisions'
+import { fetchLocalMedia } from './media-range'
+import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
 import {
   nativeRefreshUrl,
   type NativeTokenSet,
@@ -816,6 +818,7 @@ const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 const SKIP_QUIT_CONFIRM = process.env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM === '1'
 // One launch decision must reach both the renderer and every backend spawn.
 const GUEST_ONBOARDING: boolean = guestOnboardingEnabled()
+const SKIP_INTRO = skipIntroEnabled()
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -1269,13 +1272,10 @@ protocol.registerSchemesAsPrivileged([
 function registerMediaProtocol() {
   const handler = createMediaProtocolHandler({
     ensureRemoteBearer: baseUrl => ensureNativeAccessToken(baseUrl).catch(() => null),
-    fetchLocal: (resolvedPath, headers, method) =>
-      electronNet.fetch(pathToFileURL(resolvedPath).toString(), {
-        bypassCustomProtocolHandlers: true,
-        credentials: 'omit',
-        headers,
-        method
-      }),
+    // Answer local files ourselves: Electron's file:// loader ignores Range and
+    // returns the whole body as 200 without Accept-Ranges, which makes <video>
+    // unseekable (seekable=[0,0]).
+    fetchLocal: fetchLocalMedia,
     fetchRemote: (url, headers, method) =>
       electronNet.fetch(url, {
         bypassCustomProtocolHandlers: true,
@@ -16804,7 +16804,8 @@ ipcMain.on('hermes:feature-flags', (event: IpcMainEvent): void => {
       argv: process.argv,
       canary: resolveUpdaterChannelFromStamp() === 'canary'
     }),
-    guestOnboarding: GUEST_ONBOARDING
+    guestOnboarding: GUEST_ONBOARDING,
+    skipIntro: SKIP_INTRO
   }
 })
 

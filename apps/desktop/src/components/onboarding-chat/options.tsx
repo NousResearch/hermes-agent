@@ -3,25 +3,45 @@ import { Tip } from '@/components/ui/tooltip'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 
-// Preferences for the first build’s optional connector offer. The live catalog,
-// not this display list, decides which apps are available to connect. Marks
-// resolve through the shared ConnectorLogo ladder: curated brand glyph first,
-// the product's own favicon where simple-icons has no mark (Slack's left over
-// trademark), monogram last.
-export const CONNECTORS: Array<{ homepage?: string; id: string; name: string }> = [
-  { id: 'gmail', name: 'Gmail' },
-  { id: 'google-calendar', name: 'Calendar' },
-  { id: 'google-drive', name: 'Drive' },
-  { homepage: 'https://slack.com', id: 'slack', name: 'Slack' },
-  { id: 'github', name: 'GitHub' },
-  { id: 'notion', name: 'Notion' },
-  { id: 'linear', name: 'Linear' },
-  { id: 'figma', name: 'Figma' },
-  { id: 'discord', name: 'Discord' },
-  { id: 'telegram', name: 'Telegram' },
-  { id: 'spotify', name: 'Spotify' },
-  { id: 'stripe', name: 'Stripe' }
+// Which live-catalog slugs to lead with, and in what order. The catalog is the
+// source of truth for WHAT can be connected — this is only a sort key for the
+// picker, so the apps most people use land in the first rows and the rest
+// stay reachable by search. A slug the catalog no longer carries is simply
+// not shown; a new one it gains is shown after these.
+export const CONNECTOR_LEAD_ORDER = [
+  'gmail',
+  'googlecalendar',
+  'googledrive',
+  'googledocs',
+  'googlesheets',
+  'outlook',
+  'slack',
+  'notion',
+  'linear',
+  'jira',
+  'figma',
+  'todoist'
 ]
+
+// Connectors are the apps Hermes reads and acts on FOR the user. Chat channels
+// (Discord, Telegram, WhatsApp) are how a user talks TO Hermes — those live on
+// the Messaging page, and offering them here as if they were data sources
+// taught users the wrong thing about what "connect" does. The catalog
+// carries them for the agent's sake; the first-run picker leaves them out.
+export const CONNECTOR_PICKER_HIDDEN = new Set(['discord', 'discordbot', 'microsoft_teams'])
+
+export function orderConnectorPicks<T extends { connector: string }>(rows: T[]): T[] {
+  const rank = new Map(CONNECTOR_LEAD_ORDER.map((slug, index) => [slug, index]))
+
+  return rows
+    .filter(row => !CONNECTOR_PICKER_HIDDEN.has(row.connector))
+    .sort((a, b) => {
+      const ra = rank.get(a.connector) ?? Number.POSITIVE_INFINITY
+      const rb = rank.get(b.connector) ?? Number.POSITIVE_INFINITY
+
+      return ra - rb || a.connector.localeCompare(b.connector)
+    })
+}
 
 // Big accent swatches, Dia-style. Each seeds `retintTheme` through the accent
 // override, so a click repaints the surface live. Nous blue is the default =

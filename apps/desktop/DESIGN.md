@@ -221,9 +221,13 @@ Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
 status dots after 400ms, without changing tab widths. Hints follow the same
 binding and hovered/focused-zone resolver as the number shortcuts.
 
-Sticky user messages mask scrolling content with the opaque chat surface,
-including the gap above them. Use `data-glass-opaque` so Glass cannot clear the
-mask; no gradient or backdrop blur.
+Tab close buttons fade the label with a content mask, not a painted gradient.
+The tab reads its surface token directly so glass tint is painted only once.
+
+Sticky user messages clip covered scrolling content, including the gap above
+them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.
+Clipping follows the pinned prompt and its live height without changing layout,
+so glass and message-bubble transparency do not reveal scrolling text.
 
 ## Feedback & empty/error/loading states
 

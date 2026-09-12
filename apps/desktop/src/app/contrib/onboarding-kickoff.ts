@@ -6,7 +6,7 @@ import {
   $chatOnboardingThreadIds,
   endChatOnboardingSolo,
   pickOnboardingGreeting,
-  startChatOnboardingSolo
+  takeGuideShape
 } from '@/components/onboarding-chat/assembly'
 import {
   $setupSession,
@@ -114,8 +114,9 @@ export function useOnboardingKickoff({
       $newChatProfile.set(SETUP_PROFILE)
       await ensureGatewayProfile(SETUP_PROFILE)
 
-      startChatOnboardingSolo()
-      window.hermesDesktop?.chatOnboarding?.soloBoot?.()
+      // Idempotent: the gate already took the shape on the tick the guide was
+      // owed, so no full-size shell painted during the profile round trips.
+      takeGuideShape()
       await loadMachineProfile()
 
       const seedMessages = buildChatOnboardingSeedMessages(pickOnboardingGreeting(), record.free_tier !== true)

@@ -853,6 +853,7 @@ class GatewayAdapterLifecycleMixin:
             except Exception as e:
                 logger.error("Failed to start adapters for profile '%s': %s", profile_name, e, exc_info=True)
         self._record_served_profiles(active, profile_homes)
+        self._restore_secondary_completion_ledgers(profile_homes)
         return connected
 
     def _primary_resource_claims(self, active: str) -> Dict[tuple, str]:
@@ -1039,7 +1040,7 @@ class GatewayAdapterLifecycleMixin:
         adapter.set_message_handler(message_handler or self._primary_message_handler())
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
-        adapter.set_busy_session_handler(busy_session_handler or self._handle_active_session_busy_message)
+        adapter.set_busy_session_handler(busy_session_handler or self._primary_busy_session_handler())
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
@@ -1304,10 +1305,15 @@ class GatewayAdapterLifecycleMixin:
         return _handler
 
     def _make_profile_busy_session_handler(self, profile_name: str):
-        """Stamp an owning adapter's profile before resolving busy policy."""
+        """Stamp an owning adapter's profile, then resolve busy policy under the profile scope
+        (auth runs against the profile's own allowlist, same as the cold-path message handler)."""
+        from gateway.run import _async_profile_runtime_scope
+        profile_home = self._profile_home_or_none(profile_name)
+
         async def _handler(event, _session_key):
             self._stamp_event_profile(event, profile_name)
-            return await self._handle_active_session_busy_message(event, self._session_key_for_source(event.source))
+            async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
+                return await self._handle_active_session_busy_message(event, self._session_key_for_source(event.source))
 
         return _handler
 
@@ -1318,24 +1324,50 @@ class GatewayAdapterLifecycleMixin:
         default_home = Path(get_hermes_home())
 
         async def _handler(event):
-            source = event.source
-            # In-process only (serialization ignores dynamic attrs); route ≠ admitting bot.
-            source._authorization_profile_home = default_home
-            if (
-                not getattr(source, "profile", None)
-                and getattr(source, "profile_route_rejected", False) is not True
-                and not self._stamp_routed_profile(source)
-            ):
-                # Read by the ``_handle_message`` ingress gate, which drops fail-closed.
-                source.profile_route_rejected = True
-            profile_home = (
-                self._resolve_profile_home_for_source(source)
-                if getattr(source, "profile", None) else default_home
-            )
+            # A rejected route still enters ``_handle_message``, whose ingress gate drops it fail-closed.
+            profile_home = self._admit_primary_source(event.source, default_home) or default_home
             async with _async_profile_runtime_scope(profile_home):
                 return await self._handle_message(event)
 
         return _handler
+
+    def _make_default_profile_busy_session_handler(self):
+        """Busy-path twin of ``_make_default_profile_message_handler``: busy callbacks bypass the message
+        handler, so the routed scope and transport-home authorization must be re-established here or the
+        follow-up is authorized in whatever scope is ambient (#103717)."""
+        from gateway.run import _async_profile_runtime_scope, get_hermes_home
+        default_home = Path(get_hermes_home())
+
+        async def _handler(event, _session_key):
+            source = event.source
+            profile_home = self._admit_primary_source(source, default_home)
+            if profile_home is None:
+                return True  # rejected route: swallow, same disposition as the ingress gate
+            async with _async_profile_runtime_scope(profile_home):
+                return await self._handle_active_session_busy_message(
+                    event, self._session_key_for_source(source)
+                )
+
+        return _handler
+
+    def _admit_primary_source(self, source, default_home: Path) -> Optional[Path]:
+        """Stamp the transport home (authorization) and routed profile on a primary-adapter source and
+        return the runtime home to scope the turn under; ``None`` when the route targets an unserved
+        profile. ``_authorization_profile_home`` is in-process only (serialization ignores dynamic attrs);
+        route ≠ admitting bot."""
+        source._authorization_profile_home = default_home
+        if (
+            not getattr(source, "profile", None)
+            and getattr(source, "profile_route_rejected", False) is not True
+            and not self._stamp_routed_profile(source)
+        ):
+            source.profile_route_rejected = True
+        if getattr(source, "profile_route_rejected", False) is True:
+            return None
+        return (
+            self._resolve_profile_home_for_source(source)
+            if getattr(source, "profile", None) else default_home
+        )
 
     def _stamp_routed_profile(self, source) -> bool:
         """Stamp ``source.profile`` from ``profile_routes``; False when the route is rejected."""
@@ -1349,6 +1381,13 @@ class GatewayAdapterLifecycleMixin:
     def _primary_message_handler(self):
         """Return the correctly scoped handler for a primary adapter."""
         return self._make_default_profile_message_handler() if self._multiplex_on() else self._handle_message
+
+    def _primary_busy_session_handler(self):
+        """Return the correctly scoped busy-session handler for a primary adapter."""
+        return (
+            self._make_default_profile_busy_session_handler()
+            if self._multiplex_on() else self._handle_active_session_busy_message
+        )
 
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))
@@ -1475,7 +1514,7 @@ class GatewayAdapterLifecycleMixin:
 
         def check(
             user_id: str, chat_type: Optional[str] = None, chat_id: Optional[str] = None, *,
-            is_bot: bool = False, thread_id: Optional[str] = None, command: Optional[str] = None,
+            is_bot: bool = False, thread_id: Optional[str] = None,
         ) -> bool:
             if not user_id:
                 return False
@@ -1492,13 +1531,9 @@ class GatewayAdapterLifecycleMixin:
             if adapter is not None:
                 source._transport_adapter_ref = _weakref.ref(adapter)
             if transport_home is None:
-                allowed = self._is_user_authorized(source)
-            else:
-                source._authorization_profile_home = transport_home
-                if not self._stamp_routed_profile(source):
-                    return False  # fail-closed, like the ``_handle_message`` ingress gate
-                allowed = self._is_user_authorized_for_source(source)
-            if not allowed:
-                return False
-            return self._check_slash_access(source, command) is None if command else allowed
+                return self._is_user_authorized(source)
+            source._authorization_profile_home = transport_home
+            if not self._stamp_routed_profile(source):
+                return False  # fail-closed, like the ``_handle_message`` ingress gate
+            return self._is_user_authorized_for_source(source)
         return check

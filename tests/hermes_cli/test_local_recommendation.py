@@ -2,12 +2,10 @@
 
 The recommendation itself is DERIVED (catalog.recommended_entry: best
 quality among resident entries clearing the pleasant speed floor, else
-fastest resident, else least-painful spilled), so nobody hand-maintains
-per-hardware-class picks. This table is the editorial control on that
-derivation: it enumerates the real memory size classes x {discrete,
-unified} and pins every cell. A catalog change (new model, quality
-re-rank, quant swap) flips cells HERE, and the diff of this file in
-review IS the sign-off on what each machine class gets.
+fastest resident). Spilled models stay browseable but are never automatic
+recommendations, so nobody hand-maintains per-hardware-class picks.
+This table pins the model and reason across discrete and unified memory
+classes so changes to the recommendation remain reviewable.
 
 These are decision pins, not change-detectors: each cell is a choice a
 human approved, exactly like a golden file. When a cell flips on
@@ -55,8 +53,8 @@ def _unified(size_gb: int) -> HardwareBudget:
 #
 #   VRAM | discrete                | unified
 #   -----+-------------------------+------------------------
-#     8  | qwen3.6-35b-a3b spilled | (none fits)
-#    16  | qwen3.6-35b-a3b spilled | (none fits)
+#     8  | (no recommendation)      | (none fits)
+#    16  | (no recommendation)      | (none fits)
 #    24  | qwen3.8-27b             | (none fits)
 #    32  | qwen3.8-27b             | qwen3.6-35b-a3b
 #    48  | qwen3.8-27b             | qwen3.6-35b-a3b
@@ -66,9 +64,8 @@ def _unified(size_gb: int) -> HardwareBudget:
 #   512  | qwen3.8-flash-next      | qwen3.8-flash-next
 #
 # Reading guide for reviewers:
-# - Discrete <=16 GB: nothing runs resident; the 35B MoE is the least
-#   painful spill (active slice streams from host; a dense spill reads
-#   every weight over the bus).
+# - Discrete <=16 GB: nothing runs resident; no automatic recommendation.
+#   Browse remains available for explicit spill choices.
 # - Discrete 24-96 GB: the 27B is the flagship experience — dense reads
 #   at ~1 TB/s clear the floor easily, so quality decides.
 # - Discrete/unified where Flash Next fits resident (128 GB discrete,
@@ -83,9 +80,9 @@ def _unified(size_gb: int) -> HardwareBudget:
 #   the RAM). The pane's browse flow is the path for those machines
 #   until a small catalog entry lands (revisit when one does).
 DECISION_TABLE = [
-    (8, "discrete", "qwen3.6-35b-a3b", "least-painful-spilled"),
+    (8, "discrete", None, None),
     (8, "unified", None, None),
-    (16, "discrete", "qwen3.6-35b-a3b", "least-painful-spilled"),
+    (16, "discrete", None, None),
     (16, "unified", None, None),
     (24, "discrete", "qwen3.8-27b", "best-quality-resident"),
     (24, "unified", None, None),

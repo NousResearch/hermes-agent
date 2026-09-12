@@ -506,19 +506,10 @@ def _profile_scoped(handler):
 
     Secondary-profile adapters are constructed inside ``_profile_runtime_scope`` (secret scope installed +
     multiplex active) — the same discriminator the Buzz/SimpleX adapters use for this bug class (#98738).
-    The DEFAULT profile under multiplexing runs unscoped: ``os.environ`` holds its own bridge output there
-    and keeps its legacy precedence.
-    Same discriminator as the Buzz/SimpleX/Raft adapters (#98738): secret scope installed + multiplex
-    active. The DEFAULT profile under multiplexing (and every single-profile process) runs unscoped and
-    keeps its legacy ``os.environ`` precedence.
-    Secondary-profile adapters are constructed, connected, and reloaded inside ``_profile_runtime_scope``
-    (secret scope installed + multiplex active) — the same discriminator as the Discord adapter's
-    ``_profile_scoped_config_load`` (#72348). The DEFAULT profile under multiplexing runs unscoped:
-    ``os.environ`` holds its own bridge output there and keeps its legacy precedence.
-    Secondary-profile adapters are constructed, connected, and reloaded inside ``_profile_runtime_scope``
-    (secret scope installed + multiplex active) — the same discriminator the Buzz/SimpleX adapters use for
-    this bug class (#98738). The DEFAULT profile under multiplexing runs unscoped: ``os.environ`` holds its
-    own bridge output there and keeps its legacy precedence.
+    Once multiplexing is active, launch-profile *turns* bind their own terminal scope
+    (``prompt_turn._prepare_turn_input``) so they never depend on ambient ``os.environ``
+    that a secondary context might have poisoned (#107422). Single-profile processes stay
+    unscoped and keep legacy ``os.environ`` precedence.
     """
     def wrapper(rid, params):
         home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
@@ -3223,7 +3214,6 @@ from . import (  # noqa: E402
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
     agent_callbacks as _agent_callbacks, session_history as _session_history,
     prompt_attachments as _prompt_attachments, session_notifications as _session_notifications,
-    session_wisdom as _session_wisdom,
     tool_progress as _tool_progress, change_watcher as _change_watcher,
     session_compression as _session_compression, model_switch as _model_switch,
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
@@ -3241,7 +3231,7 @@ from . import (  # noqa: E402
 
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
-    _session_compression, _change_watcher, _tool_progress, _session_wisdom, _session_notifications,
+    _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,

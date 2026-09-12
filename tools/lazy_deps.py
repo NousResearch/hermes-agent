@@ -113,7 +113,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "memory.mem0": ("mem0ai==2.0.10",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
-    "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
+    "platform.telegram": (
+        "python-telegram-bot[webhooks]==22.8",
+        "tornado==6.5.8",
+    ),
     # brotlicffi: aiohttp needs its 2-arg Decompressor for Discord CDN Brotli attachments
     # (google's 1-arg `Brotli` fails "Can not decode br"). aiohttp is only capped transitively
     # by these adapters, so pin the patched floor explicitly.
@@ -187,7 +190,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # MCP client SDK for the cua-driver, so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
         "mcp==2.0.0",
-        "httpx2==2.7.0",  # mcp 2.x HTTP stack — sync with pyproject [computer-use]
+        "httpx2==2.12.0",  # mcp 2.x HTTP stack — sync with pyproject [computer-use]
         "starlette==1.3.1",
     ),
     # huggingface-hub is SHARED with transformers (>=1.5.0,<2 via Hindsight) and marked active

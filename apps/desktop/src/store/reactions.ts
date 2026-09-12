@@ -1,6 +1,7 @@
 import type { ChatMessage } from '@/lib/chat-messages'
-import { activeGateway } from '@/store/gateway'
+import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+import { requestForOwnedSession } from '@/store/session-states'
 import { $activeSessionId, $messages, setMessages } from '@/store/session'
 import type { MessageReaction } from '@/types/hermes'
 
@@ -59,7 +60,7 @@ export async function toggleMessageReaction(
   // this role — which is exactly the message being reacted to.
   const rowId = message.rowId
   const sessionId = $activeSessionId.get()
-  const gateway = activeGateway()
+  const gateway = $gateway.get()
 
   if (!sessionId || !gateway) {
     notifyError(new Error(!sessionId ? 'No active session' : 'Gateway not connected'), 'Could not react')
@@ -67,17 +68,35 @@ export async function toggleMessageReaction(
     return
   }
 
+  // Bound (not wrapped) so the ambient fallback keeps the exact call shape
+  // gateway.request callers assert on — mirrors approval.respond routing.
+  const ambientRequest = gateway.request.bind(gateway)
+
   const snapshot = $messages.get().find(m => m.id === message.id)?.reactions
 
   writeReactions(message.id, applyReaction(snapshot, emoji, author))
 
   try {
-    const result = await gateway.request<MessageReactResponse>('message.react', {
-      session_id: sessionId,
-      ...(rowId === undefined ? { newest_role: message.role } : { row_id: rowId }),
-      emoji,
-      author
-    })
+    // Route through the session's OWNER, not the ambient active gateway: the
+    // window may be foregrounding a different profile/connection than the one
+    // that owns this session (secondary-profile chats, Bot-Mode tiles,
+    // post-reconnect rehydration). Dispatching on the ambient socket made the
+    // backend that never held the runtime answer 4040 "message not found"
+    // even though the row exists in the owning profile's state DB (#80670).
+    // requestForOwnedSession resolves the exact owner route and fails closed;
+    // the ambient request stays the fallback for legacy single-profile
+    // setups where the owner cannot be named.
+    const result = await requestForOwnedSession<MessageReactResponse>(
+      sessionId,
+      ambientRequest,
+      'message.react',
+      {
+        session_id: sessionId,
+        ...(rowId === undefined ? { newest_role: message.role } : { row_id: rowId }),
+        emoji,
+        author
+      }
+    )
 
     // Learn the row id from the response so later toggles address it directly.
     writeReactions(message.id, result?.reactions ?? [], result?.row_id)

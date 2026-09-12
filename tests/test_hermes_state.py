@@ -2902,6 +2902,26 @@ class TestListSessionsRich:
 
         assert "delegate" not in [s["id"] for s in db.list_sessions_rich()]
 
+    def test_delegate_child_session_ids_filters_marked_rows(self, db):
+        """The active-session picker only classifies durable delegate markers."""
+        db.create_session("root", "tui")
+        db.create_session(
+            "child",
+            "tui",
+            parent_session_id="root",
+            model_config={"_delegate_from": "root"},
+        )
+        db.create_session(
+            "branch",
+            "tui",
+            parent_session_id="root",
+            model_config={"_branched_from": "root"},
+        )
+
+        assert db.delegate_child_session_ids(["root", "child", "branch", "missing"]) == {"child"}
+        assert db.delegate_child_session_ids([]) == set()
+        assert db.delegate_child_session_ids(["", None]) == set()
+
 
     def test_delete_session_expected_targets_fail_closed_on_new_delegate(self, db):
         db.create_session("parent", "cli")

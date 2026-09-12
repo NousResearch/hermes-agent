@@ -419,7 +419,7 @@ export function useSessionTileDelegate({
         if (isReadOnlyRuntimeId(runtimeId)) {
           notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
 
-          return
+          return { runtimeSessionId: runtimeId, storedSessionId: null }
         }
 
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
@@ -429,12 +429,27 @@ export function useSessionTileDelegate({
               requestForStoredSession<T>(storedSessionId, method, params ?? {}, timeoutMs)
           : requestGateway
 
+        let acceptedRuntimeId = runtimeId
+
         await withSessionNotFoundResume(
           runtimeId,
           storedSessionId,
           liveId => routedRequest('prompt.submit', { session_id: liveId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS),
-          { requestGateway: routedRequest, onRecovered: rebindTileRuntime(runtimeId) }
+          {
+            requestGateway: routedRequest,
+            onRecovered: recoveredId => {
+              acceptedRuntimeId = recoveredId
+              rebindTileRuntime(runtimeId)(recoveredId)
+            }
+          }
         )
+
+        return {
+          runtimeSessionId: acceptedRuntimeId,
+          // The durable binding for the accepted runtime — the only proof the
+          // requested stored session is what actually took the prompt.
+          storedSessionId: storedSessionIdForRuntime(acceptedRuntimeId) ?? null
+        }
       },
       updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)
     })

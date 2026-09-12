@@ -1364,8 +1364,8 @@ body.guest-pointer-lock :is(webview, iframe) {
 
   .scrollbar-dt::-webkit-scrollbar,
   .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar {
-    width: 0.25rem;
-    height: 0.25rem;
+    width: 0.5rem;
+    height: 0.5rem;
   }
 
   .scrollbar-dt::-webkit-scrollbar-track,
@@ -1377,14 +1377,14 @@ body.guest-pointer-lock :is(webview, iframe) {
 
   .scrollbar-dt::-webkit-scrollbar-thumb,
   .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb {
-    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent);
+    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 45%, transparent);
     border-radius: 9999rem;
     background-clip: padding-box;
   }
 
   .scrollbar-dt::-webkit-scrollbar-thumb:hover,
   .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb:hover {
-    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 40%, transparent);
+    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 60%, transparent);
     background-clip: padding-box;
   }
 
@@ -1405,12 +1405,12 @@ body.guest-pointer-lock :is(webview, iframe) {
 
   .scrollbar-fade:hover::-webkit-scrollbar-thumb,
   .scrollbar-dt .scrollbar-fade:hover::-webkit-scrollbar-thumb {
-    background-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent);
+    background-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 45%, transparent);
   }
 
   .scrollbar-fade:hover::-webkit-scrollbar-thumb:hover,
   .scrollbar-dt .scrollbar-fade:hover::-webkit-scrollbar-thumb:hover {
-    background-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 40%, transparent);
+    background-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 60%, transparent);
   }
 
   /* Hover marquee: a truncated line that scrolls its overflow into view while
@@ -1474,8 +1474,8 @@ body.guest-pointer-lock :is(webview, iframe) {
   @supports not selector(::-webkit-scrollbar) {
     .scrollbar-dt,
     .scrollbar-dt *:not(.scrollbar-overlay) {
-      scrollbar-width: thin;
-      scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent) transparent;
+      scrollbar-width: auto;
+      scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 45%, transparent) transparent;
     }
 
     .dt-portal-scrollbar {
@@ -1496,7 +1496,7 @@ body.guest-pointer-lock :is(webview, iframe) {
     }
 
     .scrollbar-fade:hover {
-      scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent) transparent;
+      scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 45%, transparent) transparent;
     }
   }
 }

@@ -48,16 +48,15 @@ function petThumbIcon(slug: string, spriteUrl: null | string | undefined): Promi
         .then(result => (result?.ok && result.dataUri ? result.dataUri : null))
         .catch(() => null),
       deadline
-    ])
-      .then(icon => {
-        // Never cache a failure: a transient backend error must not poison
-        // the tile for the rest of the session.
-        if (!icon) {
-          petThumbCache.delete(slug)
-        }
+    ]).then(icon => {
+      // Never cache a failure: a transient backend error must not poison
+      // the tile for the rest of the session.
+      if (!icon) {
+        petThumbCache.delete(slug)
+      }
 
-        return icon
-      })
+      return icon
+    })
 
     petThumbCache.set(slug, pending)
   }

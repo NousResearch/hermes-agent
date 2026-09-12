@@ -8,7 +8,7 @@
  * across the upgrade that curved the middle of the lever.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   backgroundMaterialFor,
@@ -17,6 +17,7 @@ import {
   DEFAULT_GLASS_SCOPE,
   defaultTranslucencyState,
   defaultTranslucencyValues,
+  displayMetricsRequireTranslucencyReassert,
   GLASS_MATERIALS,
   GLASS_SCOPES,
   glassActive,
@@ -26,6 +27,8 @@ import {
   glassSupportedOn,
   glassSurfaceKeep,
   hudFrostFor,
+  installTranslucencyReassertOnDisplayMetrics,
+  installTranslucencyReassertOnWindowEvents,
   normalizeBook,
   normalizeMaterial,
   normalizeMode,
@@ -33,11 +36,14 @@ import {
   normalizeState,
   opacityNeedsSetting,
   resolveTranslucency,
+  scaleFactorRequiresTranslucencyReassert,
   setTranslucencyValues,
   TRANSLUCENCY_CURVE,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_OPACITY_FLOOR,
+  TRANSLUCENCY_REASSERT_SETTLE_DELAY_MS,
+  translucencyReassertForDpiChange,
   type TranslucencyState,
   translucencySupportedOn,
   vibrancyFor,
@@ -47,6 +53,208 @@ import {
   WINDOWS_BACKGROUND_MATERIALS,
   WINDOWS_GLASS_MIN_BUILD
 } from './translucency'
+
+describe('mixed-DPI translucency reassert', () => {
+  it('recognizes only scaleFactor display metric changes', () => {
+    expect(displayMetricsRequireTranslucencyReassert(['scaleFactor'])).toBe(true)
+    expect(displayMetricsRequireTranslucencyReassert(['workArea'])).toBe(false)
+    expect(displayMetricsRequireTranslucencyReassert(undefined)).toBe(false)
+    expect(displayMetricsRequireTranslucencyReassert('scaleFactor')).toBe(false)
+  })
+
+  it('requires a positive finite scaleFactor that differs from the last applied value', () => {
+    expect(scaleFactorRequiresTranslucencyReassert(null, 1.2)).toBe(true)
+    expect(scaleFactorRequiresTranslucencyReassert(1, 1.2)).toBe(true)
+    expect(scaleFactorRequiresTranslucencyReassert(1.2, 1.2)).toBe(false)
+    expect(scaleFactorRequiresTranslucencyReassert(1.2, NaN)).toBe(false)
+    expect(scaleFactorRequiresTranslucencyReassert(1.2, 0)).toBe(false)
+    expect(scaleFactorRequiresTranslucencyReassert(1.2, -1)).toBe(false)
+  })
+
+  it('limits mixed-DPI DWM recovery to active glass and never writes opacity', () => {
+    const base = {
+      fade: 0,
+      material: DEFAULT_GLASS_MATERIAL,
+      scope: DEFAULT_GLASS_SCOPE
+    }
+
+    expect(translucencyReassertForDpiChange({ ...base, intensity: 40, mode: 'clear' })).toBeNull()
+    expect(translucencyReassertForDpiChange({ ...base, intensity: 0, mode: 'glass' })).toBeNull()
+    expect(translucencyReassertForDpiChange({ ...base, intensity: 50, mode: 'glass' })).toEqual({
+      backing: true,
+      material: true,
+      opacity: false
+    })
+  })
+
+  it('reasserts once when continuous move crosses a differently scaled display', () => {
+    const handlers = new Map<string, () => void>()
+    let destroyed = false
+    let scaleFactor = 1
+    let calls = 0
+
+    const win = {
+      isDestroyed: () => destroyed,
+      getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+      on(event: string, listener: () => void) {
+        handlers.set(event, listener)
+      }
+    }
+
+    installTranslucencyReassertOnWindowEvents(
+      win,
+      { getDisplayMatching: () => ({ scaleFactor }) },
+      () => {
+        calls += 1
+      },
+      new WeakMap(),
+      'win32'
+    )
+
+    expect([...handlers.keys()]).toEqual(['show', 'move', 'moved', 'resized'])
+
+    handlers.get('move')?.()
+    expect(calls).toBe(1)
+
+    handlers.get('move')?.()
+    handlers.get('move')?.()
+    handlers.get('moved')?.()
+    expect(calls).toBe(1)
+
+    scaleFactor = 1.25
+    handlers.get('move')?.()
+    expect(calls).toBe(2)
+    handlers.get('move')?.()
+    handlers.get('moved')?.()
+    expect(calls).toBe(2)
+
+    destroyed = true
+    scaleFactor = 1.5
+    handlers.get('resized')?.()
+    expect(calls).toBe(2)
+  })
+
+  it.each(['darwin', 'linux'] as const)('installs no window listeners on %s', platform => {
+    const handlers = new Map<string, () => void>()
+    installTranslucencyReassertOnWindowEvents(
+      {
+        isDestroyed: () => false,
+        getBounds: () => ({ x: 0, y: 0, width: 1, height: 1 }),
+        on: (event: string, listener: () => void) => handlers.set(event, listener)
+      },
+      { getDisplayMatching: () => ({ scaleFactor: 1 }) },
+      () => undefined,
+      new WeakMap(),
+      platform
+    )
+    expect(handlers.size).toBe(0)
+  })
+
+  it('reasserts all backed windows only for Windows scaleFactor display metrics', () => {
+    const handlers = new Map<string, (...args: unknown[]) => void>()
+    let calls = 0
+
+    const screen = {
+      on(event: string, listener: (...args: unknown[]) => void) {
+        handlers.set(event, listener)
+      }
+    }
+
+    installTranslucencyReassertOnDisplayMetrics(
+      screen,
+      () => {
+        calls += 1
+      },
+      'win32'
+    )
+    handlers.get('display-metrics-changed')?.({}, {}, ['workArea'])
+    expect(calls).toBe(0)
+    handlers.get('display-metrics-changed')?.({}, {}, ['scaleFactor'])
+    expect(calls).toBe(1)
+
+    const otherHandlers = new Map()
+    installTranslucencyReassertOnDisplayMetrics(
+      { on: (event: string, listener: (...args: unknown[]) => void) => otherHandlers.set(event, listener) },
+      () => undefined,
+      'darwin'
+    )
+    expect(otherHandlers.size).toBe(0)
+  })
+
+  it('fails open when display matching cannot produce a valid scaleFactor', () => {
+    vi.useFakeTimers()
+
+    try {
+      const handlers = new Map<string, () => void>()
+      let calls = 0
+      installTranslucencyReassertOnWindowEvents(
+        {
+          isDestroyed: () => false,
+          getBounds: () => {
+            throw new Error('bounds unavailable')
+          },
+          on: (event: string, listener: () => void) => handlers.set(event, listener)
+        },
+        { getDisplayMatching: () => ({ scaleFactor: NaN }) },
+        () => {
+          calls += 1
+        },
+        new WeakMap(),
+        'win32'
+      )
+
+      handlers.get('show')?.()
+      handlers.get('move')?.()
+      handlers.get('moved')?.()
+      vi.advanceTimersByTime(TRANSLUCENCY_REASSERT_SETTLE_DELAY_MS)
+      expect(calls).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('schedules one trailing translucency reassert after show', () => {
+    vi.useFakeTimers()
+
+    try {
+      const handlers = new Map<string, () => void>()
+      let destroyed = false
+      let calls = 0
+      installTranslucencyReassertOnWindowEvents(
+        {
+          isDestroyed: () => destroyed,
+          getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+          on: (event: string, listener: () => void) => handlers.set(event, listener)
+        },
+        { getDisplayMatching: () => ({ scaleFactor: 1.2 }) },
+        () => {
+          calls += 1
+        },
+        new WeakMap(),
+        'win32'
+      )
+
+      handlers.get('show')?.()
+      expect(calls).toBe(1)
+      vi.advanceTimersByTime(TRANSLUCENCY_REASSERT_SETTLE_DELAY_MS)
+      expect(calls).toBe(2)
+
+      handlers.get('show')?.()
+      expect(calls).toBe(2)
+      vi.advanceTimersByTime(TRANSLUCENCY_REASSERT_SETTLE_DELAY_MS)
+      expect(calls).toBe(3)
+
+      handlers.get('show')?.()
+      destroyed = true
+      vi.advanceTimersByTime(TRANSLUCENCY_REASSERT_SETTLE_DELAY_MS)
+      expect(calls).toBe(3)
+      vi.advanceTimersByTime(TRANSLUCENCY_REASSERT_SETTLE_DELAY_MS * 2)
+      expect(calls).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
 
 /** The linear ramp the curve replaced. Endpoints must still agree with it. */
 const legacyOpacity = (intensity: number) => 1 - (intensity / 100) * 0.7

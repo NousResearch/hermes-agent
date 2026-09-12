@@ -386,8 +386,11 @@ import {
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
+  installTranslucencyReassertOnDisplayMetrics,
+  installTranslucencyReassertOnWindowEvents,
   normalizeState as normalizeTranslucency,
   opacityNeedsSetting,
+  translucencyReassertForDpiChange,
   translucencySupportedOn,
   vibrancyFor as vibrancyForTranslucency,
   windowBackingOptions,
@@ -1031,6 +1034,7 @@ let translucencyState = readPersistedTranslucency()
 // wake indicator are `transparent: true` windows that own their backgrounds —
 // painting a themed backing onto them would turn them into opaque rectangles.
 const translucencyBackedWindows = new WeakSet()
+const translucencyScaleFactors = new WeakMap<object, number>()
 
 // Set a live window's native opacity, but only when the state asks it to fade
 // — or when the window is already faded and is on its way back to opaque. The
@@ -1102,6 +1106,14 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
     }
   } catch (error) {
     rememberLog(`[translucency] apply failed: ${error.message}`)
+  }
+}
+
+function reassertChatWindowTranslucencyForDpi(win) {
+  const changed = translucencyReassertForDpiChange(translucencyState)
+
+  if (changed) {
+    applyWindowTranslucency(win, changed)
   }
 }
 
@@ -13454,6 +13466,12 @@ function spawnSecondaryWindow({
   // Chat-surface registration: applyWindowTranslucency swaps this window's
   // backing between opaque-themed and alpha-0 when glass toggles.
   translucencyBackedWindows.add(win)
+  installTranslucencyReassertOnWindowEvents(
+    win,
+    screen,
+    () => reassertChatWindowTranslucencyForDpi(win),
+    translucencyScaleFactors
+  )
 
   if (IS_MAC) {
     win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
@@ -13540,6 +13558,12 @@ function spawnBrowserWindow(tabId) {
   })
 
   translucencyBackedWindows.add(win)
+  installTranslucencyReassertOnWindowEvents(
+    win,
+    screen,
+    () => reassertChatWindowTranslucencyForDpi(win),
+    translucencyScaleFactors
+  )
 
   if (IS_MAC) {
     win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
@@ -13635,6 +13659,12 @@ function createInstanceWindow() {
 
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(win)
+  installTranslucencyReassertOnWindowEvents(
+    win,
+    screen,
+    () => reassertChatWindowTranslucencyForDpi(win),
+    translucencyScaleFactors
+  )
 
   if (IS_MAC) {
     win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
@@ -14633,6 +14663,12 @@ function createWindow() {
 
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(mainWindow)
+  installTranslucencyReassertOnWindowEvents(
+    createdMainWindow,
+    screen,
+    () => reassertChatWindowTranslucencyForDpi(createdMainWindow),
+    translucencyScaleFactors
+  )
 
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
@@ -18132,6 +18168,15 @@ app.whenReady().then(() => {
 
     screen.on('display-removed', reposition)
   }
+
+  // Mixed-DPI display changes can drop DWM's chat backdrop (#106285).
+  installTranslucencyReassertOnDisplayMetrics(screen, () => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (translucencyBackedWindows.has(win)) {
+        reassertChatWindowTranslucencyForDpi(win)
+      }
+    }
+  })
 
   // A hard crash can interrupt the in-memory restore loop after exact remote
   // serves were drained. The owner-only recovery journal survives that crash;

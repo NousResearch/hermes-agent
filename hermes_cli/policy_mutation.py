@@ -7,6 +7,14 @@ receipt: it is not cryptographically non-forgeable. Production hardening for
 #59293 requires an OS/process boundary, such as a credential-manager-held broker
 key or a separate approval process; that is the remaining contract item for
 closure.
+
+Residual risks for #59293:
+* **Non-policy-aware generic writer:** ``utils.atomic_roundtrip_yaml_update()``
+  does not enforce policy authorization. Production callers are currently
+  guarded or non-policy; any future caller must route through the guarded APIs.
+* **Direct ledger authority:** a process or actor able to write ``state.db`` can
+  alter the authoritative ledger directly. This folds into the OS/process-boundary
+  requirement for #59293 closure.
 """
 
 from __future__ import annotations
@@ -234,9 +242,6 @@ class PolicyMutationBroker:
                           session_id: str, write) -> bool:
         """Serialize consume, final digest verification, and the guarded write."""
         with self._lock:
-            now_digest = self.policy_digest
-            if not hmac.compare_digest(proof.policy_digest, now_digest):
-                raise PolicyMutationDenied("policy digest mismatch")
             with sqlite3.connect(self.db_path) as db:
                 row = db.execute(
                     "SELECT token_hash,expires_at,consumed_at,policy_digest,target_key,operation,session_id "

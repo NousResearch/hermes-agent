@@ -2303,39 +2303,47 @@ def save_config(
         )
         existing_for_policy = read_raw_config()
         changed_policy_keys = policy_changed_keys(existing_for_policy, config)
+        broker = PolicyMutationBroker() if changed_policy_keys else None
         if changed_policy_keys:
-            if proof is None:
-                PolicyMutationBroker()
             require_policy_proof_for_payload(
                 config, proof, session_id=session_id, before=existing_for_policy, consume=False
             )
 
-        ensure_hermes_home()
-        config_path = get_config_path()
-        require_readable_config_before_write(config_path)
-        # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
-        # agent.max_turns) so _strip_default_values keeps exactly what the user set.
-        _raw_for_paths = read_raw_config()
-        if merge_existing and _raw_for_paths:
-            config = _merge_partial_save(_raw_for_paths, config)
+        def _write_config() -> None:
+            ensure_hermes_home()
+            config_path = get_config_path()
+            require_readable_config_before_write(config_path)
+            # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
+            # agent.max_turns) so _strip_default_values keeps exactly what the user set.
+            _raw_for_paths = read_raw_config()
+            save_config_payload = config
+            if merge_existing and _raw_for_paths:
+                save_config_payload = _merge_partial_save(_raw_for_paths, save_config_payload)
 
-        current_normalized = _canonicalize_config(config)
-        normalized = current_normalized
-        if _raw_for_paths:
-            normalized = _preserve_env_ref_templates(
-                normalized, _canonicalize_config(_raw_for_paths),
-                _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)))
+            current_normalized = _canonicalize_config(save_config_payload)
+            normalized = current_normalized
+            if _raw_for_paths:
+                normalized = _preserve_env_ref_templates(
+                    normalized, _canonicalize_config(_raw_for_paths),
+                    _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)))
 
-        if strip_defaults:
-            # ``_strip_default_values`` always preserves ``_config_version`` itself.
-            effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
-            normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
+            if strip_defaults:
+                # ``_strip_default_values`` always preserves ``_config_version`` itself.
+                effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
+                normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
-        _secure_file(config_path)
-        _LOAD_CONFIG_CACHE.pop(str(config_path), None)
-        _RAW_CONFIG_CACHE.pop(str(config_path), None)
-        _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+            atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
+            _secure_file(config_path)
+            _LOAD_CONFIG_CACHE.pop(str(config_path), None)
+            _RAW_CONFIG_CACHE.pop(str(config_path), None)
+            _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+
+        if changed_policy_keys:
+            broker.consume_for_write(
+                proof, changed_policy_keys[0], "set", session_id, _write_config,
+            )
+        else:
+            _write_config()
 
 
 def _parse_env_value(raw_value: str) -> str:

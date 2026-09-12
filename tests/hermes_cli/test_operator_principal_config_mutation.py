@@ -158,6 +158,39 @@ def test_save_config_refuses_policy_payload_without_proof_byte_identical(monkeyp
     assert path.read_bytes() == before
 
 
+def test_forged_proof_refusal_output(monkeypatch, tmp_path):
+    """A proof-shaped payload cannot bypass the ledger-backed save_config sink."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    path.write_bytes(b"approvals:\n  mode: manual\n")
+    before = path.read_bytes()
+    from hermes_cli.policy_mutation import PolicyMutationProof, policy_config_digest
+    forged = PolicyMutationProof(
+        token="forged-token", policy_digest=policy_config_digest(path),
+        target_key="approvals.mode", operation="set", session_id="session-1",
+        nonce="nonexistent-nonce", expires_at=time.time() + 60,
+    )
+    with pytest.raises(PolicyMutationDenied) as exc_info:
+        config.save_config({"approvals": {"mode": "off"}}, proof=forged, session_id="session-1")
+    assert str(exc_info.value) == "proof replay or unknown nonce"
+    assert path.read_bytes() == before
+
+
+def test_replay_refusal_output(monkeypatch, tmp_path):
+    """The bulk save sink consumes a real proof and refuses reusing it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    path.write_bytes(b"approvals:\n  mode: manual\n")
+    broker = PolicyMutationBroker()
+    proof = _mint(broker, broker.request("session-1", "approvals.mode", "set"))
+    config.save_config({"approvals": {"mode": "off"}}, proof=proof, session_id="session-1")
+    before = path.read_bytes()
+    with pytest.raises(PolicyMutationDenied) as exc_info:
+        config.save_config({"approvals": {"mode": "manual"}}, proof=proof, session_id="session-1")
+    assert str(exc_info.value) == "proof replay or unknown nonce"
+    assert path.read_bytes() == before
+
+
 def test_policy_consume_is_exactly_once_under_concurrency(monkeypatch, tmp_path):
     import concurrent.futures
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -189,13 +222,70 @@ def test_policy_write_fails_closed_when_state_db_is_absent(monkeypatch, tmp_path
     assert path.read_bytes() == before
 
 
-def test_save_config_fails_closed_when_state_db_is_missing(monkeypatch, tmp_path):
+def test_save_config_fails_closed_when_policy_ledger_is_unavailable(monkeypatch, tmp_path):
+    """A state.db path that cannot be opened is ledger unavailability, not absence."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    path.write_bytes(b"approvals:\n  mode: manual\n")
+    before = path.read_bytes()
+    (tmp_path / "state.db").mkdir()
+    with pytest.raises(PolicyMutationDenied, match="ledger") as exc_info:
+        config.save_config({"approvals": {"mode": "off"}})
+    assert str(exc_info.value) == "policy ledger unavailable"
+    assert path.read_bytes() == before
+
+
+def test_config_env_route_refuses_policy_payload_without_proof_byte_identical(monkeypatch, tmp_path):
+    """PUT /api/config uses the shared save_config sink; approvals.mode without proof is refused."""
+    import asyncio
+    from hermes_cli.web_models import ConfigUpdate
+    from hermes_cli.web_routers.config_env import update_config
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    path.write_bytes(b"approvals:\n  mode: manual\n")
+    before = path.read_bytes()
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(update_config(ConfigUpdate(config={"approvals": {"mode": "off"}})))
+    assert exc_info.value.status_code == 500
+    assert path.read_bytes() == before
+
+
+def test_analytics_raw_route_refuses_policy_payload_without_proof_byte_identical(monkeypatch, tmp_path):
+    """PUT /api/config/raw uses the shared save_config sink; policy YAML without proof is refused."""
+    import asyncio
+    from hermes_cli.web_models import RawConfigUpdate
+    from hermes_cli.web_routers.analytics import update_config_raw
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     path = tmp_path / "config.yaml"
     path.write_bytes(b"approvals:\n  mode: manual\n")
     before = path.read_bytes()
     with pytest.raises(PolicyMutationDenied):
-        config.save_config({"approvals": {"mode": "off"}})
+        asyncio.run(update_config_raw(RawConfigUpdate(yaml_text="approvals:\n  mode: off\n")))
+    assert path.read_bytes() == before
+
+
+def test_save_permanent_allowlist_refuses_policy_mutation_without_proof_byte_identical(monkeypatch, tmp_path):
+    """save_permanent_allowlist reaches save_config with command_allowlist and no proof."""
+    import tools.approval as approval
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    path.write_bytes(b"command_allowlist: []\n")
+    before = path.read_bytes()
+    approval.save_permanent_allowlist({"git status"})
+    assert path.read_bytes() == before
+
+
+def test_save_config_value_refuses_policy_mutation_without_proof_byte_identical(monkeypatch, tmp_path):
+    """cli.save_config_value reaches its policy sink and refuses approvals.mode without proof."""
+    from cli import save_config_value
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    path.write_bytes(b"approvals:\n  mode: manual\n")
+    before = path.read_bytes()
+    with pytest.raises(PolicyMutationDenied) as exc_info:
+        save_config_value("approvals.mode", "off")
+    assert str(exc_info.value) == "operator confirmation proof required"
     assert path.read_bytes() == before
 
 

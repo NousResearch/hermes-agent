@@ -1,8 +1,8 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import type { Translations } from './types'
+import { defineLocale } from './define-locale'
 
-export const zh: Translations = {
+export const zh = defineLocale({
   connectors: {
     title: '连接你的应用',
     connect: '连接',
@@ -26,10 +26,9 @@ export const zh: Translations = {
     ownerMissing: '请重新打开此对话以管理连接。',
     search: '查找应用',
     empty: '没有匹配的应用',
-    continue: '在对话中继续',
-    continueBusy: '等待当前操作完成',
-    continueFailed: '无法继续，请重试。',
     disclaimer: '连接为可选操作。请仅授权你希望 Hermes 使用的应用。',
+    connectTitle: app => `连接 ${app}？`,
+    describe: app => `Hermes 会在浏览器中登录 ${app}，读取任何内容前都会先询问。`,
     execution: '连接器工具'
   },
 
@@ -240,7 +239,11 @@ export const zh: Translations = {
       transcriptionFailed: '语音转写失败',
       transcriptionUnavailable: '语音转写暂不可用。',
       tryRecordingAgain: '请再录一次。',
-      unavailable: '语音不可用'
+      unavailable: '语音不可用',
+      liveEnded: '实时语音会话已结束',
+      liveError: '实时语音',
+      liveDelegationFailed: '无法将请求交给 Hermes',
+      liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`
     },
     native: {
       approvalTitle: '需要批准',
@@ -724,10 +727,10 @@ export const zh: Translations = {
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
       tipsTitle: '应用内提示',
-      tipsDesc: '指向应用某处的小气泡：空闲时偶尔出现，需要时 Hermes 也会给你一条。每条提示只出现一次。',
+      tipsDesc: '偶尔显示来自应用和 Hermes 的提示，每条提示只出现一次。开始使用满30天后自动关闭，你可以重新开启。',
       tipsReset: (count: number) => `再次显示 ${count} 条提示`,
       toursTitle: '引导导览',
-      toursDesc: '让 Hermes 带你熟悉应用：调暗界面并逐步高亮每个位置。',
+      toursDesc: '让 Hermes 逐步高亮每个位置，带你熟悉应用。开始使用满30天后自动关闭，你可以重新开启。',
       composerPopoutTitle: '悬浮输入框',
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
       vibeHeartsTitle: '心情爱心',
@@ -859,7 +862,12 @@ export const zh: Translations = {
       voice: {
         recordKey: '语音快捷键',
         maxRecordingSeconds: '最长录音时长',
-        autoTts: '朗读回复'
+        autoTts: '朗读回复',
+        voiceChatMode: '语音聊天模式',
+        gptLive: {
+          voice: 'GPT-Live 音色',
+          instructions: 'GPT-Live 人设'
+        }
       },
       stt: {
         enabled: '语音转文字',
@@ -1006,7 +1014,13 @@ export const zh: Translations = {
         enabled: '当对话变大时对较早的上下文进行摘要。'
       },
       voice: {
-        autoTts: '自动朗读助手回复。'
+        autoTts: '自动朗读助手回复。',
+        voiceChatMode:
+          'chained：语音转文字 → Hermes → 文字转语音，使用下方的提供商。gpt-live：一个全双工的 OpenAI 语音模型（gpt-live-1）负责听和说，并把每个实际请求交给 Hermes——由你选择的任意模型带着完整工具集作答。需要 OpenAI API 密钥；语音层按每分钟 $0.05 计费。',
+        gptLive: {
+          voice: 'GPT-Live 模式使用的音色，可填写自定义音色 ID。',
+          instructions: '附加到实时语音人设的句子（语气、语速、语言）。Hermes 保留自己的系统提示词。'
+        }
       },
       stt: {
         enabled: '启用本地或提供方支持的语音转写。',
@@ -2949,6 +2963,13 @@ export const zh: Translations = {
     stopDictation: '停止听写',
     transcribingDictation: '正在转写听写',
     voiceControls: '语音',
+    voiceEngine: '语音聊天引擎',
+    voiceEngineChained: '语音转文字 + Hermes 语音',
+    voiceEngineLive: 'GPT-Live（全双工，委托给 Hermes）',
+    voiceEngineLiveNeedsKey: '需要 OpenAI API 密钥',
+    voiceEngineChangeFailed: '无法更改语音聊天引擎',
+    voiceEngineChainedShort: '语音转文字',
+    voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: '语音听写',
     speakReplies: '朗读回复',
     stopSpeakingReplies: '停止朗读回复',
@@ -4282,4 +4303,4 @@ export const zh: Translations = {
       toggle: open => `${open ? '显示' : '隐藏'}侧边栏`
     }
   }
-}
+})

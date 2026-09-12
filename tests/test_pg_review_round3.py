@@ -34,6 +34,9 @@ from pathlib import Path
 
 import pytest
 
+import hermes_state_pg_schema as pg_schema
+from hermes_state_common import SCHEMA_VERSION
+
 
 # ---------------------------------------------------------------------------
 # 1. read_only must not silently select the SQLite backend
@@ -63,7 +66,11 @@ class TestReadOnlyDoesNotBypassPostgres:
 
                 class _Cur:
                     def fetchone(self):
-                        return (1,) if "information_schema" in sql else None
+                        if "information_schema" in sql:
+                            return (1,)
+                        if "from schema_version" in sql.lower():
+                            return {"version": SCHEMA_VERSION}
+                        return None
 
                     def fetchall(self):
                         return []
@@ -79,10 +86,10 @@ class TestReadOnlyDoesNotBypassPostgres:
         monkeypatch.setattr(
             hsp, "connect_postgres", lambda dsn: sentinel_conn
         )
-        monkeypatch.setattr(hsp, "init_postgres_schema", lambda conn, ver: None)
+        monkeypatch.setattr(pg_schema, "init_postgres_schema", lambda conn, ver: None)
         monkeypatch.setattr(
-            hsp, "postgres_migration_version",
-            lambda c: max((m.version for m in hsp._PG_ONLY_MIGRATIONS),
+            pg_schema, "postgres_migration_version",
+            lambda c: max((m.version for m in pg_schema._PG_ONLY_MIGRATIONS),
                           default=0),
         )
 
@@ -109,7 +116,11 @@ class TestReadOnlyDoesNotBypassPostgres:
             def execute(self, sql, params=()):
                 class _Cur:
                     def fetchone(self):
-                        return (1,) if "information_schema" in sql else None
+                        if "information_schema" in sql:
+                            return (1,)
+                        if "from schema_version" in sql.lower():
+                            return {"version": SCHEMA_VERSION}
+                        return None
 
                     def fetchall(self):
                         return []
@@ -126,10 +137,10 @@ class TestReadOnlyDoesNotBypassPostgres:
             return _ReadyConn()
 
         monkeypatch.setattr(hsp, "connect_postgres", _fake_connect)
-        monkeypatch.setattr(hsp, "init_postgres_schema", lambda conn, ver: None)
+        monkeypatch.setattr(pg_schema, "init_postgres_schema", lambda conn, ver: None)
         monkeypatch.setattr(
-            hsp, "postgres_migration_version",
-            lambda c: max((m.version for m in hsp._PG_ONLY_MIGRATIONS),
+            pg_schema, "postgres_migration_version",
+            lambda c: max((m.version for m in pg_schema._PG_ONLY_MIGRATIONS),
                           default=0),
         )
 
@@ -150,7 +161,7 @@ class TestReadOnlyDoesNotBypassPostgres:
 
         This is the exact call shape the dashboard's read paths use.
         """
-        from hermes_cli import web_server
+        from hermes_cli import web_server_sessions as web_server
 
         sentinel = object()
         monkeypatch.setattr(
@@ -173,11 +184,7 @@ class TestReadOnlyDoesNotBypassPostgres:
             "the helper fell through to the SQLite path (_open_session_db_at_path) "
             "even though a PostgreSQL DSN resolved"
         )
-        assert "db_path" not in captured["kwargs"], (
-            "the helper pinned an explicit db_path, which forces SQLite "
-            "regardless of the resolved backend"
-        )
-        assert sentinel is sentinel  # keep flake8 quiet about the unused name
+        assert captured["kwargs"]["postgres_dsn"] == "postgresql://example/db"
 
 
 # ---------------------------------------------------------------------------

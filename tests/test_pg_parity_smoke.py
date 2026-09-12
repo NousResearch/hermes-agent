@@ -48,7 +48,7 @@ os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 # any SQLite-only idiom that reaches the adapter untranslated becomes a
 # deterministic test failure here instead of a runtime error in production.
 # This is what catches "a json_extract / pragma / fts5 slipped through the
-# translator" at CI time (see hermes_state_postgres._STRICT_FORBIDDEN).
+# translator" at CI time (see hermes_state_pg_sql._STRICT_FORBIDDEN).
 os.environ.setdefault("HERMES_PG_ADAPTER_STRICT", "1")
 
 # Driver-qualified URL schemes that testcontainers may emit; we normalize any of
@@ -517,6 +517,40 @@ def test_a_mig_source_untouched(pg_clean, tmp_path):
     assert after.st_size == before.st_size
 
 
+def test_migration_preserves_rolled_back_message_sequence_allocations(pg_clean, tmp_path):
+    """A migration must not recycle sequence ids consumed by rolled-back work."""
+    import migrate_state_to_postgres as mig
+
+    src = tmp_path / "source_state.db"
+    source = SessionDB(db_path=src)
+    try:
+        source.create_session("sequence-migration", "cli")
+        source_id = source.append_message("sequence-migration", "user", content="imported request")
+    finally:
+        source.close()
+
+    target = SessionDB(postgres_dsn=pg_clean)
+    try:
+        # Only the fixture's private container is used. PostgreSQL retains these
+        # nextval allocations after rollback even though messages is still empty.
+        with psycopg.connect(pg_clean) as writer:
+            reserved = writer.execute(
+                "SELECT nextval(pg_get_serial_sequence('messages', 'id')) "
+                "FROM generate_series(1, %s)", (source_id + 10,),
+            ).fetchall()
+            reserved_id = max(row[0] for row in reserved)
+            writer.rollback()
+        assert reserved_id > source_id
+        assert target._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+
+        summary = mig.migrate(src, pg_clean)
+        assert summary["complete"], summary["field_check"]
+        appended_id = target.append_message("sequence-migration", "assistant", content="after migration")
+        assert appended_id > reserved_id
+    finally:
+        target.close()
+
+
 # ---------------------------------------------------------------------------
 # b-series: pg_trgm GIN-indexed search
 # ---------------------------------------------------------------------------
@@ -535,7 +569,7 @@ def test_b1_trgm_migration_applies(pg_clean, tmp_path):
     install pg_trgm (e.g. a stripped container image without the contrib
     module).
     """
-    from hermes_state_postgres import _probe_pg_trgm
+    from hermes_state_pg_schema import _probe_pg_trgm
 
     pg, restore = _pg_session_db(pg_clean)
     try:
@@ -775,3 +809,68 @@ def test_c3_fts_falls_back_to_ilike_before_backfill(pg_clean, tmp_path):
         pg.close()
         restore()
 
+
+
+# -- Transaction failures around derived search data -----------------------
+
+def test_optional_fts_error_keeps_canonical_message(pg_clean):
+    """A failed index UPDATE must not turn the enclosing COMMIT into ROLLBACK."""
+    db = SessionDB(postgres_dsn=pg_clean)
+    try:
+        db.create_session("fts-failure", "cli")
+        raw = db._conn.raw
+        raw.execute(
+            "CREATE OR REPLACE FUNCTION hermes_test_reject_fts() RETURNS trigger "
+            "LANGUAGE plpgsql AS $$ BEGIN "
+            "RAISE EXCEPTION 'injected search index failure' USING ERRCODE = '54000'; "
+            "END; $$"
+        )
+        try:
+            raw.execute(
+                "CREATE TRIGGER hermes_test_reject_fts BEFORE UPDATE OF fts_content "
+                "ON messages FOR EACH ROW EXECUTE FUNCTION hermes_test_reject_fts()"
+            )
+            db.append_message("fts-failure", "user", "surviving message")
+            assert db.get_messages("fts-failure")[0]["content"] == "surviving message"
+            assert db.get_session("fts-failure")["message_count"] == 1
+            assert db.search_messages("surviving")[0]["snippet"] == "surviving message"
+        finally:
+            raw.execute("DROP FUNCTION hermes_test_reject_fts() CASCADE")
+    finally:
+        db.close()
+
+
+def test_aborted_transaction_is_never_a_successful_commit(pg_clean):
+    from hermes_state_postgres import connect_postgres
+
+    conn = connect_postgres(pg_clean)
+    try:
+        conn.execute("CREATE TEMP TABLE canonical_message (content TEXT)")
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT INTO canonical_message VALUES (?)", ("must roll back",))
+        with pytest.raises(psycopg.errors.DivisionByZero):
+            conn.execute("SELECT 1 / 0")
+        with pytest.raises(RuntimeError, match="transaction is aborted"):
+            conn.commit()
+        conn.rollback()
+        assert conn.execute("SELECT count(*) FROM canonical_message").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_search_observes_unindexed_rows_from_another_writer(pg_clean):
+    db = SessionDB(postgres_dsn=pg_clean)
+    try:
+        db.create_session("other-writer", "cli")
+        db.append_message("other-writer", "user", "indexed beacon")
+        assert db.search_messages("beacon")
+        with psycopg.connect(pg_clean, autocommit=True) as other:
+            other.execute(
+                "INSERT INTO messages (session_id, role, content, timestamp) VALUES (%s, %s, %s, %s)",
+                ("other-writer", "user", "new beacon", 1000.0),
+            )
+        assert {row["snippet"] for row in db.search_messages("beacon")} == {
+            "indexed beacon", "new beacon",
+        }
+    finally:
+        db.close()

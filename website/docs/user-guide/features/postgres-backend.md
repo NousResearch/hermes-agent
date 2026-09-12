@@ -35,7 +35,7 @@ install, needs no server, and is the more thoroughly exercised path.
 
 ## Requirements
 
-- **PostgreSQL 14 or newer.**
+- **PostgreSQL 16 or newer.**
 - **The `postgres` extra**, which installs the `psycopg` driver:
 
   ```bash
@@ -137,43 +137,44 @@ still needs sufficient privilege on the target database.
 
 ## Enabling it
 
-Two settings, both under `sessions:` in `~/.hermes/config.yaml`:
+Select the backend under `sessions:` in your active profile's `config.yaml`
+(`~/.hermes/config.yaml` for the default profile):
 
 ```yaml
 sessions:
   state_backend: postgres
-  postgres_dsn: "postgresql://hermes:secret@db.example.com:5432/hermes?sslmode=require"
 ```
 
 Or via the CLI:
 
 ```bash
 hermes config set sessions.state_backend postgres
-hermes config set sessions.postgres_dsn 'postgresql://...'
+```
+
+Supply the credential-bearing DSN in the profile's `.env` file or your
+orchestrator's secret store:
+
+```bash
+HERMES_STATE_DATABASE_URL="postgresql://hermes:secret@db.example.com:5432/hermes?sslmode=require"
 ```
 
 The DSN is passed to the driver **unchanged**, so TLS mode, host, port, and
-credentials are entirely yours to specify. Use `sslmode=require` (or stricter)
-for anything crossing a network.
+credentials are yours to specify. Use `sslmode=require` (or stricter) for
+connections crossing a network.
 
-### Environment variables
+### DSN environment variables
 
-All three take precedence over the corresponding `config.yaml` keys, which is
-convenient for containers and CI:
+These credential variables take precedence over `sessions.postgres_dsn` in
+`config.yaml`:
 
 | Variable | Purpose |
 |---|---|
 | `HERMES_STATE_DATABASE_URL` | PostgreSQL DSN |
 | `HERMES_STATE_POSTGRES_DSN` | Alternate name for the same value |
-| `HERMES_STATE_BACKEND` | `sqlite` (default) or `postgres` |
 
-Resolution order for the DSN is: `HERMES_STATE_DATABASE_URL` →
-`HERMES_STATE_POSTGRES_DSN` → `sessions.postgres_dsn`. For backend selection it
-is `HERMES_STATE_BACKEND` → `sessions.state_backend`.
-
-Because the DSN carries credentials, it belongs in `~/.hermes/.env` (or your
-orchestrator's secret store) rather than in `config.yaml` when you use the
-environment-variable form.
+Resolution order is `HERMES_STATE_DATABASE_URL` →
+`HERMES_STATE_POSTGRES_DSN` → `sessions.postgres_dsn`. Keep backend selection
+in `sessions.state_backend`; setting a DSN alone does not switch backends.
 
 ## Migrating existing sessions
 
@@ -203,32 +204,54 @@ prefer to run the module without the CLI) is:
 python -m migrate_state_to_postgres --dsn 'postgresql://...' [--sqlite-path PATH]
 ```
 
-Its properties, by design:
+The migration reads raw database rows from one read-only SQLite snapshot and
+checks the destination against that same snapshot. It preserves:
 
-- **Source-safe.** The SQLite database is opened read-only and is never mutated
-  or deleted. It stays the fallback-of-record until you have verified the copy
-  and flipped `sessions.state_backend`.
-- **Idempotent.** Rows are inserted with `ON CONFLICT DO NOTHING`, so re-running
-  after a partial run fills the gaps without duplicating. Note that it does not
-  *refresh* rows already present — it targets a fresh database. If a source row
-  changed after a prior partial import, drop the target and re-run.
-- **Full fidelity.** Rewound (soft-deleted) messages are included, message ids
-  and timestamps are preserved, and content is re-encoded through the live
-  encoding path.
+- All sessions, including child/delegate sessions, and their parent links and
+  cached system prompts.
+- All messages, including rewound and compacted rows, with their ids,
+  timestamps, reasoning, display metadata and display order. Structured content
+  is decoded and re-encoded to replace the legacy NUL marker. Derived display
+  identities are marked for rebuilding when stored content changes.
+- Per-model usage, gateway routing and hygiene state, conversation generation
+  counters, and durable metadata such as session goals, loops and scheduled
+  heartbeats.
+- Telegram topic settings and bindings when those optional tables exist in the
+  source. Migrating a store without topic tables does not enable topic mode.
 
-The script verifies session and message counts after import and reports them.
+**Retries preserve existing target history.** Missing rows are inserted without
+duplicating keys. Existing session/message rows are not refreshed or overwritten;
+a differing value makes verification fail, even when row counts match. Peer
+conversation generations are the exception: the larger source or target value
+wins so a retired prompt-cache identity cannot be reused. Use a fresh, dedicated
+target database; keep any populated target intact while investigating a mismatch.
+
+**Some state stays local.** SQLite outboxes such as `async_delegations` continue
+to use the source file. Process heartbeats, compression locks and turn leases
+are not copied; restarted processes establish their own liveness and ownership.
+SQLite FTS progress, file generation/provenance and vacuum bookkeeping are not
+portable and are excluded. The migration does not move profile files or make
+SQLite-local queues shared across hosts.
+
+**Verification covers every copied row and durable column**, including message
+content, prompt references and auxiliary tables. Session/message counts show
+matching primary keys; they do not prove that values match. Only a successful
+`Migration complete` result (or `OK` from the standalone module) means the
+whole verification passed. A mismatch exits with status 1 and leaves the SQLite
+source untouched.
 
 Recommended sequence:
 
-1. Run the migration while Hermes is stopped.
-2. The command reports how many sessions and messages it migrated out of the
-   source total (for example `Sessions: 42/42`). Confirm both numbers match.
-   These counts are scoped to the rows this run actually copied, not to the
-   target's table totals — a target that already holds rows would satisfy any
-   "total >= source" comparison no matter how much was dropped.
-3. Set `sessions.state_backend: postgres`.
-4. Start Hermes and confirm `/resume` and `session_search` behave.
-5. Keep the SQLite file until you are satisfied.
+1. Stop every Hermes process using the source or target and take a SQLite
+   backup. Use a SQLite-aware backup if WAL sidecars are still present. Keep
+   writers stopped through verification and the backend switch; later source
+   writes are outside the migration snapshot.
+2. Run the migration into a fresh, dedicated PostgreSQL database. Confirm it
+   reports `Migration complete`, rather than relying only on equal counts.
+3. Set `sessions.state_backend: postgres` in the active profile's `config.yaml`.
+4. Start Hermes and confirm `/resume` and `session_search` behave. Follow the
+   search-backfill guidance below if imported history still needs indexing.
+5. Keep the SQLite file and backup for recovery and any remaining local outboxes.
 
 ## Behavioral notes
 
@@ -239,53 +262,60 @@ one you configured and split your history across two stores.
 
 **Search uses native full-text indexing, with an `ILIKE` fallback.** SQLite's
 FTS5 index has no direct PostgreSQL equivalent, so the backend builds its own:
-a `tsvector` column (`messages.fts_content`) with a GIN index, populated for
-every message as it is written. Queries use `fts_content @@ tsquery` with the
+a `tsvector` column (`messages.fts_content`) with a GIN index. Hermes attempts
+to populate it for each new message. Queries use `fts_content @@ tsquery` with the
 `simple` dictionary (lowercasing, no stemming — the right choice for a corpus
 mixing code identifiers, proper nouns, and multiple languages), which gives
 tokenized multi-word AND search.
 
-:::note If you migrated from SQLite, read this first
+:::note When search backfill is needed
 
-Migrated rows are written before the full-text column is populated, so a
-database carrying pre-existing history starts with `fts_content IS NULL` on
-every imported row. Until you run the one-time backfill below, **every search
-uses the `ILIKE` fallback, not full-text search.** Nothing is broken and no
-result is missing — but multi-word queries behave as substring matches until
-the backfill completes.
+`fts_content IS NULL` marks a row that needs indexing. Imported or older history
+and failed indexing attempts can leave these rows. A later transcript repair
+that changes message content, tool names or tool calls also clears the affected
+search vector, preventing searches from using stale text.
+
+PostgreSQL migration 27 installs triggers that maintain display and search
+data, and invalidates existing derived values once. The display index rebuilds
+when a writable Hermes process reads a conversation; restore search vectors
+with the backfill below.
 
 :::
 
-Rows written *before* the full-text column existed have `fts_content IS NULL`.
-Until every such row is backfilled, search deliberately stays on a
-trigram-indexed `ILIKE` scan, because an FTS-only query would silently miss
-every un-backfilled row — `ILIKE` covers all rows, so it is the correct choice
-during that window. The `pg_trgm` GIN indexes keep it usable.
+While any rows still need indexing, search uses the `ILIKE` fallback across all
+rows. Multi-word queries use substring matching during this period, with
+`pg_trgm` indexes providing acceleration when available.
 
-To finish the transition on a database with pre-existing history, run the
-one-time backfill (safe to run in batches, and safe to re-run):
+Run or repeat this backfill whenever rows have `fts_content IS NULL`. It updates
+only those rows and is safe to re-run:
 
 ```sql
 UPDATE messages
-   SET fts_content = to_tsvector('simple', coalesce(content, ''))
+   SET fts_content = to_tsvector(
+       'simple', coalesce(content, '') || ' ' ||
+       coalesce(tool_name, '') || ' ' || coalesce(tool_calls, ''))
  WHERE fts_content IS NULL;
 ```
 
-Search switches to the FTS path automatically once no `NULL` rows remain; there
-is no flag to flip. A fresh database that starts on PostgreSQL never needs this.
+Search switches to the FTS path automatically once no `NULL` rows remain.
+Later content repairs can require another backfill, including on a database
+that has always used PostgreSQL.
 
-**Two independent schema version counters.** `SCHEMA_VERSION` governs the shared
-and SQLite schema and is recorded in the `schema_version` table. The PostgreSQL
-backend keeps its own migration list with its own counter, recorded separately
-in `pg_migration_version`. The two numbers are deliberately unrelated — do not
+**Two independent schema version counters.** `SCHEMA_VERSION` in
+`hermes_state_common.py` governs the shared and SQLite schema and is recorded
+in `schema_version`. PostgreSQL schema setup and its own migration list live
+in `hermes_state_pg_schema.py`, with a separate counter in
+`pg_migration_version`. The two numbers are deliberately unrelated — do not
 expect them to match, and do not merge the tables. (They shared one table
 originally, which meant that once the shared version climbed past the highest
 Postgres-only migration number, every Postgres migration looked already-applied
 and was skipped.)
 
-Every Postgres-only migration statement is `IF NOT EXISTS`-guarded, so a
-database with no `pg_migration_version` row simply replays the list; existing
-objects are left alone and anything missing is created.
+Postgres-only migrations are idempotent and retryable. Writable startup applies
+missing ledger entries, including gaps left by optional migrations. A step may
+create missing objects, replace trigger definitions or invalidate stale derived
+data. Completed steps are recorded and skipped on later opens; a database with
+no `pg_migration_version` entries replays the migration list.
 
 **Read-only opens read PostgreSQL, but cannot write to it.** Read-only callers
 — the dashboard's status and session listing, cron history, usage analytics,
@@ -297,12 +327,11 @@ Because those callers are not the owner of the store, a read-only open is
 restricted in three ways:
 
 - It runs no DDL. Schema is created and migrated only by writable opens.
-- It fails, rather than provisioning, when the schema is absent — or when the
-  store's recorded migration version is *older* than the running build
-  expects, since queries may reference columns it does not have. A store
-  *newer* than the running build is accepted: the schema only grows, so an
-  older reader's queries still work, and refusing it would break rolling
-  upgrades.
+- It checks both the shared version in `schema_version` and the PostgreSQL-only
+  ledger in `pg_migration_version`. If the schema is absent or either version is
+  below this build's requirement, the open fails. Start Hermes normally
+  against the database once to apply pending changes, then retry the read-only
+  operation. Newer store versions are accepted to support rolling upgrades.
 - The connection sets `default_transaction_read_only`, so the server itself
   rejects any write with SQLSTATE `25006`. The prohibition is enforced by
   PostgreSQL, not by convention.
@@ -326,8 +355,28 @@ psql "$HERMES_STATE_DATABASE_URL" -c 'SELECT count(*) FROM messages;'
 Then start a session, send a message, and re-run the message count — it should
 increase. A count that stays flat while Hermes appears healthy means the backend
 did not engage and writes are still going to SQLite; check that
-`sessions.state_backend` is `postgres` and that no stale `HERMES_STATE_BACKEND`
-is overriding it.
+`sessions.state_backend` is `postgres` in the active profile and that the DSN
+points to the database you are querying.
+
+## Cleaning stale tool-call markers
+
+You can inspect affected rows in PostgreSQL without changing them:
+
+```bash
+hermes sessions clean-markers --dry-run
+```
+
+The command's automatic backup step supports SQLite only. Before cleaning a
+PostgreSQL store, take a native PostgreSQL backup with `pg_dump` or your managed
+provider's backup facility, then use the existing `--no-backup` flag:
+
+```bash
+hermes sessions clean-markers --no-backup
+```
+
+Without that flag, a cleanup that would change PostgreSQL rows stops with an
+explanation before modifying them. The flag skips only the automatic SQLite
+backup step; it does not create a PostgreSQL backup.
 
 ## Troubleshooting
 

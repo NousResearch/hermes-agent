@@ -81,7 +81,7 @@ def _run(args: SimpleNamespace, *, tty: bool, env: dict | None = None) -> tuple[
 
     Returns (exit_code, stdout, stderr).
     """
-    from hermes_cli.migrate import cmd_migrate_state_to_postgres
+    from hermes_cli.migrate_postgres import cmd_migrate_state_to_postgres
 
     buf_out = io.StringIO()
     buf_err = io.StringIO()
@@ -429,33 +429,20 @@ class TestArgumentParsing:
     """Smoke-test that the CLI parser wires state-to-postgres correctly."""
 
     def test_subcommand_registered(self) -> None:
-        """hermes migrate state-to-postgres is parsed without error."""
-        # Import the build_parser function via the module, not the full CLI.
-        # We only need to verify the parser accepts the subcommand name and
-        # the expected flags; we do not need to invoke the handler.
-        from hermes_cli.main import main as hermes_main  # noqa: F401
+        """The real CLI parser dispatches the migration and forwards its flags."""
+        from hermes_cli.main import _build_cli_parser
+        from hermes_cli.migrate_postgres import cmd_migrate_state_to_postgres
 
-        # build_arg_parser is defined inside main() so we call parse_args
-        # via the module's public surface with --help captured.
-        import argparse
+        parser, _ = _build_cli_parser()
+        args = parser.parse_args([
+            "migrate", "state-to-postgres", "--dsn", "postgresql://host/state",
+            "--sqlite-path", "/tmp/source.db", "--yes",
+        ])
 
-        captured = io.StringIO()
-        # Build just the migrate subparser fragment in isolation is complex —
-        # instead verify that help output for the full CLI contains our name.
-        # This is a registration check, not a snapshot test.
-        try:
-            with patch("sys.argv", ["hermes", "migrate", "state-to-postgres", "--help"]), patch(
-                "sys.stdout", captured
-            ):
-                hermes_main()
-        except SystemExit:
-            pass
-
-        help_text = captured.getvalue()
-        # At minimum the help should reference the known flags.
-        assert "--dsn" in help_text
-        assert "--sqlite-path" in help_text
-        assert "--yes" in help_text or "-y" in help_text
+        assert args.func is cmd_migrate_state_to_postgres
+        assert args.dsn == "postgresql://host/state"
+        assert args.sqlite_path == "/tmp/source.db"
+        assert args.yes is True
 
 
 # ---------------------------------------------------------------------------
@@ -544,3 +531,40 @@ def test_complete_migration_reports_scoped_counts():
 
     assert rc == 0, out
     assert "3/3" in out and "6/6" in out, out
+
+
+@pytest.mark.parametrize("dsn", [
+    "postgresql://alice:private-password@localhost/state",
+    "postgresql://localhost/state?user=alice&password=private-password",
+    "host=localhost user=alice password=private-password dbname=state",
+])
+def test_confirmation_hides_dsn_credentials(dsn):
+    """All supported DSN forms keep their password out of confirmation output."""
+    args = _make_args(dsn=dsn)
+    with patch("builtins.input", return_value="n"):
+        rc, out, err = _run(args, tty=True)
+
+    assert rc != 0
+    assert "Target" in out
+    assert "private-password" not in out + err
+
+
+def test_matching_counts_do_not_mask_field_mismatches():
+    """The command must respect the migrator's field verification result."""
+    summary = {
+        **_GOOD_SUMMARY,
+        "field_check": {
+            "sessions_checked": 3,
+            "messages_checked": 12,
+            "field_mismatches": ["session.title differs"],
+            "clean": False,
+        },
+        "complete": False,
+    }
+    args = _make_args(dsn="postgresql://localhost/state", yes=True)
+    with patch("migrate_state_to_postgres.migrate", return_value=summary):
+        rc, out, err = _run(args, tty=False)
+
+    assert rc != 0
+    assert "field" in (out + err).lower()
+    assert "Do not switch backends" in out + err

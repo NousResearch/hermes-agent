@@ -7,7 +7,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, Ear, EarOff, iconSize, Layers3, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $hudMode, closeHud } from '@/store/hud'
+import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
@@ -41,6 +41,7 @@ export function ComposerControls({
   disabled,
   foldVoice = false,
   hasComposerPayload,
+  hideModelPill = false,
   minimal = false,
   state,
   voiceStatus,
@@ -57,6 +58,7 @@ export function ComposerControls({
   disabled: boolean
   foldVoice?: boolean
   hasComposerPayload: boolean
+  hideModelPill?: boolean
   minimal?: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
@@ -107,7 +109,7 @@ export function ComposerControls({
     <div className="ml-auto flex min-w-0 shrink items-center gap-(--composer-control-gap)">
       {minimal ? null : (
         <>
-          <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+          {hideModelPill ? null : <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />}
           {voiceControls}
         </>
       )}
@@ -173,27 +175,41 @@ export function ComposerControls({
           the surface, paid for in every state, for a control that is invisible
           until hovered. Here it costs no reserved space and sits with the other
           things you can press. */}
-      {hudMode ? <ExitHudButton /> : null}
+      {hudMode ? <HudWindowButtons /> : null}
     </div>
   )
 }
 
-function ExitHudButton() {
+function HudWindowButtons() {
   const { t } = useI18n()
 
   return (
-    <Tip label={t.titlebar.exitHud}>
-      <Button
-        aria-label={t.titlebar.exitHud}
-        className={cn(GHOST_ICON_BTN, 'p-0')}
-        onClick={closeHud}
-        size="icon"
-        type="button"
-        variant="ghost"
-      >
-        <Codicon name="screen-normal" size="0.875rem" />
-      </Button>
-    </Tip>
+    <>
+      <Tip label={t.titlebar.resetHudLayout}>
+        <Button
+          aria-label={t.titlebar.resetHudLayout}
+          className={cn(GHOST_ICON_BTN, 'p-0')}
+          onClick={resetHudLayout}
+          size="icon"
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name="discard" size="0.875rem" />
+        </Button>
+      </Tip>
+      <Tip label={t.titlebar.exitHud}>
+        <Button
+          aria-label={t.titlebar.exitHud}
+          className={cn(GHOST_ICON_BTN, 'p-0')}
+          onClick={closeHud}
+          size="icon"
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name="screen-normal" size="0.875rem" />
+        </Button>
+      </Tip>
+    </>
   )
 }
 
@@ -309,7 +325,7 @@ function ConversationIndicator({
 
 // Pure-TTS toggle: type normally, but have every assistant reply read aloud —
 // no dictation, no full conversation loop. Filled/accent when on, mirroring the
-// muted-mic pressed state above. Driven by (and persisted to) `voice.auto_tts`.
+// muted-mic pressed state above. Persisted locally, independently of gateway TTS.
 function AutoSpeakButton({ active, disabled, onToggle }: { active: boolean; disabled: boolean; onToggle: () => void }) {
   const { t } = useI18n()
   const c = t.composer

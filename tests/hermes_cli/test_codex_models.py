@@ -35,6 +35,35 @@ def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch)
     assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(model_ids)
 
 
+def test_picker_synthesizes_900k_variants_for_verified_slugs():
+    """Every live-verified large-context slug gets an explicit ``-900k``
+    picker variant directly after its base entry; slugs that genuinely
+    enforce 272K (gpt-5.5, gpt-5.4-mini) never get one. Base slugs stay
+    in the list as the cheaper 272K default."""
+    model_ids = get_codex_model_ids()  # offline curated path
+
+    for base in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"):
+        assert base in model_ids
+        assert f"{base}-900k" in model_ids
+        assert model_ids.index(f"{base}-900k") == model_ids.index(base) + 1
+
+    assert "gpt-5.5-900k" not in model_ids
+    assert "gpt-5.4-mini-900k" not in model_ids
+    assert "gpt-5.3-codex-900k" not in model_ids
+
+
+def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
+    """Eligibility is an exact predicate, not a family-prefix match:
+    ``-pro`` slugs are not routable on Codex OAuth (backend 400s them) and
+    unknown future descendants were never probed — neither may gain a
+    synthetic ``-900k`` entry (#92797 review)."""
+    from hermes_cli.codex_models import _finalize_codex_models
+
+    out = _finalize_codex_models(["gpt-5.6-sol-pro", "gpt-5.6-nova"])
+    assert "gpt-5.6-sol-pro-900k" not in out
+    assert "gpt-5.6-nova-900k" not in out
+
+
 
 
 def test_setup_wizard_codex_import_resolves():
@@ -83,12 +112,43 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
     assert "gpt-5-internal" not in models
 
 
+def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
+    """Cached/configured Astra names must not manufacture current OAuth entitlement."""
+    from hermes_cli import codex_models
+
+    (tmp_path / "config.toml").write_text('model = "gpt-6-astra"\n', encoding="utf-8")
+    (tmp_path / "models_cache.json").write_text(
+        json.dumps({"models": [
+            {"slug": "gpt-6-astra", "priority": 0},
+            {"slug": "openai/gpt-6-astra", "priority": 1},
+            {"slug": "gpt-6-astra-900k", "priority": 2},
+            {"slug": "openai/gpt-6-astra-900k", "priority": 3},
+        ]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda _token: [])
+
+    assert "gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
+    assert "openai/gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
+    assert "gpt-6-astra-900k" not in get_codex_model_ids(access_token="stale-token")
+    assert "openai/gpt-6-astra-900k" not in get_codex_model_ids(access_token="stale-token")
+
+    monkeypatch.setattr(
+        codex_models,
+        "_fetch_models_from_api",
+        lambda _token: codex_models._finalize_codex_models(["gpt-6-astra"]),
+    )
+    entitled = get_codex_model_ids(access_token="entitled-token")
+    assert entitled[entitled.index("gpt-6-astra") + 1] == "gpt-6-astra-900k"
+
+
 
 
 
 
 def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypatch, capsys):
-    from hermes_cli.main import _model_flow_openai_codex
+    from hermes_cli.model_setup_flows import _model_flow_openai_codex
 
     captured = {"login_calls": 0}
     choices = iter(["2"])
@@ -209,4 +269,3 @@ class TestNormalizeModelForProvider:
         assert changed is True
         # Uses first from available list
         assert cli.model == "gpt-5.3-codex"
-

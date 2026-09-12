@@ -237,6 +237,12 @@ respawned automatically on the next relevant file operation. Set
 `idle_timeout: 0` to disable reaping and hold every server's index warm
 for the life of the process.
 
+Servers that support multi-root workspaces (currently pyright) run as a
+**single process** per Hermes process: the first Python project spawns
+it, and every further project root — for example sibling git worktrees
+edited by parallel subagents — is attached to that same server as an
+additional workspace folder instead of starting another copy.
+
 ## Disabling
 
 Set `lsp.enabled: false` in `config.yaml` to disable the entire

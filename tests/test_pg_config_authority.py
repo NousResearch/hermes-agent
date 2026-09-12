@@ -47,25 +47,25 @@ class TestStrictAuthorityReader:
         return p
 
     def test_absent_file_returns_none(self, tmp_path):
-        from hermes_cli.config import read_user_config_for_authority
+        from hermes_cli.config_readers import read_user_config_for_authority
 
         assert read_user_config_for_authority(tmp_path / "nope.yaml") is None
 
     @pytest.mark.parametrize("label,body", NO_SELECTION)
     def test_empty_documents_return_none(self, tmp_path, label, body):
-        from hermes_cli.config import read_user_config_for_authority
+        from hermes_cli.config_readers import read_user_config_for_authority
 
         assert read_user_config_for_authority(self._write(tmp_path, body)) is None
 
     @pytest.mark.parametrize("label,body", UNUSABLE)
     def test_unusable_documents_raise(self, tmp_path, label, body):
-        from hermes_cli.config import read_user_config_for_authority
+        from hermes_cli.config_readers import read_user_config_for_authority
 
         with pytest.raises(Exception):
             read_user_config_for_authority(self._write(tmp_path, body))
 
     def test_mapping_root_is_returned_verbatim(self, tmp_path):
-        from hermes_cli.config import read_user_config_for_authority
+        from hermes_cli.config_readers import read_user_config_for_authority
 
         got = read_user_config_for_authority(
             self._write(tmp_path, "sessions:\n  state_backend: postgres\n")
@@ -80,7 +80,7 @@ class TestStrictAuthorityReader:
         A reader that returns `{}` for an empty file cannot tell it apart from
         one that returned `{}` for a list root — which is the bug.
         """
-        from hermes_cli.config import read_user_config_for_authority
+        from hermes_cli.config_readers import read_user_config_for_authority
 
         assert read_user_config_for_authority(self._write(tmp_path, "")) is None
         got = read_user_config_for_authority(self._write(tmp_path, "a: 1\n"))

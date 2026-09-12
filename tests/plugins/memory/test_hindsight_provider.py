@@ -10,10 +10,13 @@ import os
 import re
 import stat
 import sys
+import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -29,8 +32,9 @@ from plugins.memory.hindsight import (
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
-    _sanitize_bank_segment,
+    _WRITER_SENTINEL,
 )
+from plugins.memory.hindsight.settings import _sanitize_bank_segment
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +458,50 @@ class TestToolHandlers:
         assert "bank_id" not in item
         assert "retain_async" not in item
 
+    def test_retain_defaults_item_timestamp_when_no_occurred_at(self, provider, monkeypatch):
+        event_time = datetime(2026, 8, 24, 9, 30, tzinfo=ZoneInfo("America/Los_Angeles"))
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "user likes dark mode"}
+        ))
+        assert result["result"] == "Memory stored successfully."
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        # Non-temporal retains still carry a defaulted event timestamp so the
+        # server can resolve any relative time phrases (#93568).
+        assert item["timestamp"] == event_time.isoformat(timespec="seconds")
+
+    def test_retain_threads_explicit_occurred_at_into_item_timestamp(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain",
+            {"content": "user visited Paris", "occurred_at": "2026-03-03"},
+        ))
+        assert result["result"] == "Memory stored successfully."
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["timestamp"] == "2026-03-03"
+
+    def test_retain_ignores_blank_occurred_at(self, provider, monkeypatch):
+        event_time = datetime(2026, 8, 24, 9, 30, tzinfo=ZoneInfo("America/Los_Angeles"))
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
+        json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "hello", "occurred_at": "   "}
+        ))
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["timestamp"] == event_time.isoformat(timespec="seconds")
+
+    def test_build_retain_kwargs_accepts_explicit_occurred_at(self, provider):
+        item = provider._build_retain_kwargs("dinner with Sam", occurred_at="2026-08-20T19:00:00+02:00")
+        assert item["timestamp"] == "2026-08-20T19:00:00+02:00"
+
+    def test_retain_schema_exposes_occurred_at(self):
+        from plugins.memory.hindsight import RETAIN_SCHEMA
+
+        props = RETAIN_SCHEMA["parameters"]["properties"]
+        assert "occurred_at" in props
+        assert props["occurred_at"]["type"] == "string"
+        # The description must steer the model to pass event times.
+        assert "event" in props["occurred_at"]["description"].lower()
+        assert "occurred_at" not in RETAIN_SCHEMA["parameters"]["required"]
+
 
     def test_recall_success(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -844,7 +892,9 @@ class TestRecallStatus:
 
 
 class TestSyncTurn:
-    def test_sync_turn_retains_metadata_rich_turn(self, provider_with_config):
+    def test_sync_turn_retains_metadata_rich_turn(self, provider_with_config, monkeypatch):
+        event_time = datetime(2026, 8, 10, 11, 9, tzinfo=ZoneInfo("Asia/Shanghai"))
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
         p = provider_with_config(
             retain_tags=["conv", "session1"],
             retain_source="hermes",
@@ -894,8 +944,42 @@ class TestSyncTurn:
         assert item["metadata"]["agent_identity"] == "fakeassistantname"
         assert item["metadata"]["turn_index"] == "1"
         assert item["metadata"]["message_count"] == "2"
-        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00", content[0][0]["timestamp"])
+        assert content[0][0]["timestamp"] == event_time.isoformat(timespec="seconds")
+        assert content[0][1]["timestamp"] == event_time.isoformat(timespec="seconds")
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
+        assert item["timestamp"] == event_time.isoformat(timespec="seconds")
+
+    def test_retain_timestamp_normalizes_a_naive_clock(self, provider, monkeypatch):
+        event_time = datetime(2026, 8, 10, 11, 9)
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
+
+        timestamp = provider._build_retain_kwargs("hello")["timestamp"]
+        parsed = datetime.fromisoformat(timestamp)
+
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() is not None
+
+    @pytest.mark.asyncio
+    async def test_retain_timestamp_is_serialized_by_pinned_client(self, provider):
+        hindsight_client = pytest.importorskip(
+            "hindsight_client", reason="pinned hindsight-client SDK not installed"
+        )
+        Hindsight = hindsight_client.Hindsight
+
+        item = provider._build_retain_kwargs("hello")
+        item.pop("bank_id", None)
+        item.pop("retain_async", None)
+
+        client = Hindsight(base_url="http://localhost:9999", api_key="test-key")
+        client._memory_api.retain_memories = AsyncMock(return_value=SimpleNamespace(ok=True))
+        try:
+            await client.aretain_batch(bank_id="test-bank", items=[item])
+            call = client._memory_api.retain_memories.await_args
+            assert call is not None
+            request = call.args[1]
+            assert request.to_dict()["items"][0]["timestamp"] == item["timestamp"]
+        finally:
+            await client.aclose()
 
 
     def test_resume_creates_new_document(self, tmp_path, monkeypatch):
@@ -1329,7 +1413,7 @@ class TestAvailability:
             )
 
         monkeypatch.setattr(
-            "plugins.memory.hindsight.importlib.import_module",
+            "importlib.import_module",
             _raise,
         )
         p = HindsightMemoryProvider()
@@ -1348,7 +1432,7 @@ class TestAvailability:
             raise RuntimeError("x86_64-v2 unsupported")
 
         monkeypatch.setattr(
-            "plugins.memory.hindsight.importlib.import_module",
+            "importlib.import_module",
             _raise,
         )
 
@@ -1561,3 +1645,68 @@ class TestClientAutoUpgradeRoutesThroughLazyDeps:
         assert len(calls) == 1  # attempted exactly once, init still completed
         assert any("runtime installs are disabled" in r.getMessage()
                    for r in caplog.records)
+
+
+
+class TestMultiplexBackgroundScope:
+    """Under multiplex_profiles get_secret fails closed on an unscoped thread;
+    the writer / daemon-start threads are spawned from a scoped context and
+    must carry it along (#92608, #94933)."""
+
+    @pytest.fixture()
+    def scoped_embedded(self, tmp_path, monkeypatch):
+        from agent.secret_scope import (
+            build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope,
+        )
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        created = []
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                created.append(kwargs["llm_api_key"])
+                self._manager = SimpleNamespace(is_running=lambda profile: False, stop=lambda profile: None)
+                self._ensure_started = lambda: None
+
+        dem = SimpleNamespace(console=None)
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setitem(sys.modules, "hindsight_embed", SimpleNamespace(daemon_embed_manager=dem))
+        monkeypatch.setitem(sys.modules, "hindsight_embed.daemon_embed_manager", dem)
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        home = tmp_path / "profiles" / "p1"
+        (home / "hindsight").mkdir(parents=True)
+        (home / ".env").write_text("HINDSIGHT_LLM_API_KEY=p1-secret\n")
+        (home / "hindsight" / "config.json").write_text(json.dumps(
+            {"mode": "local_embedded", "llm_provider": "openai", "llm_model": "m", "memory_mode": "hybrid"}
+        ))
+        # Enter the profile scope the way gateway _profile_runtime_scope does.
+        set_multiplex_active(True)
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: home)
+        home_tok = set_hermes_home_override(str(home))
+        scope_tok = set_secret_scope(build_profile_secret_scope(home))
+        yield created, home
+        set_multiplex_active(False)
+        reset_secret_scope(scope_tok)
+        reset_hermes_home_override(home_tok)
+
+    def test_writer_thread_resolves_profile_secret(self, scoped_embedded):
+        created, home = scoped_embedded
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {"profile": "hermes", "llm_provider": "openai", "llm_model": "m"}
+        p._ensure_writer()
+        p._retain_queue.put(p._get_client)   # real body: get_secret(HINDSIGHT_LLM_API_KEY)
+        p._retain_queue.put(_WRITER_SENTINEL)
+        p._writer_thread.join(timeout=5)
+        assert created == ["p1-secret"]
+
+    def test_daemon_start_thread_resolves_profile_secret(self, scoped_embedded):
+        created, home = scoped_embedded
+        p = HindsightMemoryProvider()
+        p.initialize(session_id="s1", hermes_home=str(home), platform="cli")
+        for t in threading.enumerate():
+            if t.name == "hindsight-daemon-start":
+                t.join(timeout=5)
+        assert created == ["p1-secret"]
+        assert "Daemon started successfully" in (home / "logs" / "hindsight-embed.log").read_text()

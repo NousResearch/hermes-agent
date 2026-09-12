@@ -51,11 +51,12 @@ def _make_broken_postgres_module(exc: Exception) -> types.ModuleType:
 class _RaisingFinder:
     """A meta path finder that raises when asked to find hermes_state_postgres."""
 
-    def __init__(self, exc: Exception) -> None:
+    def __init__(self, exc: Exception, module="hermes_state_postgres") -> None:
         self._exc = exc
+        self._module = module
 
     def find_spec(self, fullname, path, target=None):
-        if fullname == "hermes_state_postgres":
+        if fullname == self._module or fullname.startswith(self._module + "."):
             raise self._exc
         return None
 
@@ -131,38 +132,31 @@ class TestHoleA_ImportFailureWithExplicitSelection:
             ModuleNotFoundError("hermes_state_postgres not installed"),
         )
 
-    def test_import_error_without_explicit_selection_falls_back_silently(
-        self, monkeypatch, tmp_path
-    ):
-        """Hole A: import raises + no env selection → silent SQLite fallback (correct).
+    def test_default_sqlite_does_not_require_the_postgres_driver(self, monkeypatch, tmp_path):
+        """A base installation can open SQLite with psycopg unavailable.
 
-        When Postgres has NOT been selected by the operator, a missing psycopg
-        package is expected — the operator just hasn't installed the postgres
-        extra.  Silence is correct here; this is the default install path.
+        The adapter ships with Hermes; only its driver is optional. A broken
+        adapter import must not hide a configuration that selected PostgreSQL.
         """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(hermes_state, "_default_db_path", lambda: tmp_path / "state.db")
-        monkeypatch.setattr(hermes_state, "_ensure_test_isolation", lambda p: None)
-        monkeypatch.delenv("HERMES_STATE_BACKEND", raising=False)
-        monkeypatch.delenv("HERMES_STATE_DATABASE_URL", raising=False)
-        monkeypatch.delenv("HERMES_STATE_POSTGRES_DSN", raising=False)
-
-        real_mod = sys.modules.pop("hermes_state_postgres", None)
-        finder = _RaisingFinder(ModuleNotFoundError("no module named hermes_state_postgres"))
+        for name in ("HERMES_STATE_BACKEND", "HERMES_STATE_DATABASE_URL", "HERMES_STATE_POSTGRES_DSN"):
+            monkeypatch.delenv(name, raising=False)
+        for name in tuple(sys.modules):
+            if name == "psycopg" or name.startswith("psycopg."):
+                monkeypatch.delitem(sys.modules, name)
+        finder = _RaisingFinder(ModuleNotFoundError("psycopg is not installed"), module="psycopg")
         sys.meta_path.insert(0, finder)
-
         try:
-            # Must NOT raise — should open SQLite silently.
             db = hermes_state.SessionDB()
-            assert not db._is_postgres, (
-                "Expected SQLite fallback when Postgres is not configured "
-                "and the import fails — got Postgres instead."
-            )
+            try:
+                assert not db._is_postgres
+                db.create_session("base-install", "cli")
+                assert db.get_session("base-install")["source"] == "cli"
+            finally:
+                db.close()
         finally:
             sys.meta_path.remove(finder)
-            if real_mod is not None:
-                sys.modules["hermes_state_postgres"] = real_mod
-            elif "hermes_state_postgres" in sys.modules:
-                del sys.modules["hermes_state_postgres"]
 
     def test_import_error_aliases_postgresql_backend_name(
         self, monkeypatch, tmp_path

@@ -8,6 +8,7 @@ use the notepad, and the `hermes cron notepad` CLI handler.
 from __future__ import annotations
 
 import argparse
+import importlib
 import sys
 from pathlib import Path
 
@@ -101,6 +102,33 @@ class TestNotepadCrud:
         (remove_job calls clear_notepad unconditionally)."""
         assert notepad.clear_notepad("never-used") == 0
         assert not notepad.NOTEPAD_FILE.exists()
+
+
+class TestNotepadProfileIsolation:
+    def test_profile_override_routes_writes_to_current_home(self, tmp_path):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        import cron.notepad as notepad_mod
+
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+
+        import_token = set_hermes_home_override(profile_a)
+        try:
+            importlib.reload(notepad_mod)
+        finally:
+            reset_hermes_home_override(import_token)
+
+        runtime_token = set_hermes_home_override(profile_b)
+        try:
+            notepad_mod.set_note("job-1", "cursor", "page=7")
+        finally:
+            reset_hermes_home_override(runtime_token)
+
+        assert (profile_b / "cron" / "notepad.db").exists()
+        assert not (profile_a / "cron" / "notepad.db").exists()
 
 
 class TestJobRemovalCleanup:

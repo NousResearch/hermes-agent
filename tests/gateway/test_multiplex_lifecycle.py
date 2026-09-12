@@ -2,6 +2,7 @@
 import pytest
 
 from gateway.config import GatewayConfig
+from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 
 
 class TestServedProfilesStatus:
@@ -38,6 +39,34 @@ def test_cron_profile_homes_follow_allowlist(tmp_path, monkeypatch):
     )
 
     assert [name for name, _home in homes] == ["default", "worker"]
+
+
+def test_cron_tick_homes_include_active_named_host(tmp_path, monkeypatch):
+    """Named-profile gateway + allowlist must still tick the host store.
+
+    Adapter homes stay allowlist-only so the host is not started a second
+    time as a secondary (same bot token). Cron unions the active profile.
+    """
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    default_home = tmp_path / ".hermes"
+    for name in ("host", "worker"):
+        (default_home / "profiles" / name).mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(default_home / "profiles" / "host"))
+
+    import gateway.run as gateway_run
+
+    cfg = GatewayConfig(
+        multiplex_profiles=True,
+        multiplex_profile_allowlist=["worker"],
+    )
+    adapter_names = [name for name, _home in gateway_run._multiplex_profile_homes(cfg)]
+    cron_homes = gateway_run._cron_tick_profile_homes(cfg)
+    cron_names = [name for name, _home in cron_homes]
+    cron_by_name = dict(cron_homes)
+
+    assert adapter_names == ["default", "worker"]
+    assert cron_names == ["default", "worker", "host"]
+    assert cron_by_name["host"] == default_home / "profiles" / "host"
 
 
 class TestNamedProfileMultiplexerGuard:
@@ -82,8 +111,9 @@ class TestNamedProfileMultiplexerGuard:
 
         from hermes_cli import gateway as gw
 
-        with pytest.raises(SystemExit, match="1"):
+        with pytest.raises(SystemExit) as excinfo:
             gw._guard_named_profile_under_multiplexer(force=False)
+        assert excinfo.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
 
     def test_served_profile_is_still_guarded(self, monkeypatch, tmp_path):
         self._fake_running_default_gateway(monkeypatch, tmp_path)
@@ -97,8 +127,9 @@ class TestNamedProfileMultiplexerGuard:
 
         from hermes_cli import gateway as gw
 
-        with pytest.raises(SystemExit, match="1"):
+        with pytest.raises(SystemExit) as excinfo:
             gw._guard_named_profile_under_multiplexer(force=False)
+        assert excinfo.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
 
     @pytest.mark.parametrize(
         "allowlist_yaml",
@@ -118,5 +149,19 @@ class TestNamedProfileMultiplexerGuard:
         from hermes_cli import gateway as gw
 
         gw._guard_named_profile_under_multiplexer(force=False)
+
+    def test_named_profile_served_probe_matches_the_start_guard(self, monkeypatch, tmp_path):
+        self._fake_running_default_gateway(monkeypatch, tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n  multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        from hermes_cli import gateway as gw
+
+        assert gw.named_profile_served_by_running_multiplexer() is True
+
+        monkeypatch.setattr(gw, "_profile_suffix", lambda: "")
+        assert gw.named_profile_served_by_running_multiplexer() is False
 
 

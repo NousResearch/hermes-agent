@@ -23,7 +23,8 @@ _HISTORICAL_BYPASS_NAMES = frozenset(
     {
         "agents",
         "approve",
-        "background",
+        "bg",
+        "btw",
         "commands",
         "deny",
         "help",

@@ -43,8 +43,10 @@ export function SettingsCategoryHeading({ count, icon: Icon, title }: CategoryHe
 // credential pages (Providers, Keys) share one source of truth and one set of
 // mutation handlers instead of duplicating the plumbing. An optional `profile`
 // targets another profile's env store (the shared settings "Applies to"
-// scope); undefined/null keeps the app-wide active profile.
-export function useEnvCredentials(profile: null | string = null): UseEnvCredentials {
+// scope); undefined keeps the app-wide active profile. Request-shaped on
+// purpose: the API helpers treat an explicit `null` as "target the
+// primary/default backend", which is never what a settings page means.
+export function useEnvCredentials(profile?: string): UseEnvCredentials {
   const { t } = useI18n()
   const credentials = t.settings.credentials
   const toolsets = t.settings.toolsets

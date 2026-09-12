@@ -8,8 +8,8 @@ A. Retry wraps the wrong methods
    discovered on the actual ``execute()``, not while constructing a cursor, so
    the real failure path was uncovered.
 
-   Fix: ``_PostgresCursor.execute()`` itself reconnects the parent connection
-   and retries the statement once on a broken-connection error.
+   Fix: ``_PostgresCursor.execute()`` propagates connection loss without
+   replaying a statement whose outcome is unknown.
 
 B. Retrying commit() is unsafe
    The original ``commit()`` retry reconnected and called ``commit()`` on the
@@ -171,9 +171,7 @@ class TestExecuteFailsClosedOnBrokenConnection:
             def close(self):
                 pass
 
-        pg_conn = _PostgresConnection.__new__(_PostgresConnection)
-        pg_conn._conn = _FakeConn2()
-        pg_conn._dsn = "postgresql://fake/db"
+        pg_conn = _PostgresConnection(_FakeConn2(), "postgresql://fake/db")
 
         reconnects = [0]
 
@@ -294,9 +292,8 @@ class TestCommitLossIsUnknownOutcome:
 
         conn_error = _FakePsycopgError("SSL connection has been closed unexpectedly")
 
-        pg_conn = _PostgresConnection.__new__(_PostgresConnection)
-        pg_conn._conn = _FakePsycopgConn(fail_commit=True, fail_commit_with=conn_error)
-        pg_conn._dsn = "postgresql://fake/db"
+        pg_conn = _PostgresConnection(
+            _FakePsycopgConn(fail_commit=True, fail_commit_with=conn_error), "postgresql://fake/db")
         pg_conn._ensure_live = lambda: None
 
         with pytest.raises(RuntimeError, match="UNKNOWN"):
@@ -313,10 +310,7 @@ class TestCommitLossIsUnknownOutcome:
             def commit(self):
                 raise conn_error
 
-        pg_conn = _PostgresConnection.__new__(_PostgresConnection)
-        inner = _TrackingConn()
-        pg_conn._conn = inner
-        pg_conn._dsn = "postgresql://fake/db"
+        pg_conn = _PostgresConnection(_TrackingConn(), "postgresql://fake/db")
         pg_conn._ensure_live = lambda: None
 
         original_reconnect = getattr(pg_conn, "_reconnect", None)
@@ -340,11 +334,9 @@ class TestCommitLossIsUnknownOutcome:
         class _ConstraintError(Exception):
             sqlstate = "23505"  # unique_violation — NOT a connection error
 
-        pg_conn = _PostgresConnection.__new__(_PostgresConnection)
-        pg_conn._conn = _FakePsycopgConn(
-            fail_commit=True, fail_commit_with=_ConstraintError("unique violation")
-        )
-        pg_conn._dsn = "postgresql://fake/db"
+        pg_conn = _PostgresConnection(
+            _FakePsycopgConn(fail_commit=True, fail_commit_with=_ConstraintError("unique violation")),
+            "postgresql://fake/db")
         pg_conn._ensure_live = lambda: None
 
         with pytest.raises(_ConstraintError):
@@ -359,33 +351,16 @@ class TestCommitLossIsUnknownOutcome:
 class TestIsPostgresRetryableWired:
     """Serialization failures and deadlocks retry the whole transaction fn."""
 
-    def _make_session_db_postgres(self):
+    def _make_session_db_postgres(self, tmp_path):
         """Return a minimally-wired SessionDB instance set to is_postgres mode."""
         import hermes_state
 
-        db = object.__new__(hermes_state.SessionDB)
-        db.__dict__.update(
-            {
-                "_is_postgres": True,
-                "_lock": __import__("threading").Lock(),
-                "_write_count": 0,
-                # Match the actual class constants so override-assignment is
-                # consistent with what _execute_write reads at runtime.
-                "_WRITE_PATIENCE_S": 5.0,
-                "_TRANSCRIPT_WRITE_PATIENCE_S": 10.0,
-                "_COMPRESSION_BUSY_WAIT_S": 2.0,
-                "_WRITE_RETRY_SLOW_AFTER_S": 0.5,
-                "_WRITE_RETRY_MIN_S": 0.01,
-                "_WRITE_RETRY_MAX_S": 0.05,
-                "_WRITE_RETRY_SLOW_MIN_S": 0.1,
-                "_WRITE_RETRY_SLOW_MAX_S": 0.3,
-                # FTS is disabled (False) on the Postgres path; _execute_write
-                # checks _write_count % class-level constants, which are fine
-                # as class attrs.
-                "_notadb_reconnect_attempted": False,
-                "_fts_enabled": False,
-            }
-        )
+        db = hermes_state.SessionDB(tmp_path / "state.db")
+        db._conn.close()
+        db._conn = None
+        db._is_postgres = True
+        db._wal_active = db._fts_enabled = False
+        db._WRITE_PATIENCE_S = 5.0
         return db
 
     def _make_fake_conn(self):
@@ -397,9 +372,9 @@ class TestIsPostgresRetryableWired:
         # Make execute("BEGIN IMMEDIATE") work (adapter translates to BEGIN)
         return conn
 
-    def test_serialization_failure_retries_whole_fn(self):
+    def test_serialization_failure_retries_whole_fn(self, tmp_path):
         """40001 serialization failure retries fn from the top of _execute_write."""
-        db = self._make_session_db_postgres()
+        db = self._make_session_db_postgres(tmp_path)
         fake_conn = self._make_fake_conn()
         db._conn = fake_conn
 
@@ -418,9 +393,9 @@ class TestIsPostgresRetryableWired:
         assert outcome == "done", "should succeed on retry"
         assert call_counts["fn"] == 2, "fn must be called twice (fail + retry)"
 
-    def test_deadlock_retries_whole_fn(self):
+    def test_deadlock_retries_whole_fn(self, tmp_path):
         """40P01 deadlock detected retries fn from the top of _execute_write."""
-        db = self._make_session_db_postgres()
+        db = self._make_session_db_postgres(tmp_path)
         fake_conn = self._make_fake_conn()
         db._conn = fake_conn
 
@@ -437,9 +412,9 @@ class TestIsPostgresRetryableWired:
         assert outcome == "done"
         assert call_counts["fn"] == 2
 
-    def test_non_retryable_postgres_error_propagates(self):
+    def test_non_retryable_postgres_error_propagates(self, tmp_path):
         """A non-retryable Postgres error (e.g. 23505) propagates immediately."""
-        db = self._make_session_db_postgres()
+        db = self._make_session_db_postgres(tmp_path)
         fake_conn = self._make_fake_conn()
         db._conn = fake_conn
 
@@ -457,9 +432,9 @@ class TestIsPostgresRetryableWired:
 
         assert call_counts["fn"] == 1, "non-retryable error must not retry"
 
-    def test_serialization_retry_exhaustion_propagates(self):
+    def test_serialization_retry_exhaustion_propagates(self, tmp_path):
         """When patience runs out, the serialization error propagates."""
-        db = self._make_session_db_postgres()
+        db = self._make_session_db_postgres(tmp_path)
         # Very short patience so the loop exits fast in the test
         db._WRITE_PATIENCE_S = 0.05
         db._WRITE_RETRY_SLOW_AFTER_S = 0.01
@@ -477,31 +452,11 @@ class TestIsPostgresRetryableWired:
         with pytest.raises(_FakeSerializationError):
             db._execute_write(_always_fails)
 
-    def test_sqlite_is_postgres_false_does_not_catch_generic_exceptions(self):
-        """On a SQLite-backed SessionDB, non-sqlite3 exceptions propagate unhandled."""
+    def test_sqlite_is_postgres_false_does_not_catch_generic_exceptions(self, tmp_path):
+        """SQLite writes propagate unrelated errors from their transaction callback."""
         import hermes_state
 
-        db = object.__new__(hermes_state.SessionDB)
-        db.__dict__.update(
-            {
-                "_is_postgres": False,
-                "_lock": __import__("threading").Lock(),
-                "_write_count": 0,
-                "_WRITE_PATIENCE_S": 5.0,
-                "_TRANSCRIPT_WRITE_PATIENCE_S": 10.0,
-                "_COMPRESSION_BUSY_WAIT_S": 2.0,
-                "_WRITE_RETRY_SLOW_AFTER_S": 0.5,
-                "_WRITE_RETRY_MIN_S": 0.01,
-                "_WRITE_RETRY_MAX_S": 0.05,
-                "_WRITE_RETRY_SLOW_MIN_S": 0.1,
-                "_WRITE_RETRY_SLOW_MAX_S": 0.3,
-                "_notadb_reconnect_attempted": False,
-                "_fts_enabled": False,
-            }
-        )
-
-        fake_conn = self._make_fake_conn()
-        db._conn = fake_conn
+        db = hermes_state.SessionDB(tmp_path / "state.db")
 
         class _RandomError(Exception):
             pass
@@ -509,8 +464,11 @@ class TestIsPostgresRetryableWired:
         def _failing_fn(conn):
             raise _RandomError("unrelated runtime error")
 
-        with pytest.raises(_RandomError):
-            db._execute_write(_failing_fn)
+        try:
+            with pytest.raises(_RandomError):
+                db._execute_write(_failing_fn)
+        finally:
+            db.close()
 
 
 # ---------------------------------------------------------------------------

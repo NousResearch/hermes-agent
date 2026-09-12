@@ -28,20 +28,27 @@ const DRAWER_SELECTOR = '[data-slot="composer-completion-drawer"]'
  * untinted frost on screen — a grey blurred rectangle that pops out at the end
  * instead of a band fading away.
  *
- * Engaged means the caret is in the composer, matching the stylesheet. Merely
- * holding window focus does not count: activating a window restores focus to
- * whatever had it last, so grabbing the bar to drag the HUD would otherwise
- * read as sitting down to use it. Queried live rather than tracked from
- * document.activeElement, which stays put when the window is blurred and would
- * latch the frost on forever once the user had ever typed here.
+ * Engaged means the caret is in the composer, and it is the SAME gate the
+ * `[data-hud-glass]` scrim runs on — the frost is what that scrim is painted
+ * over, so a frost the scrim doesn't cover is bare material. The caller used
+ * to widen this to "recent or held", which put the window's material up for
+ * the whole of a turn while the scrim stayed down: on a light theme that is a
+ * white slab under the band's unconditionally white ink, and there is nothing
+ * to read. One gate, or the two drift again.
+ *
+ * Merely holding window focus does not count: activating a window restores
+ * focus to whatever had it last, so grabbing the bar to drag the HUD would
+ * otherwise read as sitting down to use it. Queried live rather than tracked
+ * from document.activeElement, which stays put when the window is blurred and
+ * would latch the frost on forever once the user had ever typed here — the
+ * window's own focus changes are listened for so the query is re-run when
+ * `:focus` stops matching under an inactive window.
  *
  * Two vetoes sit over that:
  *
  * - `backing` — because the frost is the window and not the sheet, it is only
  *   ever right when the sheet covers the window; short of that the excess is
- *   frost over empty space. Gating the caller's `engaged` alone would not do
- *   it — focus turns the frost on by itself, which is how a brand new thread
- *   still frosted its whole empty window.
+ *   frost over empty space.
  * - An open completion drawer, which drops the band to 25% and blurs it
  *   (see the `composer-completion-drawer` rule in styles.css). Full-strength
  *   frost behind a band that has deliberately stepped back is the same bare
@@ -53,7 +60,7 @@ const DRAWER_SELECTOR = '[data-slot="composer-completion-drawer"]'
  * that answer lives in main (`hudFrostFor`) next to the state it reads. This
  * hook reports what the band is doing; it does not decide the material.
  */
-export function useHudGlass(rootRef: RefObject<HTMLElement | null>, engaged: boolean, backing: boolean): void {
+export function useHudGlass(rootRef: RefObject<HTMLElement | null>, backing: boolean): void {
   useEffect(() => {
     const root = rootRef.current
     const setFrost = window.hermesDesktop?.hud?.setFrost
@@ -66,9 +73,7 @@ export function useHudGlass(rootRef: RefObject<HTMLElement | null>, engaged: boo
 
     const apply = () => {
       const next =
-        backing &&
-        root.querySelector(DRAWER_SELECTOR) === null &&
-        (engaged || root.querySelector(TYPING_SELECTOR) !== null)
+        backing && root.querySelector(DRAWER_SELECTOR) === null && root.querySelector(TYPING_SELECTOR) !== null
 
       if (on !== next) {
         on = next
@@ -99,6 +104,12 @@ export function useHudGlass(rootRef: RefObject<HTMLElement | null>, engaged: boo
     apply()
     root.addEventListener('focusin', apply)
     root.addEventListener('focusout', apply)
+    // Clicking away to another APP fires no focusout — the composer stays
+    // document.activeElement — but `:focus` stops matching, so the scrim goes
+    // and the frost would be left behind as a bare slab. Deferred a frame so
+    // the query runs after the deactivation has landed.
+    window.addEventListener('blur', schedule)
+    window.addEventListener('focus', schedule)
 
     return () => {
       void setFrost(false)
@@ -110,6 +121,8 @@ export function useHudGlass(rootRef: RefObject<HTMLElement | null>, engaged: boo
 
       root.removeEventListener('focusin', apply)
       root.removeEventListener('focusout', apply)
+      window.removeEventListener('blur', schedule)
+      window.removeEventListener('focus', schedule)
     }
-  }, [backing, engaged, rootRef])
+  }, [backing, rootRef])
 }

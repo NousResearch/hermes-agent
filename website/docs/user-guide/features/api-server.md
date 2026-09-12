@@ -298,6 +298,15 @@ Requested capabilities outside that list are filtered out. Raw CDP, arbitrary
 script evaluation, console access, uploads, image extraction, and vision are not
 part of the controller protocol.
 
+Developer Mode does not widen this controller allowlist: `browser_evaluate` is
+retired and `browser_cdp` is never negotiated or dispatched over a controller
+transport. The separate direct `browser_cdp` tool remains a narrow read-only
+inspection path only for an explicitly configured CDP endpoint (which may be
+cloud-hosted). A provider-managed session URL does not add controller capabilities. Controller
+navigation uses the normal browser URL policy before dispatch (metadata endpoints
+are always blocked; private-address behavior follows the configured guard), and
+CDP target/frame/session routing parameters are rejected.
+
 When a request has no bound controller identity, or when the feature is disabled,
 Hermes preserves the existing browser backend. Once the gateway binds a
 controller principal and transport family to the request, that extension lane

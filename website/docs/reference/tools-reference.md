@@ -20,7 +20,7 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 |------|-------------|----------------------|
 | `browser_back` | Navigate back to the previous page in browser history. Requires browser_navigate to be called first. | — |
 | `browser_click` | Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first. | — |
-| `browser_console` | Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requi… | — |
+| `browser_console` | Get browser console output and JavaScript errors from the current page. The retired `expression` parameter is rejected: arbitrary page JavaScript could expose credentials or reach internal services. Use snapshots, vision, images, and dedicated browser actions for inspection and interaction. | — |
 | `browser_get_images` | Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with the vision tool. Requires browser_navigate to be called first. | — |
 | `browser_navigate` | Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). Use browser tools when you need… | — |
 | `browser_press` | Press a keyboard key. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts. Requires browser_navigate to be called first. | — |
@@ -31,12 +31,16 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 
 ## `browser` toolset (CDP-gated tools)
 
-These two tools live in the `browser` toolset but only register when a Chrome DevTools Protocol endpoint is reachable at session start — via `/browser connect`, `browser.cdp_url` config, a Browserbase session, or Camofox.
+These two tools live in the `browser` toolset but only register when an explicit Chrome DevTools Protocol override was configured at session start through `/browser connect` or `browser.cdp_url`. The endpoint may be local or cloud-hosted. A provider-managed per-session CDP URL (Browserbase, Browser Use, or Firecrawl) is not automatically surfaced; Camofox and the default local agent-browser have no such override. `browser_cdp` is deliberately a read-only, browser-level allowlist rather than a raw CDP escape hatch, so attached pages cannot use Hermes to run script, navigate, or reach internal services.
+
+`browser_cdp` is direct explicitly configured CDP inspection only, never a
+browser-extension/controller capability (including Developer Mode). Arbitrary
+browser evaluation is retired.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `browser_cdp` | Send a raw Chrome DevTools Protocol command. Escape hatch for browser operations not covered by the higher-level `browser_*` tools. See https://chromedevtools.github.io/devtools-protocol/ | CDP endpoint |
-| `browser_dialog` | Respond to a native JavaScript dialog (alert / confirm / prompt / beforeunload). Call `browser_snapshot` first — pending dialogs appear in its `pending_dialogs` field. Then call `browser_dialog(action='accept'\|'dismiss')`. | CDP endpoint |
+| `browser_cdp` | Read-only CDP inspection: only parameterless `Browser.getVersion` and `Target.getTargets` are allowed. Page targeting, frame routing, scripting/evaluation, navigation, DOM, cookie, and network commands are rejected. | Explicit CDP override |
+| `browser_dialog` | Respond to a native JavaScript dialog (alert / confirm / prompt / beforeunload). Call `browser_snapshot` first — pending dialogs appear in its `pending_dialogs` field. Then call `browser_dialog(action='accept'\|'dismiss')`. | Explicit CDP override |
 
 ## `clarify` toolset
 

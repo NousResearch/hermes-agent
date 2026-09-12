@@ -27,11 +27,11 @@ BROWSER_DIALOG_SCHEMA: Dict[str, Any] = {
         "**Multiple dialogs:** if more than one dialog is queued (rare — "
         "happens when a second dialog fires while the first is still open), "
         "pass ``dialog_id`` from the snapshot to disambiguate.\n\n"
-        "**Availability:** only present when a CDP-capable backend is "
-        "attached — Browserbase sessions, local Chromium-family browser via "
-        "``/browser connect``, or ``browser.cdp_url`` in config.yaml. "
-        "Not available on Camofox (REST-only) or the default Playwright "
-        "local browser (CDP port is hidden)."
+        "**Availability:** only present when an explicit CDP override was "
+        "configured at session start through ``/browser connect`` or "
+        "``browser.cdp_url`` in config.yaml. The endpoint may be cloud-hosted; "
+        "a provider-managed per-session CDP URL is not automatically surfaced. "
+        "Camofox and the default Playwright local browser do not expose this tool."
     ),
     "parameters": {
         "type": "object",

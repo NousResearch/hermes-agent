@@ -20,7 +20,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 |------|------|----------|
 | `browser_back` | 在浏览器历史记录中导航回上一页。需先调用 `browser_navigate`。 | — |
 | `browser_click` | 点击快照中由 ref ID 标识的元素（如 `@e5`）。ref ID 显示在快照输出的方括号中。需先调用 `browser_navigate` 和 `browser_snapshot`。 | — |
-| `browser_console` | 获取当前页面的浏览器控制台输出和 JavaScript 错误。返回 `console.log`/`warn`/`error`/`info` 消息及未捕获的 JS 异常。用于检测静默 JavaScript 错误、失败的 API 调用和应用警告。需先调用… | — |
+| `browser_console` | 获取当前页面的浏览器控制台输出和 JavaScript 错误。已弃用的 `expression` 参数会被拒绝：任意页面 JavaScript 可能泄露凭据或访问内部服务。请使用快照、视觉、图片和专用浏览器操作进行检查与交互。 | — |
 | `browser_get_images` | 获取当前页面所有图片的列表，包含 URL 和 alt 文本。可用于查找供 vision 工具分析的图片。需先调用 `browser_navigate`。 | — |
 | `browser_navigate` | 在浏览器中导航到某个 URL，初始化会话并加载页面。必须在其他浏览器工具之前调用。对于简单信息检索，优先使用 `web_search` 或 `web_extract`（更快、更省）。当需要… 时使用浏览器工具。 | — |
 | `browser_press` | 按下键盘按键。适用于提交表单（Enter）、导航（Tab）或键盘快捷键。需先调用 `browser_navigate`。 | — |
@@ -31,12 +31,14 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `browser` 工具集（CDP 门控工具）
 
-这两个工具属于 `browser` 工具集，但仅在会话启动时可访问 Chrome DevTools Protocol（CDP）端点时才注册——通过 `/browser connect`、`browser.cdp_url` 配置、Browserbase 会话或 Camofox。
+这两个工具属于 `browser` 工具集，但仅在会话启动时通过 `/browser connect` 或 `browser.cdp_url` 配置显式 Chrome DevTools Protocol 覆盖时才注册。端点可以在本地或云端托管。Browserbase、Browser Use 或 Firecrawl 的 provider 托管每会话 CDP URL 不会自动暴露；Camofox 和默认本地 agent-browser 没有此类覆盖。`browser_cdp` 有意采用只读、浏览器级允许列表，而不是原始 CDP 逃生舱口，以防附加页面借助 Hermes 运行脚本、导航或访问内部服务。
+
+`browser_cdp` 仅用于显式配置的 CDP 直接检查，绝不是浏览器扩展/控制器能力（包括开发者模式）。任意浏览器求值已退役。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
-| `browser_cdp` | 发送原始 Chrome DevTools Protocol 命令。用于高层 `browser_*` 工具未覆盖的浏览器操作的逃生舱口。参见 https://chromedevtools.github.io/devtools-protocol/ | CDP 端点 |
-| `browser_dialog` | 响应原生 JavaScript 对话框（alert / confirm / prompt / beforeunload）。先调用 `browser_snapshot`——待处理的对话框会出现在其 `pending_dialogs` 字段中。然后调用 `browser_dialog(action='accept'\|'dismiss')`。 | CDP 端点 |
+| `browser_cdp` | 只读 CDP 检查：仅允许无参数的 `Browser.getVersion` 和 `Target.getTargets`。页面定位、帧路由、脚本/执行、导航、DOM、Cookie 和网络命令均会被拒绝。 | 显式 CDP 覆盖 |
+| `browser_dialog` | 响应原生 JavaScript 对话框（alert / confirm / prompt / beforeunload）。先调用 `browser_snapshot`——待处理的对话框会出现在其 `pending_dialogs` 字段中。然后调用 `browser_dialog(action='accept'\|'dismiss')`。 | 显式 CDP 覆盖 |
 
 ## `clarify` 工具集
 

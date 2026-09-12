@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Raw Chrome DevTools Protocol (CDP) passthrough tool ``browser_cdp``.
-
-Sends arbitrary CDP commands to the browser's DevTools WebSocket when a CDP URL is
-configured (``/browser connect`` → ``BROWSER_CDP_URL``, ``browser.cdp_url``, or a
-CDP-backed cloud session). Escape hatch for operations the main browser tools don't
-cover. Method reference: https://chromedevtools.github.io/devtools-protocol/
-"""
+"""Read-only Chrome DevTools Protocol (CDP) inspection tool ``browser_cdp``."""
 from __future__ import annotations
 
 import asyncio
@@ -20,12 +14,13 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
-# Browser/target inspection that never reads page body/cookies/DOM/storage — stays
-# usable so the model can list tabs or navigate away from a blocked page.
-_CDP_PRIVATE_PAGE_ALLOWED_METHODS = {
-    "Browser.getVersion", "Target.getTargets", "Target.attachToTarget", "Target.detachFromTarget",
-    "Page.navigate", "Page.reload", "Page.stopLoading",
-}
+# This is a capability allowlist, not a denylist: each method is browser-level,
+# parameterless, read-only, and cannot access page content or create state.
+_CDP_READ_ONLY_METHODS = frozenset({"Browser.getVersion", "Target.getTargets"})
+CDP_CAPABILITY_ERROR = (
+    "Blocked: browser_cdp only permits read-only inspection methods "
+    "(Browser.getVersion, Target.getTargets)."
+)
 
 # method → result paths that are ALWAYS opaque base64 (protocol-declared binary).
 # redact_sensitive_text's Fernet pattern ("gAAAA" + base64 alphabet) can match arbitrary
@@ -115,52 +110,10 @@ def _blocked(message: str, method: str) -> str:
     return tool_error(message, method=method, cdp_docs=CDP_DOCS_URL)
 
 
-def _expression_private_target(expression: str) -> Optional[str]:
-    from tools.browser_tool_eval_policy import _expression_targets_private_url
-    return _expression_targets_private_url(expression)
-
-
-def _navigate_private_target(bt: Any, params: Dict[str, Any]) -> Optional[str]:
-    """Blocked URL literal for ``Page.navigate`` params, else ``None``."""
-    from tools.browser_tool_eval_policy import _url_blocked
-    target_url = str(params.get("url") or "").strip()
-    return target_url if target_url and _url_blocked(bt, target_url) else None
-
-
-# method → (probe(bt, params) -> blocked literal | None, error template)
-_METHOD_PARAM_GUARDS = {
-    "Page.navigate": (_navigate_private_target,
-                      "Blocked: CDP Page.navigate target is a private or internal address ({})."),
-    "Runtime.evaluate": (lambda bt, params: _expression_private_target(str(params.get("expression") or "")),
-                         "Blocked: CDP Runtime.evaluate expression targets a private or internal address ({})."),
-}
-
-
-def _browser_cdp_private_guard(*, task_id: str, method: str, params: Dict[str, Any]) -> Optional[str]:
-    """Apply the browser SSRF/private-page guard to raw CDP calls.
-
-    Raw CDP shares the cloud/private-network boundary of ``browser_snapshot`` /
-    ``browser_console`` / ``browser_eval`` and must not become their bypass. Probes are
-    best-effort; a probe failure never breaks local/custom CDP workflows.
-    """
-    try:
-        from tools import browser_tool as bt  # type: ignore[import-not-found]
-        from tools import browser_tool_eval_policy as policy
-        if not policy._eval_ssrf_guard_active(task_id):
-            return None
-        guard = _METHOD_PARAM_GUARDS.get(method)
-        if guard is not None:
-            probe, template = guard
-            literal = probe(bt, params or {})
-            if literal:
-                return _blocked(template.format(literal), method)
-        if method not in _CDP_PRIVATE_PAGE_ALLOWED_METHODS:
-            blocked_url = policy._current_page_private_url(task_id)
-            if blocked_url:
-                return _blocked(f"Blocked: page URL targets a private or internal address ({blocked_url}). "
-                                f"Raw CDP method {method!r} could expose private page content or state.", method)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("browser_cdp: private-page guard probe failed: %s", exc)
+def _validate_cdp_capability(method: Any, params: Any, target_id: Optional[str], frame_id: Optional[str]) -> Optional[str]:
+    """Return the stable refusal unless this request is one of the safe capabilities."""
+    if method not in _CDP_READ_ONLY_METHODS or params not in (None, {}) or target_id or frame_id:
+        return CDP_CAPABILITY_ERROR
     return None
 
 
@@ -257,22 +210,11 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
 
 def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id: Optional[str] = None,
                 frame_id: Optional[str] = None, timeout: float = 30.0, task_id: Optional[str] = None) -> str:
-    """Send a raw CDP command (see ``CDP_DOCS_URL``). ``target_id`` attaches a fresh stateless connection
-    to a tab; ``frame_id`` (OOPIF from ``browser_snapshot.frame_tree``) routes through the supervisor's live
-    WebSocket instead — the only reliable way to evaluate inside an iframe where fresh per-call connections
-    hit signed-URL expiry (Browserbase). Both paths share the same private-page/SSRF guard. Returns JSON
-    ``{"success": True, "method", "result"}`` or ``{"error": ...}``."""
-    effective_task_id = task_id or "default"
-
-    if frame_id:
-        blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=params or {})
-        if blocked:
-            return blocked
-        return _browser_cdp_via_supervisor(task_id=effective_task_id, frame_id=frame_id, method=method,
-                                           params=params, timeout=timeout)
-
+    """Run one safe browser-level CDP inspection command and return JSON."""
     if not method or not isinstance(method, str):
         return tool_error("'method' is required (e.g. 'Target.getTargets')", cdp_docs=CDP_DOCS_URL)
+    if capability_error := _validate_cdp_capability(method, params, target_id, frame_id):
+        return tool_error(capability_error)
     if not _WS_AVAILABLE:
         return tool_error("The 'websockets' Python package is required but not installed. "
                           "Install it with: pip install websockets")
@@ -285,13 +227,7 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         return tool_error(f"CDP endpoint is not a WebSocket URL: {endpoint!r}. Expected ws://... or wss://... — "
                           "the /browser connect resolver should have rewritten this. Check that a Chromium-family "
                           "browser is actually listening on the debug port.")
-    call_params: Dict[str, Any] = params or {}
-    if not isinstance(call_params, dict):
-        return tool_error(f"'params' must be an object/dict, got {type(call_params).__name__}")
-
-    blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=call_params)
-    if blocked:
-        return blocked
+    call_params: Dict[str, Any] = {}
 
     try:
         safe_timeout = float(timeout) if timeout else 30.0
@@ -322,53 +258,23 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
 BROWSER_CDP_SCHEMA: Dict[str, Any] = {
     "name": "browser_cdp",
     "description": (
-        "Send a raw Chrome DevTools Protocol (CDP) command. Escape hatch for browser operations not covered "
-        "by browser_navigate, browser_click, browser_console, etc.\n\n"
-        "**Requires a reachable CDP endpoint.** Available when the user has run '/browser connect' to attach "
-        "to a running Chrome, Brave, Chromium, or Edge browser, or when 'browser.cdp_url' is set in "
-        "config.yaml. Not currently wired up for cloud backends (Browserbase, Browser Use, Firecrawl) — "
-        "those expose CDP per session but live-session routing is a follow-up. Camofox is REST-only and "
-        "will never support CDP. If the tool is in your toolset at all, a CDP endpoint is already reachable.\n\n"
-        f"**CDP method reference:** {CDP_DOCS_URL} — use web_extract on a method's URL "
-        "(e.g. '/tot/Page/#method-handleJavaScriptDialog') to look up parameters and return shape.\n\n"
-        "**Common patterns:**\n"
+        "Read-only Chrome DevTools Protocol (CDP) browser inspection. Only Browser.getVersion and "
+        "Target.getTargets are supported; arbitrary CDP commands, page targeting, navigation, network, DOM "
+        "changes, scripting, and JavaScript evaluation are blocked. Use the dedicated browser tools for "
+        "navigation, snapshots, vision, and actions.\n\n"
+        "**Requires an explicit CDP override.** Available when the user has run '/browser connect' or set "
+        "'browser.cdp_url' in config.yaml. The endpoint may be local or cloud-hosted. A cloud provider's "
+        "managed per-session CDP URL is not automatically surfaced to this tool. Camofox is REST-only. "
+        "If the tool is in your toolset at all, an explicit CDP endpoint is configured.\n\n"
+        "**Available patterns:**\n"
         "- List tabs: method='Target.getTargets', params={}\n"
-        "- Handle a native JS dialog: method='Page.handleJavaScriptDialog', "
-        "params={'accept': true, 'promptText': ''}, target_id=<tabId>\n"
-        "- Get all cookies: method='Network.getAllCookies', params={}\n"
-        "- Eval in a specific tab: method='Runtime.evaluate', params={'expression': '...', 'returnByValue': true}, "
-        "target_id=<tabId>\n"
-        "- Set viewport for a tab: method='Emulation.setDeviceMetricsOverride', "
-        "params={'width': 1280, 'height': 720, 'deviceScaleFactor': 1, 'mobile': false}, target_id=<tabId>\n\n"
-        "**Usage rules:**\n"
-        "- Browser-level methods (Target.*, Browser.*, Storage.*): omit target_id and frame_id.\n"
-        "- Page-level methods (Page.*, Runtime.*, DOM.*, Emulation.*, Network.* scoped to a tab): pass "
-        "target_id from Target.getTargets.\n"
-        "- **Cross-origin iframe scope** (Runtime.evaluate inside an OOPIF, Page.* targeting a frame target, "
-        "etc.): pass frame_id from the browser_snapshot frame_tree output. This routes through the CDP "
-        "supervisor's live connection — the only reliable way on Browserbase where stateless CDP calls hit "
-        "signed-URL expiry.\n"
-        "- Each stateless call (without frame_id) is independent — sessions and event subscriptions do not "
-        "persist between calls. For stateful workflows, prefer the dedicated browser tools or use frame_id "
-        "routing."
+        "- Inspect browser version: method='Browser.getVersion', params={}"
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "method": {"type": "string", "description": (
-                "CDP method name, e.g. 'Target.getTargets', 'Runtime.evaluate', 'Page.handleJavaScriptDialog'.")},
-            "params": {"type": "object", "properties": {}, "additionalProperties": True, "description": (
-                "Method-specific parameters as a JSON object. Omit or pass {} for methods that take no parameters.")},
-            "target_id": {"type": "string", "description": (
-                "Optional. Target/tab ID from Target.getTargets result (each entry's 'targetId'). Use for "
-                "page-level methods at the top-level tab scope. Mutually exclusive with frame_id.")},
-            "frame_id": {"type": "string", "description": (
-                "Optional. Out-of-process iframe (OOPIF) frame_id from browser_snapshot.frame_tree.children[] "
-                "where is_oopif=true. When set, routes the call through the CDP supervisor's live session for "
-                "that iframe. Essential for Runtime.evaluate inside cross-origin iframes, especially on "
-                "Browserbase where fresh per-call CDP connections can't keep up with signed URL rotation. For "
-                "same-origin iframes, use parent contentWindow/contentDocument from Runtime.evaluate at the "
-                "top-level page instead.")},
+            "method": {"type": "string", "enum": sorted(_CDP_READ_ONLY_METHODS), "description": "Browser.getVersion or Target.getTargets."},
+            "params": {"type": "object", "properties": {}, "additionalProperties": False, "description": "Omit or pass {}."},
             "timeout": {"type": "number", "default": 30, "description": "Timeout in seconds (default 30, max 300)."},
         },
         "required": ["method"],
@@ -390,18 +296,29 @@ def _browser_cdp_check() -> bool:
     return bool(check_browser_requirements() and _get_cdp_override_raw())
 
 
+def _browser_cdp_handler(args: Dict[str, Any], **kw: Any) -> str:
+    """Apply the raw-CDP capability floor before any controller can route it."""
+    method = args.get("method", "")
+    params = args.get("params")
+    target_id = args.get("target_id")
+    frame_id = args.get("frame_id")
+    if capability_error := _validate_cdp_capability(method, params, target_id, frame_id):
+        return tool_error(capability_error)
+    return routed_browser_handler(
+        "browser_cdp", args,
+        fallback=lambda: browser_cdp(
+            method=method, params=params, target_id=target_id, frame_id=frame_id,
+            timeout=args.get("timeout", 30.0), task_id=kw.get("task_id"),
+        ),
+        task_id=kw.get("task_id"), session_id=kw.get("session_id"),
+    )
+
+
 registry.register(
     name="browser_cdp",
     toolset="browser-cdp",
     schema=BROWSER_CDP_SCHEMA,
-    handler=lambda args, **kw: routed_browser_handler(
-        "browser_cdp", args,
-        fallback=lambda: browser_cdp(
-            method=args.get("method", ""), params=args.get("params"), target_id=args.get("target_id"),
-            frame_id=args.get("frame_id"), timeout=args.get("timeout", 30.0), task_id=kw.get("task_id"),
-        ),
-        task_id=kw.get("task_id"), session_id=kw.get("session_id"),
-    ),
+    handler=_browser_cdp_handler,
     check_fn=_browser_cdp_check,
     emoji="🧪",
 )

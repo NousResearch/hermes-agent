@@ -436,6 +436,14 @@ class TestIsAlwaysBlockedUrl:
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
         assert is_always_blocked_url("http://169.254.169.254/") is True
 
+    @pytest.mark.parametrize("host", [
+        "2852039166", "0xA9FEA9FE", "0251.0376.0251.0376", "0xa9.0376.0xA9.254",
+        "%31%36%39.254.169.254", "0%78A9FEA9FE",
+    ])
+    def test_chromium_ipv4_metadata_aliases_block_without_dns(self, monkeypatch, host):
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *_args, **_kwargs: pytest.fail("alias must not use DNS"))
+        assert is_always_blocked_url(f"http://{host}/latest/meta-data/") is True
+
 
 class TestIPv4MappedIPv6SSRF:
     """Regression tests for SSRF bypass via IPv4-mapped IPv6 addresses.

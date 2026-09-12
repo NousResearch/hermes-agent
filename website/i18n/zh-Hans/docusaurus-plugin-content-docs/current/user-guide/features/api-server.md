@@ -231,6 +231,14 @@ OpenAI Responses API 格式。通过 `previous_response_id` 支持服务端对�
 
 公开的 `/health` 路由仍是低开销的存活探针，不运行就绪检查。就绪状态降级时仍返回 HTTP 200；请检查顶层 `status` 和 `readiness.checks` 字段。
 
+## 浏览器扩展控制
+
+Hermes 可以通过已认证的浏览器扩展控制当前 Hermes session 关联的浏览器。该功能默认关闭；将 `browser.extension_control.enabled` 设为 `true` 后才会启用。
+
+通过 `GET /v1/capabilities` 获取实际允许的控制器能力。控制器仅能协商公开的导航、点击、输入、滚动、截图、快照和标签页操作；原始 CDP、任意脚本求值、控制台访问、上传、图像提取和视觉不属于控制器协议。
+
+开发者模式不会扩大这个列表：`browser_evaluate` 已退役，`browser_cdp` 不会通过控制器协商或分发。单独的直接 `browser_cdp` 工具仅适用于显式配置的 CDP 端点（可托管在云端），且只提供窄范围的只读检查。provider 托管会话 URL 不会增加控制器能力。控制器导航会在分发前应用标准 URL 策略：元数据端点始终被阻止，私有地址则遵循已配置的策略；CDP 的 target/frame/session 路由参数同样会被拒绝。
+
 ## Runs API（流式友好的替代方案）
 
 除 `/v1/chat/completions` 和 `/v1/responses` 外，服务器还暴露了一个 **runs** API，适用于客户端希望订阅进度事件而非自行管理流式传输的长时 session。

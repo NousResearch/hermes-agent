@@ -9,25 +9,23 @@
 原生 JS 对话框（`alert`/`confirm`/`prompt`/`beforeunload`）和 iframe 是我们浏览器工具中最大的两个缺口：
 
 1. **对话框会阻塞 JS 线程。** 页面上的任何操作都会挂起，直到对话框被处理。在此工作之前，agent 无法感知对话框是否已打开——后续的工具调用会挂起或抛出不透明的错误。
-2. **iframe 不可见。** Agent 可以在 DOM 快照中看到 iframe 节点，但无法在其中点击、输入或执行 eval——尤其是运行在独立 Chromium 进程中的跨域（OOPIF）iframe。
+2. **iframe 不可见。** Agent 可以在 DOM 快照中看到 iframe 节点；supervisor 为观察跨域（OOPIF）iframe 而附加 CDP 会话，但有意不暴露原始 CDP 或 JavaScript 执行路径。
 
 [PR #12550](https://github.com/NousResearch/hermes-agent/pull/12550) 提出了一个无状态的 `browser_dialog` 包装器。该方案无法解决检测问题——它只是在 agent 已经（通过症状）知道对话框已打开时，提供了一个更简洁的 CDP 调用。已作为被取代方案关闭。
 
 ## 后端能力矩阵（2026-04-23 实测验证）
 
-使用一次性探测脚本，针对一个在主框架和同源 srcdoc iframe 中触发 alert 的 data-URL 页面，以及一个跨域 `https://example.com` iframe 进行测试：
+supervisor 会为任何附加 CDP URL 的浏览器任务保持持久 WebSocket，并将待处理对话框和框架结构加入 `browser_snapshot`。`browser_dialog` 和只读 `browser_cdp` 仅在会话启动时通过 `/browser connect` 或 `browser.cdp_url` 配置显式覆盖时注册；端点可托管在云端。provider 托管的每会话 CDP URL 不会自动作为该覆盖暴露。
 
-| 后端 | 对话框检测 | 对话框响应 | 框架树 | OOPIF `Runtime.evaluate`（通过 `browser_cdp(frame_id=...)`） |
+| 后端 | 对话框检测 | 对话框响应 | 框架树 | 原始 CDP / eval 暴露 |
 |---|---|---|---|---|
-| 本地 Chrome（`--remote-debugging-port`）/ `/browser connect` | ✓ | ✓ 完整流程 | ✓ | ✓ |
-| Browserbase | ✓（通过 bridge） | ✓ 完整流程（通过 bridge） | ✓ | ✓（`document.title = "Example Domain"` 已在真实跨域 iframe 上验证） |
-| Camofox | ✗ 无 CDP（仅 REST） | ✗ | 通过 DOM 快照部分支持 | ✗ |
+| 显式 `/browser connect` 或 `browser.cdp_url` 覆盖（本地或云端托管） | ✓ | ✓ 完整流程 | ✓ | 仅只读浏览器检查 |
+| provider 托管的 Browserbase、Browser Use、Firecrawl 会话 CDP | 附加时 ✓ | ✗ 不会自动注册 | 附加时 ✓ | ✗ |
+| Camofox / 默认本地 agent-browser | ✗ 无 CDP 端点 | ✗ | 通过 DOM 快照部分支持 | ✗ |
 
-**Browserbase 响应的工作原理。** Browserbase 的 CDP 代理在内部使用 Playwright，并在约 10ms 内自动关闭原生对话框，因此 `Page.handleJavaScriptDialog` 无法跟上。为解决此问题，supervisor 通过 `Page.addScriptToEvaluateOnNewDocument` 注入一个 bridge 脚本，将 `window.alert`/`confirm`/`prompt` 覆盖为向魔法主机（`hermes-dialog-bridge.invalid`）发起的同步 XHR。`Fetch.enable` 在这些 XHR 触达网络之前将其拦截——对话框变成 supervisor 捕获的 `Fetch.requestPaused` 事件，`respond_to_dialog` 通过 `Fetch.fulfillRequest` 以 JSON 响应体完成请求，注入的脚本对其进行解码。
+只读直接检查路径仅适用于显式配置的 CDP 传输。浏览器控制器协议（包括开发者模式）绝不协商或分派原始 CDP 或任意求值。
 
-最终效果：从页面角度看，`prompt()` 仍然返回 agent 提供的字符串。从 agent 角度看，无论哪种方式，都是同一套 `browser_dialog(action=...)` API。已针对真实 Browserbase 会话进行端到端测试——4/4（alert/prompt/confirm-accept/confirm-dismiss）全部通过，包括值回传到页面 JS 的验证。
-
-Camofox 在本 PR 中暂不支持；计划在 `jo-inc/camofox-browser` 提交上游 issue，请求添加对话框轮询端点。
+**云端会话边界。** 云端 provider 的每会话 CDP URL 可附加 supervisor 并添加快照字段，但不会自动注册直接工具。通过 `/browser connect` 或 `browser.cdp_url` 显式配置该 URL 才可选择只读检查和对话框响应工具。Camofox 没有 CDP 端点。
 
 ## 架构
 
@@ -36,7 +34,7 @@ Camofox 在本 PR 中暂不支持；计划在 `jo-inc/camofox-browser` 提交上
 每个 Hermes `task_id` 对应一个在后台守护线程中运行的 `asyncio.Task`。持有一个到后端 CDP 端点的持久 WebSocket 连接。维护：
 
 - **对话框队列** — `List[PendingDialog]`，包含 `{id, type, message, default_prompt, session_id, opened_at}`
-- **框架树** — `Dict[frame_id, FrameInfo]`，包含父子关系、URL、origin，以及是否为跨域子会话
+- **框架树** — `Dict[frame_id, FrameInfo]`，包含父子关系、URL、origin，以及是否存在用于 supervisor 观察的跨域子会话
 - **会话映射** — `Dict[session_id, SessionInfo]`，供交互工具将操作路由到正确的已附加会话以执行 OOPIF 操作
 - **近期控制台错误** — 最近 50 条的环形缓冲区（用于 PR 2 诊断）
 
@@ -49,7 +47,7 @@ Camofox 在本 PR 中暂不支持；计划在 `jo-inc/camofox-browser` 提交上
 
 ### 生命周期
 
-- **启动：** `SupervisorRegistry.get_or_start(task_id, cdp_url)` — 由 `browser_navigate`、Browserbase 会话创建、`/browser connect` 调用。幂等。
+- **启动：** `SupervisorRegistry.get_or_start(task_id, cdp_url)` — 当任务附加显式覆盖或 provider 会话 CDP URL 时调用。幂等。
 - **停止：** 会话拆除或 `/browser disconnect`。取消 asyncio task，关闭 WebSocket，丢弃状态。
 - **重新绑定：** 若 CDP URL 变更（用户重新连接到新的 Chrome），停止旧 supervisor 并重新启动——绝不跨端点复用状态。
 
@@ -101,23 +99,21 @@ browser_dialog(action, prompt_text=None, dialog_id=None)
 }
 ```
 
-- **`pending_dialogs`**：当前阻塞页面 JS 线程的对话框。Agent 必须调用 `browser_dialog(action=...)` 进行响应。在 Browserbase 上为空，因为其 CDP 代理会在约 10ms 内自动关闭对话框。
+- **`pending_dialogs`**：当前阻塞页面 JS 线程的对话框。Agent 必须调用 `browser_dialog(action=...)` 进行响应。
 
-- **`recent_dialogs`**：最近关闭的最多 20 个对话框的环形缓冲区，带有 `closed_by` 标签——`"agent"`（我们响应了）、`"auto_policy"`（本地 auto_dismiss/auto_accept）、`"watchdog"`（must_respond 超时触发）或 `"remote"`（浏览器/后端主动关闭，例如 Browserbase）。这是 Browserbase 上的 agent 仍能了解发生了什么的方式。
+- **`recent_dialogs`**：最近关闭的最多 20 个对话框的环形缓冲区，带有 `closed_by` 标签——`"agent"`（我们响应了）、`"auto_policy"`（本地 auto_dismiss/auto_accept）、`"watchdog"`（must_respond 超时触发）或 `"remote"`（浏览器/后端主动关闭）。
 
-- **`frame_tree`**：框架结构，包括跨域（OOPIF）子框架。上限为 30 条 + OOPIF 深度 2，以限制广告密集页面上的快照大小。当达到限制时，`truncated: true` 会出现；需要完整树的 agent 可使用 `browser_cdp` 配合 `Page.getFrameTree`。
+- **`frame_tree`**：框架结构，包括跨域（OOPIF）子框架。上限为 30 条 + OOPIF 深度 2，以限制广告密集页面上的快照大小。当达到限制时，`truncated: true` 会出现；请使用快照和专用浏览器操作继续交互。
 
 以上均不新增工具 schema 接口——agent 从其已请求的快照中读取。
 
 ### 可用性门控
 
-两个接口均通过 `_browser_cdp_check` 进行门控（supervisor 只能在 CDP 端点可达时运行）。在 Camofox / 无后端会话中，对话框工具被隐藏，快照省略新字段——不产生 schema 膨胀。
+`browser_cdp` 和 `browser_dialog` 均通过 `_browser_cdp_check` 门控：仅在会话启动时通过 `/browser connect` 或 `browser.cdp_url` 配置显式 CDP 覆盖时注册，端点可托管在云端。provider 托管会话 URL 本身不会注册它们。另一方面，任何附加 CDP 会话都可启动 supervisor，因此云端会话可能显示其快照字段；Camofox 和默认本地 agent-browser 会省略这些字段。
 
-## 跨域 iframe 交互
+## 跨域 iframe 边界
 
-在对话框检测工作的基础上，`browser_cdp(frame_id=...)` 通过 supervisor 已连接的 WebSocket，使用 OOPIF 的子 `sessionId` 路由 CDP 调用（尤其是 `Runtime.evaluate`）。Agent 从 `browser_snapshot.frame_tree.children[]` 中 `is_oopif=true` 的条目获取 frame_id，并将其传递给 `browser_cdp`。对于同源 iframe（无专用 CDP 会话），agent 改用顶层 `Runtime.evaluate` 中的 `contentWindow`/`contentDocument`——当 `frame_id` 属于非 OOPIF 时，supervisor 会返回指向该回退方案的错误。
-
-在 Browserbase 上，这是 iframe 交互的**唯一**可靠路径——无状态 CDP 连接（每次 `browser_cdp` 调用时打开）会遭遇签名 URL 过期，而 supervisor 的长连接则保持有效会话。
+supervisor 保留子 CDP 会话以观察对话框和帧结构，而不提供执行传输。`browser_cdp` 仅接受狭窄的只读浏览器级允许列表（`Browser.getVersion`、`Target.getTargets`），并拒绝 target 与 `frame_id`。`browser_console(expression=...)` 同样已禁用。这可防止附加或恶意页面借助 iframe 路由执行代码、访问凭据或访问内部服务。
 
 ## Camofox（后续跟进）
 
@@ -153,8 +149,8 @@ browser_dialog(action, prompt_text=None, dialog_id=None)
 - 向用户实时流式传输对话框/框架事件（需要 gateway 钩子）
 - 跨会话持久化对话框历史（仅内存）
 - 按 iframe 配置对话框策略（agent 可通过 `dialog_id` 表达）
-- 替换 `browser_cdp`——它作为长尾场景（cookies、viewport、网络限速）的逃生舱口继续保留
+- 将 `browser_cdp` 扩展到只读浏览器级允许列表之外
 
 ## 测试
 
-单元测试使用 asyncio 模拟 CDP 服务器，该服务器实现了足够的协议子集，以覆盖所有状态转换：附加、启用、导航、对话框触发、对话框关闭、框架附加/分离、子 target 附加、会话拆除。真实后端端到端测试（Browserbase + 本地 Chromium 系浏览器）为手动执行——通过 `/browser connect` 连接到实时 Chromium 系浏览器，并运行上述对话框/框架测试用例。
+单元测试使用 asyncio 模拟 CDP 服务器，该服务器实现了足够的协议子集，以覆盖所有状态转换：附加、启用、导航、对话框触发、对话框关闭、框架附加/分离、子 target 附加、会话拆除。手动端到端测试通过 `/browser connect` 连接到实时 Chromium 系浏览器，并运行上述对话框/框架测试用例。provider 托管的云端 CDP 单独作为快照-supervisor 路径覆盖；显式配置的云端端点与本地端点遵循相同的直接工具边界。

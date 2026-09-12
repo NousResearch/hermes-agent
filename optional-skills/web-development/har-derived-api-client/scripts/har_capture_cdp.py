@@ -15,8 +15,9 @@ Usage:
   python3 har_capture_cdp.py <cdp_url> <output.har> [--wait S] \
       [--goto URL] [--action "fill:SEL:TEXT"] [--action "click:SEL"] ...
 
-<cdp_url> is the ws:// or http:// CDP endpoint. For Hermes: run
-`/browser connect` to see the active endpoint, or read BROWSER_CDP_URL.
+<cdp_url> is the ws:// or http:// CDP endpoint. For Hermes, explicitly supply
+an endpoint with `/browser connect <url>`, BROWSER_CDP_URL, or browser.cdp_url;
+provider-managed cloud session endpoints are not automatically printed or exposed.
 """
 import argparse
 import base64

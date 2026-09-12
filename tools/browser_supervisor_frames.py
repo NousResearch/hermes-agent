@@ -2,8 +2,9 @@
 
 Maintains ``CDPSupervisor._frames`` from ``Page.frame*`` and ``Target.*``
 events and renders the bounded ``frame_tree`` snapshot payload. ``FrameInfo``
-entries for OOPIFs carry the child CDP session id so ``browser_cdp(frame_id=)``
-can route calls into the iframe over the supervisor's live socket.
+entries for OOPIFs carry the child CDP session id so internal supervisor operations
+can route calls into the iframe over the supervisor's live socket. The public
+``browser_cdp`` tool deliberately does not accept frame routing.
 """
 
 from __future__ import annotations

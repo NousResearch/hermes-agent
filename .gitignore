@@ -217,6 +217,8 @@ infographics/
 infograficos/
 infografico/
 native/fts5_cjk/*.so
+# Personal Claude Code hook/permission overrides — not shared with the team.
+.claude/settings.local.json
 # Runtime marker written by hermes update when a lazy dependency refresh is
 # interrupted; consumed by launch-time recovery. Never commit it (was tracked
 # by accident via 3a69e34702, removed in the #72002 salvage).

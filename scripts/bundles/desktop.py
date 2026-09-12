@@ -55,6 +55,11 @@ def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],
     from pm.store import current_target
     from scripts.releases.commit_build import require_commit, version_at
     from scripts.releases.bundle_env import decode
+    from scripts.termux.deb_version import channel_for_tag
+
+    # Reject before preparing a payload that cannot use the Store identity.
+    if variant == "store" and (commit_build or not tag or channel_for_tag(tag) != "stable"):
+        raise ValueError("Store packaging requires a stable release tag")
 
     repo = repo.resolve()
     bundle_env = decode(os.environ.get("HERMES_BUNDLE_ENV_JSON", ""))

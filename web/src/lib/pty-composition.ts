@@ -2,7 +2,8 @@
  * Delays an IME/dead-key commit just long enough for xterm to emit onData.
  *
  * xterm is authoritative when it emits the commit. Browsers/layouts where it
- * does not emit onData still forward the compositionend text on the next turn.
+ * does not emit onData still forward the native beforeinput/composition commit
+ * on the next turn.
  */
 export function createPtyCompositionForwarder(send: (data: string) => void) {
   let pending: string | null = null;
@@ -20,19 +21,33 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
     }
   };
 
-  return {
-    onCompositionEnd(data: string | null) {
-      if (!data) return;
-      // Preserve rapid consecutive commits instead of discarding the first.
-      const previous = pending;
+  const scheduleCommit = (data: string | null | undefined) => {
+    if (!data) return;
+    // Preserve rapid consecutive commits instead of discarding the first.
+    const previous = pending;
+    clearPending();
+    if (previous) send(previous);
+    pending = data;
+    timer = setTimeout(() => {
+      const committed = pending;
       clearPending();
-      if (previous) send(previous);
-      pending = data;
-      timer = setTimeout(() => {
-        const committed = pending;
-        clearPending();
-        if (committed) send(committed);
-      }, 16);
+      if (committed) send(committed);
+    }, 16);
+  };
+
+  return {
+    onBeforeInput(
+      inputType: string | undefined,
+      data: string | null | undefined,
+      isMobileLike: boolean,
+    ) {
+      if (!shouldForwardPtyBeforeInputCommit(inputType, data, isMobileLike)) {
+        return;
+      }
+      scheduleCommit(data);
+    },
+    onCompositionEnd(data: string | null) {
+      scheduleCommit(data);
     },
     noteTerminalData(data: string) {
       if (!pending || data.startsWith("\x1b") || sawUnrelatedTerminalData) return;
@@ -51,4 +66,16 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
     },
     dispose: clearPending,
   };
+}
+
+export function shouldForwardPtyBeforeInputCommit(
+  inputType: string | undefined,
+  data: string | null | undefined,
+  isMobileLike: boolean,
+): boolean {
+  if (!data) return false;
+  if (inputType === "insertFromComposition") return true;
+  return (
+    isMobileLike && inputType === "insertText" && Array.from(data).length > 1
+  );
 }

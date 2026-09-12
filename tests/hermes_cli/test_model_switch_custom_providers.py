@@ -239,6 +239,22 @@ def test_resolve_provider_full_finds_named_custom_provider():
     assert resolved.source == "user-config"
 
 
+def test_resolve_provider_full_rejects_disabled_user_provider():
+    """Explicit provider resolution must honor ``providers.*.enabled``."""
+    resolved = resolve_provider_full(
+        "my-local",
+        user_providers={
+            "my-local": {
+                "name": "My Local",
+                "base_url": "http://127.0.0.1:1234/v1",
+                "enabled": False,
+            }
+        },
+    )
+
+    assert resolved is None
+
+
 @pytest.mark.parametrize(
     "requested",
     [

@@ -34,10 +34,13 @@ vi.mock('@/i18n', () => ({
           handoffOrigin: (platform: string) => `Started on ${platform}`,
           messageCount: (count: number) => `${count} messages`,
           needsInput: 'Needs input',
+          pin: 'Pin',
           sessionActions: 'Session actions',
           sessionRunning: 'Running',
           todoProgress: 'Tasks completed',
-          waitingForAnswer: 'Waiting for answer'
+          unpin: 'Unpin',
+          waitingForAnswer: 'Waiting for answer',
+          archive: 'Archive'
         }
       },
       assistant: {
@@ -437,5 +440,89 @@ describe('Inbox-style session card', () => {
 
     expect(workspace.className).toMatch(/\btruncate\b/)
     expect(screen.getByText('133 messages')).toBeTruthy()
+  })
+})
+
+describe('hover quick actions', () => {
+  it('exposes pin and archive icon buttons on a live row', () => {
+    renderRow(makeSession({ title: 'Live', archived: false }))
+    expect(screen.getByRole('button', { name: 'Pin' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Archive' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Session actions' })).toBeTruthy()
+  })
+
+  it('pin click calls onPin only and does not resume', () => {
+    const onPin = vi.fn()
+    const onArchive = vi.fn()
+    const onResume = vi.fn()
+
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={onArchive}
+        onDelete={noop}
+        onPin={onPin}
+        onResume={onResume}
+        onToggleUnread={noop}
+        session={makeSession({ title: 'Live', archived: false })}
+        unread={false}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pin' }))
+    expect(onPin).toHaveBeenCalledTimes(1)
+    expect(onArchive).not.toHaveBeenCalled()
+    expect(onResume).not.toHaveBeenCalled()
+  })
+
+  it('archive click calls onArchive only and does not resume', () => {
+    const onPin = vi.fn()
+    const onArchive = vi.fn()
+    const onResume = vi.fn()
+
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={onArchive}
+        onDelete={noop}
+        onPin={onPin}
+        onResume={onResume}
+        onToggleUnread={noop}
+        session={makeSession({ title: 'Live', archived: false })}
+        unread={false}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
+    expect(onArchive).toHaveBeenCalledTimes(1)
+    expect(onPin).not.toHaveBeenCalled()
+    expect(onResume).not.toHaveBeenCalled()
+  })
+
+  it('pinned row labels the pin control Unpin', () => {
+    render(
+      <SidebarSessionRow
+        isPinned={true}
+        isSelected={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        onToggleUnread={noop}
+        session={makeSession({ title: 'Pinned', archived: false })}
+        unread={false}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: 'Unpin' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Pin' })).toBeNull()
+  })
+
+  it('archived row has no archive quick action', () => {
+    renderRow(makeSession({ title: 'Old', archived: true }))
+    expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Pin' })).toBeTruthy()
   })
 })

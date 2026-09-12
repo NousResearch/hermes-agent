@@ -42,6 +42,13 @@ _DEFAULT_USER_ID = "hermes-user"
 _SYNC_MSG_MAX_CHARS = 450
 
 
+# Sentence ends recognized when trimming a synced message. Deliberately unordered:
+# the LAST boundary of ANY kind wins, so one CJK stop early in a mixed-script turn
+# cannot outrank a Latin stop near the end of the window. ``".\n"`` is not listed —
+# its index can never exceed the bare ``"."`` it starts with.
+_SYNC_SENTENCE_ENDS = ("。", "！", "？", ".", "!", "?")
+
+
 def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
     """Cap a synced message at its last sentence boundary within ``max_len``.
 
@@ -52,10 +59,10 @@ def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
     """
     if len(text) <= max_len:
         return text
-    for sep in ("。", "！", "？", ".\n", ".", "!", "?"):
-        cut = text[:max_len].rfind(sep)
-        if cut > max_len // 3:
-            return text[:cut + 1]
+    window = text[:max_len]
+    cut = max(window.rfind(sep) for sep in _SYNC_SENTENCE_ENDS)
+    if cut > max_len // 3:
+        return text[:cut + 1]
     return text[:max_len]
 
 

@@ -56,6 +56,12 @@ logger = logging.getLogger(__name__)
 # critical section it guards is a local file read/write, never a network call.
 _TOKEN_LOCK_TIMEOUT_SECONDS = 10.0
 
+# The refresh FENCE is a different animal: the critical section it guards spans
+# the token-endpoint POST, so it must outlast a slow network round trip. Bounded
+# anyway -- a wedged peer must not strand us forever -- but generous enough that
+# a healthy refresh never trips it.
+_REFRESH_FENCE_TIMEOUT_SECONDS = 60.0
+
 # In-process mutual exclusion, keyed by lock path, so threads inside one
 # process don't fight over the same file before the advisory lock is reached.
 _token_locks: dict[str, threading.RLock] = {}
@@ -133,6 +139,112 @@ def _token_store_lock(path: "Path"):
                     pass
                 finally:
                     lock_fd.close()
+
+class RefreshFenceTimeout(RuntimeError):
+    """The refresh fence could not be acquired within its bound.
+
+    Raised so the caller FAILS CLOSED. Submitting a refresh token we are not
+    certain we own is the whole defect class this fence exists to close: on a
+    provider with single-use refresh tokens it burns the credential and logs
+    the user out of a working session. Aborting this one refresh attempt is
+    strictly cheaper -- the next request retries, and by then the peer that
+    held the fence has published its replacement.
+    """
+
+
+@_contextmanager
+def _refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOUT_SECONDS):
+    """Own one refresh generation across read -> POST -> persist.
+
+    ``_token_store_lock`` is deliberately narrow: it makes a single file
+    read or write atomic, then releases. That is not enough for a provider
+    that issues single-use refresh tokens. The damaging interleaving is:
+
+        A: get_tokens() -> R1   (lock taken and RELEASED)
+        B: get_tokens() -> R1   (lock taken and RELEASED)
+        A: POST R1              -> 200, receives R2
+        B: POST R1              -> 400, credential already burned
+        B: clear_tokens()       -> user is logged out of a live session
+
+    Every step above respects the narrow lock, so no amount of hardening
+    inside get_tokens/set_tokens can prevent it. The fence must be held
+    across the POST, which is exactly why it cannot reuse the token-store
+    lock's file: flock/msvcrt locks are per-file-descriptor, so nesting the
+    same path would self-deadlock on Windows and silently no-op on POSIX.
+
+    A separate ``.refresh.lock`` sibling keeps the two scopes independent:
+    the fence holder can still call get_tokens()/set_tokens() normally.
+
+    Unlike ``_token_store_lock``, acquisition failure RAISES. Degrading to
+    "proceed unlocked" here would reintroduce the exact race.
+    """
+    lock_path = path.with_suffix(path.suffix + ".refresh.lock")
+    key = str(lock_path)
+
+    with _token_locks_guard:
+        local_lock = _token_locks.setdefault(key, threading.RLock())
+
+    # Bound the in-process wait too: a sibling thread holding the fence is
+    # just as capable of stranding us as a sibling process.
+    if not local_lock.acquire(timeout=timeout):
+        raise RefreshFenceTimeout(
+            f"refresh fence busy in this process after {timeout:.0f}s ({lock_path.name})"
+        )
+    try:
+        lock_fd = None
+        acquired = False
+        try:
+            try:
+                secure_parent_dir(lock_path)
+                lock_fd = open(lock_path, "a+", encoding="utf-8")
+                lock_fd.seek(0)
+            except OSError as exc:
+                # No lock file means no ownership proof. Fail closed: see the
+                # class docstring for why proceeding is worse than aborting.
+                raise RefreshFenceTimeout(
+                    f"refresh fence unavailable ({lock_path.name}): {exc}"
+                ) from exc
+
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    elif msvcrt is not None:
+                        getattr(msvcrt, "locking")(
+                            lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
+                        )
+                    else:  # pragma: no cover - no advisory locking primitive
+                        raise RefreshFenceTimeout(
+                            "refresh fence unsupported: no flock/msvcrt on this platform"
+                        )
+                    acquired = True
+                    break
+                except (OSError, IOError):
+                    if time.monotonic() >= deadline:
+                        raise RefreshFenceTimeout(
+                            f"refresh fence held by a peer for {timeout:.0f}s ({lock_path.name})"
+                        ) from None
+                    time.sleep(0.05)
+
+            yield
+        finally:
+            if lock_fd is not None:
+                try:
+                    if acquired:
+                        if fcntl is not None:
+                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                        elif msvcrt is not None:
+                            getattr(msvcrt, "locking")(
+                                lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+                            )
+                except (OSError, IOError):
+                    pass
+                finally:
+                    lock_fd.close()
+    finally:
+        local_lock.release()
+
 
 # ---------------------------------------------------------------------------
 # Lazy imports -- MCP SDK with OAuth support is optional

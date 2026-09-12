@@ -94,7 +94,8 @@ class WeComMediaMixin:
         url = str(media.get("url") or "").strip()
         if not url:
             return None
-        aes_key = str(media.get("aeskey") or "").strip()
+        # The key arrives URL-encoded in some payloads (%2F, %3D); base64-decode the real value.
+        aes_key = unquote(str(media.get("aeskey") or "").strip())
         try:
             step = "download"
             raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
@@ -105,7 +106,10 @@ class WeComMediaMixin:
             return None
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
         ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
-        return await self._store_media(kind, raw, ext, content_type, self._guess_filename(url, headers.get("content-disposition"), content_type), content_type, f" from {url}")
+        # Images: never forward the CDN's generic octet-stream label — downstream classifiers
+        # reject non-image MIMEs; derive it from the resolved extension instead.
+        image_mime = content_type if content_type.startswith("image/") else ""
+        return await self._store_media(kind, raw, ext, image_mime, self._guess_filename(url, headers.get("content-disposition"), content_type), content_type, f" from {url}")
 
     async def _store_media(self, kind, raw, ext, image_mime, filename, doc_mime, origin) -> Optional[Tuple[str, str]]:
         """Cache bytes as an image (``kind == "image"``) or a document; returns (path, mime)."""

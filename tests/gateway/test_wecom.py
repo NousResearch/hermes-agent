@@ -43,6 +43,39 @@ class TestWeComInboundImageExtension:
         assert ext == ".jpg"
         assert WeComAdapter._guess_extension("https://x/y.png", "image/png", fallback=".jpg") == ".png"
 
+    def test_encoded_aeskey_and_octet_stream_image_cached_as_real_image(self, monkeypatch):
+        """End to end through `_cache_media`: a percent-encoded, unpadded `aeskey` decrypts, and an
+        octet-stream-labelled PNG is stored with an image MIME, not application/octet-stream."""
+        from urllib.parse import quote
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from plugins.platforms.wecom import media as wecom_media
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        key = os.urandom(32)
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
+        pad = 16 - len(png) % 16
+        enc = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+        encrypted = enc.update(png + bytes([pad]) * pad) + enc.finalize()
+        encoded_key = quote(base64.b64encode(key).decode().rstrip("="), safe="")
+
+        adapter = WeComAdapter.__new__(WeComAdapter)
+        stored = {}
+
+        async def _download(url, max_bytes):
+            return encrypted, {"content-type": "application/octet-stream"}
+
+        async def _cache(raw, ext):
+            stored["raw"] = raw
+            return f"/tmp/img{ext}"
+
+        monkeypatch.setattr(adapter, "_download_remote_bytes", _download)
+        monkeypatch.setattr(wecom_media, "cache_image_from_bytes_async", _cache)
+
+        result = asyncio.run(adapter._cache_media("image", {"url": "https://cdn/x", "aeskey": encoded_key}))
+
+        assert result == ("/tmp/img.png", "image/png")
+        assert stored["raw"] == png
+
 
 class TestWeComAdapterAuthzScope:
     """dm_policy/allowlist reads must honor the profile secret scope under

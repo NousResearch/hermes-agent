@@ -13,16 +13,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 try:
     from aiohttp import web
-except ImportError:  # pragma: no cover
+except ImportError:
     web = None  # type: ignore[assignment]
 try:
     from aiohttp.web_request import RequestKey
-except ImportError:  # pragma: no cover
-    # aiohttp < 3.14 does not export RequestKey. Import it separately so its
-    # absence does not clobber the already-imported ``web`` module: sharing
-    # one try/except turned ``web`` into None on older aiohttp, making every
-    # non-streaming ``POST /v1/runs`` reply crash with ``AttributeError:
-    # 'NoneType' object has no attribute 'json_response'``.
+except ImportError:
+    # Separate block: aiohttp < 3.14 lacks RequestKey, and a shared except
+    # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response

@@ -1122,6 +1122,19 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _has_explicit_requeue_since(
+    conn: sqlite3.Connection, task_id: str, since: int,
+) -> bool:
+    """Whether an explicit operator/dispatcher requeue occurred at or after ``since``."""
+    return conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND created_at >= ? "
+        "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+        "LIMIT 1",
+        (task_id, since),
+    ).fetchone() is not None
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1135,9 +1148,10 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
-    dead claim locks are NOT a guard reason — the reclaim passes own those.
+    (PR URL in a recent comment with no later explicit requeue; re-spawning risks
+    a duplicate PR). The review lane skips the last two: they are the *inputs* to
+    a review handoff. Stale / dead claim locks are NOT a guard reason — the
+    reclaim passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1193,23 +1207,23 @@ def check_respawn_guard(
     ).fetchone()
     if recent_completed:
         completed_at = int(recent_completed["ended_at"] or 0)
-        requeued_after = conn.execute(
-            "SELECT 1 FROM task_events "
-            "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
-            "LIMIT 1",
-            (task_id, completed_at),
-        ).fetchone()
-        if not requeued_after:
+        if not _has_explicit_requeue_since(conn, task_id, completed_at):
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    As with recent success, a later explicit requeue is a deliberate rerun.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+        if (
+            c["body"]
+            and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])
+            and not _has_explicit_requeue_since(conn, task_id, int(c["created_at"]))
+        ):
             return "active_pr"
 
     return None

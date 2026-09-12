@@ -51,49 +51,94 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV=""
 VENV_PYTHON=""
 SKIPPED_VENVS=""
+# Minimum imports the suite needs to fail honestly. A venv with only pytest can
+# launch the runner but then misreports missing core/dev deps as code failures.
+REQUIRED_TEST_IMPORTS=(pytest croniter psutil pytest_asyncio)
+
+missing_test_imports() {
+  local python_bin="$1"
+  local output
+  if output=$("$python_bin" - "${REQUIRED_TEST_IMPORTS[@]}" <<'PY' 2>/dev/null
+import importlib
+import sys
+
+for module_name in sys.argv[1:]:
+    try:
+        importlib.import_module(module_name)
+    except Exception:
+        print(module_name)
+PY
+); then
+    printf "%s" "$output"
+  else
+    printf "%s" "__probe_failed__"
+  fi
+}
+
+python_has_required_test_imports() {
+  local python_bin="$1"
+  [ -z "$(missing_test_imports "$python_bin")" ]
+}
+
+record_skipped_python() {
+  local candidate="$1"
+  local python_bin="$2"
+  local missing
+  local missing_csv
+  missing="$(missing_test_imports "$python_bin")"
+  missing_csv="${missing//$'\n'/,}"
+  SKIPPED_VENVS="${SKIPPED_VENVS}${SKIPPED_VENVS:+ }$candidate(missing:${missing_csv:-unknown})"
+}
+
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
-    if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
+    if python_has_required_test_imports "$candidate/bin/python"; then
       VENV="$candidate"
       VENV_PYTHON="$candidate/bin/python"
       break
     fi
-    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
+    record_skipped_python "$candidate" "$candidate/bin/python"
   fi
   # Native Windows venv layout: python.exe and activate live under
   # Scripts/, and there is no bin/. Anyone running this script from
   # Git Bash / MSYS with a `python -m venv`- or uv-created venv hits
   # this branch — without it the canonical runner refuses to start.
   if [ -f "$candidate/Scripts/activate" ]; then
-    if "$candidate/Scripts/python.exe" -c 'import pytest' 2>/dev/null; then
+    if python_has_required_test_imports "$candidate/Scripts/python.exe"; then
       VENV="$candidate"
       VENV_PYTHON="$candidate/Scripts/python.exe"
       break
     fi
-    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
+    record_skipped_python "$candidate" "$candidate/Scripts/python.exe"
   fi
 done
 
 if [ -n "$SKIPPED_VENVS" ]; then
   for skipped in $SKIPPED_VENVS; do
-    echo "▶ skipping venv without pytest: $skipped" >&2
+    echo "▶ skipping venv missing test imports: $skipped" >&2
   done
 fi
 
 if [ -n "$VENV" ]; then
   PYTHON="$VENV_PYTHON"
 elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
-    && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
-  # Guard with an import check: HERMES_PYTHON may point at the RELEASE
+    && python_has_required_test_imports "$HERMES_PYTHON"; then
+  # Guard with import checks: HERMES_PYTHON may point at the RELEASE
   # venv (no pytest) when inherited from a wrapped `hermes` binary rather
-  # than the devShell hook.
+  # than the devShell hook, or at a drifted dev venv missing suite deps.
   PYTHON="$HERMES_PYTHON"
   echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
 else
-  echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
-  echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
+  echo "error: no virtualenv with required test imports found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
+  echo "       and HERMES_PYTHON is not a python with the required test imports" >&2
+  echo "       (enter the Nix devShell or install dev extras in a local venv)" >&2
   if [ -n "$SKIPPED_VENVS" ]; then
-    echo "       (skipped for missing pytest:$SKIPPED_VENVS — install dev extras there, or create $REPO_ROOT/.venv)" >&2
+    echo "       skipped venvs: $SKIPPED_VENVS" >&2
+  fi
+  if [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ]; then
+    _hermes_missing="$(missing_test_imports "$HERMES_PYTHON")"
+    _hermes_missing_csv="${_hermes_missing//$'\n'/,}"
+    echo "       HERMES_PYTHON missing: ${_hermes_missing_csv:-unknown}" >&2
   fi
   exit 1
 fi

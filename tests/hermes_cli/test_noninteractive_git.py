@@ -97,6 +97,7 @@ class TestNoninteractiveGitEnv:
         assert values["sequence.editor"] == "true"
         assert values["diff.external"] == ""
 
+    @pytest.mark.real_safe_directory
     def test_safe_directory_preserves_git_ordering_and_reset_markers(self, tmp_path, monkeypatch):
         """The user's effective trust policy is replayed verbatim, resets included.
 
@@ -146,6 +147,7 @@ class TestNoninteractiveGitEnv:
         assert expected == ["*", "", "/trusted/only"], "git's documented reset shape changed"
         assert injected == expected
 
+    @pytest.mark.real_safe_directory
     def test_safe_directory_reset_still_revokes_wildcard_for_real_git(self, tmp_path):
         """End-to-end: a revoked wildcard stays revoked, and the named repo stays usable.
 

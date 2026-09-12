@@ -217,9 +217,9 @@ def terminate_pid(
     Windows ``force`` REQUIRES a matching ``expected_start_time`` (taskkill on a recycled PID has
     killed svchost.exe); POSIX optional, but a provided mismatch refuses the kill everywhere.
 
-    On POSIX an expectation is optional, but when the caller provides one and it no longer matches the live
-    process, the kill is refused on every platform — a mismatched fingerprint always means the PID was
-    recycled. See #89614.
+    On POSIX an expectation is optional, but when the caller provides one and it differs beyond the
+    clock-adjustment tolerance (``_START_TIME_TOLERANCE_CS``), the kill is refused on every platform —
+    that means the PID was recycled. See #89614.
     """
     if force and (_IS_WINDOWS or expected_start_time is not None):
         if expected_start_time is None:
@@ -251,10 +251,21 @@ def terminate_pid(
         raise OSError(details or f"taskkill failed for PID {pid}")
 
 
+# Start-time fingerprints are centisecond ints (``_get_process_start_time``). On macOS psutil's
+# ``create_time()`` applies a whole-second clock-update correction against the ``boot_time()``
+# snapshot taken at psutil's import IN THAT PROCESS (``adjust_proc_create_time``), so two processes
+# legitimately measure the same PID seconds apart. Exact equality therefore read a live gateway as a
+# recycled PID: the desktop rendered "Messaging gateway stopped" while the gateway was up and
+# polling. These guards exist to catch PID REUSE, and a PID is not recycled within seconds, so a
+# delta this small must not count as a different process object.
+_START_TIME_TOLERANCE_CS = 200
+
+
 def _start_times_agree(current: Any, *recorded: Any) -> bool:
-    """Same process object: all fingerprints > 0 and within 1ms of ``current``; raises on junk."""
+    """Same process object: all fingerprints > 0 and within the clock-adjustment tolerance of
+    ``current``; raises on junk (callers turn that into a refusal)."""
     cur = float(current)
-    return cur > 0 and all(r > 0 and abs(r - cur) <= 0.001 for r in map(float, recorded))
+    return cur > 0 and all(r > 0 and abs(r - cur) <= _START_TIME_TOLERANCE_CS for r in map(float, recorded))
 
 
 def _scope_hash(identity: str) -> str:
@@ -505,8 +516,15 @@ def _pid_from_record(record: Optional[dict[str, Any]], key: str = "pid") -> Opti
 
 
 def _start_times_conflict(recorded_start: Any, current_start: Any) -> bool:
-    """PID-reuse guard: True only when BOTH start times are known and differ."""
-    return None not in (recorded_start, current_start) and current_start != recorded_start
+    """PID-reuse guard: True only when BOTH start times are known and differ by more than the
+    clock-adjustment tolerance (``_START_TIME_TOLERANCE_CS``). An unparseable pair falls back to
+    plain inequality: a fingerprint we cannot compare is never evidence of the same process."""
+    if None in (recorded_start, current_start):
+        return False
+    try:
+        return abs(int(current_start) - int(recorded_start)) > _START_TIME_TOLERANCE_CS
+    except (TypeError, ValueError):
+        return current_start != recorded_start
 
 
 def _live_pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:
@@ -1168,7 +1186,7 @@ def _pid_marker_names_self(target_pid: int, target_start_time: Any) -> bool:
     if target_pid != os.getpid():
         return False
     our_start_time = _get_process_start_time(target_pid)
-    return None in (target_start_time, our_start_time) or target_start_time == our_start_time
+    return not _start_times_conflict(target_start_time, our_start_time)
 
 
 def _consume_pid_marker_for_self(path: Path, *, ttl_s: int) -> bool:

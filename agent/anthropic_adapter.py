@@ -647,7 +647,15 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
         # returns the accumulated snapshot. TimeoutError is the caller's deadline seam: the host
         # has given up, so abandon the stream (``with`` closes it) instead of streaming an answer
         # nobody reads.
-        for event in stream if callable(on_stream_event) else ():
+        # Some SDK versions drop optional message_delta metadata from the final snapshot.
+        stop_details = None
+        for event in stream:
+            if getattr(event, "type", None) == "message_delta":
+                details = getattr(getattr(event, "delta", None), "stop_details", None)
+                if details is not None:
+                    stop_details = details
+            if not callable(on_stream_event):
+                continue
             try:
                 on_stream_event(event)
             except TimeoutError:
@@ -657,7 +665,10 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
                 raise
             except Exception:
                 logger.debug("%son_stream_event callback failed", log_prefix, exc_info=True)
-        return stream.get_final_message()
+        message = stream.get_final_message()
+        if stop_details is not None:
+            message.stop_details = stop_details
+        return message
 
 
 def create_anthropic_message(

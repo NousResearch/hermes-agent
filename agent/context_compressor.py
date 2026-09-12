@@ -140,6 +140,10 @@ def _response_finish_reason(response: Any) -> str:
 _TRUNCATED_SUMMARY_MARKER = "finish_reason=length"
 
 
+class _SummaryRefusalError(RuntimeError):
+    """A provider refusal, distinct from retryable empty summary output."""
+
+
 def _is_summary_access_or_quota_error(exc: Exception) -> bool:
     """Return True for non-retryable summary auth, permission, or quota errors."""
 
@@ -595,6 +599,12 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
 # Summary failures that abort compress() regardless of abort_on_summary_failure, in precedence
 # order: (flag attribute, telemetry failure_class, user-facing warning with %d preserved messages).
 _TERMINAL_SUMMARY_FAILURES = (
+    (
+        "_last_summary_refusal_failure",
+        "summary_refusal_failure",
+        "Context compression refused by the provider — aborting compression. %d message(s) "
+        "preserved unchanged; the session was NOT rotated. Review the provider refusal.",
+    ),
     (
         "_last_summary_auth_failure",
         "summary_auth_failure",
@@ -3263,9 +3273,20 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             )
         if self._compression_cancelled():
             raise AuxiliaryExplicitCancellation()
+        where = f"(provider={_aux_route.get('provider') or self.provider or 'auto'} model={_aux_model})"
+        if _response_finish_reason(response) == "content_filter":
+            data = response.get("provider_data") if isinstance(response, dict) else getattr(response, "provider_data", None)
+            details = data.get("stop_details") if isinstance(data, dict) else None
+            # Never echo provider explanation text or arbitrary category values into notices.
+            category = details.get("category") if isinstance(details, dict) else None
+            category = "cyber" if category == "cyber" else "unspecified"
+            route = re.sub(r"[\x00-\x1f\x7f]", "", _redact_compaction_text(where))[:160]
+            raise _SummaryRefusalError(
+                f"Context compression refused {route}; category={category}. "
+                "Original context preserved; review the provider refusal."
+            )
         # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
         content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
-        where = f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})"
         # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
         # with an empty or whitespace-only ``content`` instead of an error or empty ``choices``. That
         # payload passes ``_validate_llm_response`` (a ``message`` exists), so it reaches here and would
@@ -3486,6 +3507,12 @@ Write only the summary body. Do not include any preamble or prefix."""
         self, e: Exception, turns_to_summarize: List[Dict[str, Any]], focus_topic: Optional[str], memory_context: str,
     ) -> Optional[str]:
         """Classify a summary-call failure; retry once on the main model (returning its result) or arm a cooldown (None)."""
+        if isinstance(e, _SummaryRefusalError):
+            self._last_summary_error = str(e)
+            self._last_summary_refusal_failure = True
+            self._record_compression_failure_cooldown(60, str(e))
+            logger.warning("%s", e)
+            return None
         # Only a genuine no-provider RuntimeError gets the long cooldown; empty/invalid-response
         # RuntimeErrors are transient and must get the main-model retry below first.
         # ``call_llm`` raises ``RuntimeError`` for two very different cases: 1. 2. An empty/invalid response

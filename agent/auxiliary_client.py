@@ -1689,8 +1689,7 @@ class _AnthropicCompletionsAdapter:
             self._client,
             anthropic_kwargs,
             # Record provider-response timing every event, but tick forward progress only for
-            # substantive payloads so keepalives can't hold a stalled summary open. None keeps
-            # the fast get_final_message path.
+            # substantive payloads so keepalives can't hold a stalled summary open.
             on_stream_event=(_anthropic_aux_stream_event_hook() if _aux_progress_active() else None),
         )
         _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
@@ -1708,7 +1707,7 @@ class _AnthropicCompletionsAdapter:
             message=SimpleNamespace(content=_nr.content, tool_calls=_nr.tool_calls, reasoning=_nr.reasoning),
             finish_reason=_nr.finish_reason,
         )
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+        return SimpleNamespace(choices=[choice], model=model, usage=usage, provider_data=_nr.provider_data)
 
 
 class AnthropicAuxiliaryClient:

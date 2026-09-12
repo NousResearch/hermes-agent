@@ -4928,6 +4928,35 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
         client, final_model = _build_vertex_client(provider, req.model)
     elif auth_type == "aws_sdk":
         client, final_model = _build_bedrock_client(provider, req.model, raw_codex=req.raw_codex)
+    elif auth_type == "oauth_minimax":
+        # MiniMax OAuth → Anthropic-compatible inference endpoint with a callable bearer
+        # (tokens live ~15 min; the Anthropic SDK re-invokes the provider each request).
+        try:
+            from agent.anthropic_adapter import build_anthropic_client
+            from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+        except ImportError:
+            return None, None
+        try:
+            credentials = resolve_minimax_oauth_runtime_credentials(as_token_provider=True)
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth runtime resolution failed: %s", exc)
+            return None, None
+        token_provider = credentials.get("api_key")
+        base_url = str(credentials.get("base_url") or "").strip().rstrip("/")
+        if not callable(token_provider) or not base_url:
+            return None, None
+        final_model = _normalize_resolved_model(
+            req.model or _get_aux_model_for_provider(provider) or "MiniMax-M3", provider,
+        )
+        if _aux_probe_active():
+            return _AuxProbeClientStub(api_key="", base_url=base_url), final_model
+        try:
+            real_client = build_anthropic_client(token_provider, base_url)
+        except ImportError:
+            return None, None
+        client = AnthropicAuxiliaryClient(real_client, final_model, token_provider, base_url, is_oauth=True)
+        return _route_client(req, client, final_model)
     elif auth_type in {"oauth_device_code", "oauth_external"}:
         # nous / openai-codex / xai-oauth already returned from their explicit branches.
         _log_once_debug(_LOGGED_UNSUPPORTED_OAUTH_KEYS, provider,

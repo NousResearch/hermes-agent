@@ -381,6 +381,25 @@ class ActiveSessionLease:
         release_active_session(self)
 
 
+def current_repo_root(start: Optional[Path] = None) -> Optional[str]:
+    """Return the enclosing git checkout for ``start``, or None if there is none.
+
+    Walks up looking for ``.git`` rather than shelling out to ``git``: this runs
+    on every session start, and a subprocess per session is a poor trade for a
+    field that is advisory.  ``.git`` is a file (not a directory) inside linked
+    worktrees, which is why this tests existence rather than is_dir -- sessions
+    in two worktrees of one repo are exactly the case #46303 is about.
+    """
+    try:
+        current = (start or Path.cwd()).resolve()
+    except OSError:
+        return None
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return str(candidate)
+    return None
+
+
 def _clean_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return {str(k): v for k, v in metadata.items() if isinstance(k, str)}
 
@@ -434,8 +453,18 @@ def _lease_entry(
     }
     if track_liveness:
         entry["track_liveness"] = True
-    if metadata:
-        entry["metadata"] = _clean_metadata(metadata)
+    entry_metadata = _clean_metadata(metadata) if metadata else {}
+    # Repo attribution is what makes "which checkout is that session attached
+    # to?" answerable at all (#46303).  Recorded here rather than by caller
+    # opt-in so every surface gets it without threading it through three
+    # separate call sites; an explicit metadata repo_root wins, and a session
+    # started outside any checkout simply records nothing.
+    if "repo_root" not in entry_metadata:
+        _repo_root = current_repo_root()
+        if _repo_root:
+            entry_metadata["repo_root"] = _repo_root
+    if entry_metadata:
+        entry["metadata"] = entry_metadata
     return entry
 
 
@@ -581,7 +610,16 @@ def transfer_active_session(
             own["session_id"] = new_session_id
             own["updated_at"] = time.time()
             if metadata:
-                own["metadata"] = _clean_metadata(metadata)
+                new_metadata = _clean_metadata(metadata)
+                # Carry the checkout attribution across a session-id transfer:
+                # callers pass identity metadata, not a full replacement, and
+                # the process has not changed repos (#46303).
+                prior = own.get("metadata")
+                if "repo_root" not in new_metadata and isinstance(prior, dict):
+                    prior_root = prior.get("repo_root")
+                    if prior_root:
+                        new_metadata["repo_root"] = prior_root
+                own["metadata"] = new_metadata
         elif lease.track_liveness:
             entries.append(_lease_entry(
                 lease_id=lease.lease_id, session_id=new_session_id, surface=lease.surface,

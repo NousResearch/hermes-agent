@@ -302,26 +302,42 @@ def _render_sessions(ctx):
         except Exception:
             _kv("Active:", "(error reading sessions file)")
 
-    # Slot usage, only when max_concurrent_sessions is set. The cap is shared across CLI,
-    # desktop/TUI and the messaging gateway, so the surface that gets rejected is rarely the one
-    # holding the slots — without this the only way to find out is reading
-    # runtime/active_sessions.json by hand.
+    # Live sessions from the active-session registry. Slot usage is only meaningful when
+    # max_concurrent_sessions is set — the cap is shared across CLI, desktop/TUI and the
+    # messaging gateway, so the surface that gets rejected is rarely the one holding the
+    # slots — but the sessions themselves are worth listing either way: per-session
+    # exclusivity (#94595) made the registry authoritative for every surface, so with no cap
+    # set the entries exist and only this readout was still gated on the cap (#46303).
     try:
         from hermes_cli.active_sessions import (
-            active_session_registry_snapshot, format_age, resolve_max_concurrent_sessions)
+            active_session_registry_snapshot, current_repo_root, format_age,
+            resolve_max_concurrent_sessions)
         cap = resolve_max_concurrent_sessions(ctx.config)
-    except Exception:
-        cap = None
-    if cap:
         try:
             held = active_session_registry_snapshot()
         except Exception:
             held = []
+        here = current_repo_root()
+    except Exception:
+        cap, held, here = None, [], None
+    if cap:
         _kv("Slots:", color(f"{len(held)}/{cap} in use", Colors.YELLOW if len(held) >= cap else Colors.GREEN))
+    elif held:
+        # No cap means no slots to report, but "another session is live in this
+        # checkout" is exactly the signal #46303 asks for.
+        _kv("Live:", color(f"{len(held)} session(s)", Colors.GREEN))
+    if held:
         now = time.time()
         for entry in sorted(held, key=lambda e: e.get("started_at") or 0):
             age = format_age(now - float(entry.get("started_at") or now))
-            print(f"                {entry.get('surface') or 'unknown':<17} {entry.get('session_id') or '?':<24} {age}")
+            meta = entry.get("metadata")
+            repo = meta.get("repo_root") if isinstance(meta, dict) else None
+            where = ""
+            if repo:
+                where = ("  ← this repo" if here and str(repo) == str(here)
+                         else f"  {os.path.basename(str(repo))}")
+            print(f"                {entry.get('surface') or 'unknown':<17} "
+                  f"{entry.get('session_id') or '?':<24} {age}{where}")
 
 
 def _render_deep(ctx):

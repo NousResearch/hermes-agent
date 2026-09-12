@@ -3498,6 +3498,8 @@ def set_config_value(key: str, value: str, force: bool = False):
 
 def get_config_value(key: str, *, as_json: bool = False):
     """Print a resolved configuration value."""
+    # Env keys live outside the YAML schema; only YAML paths are schema-checked below.
+    schema_known, suggestion = True, None
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value
@@ -3506,9 +3508,22 @@ def get_config_value(key: str, *, as_json: bool = False):
         # See #71047.
         key, _ = _redirect_platform_display_key(key)
         value = _get_nested(load_config(), key)
+        schema_known, suggestion = _validate_config_key(key)
 
     if value is _MISSING:
         _exit_invalid(f"Config key not set: {key}")
+
+    # Unknown-key notice on the read path (#109443), mirroring the post-write notice in
+    # set_config_value (#34067): a hand-edited config.yaml can park a value at a plausible-but-
+    # wrong dotted path (``agent.tool_search.enabled`` vs ``tools.tool_search.enabled``). ``get``
+    # is the natural way to verify such an edit, so echo the value but say the runtime may never
+    # read it. stderr keeps ``--json`` stdout parseable and the exit code untouched.
+    if not schema_known:
+        print(color(
+            f"⚠ '{key}' is not a recognized config key — the value prints, "
+            "but Hermes may never read it.", Colors.YELLOW), file=sys.stderr)
+        if suggestion:
+            print(color(f"  Did you mean: {suggestion}", Colors.YELLOW), file=sys.stderr)
 
     print(_format_config_get_value(value, as_json=as_json))
 

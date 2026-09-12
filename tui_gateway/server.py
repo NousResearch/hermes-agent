@@ -1928,7 +1928,10 @@ def _get_usage(agent) -> dict:
     comp = getattr(agent, "context_compressor", None)
     if comp:
         from agent.context_breakdown import context_usage_fields
-        usage.update(context_usage_fields(comp))
+        messages = getattr(agent, "_session_messages", None)
+        usage.update(context_usage_fields(
+            comp, agent=agent, messages=messages if isinstance(messages, list) else None
+        ))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     # Cache-hit ratio + rolling latency/tps (CLI status-bar parity). Omitted, not fabricated, when there is no
     # data (Codex reports no latency; zero cache reads shows no hit% rather than an alarming 0).

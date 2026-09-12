@@ -17,6 +17,47 @@ _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
 
+def _stop_call_seq(monkeypatch, liveness: str):
+    """Arrange a running gateway whose loop classifies as ``liveness``; return (module, calls)."""
+    gw = gateway_windows
+    monkeypatch.setattr(gw, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gw, "_clear_start_attestation", lambda: None)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    monkeypatch.setattr(gw, "_collect_gateway_stop_pids", lambda primary_pid=None: [4242])
+    monkeypatch.setattr("hermes_cli.gateway.probe_gateway_loop_liveness",
+                        lambda pid, **kw: liveness)
+    calls: list[str] = []
+    monkeypatch.setattr(gw, "_drain_gateway_pid",
+                        lambda pid, timeout: calls.append("drain") or True)
+    monkeypatch.setattr(gw, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gw, "_force_terminate_known_gateway_pids",
+                        lambda pids: calls.append("kill") or 1)
+    return gw, calls
+
+
+def test_stop_skips_drain_when_loop_wedged(monkeypatch):
+    """#106359: a provably-dead event loop can't read the planned-stop marker — waiting the full
+    drain window is a guaranteed burn. stop() must skip the drain and go to the bounded kill."""
+    gw, calls = _stop_call_seq(monkeypatch, gateway.GATEWAY_LOOP_WEDGED)
+    gw.stop()
+    assert "drain" not in calls
+    assert "kill" in calls
+
+
+def test_stop_drains_normally_when_loop_alive(monkeypatch):
+    gw, calls = _stop_call_seq(monkeypatch, gateway.GATEWAY_LOOP_ALIVE)
+    gw.stop()
+    assert calls[0] == "drain"
+    assert "kill" in calls
+
+
+def test_stop_drains_when_liveness_unknown(monkeypatch):
+    """Ambiguity is never evidence of a wedge — a merely-busy gateway keeps its full drain."""
+    gw, calls = _stop_call_seq(monkeypatch, gateway.GATEWAY_LOOP_UNKNOWN)
+    gw.stop()
+    assert calls[0] == "drain"
+
+
 def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
     """A broken/empty locale must not leave us without a decoder (issue #38172)."""
 

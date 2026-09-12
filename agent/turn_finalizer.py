@@ -125,9 +125,10 @@ def _resolve_budget_fallback(
     budget_exhausted = (
         api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
     )
+    missing_final_response = not flatten_message_text(final_response).strip()
     preserved_verification_fallback = False
     if (
-        final_response is None and budget_exhausted and not interrupted and not failed
+        missing_final_response and budget_exhausted and not interrupted and not failed
         and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
     ):
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"

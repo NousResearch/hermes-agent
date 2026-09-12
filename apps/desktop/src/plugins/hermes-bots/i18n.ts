@@ -185,6 +185,8 @@ type BotsMessages = {
     pictureGenerationFailed: string
     nameTaken: (name: string) => string
     memberCount: (count: number) => string
+    /** How many of a room's members are reachable right now. */
+    availableCount: (available: number, total: number) => string
     settingsHint: (group: string) => string
     settingsLabel: (group: string) => string
     disbandHint: (group: string) => string
@@ -411,6 +413,7 @@ const en: BotsMessages = {
     pictureGenerationFailed: 'Group picture generation failed',
     nameTaken: name => `A group named “${name}” already exists.`,
     memberCount: count => `${count} bots`,
+    availableCount: (available, total) => `${available} of ${total} available`,
     settingsHint: group => `Group settings — rename ${group} or set a room picture`,
     settingsLabel: group => `Group settings for ${group}`,
     disbandHint: group => `Disband the ${group} group chat`,
@@ -630,6 +633,7 @@ const ja: BotsMessages = {
     pictureGenerationFailed: 'グループ画像の生成に失敗しました',
     nameTaken: name => `「${name}」という名前のグループはすでに存在します。`,
     memberCount: count => `ボット${count}体`,
+    availableCount: (available, total) => `${total}体中${available}体が利用可能`,
     settingsHint: group => `グループ設定 — ${group}の名前変更やルーム画像の設定`,
     settingsLabel: group => `${group}のグループ設定`,
     disbandHint: group => `${group}グループチャットを解散`,
@@ -844,6 +848,7 @@ const zh: BotsMessages = {
     pictureGenerationFailed: '群组图片生成失败',
     nameTaken: name => `已存在名为“${name}”的群聊。`,
     memberCount: count => `${count} 个机器人`,
+    availableCount: (available, total) => `${total} 个中 ${available} 个可用`,
     settingsHint: group => `群聊设置 — 重命名 ${group} 或设置房间图片`,
     settingsLabel: group => `${group} 的群聊设置`,
     disbandHint: group => `解散 ${group} 群聊`,
@@ -1058,6 +1063,7 @@ const zhHant: BotsMessages = {
     pictureGenerationFailed: '群組圖片產生失敗',
     nameTaken: name => `已存在名為「${name}」的群組聊天。`,
     memberCount: count => `${count} 個機器人`,
+    availableCount: (available, total) => `${total} 個中 ${available} 個可用`,
     settingsHint: group => `群組設定 — 重新命名 ${group} 或設定房間圖片`,
     settingsLabel: group => `${group} 的群組設定`,
     disbandHint: group => `解散 ${group} 群組聊天`,

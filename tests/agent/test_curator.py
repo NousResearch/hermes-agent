@@ -950,3 +950,103 @@ def test_review_prompt_does_not_steer_terminal_writes():
             "write_file/remove_file instead"
         )
         assert "&& mv" not in text
+
+
+def test_review_fork_read_marks_survive_tool_context_copies(curator_env, monkeypatch):
+    """A skill_view mark must still be visible to a later skill_manage in the fork.
+
+    Tool calls are dispatched through ``propagate_context_to_thread``, which
+    snapshots the context with ``contextvars.copy_context()`` at submit time — so a
+    ContextVar *set* inside the worker is discarded when that call returns. If the
+    fork never seeds the read-mark store in the parent context,
+    ``mark_background_review_skill_read`` lazily creates its own store inside the
+    worker and the write guard's ``_background_review_has_read`` never sees it:
+    every skill_view -> skill_manage pair is refused ("the current SKILL.md content
+    has not been loaded in this review turn"), the fork retries the same write, and
+    the pass dies on the repeat-failure guardrail without consolidating anything.
+    Seed via ``_reset_background_review_read_marks()`` before the fork's
+    conversation starts — the same call agent/background_review.py already makes.
+    """
+    curator = curator_env["curator"]
+
+    # curator_env stubs _run_llm_review wholesale; reload to get the real one.
+    import importlib
+
+    importlib.reload(curator)
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tools.skill_manager_guards import (
+        _background_review_has_read,
+        mark_background_review_skill_read,
+    )
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+    from tools.thread_context import propagate_context_to_thread
+
+    skill_md = curator_env["home"] / "skills" / "demo-skill" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True, exist_ok=True)
+    skill_md.write_text("# demo skill\n", encoding="utf-8")
+    seen = {}
+
+    class _StubAgent:
+        def __init__(self, *args, **kwargs):
+            self._memory_write_origin = "assistant_tool"
+            self._session_messages = []
+
+        def run_conversation(self, user_message=None, **kwargs):
+            # One fork turn: bind the review write origin (turn_context does this
+            # for real), then dispatch two tool calls the way
+            # agent/tool_executor.py does — each in a worker thread whose context
+            # is copied at submit time.
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    pool.submit(
+                        propagate_context_to_thread(mark_background_review_skill_read),
+                        skill_md,
+                    ).result()
+                    seen["has_read"] = pool.submit(
+                        propagate_context_to_thread(_background_review_has_read),
+                        skill_md,
+                    ).result()
+            finally:
+                reset_current_write_origin(token)
+            return {"final_response": "no change"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "model": "review-model",
+            "api_key": "test-key",
+            "base_url": "https://gateway.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert seen.get("has_read") is True, (
+        "the fork's read mark did not reach the next tool context, so every "
+        "skill_view -> skill_manage pair is refused with 'the current SKILL.md "
+        "content has not been loaded in this review turn'; seed "
+        "_reset_background_review_read_marks() in the parent context before the "
+        "fork's conversation starts"
+    )

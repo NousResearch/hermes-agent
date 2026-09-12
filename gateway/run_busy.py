@@ -11,16 +11,18 @@ import logging
 from typing import TYPE_CHECKING
 import asyncio
 import contextlib
+import inspect
 import json
 import os
 import time
+from pathlib import Path
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, _session_key_namespace
-from typing import Any, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -801,6 +803,474 @@ class GatewayBusySessionMixin:
         k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
     }
 
+    def _plugin_source_identity_candidates(self, source: SessionSource) -> tuple[str, ...]:
+        """Resolve adapter-normalized sender identities without exposing the adapter."""
+        # Normalize through the actual receiving transport: its runtime profile may differ from
+        # the routed config/profile identity on a shared multiplexed adapter.
+        adapter = self._adapter_for_source(source)
+        normalize = getattr(adapter, "normalize_source_identity_candidates", None)
+        if callable(normalize):
+            try:
+                values = normalize(source)
+            except Exception:
+                values = ()
+        else:
+            values = (source.user_id, source.user_id_alt)
+        candidates: list[str] = []
+        for value in values or ():
+            normalized = str(value or "").strip()
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+        return tuple(candidates)
+
+    def _plugin_transport_profile(self, source: SessionSource) -> str:
+        """Return the opaque registry identity of the source transport owner."""
+        owner = self._transport_owner(source)
+        if owner is not None:
+            _adapter, profile = owner
+            return str(profile or getattr(self, "_primary_profile_name", None) or "default")
+        return self._plugin_routed_profile(source)
+
+    def _plugin_routed_profile(self, source: SessionSource) -> str:
+        """Return the routed profile identity, never a profile filesystem path."""
+        name = str(getattr(source, "profile", None) or "").strip()
+        if not name:
+            try:
+                name = str(self._profile_name_for_source(source) or "").strip()
+            except Exception:
+                name = ""
+        if not name:
+            try:
+                name = str(self._active_profile_name() or "").strip()
+            except Exception:
+                name = ""
+        return name or "default"
+
+    def _plugin_slash_access_policy(self, source: SessionSource):
+        """Load slash authority from the profile owning a contextual command."""
+        from gateway.slash_access import SlashAccessPolicy, policy_from_extra
+
+        try:
+            from hermes_cli.config import require_readable_config_before_write
+
+            profile = self._plugin_routed_profile(source)
+            _profile, profile_home = self._plugin_profile_home(profile)
+            raw = require_readable_config_before_write(profile_home / "config.yaml")
+            platform = source.platform.value if source.platform else ""
+            scope = (
+                "dm"
+                if str(source.chat_type or "").strip().lower()
+                in {"", "dm", "direct", "private"}
+                else "group"
+            )
+            return policy_from_extra(
+                self._plugin_platform_extra_from_raw(raw, platform), scope
+            )
+        except Exception:
+            logger.warning(
+                "Could not load routed-profile slash policy for plugin command",
+                exc_info=True,
+            )
+            return SlashAccessPolicy(
+                enabled=True,
+                admin_user_ids=frozenset(),
+                user_allowed_commands=frozenset(),
+            )
+
+    @staticmethod
+    def _plugin_profile_home(routed_profile: str) -> tuple[str, Path]:
+        """Resolve a routed profile, including an active custom HERMES_HOME."""
+        from hermes_cli.profiles import (
+            get_active_profile_name,
+            get_profile_dir,
+            normalize_profile_name,
+            validate_profile_name,
+        )
+
+        profile = normalize_profile_name(routed_profile)
+        validate_profile_name(profile)
+        if profile == "custom" and get_active_profile_name() == "custom":
+            from hermes_constants import get_hermes_home
+
+            return profile, get_hermes_home()
+        return profile, get_profile_dir(profile)
+
+    def _plugin_channel_policy_target(
+        self,
+        platform: str,
+        routed_profile: str,
+        transport_profile: Optional[str] = None,
+    ):
+        """Resolve routed config ownership and the connected transport owner."""
+        try:
+            from gateway.config import Platform
+            from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+
+            platform_enum = Platform(str(platform or "").strip().lower())
+            profile, profile_home = self._plugin_profile_home(routed_profile)
+            live_profile = normalize_profile_name(transport_profile or profile)
+            validate_profile_name(live_profile)
+        except Exception:
+            return None, None, None, None, {
+                "ok": False,
+                "error": "invalid_argument",
+                "detail": "platform, routed profile, or transport profile is invalid",
+            }
+        adapter = self._authorization_adapter(platform_enum, live_profile)
+        if adapter is None:
+            return None, None, None, None, {
+                "ok": False,
+                "error": "adapter_not_registered",
+                "detail": f"no {platform_enum.value} adapter is registered for this source transport",
+            }
+        try:
+            connected = bool(adapter.is_connected)
+        except Exception:
+            connected = False
+        if not connected:
+            return None, None, None, None, {
+                "ok": False,
+                "error": "adapter_disconnected",
+                "detail": f"the {platform_enum.value} adapter is not connected",
+            }
+        return platform_enum, profile, profile_home, live_profile, None
+
+    @staticmethod
+    def _plugin_platform_extra_from_raw(raw: dict, platform: str) -> dict:
+        """Resolve slash-access settings from raw config with gateway precedence."""
+        merged: dict = {}
+        gateway_cfg = raw.get("gateway") if isinstance(raw, dict) else None
+        nested_platforms = (
+            gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
+        )
+        top_platforms = raw.get("platforms") if isinstance(raw, dict) else None
+        direct = raw.get(platform) if isinstance(raw, dict) else None
+        blocks = []
+        for source in (nested_platforms, top_platforms):
+            block = source.get(platform) if isinstance(source, dict) else None
+            if isinstance(block, dict):
+                blocks.append(block)
+        if isinstance(direct, dict):
+            blocks.append(direct)
+        bridge_keys = (
+            "allow_admin_from",
+            "user_allowed_commands",
+            "group_allow_admin_from",
+            "group_user_allowed_commands",
+        )
+        for block in blocks:
+            extra = block.get("extra")
+            if isinstance(extra, dict):
+                merged.update(extra)
+            for key in bridge_keys:
+                if key in block:
+                    merged[key] = block[key]
+        return merged
+
+    def _plugin_channel_policy_operation_lock(
+        self, routed_profile: str, platform: str,
+    ) -> asyncio.Lock:
+        """Return the in-process persist-through-live-apply serialization lock."""
+        locks = getattr(self, "_plugin_channel_policy_operation_locks", None)
+        if not isinstance(locks, dict):
+            locks = {}
+            self._plugin_channel_policy_operation_locks = locks
+        key = (str(routed_profile), str(platform))
+        lock = locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[key] = lock
+        return lock
+
+    @staticmethod
+    def _plugin_channel_policy_capability_granted(plugin_id: str, raw: dict) -> bool:
+        try:
+            from hermes_cli.platform_actions import CAPABILITY_ID
+            from hermes_cli.plugin_capabilities import plugin_capability_granted
+
+            return plugin_capability_granted(plugin_id, CAPABILITY_ID, config=raw)
+        except Exception:
+            return False
+
+    async def _get_plugin_channel_policy_status_action(
+        self,
+        *,
+        plugin_id: str,
+        platform: str,
+        routed_profile: str,
+        transport_profile: Optional[str] = None,
+        channel_id: str,
+        thread_id: Optional[str],
+        chat_type: str,
+        source_identity_candidates: tuple[str, ...],
+    ) -> dict:
+        """Return current adapter policy through a capability-gated read path."""
+        del thread_id, source_identity_candidates
+        platform_enum, profile, profile_home, live_profile, error = (
+            self._plugin_channel_policy_target(
+                platform, routed_profile, transport_profile
+            )
+        )
+        if error is not None:
+            return error
+        try:
+            from hermes_cli.config import require_readable_config_before_write
+
+            raw = require_readable_config_before_write(profile_home / "config.yaml")
+        except Exception as exc:
+            return {"ok": False, "error": "config_unreadable", "detail": str(exc)[:512]}
+        if not self._plugin_channel_policy_capability_granted(plugin_id, raw):
+            return {
+                "ok": False,
+                "error": "capability_not_granted",
+                "detail": f"plugin {plugin_id!r} lacks gateway.platform_actions",
+            }
+        adapter = self._authorization_adapter(platform_enum, live_profile)
+        status_fn = getattr(adapter, "channel_policy_status", None)
+        if not callable(status_fn):
+            return {
+                "ok": False,
+                "error": "unsupported_platform_action",
+                "detail": f"{platform_enum.value} does not expose channel policy status",
+            }
+        try:
+            status = status_fn(
+                channel_id,
+                chat_type=chat_type,
+                routed_profile=profile,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": "action_failed", "detail": str(exc)[:512]}
+        return {"ok": True, "status": status}
+
+    def _persist_plugin_channel_policy(
+        self,
+        *,
+        plugin_id: str,
+        platform: str,
+        profile_home: Path,
+        channel_id: str,
+        policy: str,
+        value: str,
+        source_identity_candidates: tuple[str, ...],
+        config_updater: Callable[
+            [dict, str, str, str], tuple[str, Optional[str], bool]
+        ],
+    ) -> tuple[str, Optional[str]]:
+        """Authorize and atomically persist an adapter-owned config mutation."""
+        from gateway.slash_access import policy_from_extra
+        from hermes_cli import config as config_mod
+        from hermes_cli.plugins import _locked_plugin_state
+
+        config_path = profile_home / "config.yaml"
+        with _locked_plugin_state(config_path):
+            with config_mod._CONFIG_LOCK:
+                before = config_path.read_bytes() if config_path.exists() else None
+                raw = config_mod.require_readable_config_before_write(config_path)
+                if not self._plugin_channel_policy_capability_granted(plugin_id, raw):
+                    raise LookupError(
+                        f"plugin {plugin_id!r} lacks gateway.platform_actions in the routed profile"
+                    )
+                access = policy_from_extra(
+                    self._plugin_platform_extra_from_raw(raw, platform), "group"
+                )
+                if not access.is_explicit_admin(source_identity_candidates):
+                    raise PermissionError(
+                        "an explicitly configured group administrator is required"
+                    )
+
+                canonical_channel, candidate_value, changed = config_updater(
+                    raw,
+                    channel_id,
+                    policy,
+                    value,
+                )
+                current_bytes = config_path.read_bytes() if config_path.exists() else None
+                if current_bytes != before:
+                    raise RuntimeError(
+                        "config.yaml changed outside the supported mutation lock; retry the command"
+                    )
+                if not changed:
+                    return canonical_channel, candidate_value
+                config_mod.atomic_config_write(config_path, raw, sort_keys=False)
+                return canonical_channel, candidate_value
+
+    async def _apply_plugin_channel_policy_action(
+        self,
+        *,
+        plugin_id: str,
+        platform: str,
+        routed_profile: str,
+        transport_profile: Optional[str] = None,
+        channel_id: str,
+        thread_id: Optional[str],
+        chat_type: str,
+        source_identity_candidates: tuple[str, ...],
+        policy: str,
+        value: str,
+    ) -> dict:
+        """Persist first, then apply to the adapter currently owning the profile."""
+        del thread_id
+        if str(chat_type or "").strip().lower() not in {"group", "channel", "thread"}:
+            return {
+                "ok": False,
+                "error": "unsupported_context",
+                "detail": "channel policies require a group or channel source",
+            }
+        if not source_identity_candidates:
+            return {
+                "ok": False,
+                "error": "explicit_admin_required",
+                "detail": "no normalized sender identity is available",
+            }
+        platform_enum, profile, profile_home, live_profile, error = (
+            self._plugin_channel_policy_target(
+                platform, routed_profile, transport_profile
+            )
+        )
+        if error is not None:
+            return error
+        operation_lock = self._plugin_channel_policy_operation_lock(
+            profile, platform_enum.value
+        )
+        async with operation_lock:
+            initial_adapter = self._authorization_adapter(
+                platform_enum, live_profile
+            )
+            config_updater = getattr(
+                initial_adapter, "update_channel_policy_config", None
+            )
+            if not callable(config_updater):
+                return {
+                    "ok": False,
+                    "error": "unsupported_platform_action",
+                    "detail": f"{platform_enum.value} does not support channel policies",
+                }
+            try:
+                canonical_channel, applied_value = await asyncio.to_thread(
+                    self._persist_plugin_channel_policy,
+                    plugin_id=plugin_id,
+                    platform=platform_enum.value,
+                    profile_home=profile_home,
+                    channel_id=channel_id,
+                    policy=policy,
+                    value=value,
+                    source_identity_candidates=source_identity_candidates,
+                    config_updater=config_updater,
+                )
+            except LookupError as exc:
+                return {
+                    "ok": False,
+                    "error": "capability_not_granted",
+                    "detail": str(exc)[:512],
+                }
+            except PermissionError as exc:
+                return {
+                    "ok": False,
+                    "error": "explicit_admin_required",
+                    "detail": str(exc)[:512],
+                }
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": "persistence_failed",
+                    "detail": str(exc)[:512],
+                }
+
+            current_adapter = self._authorization_adapter(
+                platform_enum, live_profile
+            )
+            apply_fn = getattr(current_adapter, "apply_channel_policy", None)
+            status_fn = getattr(current_adapter, "channel_policy_status", None)
+            try:
+                connected = bool(current_adapter and current_adapter.is_connected)
+            except Exception:
+                connected = False
+            if not connected or not callable(apply_fn) or not callable(status_fn):
+                return {
+                    "ok": True,
+                    "persisted": True,
+                    "live_applied": False,
+                    "restart_required": True,
+                    "detail": "the current adapter changed or disconnected after persistence",
+                }
+            try:
+                apply_fn(
+                    canonical_channel,
+                    policy,
+                    applied_value,
+                    routed_profile=profile,
+                )
+                status = status_fn(
+                    canonical_channel,
+                    chat_type=chat_type,
+                    routed_profile=profile,
+                )
+            except Exception as exc:
+                return {
+                    "ok": True,
+                    "persisted": True,
+                    "live_applied": False,
+                    "restart_required": True,
+                    "detail": str(exc)[:512],
+                }
+            return {
+                "ok": True,
+                "persisted": True,
+                "live_applied": True,
+                "restart_required": False,
+                "status": status,
+            }
+
+    async def _dispatch_registered_plugin_command(
+        self, event: MessageEvent, source: SessionSource, command_name: str,
+    ):
+        """Invoke one plugin command using its backward-compatible contract."""
+        from hermes_cli.platform_actions import PlatformActions
+        from hermes_cli.plugins import PluginCommandInvocation, get_plugin_command
+
+        entry = get_plugin_command(command_name)
+        if not entry:
+            return None
+        raw_args = event.get_command_args().strip()
+        handler = entry["handler"]
+        if entry.get("with_context"):
+            platform = source.platform.value if source.platform else ""
+            profile = self._plugin_routed_profile(source)
+            transport_profile = self._plugin_transport_profile(source)
+            identity_candidates = self._plugin_source_identity_candidates(source)
+            invocation = PluginCommandInvocation(
+                platform=platform,
+                channel_id=str(source.chat_id or ""),
+                thread_id=str(source.thread_id) if source.thread_id is not None else None,
+                message_id=str(event.message_id) if event.message_id is not None else None,
+                chat_type=str(source.chat_type or ""),
+                scope_id=(
+                    str(source.scope_id or source.guild_id)
+                    if (source.scope_id or source.guild_id)
+                    else None
+                ),
+                source_identity_candidates=identity_candidates,
+                routed_profile=profile,
+                platform_actions=PlatformActions(entry["plugin_key"]).for_source(
+                    platform=platform,
+                    channel_id=str(source.chat_id or ""),
+                    thread_id=(
+                        str(source.thread_id) if source.thread_id is not None else None
+                    ),
+                    chat_type=str(source.chat_type or ""),
+                    routed_profile=profile,
+                    transport_profile=transport_profile,
+                    source_identity_candidates=identity_candidates,
+                ),
+            )
+            result = handler(raw_args, invocation)
+        else:
+            result = handler(raw_args)
+        if inspect.isawaitable(result):
+            result = await result
+        return str(result) if result else None
+
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
         """Dispatch a recognized slash command while an agent is running.
 
@@ -818,6 +1288,17 @@ class GatewayBusySessionMixin:
         name = cmd_def.name
         policy = getattr(cmd_def, "busy_policy", "reject")
         handler_key = getattr(cmd_def, "busy_handler", None)
+        try:
+            from hermes_cli.plugins import get_plugin_command
+
+            plugin_entry = get_plugin_command(name)
+        except Exception:
+            plugin_entry = None
+        if plugin_entry is not None and policy in (
+            "dispatch",
+            "interrupt_then_dispatch",
+        ):
+            return await self._dispatch_registered_plugin_command(event, source, name)
         if handler_key:
             special = self._BUSY_SPECIAL_HANDLERS.get(handler_key)
             if special is not None:
@@ -964,14 +1445,97 @@ class GatewayBusySessionMixin:
             return await self._handle_loop_command(event)
         return "Agent is running — use /loop status / pause / stop mid-run, or /stop before setting a new loop."
 
-    def _check_slash_access(self, source: SessionSource, canonical_cmd: str) -> Optional[str]:
+    def _check_slash_access_compat(
+        self, source: SessionSource, canonical_cmd: str, raw_args: str
+    ) -> Optional[str]:
+        """Call argument-aware access while tolerating legacy test doubles."""
+        checker = self._check_slash_access
+        try:
+            parameters = tuple(inspect.signature(checker).parameters.values())
+        except (TypeError, ValueError):
+            parameters = ()
+        if parameters and not any(
+            parameter.kind is inspect.Parameter.VAR_POSITIONAL
+            for parameter in parameters
+        ) and len(parameters) < 3:
+            return checker(source, canonical_cmd)
+        return checker(source, canonical_cmd, raw_args)
+
+    def _check_slash_access(
+        self, source: SessionSource, canonical_cmd: str, raw_args: str = "",
+    ) -> Optional[str]:
         """Denial message if ``source`` cannot run ``canonical_cmd``, else None (both dispatch paths
         use it so an in-flight agent can't bypass admin gating; no ``allow_admin_from`` → None)."""
         from gateway.slash_access import policy_for_source as _policy_for_source
         if not canonical_cmd:
             return None
-        policy = _policy_for_source(self.config, source)
-        if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
+        identity_candidates = self._plugin_source_identity_candidates(source)
+        try:
+            from hermes_cli.plugins import (
+                PluginCommandAccessContext,
+                get_plugin_command,
+                plugin_command_access_level,
+            )
+
+            plugin_entry = get_plugin_command(canonical_cmd)
+            required_access = (
+                plugin_command_access_level(
+                    plugin_entry,
+                    raw_args,
+                    PluginCommandAccessContext(
+                        platform=(
+                            getattr(getattr(source, "platform", None), "value", "")
+                            or ""
+                        ),
+                        channel_id=str(getattr(source, "chat_id", None) or ""),
+                        thread_id=(
+                            str(getattr(source, "thread_id", None))
+                            if getattr(source, "thread_id", None) is not None
+                            else None
+                        ),
+                        chat_type=str(getattr(source, "chat_type", None) or ""),
+                        scope_id=(
+                            str(
+                                getattr(source, "scope_id", None)
+                                or getattr(source, "guild_id", None)
+                            )
+                            if (
+                                getattr(source, "scope_id", None)
+                                or getattr(source, "guild_id", None)
+                            )
+                            else None
+                        ),
+                        source_identity_candidates=identity_candidates,
+                        routed_profile=self._plugin_routed_profile(source),
+                    ),
+                )
+                if plugin_entry is not None
+                else None
+            )
+        except Exception:
+            plugin_entry = None
+            from hermes_cli.commands import resolve_command
+
+            required_access = None if resolve_command(canonical_cmd) else "admin"
+        if required_access == "user":
+            return None
+        policy = (
+            self._plugin_slash_access_policy(source)
+            if plugin_entry is not None and getattr(source, "profile", None)
+            else _policy_for_source(self.config, source)
+        )
+        if required_access == "admin":
+            allowed = policy.is_explicit_admin(identity_candidates)
+        else:
+            allowed = (
+                not policy.enabled
+                or policy.can_run(
+                    source.user_id,
+                    canonical_cmd,
+                    identity_candidates=identity_candidates,
+                )
+            )
+        if allowed:
             return None
         logger.info(
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",

@@ -494,7 +494,29 @@ if not result["ok"]:
     print(result["error"], result.get("detail"))
 ```
 
-Success is `{"ok": True, "action": <verb>}`. Failures are
+A slash command registered with `with_context=True` receives a narrower,
+source-bound facade as `invocation.platform_actions`. It exposes only the
+conversation that invoked the command:
+
+```python
+status = await invocation.platform_actions.get_channel_policy_status()
+result = await invocation.platform_actions.set_channel_policy(
+    policy="listen", value="always",
+)
+```
+
+The host binds the platform, channel, thread, routed profile, and normalized
+sender identities. The plugin cannot redirect these calls to another source.
+Status is read-only. Mutations additionally require a group or channel source
+and explicit administrator authority, which the host rechecks before any
+configuration or live-state change. Source-bound channel-policy calls use the
+same structured result envelope; their action-specific failures can also
+report `unsupported_context`, `explicit_admin_required`, `config_unreadable`,
+or `persistence_failed`.
+
+Success is `{"ok": True, ...}`; the two general v1 verbs include
+`"action": <verb>`, while source-bound channel-policy calls return policy or
+persistence details. Failures are
 `{"ok": False, "error": <code>, "detail": <str>}` with stable error codes:
 `capability_not_granted`, `invalid_argument`, `gateway_unavailable`,
 `unknown_platform`, `adapter_not_registered`, `adapter_disconnected`,
@@ -502,10 +524,11 @@ Success is `{"ok": True, "action": <verb>}`. Failures are
 target adapter exists and is connected before acting; a disconnected or
 missing adapter degrades to a structured error, never an exception.
 
-Platforms supported in v1: Telegram and Discord. Telegram's `add_reaction`
-*sets* the bot's reaction (the Bot API replaces a previous bot reaction rather
-than stacking). Every action — allowed or denied — is written to the log with
-the plugin id, verb, platform, and outcome.
+The general v1 actions above support Telegram and Discord; source-bound
+channel-policy actions are currently exposed by Buzz. Telegram's
+`add_reaction` *sets* the bot's reaction (the Bot API replaces a previous bot
+reaction rather than stacking). Every action — allowed or denied — is written
+to the log with the plugin id, verb, platform, and outcome.
 
 :::warning Security note
 Platform actions are a **messaging-as-the-bot power**: a granted plugin can

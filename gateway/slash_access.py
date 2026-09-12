@@ -41,8 +41,22 @@ class SlashAccessPolicy:
             return True
         return bool(user_id) and str(user_id) in self.admin_user_ids
 
-    def can_run(self, user_id: Optional[str], canonical_cmd: str) -> bool:
-        if self.is_admin(user_id):
+    def is_explicit_admin(self, identity_candidates: Iterable[str]) -> bool:
+        """Match any normalized identity, never treating disabled gating as admin."""
+        if not self.enabled:
+            return False
+        return any(str(candidate) in self.admin_user_ids for candidate in identity_candidates)
+
+    def can_run(
+        self,
+        user_id: Optional[str],
+        canonical_cmd: str,
+        *,
+        identity_candidates: Iterable[str] = (),
+    ) -> bool:
+        if not self.enabled:
+            return True
+        if self.is_admin(user_id) or self.is_explicit_admin(identity_candidates):
             return True
         return bool(canonical_cmd) and (
             canonical_cmd in _ALWAYS_ALLOWED_FOR_USERS or canonical_cmd in self.user_allowed_commands

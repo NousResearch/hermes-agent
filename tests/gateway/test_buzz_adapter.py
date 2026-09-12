@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock
 from gateway.platforms.base import CachedMedia
 from gateway.platforms.event import MessageType
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
-from gateway.platforms.event import MessageType
 
 # Load plugins/platforms/buzz/adapter.py under a unique module name
 # (plugin_adapter_buzz) so it cannot collide with other plugin adapters
@@ -41,6 +40,7 @@ SELF_NPUB = "npub1nl2u0wnd8mezfknc74q7pl9ec58h9nrrakce4tnk434qgaxl4psqe5twr6"
 OTHER_PUBKEY = "a" * 64
 AGENT_PUBKEY = "b" * 64
 CHANNEL = "ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd"
+OTHER_CHANNEL = "863020b7-3ac8-4cec-9479-13ad62391fc0"
 # Real DM conversation as materialized by a hosted relay: `dms list` returns
 # [] for it (#68871) while `channels list` shows it as name "DM", empty
 # description, indistinguishable from a channel except via message p-tags.
@@ -1621,6 +1621,189 @@ class TestMentionGating:
         adapter.require_mention = False
         await self._poll_with(adapter, _event("e1", content="just chatting", created_at=10))
         assert len(adapter._dispatched) == 1
+
+    def test_effective_listen_mode_is_channel_scoped_and_inherits_global(self):
+        adapter = _make_adapter(
+            {
+                "channel_modes": {
+                    CHANNEL: {"listen": "always"},
+                    OTHER_CHANNEL: {"listen": "mentions"},
+                }
+            }
+        )
+
+        assert adapter.effective_listen_mode(CHANNEL) == "always"
+        assert adapter.effective_listen_mode(OTHER_CHANNEL) == "mentions"
+        assert (
+            adapter.effective_listen_mode("5d09f936-4bd6-47c4-9aec-77846da7f408")
+            == "mentions"
+        )
+
+        adapter.require_mention = False
+        assert (
+            adapter.effective_listen_mode("5d09f936-4bd6-47c4-9aec-77846da7f408")
+            == "always"
+        )
+        assert adapter.effective_listen_mode(OTHER_CHANNEL) == "mentions"
+        assert adapter.effective_listen_mode(CHANNEL, chat_type="dm") == "always"
+
+    @pytest.mark.asyncio
+    async def test_always_override_dispatches_authorized_ambient_only_in_that_channel(self):
+        adapter = _make_adapter({"channel_modes": {CHANNEL: {"listen": "always"}}})
+        adapter._dispatch_message = AsyncMock()
+        adapter._resolve_user_name = AsyncMock(return_value="Other")
+        authorization_check = MagicMock(return_value=True)
+        adapter.set_authorization_check(authorization_check)
+        channel_state = adapter._new_channel_state("group")
+        other_state = adapter._new_channel_state("group")
+
+        await adapter._handle_event(
+            CHANNEL,
+            channel_state,
+            _event("ambient-always", content="new research result", created_at=10),
+        )
+        other_event = _event("ambient-inherited", content="other room chatter", created_at=11)
+        other_event["tags"] = [["h", OTHER_CHANNEL]]
+        await adapter._handle_event(OTHER_CHANNEL, other_state, other_event)
+
+        adapter._dispatch_message.assert_awaited_once()
+        assert adapter._dispatch_message.await_args.kwargs["message_id"] == "ambient-always"
+        authorization_check.assert_called_once_with(OTHER_PUBKEY, "group", CHANNEL)
+
+    @pytest.mark.asyncio
+    async def test_mentions_override_restores_gate_when_global_mentions_are_disabled(self):
+        adapter = _make_adapter(
+            {"channel_modes": {CHANNEL: {"listen": "mentions"}}}
+        )
+        adapter.require_mention = False
+        adapter._dispatch_message = AsyncMock()
+        state = adapter._new_channel_state("group")
+
+        await adapter._handle_event(
+            CHANNEL,
+            state,
+            _event("ambient-explicit-mentions", content="background chatter"),
+        )
+        await adapter._handle_event(
+            CHANNEL,
+            state,
+            _event("addressed-explicit-mentions", content="@Chip please check"),
+        )
+
+        adapter._dispatch_message.assert_awaited_once()
+        assert (
+            adapter._dispatch_message.await_args.kwargs["message_id"]
+            == "addressed-explicit-mentions"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("authorization", [False, None, "truthy", "raise"])
+    async def test_ambient_always_requires_explicit_gateway_authorization_before_side_effects(
+        self,
+        authorization,
+    ):
+        adapter = _make_adapter({"channel_modes": {CHANNEL: {"listen": "always"}}})
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        if authorization is None:
+            adapter.set_authorization_check(None)
+        elif authorization == "truthy":
+            adapter.set_authorization_check(lambda *_args: "AUTHORIZED")
+        elif authorization == "raise":
+            def unavailable(*_args):
+                raise RuntimeError("authorization backend unavailable")
+
+            adapter.set_authorization_check(unavailable)
+        else:
+            adapter.set_authorization_check(lambda *_args: False)
+        adapter._resolve_user_name = AsyncMock(return_value="Other")
+        adapter._cache_inbound_attachments = AsyncMock()
+        adapter._download_attachment = AsyncMock()
+        adapter._dispatch_message = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+        state = adapter._new_channel_state("group")
+        event = _event(
+            f"ambient-{authorization}",
+            content="unmentioned report",
+            created_at=10,
+        )
+        event["tags"].append(
+            [
+                "imeta",
+                "url https://test.relay/media/file.bin",
+                "m application/octet-stream",
+                "x " + "a" * 64,
+                "size 1",
+                "filename file.bin",
+            ]
+        )
+
+        await adapter._handle_event(CHANNEL, state, event)
+
+        adapter._resolve_user_name.assert_not_awaited()
+        adapter._cache_inbound_attachments.assert_not_awaited()
+        adapter._download_attachment.assert_not_awaited()
+        adapter._dispatch_message.assert_not_awaited()
+        adapter.send_reaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dm_ignores_channel_mentions_override(self):
+        adapter = _make_adapter(
+            {"channel_modes": {CHANNEL: {"listen": "mentions"}}}
+        )
+        adapter._dispatch_message = AsyncMock()
+        adapter._resolve_user_name = AsyncMock(return_value="Other")
+        state = adapter._new_channel_state("dm")
+
+        await adapter._handle_event(
+            CHANNEL,
+            state,
+            _event("dm-unmentioned", content="hello from a DM"),
+        )
+
+        adapter._dispatch_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_switching_to_always_does_not_replay_an_observed_event(self):
+        adapter = _make_adapter()
+        adapter._dispatch_message = AsyncMock()
+        adapter._resolve_user_name = AsyncMock(return_value="Other")
+        state = adapter._new_channel_state("group")
+        observed = _event("observed-before-switch", content="background chatter")
+
+        await adapter._handle_event(CHANNEL, state, observed)
+        adapter.apply_channel_policy(CHANNEL, "listen", "always")
+        await adapter._handle_event(CHANNEL, state, observed)
+        await adapter._handle_event(
+            CHANNEL,
+            state,
+            _event("new-after-switch", content="new background message"),
+        )
+
+        adapter._dispatch_message.assert_awaited_once()
+        assert adapter._dispatch_message.await_args.kwargs["message_id"] == "new-after-switch"
+        assert "observed-before-switch" in state["seen"]
+
+    @pytest.mark.asyncio
+    async def test_always_preserves_self_and_event_id_guards_without_content_dedupe(self):
+        adapter = _make_adapter({"channel_modes": {CHANNEL: {"listen": "always"}}})
+        adapter._dispatch_message = AsyncMock()
+        adapter._resolve_user_name = AsyncMock(return_value="Other")
+        state = adapter._new_channel_state("group")
+        shared_text = "same research update"
+        own = _event("self-event", pubkey=SELF_PUBKEY, content=shared_text)
+        first = _event("distinct-one", content=shared_text)
+        second = _event("distinct-two", content=shared_text)
+
+        await adapter._handle_event(CHANNEL, state, own)
+        await adapter._handle_event(CHANNEL, state, first)
+        await adapter._handle_event(CHANNEL, state, first)
+        await adapter._handle_event(CHANNEL, state, second)
+
+        assert [
+            call.kwargs["message_id"]
+            for call in adapter._dispatch_message.await_args_list
+        ] == ["distinct-one", "distinct-two"]
+        assert set(state["seen"]) == {"self-event", "distinct-one", "distinct-two"}
 
     def test_strip_mention_requires_at_for_display_name(self, adapter):
         assert adapter._strip_mention("@Chip: /whoami") == "/whoami"
@@ -3223,8 +3406,8 @@ class TestCredentialResolution:
         scoped_tag = ["auth", "b" * 64, "", "c" * 128]
         ambient = tmp_path / "ambient.json"
         scoped = tmp_path / "scoped.json"
-        ambient.write_text(json.dumps({"nsec": "nsec1ambient", "auth_tag": ambient_tag}))
-        scoped.write_text(json.dumps({"nsec": "nsec1scoped", "auth_tag": scoped_tag}))
+        ambient.write_text(json.dumps({"nsec": "nsec1ambient", "auth_tag": ambient_tag}), encoding="utf-8")
+        scoped.write_text(json.dumps({"nsec": "nsec1scoped", "auth_tag": scoped_tag}), encoding="utf-8")
         monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(ambient))
         monkeypatch.setenv("BUZZ_AUTH_TAG", json.dumps(ambient_tag))
         ss.set_multiplex_active(True)

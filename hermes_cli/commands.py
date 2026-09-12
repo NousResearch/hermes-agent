@@ -335,6 +335,34 @@ def resolve_command(name: str) -> CommandDef | None:
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
 
 
+def resolve_gateway_command(name: str) -> CommandDef | None:
+    """Resolve a core or plugin command to the common gateway contract."""
+    core = resolve_command(name)
+    if core is not None:
+        return core
+    try:
+        from hermes_cli.plugins import get_plugin_command
+
+        clean = str(name or "").strip().lstrip("/").lower().replace("_", "-")
+        entry = get_plugin_command(clean)
+    except Exception:
+        entry = None
+    if not entry:
+        return None
+    busy_policy = str(entry.get("busy_policy") or "reject")
+    if busy_policy not in VALID_BUSY_POLICIES:
+        busy_policy = "reject"
+    return CommandDef(
+        clean,
+        str(entry.get("description") or f"Run /{clean}"),
+        "Plugins",
+        args_hint=str(entry.get("args_hint") or ""),
+        gateway_only=True,
+        busy_policy=busy_policy,
+        argument_mode=entry.get("argument_mode"),
+    )
+
+
 def _build_description(cmd: CommandDef) -> str:
     """CLI-facing description including the usage hint."""
     if not cmd.args_hint:
@@ -398,22 +426,34 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
 
 def is_interrupt_then_dispatch(command_name: str | None) -> bool:
     """Guard 1 (gateway/platforms/base.py) routes these through the cancel-handoff path."""
-    cmd = resolve_command(command_name) if command_name else None
+    cmd = resolve_gateway_command(command_name) if command_name else None
     return cmd is not None and cmd.busy_policy == "interrupt_then_dispatch"
 
 
 def should_bypass_active_session(command_name: str | None) -> bool:
-    """True for any resolvable slash command: every recognized command is dispatched mid-run
-    (Guard-2 handler or the "busy" catch-all), never queued — gateway.run's safety net discards
-    command text reaching the pending queue, so a queued mid-run /model (or /reasoning, /voice,
-    /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp, /sethome, /reset)
-    would silently interrupt the agent AND get discarded — a zero-char response. See issue
-    #5057 / PRs #6252, #10370, #4665. ACTIVE_SESSION_BYPASS_COMMANDS remains the subset with
+    """Return True for core commands and plugin commands that opt in.
+
+    Plugin commands registered before busy-policy metadata existed followed
+    the ordinary active-session message path. Preserve that behavior when the
+    plugin omits ``busy_policy``; any explicit policy opts into bypass.
+
+    ACTIVE_SESSION_BYPASS_COMMANDS remains the subset of core commands with
     explicit Level-2 handlers; the rest fall through to the catch-all.
 
     See #10370, #4665, #5057, #6252.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    if not command_name:
+        return False
+    if resolve_command(command_name) is not None:
+        return True
+    try:
+        from hermes_cli.plugins import get_plugin_command
+
+        clean = str(command_name).strip().lstrip("/").lower().replace("_", "-")
+        entry = get_plugin_command(clean)
+    except Exception:
+        return False
+    return bool(entry and entry.get("busy_policy") is not None)
 
 
 def _resolve_config_gates() -> set[str]:

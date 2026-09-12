@@ -3,15 +3,15 @@
 from gateway.run import _resolve_progress_thread_id
 
 
-def test_buzz_progress_without_source_thread_uses_triggering_event():
-    """Progress for a Buzz reply must inherit the triggering event anchor."""
+def test_buzz_progress_without_source_thread_defers_to_adapter_policy():
+    """Buzz placement is resolved from source metadata by its adapter."""
     assert (
         _resolve_progress_thread_id(
             "buzz",
             source_thread_id=None,
             event_message_id="buzz-event-123",
         )
-        == "buzz-event-123"
+        is None
     )
 
 

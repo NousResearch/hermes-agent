@@ -98,7 +98,12 @@ def _float_env(name: str, default: float) -> float:
     return _or_default(lambda: float(raw) if raw else default, default)
 
 
-def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
+def _thread_metadata_for_source(
+    source,
+    reply_to_message_id: str | None = None,
+    *,
+    adapter=None,
+) -> dict | None:
     """Platform-aware thread metadata for adapter sends. Telegram DM topics route with
     ``message_thread_id`` + a reply anchor; anchorless synthetic/resumed sends fall back to
     ``direct_messages_topic_id`` when supported."""
@@ -110,9 +115,11 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
     if scope_id:
         metadata["slack_team_id"] = str(scope_id)
-    if not metadata:
-        return None
-    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
+    if (
+        metadata
+        and platform == "telegram"
+        and getattr(source, "chat_type", None) == "dm"
+    ):
         metadata["telegram_dm_topic_reply_fallback"] = True
         if str(thread_id) not in {"", "1"}:
             metadata["direct_messages_topic_id"] = str(thread_id)
@@ -122,14 +129,32 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     # Routed profile (multiplex / profile_routes): outbound prune paths must not assume the
     # adapter's static profile stamp.
     profile = str(getattr(source, "profile", None) or "").strip()
-    if profile:
+    enrich = getattr(type(adapter), "enrich_source_reply_metadata", None)
+    if callable(enrich):
+        try:
+            metadata = enrich(
+                adapter,
+                source,
+                metadata or None,
+                reply_to_message_id=reply_to_message_id,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to enrich source reply metadata for %s",
+                getattr(adapter, "name", "adapter"),
+                exc_info=True,
+            )
+    if profile and metadata:
+        metadata = dict(metadata)
         metadata["hermes_profile"] = profile
-    return metadata
+    return metadata or None
 
 
-def _thread_metadata_for_event(event) -> dict | None:
+def _thread_metadata_for_event(event, *, adapter=None) -> dict | None:
     """``_thread_metadata_for_source`` for an event, anchored on its reply id."""
-    return _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+    return _thread_metadata_for_source(
+        event.source, _reply_anchor_for_event(event), adapter=adapter
+    )
 
 
 def _mark_notify_metadata(metadata: dict | None) -> dict:
@@ -1825,6 +1850,9 @@ class BasePlatformAdapter(ABC):
     # the whole-channel bucket ``(platform, chat_id, None)``; needs a flat-reply outbound gate too
     # (Slack ``reply_in_thread: false``). False fails SAFE -> ``thread``.
     supports_inchannel_continuable: bool = False
+    # Shared primary transports may opt in to secondary-profile policy hydration before connect.
+    supports_routed_profile_config_hydration: bool = False
+
     # A human can answer "session restored — what next?"; webhook-style platforms set False so
     # auto-resume finishes the work instead of asking nobody.
     # The startup auto-resume turn (``_schedule_resume_pending_sessions`` → the ``_is_resume_pending``
@@ -2284,6 +2312,50 @@ class BasePlatformAdapter(ABC):
         """Declare the owning multiplex profile (secondary profiles only); read by
         :meth:`_session_key_profile` so adapter-level keys leave ``agent:main:``."""
         self._owner_profile = None if (name := (profile_name or "").strip() or None) == "default" else name
+
+    def hydrate_routed_profile_config(
+        self, profile_name: str, config: PlatformConfig
+    ) -> None:
+        """Hydrate profile-specific policy before a shared transport connects.
+
+        Adapters opt in with ``supports_routed_profile_config_hydration`` and
+        override this no-op hook. The config object contains no live adapter,
+        client, credential handle, or profile filesystem path.
+        """
+        del profile_name, config
+
+    def normalize_source_identity_candidates(self, source: Any) -> tuple[str, ...]:
+        """Return stable sender identities suitable for scoped admin checks.
+
+        Adapters may override this to add equivalent platform encodings. The
+        default preserves both canonical and alternate IDs while exposing no
+        transport client or credential-bearing object.
+        """
+        candidates: list[str] = []
+        for value in (
+            getattr(source, "user_id", None),
+            getattr(source, "user_id_alt", None),
+        ):
+            normalized = str(value or "").strip()
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+        return tuple(candidates)
+
+    def enrich_source_reply_metadata(
+        self,
+        source: Any,
+        metadata: Optional[Dict[str, Any]],
+        *,
+        reply_to_message_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Enrich generic reply metadata with adapter-owned source context.
+
+        The default is a no-op. Platform adapters may add immutable routing
+        provenance required by their send paths without teaching gateway core
+        about platform-specific metadata keys.
+        """
+        del source, reply_to_message_id
+        return metadata
 
     def _session_key_profile(self, source: Optional[Any] = None) -> Optional[str]:
         """Profile namespace for an adapter-derived session key. Ingress runs BEFORE the runner
@@ -3157,7 +3229,7 @@ class BasePlatformAdapter(ABC):
     async def _dispatch_inline_reply(self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> None:
         """Call the handler and send its reply inline, with retry, threading and
         ephemeral deletion — no session lifecycle (active-session bypass paths)."""
-        thread_meta = _thread_metadata_for_event(event)
+        thread_meta = _thread_metadata_for_event(event, adapter=self)
         response = await self._message_handler(event)
         text, eph_ttl = self._unwrap_ephemeral(response)
         if not text:
@@ -3856,7 +3928,7 @@ class BasePlatformAdapter(ABC):
         _thread_metadata = None
         try:
             error_detail = str(e)[:300] if str(e) else "no details available"
-            _thread_metadata = _thread_metadata_for_event(event)
+            _thread_metadata = _thread_metadata_for_event(event, adapter=self)
             await self.send(
                 chat_id=event.source.chat_id,
                 content=(f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
@@ -3994,7 +4066,7 @@ class BasePlatformAdapter(ABC):
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
-        _thread_metadata = _thread_metadata_for_event(event)
+        _thread_metadata = _thread_metadata_for_event(event, adapter=self)
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
             await self._run_processing_hook("on_processing_start", event)

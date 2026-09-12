@@ -1927,13 +1927,16 @@ class TestSlackReplyInThreadProgressRouting:
             reply_in_thread=False,
         ) is None
 
-    def test_buzz_uses_event_message_id_as_progress_thread(self):
-        """Buzz has no native thread_id; progress must reply-to the trigger."""
+    def test_buzz_defers_progress_placement_to_adapter_policy(self):
+        """Buzz resolves the trigger from adapter-owned source metadata."""
         from gateway.run import _resolve_progress_thread_id
 
-        assert _resolve_progress_thread_id(
-            "buzz",
-            source_thread_id=None,
-            event_message_id="evt-trigger-001",
-            reply_in_thread=True,
-        ) == "evt-trigger-001"
+        assert (
+            _resolve_progress_thread_id(
+                "buzz",
+                source_thread_id=None,
+                event_message_id="evt-trigger-001",
+                reply_in_thread=True,
+            )
+            is None
+        )

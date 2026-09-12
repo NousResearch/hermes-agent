@@ -715,6 +715,7 @@ class GatewayAdapterLifecycleMixin:
                 self._drop_from_reconnect_queue(platform, "adapter creation returned None")
                 return
             self._wire_adapter_handlers(adapter)
+            self._hydrate_shared_adapter_routed_profile_configs(adapter, platform)
             # is_reconnect keeps the server-side update queue so offline-period messages are delivered.
             success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
             if success:
@@ -880,6 +881,42 @@ class GatewayAdapterLifecycleMixin:
                         self.pairing_store if name == active else PairingStore(profile=name)
                     )
             write_runtime_status(served_profiles=served)
+
+    def _hydrate_shared_adapter_routed_profile_configs(
+        self, adapter: BasePlatformAdapter, platform: Platform,
+    ) -> None:
+        """Hydrate routed config before a shared primary transport connects."""
+        if (
+            not self._multiplex_on()
+            or getattr(adapter, "supports_routed_profile_config_hydration", False) is not True
+        ):
+            return
+        hydrate = getattr(adapter, "hydrate_routed_profile_config", None)
+        if not callable(hydrate):
+            raise RuntimeError("adapter opted into routed config hydration without a hook")
+
+        routed_profiles = {
+            str(getattr(route, "profile", "") or "").strip()
+            for route in (getattr(self.config, "profile_routes", None) or ())
+            if getattr(route, "enabled", True)
+            and str(getattr(route, "platform", "") or "").strip().lower() == platform.value
+        }
+        primary_profile = str(getattr(self, "_primary_profile_name", None) or "default")
+        from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+        from gateway.config import PlatformConfig, load_gateway_config
+
+        homes = dict(_multiplex_profile_homes(self.config))
+        for profile in sorted(routed_profiles):
+            if not profile or profile == primary_profile:
+                continue
+            profile_home = homes.get(profile)
+            if profile_home is None:
+                continue
+            with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                profile_config = load_gateway_config().platforms.get(platform)
+            if profile_config is None:
+                profile_config = PlatformConfig(enabled=False)
+            hydrate(profile, profile_config)
 
     async def _load_secondary_profile_config(self, profile_name: str, profile_home: "Path"):
         """Hydrate + enter ``profile_home``'s scope once; return its gateway config. Raises

@@ -24,7 +24,7 @@ import threading
 import types
 from contextlib import suppress
 from dataclasses import dataclass, field
-from functools import cached_property
+from functools import cached_property, wraps
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
@@ -216,6 +216,36 @@ class LoadedPlugin:
     error: Optional[str] = None
     # Bundled platform recorded as a not-yet-imported loader (see _register_deferred_platform).
     deferred: bool = False
+
+
+
+
+@dataclass(frozen=True)
+class PluginCommandAccessContext:
+    """Minimal immutable source context for gateway access classifiers."""
+
+    platform: str
+    channel_id: str
+    thread_id: Optional[str]
+    chat_type: str
+    scope_id: Optional[str]
+    source_identity_candidates: Tuple[str, ...]
+    routed_profile: str
+
+
+@dataclass(frozen=True)
+class PluginCommandInvocation:
+    """Minimal immutable gateway context for an opted-in plugin command."""
+
+    platform: str
+    channel_id: str
+    thread_id: Optional[str]
+    message_id: Optional[str]
+    chat_type: str
+    scope_id: Optional[str]
+    source_identity_candidates: Tuple[str, ...]
+    routed_profile: str
+    platform_actions: Any
 
 
 class PluginContext:
@@ -659,10 +689,46 @@ class PluginContext:
     def register_command(
         self, name: str, handler: Callable, description: str = "", args_hint: str = "",
         argument_mode: str | None = None,
+        *,
+        with_context: bool = False,
+        access: Callable[..., str] | str | None = None,
+        busy_policy: str | None = None,
     ) -> Optional[PluginRegistration]:
-        """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
-        field; without it the command registers parameterless there but still accepts trailing text."""
+        """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
+
+        The legacy handler signature is ``fn(raw_args: str) -> str | None``.
+        When ``with_context=True``, it is
+        ``fn(raw_args, invocation: PluginCommandInvocation | None)``; CLI/TUI
+        surfaces pass ``None`` while the gateway supplies the bounded context.
+        Handlers may be synchronous or asynchronous.
+
+        ``access`` may be ``"user"``, ``"admin"``, or a callable that maps
+        raw arguments to one of those values. A callable may optionally accept
+        ``PluginCommandAccessContext`` as a second argument. Invalid values and
+        classifier failures resolve to ``"admin"``. Omit it to preserve the
+        existing platform slash-command policy.
+
+        ``busy_policy`` uses the same values as core ``CommandDef`` entries.
+        Omit it to preserve the legacy active-session message path; setting it
+        explicitly opts into the gateway's active-turn bypass dispatcher.
+
+        Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
+        terminal commands), this registers in-session slash commands that users
+        invoke during a conversation.
+
+        ``args_hint`` is an optional short string (e.g. ``"<file>"`` or
+        ``"dias:7 formato:json"``) used by gateway adapters to surface the
+        command with an argument field — for example Discord's native slash
+        command picker. Plugin commands without ``args_hint`` register as
+        parameterless in Discord and still accept trailing text when invoked
+        as free-form chat.
+
+        ``argument_mode`` tells the desktop composer how text after the command
+        name behaves (``options``, ``text``, or ``mixed``). Omit it to infer
+        ``text`` whenever ``args_hint`` is set, so ``/myplugin `` stays typeable.
+
+        Names conflicting with built-in commands are rejected with a warning.
+        """
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
@@ -673,12 +739,37 @@ class PluginContext:
                 logger.warning("Plugin '%s' tried to register command '/%s' which conflicts "
                                "with a built-in command. Skipping.", self.manifest.name, clean)
                 return
+        try:
+            from hermes_cli.commands import VALID_BUSY_POLICIES
+        except Exception:
+            VALID_BUSY_POLICIES = frozenset({"dispatch", "reject", "interrupt_then_dispatch"})
+        normalized_busy = None
+        if busy_policy is not None:
+            normalized_busy = str(busy_policy).strip().lower()
+            if normalized_busy not in VALID_BUSY_POLICIES:
+                logger.warning(
+                    "Plugin '%s' registered invalid busy policy %r for '/%s'; using reject.",
+                    self.manifest.name,
+                    busy_policy,
+                    clean,
+                )
+                normalized_busy = "reject"
+        if access is not None and not callable(access) and access not in {"user", "admin"}:
+            logger.warning(
+                "Plugin '%s' registered invalid access metadata for '/%s'; using admin.",
+                self.manifest.name,
+                clean,
+            )
+            access = "admin"
         hint = (args_hint or "").strip()
         entry = {
             "handler": handler, "description": description or "Plugin command",
             "plugin": self.manifest.name, "plugin_key": self.plugin_id, "args_hint": hint,
             "argument_mode": argument_mode if argument_mode in {"options", "text", "mixed"}
             else ("text" if hint else None),
+            "with_context": bool(with_context),
+            "access": access,
+            "busy_policy": normalized_busy,
         }
         return self._register_entry("command", clean, self._manager._plugin_commands, entry,
                                     "Plugin %s registered command: /%s", clean)
@@ -1983,10 +2074,58 @@ def get_plugin_context_engine():
     return _ensure_plugins_discovered()._context_engine
 
 
+def get_plugin_command(name: str) -> Optional[dict]:
+    """Return plugin command metadata for a normalized command name."""
+    clean = str(name or "").strip().lstrip("/").lower().replace("_", "-")
+    return _ensure_plugins_discovered()._plugin_commands.get(clean)
+
+
+def plugin_command_access_level(
+    entry: Mapping[str, Any],
+    raw_args: str,
+    context: PluginCommandAccessContext | None = None,
+) -> str | None:
+    """Resolve source-aware access while preserving one-argument classifiers."""
+    access = entry.get("access")
+    if access is None:
+        return None
+    try:
+        if callable(access):
+            accepts_context = False
+            try:
+                inspect.signature(access).bind(raw_args, context)
+            except (TypeError, ValueError):
+                pass
+            else:
+                accepts_context = True
+            level = access(raw_args, context) if accepts_context else access(raw_args)
+        else:
+            level = access
+    except Exception:
+        logger.warning("Plugin command access classifier failed", exc_info=True)
+        return "admin"
+    return level if level in {"user", "admin"} else "admin"
+
+
 def get_plugin_command_handler(name: str) -> Optional[Callable]:
-    """Return the handler for a plugin-registered slash command, or ``None``."""
-    entry = _ensure_plugins_discovered()._plugin_commands.get(name)
-    return entry["handler"] if entry else None
+    """Return a CLI-compatible plugin handler, or ``None``.
+
+    Context-aware commands receive ``None`` on non-gateway surfaces so they
+    can return their own unsupported-surface response without changing the
+    established one-argument handler contract.
+    """
+    entry = get_plugin_command(name)
+    if not entry:
+        return None
+    handler = entry["handler"]
+    if not entry.get("with_context"):
+        return handler
+
+    @wraps(handler)
+    def _without_gateway_context(raw_args: str):
+        return handler(raw_args, None)
+
+    return _without_gateway_context
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

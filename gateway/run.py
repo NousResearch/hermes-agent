@@ -827,7 +827,7 @@ def _resolve_progress_thread_id(
         return str(source_thread_id) if source_thread_id else None
     if source_thread_id:
         return str(source_thread_id)
-    if platform_key in {"slack", "mattermost", "buzz"} and event_message_id:
+    if platform_key in {"slack", "mattermost"} and event_message_id:
         return str(event_message_id)
     return None
 
@@ -4127,6 +4127,20 @@ class GatewayRunner(
         # stamp is not the profile that wrote the binding (Telegram prune path needs it).
         # See #76423.
         profile = str(getattr(source, "profile", None) or "").strip()
+        adapter = self._adapter_for_source(source)
+        enrich = getattr(type(adapter), "enrich_source_reply_metadata", None)
+        if callable(enrich):
+            try:
+                metadata = enrich(
+                    adapter,
+                    source,
+                    metadata,
+                    reply_to_message_id=(
+                        reply_to_message_id or getattr(source, "message_id", None)
+                    ),
+                )
+            except Exception:
+                logger.debug("Adapter source reply metadata enrichment failed", exc_info=True)
         if profile and metadata is not None:
             metadata = dict(metadata)
             metadata["hermes_profile"] = profile

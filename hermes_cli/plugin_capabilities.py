@@ -44,7 +44,8 @@ _CAPABILITY_ROWS = (
      "task lanes"),
     ("gateway.platform_actions", ("allow_platform_actions",),
      "Act on connected chat platforms as the gateway bot "
-     "(add reactions, rename threads) via ctx.platform_actions"))
+     "(add reactions, rename threads, or request a source-bound channel policy change) "
+     "via ctx.platform_actions"))
 CAPABILITY_REGISTRY: Dict[str, CapabilitySpec] = {
     cid: CapabilitySpec(cid, path, desc) for cid, path, desc in _CAPABILITY_ROWS
 }

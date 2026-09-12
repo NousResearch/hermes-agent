@@ -36,13 +36,21 @@ The spawned Hermes uses the same config, credentials, memory, and skills as `her
 
 ## ③ Native gateway platform (recommended for full Hermes)
 
-The bundled `buzz` platform plugin makes Buzz a normal Hermes messaging platform — channels, DMs, mention gating, threaded replies, reactions, images, and cron delivery (`deliver=buzz`), with Hermes' own approvals, memory, and session management intact. Inbound arrives over a persistent NIP-42-authenticated Nostr WebSocket (dependency-free BIP-340 signing) with automatic fallback to CLI polling; outbound goes through the `buzz` CLI.
+The bundled `buzz` platform plugin makes Buzz a normal Hermes messaging platform — channels, DMs, mention gating, per-channel listening and reply placement, reactions, images, and cron delivery (`deliver=buzz`) — with Hermes' own approvals, memory, and session management intact. Inbound arrives over a persistent NIP-42-authenticated Nostr WebSocket (dependency-free BIP-340 signing) with automatic fallback to CLI polling; outbound goes through the `buzz` CLI.
 
 ```bash
 hermes gateway setup   # pick Buzz
 ```
 
-Full configuration reference (env vars, config.yaml, transport modes, access control): **[Messaging → Buzz](/user-guide/messaging/buzz)**
+Administrators can use `/buzz` in a channel to switch between mention-only and
+ambient listening or choose flat, threaded, and hybrid reply placement. These
+controls are scoped to the immutable channel UUID, persist in the active
+profile, and apply immediately without changing other channels. Read-only
+status remains available to authorized users; mutations require a separately
+configured explicit Buzz group administrator and platform-action consent.
+
+Full configuration, command, authorization, persistence, and operator-test
+reference: **[Messaging → Buzz](/user-guide/messaging/buzz#per-channel-controls)**
 
 ## Which one should I use?
 

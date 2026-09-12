@@ -36,6 +36,41 @@ _PLUGIN_SECTION_FRAME_RE = re.compile(
 )
 _GATE_WORDS = {**dict.fromkeys(("true", "always", "yes", "on"), True), **dict.fromkeys(("false", "never", "no", "off"), False)}
 
+# Process-lifetime once-flag: auto + unmatched model logs at most once.
+_tool_use_enforcement_auto_skip_logged = False
+
+
+def _reset_tool_use_enforcement_auto_skip_log() -> None:
+    """Test helper: allow the auto-skip notice to fire again."""
+    global _tool_use_enforcement_auto_skip_logged
+    _tool_use_enforcement_auto_skip_logged = False
+
+
+def _is_tool_use_enforcement_auto_path(setting: Any) -> bool:
+    """True when *setting* is the implicit auto path (not bool / gate-word / list)."""
+    if setting is True or setting is False:
+        return False
+    if isinstance(setting, str) and setting.lower() in _GATE_WORDS:
+        return False
+    if isinstance(setting, list):
+        return False
+    return True
+
+
+def _log_tool_use_enforcement_auto_skip(model: Optional[str]) -> None:
+    """One-time WARNING when auto enforcement does not apply for this model."""
+    global _tool_use_enforcement_auto_skip_logged
+    if _tool_use_enforcement_auto_skip_logged:
+        return
+    _tool_use_enforcement_auto_skip_logged = True
+    logger.warning(
+        "tool_use_enforcement is auto and model %r matched none of the known-family "
+        "list %s; Tool-use enforcement guidance was not injected. "
+        "Set tool_use_enforcement: true to force it.",
+        model,
+        TOOL_USE_ENFORCEMENT_MODELS,
+    )
+
 
 def _model_gate(setting: Any, model: Optional[str], default_models) -> bool:
     """Resolve a config gate: True/"true"-ish -> on, False/"false"-ish -> off,
@@ -517,6 +552,8 @@ def _guidance_parts(agent: Any) -> List[str]:
         parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
         if any(g in (agent.model or "").lower() for g in ("gemini", "gemma")):
             parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+    elif _is_tool_use_enforcement_auto_path(agent._tool_use_enforcement):
+        _log_tool_use_enforcement_auto_skip(agent.model)
     if _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
         from agent.prompt_builder import execution_guidance_text
         parts.append(execution_guidance_text(agent.valid_tool_names))

@@ -351,3 +351,68 @@ describe('MessagingView Telegram quick setup', () => {
     }
   })
 })
+
+function envVar(patch: Partial<MessagingEnvVarInfo> = {}): MessagingEnvVarInfo {
+  return {
+    advanced: false,
+    description: '',
+    is_password: false,
+    is_set: false,
+    key: 'ZULIP_SITE_URL',
+    prompt: 'ZULIP_SITE_URL',
+    redacted_value: null,
+    required: true,
+    url: null,
+    ...patch
+  }
+}
+
+describe('MessagingView Zulip field copy', () => {
+  it('uses a human label, an example placeholder, and the env var as a caption', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          id: 'zulip',
+          name: 'Zulip',
+          env_vars: [
+            envVar({
+              key: 'ZULIP_SITE_URL',
+              prompt: 'ZULIP_SITE_URL',
+              required: true
+            })
+          ]
+        })
+      ]
+    })
+
+    await renderMessaging()
+
+    const input = await screen.findByLabelText('Site URL')
+    expect(input.getAttribute('placeholder')).toBe('https://example.zulipchat.com')
+    expect(screen.getByText('ZULIP_SITE_URL')).toBeTruthy()
+  })
+
+  it('does not caption non-Zulip fields with their env var name', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          id: 'telegram',
+          name: 'Telegram',
+          env_vars: [
+            envVar({
+              key: 'TELEGRAM_BOT_TOKEN',
+              prompt: 'Telegram bot token',
+              required: true
+            })
+          ]
+        })
+      ]
+    })
+
+    await renderMessaging()
+
+    const input = await screen.findByLabelText('Bot token')
+    expect(input.getAttribute('placeholder')).toBe('Paste Telegram bot token')
+    expect(screen.queryByText('TELEGRAM_BOT_TOKEN')).toBeNull()
+  })
+})

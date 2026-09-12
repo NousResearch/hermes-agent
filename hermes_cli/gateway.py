@@ -3548,13 +3548,26 @@ def _launchctl_domain_unsupported(returncode: int) -> bool:
 _LAUNCHCTL_BOOTSTRAP_EIO = 5
 
 
-def _launchctl_bootstrap(domain: str, plist_path, label: str, *, timeout: int = 30) -> None:
+def _launchctl_remaining_timeout(deadline: float, timeout: float) -> float:
+    """Cap one launchctl operation by the shared monotonic deadline."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired("launchctl", timeout)
+    return min(timeout, remaining)
+
+
+def _launchctl_bootstrap(
+    domain: str, plist_path, label: str, *, timeout: float = 30,
+    deadline: float | None = None,
+) -> None:
     """Bootstrap a launchd job, recovering from a stale still-registered label (EIO 5). Without the
     bootout + retry that case is misread as an unmanageable domain and degrades to detached, silently
     losing auto-start and crash-restart."""
+    if deadline is None:
+        deadline = time.monotonic() + timeout
     bootstrap = ["launchctl", "bootstrap", domain, str(plist_path)]
     try:
-        subprocess.run(bootstrap, check=True, timeout=timeout)
+        subprocess.run(bootstrap, check=True, timeout=_launchctl_remaining_timeout(deadline, timeout))
     except subprocess.CalledProcessError as exc:
         if exc.returncode != _LAUNCHCTL_BOOTSTRAP_EIO:
             raise
@@ -3563,8 +3576,8 @@ def _launchctl_bootstrap(domain: str, plist_path, label: str, *, timeout: int = 
         # unloaded), so its expected 3/113/125 stderr must not leak to the terminal.
         subprocess.run(
             ["launchctl", "bootout", f"{domain}/{label}"],
-            check=False, timeout=timeout, **_CAPTURE_TEXT)
-        subprocess.run(bootstrap, check=True, timeout=timeout)
+            check=False, timeout=_launchctl_remaining_timeout(deadline, timeout), **_CAPTURE_TEXT)
+        subprocess.run(bootstrap, check=True, timeout=_launchctl_remaining_timeout(deadline, timeout))
 
 
 def _launchd_reload_log_path() -> Path:
@@ -3591,11 +3604,11 @@ def _launchd_reload_budget() -> float:
     return max(30.0, _get_restart_drain_timeout())
 
 
-def _launchctl_label_supervising_process(label: str) -> bool:
+def _launchctl_label_supervising_process(label: str, *, timeout: float = 10) -> bool:
     """True when launchd knows ``label`` AND runs a process for it. ``launchctl list`` exits 0 for a
     mere registered definition (``state = not running`` on macOS 26+), so a positive PID is required."""
     try:
-        result = subprocess.run(["launchctl", "list", label], check=False, timeout=10, **_CAPTURE_TEXT)
+        result = subprocess.run(["launchctl", "list", label], check=False, timeout=timeout, **_CAPTURE_TEXT)
     except (subprocess.TimeoutExpired, OSError):
         return False
     return result.returncode == 0 and _parse_launchd_pid_from_list_output(result.stdout) is not None
@@ -3608,10 +3621,14 @@ def _retry_launchctl_bootstrap_until_registered(
     load bootstrap can fail even after bootout, during a drain (default 180s) — ~10s is too short."""
     attempt = 0
     while True:
+        if time.monotonic() >= deadline:
+            return False
         attempt += 1
         try:
-            _launchctl_bootstrap(domain, plist_path, label, timeout=30)
-            if _launchctl_label_supervising_process(label):
+            _launchctl_bootstrap(domain, plist_path, label, timeout=30, deadline=deadline)
+            if _launchctl_label_supervising_process(
+                label, timeout=_launchctl_remaining_timeout(deadline, 10),
+            ):
                 return True
             outcome = f"exited 0 but {domain}/{label} has no supervised process (launchctl list)"
         except subprocess.CalledProcessError as exc:
@@ -3619,9 +3636,10 @@ def _retry_launchctl_bootstrap_until_registered(
         except subprocess.TimeoutExpired:
             outcome = f"timed out for {domain}/{label}"
         _append_launchd_reload_log(f"bootstrap attempt {attempt} {outcome} — retrying")
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             return False
-        time.sleep(2)
+        time.sleep(min(2, remaining))
 
 
 # launchd-unsupported marker: written when the domain can't be managed (exit 5/125, macOS 26+) so
@@ -4006,10 +4024,8 @@ def launchd_install(force: bool = False):
 
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
-    # Captured: uninstalling an already-unloaded job is fine — don't print Boot-out failed: 3.
-    subprocess.run(
-        ["launchctl", "bootout", f"{_launchd_domain()}/{get_launchd_label()}"],
-        check=False, timeout=90, **_CAPTURE_TEXT)
+    if launchd_stop() is False:
+        raise LaunchdStopError("Gateway did not stop; preserving the launchd plist")
     if plist_path.exists():
         plist_path.unlink()
         print(f"✓ Removed {plist_path}")
@@ -4066,7 +4082,11 @@ def _launchd_ok(message: str) -> None:
     _clear_launchd_unsupported_marker()
 
 
-def launchd_stop():
+class LaunchdStopError(RuntimeError):
+    """The launchd gateway could not be confirmed stopped."""
+
+
+def launchd_stop() -> bool:
     target = f"{_launchd_domain()}/{get_launchd_label()}"
     _mark_planned_stop()
     # bootout unloads the definition so KeepAlive doesn't respawn; `hermes gateway start` re-bootstraps.
@@ -4080,14 +4100,22 @@ def launchd_stop():
         # below.
         if not (_launchd_error_indicates_unloaded(e) or _launchctl_domain_unsupported(e.returncode)):
             raise
-    _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+    if not _wait_for_gateway_exit(timeout=10.0, force_after=5.0):
+        return False
     print("✓ Service stopped")
+    return True
 
 
 def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.0) -> bool:
     """Wait up to ``timeout`` s for the gateway (by gateway.pid, not launchd labels, so multiple
     HERMES_HOMEs work) to exit; SIGKILL it after ``force_after`` s of graceful waiting."""
     from gateway.status import get_process_start_time, get_running_pid
+    original_pid = get_running_pid()
+    if original_pid is None:
+        return True
+    original_start = get_process_start_time(original_pid)
+    if original_start is None:
+        return get_running_pid() is None
     deadline = time.monotonic() + timeout
     force_deadline = (time.monotonic() + force_after) if force_after is not None else None
     force_sent = False
@@ -4097,13 +4125,16 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
         if pid is None:
             return True  # Process exited cleanly.
 
+        if pid != original_pid or get_process_start_time(pid) != original_start:
+            return False  # Never signal a replacement or an unverified identity.
+
         if force_after is not None and not force_sent and time.monotonic() >= force_deadline:
             # Grace period expired — force-kill the specific PID.
             try:
-                terminate_pid(pid, force=True, expected_start_time=get_process_start_time(pid))
+                terminate_pid(original_pid, force=True, expected_start_time=original_start)
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
             except (ProcessLookupError, PermissionError, OSError):
-                return True  # Already gone or we can't touch it.
+                return get_running_pid() is None
             force_sent = True
 
         time.sleep(0.3)
@@ -5524,7 +5555,10 @@ def _service_call(backend: str, verb: str, system: bool | None = False) -> None:
     if backend == "windows":
         return getattr(_gw_windows(), verb)()
     if backend == "launchd":
-        return globals()[f"launchd_{verb}"]()
+        result = globals()[f"launchd_{verb}"]()
+        if verb == "stop" and result is False:
+            raise LaunchdStopError("Gateway did not stop")
+        return result
     fn = globals()[f"systemd_{verb}"]
     return fn() if system is None else fn(system=system)
 
@@ -5769,6 +5803,9 @@ def gateway_command(args):
     """Handle gateway subcommands."""
     try:
         return _gateway_command_inner(args)
+    except LaunchdStopError as e:
+        print_error(str(e))
+        sys.exit(1)
     except UserSystemdUnavailableError as e:
         # Actionable message, not a traceback, when the user D-Bus session is unreachable.
         print_error("User systemd not reachable:")

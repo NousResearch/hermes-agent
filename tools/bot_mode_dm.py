@@ -50,6 +50,9 @@ _LIVE_WAIT_SECONDS = 300
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
 # Same shape as ``tools.bot_relay._HANDLE_RE`` (kept local: see import note above).
 _LOCAL_TARGET_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+# A marker at the very end is evidence that the authored body was already cut. Matching
+# only the anchored bracketed token keeps discussions or quoted examples deliverable.
+_TRUNCATED_MESSAGE_TAIL_RE = re.compile(r"\[truncated\]$", re.IGNORECASE)
 
 
 def _default_home() -> str:
@@ -208,6 +211,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     if len(body) > MESSAGE_MAX_CHARS:
         return _err(f"message too long ({len(body)} chars > {MESSAGE_MAX_CHARS}). "
                     "Send the essentials; share large content as a file path instead.")
+    if _TRUNCATED_MESSAGE_TAIL_RE.search(body):
+        return _err("message appears truncated and was not delivered. Regenerate the complete message and retry.")
 
     raw_target = str(target or "").strip().lstrip("@")
     if not raw_target:

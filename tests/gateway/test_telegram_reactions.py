@@ -53,6 +53,23 @@ def test_reactions_enabled_when_set_true(monkeypatch):
     assert adapter._reactions_enabled() is True
 
 
+def test_reactions_explicit_env_overrides_stock_yaml_default(monkeypatch, tmp_path):
+    """An explicit env opt-in wins over the materialized YAML default."""
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(yaml.dump({"telegram": {"reactions": False}}))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+
+    from gateway.config import load_gateway_config
+
+    adapter = _make_adapter()
+    adapter.config = load_gateway_config().platforms[Platform.TELEGRAM]
+
+    assert adapter.config.extra["reactions"] is False
+    assert adapter._reactions_enabled() is True
+
+
 # ── _set_reaction ────────────────────────────────────────────────────
 
 
@@ -152,5 +169,3 @@ def test_config_bridges_telegram_reactions(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("TELEGRAM_REACTIONS") == "true"
-
-

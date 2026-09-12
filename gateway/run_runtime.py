@@ -98,6 +98,8 @@ async def recover_gateway_native_sessions(runner):
     for authority in authorities:
         with owner_scope(authority):
             recover_local_sessions(authority, schedule=True)
+            from gateway.platforms.webhook_ingress import recover_webhook_finalizations
+            await recover_webhook_finalizations(authority)
             pending = {row['target_session_id'] for row in authority.db._read_all(
                 "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
             bindings = [(owner, entry.origin, runner._adapter_for_source(entry.origin))

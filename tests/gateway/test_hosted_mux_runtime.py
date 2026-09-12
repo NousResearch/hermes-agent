@@ -77,6 +77,29 @@ def test_hosted_lifecycle_serves_and_stops_every_authority(mux):
     assert all(not s.runtime.status()['running'] for s in services.values())
 
 
+def test_native_recovery_checks_webhook_finalization_in_each_owner_scope(mux, monkeypatch):
+    from gateway.run_runtime import recover_gateway_native_sessions
+    from hermes_constants import get_hermes_home
+
+    runner, homes, _, call = mux
+    observed = []
+
+    async def record_scope(authority):
+        observed.append((authority.profile_id, get_hermes_home().resolve()))
+        return {}
+
+    monkeypatch.setattr(
+        "gateway.platforms.webhook_ingress.recover_webhook_finalizations", record_scope
+    )
+    call(recover_gateway_native_sessions(runner))
+
+    assert observed == [
+        (authority.profile_id, Path(authority.profile_id).resolve())
+        for authority in runner.session_authorities
+    ]
+    assert {home for _profile, home in observed} == {home.resolve() for home in homes.values()}
+
+
 def test_secondary_owner_transport_routes_both_directions_through_mux(mux):
     from gateway import hosted_rooms
     from gateway.session_authorities import owner_scope

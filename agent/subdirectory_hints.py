@@ -53,7 +53,28 @@ def _first_hint_file(directory: Path):
 
 
 _NAV_COMMANDS = frozenset({"cd", "pushd"})
-_SHELL_OPERATORS = frozenset({"&&", "||", "|", ";", "&"})
+_SHELL_OPERATORS = frozenset({"&&", "||", "|", ";", "&", ";;", "|&", "(", ")"})
+
+
+def _nav_targets(cmd: str) -> list:
+    """Operands of `cd` / `pushd` that begin a shell segment. `cd -` and bare `cd` yield nothing."""
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    targets, segment_start = [], True
+    for idx, token in enumerate(tokens):
+        if token in _SHELL_OPERATORS:
+            segment_start = True
+            continue
+        if segment_start and token in _NAV_COMMANDS:
+            operand = next((t for t in tokens[idx + 1:] if t in _SHELL_OPERATORS or not t.startswith("-")), None)
+            if operand and operand not in _SHELL_OPERATORS:
+                targets.append(operand)
+        segment_start = False
+    return targets
 
 
 class SubdirectoryHintTracker:
@@ -121,13 +142,11 @@ class SubdirectoryHintTracker:
         except ValueError:
             tokens = cmd.split()
         # `cd backend && ls`: a bare directory name has no `/` or `.`, so the generic filter below drops
-        # it; the token after a navigation command is a path by construction (#11032). `cd -` / bare `cd`
-        # are skipped (nothing under the working dir to load).
-        for idx, token in enumerate(tokens):
-            if token in _NAV_COMMANDS:
-                target = next((t for t in tokens[idx + 1:] if not t.startswith("-")), None)
-                if target and target not in _SHELL_OPERATORS:
-                    self._add_path_candidate(target.rstrip(";"), candidates)
+        # it; the operand of a navigation command is a path by construction (#11032). Only a `cd` at the
+        # START of a shell segment counts (`echo cd backend` is prose); punctuation-aware tokenizing keeps
+        # a quoted `'backend;'` literal while splitting bare `backend;ls` at the operator.
+        for target in _nav_targets(cmd):
+            self._add_path_candidate(target, candidates)
         for token in tokens:
             if token.startswith(("-", "http://", "https://", "git@")) or ("/" not in token and "." not in token):
                 continue

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 
+import hashlib
 import logging
 import os
 import random
@@ -2595,6 +2596,51 @@ _ENV_BASE_URL_RESOLVERS = {
 }
 
 
+def _zai_key_hash(token: str) -> str:
+    """Key-hash form the Z.AI endpoint cache is stored under (``auth_zai_kimi``)."""
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def _reconcile_key_scoped_base_url(provider: str, entry: PooledCredential) -> PooledCredential:
+    """Adopt the endpoint this credential's KEY resolves to (Z.AI / Kimi Coding).
+
+    These providers sell per-region endpoints behind one key shape: a Coding Plan key
+    authenticates only against ``/api/coding/paas/v4``. ``hermes auth add`` persists the
+    provider's standard URL on the row, and ``_swap_credential`` adopts the stored value
+    verbatim, so any rotation routes the key at the standard endpoint — which answers
+    ``429`` code ``1113`` ("Insufficient balance or no resource package."). That body
+    classifies as *verified billing*, benching the sole credential for an hour and
+    replaying the latched error without a request until ``hermes auth reset``.
+
+    Env-seeded rows already resolve this way (``_seed_from_env``); manual rows did not.
+    Reads the endpoint cached on the key hash only — probing here would put seconds of
+    network latency inside a pool load, and a probe already happens on first client build.
+    """
+    if provider not in _ENV_BASE_URL_RESOLVERS:
+        return entry
+    token = str(entry.access_token or "").strip()
+    if not token:
+        return entry
+    try:
+        cached = (_load_provider_state(_load_auth_store(), provider) or {}).get("detected_endpoint")
+    except Exception:
+        return entry
+    if not isinstance(cached, dict):
+        return entry
+    cached_hash = str(cached.get("key_hash") or "")
+    if cached_hash and cached_hash != _zai_key_hash(token):
+        return entry
+    resolved = str(cached.get("base_url") or "").strip().rstrip("/")
+    current = str(entry.base_url or "").strip().rstrip("/")
+    if not resolved or resolved == current:
+        return entry
+    logger.info(
+        "Pool entry %s: adopting key-resolved endpoint %s (stored %s)",
+        entry.id, resolved, current or "<none>",
+    )
+    return replace(entry, base_url=resolved)
+
+
 def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     seed = _Seeder(provider, entries)
     # Copilot's singleton branch exchanges the raw ghu_ OAuth token for the
@@ -2725,6 +2771,8 @@ def load_pool(provider: str) -> CredentialPool:
         for payload in raw_entries
     )
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
+    # A stored row's base_url is not authoritative for key-scoped endpoints.
+    entries = [_reconcile_key_scoped_base_url(provider, entry) for entry in entries]
     raw_needs_auth_normalization = any(
         isinstance(payload, dict)
         and _normalize_pool_auth_type(

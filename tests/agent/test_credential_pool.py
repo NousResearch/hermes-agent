@@ -2209,3 +2209,77 @@ def test_a_persist_without_declared_intent_still_cannot_erase_a_cooldown(
     entry = _disk_entry(tmp_path)
     assert entry["last_status"] == "exhausted"
     assert entry["last_error_code"] == 402
+
+
+def _zai_auth_store(token: str, stored_base_url: str, detected_base_url: str, detected_hash: str = "match") -> dict:
+    import hashlib
+
+    key_hash = hashlib.sha256(token.encode()).hexdigest()[:16] if detected_hash == "match" else "deadbeefdeadbeef"
+    return {
+        "version": 1,
+        "providers": {
+            "zai": {
+                "detected_endpoint": {
+                    "base_url": detected_base_url,
+                    "endpoint_id": "coding-global",
+                    "model": "glm-5.3",
+                    "key_hash": key_hash,
+                }
+            }
+        },
+        "credential_pool": {
+            "zai": [
+                {
+                    "id": "zai-1",
+                    "label": "hermes-api-key",
+                    "auth_type": "api_key",
+                    "priority": 0,
+                    "source": "manual",
+                    "access_token": token,
+                    "base_url": stored_base_url,
+                    "last_status": None,
+                }
+            ]
+        },
+    }
+
+
+def test_zai_manual_row_adopts_key_resolved_endpoint(tmp_path, monkeypatch):
+    """A Coding Plan key must not be routed at the standard endpoint.
+
+    `hermes auth add` stores the provider default on the row and `_swap_credential`
+    adopts it verbatim; the standard endpoint answers 429/1113 ("Insufficient
+    balance"), which classifies as billing and benches the sole credential for an
+    hour. The key's own cached endpoint wins over the stored row.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool
+
+    coding = "https://api.z.ai/api/coding/paas/v4"
+    _write_auth_store(tmp_path, _zai_auth_store("sk-coding-key", "https://api.z.ai/api/paas/v4", coding))
+
+    pool = load_pool("zai")
+    entry = next(e for e in pool.entries() if e.id == "zai-1")
+    assert entry.base_url == coding, "stored standard endpoint must be reconciled to the key's endpoint"
+    assert entry.runtime_base_url == coding, "the runtime route is what _swap_credential adopts"
+
+
+def test_zai_row_for_a_different_key_is_left_alone(tmp_path, monkeypatch):
+    """Only the credential's OWN cached endpoint is authoritative.
+
+    A stale `detected_endpoint` left by a previous key must not rewrite the row —
+    silently switching a rotated key to another key's endpoint would be worse than
+    the misrouting this fixes.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool
+
+    stored = "https://api.z.ai/api/paas/v4"
+    _write_auth_store(
+        tmp_path,
+        _zai_auth_store("sk-new-key", stored, "https://api.z.ai/api/coding/paas/v4", detected_hash="stale"),
+    )
+
+    pool = load_pool("zai")
+    entry = next(e for e in pool.entries() if e.id == "zai-1")
+    assert entry.base_url == stored

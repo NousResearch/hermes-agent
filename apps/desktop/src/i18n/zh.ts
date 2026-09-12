@@ -2504,6 +2504,13 @@ export const zh = defineLocale({
     deleting: '删除中…',
     createDesc: '配置档案是相互独立的 Hermes 环境：各自拥有独立的配置、技能和 SOUL.md。',
     nameLabel: '名称',
+    createConflict: {
+      duplicate: name => `已存在名为“${name}”的配置档案。`,
+      nearMiss: (typed, existing) => `“${typed}”与现有配置档案“${existing}”只差一个字符。`,
+      scaffoldNote: '新建配置档案会生成默认的 SOUL.md，并在首次切换时启动独立后端。',
+      useExisting: name => `使用 ${name}`,
+      createAnyway: '仍然新建'
+    },
     cloneFrom: '克隆来源',
     cloneFromNone: '无（空白）',
     cloneFromDesc: '从选中的来源配置档案复制配置、技能和 SOUL.md。',

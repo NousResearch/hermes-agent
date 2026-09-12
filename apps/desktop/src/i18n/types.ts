@@ -2017,6 +2017,16 @@ export interface Translations {
     deleting: string
     createDesc: string
     nameLabel: string
+    createConflict: {
+      /** The name is taken already — creation must not proceed. */
+      duplicate: (name: string) => string
+      /** The typed name is one edit from an existing profile (the typo guard). */
+      nearMiss: (typed: string, existing: string) => string
+      /** What a brand-new profile actually costs on its first switch. */
+      scaffoldNote: string
+      useExisting: (name: string) => string
+      createAnyway: string
+    }
     cloneFrom: string
     cloneFromNone: string
     cloneFromDesc: string

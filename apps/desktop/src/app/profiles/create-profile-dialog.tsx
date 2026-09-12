@@ -17,6 +17,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { createProfile, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
+import { findProfileNameConflict } from '@/lib/profile-name-guard'
 import { slug } from '@/lib/sanitize'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -32,11 +33,15 @@ export function isValidProfileName(name: string): boolean {
 export function CreateProfileDialog({
   onClose,
   onCreated,
+  onUseExisting,
   open,
   profiles = []
 }: {
   onClose: () => void
   onCreated?: (name: string) => Promise<void> | void
+  // "Take me to the profile this name was probably meant to be" — the caller owns
+  // selection, so a typo is one click from the profile that already exists.
+  onUseExisting: (name: string) => Promise<void> | void
   open: boolean
   profiles?: ProfileInfo[]
 }) {
@@ -64,11 +69,29 @@ export function CreateProfileDialog({
   const invalid = trimmed !== '' && !isValidProfileName(trimmed)
   const busy = status === 'saving' || status === 'done'
 
+  // This dialog is the one free-text door that mints a profile. A name one
+  // keystroke from an existing one is almost always a typo, and a typo'd profile
+  // boots as a real agent (stock SOUL.md, its own backend), so say so before the
+  // scaffold instead of letting it happen silently.
+  const conflict =
+    trimmed && !invalid
+      ? findProfileNameConflict(
+          trimmed,
+          profiles.map(profile => profile.name)
+        )
+      : null
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
 
     if (!trimmed || invalid) {
       setError(invalid ? p.invalidName(p.nameHint) : p.nameRequired)
+
+      return
+    }
+
+    if (conflict?.kind === 'duplicate') {
+      setError(p.createConflict.duplicate(conflict.name))
 
       return
     }
@@ -144,6 +167,25 @@ export function CreateProfileDialog({
             />
           </Field>
 
+          {conflict?.kind === 'near-miss' && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              <div className="grid gap-1.5">
+                <span>{p.createConflict.nearMiss(trimmed, conflict.name)}</span>
+                <span>{p.createConflict.scaffoldNote}</span>
+                <Button
+                  className="justify-self-start"
+                  onClick={() => onUseExisting(conflict.name)}
+                  size="xs"
+                  type="button"
+                  variant="outline"
+                >
+                  {p.createConflict.useExisting(conflict.name)}
+                </Button>
+              </div>
+            </div>
+          )}
+
           {error && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
@@ -156,7 +198,12 @@ export function CreateProfileDialog({
               {t.common.cancel}
             </Button>
             <Button disabled={busy || !trimmed || invalid} type="submit">
-              <ActionStatus busy={p.creating} done={p.created} idle={p.createAction} state={status} />
+              <ActionStatus
+                busy={p.creating}
+                done={p.created}
+                idle={conflict?.kind === 'near-miss' ? p.createConflict.createAnyway : p.createAction}
+                state={status}
+              />
             </Button>
           </DialogFooter>
         </form>

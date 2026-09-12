@@ -2343,6 +2343,13 @@ export const en: Translations = {
     deleting: 'Deleting...',
     createDesc: 'Profiles are independent Hermes environments: separate config, skills, and SOUL.md.',
     nameLabel: 'Name',
+    createConflict: {
+      duplicate: name => `A profile named “${name}” already exists.`,
+      nearMiss: (typed, existing) => `“${typed}” is one character away from the existing profile “${existing}”.`,
+      scaffoldNote: 'Creating a new profile scaffolds a stock SOUL.md and boots its own backend on first switch.',
+      useExisting: name => `Use ${name}`,
+      createAnyway: 'Create anyway'
+    },
     cloneFrom: 'Clone from',
     cloneFromNone: 'None (blank)',
     cloneFromDesc: 'Copies config, skills, and SOUL.md from the selected source profile.',

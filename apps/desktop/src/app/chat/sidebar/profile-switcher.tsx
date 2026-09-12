@@ -544,6 +544,14 @@ export function ProfileRail() {
           await refreshActiveProfile()
           selectProfile(name)
         }}
+        onUseExisting={async name => {
+          // A name one keystroke from an existing profile resolves to that
+          // profile: leave the create flow and land on it instead of scaffolding
+          // a stray agent.
+          setCreateOpen(false)
+          await refreshActiveProfile()
+          selectProfile(name)
+        }}
         open={createOpen}
         profiles={profiles}
       />

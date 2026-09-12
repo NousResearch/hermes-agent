@@ -6,8 +6,9 @@ re-issues the unanswered call → endless "thinking"/reboot loop. These pure hel
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
@@ -26,12 +27,58 @@ _DANGLING_NOTICES = (
 )
 
 
+_INTERRUPT_EXIT_CODES = {130, -1}
+_INTERRUPT_OUTPUT_FIELDS = ("output", "error", "stdout", "stderr")
+
+
+def _legacy_interrupt_heuristic(content: str) -> bool:
+    """Unstructured / invalid-JSON fail-open: historical substring match."""
+    lowered = content.lower()
+    return "[command interrupted]" in lowered or (
+        "exit_code" in lowered and ("130" in lowered or "-1" in lowered) and "interrupt" in lowered
+    )
+
+
+def _text_has_interrupt_indication(text: str) -> bool:
+    lowered = text.lower()
+    return "[command interrupted]" in lowered or "interrupt" in lowered
+
+
+def _try_parse_json_object(text: str) -> Optional[Dict[str, Any]]:
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _structured_interrupt_result(payload: Dict[str, Any]) -> bool:
+    """True only for an outer integer exit_code in {130, -1} plus an interrupt indication."""
+    exit_code = payload.get("exit_code")
+    # bool is a subclass of int; True/False are not valid exit codes.
+    if type(exit_code) is not int or exit_code not in _INTERRUPT_EXIT_CODES:
+        return False
+    return any(
+        isinstance(payload.get(field), str) and _text_has_interrupt_indication(payload[field])
+        for field in _INTERRUPT_OUTPUT_FIELDS
+    )
+
+
 def is_interrupted_tool_result(content: Any) -> bool:
-    """Return True if a tool result indicates the tool was interrupted."""
+    """Return True if a tool result indicates the tool was interrupted.
+
+    Valid JSON objects are classified from the *outer* ``exit_code`` and
+    interrupt text in outer output fields only — quoting ``[Command interrupted]``
+    inside a completed result must not fire. Unstructured / invalid JSON keeps
+    the legacy substring heuristic (fail-open).
+    """
     if not isinstance(content, str):
         return False
-    lowered = content.lower()
-    return "[command interrupted]" in lowered or ("exit_code" in lowered and ("130" in lowered or "-1" in lowered) and "interrupt" in lowered)
+    stripped = content.strip()
+    parsed = _try_parse_json_object(stripped)
+    if parsed is not None:
+        return _structured_interrupt_result(parsed)
+    return _legacy_interrupt_heuristic(stripped)
 
 
 def _call_name(call: Dict[str, Any]) -> str:

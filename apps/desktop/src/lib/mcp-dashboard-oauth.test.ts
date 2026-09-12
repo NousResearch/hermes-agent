@@ -80,7 +80,9 @@ describe('Desktop MCP client callback lifecycle', () => {
       const { bridge, api, openExternal, rpc } = harness()
       setApiRequestConnection(connectionId)
       setApiRequestProfile('origin-profile')
-      const callbackResult = { code: 'code-1', state: 'expected', error: null }
+      const callbackResult = {
+        code: 'code-1', state: 'expected', error: null, iss: 'https://idp.example'
+      }
       bridge.wait.mockResolvedValue(callbackResult)
       openExternal.mockImplementation(async () => {
         setApiRequestConnection('other-gateway')

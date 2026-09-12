@@ -1675,6 +1675,12 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
 
 
 def _write_config_key(key_path: str, value):
+    from hermes_cli.config import _is_sensitive_config_key
+    if _is_sensitive_config_key(key_path):
+        raise ValueError(
+            f"Cannot mutate security-sensitive key '{key_path}' via _write_config_key(); "
+            "route through set_config_value() instead"
+        )
     # Write-back round-trip: raw read is mandatory — saving the overlaid/expanded view would persist it.
     cfg = current = _load_cfg_raw()
     *parents, leaf = key_path.split(".")

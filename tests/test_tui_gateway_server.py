@@ -37,6 +37,15 @@ def _dispatch_sync(req: dict, transport=None) -> dict | None:
         reset_transport(token)
 
 
+# A stub transport for ``config.set`` security-policy writes. ``config.set`` for
+# policy keys (``approvals.mode`` / ``yolo``) routes through ``_tui_policy_write``,
+# which requires the live gateway RPC transport — ``current_transport()`` is bound
+# by ``dispatch`` in production. These tests call ``handle_request`` directly to
+# isolate the handler, so bind this stub to model the transport-bound gateway
+# context and keep the ``_tui_policy_write`` guard exercised rather than bypassed.
+_RPC_TRANSPORT = Mock()
+
+
 @pytest.fixture(autouse=True)
 def _neuter_agent_prewarm_timer(request, monkeypatch):
     """Stub the deferred agent pre-warm timer for every test in this module.
@@ -8315,24 +8324,29 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    # set_config_value (the canonical chokepoint _tui_policy_write now routes
+    # through) resolves the config path from HERMES_HOME, not server._hermes_home.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    resp_on = server.handle_request(
+    resp_on = _dispatch_sync(
         {
             "id": "1",
             "method": "config.set",
             "params": {"key": "yolo", "scope": "global"},
-        }
+        },
+        _RPC_TRANSPORT,
     )
     assert resp_on["result"]["value"] == "1"
     assert resp_on["result"]["scope"] == "global"
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
 
-    resp_off = server.handle_request(
+    resp_off = _dispatch_sync(
         {
             "id": "2",
             "method": "config.set",
             "params": {"key": "yolo", "scope": "global"},
-        }
+        },
+        _RPC_TRANSPORT,
     )
     assert resp_off["result"]["value"] == "0"
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "manual"
@@ -8411,12 +8425,13 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
     server._sessions["sid"] = {"agent": object(), "session_key": "profile-session"}
 
     try:
-        resp = server.handle_request(
+        resp = _dispatch_sync(
             {
                 "id": "1",
                 "method": "config.set",
                 "params": {"key": "approvals.mode", "value": "manual"},
-            }
+            },
+            _RPC_TRANSPORT,
         )
     finally:
         server._sessions.clear()
@@ -8520,24 +8535,29 @@ def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatc
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    # set_config_value resolves HERMES_HOME, not server._hermes_home (see the
+    # parallel test_config_set_yolo_global_scope_writes_approvals_mode comment).
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    resp = server.handle_request(
+    resp = _dispatch_sync(
         {
             "id": "1",
             "method": "config.set",
             "params": {"key": "yolo", "scope": "global", "value": "1"},
-        }
+        },
+        _RPC_TRANSPORT,
     )
     assert resp["result"]["value"] == "1"
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
 
     # Setting it on again is idempotent — stays off.
-    resp_again = server.handle_request(
+    resp_again = _dispatch_sync(
         {
             "id": "2",
             "method": "config.set",
             "params": {"key": "yolo", "scope": "global", "value": "1"},
-        }
+        },
+        _RPC_TRANSPORT,
     )
     assert resp_again["result"]["value"] == "1"
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"

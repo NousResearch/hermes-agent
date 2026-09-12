@@ -71,6 +71,64 @@ def test_shared_command_refuses_managed_mode_override(tmp_path, monkeypatch):
     assert not (home / "config.yaml").exists()
 
 
+def test_unbound_approvals_handler_refused(tmp_path, monkeypatch):
+    """An agent or adversary calling CLICommandsMixin._handle_approvals_command
+    directly (unbound, outside process_command dispatch) must NOT persist changes
+    to security policy (#104697 P1-A)."""
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    config_file = home / "config.yaml"
+    config_file.write_text("approvals:\n  mode: smart\n", encoding="utf-8")
+    initial_bytes = config_file.read_bytes()
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from hermes_cli.config import _LOAD_CONFIG_CACHE, _RAW_CONFIG_CACHE
+    _LOAD_CONFIG_CACHE.clear()
+    _RAW_CONFIG_CACHE.clear()
+
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+    # Plain context: no process_command frame on the stack.
+    # Must cleanly report error or exit without mutating config.yaml.
+    try:
+        CLICommandsMixin._handle_approvals_command(object(), "/approvals off")
+    except (SystemExit, RuntimeError):
+        pass
+
+    assert config_file.read_bytes() == initial_bytes
+    cfg = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    assert (cfg.get("approvals") or {}).get("mode") == "smart"
+
+
+def test_sanctioned_repl_process_command_persists(tmp_path, monkeypatch):
+    """The sanctioned REPL path (via HermesCLI.process_command) carries the
+    real process_command frame from cli.py, satisfying the stamp check and
+    persisting the change (#104697)."""
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    config_file = home / "config.yaml"
+    config_file.write_text("approvals:\n  mode: smart\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from hermes_cli.config import _LOAD_CONFIG_CACHE, _RAW_CONFIG_CACHE
+    _LOAD_CONFIG_CACHE.clear()
+    _RAW_CONFIG_CACHE.clear()
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.config = {}
+    cli.console = MagicMock()
+    cli.agent = None
+    cli.conversation_history = []
+    cli.session_id = "test-session"
+
+    result = cli.process_command("/approvals off")
+    assert result is True
+
+    cfg = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    assert (cfg.get("approvals") or {}).get("mode") == "off"
+
+
+
 
 
 

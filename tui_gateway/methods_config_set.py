@@ -252,6 +252,35 @@ def _set_focus(rid, params, key, value, session):
     return _kv(rid, key, "on" if target else "off", tool_progress=effective)
 
 
+def _tui_policy_write(key: str, value: str) -> None:
+    """Persist a security-policy key via the canonical set_config_value chokepoint.
+
+    The TUI RPC originates from the human's renderer (Ink / Desktop over the gateway
+    socket; agent processes hold no RPC token and cannot open the socket). Stamps
+    the operator grant and provides the sanctioned marker frame required by the
+    writer.
+
+    The stamp ALSO requires the JSON-RPC transport to be bound in THIS process
+    (``tui_gateway.transport.current_transport()`` — bound only by the live gateway
+    entry point). An agent kernel is a separate subprocess that never binds a
+    transport, so importing and calling this funnel directly cannot mint the grant
+    (controller probe: kernel-child direct call minted under frame-only checking).
+    """
+    from tui_gateway.transport import current_transport
+    if current_transport() is None:
+        raise RuntimeError(
+            "TUI policy write requires the live gateway RPC transport; "
+            "direct calls are not sanctioned")
+    from hermes_cli.config import set_config_value
+    from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
+
+    token = grant_operator_policy_write()
+    try:
+        set_config_value(key, value)
+    finally:
+        reset_operator_policy_write(token)
+
+
 def _set_approval_mode(rid, params, key, value, session):
     return _set_word(rid, params, "approvals.mode", value, session)  # legacy alias reports the real key
 
@@ -268,7 +297,7 @@ def _set_yolo(rid, params, key, value, session):
         appr = _load_cfg().get("approvals")
         appr = appr if isinstance(appr, dict) else {}
         enable = _BOOL_WORDS.get(raw, _normalize_approval_mode(appr.get("mode", "manual")) != "off")
-        _write_config_key("approvals.mode", "off" if enable else "manual")  # binary: no "smart" restore
+        _tui_policy_write("approvals.mode", "off" if enable else "manual")  # binary: no "smart" restore
         _emit_all_session_info()  # reflect the flip in every live indicator
     elif session:
         skey = session["session_key"]
@@ -332,7 +361,7 @@ def _word_setters() -> dict:
         "busy": (_word, {"queue", "steer", "interrupt"}, "unknown busy mode: {value}",
                  lambda w: _write_config_key("display.busy_input_mode", w)),
         "approvals.mode": (_word, _APPROVAL_MODES, "unknown approval mode: {value}; pick one of manual|smart|off",
-                           lambda w: (_write_config_key("approvals.mode", w), _emit_all_session_info())),
+                           lambda w: (_tui_policy_write("approvals.mode", w), _emit_all_session_info())),
         "details_mode": (_word, _DETAIL_MODES, "unknown details_mode: {value}", lambda w: _write_display_sections(
             sections={section: w for section in _DETAIL_SECTION_NAMES}, details_mode=w)),
         # thinking_mode also keeps details_mode aligned (compat bridge).

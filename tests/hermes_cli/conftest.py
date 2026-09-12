@@ -85,3 +85,39 @@ def isolated_update_runtime(monkeypatch, tmp_path, request):
     monkeypatch.setattr(update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None)
     monkeypatch.setattr(update_inventory, "collect_runtime_inventory", lambda: None)
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda *a, **k: [])
+# --- Operator-qualified security-policy write scope (test helper) --------------------
+# The #104697-review boundary removed the importable `approval_override` bool —
+# sensitive-key writes require (operator scope AND human presence), both evaluated
+# inside the writer. Tests exercising the SANCTIONED operator path enter the scope
+# via this fixture; tests exercising the ADVERSARIAL path must NOT enter it.
+
+
+@pytest.fixture
+def operator_write_scope(monkeypatch):
+    """Simulate the SANCTIONED operator path for direct-writer test calls: stamp
+    the one-shot grant AND satisfy the sanctioned-caller-chain check. The writer's
+    frame check requires a _handle_approvals_command frame (gateway or REPL
+    mixin); tests calling set_config_value directly satisfy it via a chain shim
+    on _policy_write_authorized (test-only; the real handlers satisfy the check
+    with their live frames, covered by the handler-chain tests)."""
+    import hermes_cli.config as _cfg
+    from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
+
+    monkeypatch.setattr("tools.approval_context._is_sanctioned_policy_stamp_caller", lambda: True)
+    token = grant_operator_policy_write()
+    orig = _cfg._policy_write_authorized
+
+    def _sanctioned_chain_present():
+        if not token_granted():
+            return False
+        return True
+
+    def token_granted():
+        from tools.approval_context import is_operator_policy_write
+        return is_operator_policy_write()
+
+    # Direct-writer tests simulate the handler's grant; the frame check's real
+    # coverage lives in the handler-chain tests (gateway/REPL e2e).
+    monkeypatch.setattr(_cfg, "_policy_write_authorized", _with_chain := (lambda: token_granted() or orig()))
+    yield token
+    reset_operator_policy_write(token)

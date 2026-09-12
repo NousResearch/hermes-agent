@@ -712,6 +712,68 @@ def _provider_has_credentials(pid: str) -> bool:
         return False
 
 
+def named_custom_provider_id(name: Optional[str]) -> Optional[str]:
+    """Return the durable ``custom:<key>`` id for a user-configured endpoint.
+
+    Built-in names (``openrouter``, ``deepseek``, bare ``custom``, …) return
+    ``None`` so ``parse_model_input`` keeps treating them as native prefixes.
+    Named ``providers:`` / ``custom_providers:`` keys such as ``aihubmix``
+    become ``custom:aihubmix`` so ACP choice ids round-trip instead of being
+    kept as an unsplit model string.
+    """
+    part = (name or "").strip().lower()
+    if not part:
+        return None
+    if part.startswith("custom:") and part != "custom:":
+        return part
+    if part in _KNOWN_PROVIDER_NAMES:
+        return None
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+        from hermes_cli.providers import (
+            custom_provider_slug,
+            resolve_custom_provider,
+            resolve_user_provider,
+        )
+
+        cfg = load_config()
+    except Exception:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+
+    user_providers = cfg.get("providers")
+    if isinstance(user_providers, dict):
+        matched_key = None
+        matched_entry = None
+        for key, entry in user_providers.items():
+            if str(key).strip().lower() == part and isinstance(entry, dict):
+                matched_key = str(key).strip()
+                matched_entry = entry
+                break
+        if matched_key is None:
+            user = resolve_user_provider(part, user_providers)
+            if user is not None:
+                matched_key = str(user.id or part).strip()
+                matched_entry = {"name": user.name}
+        if matched_key:
+            display = ""
+            if isinstance(matched_entry, dict):
+                display = str(matched_entry.get("name") or "").strip()
+            return custom_provider_slug(display or matched_key, matched_key)
+
+    custom = resolve_custom_provider(
+        part,
+        get_compatible_custom_providers(cfg),
+    )
+    if custom is None:
+        return None
+    custom_id = str(custom.id or "").strip()
+    if custom_id.startswith("custom:") and custom_id != "custom:":
+        return custom_id
+    return custom_provider_slug(str(custom.name or custom_id), custom_id)
+
+
 def list_available_providers() -> list[dict[str, str]]:
     """``{id, label, aliases, authenticated}`` for every provider usable with ``provider:model``,
     derived from :data:`CANONICAL_PROVIDERS` (shared with ``hermes model`` and ``/model``)."""
@@ -729,13 +791,22 @@ def list_available_providers() -> list[dict[str, str]]:
 
 def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     """Parse ``/model`` input into ``(provider, model)``. The colon is a provider delimiter only when
-    the left side is a known provider/alias, so ``anthropic/claude-3.5-sonnet:beta`` stays a model."""
+    the left side is a known provider/alias or a user-configured named endpoint, so
+    ``anthropic/claude-3.5-sonnet:beta`` stays a model while ``aihubmix:qwen3.8-flash``
+    becomes ``("custom:aihubmix", "qwen3.8-flash")``."""
     stripped = raw.strip()
     colon = stripped.find(":")
     if colon > 0:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
-        if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
+        named_custom = (
+            named_custom_provider_id(provider_part)
+            if provider_part and provider_part not in _KNOWN_PROVIDER_NAMES
+            else None
+        )
+        if provider_part and model_part and (
+            provider_part in _KNOWN_PROVIDER_NAMES or named_custom
+        ):
             if provider_part == "custom":
                 # Longest configured ``custom:<name>`` id that prefixes the input wins.
                 lowered = stripped.lower()
@@ -747,9 +818,14 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
                 if ":" in model_part:
                     custom_name, actual_model = (part.strip() for part in model_part.split(":", 1))
                     if custom_name and actual_model:
+                        durable = named_custom_provider_id(custom_name)
+                        if durable:
+                            return (durable, actual_model)
                         if f"custom:{custom_name.lower()}" in _configured_custom_provider_ids():
                             return (f"custom:{custom_name.lower()}", actual_model)
                         return ("custom", model_part)
+            if named_custom:
+                return (named_custom, model_part)
             return (normalize_provider(provider_part), model_part)
     return (current_provider, stripped)
 

@@ -275,3 +275,97 @@ class TestModelStateIncludesNamedProviders:
             )
         assert provider == "custom:local-127.0.0.1:11434"
         assert model == "qwen3:1.7b"
+
+    def test_encode_canonicalizes_named_custom_inventory_slug(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "providers": {
+                    "aihubmix": {
+                        "name": "AIHubMix",
+                        "base_url": "https://api.inferera.com/v1",
+                    }
+                }
+            },
+        )
+        from acp_adapter.model_catalog import encode_model_choice
+
+        assert encode_model_choice("aihubmix", "qwen3.8-flash") == "custom:aihubmix:qwen3.8-flash"
+        assert encode_model_choice("custom", "aihubmix:qwen3.8-flash") == "custom:aihubmix:qwen3.8-flash"
+        assert encode_model_choice("custom:aihubmix", "qwen3.8-flash") == "custom:aihubmix:qwen3.8-flash"
+        assert encode_model_choice("openai-codex", "gpt-5.4") == "openai-codex:gpt-5.4"
+
+    def test_auto_request_keeps_resolved_provider_id(self):
+        """``auto`` must not leak into ACP choice ids (#101946 / #97233)."""
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="anthropic/claude-sonnet-4.5",
+                provider="openrouter",
+                requested_provider="auto",
+                base_url=None,
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+
+        with patch(
+            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            return_value=[],
+        ), patch(
+            "hermes_cli.inventory.build_models_payload",
+            return_value={"providers": []},
+        ):
+            model_state = acp_agent._build_model_state(state)
+
+        assert isinstance(model_state, SessionModelState)
+        assert model_state.current_model_id == "openrouter:anthropic/claude-sonnet-4.5"
+
+    def test_named_provider_inventory_slug_uses_canonical_choice_id(self, monkeypatch):
+        """Bare inventory slugs must not be advertised alongside ``custom:<name>`` (#97233)."""
+        model = "tflow/gpt-5.6-sol"
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "providers": {
+                    "9router": {
+                        "name": "9Router",
+                        "base_url": "https://router.example/v1",
+                    }
+                }
+            },
+        )
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model=model,
+                provider="custom",
+                requested_provider="custom:9router",
+                base_url="https://router.example/v1",
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+        inventory = {
+            "providers": [
+                {
+                    "slug": "9router",
+                    "name": "9Router",
+                    "api_url": "https://router.example/v1",
+                    "models": [{"id": model}],
+                }
+            ]
+        }
+
+        with patch(
+            "hermes_cli.inventory.build_models_payload", return_value=inventory
+        ), patch(
+            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            return_value=[("custom:9router", "9Router", [(model, "")])],
+        ):
+            model_state = acp_agent._build_model_state(state)
+
+        assert isinstance(model_state, SessionModelState)
+        canonical_id = f"custom:9router:{model}"
+        ids = [item.model_id for item in model_state.available_models]
+        assert ids.count(canonical_id) == 1
+        assert f"9router:{model}" not in ids
+        assert model_state.current_model_id == canonical_id

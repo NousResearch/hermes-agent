@@ -41,6 +41,56 @@ class TestParseModelInput:
         assert provider == "openrouter"
         assert model == "anthropic/claude-sonnet-4.5"
 
+    def test_known_provider_prefix_still_splits(self):
+        provider, model = parse_model_input("openai-codex:gpt-5.4", "openrouter")
+        assert provider == "openai-codex"
+        assert model == "gpt-5.4"
+
+    def test_named_custom_bare_prefix_splits_to_custom_slug(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "providers": {
+                    "aihubmix": {
+                        "name": "AIHubMix",
+                        "base_url": "https://api.inferera.com/v1",
+                    },
+                    "custom_by-jl": {
+                        "name": "JL",
+                        "base_url": "https://example.jl/v1",
+                    },
+                }
+            },
+        )
+        provider, model = parse_model_input("aihubmix:qwen3.8-flash", "custom")
+        assert provider == "custom:aihubmix"
+        assert model == "qwen3.8-flash"
+        provider, model = parse_model_input("custom_by-jl:deepseek-v4-pro", "openrouter")
+        assert provider == "custom:custom_by-jl"
+        assert model == "deepseek-v4-pro"
+
+    def test_unknown_colon_prefix_stays_in_model_name(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"providers": {}})
+        provider, model = parse_model_input("not-a-provider:weird-model", "openrouter")
+        assert provider == "openrouter"
+        assert model == "not-a-provider:weird-model"
+
+    def test_custom_triple_syntax_unchanged(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "providers": {
+                    "aihubmix": {
+                        "name": "AIHubMix",
+                        "base_url": "https://api.inferera.com/v1",
+                    }
+                }
+            },
+        )
+        provider, model = parse_model_input("custom:aihubmix:qwen3.8-flash", "bedrock")
+        assert provider == "custom:aihubmix"
+        assert model == "qwen3.8-flash"
+
 
 # -- curated_models_for_provider ---------------------------------------------
 

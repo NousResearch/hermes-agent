@@ -24,6 +24,120 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _plain_str(value: Any) -> Optional[str]:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _named_provider_identity(provider: Any, requested_provider: Any) -> str:
+    """Prefer ``custom:<name>`` over the flattened runtime provider ``custom``.
+
+    ``auto`` is a resolution sentinel, not a durable identity — keep the already
+    resolved runtime provider so ACP choice ids stay ``openrouter:...`` (#101946).
+    """
+    requested = _plain_str(requested_provider) or ""
+    flattened = _plain_str(provider) or ""
+    requested_l = requested.lower()
+    flattened_l = flattened.lower()
+    if requested_l.startswith("custom:") and requested_l != "custom:":
+        return requested
+    if flattened_l.startswith("custom:") and flattened_l != "custom:":
+        return flattened
+    try:
+        from hermes_cli.models import named_custom_provider_id
+
+        durable = named_custom_provider_id(requested) or named_custom_provider_id(flattened)
+        if durable:
+            return durable
+    except Exception:
+        pass
+    if requested_l in {"", "auto"}:
+        return flattened
+    return requested or flattened
+
+
+def _split_prefixed_model(model: Optional[str], provider: Optional[str]) -> tuple[str, str]:
+    """Split ``aihubmix:qwen3.8-flash`` into ``(custom:aihubmix, qwen3.8-flash)``.
+
+    Unprefixed model ids are returned unchanged with *provider* preserved.
+    """
+    raw_model = _plain_str(model) or ""
+    raw_provider = _plain_str(provider) or ""
+    if not raw_model:
+        return raw_provider, raw_model
+    try:
+        from hermes_cli.models import named_custom_provider_id, parse_model_input
+
+        parsed_provider, parsed_model = parse_model_input(
+            raw_model, raw_provider or "custom"
+        )
+        durable = named_custom_provider_id(parsed_provider) or parsed_provider
+        if parsed_model != raw_model:
+            return durable or parsed_provider, parsed_model
+        if durable:
+            return durable, parsed_model
+        return raw_provider or parsed_provider, parsed_model
+    except Exception:
+        return raw_provider, raw_model
+
+
+def persist_identity(state: "SessionState") -> Dict[str, Optional[str]]:
+    """Return the ACP session identity that should be written to SessionDB.
+
+    Fallback is turn-scoped: a transient aiberm → aihubmix failover must not
+    become the restored primary after the next prompt or ACP process restart.
+    Named custom providers (``custom:aiberm``) are preserved even though the
+    live runtime provider is flattened to ``custom``.
+    """
+    agent = getattr(state, "agent", None)
+    rt = getattr(agent, "_primary_runtime", None) if agent is not None else None
+    if not isinstance(rt, dict):
+        rt = {}
+    fallback_on = getattr(agent, "_fallback_activated", False) is True
+    use_primary = fallback_on and bool(
+        _plain_str(rt.get("model")) or _plain_str(rt.get("provider")) or _plain_str(rt.get("base_url"))
+    )
+
+    if use_primary:
+        model = _plain_str(rt.get("model")) or _plain_str(getattr(state, "model", None))
+        provider = _named_provider_identity(rt.get("provider"), rt.get("requested_provider"))
+        base_url = _plain_str(rt.get("base_url"))
+        api_mode = _plain_str(rt.get("api_mode"))
+        requested_provider = _plain_str(rt.get("requested_provider")) or provider or None
+    else:
+        live_model = getattr(agent, "model", None) if agent is not None else None
+        model = _plain_str(getattr(state, "model", None)) or _plain_str(live_model)
+        provider = _named_provider_identity(
+            getattr(agent, "provider", None) if agent is not None else None,
+            getattr(agent, "requested_provider", None) if agent is not None else None,
+        )
+        base_url = _plain_str(getattr(agent, "base_url", None)) if agent is not None else None
+        api_mode = _plain_str(getattr(agent, "api_mode", None)) if agent is not None else None
+        requested_provider = (
+            _plain_str(getattr(agent, "requested_provider", None)) or provider or None
+            if agent is not None
+            else None
+        )
+
+    live_requested = requested_provider
+    provider, model = _split_prefixed_model(model, provider or requested_provider)
+    durable = _named_provider_identity(provider, requested_provider) or provider
+    if (live_requested or "").strip().lower() == "auto":
+        requested_provider = live_requested
+    else:
+        requested_provider = durable or live_requested or provider
+    provider = durable or provider
+
+    return {
+        "model": model,
+        "provider": provider or None,
+        "requested_provider": requested_provider or provider or None,
+        "base_url": base_url,
+        "api_mode": api_mode,
+    }
+
+
 def _translate_acp_cwd(cwd: str) -> str:
     """Translate Windows ACP cwd values (``E:\\Projects``, ``\\\\wsl.localhost\\``) to POSIX form
     when Hermes runs in WSL so agents, tools, and persisted sessions agree; no-op elsewhere."""
@@ -283,11 +397,13 @@ class SessionManager:
         if db is None:
             return
 
-        # Ensure model is a plain string (not a MagicMock or other proxy).
-        model_str = str(state.model) if state.model else None
+        identity = persist_identity(state)
+        model_str = identity.get("model")
+        if model_str:
+            state.model = model_str
         session_meta = {"cwd": state.cwd}
-        for key in ("provider", "base_url", "api_mode"):
-            value = getattr(state.agent, key, None)
+        for key in ("provider", "requested_provider", "base_url", "api_mode"):
+            value = identity.get(key)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
 
@@ -297,7 +413,7 @@ class SessionManager:
                     # Empty editor probes stay ephemeral; copied fork history persists.
                     return
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
-                                  model_config={"cwd": state.cwd})
+                                  model_config=session_meta)
             else:
                 try:
                     db.update_session_meta(state.session_id, json.dumps(session_meta), model_str)
@@ -355,7 +471,7 @@ class SessionManager:
         try:
             agent = self._make_agent(
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
-                requested_provider=meta.get("provider") or row.get("billing_provider"),
+                requested_provider=meta.get("requested_provider") or meta.get("provider") or row.get("billing_provider"),
                 base_url=meta.get("base_url") or row.get("billing_base_url"))
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
@@ -370,7 +486,17 @@ class SessionManager:
     def _make_agent(self, *, session_id: str, cwd: str, model: str | None = None,
                     requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None):
         if self._agent_factory is not None:
-            return self._agent_factory()
+            try:
+                return self._agent_factory(
+                    session_id=session_id,
+                    cwd=cwd,
+                    model=model,
+                    requested_provider=requested_provider,
+                    base_url=base_url,
+                    api_mode=api_mode,
+                )
+            except TypeError:
+                return self._agent_factory()
 
         from run_agent import AIAgent
         from hermes_cli.config import load_config
@@ -388,20 +514,50 @@ class SessionManager:
             name for name, cfg in (config.get("mcp_servers") or {}).items()
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
+
+        incoming_model = model or default_model
+        incoming_provider = requested_provider or config_provider
+        if incoming_model:
+            split_provider, split_model = _split_prefixed_model(
+                incoming_model, incoming_provider
+            )
+            incoming_model = split_model or incoming_model
+            if split_provider and (
+                incoming_provider or (model and ":" in str(model))
+            ):
+                incoming_provider = split_provider
+        requested_provider = incoming_provider
+
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
             "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
-            "model": model or default_model,
+            "model": incoming_model or default_model,
         }
         try:
-            runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
+            from hermes_cli.fallback_config import get_fallback_chain
+
+            fallback_chain = get_fallback_chain(config)
+            if fallback_chain:
+                kwargs["fallback_model"] = fallback_chain
+        except Exception:
+            logger.debug("ACP session could not load fallback_model", exc_info=True)
+
+        try:
+            runtime = resolve_runtime_provider(
+                requested=requested_provider or config_provider,
+                target_model=kwargs.get("model") or None,
+            )
             kwargs.update({
-                "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
+                "provider": runtime.get("provider"),
+                "requested_provider": requested_provider or runtime.get("requested_provider") or runtime.get("provider"),
+                "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),
             })
         except Exception:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
+            if requested_provider:
+                kwargs["requested_provider"] = requested_provider
 
         _register_task_cwd(session_id, cwd)
 

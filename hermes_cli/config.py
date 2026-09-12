@@ -3415,9 +3415,23 @@ def _exit_invalid(msg: str) -> None:
 
 
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
-    """Write only the user's raw config back (never the merged defaults)."""
+    """Write only the user's raw config back (never the merged defaults).
+
+    Uses ruamel.yaml round-trip mode so untouched keys keep their original
+    quote style, indentation, surrounding blank lines, and trailing comments.
+    Falls back to the PyYAML emitter if the file is unreadable (e.g. locked
+    by another process) so the write still succeeds — the fallback path keeps
+    the old behavior rather than silently dropping the change.
+    """
     ensure_hermes_home()
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    try:
+        from utils import atomic_roundtrip_yaml_save
+        atomic_roundtrip_yaml_save(config_path, user_config)
+    except Exception:
+        # Fallback to the legacy PyYAML emitter only when the round-trip
+        # path itself fails (parse error, file missing, ruamel import error,
+        # etc.) — preserves the existing "set still saves" guarantee.
+        atomic_yaml_write(config_path, user_config, sort_keys=False)
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:

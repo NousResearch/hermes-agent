@@ -493,6 +493,51 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
 
 
+def board_for_db_path(path: "str | os.PathLike[str] | None") -> Optional[str]:
+    """Board slug whose canonical store is ``path`` — the inverse of
+    :func:`kanban_db_path`. ``None`` when ``path`` is not a board store in the
+    canonical layout: a copied, relative or in-memory store carries no board
+    identity, and callers must not attribute one to it."""
+    if not path:
+        return None
+    try:
+        candidate = Path(path).expanduser().resolve()
+        home_store = (kanban_home() / "kanban.db").resolve()
+    except (OSError, RuntimeError):
+        return None
+    if candidate == home_store:
+        return DEFAULT_BOARD
+    try:
+        rel = candidate.relative_to(boards_root().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    parts = rel.parts
+    if len(parts) != 2 or parts[1] != "kanban.db":
+        return None
+    try:
+        return _normalize_board_slug(parts[0])
+    except ValueError:
+        return None
+
+
+def _board_for_connection(conn: sqlite3.Connection, declared: Optional[str] = None) -> Optional[str]:
+    """Board whose store ``conn`` opened, preferring it over ``declared``.
+
+    ``HERMES_KANBAN_DB`` pins the store and outranks the board slug in
+    :func:`_board_path`, so the store — not the board the caller named or the
+    session sits on — is the only reliable answer to "which board is this row
+    about to land on".
+    """
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except sqlite3.Error:
+        return declared
+    for row in rows:
+        if row[1] == "main":
+            return board_for_db_path(row[2]) or declared
+    return declared
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
     ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""
@@ -1259,6 +1304,13 @@ def create_task(
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
+    # The row lands in the store THIS connection opened, and ``HERMES_KANBAN_DB``
+    # (injected into every dispatcher-spawned worker) pins that store ahead of the
+    # board slug, so the store can belong to a different board than the one the
+    # session sits on. Board-derived columns must follow the store: reading the
+    # session's board here anchors the task to another board's project/workdir.
+    # An explicit ``board=`` stays the fallback for stores with no board identity.
+    board = _board_for_connection(conn, board)
     # A project-scoped board anchors every new task to its project's repo
     # (deterministic worktree + branch) without each surface repeating it.
     # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:

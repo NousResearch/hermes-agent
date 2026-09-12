@@ -25,8 +25,15 @@ HEARTBEAT_PROMPT_TEMPLATE = (
     "right now, reply briefly that nothing has changed and stop — do not invent work."
 )
 
-_INTERVAL_RE = re.compile(
-    r"^\s*(?:every\s+)?(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)\s*$", re.IGNORECASE)
+# Anchored at the start only, so the prompt following the interval can be
+# split off. ``\b`` (rather than ``$``) terminates the unit: on
+# `every 90 minutes Check CI` the alternation first tries `m`, finds no word
+# boundary before `inutes`, and backtracks until `minutes` matches whole.
+_INTERVAL_PREFIX_RE = re.compile(
+    r"^\s*(?:every\s+)?(\d+(?:\.\d+)?)\s*"
+    r"(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)\b\s*",
+    re.IGNORECASE,
+)
 
 _UNIT_SECONDS = {
     **dict.fromkeys(("s", "sec", "secs", "second", "seconds"), 1),
@@ -45,13 +52,41 @@ _STATE_FIELDS = {
 def parse_interval(text: str) -> Optional[int]:
     """Parse ``10m`` / ``every 2h`` / ``every 90 minutes`` into seconds.
 
-    None when not an interval; below ``MIN_INTERVAL_SECONDS`` returns -1 so callers can tell "too small" apart.
+    Returns None when the text is not an interval (including when it is an
+    interval followed by anything else). Values below ``MIN_INTERVAL_SECONDS``
+    are rejected (returns -1 so callers can distinguish "not an interval" from
+    "too small").
     """
-    m = _INTERVAL_RE.match(text) if text else None
-    if not m:
+    seconds, remainder = split_interval_prefix(text)
+    if seconds is None or remainder:
         return None
+    return seconds
+
+
+def split_interval_prefix(text: str) -> tuple[Optional[int], str]:
+    """Split a ``<interval> <prompt>`` string into its two halves.
+
+    ``every 90 minutes Check CI`` → ``(5400, "Check CI")``. Command handlers
+    need this rather than a whitespace split: the value and the unit are two
+    words in `every 2 hours`, so taking one token as the interval strands
+    `hours` at the head of the prompt and rejects the whole command.
+
+    The interval slot uses the same signalling as :func:`parse_interval`:
+    ``None`` when the text does not start with an interval at all, and ``-1``
+    when it does but the interval is below ``MIN_INTERVAL_SECONDS``. The prompt
+    half is returned in both cases so callers can report the more specific
+    error; its internal whitespace is preserved.
+    """
+    if not text:
+        return None, ""
+    m = _INTERVAL_PREFIX_RE.match(text)
+    if not m:
+        return None, text.strip()
     seconds = int(float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()])
-    return -1 if seconds < MIN_INTERVAL_SECONDS else seconds
+    prompt = text[m.end():].strip()
+    if seconds < MIN_INTERVAL_SECONDS:
+        return -1, prompt
+    return seconds, prompt
 
 
 def format_interval(seconds: int) -> str:
@@ -251,8 +286,9 @@ def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bo
 
 
 __all__ = [
-    "HeartbeatState", "HeartbeatManager", "parse_interval", "format_interval", "load_heartbeat", "save_heartbeat",
-    "migrate_heartbeat_to_session", "HEARTBEAT_PROMPT_TEMPLATE", "MIN_INTERVAL_SECONDS", "POLL_SECONDS",
+    "HeartbeatState", "HeartbeatManager", "parse_interval", "split_interval_prefix", "format_interval",
+    "load_heartbeat", "save_heartbeat", "migrate_heartbeat_to_session", "HEARTBEAT_PROMPT_TEMPLATE",
+    "MIN_INTERVAL_SECONDS", "POLL_SECONDS",
 ]
 
 

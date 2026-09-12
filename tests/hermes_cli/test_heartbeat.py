@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+import hermes_cli.heartbeat as _heartbeat_mod
 from hermes_cli.heartbeat import (
     HeartbeatManager,
     HeartbeatState,
@@ -14,6 +15,11 @@ from hermes_cli.heartbeat import (
     parse_interval,
     save_heartbeat,
 )
+
+
+def split_interval_prefix(text):
+    """Resolved at call time so a missing fix fails the assertions, not collection."""
+    return _heartbeat_mod.split_interval_prefix(text)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -47,6 +53,62 @@ def test_parse_interval_too_small_is_rejected():
     assert parse_interval("30s") == -1
     # Exactly the floor is allowed.
     assert parse_interval(f"{MIN_INTERVAL_SECONDS}s") == MIN_INTERVAL_SECONDS
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # Compact unit — the form that already worked end-to-end.
+        ("every 10m Check CI", (600, "Check CI")),
+        ("10m Check CI", (600, "Check CI")),
+        # Spaced value/unit — parse_interval accepts these, so the command
+        # handlers must be able to peel them off too.
+        ("every 90 minutes Check CI", (5400, "Check CI")),
+        ("every 2 hours Check CI", (7200, "Check CI")),
+        ("every 30 min ping", (1800, "ping")),
+        ("90 minutes Check CI", (5400, "Check CI")),
+        ("every 1 day run the backup", (86400, "run the backup")),
+        # A unit that is a prefix of a longer unit must not match short:
+        # `m` would strand "inutes" at the head of the prompt.
+        ("every 5 minutes deploy", (300, "deploy")),
+        # Interval with no prompt.
+        ("every 10m", (600, "")),
+        # Prompt-internal whitespace is preserved.
+        ("every 10m  check   CI  ", (600, "check   CI")),
+    ],
+)
+def test_split_interval_prefix_valid(text, expected):
+    assert split_interval_prefix(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", "banana check CI", "check CI", "every", "every soon", "m10 nope"],
+)
+def test_split_interval_prefix_not_an_interval(text):
+    interval, _prompt = split_interval_prefix(text)
+    assert interval is None
+
+
+def test_split_interval_prefix_too_small_keeps_the_prompt():
+    # -1 mirrors parse_interval's "below the floor" signal, and the prompt is
+    # still returned so callers can report the more specific error.
+    assert split_interval_prefix("every 30s Check CI") == (-1, "Check CI")
+    assert split_interval_prefix("every 30 seconds Check CI") == (-1, "Check CI")
+    assert split_interval_prefix(f"every {MIN_INTERVAL_SECONDS}s Check CI") == (
+        MIN_INTERVAL_SECONDS,
+        "Check CI",
+    )
+
+
+def test_split_interval_prefix_agrees_with_parse_interval():
+    # Every interval parse_interval accepts must survive being followed by a
+    # prompt — that equivalence is what the command handlers depend on.
+    for text in ("10m", "every 10m", "2h", "every 2 hours", "1d", "90 minutes"):
+        assert split_interval_prefix(f"{text} do the thing") == (
+            parse_interval(text),
+            "do the thing",
+        )
 
 
 def test_format_interval():
@@ -185,3 +247,68 @@ def test_migrate_heartbeat_to_session():
 def test_migrate_noop_without_source():
     assert migrate_heartbeat_to_session("hb-none-a", "hb-none-b") is False
     assert migrate_heartbeat_to_session("same", "same") is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# the command handler — what the user actually types
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_cli_heartbeat_accepts_a_spaced_interval(monkeypatch):
+    """`/heartbeat every 90 minutes Check CI` must set a heartbeat.
+
+    The old handler split the argument on whitespace and fed one token to
+    parse_interval, so `every 90` never parsed and the whole command was
+    rejected with the usage line — even though parse_interval has always
+    accepted `every 90 minutes`. This drives the real handler, so it fails on
+    the behaviour rather than on an import.
+    """
+    from types import SimpleNamespace
+
+    from hermes_cli import cli_commands_mixin as ccm
+
+    printed: list = []
+    monkeypatch.setattr(ccm, "_cp", lambda *lines: printed.extend(lines))
+
+    class _Mgr:
+        def __init__(self):
+            self.calls = []
+
+        def set(self, prompt, interval):
+            self.calls.append((prompt, interval))
+            return SimpleNamespace(interval_seconds=interval, prompt=prompt)
+
+    class _Shell(ccm.CLICommandsMixin):
+        def _start_heartbeat_watchdog(self):
+            pass
+
+    mgr = _Mgr()
+    _Shell()._heartbeat_set(mgr, "every 90 minutes Check CI")
+
+    assert mgr.calls == [("Check CI", 5400)], printed
+
+
+def test_cli_heartbeat_still_accepts_the_compact_form(monkeypatch):
+    """Guard: the form that already worked is unchanged."""
+    from types import SimpleNamespace
+
+    from hermes_cli import cli_commands_mixin as ccm
+
+    monkeypatch.setattr(ccm, "_cp", lambda *lines: None)
+
+    class _Mgr:
+        def __init__(self):
+            self.calls = []
+
+        def set(self, prompt, interval):
+            self.calls.append((prompt, interval))
+            return SimpleNamespace(interval_seconds=interval, prompt=prompt)
+
+    class _Shell(ccm.CLICommandsMixin):
+        def _start_heartbeat_watchdog(self):
+            pass
+
+    mgr = _Mgr()
+    _Shell()._heartbeat_set(mgr, "every 10m Check CI")
+
+    assert mgr.calls == [("Check CI", 600)]

@@ -5169,6 +5169,104 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         return cls._GENERAL_TOPIC_THREAD_ID if is_forum_group else None
 
+    def _telegram_auto_topic_on_mention(self) -> bool:
+        """Opt-in: open a forum topic when the bot is @mentioned in General (Discord auto_thread parity)."""
+        return self._extra_bool("auto_topic_on_mention", "TELEGRAM_AUTO_TOPIC_ON_MENTION", "false")
+
+    def _telegram_auto_topic_copy_source(self) -> bool:
+        """Copy the triggering General message into the new topic (default on)."""
+        return self._extra_bool("auto_topic_copy_source", "TELEGRAM_AUTO_TOPIC_COPY_SOURCE", "true")
+
+    def _telegram_auto_topic_source_ids(self) -> set[str]:
+        """Thread ids treated as the forum lobby. Default: General (``1``)."""
+        raw = self.config.extra.get("auto_topic_source_threads")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_AUTO_TOPIC_SOURCE_THREADS", "1")
+        if isinstance(raw, list):
+            parts = [str(part).strip() for part in raw if str(part).strip()]
+        else:
+            parts = [part.strip() for part in str(raw).split(",") if part.strip()]
+        return set(parts) or {self._GENERAL_TOPIC_THREAD_ID}
+
+    def _derive_auto_topic_name(self, content: str, bot_username: str = "") -> str:
+        """Placeholder topic name from the user request; mentions stripped (Discord auto-thread parity)."""
+        text = (content or "").strip()
+        if bot_username:
+            text = re.sub("@" + re.escape(bot_username) + r"\b", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"@\w+", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if text.startswith("/"):
+            return "Hermes"
+        if not text:
+            return "Hermes"
+        if len(text) > 80:
+            return text[:77].rstrip() + "..."
+        return text
+
+    def _should_open_forum_auto_topic(self, message: Message) -> bool:
+        """True only for an addressed mention in a forum General topic when the feature is on."""
+        if not self._telegram_auto_topic_on_mention():
+            return False
+        chat = getattr(message, "chat", None)
+        if not chat or getattr(chat, "is_forum", False) is not True:
+            return False
+        if self._chat_type_str(chat) not in {"group", "supergroup"}:
+            return False
+        thread_id = self._topic_id_or_general(self._effective_message_thread_id(message))
+        if thread_id not in self._telegram_auto_topic_source_ids():
+            return False
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+        if text.startswith("/"):
+            return False
+        return self._message_mentions_bot(message) or self._message_matches_mention_patterns(message)
+
+    async def _maybe_open_forum_auto_topic(self, message: Message, event: MessageEvent) -> MessageEvent:
+        """Create a named forum topic for a General @mention; fail closed and keep General on error.
+
+        Discord already auto-threads @mentions. Telegram forum groups had no equivalent: General
+        stayed a dump of every job. Opt-in because the bot must be allowed to manage topics.
+        """
+        if not self._should_open_forum_auto_topic(message) or not self._bot:
+            return event
+        chat_id = getattr(getattr(message, "chat", None), "id", None)
+        message_id = getattr(message, "message_id", None)
+        if chat_id is None:
+            return event
+        bot_username = str(getattr(self._bot, "username", "") or "")
+        topic_name = self._derive_auto_topic_name(
+            getattr(message, "text", None) or getattr(message, "caption", None) or "",
+            bot_username,
+        )
+        try:
+            topic = await self._bot.create_forum_topic(chat_id=chat_id, name=topic_name)
+            thread_id = getattr(topic, "message_thread_id", None)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Could not create auto-topic in chat %s: %s",
+                self.name, chat_id, _redact_telegram_error_text(exc),
+            )
+            return event
+        if not thread_id:
+            return event
+        thread_id_str = str(thread_id)
+        if self._telegram_auto_topic_copy_source() and message_id is not None:
+            try:
+                await self._bot.copy_message(
+                    chat_id=chat_id, from_chat_id=chat_id, message_id=int(message_id),
+                    message_thread_id=int(thread_id),
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[%s] Auto-topic source copy failed in chat %s thread %s: %s",
+                    self.name, chat_id, thread_id_str, _redact_telegram_error_text(exc),
+                )
+        source = event.source
+        source.thread_id = thread_id_str
+        source.auto_thread_created = True
+        source.auto_thread_initial_name = topic_name
+        source.prospective_thread_id = thread_id_str
+        return event
+
     # Decides only whether a FOREIGN @handle is bot-shaped; our own handle is matched by identity, never
     # shape (collectible/Fragment bot usernames need not end in "bot").
     _FOREIGN_BOT_HANDLE_RE = re.compile(r"[a-z0-9_]{2,29}bot", re.IGNORECASE)
@@ -5734,7 +5832,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
         await self._ensure_forum_commands(update.message)
-        self._enqueue_text_event(await self._build_triggered_event(msg, update, MessageType.TEXT))
+        event = await self._build_triggered_event(msg, update, MessageType.TEXT)
+        event = await self._maybe_open_forum_auto_topic(msg, event)
+        self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
@@ -6045,6 +6145,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if msg.caption:
             from plugins.platforms.telegram.telegram_context import group_trigger_text
             event.text = group_trigger_text(self, msg, msg.caption)
+        event = await self._maybe_open_forum_auto_topic(msg, event)
         # Stickers: _handle_sticker overwrites event.text with its vision description, so observe attribution must run after it.
         if msg.sticker:
             await self._handle_sticker(msg, event)
@@ -6503,6 +6604,9 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
 
     if "disable_topic_auto_rename" in telegram_cfg:
         extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])
+    for _auto_key in ("auto_topic_on_mention", "auto_topic_copy_source", "auto_topic_source_threads"):
+        if _auto_key in telegram_cfg:
+            extras.setdefault(_auto_key, telegram_cfg[_auto_key])
     _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
     if _effective_rm is not None:
         _set_env("TELEGRAM_REQUIRE_MENTION", str(_effective_rm).lower())

@@ -1502,6 +1502,11 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},
         "allowed_chats": "",  # if set, ONLY respond in these group/supergroup chat IDs
         "extra": {
+            # Opt-in Discord-style auto-thread for Telegram forum groups: @mention in General
+            # opens a named topic and copies the source message into it. Off by default because
+            # the bot must be a forum admin with Manage Topics.
+            "auto_topic_on_mention": False,
+            "auto_topic_copy_source": True,
             # Bot API 10.1 native rich messages (tables/task lists/math). Off = legacy MarkdownV2,
             # since rich messages are hard to copy as plain text.
             "rich_messages": False,

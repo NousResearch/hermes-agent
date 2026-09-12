@@ -1416,3 +1416,150 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         conn.close()
 
 
+
+
+# ---------------------------------------------------------------------------
+# Gateway-restart collateral: dead pre-boot claim is not a task crash
+# ---------------------------------------------------------------------------
+
+
+def test_supervisor_restart_preboot_claim_neutral_release(kanban_home, monkeypatch):
+    """Dead PID + unknown exit + claim predating dispatcher boot -> neutral.
+
+    Expected: outcome ``supervisor_restart``, event kind
+    ``gateway_restart_collateral``, no failure-counter tick, task back at
+    ``ready`` for respawn.
+    """
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="pre-boot collateral", assignee="worker")
+        kb.claim_task(conn, tid)
+        kbd._set_worker_pid(conn, tid, 234567)
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+        boot_ts = time.time() + 3600.0  # "process booted" an hour from now
+        monkeypatch.setattr(kbd, "_supervisor_restart_boot_ts", lambda: boot_ts)
+
+        crashed = kbd.detect_crashed_workers(conn)
+
+        assert crashed == []  # not a crash — neutral release
+        assert kbd.detect_crashed_workers._last_supervisor_restart == [tid]
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        run = kb.latest_run(conn, tid)
+        assert run.outcome == "supervisor_restart"
+        assert "supervisor restart collateral" in (run.error or "")
+        ev = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert ev is not None and ev["kind"] == "gateway_restart_collateral"
+    finally:
+        conn.close()
+
+
+def test_supervisor_restart_postboot_claim_stays_crashed(kanban_home, monkeypatch):
+    """Claim AFTER dispatcher boot + unknown exit -> still a genuine crash.
+
+    The classification only fires when the claim provably predates the
+    dispatcher process: a newer claim with a dead unregistered PID keeps
+    legacy crash accounting.
+    """
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="post-boot unknown", assignee="worker")
+        kb.claim_task(conn, tid)
+        kbd._set_worker_pid(conn, tid, 456789)
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+        boot_ts = time.time() - 3600.0  # booted an hour ago
+        monkeypatch.setattr(kbd, "_supervisor_restart_boot_ts", lambda: boot_ts)
+
+        crashed = kbd.detect_crashed_workers(conn)
+
+        assert crashed == [tid]
+        run = kb.latest_run(conn, tid)
+        assert run.outcome == "crashed"
+        assert kbd.detect_crashed_workers._last_supervisor_restart == []
+    finally:
+        conn.close()
+
+
+def test_supervisor_restart_boot_ts_unavailable_stays_crashed(kanban_home, monkeypatch):
+    """Boot ts unavailable -> fail safe: legacy crashed classification."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="no boot ts", assignee="worker")
+        kb.claim_task(conn, tid)
+        kbd._set_worker_pid(conn, tid, 567890)
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+        monkeypatch.setattr(kbd, "_supervisor_restart_boot_ts", lambda: None)
+
+        crashed = kbd.detect_crashed_workers(conn)
+
+        assert crashed == [tid]
+        run = kb.latest_run(conn, tid)
+        assert run.outcome == "crashed"
+    finally:
+        conn.close()
+
+
+
+# ---------------------------------------------------------------------------
+# P2 review follow-up: neutral supervisor_restart releases must preserve the
+# protocol-violation streak (neither consume nor replenish the budget).
+# ---------------------------------------------------------------------------
+
+
+def test_protocol_violation_streak_survives_interleaved_supervisor_restart(kanban_home, monkeypatch):
+    """violation, violation, supervisor_restart, violation -> streak 3.
+
+    Regression for the review finding: ``_protocol_violation_streak`` skipped
+    only ``rate_limited`` among neutral outcomes, so a gateway-restart
+    collateral release interleaved between violations reset the trailing
+    streak to the runs after it — silently replenishing the violation budget
+    on every restart. A neutral release must be skipped exactly like a quota
+    wall: the streak crosses it.
+    """
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="streak across neutral", assignee="worker")
+
+        # Two violations: streak 2.
+        _drive_protocol_violation(conn, tid, 992001)
+        _drive_protocol_violation(conn, tid, 992002)
+        assert kbd._protocol_violation_streak(conn, tid) == 2
+
+        # Neutral release interleaved: a supervisor-restart collateral pass.
+        # Pre-boot claim + dead pid + no reaped exit -> supervisor_restart.
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        kbd._set_worker_pid(conn, tid, 992003)
+        monkeypatch.setattr(kb, "_pid_alive", lambda p: False)
+        monkeypatch.setattr(kbd, "_supervisor_restart_boot_ts", lambda: time.time() + 3600.0)
+        kbd.detect_crashed_workers(conn)
+        latest = kb.latest_run(conn, tid)
+        assert latest.outcome == "supervisor_restart", (
+            f"expected neutral supervisor_restart, got {latest.outcome}"
+        )
+
+        # Third violation after the neutral release: streak must be 3, not 1.
+        _drive_protocol_violation(conn, tid, 992004)
+        assert kbd._protocol_violation_streak(conn, tid) == 3
+    finally:
+        monkeypatch.undo()
+        conn.close()
+
+
+def test_protocol_violation_streak_completed_run_breaks(kanban_home):
+    """Control: a completed run between violations still breaks the streak."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="streak vs completed", assignee="worker")
+        _drive_protocol_violation(conn, tid, 993001)
+        kb._synthesize_ended_run(conn, tid, outcome="completed", summary="done")
+        _drive_protocol_violation(conn, tid, 993002)
+        # completed is a genuine success boundary: streak restarts at 1
+        assert kbd._protocol_violation_streak(conn, tid) == 1
+    finally:
+        conn.close()
+

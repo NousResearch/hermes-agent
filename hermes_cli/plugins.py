@@ -155,7 +155,8 @@ VALID_HOOKS: Set[str] = {
     # worker_spawned (DISPATCHER, after PID persisted, inside the dispatch lock — stay fast):
     #   worker_pid, workspace_path (privacy: project layout/usernames).
     # worker_exited (tick-derived on dead-PID reclaim): worker_pid, exit_kind ("clean_exit" |
-    #   "rate_limited" | "nonzero_exit" | "signaled" | "unknown"), exit_code, outcome, retry_status.
+    #   "rate_limited" | "nonzero_exit" | "signaled" | "unknown" | "supervisor_restart"),
+    #   exit_code, outcome, retry_status.
     # worker_stale_claim (TTL-expired claim reclaimed; live-PID extensions do NOT fire):
     #   worker_pid, heartbeat_stale, retry_status.
     # task_updated (committed task-row write outside claim/complete/block, in whichever process

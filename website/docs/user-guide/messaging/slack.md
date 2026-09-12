@@ -578,15 +578,19 @@ platforms:
   built-in default `tool_progress: off`. Writing `tool_progress: off` yourself
   (globally, under `display.platforms.slack`, or by cycling `/verbose` to off)
   turns cards off as well; `new` or `all` keeps them. A `null` value inherits
-  and is not an "off".
+  and is not an "off". Null also allows the existing environment bridge to
+  supply the mode when no YAML layer sets a non-null value. Changes apply
+  when the next turn resolves its display settings.
 - Cards need a thread. With the card lane active, a chat that has no thread to
   anchor on (a top-level DM under `reply_in_thread: false`) shows no tool
   progress at all rather than text bubbles; replies inside an existing thread
   still get cards.
 - Concurrent calls to the same tool are correlated by real tool-call ID, so
   parallel `web_search` calls each get their own row with the right status.
-- If the native stream fails for a recoverable reason (API error, rate
-  limit), Hermes falls back to a single continuously edited text message so
+- Hermes checks thread eligibility before attempting publication, so a
+  disconnect or timeout cannot turn an unthreaded destination into text fallback.
+- On a supported threaded destination, if the native stream fails for a
+  recoverable reason (API error, rate limit), Hermes falls back to a single continuously edited text message so
   progress stays live for the turn. A relay egress refusal of the destination
   is not recoverable and suppresses progress for the turn.
 - The card stream is stopped exactly once when the turn finalizes, including

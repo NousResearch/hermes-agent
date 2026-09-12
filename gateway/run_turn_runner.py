@@ -460,8 +460,8 @@ class TurnRunner:
         return changed
 
     async def _send_native_task_card_progress(self, adapter) -> None:
-        """Drain the progress queue into Slack-native plan/task cards; on any native failure, fall
-        back to an editable in-thread message so progress stays live.
+        """Drain progress into native cards; supported destinations retain editable fallback.
+        Unsupported destinations and egress refusals suppress publication, never finalization.
 
         See #29483.
         """

@@ -789,6 +789,21 @@ def _resolve_sequential_tool_timeout() -> float | None:
 _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task"})
 
 
+def _delegate_timeout_guard(op: str, *args):
+    """Indirect call into tools.delegate_tool_timeout for the sequential-timeout guard.
+
+    Module-attribute indirection so tests patch ``agent.tool_executor._delegate_timeout_guard``
+    (the binding this call site reads) instead of the defining module. Best-effort: a guard
+    failure falls back to legacy fatal-timeout behavior, never masks the tool's own result.
+    """
+    try:
+        import tools.delegate_tool_timeout as _guard
+
+        return getattr(_guard, op)(*args)
+    except Exception:
+        logger.debug("delegate timeout guard op %r failed", op, exc_info=True)
+        return False
+
 def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_cls, **outcome) -> _ManagedToolResult:
     """Emit the terminal post_tool_call for a worker the sequential runner gave up on
     (timeout / interrupt) and wrap ``message`` in its marker ``result_cls``."""
@@ -834,7 +849,9 @@ def _run_sequential_tool_execution_middleware(
 ) -> _ManagedToolResult:
     """Run one sequential call on a worker thread under the concurrent executor's deadline.
     Interactive tools (``clarify``) own their wait via ``agent.clarify_timeout``; the
-    generic deadline would report ``tool_timeout`` while the prompt is still live."""
+    generic deadline would report ``tool_timeout`` while the prompt is still live.
+    ``delegate_task`` is special-cased on timeout (``_on_delegate_sequential_timeout``):
+    an in-flight batch whose children still show life is not torn down or re-run."""
     timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _resolve_sequential_tool_timeout()
     ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
     kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
@@ -849,6 +866,16 @@ def _run_sequential_tool_execution_middleware(
     def _run() -> _ManagedToolResult:
         with _registered_tool_worker(agent) as tid:
             worker_tid.append(tid)
+            if function_name == "delegate_task":
+                # Recycled-tid hygiene: a tid that previously ran delegate_task must not
+                # leave a stale entry a later timeout could misread as this batch's.
+                _delegate_timeout_guard("unregister_delegation", tid)
+                try:
+                    return _run_agent_tool_execution_middleware(agent, authorization_gate=authorization_gate, **kwargs)
+                finally:
+                    # Normal completion OR exception: the deadline thread must never see
+                    # a finished/failed batch as "still alive".
+                    _delegate_timeout_guard("unregister_delegation", tid)
             return _run_agent_tool_execution_middleware(agent, authorization_gate=authorization_gate, **kwargs)
 
     if ref.trace is None:
@@ -858,6 +885,7 @@ def _run_sequential_tool_execution_middleware(
     deadline = time.monotonic() + timeout_s if timeout_s is not None else None
     started = time.monotonic()
     abandoned = False
+    _deferred = False  # delegate_task timeout deferred because children are still active
     try:
         state, result = _poll_sequential_future(agent, future, function_name, deadline, started, authorization_gate)
         if state == "done":
@@ -881,14 +909,38 @@ def _run_sequential_tool_execution_middleware(
             )
         else:
             assert timeout_s is not None  # only reachable when a deadline exists
-            message = f"Error executing tool '{function_name}': timed out after {timeout_s:.1f}s"
-            logger.warning("sequential tool %s timed out after %.1fs", function_name, timeout_s)
-            result_cls, outcome = _ToolTimeoutResult, dict(
-                duration_ms=int(timeout_s * 1000), status="timeout", error_type="tool_timeout", error_message=message,
+            _deferred = (
+                function_name == "delegate_task"
+                and worker_tid
+                and _delegate_timeout_guard("maybe_defer_sequential_timeout", worker_tid[0])
             )
+            if _deferred:
+                # Children are alive (fresh live-transcript activity): don't cancel the
+                # worker or interrupt its thread — the batch is the record of truth and a
+                # re-dispatch here would duplicate every task (measured: 332 timeouts, ~$4k
+                # of duplicate orchestrator spend in one run).
+                deleg_id = _delegate_timeout_guard("active_delegation_id", worker_tid[0])
+                logger.warning(
+                    "sequential tool %s timed out after %.1fs; delegation %s still active - "
+                    "deferring (no worker teardown, no re-dispatch)",
+                    function_name, timeout_s, deleg_id,
+                )
+                message = _delegate_timeout_guard("timeout_notice", timeout_s, deleg_id)
+                result_cls, outcome = _ToolTimeoutResult, dict(
+                    duration_ms=int(timeout_s * 1000), status="timeout",
+                    error_type="delegate_still_active", error_message=message,
+                )
+            else:
+                message = f"Error executing tool '{function_name}': timed out after {timeout_s:.1f}s"
+                logger.warning("sequential tool %s timed out after %.1fs", function_name, timeout_s)
+                result_cls, outcome = _ToolTimeoutResult, dict(
+                    duration_ms=int(timeout_s * 1000), status="timeout", error_type="tool_timeout", error_message=message,
+                )
         abandoned = True
         future.cancel()
-        if state == "timeout":
+        if state == "timeout" and not _deferred:
+            # Deferred delegations keep their worker thread: the run is still the
+            # live record, and teardown would orphan children with no completion path.
             _interrupt_worker_tids(agent, worker_tid)
         return _abandoned_sequential_result(agent, ref, message, result_cls, **outcome)
     finally:

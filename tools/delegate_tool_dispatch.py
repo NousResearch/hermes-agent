@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
 from dataclasses import dataclass, replace
@@ -20,6 +21,7 @@ from tools.delegate_tool_progress import (
 )
 from tools.delegate_tool_registry import _capture_gateway_steer_authority
 from tools.delegate_tool_results import _finalize_child_results
+from tools.delegate_tool_timeout import register_delegation as _register_delegation_timeout, unregister_delegation as _unregister_delegation_timeout
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -427,6 +429,21 @@ def _dispatch_background(batch: _Batch) -> str:
 
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""
-    if background:
-        return _dispatch_background(batch)
-    return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)
+    # P-0106: make this batch's identity discoverable from the worker thread. If the
+    # sequential deadline later fires mid-batch, agent.tool_executor checks the live
+    # transcripts (tools.delegate_tool_timeout) before declaring the call dead, so a
+    # healthy batch is deferred instead of torn down and re-dispatched.
+    delegation_id = batch.live_deleg_id or None
+    live_dir = None
+    if delegation_id:
+        from tools.delegation_live_log import live_transcript_root
+        live_dir = str(live_transcript_root() / delegation_id)
+    _register_delegation_timeout(delegation_id, live_dir)
+    try:
+        if background:
+            return _dispatch_background(batch)
+        return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)
+    finally:
+        # Sync batches unregister here; deferred-timeout batches were already unregistered
+        # by the executor's cleanup (register is self-keyed, so the pop below is a no-op).
+        _unregister_delegation_timeout(threading.get_ident())

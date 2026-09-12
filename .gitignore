@@ -225,3 +225,6 @@ native/fts5_cjk/*.so
 
 # Disposable profile created by scripts/probe_active_session_exclusivity.py
 .probe-home/
+
+# P-0106 delegate sequential-timeout test scratch dir
+tests/agent/_p0106_live_dir/

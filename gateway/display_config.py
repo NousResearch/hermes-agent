@@ -54,7 +54,8 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Slack: Bolt posts cannot be edited like CLI; "new"/"all" spam permanent lines.
     "slack": {**_TIER_MEDIUM, "tool_progress": "off", "long_running_notifications": False, "busy_ack_detail": False},
     "mattermost": _TIER_MEDIUM,
-    "matrix": _TIER_MEDIUM,
+    # Replacements are still room events for clients/bridges that expose edits.
+    "matrix": {**_TIER_MEDIUM, "tool_progress": "off"},
     "feishu": _TIER_MEDIUM,
     "buzz": _TIER_MEDIUM,  # Nostr: edits in place but channels are shared community spaces
     "signal": _TIER_LOW,

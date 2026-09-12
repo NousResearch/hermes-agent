@@ -144,7 +144,14 @@ def _validate_moa(req: _Request) -> dict[str, Any]:
 
 def _reject_whitespace(req: _Request) -> Optional[dict[str, Any]]:
     if any(ch.isspace() for ch in req.requested):
-        return _reject("Model names cannot contain spaces.")
+        # A whitespace char reached the model token — usually an internal space
+        # (a typo, an autocomplete re-join) or a non-ASCII/zero-width space a
+        # client injected. Name the symptom, show what we got, and point at the
+        # interactive picker, which never hand-parses the string.
+        return _reject(
+            f"Model name contains a space: {req.requested!r}. Re-type it with "
+            "no spaces, or run /model (no arguments) to pick from the list."
+        )
     return None
 
 

@@ -51,6 +51,70 @@ def test_once_with_global_conflict():
     assert "/model --once cannot be combined with --global" in req.error_messages()
 
 
+@pytest.mark.parametrize(
+    "raw,expected_target",
+    [
+        ("sonnet\u200b", "sonnet"),      # trailing ZWSP
+        ("\u200bsonnet", "sonnet"),      # leading ZWSP
+        ("sonnet\u200b --once", "sonnet"),  # ZWSP after a clean token + a real flag
+    ],
+)
+def test_invisible_zero_width_chars_do_not_leak_into_target(raw, expected_target):
+    """Zero-width / BOM markers must not survive into the model target.
+
+    Clients (mobile auto-correct, IMEs, rich-text copy-paste) inject these
+    invisible chars. They are *not* whitespace to Python, so ``str.split()``
+    keeps them glued to a token and the value would otherwise reach validation
+    as a "model name" containing an embedded invisible char. The parser must
+    strip them so the target is the clean model ID — and any real flags are
+    still parsed.
+    """
+    req = parse_model_switch_args(raw)
+    # The invariant: no invisible char survives into the target token.
+    for ch in ("\u200b", "\u200c", "\u200d", "\ufeff"):
+        assert ch not in req.target, f"invisible {ch!r} leaked into target {req.target!r}"
+    assert req.target == expected_target
+    # Real flags co-existing with an invisible char are still honored.
+    if raw.endswith("--once"):
+        assert req.is_once is True
+
+
+@pytest.mark.parametrize(
+    "raw,expected_target",
+    [
+        ("so\u200bnet", "sonet"),     # ZWSP mid-token
+        ("so\ufeffnet", "sonet"),     # BOM / zero-width no-break mid-token
+        ("so\u200cnet", "sonet"),     # ZWNJ mid-token
+        ("so\u200dnet", "sonet"),     # ZWJ mid-token
+    ],
+)
+def test_invisible_zero_width_chars_stripped_from_mid_token(raw, expected_target):
+    """A zero-width marker glued *inside* a token is removed, leaving the
+    clean (de-invisible) model ID — never a token that still carries it."""
+    req = parse_model_switch_args(raw)
+    for ch in ("\u200b", "\u200c", "\u200d", "\ufeff"):
+        assert ch not in req.target, f"invisible {ch!r} leaked into target {req.target!r}"
+    assert req.target == expected_target
+
+
+def test_space_in_model_name_yields_diagnostic_error_not_dead_end():
+    """A genuine internal space must fail with an actionable message.
+
+    A model ID never legitimately contains a space, so ``co dex`` must be
+    rejected — but the message should name the symptom and point at the
+    picker, not the old dead-end "Model names cannot contain spaces."
+    """
+    req = parse_model_switch_args("co dex")
+    assert req.target == "co dex"  # parser preserves it for the validator to judge
+
+    from hermes_cli.models_validate import validate_requested_model
+    result = validate_requested_model(req.target, "custom")
+    assert result["accepted"] is False
+    msg = result["message"]
+    assert "contains a space" in msg
+    assert "/model" in msg  # points the user at the picker as the recovery
+
+
 
 
 # ---------------------------------------------------------------------------

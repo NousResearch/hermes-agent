@@ -214,13 +214,32 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         if rc != 0:
             return rc
     # 7. Enable the platform in config.yaml, or the channel silently stays offline.
+    rc = _enable_photon_platform()
+    if rc != 0:
+        return rc
+    print("\n✓ Photon setup complete.\n  Start the gateway:  hermes gateway start")
+    return 0
+
+
+def _enable_photon_platform() -> int:
+    """Flip ``photon.enabled`` on in config.yaml. Nonzero when it did not take.
+
+    Reporting success with the platform still disabled would mislead the
+    operator: setup would look finished while the gateway cannot load the
+    channel on next start.
+    """
     try:
         from hermes_cli.config import write_platform_config_field
         write_platform_config_field("photon", "enabled", True, raw=True)
-        print("  ✓ photon platform enabled in config.yaml")
     except Exception as e:
-        print(f"      (could not enable Photon in config: {e})", file=sys.stderr)
-    print("\n✓ Photon setup complete.\n  Start the gateway:  hermes gateway start")
+        print(f"[photon] setup: could not enable Photon in config: {e}", file=sys.stderr)
+        print(
+            "[photon] setup: Photon stays disabled until config.yaml is writable; "
+            "the gateway will not load the channel.",
+            file=sys.stderr,
+        )
+        return 1
+    print("  ✓ photon platform enabled in config.yaml")
     return 0
 
 
@@ -330,9 +349,11 @@ _COMMANDS = {
 def gateway_setup() -> None:
     """Run Photon first-time setup from the unified `hermes gateway setup` wizard (same flow
     as ``hermes photon setup``; phone is prompted when stdin is a TTY)."""
-    _cmd_setup(argparse.Namespace(
+    rc = _cmd_setup(argparse.Namespace(
         photon_command="setup", project_name=None, phone=None, first_name=None, last_name=None,
         email=None, no_browser=False, skip_sidecar_install=False))
+    if rc:
+        raise SystemExit(rc)
 
 
 def _prompt(prompt: str, *, secret: bool = False) -> str:

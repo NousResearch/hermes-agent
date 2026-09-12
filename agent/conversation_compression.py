@@ -67,6 +67,7 @@ COMPACTION_STATUS = f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier
 COMPACTION_HEARTBEAT_STATUS = f"🗜️ {COMPACTION_STATUS_MARKER} — still summarizing earlier conversation so I can continue..."
 
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
+COMPACTION_FAILED_STATUS = "⚠ Context compaction did not complete — continuing turn..."
 
 
 def _strip_marker_for_comparison(msgs: Any) -> Any:
@@ -79,13 +80,31 @@ def _strip_marker_for_comparison(msgs: Any) -> Any:
     return [{k: v for k, v in m.items() if k != _DB_PERSISTED_MARKER} if isinstance(m, dict) else m for m in msgs]
 
 
-def _emit_compaction_done(agent: Any) -> None:
-    """Emit the structured terminal edge for a started compaction."""
-    status_callback = getattr(agent, "status_callback", None)
-    if not status_callback:
+def _emit_compaction_event(
+    agent: Any, phase: str, message: str, *, error: bool = False,
+) -> None:
+    """Emit a semantic compaction lifecycle event for structured clients."""
+    callback = getattr(agent, "compaction_callback", None)
+    if not callback:
         return
-    with _swallow('status_callback error in compaction completion', exc_info=True):
-        status_callback("compacted", COMPACTION_DONE_STATUS)
+    with _swallow("compaction_callback error", exc_info=True):
+        callback(phase, {"message": message, "error": error})
+
+
+def _emit_compaction_done(agent: Any) -> None:
+    """Emit the successful terminal edge for a started compaction."""
+    status_callback = getattr(agent, "status_callback", None)
+    if status_callback:
+        with _swallow('status_callback error in compaction completion', exc_info=True):
+            status_callback("compacted", COMPACTION_DONE_STATUS)
+    _emit_compaction_event(agent, "completed", COMPACTION_DONE_STATUS)
+
+
+def _emit_compaction_failed(agent: Any) -> None:
+    """Close the structured lifecycle without changing chat status UX."""
+    _emit_compaction_event(
+        agent, "failed", COMPACTION_FAILED_STATUS, error=True,
+    )
 
 
 # Every ROUTINE compression status line lives here: suppressed on chat platforms
@@ -2270,8 +2289,17 @@ class _CompactionLifecycle:
         # Suppressed start → no terminal edge. Non-compacting aborts (lock contender,
         # cancelled fence) opt in via force_terminal so clients can retire their phase.
         # Failure warnings go through _emit_warning and are never suppressed here.
-        if self.status_emitted and (self.commit_status == "committed" or force_terminal):
+        if not self.status_emitted:
+            return
+        if self.commit_status == "committed":
             _emit_compaction_done(self._agent)
+        else:
+            _emit_compaction_failed(self._agent)
+            if force_terminal:
+                status_callback = getattr(self._agent, "status_callback", None)
+                if status_callback:
+                    with _swallow('status_callback error in compaction completion', exc_info=True):
+                        status_callback("compacted", COMPACTION_DONE_STATUS)
 
 
 class _CompressionLease:
@@ -3552,6 +3580,7 @@ def _announce_compression_start(
         )
     if status:
         agent._emit_status(status)
+        _emit_compaction_event(agent, "started", status)
     return _CompactionLifecycle(agent, bool(status))
 
 
@@ -3805,11 +3834,13 @@ def _compress_context_via_codex_app_server(
     logger.info("codex app-server compaction started: session=%s messages=%d tokens=~%s", _sid, len(messages), _tokens)
     with contextlib.suppress(Exception):
         agent._emit_status(COMPACTION_STATUS)
+        _emit_compaction_event(agent, "started", COMPACTION_STATUS)
     _activity_heartbeat = _CompressionActivityHeartbeat(agent, emit_client_status=True).start()
     try:
         result = codex_session.compact_thread()
     except BaseException:
         _activity_heartbeat.stop("context compression failed")
+        _emit_compaction_failed(agent)
         raise
     failed = bool(getattr(result, "interrupted", False) or getattr(result, "error", None))
     _activity_heartbeat.stop("context compression failed" if failed else "context compression completed")
@@ -3823,6 +3854,7 @@ def _compress_context_via_codex_app_server(
         # The transcript is returned unchanged, so the session is still over
         # threshold. Without a brake the next turn retries immediately.
         _record_codex_compaction_failure(agent, str(getattr(result, "error", None) or "compaction interrupted"))
+        _emit_compaction_failed(agent)
         return messages, _existing_system_prompt(agent, system_message)
     with _swallow('codex compaction bookkeeping failed', exc_info=True):
         from agent.codex_runtime import _record_codex_app_server_compaction, _record_codex_app_server_usage
@@ -4027,7 +4059,8 @@ def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int
 
 
 __all__ = [
-    "COMPACTION_STATUS", "COMPACTION_DONE_STATUS", "COMPACTION_HEARTBEAT_STATUS", "COMPACTION_STATUS_MARKER", "is_compaction_progress_status",
+    "COMPACTION_STATUS", "COMPACTION_DONE_STATUS", "COMPACTION_FAILED_STATUS",
+    "COMPACTION_HEARTBEAT_STATUS", "COMPACTION_STATUS_MARKER", "is_compaction_progress_status",
     "check_compression_model_feasibility", "replay_compression_warning", "compress_context",
     "try_shrink_image_parts_in_messages",
 ]

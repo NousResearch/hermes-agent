@@ -253,6 +253,7 @@ class AIAgent(
         setup_mcp_callback: callable = None, tour_callback: callable = None, step_callback: callable = None,
         stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
         tool_gen_callback: callable = None, status_callback: callable = None,
+        compaction_callback: Optional[Callable[[str, dict], None]] = None,
         notice_callback: callable = None, notice_clear_callback: callable = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
         reaction_callback: Optional[Callable[[str], None]] = None,

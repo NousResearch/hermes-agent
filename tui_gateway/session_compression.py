@@ -188,6 +188,25 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
     except Exception as e:
         _emit("error", sid, {"message": f"Could not switch model: {e}"})
 
+def _apply_pending_mcp_refresh(sid: str, session: dict) -> None:
+    """Apply a tool-snapshot rebuild deferred by ``reload.mcp`` while this session was mid-turn
+    (``session["pending_mcp_refresh"]``). Runs on the TURN thread at turn start — inside the
+    session's profile scope, before request assembly — so the swap can't split a live turn's
+    issue/validate reads. A failed refresh keeps the stale snapshot and never blocks the turn."""
+    if not session.pop("pending_mcp_refresh", None):
+        return
+    agent = session.get("agent")
+    if agent is None:
+        return
+    try:
+        from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        refresh_agent_mcp_tools(
+            agent, enabled_override=_load_enabled_toolsets(_session_source(session)), quiet_mode=True)
+    except Exception as exc:
+        logger.warning("Deferred MCP tool refresh failed for %s: %s", sid, exc)
+        return
+    _emit_session_info_for_session(sid, session)
+
 
 class CompressionLockHeld(Exception):
     """Raised by _compress_session_history when a concurrent compression_locks row skipped compression."""

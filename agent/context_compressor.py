@@ -1892,6 +1892,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._cooldown_persist_failed = False
         # Callers read this to know compression was attempted but aborted (freeze until manual /compress).
         self._last_compress_aborted = self._last_compress_refused_would_grow = False
+        # #100827: fingerprint of the last compress() input; a cron tick on an unchanged
+        # long thread skips the LLM re-summarize. Reset per session, never persisted.
+        self._last_compress_fingerprint: Optional[str] = None
         self._context_probed = self._context_probe_persistable = False
         self._reset_real_usage_pairing()
         self._last_compression_telemetry = self._active_compression_telemetry = None
@@ -4642,7 +4645,38 @@ Write only the summary body. Do not include any preamble or prefix."""
         WITHOUT clearing it (#100661). Set by provider-proven overflow recovery, which is already bounded by
         the caller's attempt budget.
         """
+        # #100827: snapshot before _begin_compress_attempt() resets per-call state — an
+        # aborted previous attempt must re-run, never dedup-skip (a skip would hand the
+        # fossil back unchanged and strand it as a stacked summary on retry).
+        _prev_compress_aborted = self._last_compress_aborted
         telemetry = self._begin_compress_attempt(current_tokens, force)
+        # Skip re-summarizing an unchanged long thread (cron every 5m): hash check before LLM.
+        try:
+            _fp = hashlib.sha256(
+                json.dumps(
+                    [(m.get("role"), str(m.get("content", ""))[:500]) for m in messages],
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+        except Exception:
+            _fp = None
+        # Never dedup after an abort/cooldown failure (that path must re-run to set
+        # _last_compress_aborted correctly) nor during feasibility-skip probing
+        # (ineffective strike), whose second identical call must still produce a
+        # fallback boundary.
+        _can_dedup = (
+            not _prev_compress_aborted
+            and not getattr(self, "_last_summary_empty_content_failure", False)
+            and not getattr(self, "_last_summary_network_failure", False)
+            and not getattr(self, "_last_summary_auth_failure", False)
+            and not getattr(self, "_last_summary_truncated_failure", False)
+            and self._ineffective_compression_count == 0
+        )
+        if not force and _fp is not None and _fp == getattr(self, "_last_compress_fingerprint", None) and _can_dedup:
+            telemetry["failure_class"] = "duplicate_input_skipped"
+            return messages
+        if _fp is not None:
+            self._last_compress_fingerprint = _fp
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1

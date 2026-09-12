@@ -246,7 +246,7 @@ async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow
 const RELAY_AGENTS_CACHE_MAX = 32
 const relayAgentsCache = new LruCache<string, RelayAgentRow[]>(RELAY_AGENTS_CACHE_MAX)
 
-/** Push every gateway the union roster of agents on the OTHER connections. */
+/** Push every gateway the union roster of agents plus its self-connection id. */
 async function syncRelayRosters() {
   if (relay.disposed || relay.rosterBusy) {
     return
@@ -257,7 +257,7 @@ async function syncRelayRosters() {
   try {
     const connections = await relayConnections()
 
-    if (connections.length < 2) {
+    if (connections.length < 1) {
       return
     }
 
@@ -289,19 +289,18 @@ async function syncRelayRosters() {
       }
     }
 
+    const union: RelayAgentRow[] = []
+
+    for (const agents of agentsByConnection.values()) {
+      union.push(...agents)
+    }
+
     await Promise.all(
       connections.map(async connection => {
-        const others: RelayAgentRow[] = []
-
-        for (const [id, agents] of agentsByConnection) {
-          if (id !== connection.id) {
-            others.push(...agents)
-          }
-        }
-
         try {
           await host.requestProfile(connection.route, 'bot_relay.roster.sync', {
-            agents: others
+            agents: union,
+            self_connection_id: connection.id
           })
         } catch {
           // Older backend without the relay RPCs — skip this connection.
@@ -335,11 +334,11 @@ async function drainRelayOutboxes() {
   try {
     const connections = await relayConnections()
 
-    // Retention follows the relay-eligible set: with fewer than two
-    // connections there is nothing to relay, so nothing stays pinned.
-    syncRelayRetention(connections.length >= 2 ? connections : [])
+    // Retention follows the relay-eligible set: at least one connection is
+    // enough for same-connection relay deliveries.
+    syncRelayRetention(connections.length >= 1 ? connections : [])
 
-    if (connections.length < 2) {
+    if (connections.length < 1) {
       return
     }
 

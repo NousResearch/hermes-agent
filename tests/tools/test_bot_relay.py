@@ -67,6 +67,22 @@ def test_roster_roundtrip_and_validation(root):
     assert back[0]["title"] == "Moxie"
 
 
+def test_read_remote_roster_filters_self_connection_rows(root):
+    rows = [
+        {"profile": "default", "handle": "hermes", "connection_id": "local-1"},
+        {"profile": "researcher", "handle": "researcher", "connection_id": "local-1"},
+        {"profile": "ops", "handle": "ops", "connection_id": "cloud-1"},
+    ]
+    bot_relay.write_remote_roster(root, rows, self_connection_id="local-1")
+
+    payload = bot_relay.read_relay_roster(root)
+    assert payload["self_connection_id"] == "local-1"
+    assert {r["profile"] for r in payload["agents"]} == {"default", "researcher", "ops"}
+
+    remote = bot_relay.read_remote_roster(root)
+    assert [r["profile"] for r in remote] == ["ops"]
+
+
 def test_roster_read_missing_and_corrupt(root):
     assert bot_relay.read_remote_roster(root) == []
     base = bot_relay.relay_root(root)

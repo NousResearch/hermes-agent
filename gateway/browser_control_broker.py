@@ -32,8 +32,10 @@ BROWSER_CONTROL_CAPABILITIES = frozenset({
     "controller.noop", "browser_back", "browser_click", "browser_navigate", "browser_press", "browser_screenshot",
     "browser_scroll", "browser_snapshot", "browser_tab_activate", "browser_tabs", "browser_type",
 })
-#: Privileged capabilities: fail-closed unless Developer Mode is on AND explicitly negotiated.
-BROWSER_CONTROL_DEVELOPER_CAPABILITIES = frozenset({"browser_cdp", "browser_evaluate"})
+#: Controller Developer Mode intentionally grants no browser execution transport.
+#: ``browser_evaluate`` is retired and raw ``browser_cdp`` is limited to the
+#: trusted, statically-configured direct transport in ``tools.browser_cdp_tool``.
+BROWSER_CONTROL_DEVELOPER_CAPABILITIES = frozenset()
 #: Artifact transport capabilities; non-developer because only a store-validated ``artifact_id`` travels.
 BROWSER_CONTROL_ARTIFACT_CAPABILITIES = frozenset({"browser_artifact_download", "browser_artifact_upload"})
 
@@ -62,7 +64,7 @@ def _extension_control_flag(config: Optional[dict], key: str) -> bool:
 
 
 def browser_control_developer_mode(config: Optional[dict] = None) -> bool:
-    """Explicit Developer Mode flag; gates ``browser_evaluate``/raw CDP only."""
+    """Explicit controller Developer Mode flag (it grants no eval or raw-CDP capability)."""
     return _extension_control_flag(config, "developer_mode")
 
 
@@ -72,13 +74,14 @@ def browser_control_enabled(config: Optional[dict] = None) -> bool:
 
 
 def filter_browser_control_capabilities(value: Any, *, developer_mode: Optional[bool] = None) -> frozenset:
-    """Permitted subset of a capability list (non-list -> empty); developer caps only in Developer Mode."""
+    """Permitted controller subset (non-list -> empty); eval/raw CDP are never negotiated."""
     if not isinstance(value, list):
         return frozenset()
     allowed = BROWSER_CONTROL_CAPABILITIES | BROWSER_CONTROL_ARTIFACT_CAPABILITIES
-    if (browser_control_developer_mode() if developer_mode is None else developer_mode) is True:
-        allowed |= BROWSER_CONTROL_DEVELOPER_CAPABILITIES
     return frozenset(c for c in value if isinstance(c, str) and c in allowed)
+
+
+_RETIRED_CONTROLLER_ACTIONS = frozenset({"browser_cdp", "browser_evaluate"})
 
 
 class BrowserControlError(Exception):
@@ -177,15 +180,14 @@ class BrowserControlBroker:
         self._tickets: Dict[str, _TicketRecord] = {}
         self._controllers: Dict[ControllerScope, _Controller] = {}
         self._pending: Dict[str, _PendingCommand] = {}
-        # None defers to live config on every selection (so flipping developer_mode off REVOKES
-        # raw CDP/eval from attached controllers without restart); a bool pins the gate.
+        # Kept for API compatibility; Developer Mode never grants controller eval/raw CDP.
         self._developer_mode_pinned: Optional[bool] = None if developer_mode is None else developer_mode is True
         # Artifact stores keyed by profile id; ``None`` is the default slot.
         self._artifact_stores: Dict[Optional[str], Any] = {}
 
     @property
     def developer_mode(self) -> bool:
-        """Whether privileged capabilities may be selected/dispatched (live config unless pinned)."""
+        """Whether the legacy Developer Mode flag is enabled (it grants no controller capabilities)."""
         if self._developer_mode_pinned is not None:
             return self._developer_mode_pinned
         try:
@@ -287,9 +289,8 @@ class BrowserControlBroker:
                 return
 
     def select(self, scope: ControllerScope, capability: str) -> Optional[_Controller]:
-        """Connected controller matching identity whose *current* negotiated set holds ``capability`` (the
-        caller's set is not authoritative); developer capabilities are also gated on LIVE Developer Mode."""
-        if capability in BROWSER_CONTROL_DEVELOPER_CAPABILITIES and not self.developer_mode:
+        """Connected controller matching identity whose negotiated set holds ``capability``."""
+        if capability in _RETIRED_CONTROLLER_ACTIONS:
             return None
         controller = self._live_controller(scope)
         return controller if controller is not None and capability in controller.scope.capabilities else None
@@ -337,10 +338,13 @@ class BrowserControlBroker:
     ) -> Any:
         """Send one controller command and block for completion; raises ControllerUnavailable/Cancelled/Timeout/
         Rejected. Artifact actions also need an attached store and an approved ``artifact_id`` (only the id travels)."""
+        if action in _RETIRED_CONTROLLER_ACTIONS:
+            raise ControllerUnavailable(f"{action} is not available through browser controllers")
         controller = self.select(scope, action)
         if controller is None:
             raise ControllerUnavailable(f"no controller for scope {scope!r} with capability {action!r}")
         arguments = dict(arguments or {})
+
         if action in BROWSER_CONTROL_ARTIFACT_CAPABILITIES:
             self._validate_artifact_reference(scope, action, arguments)
         command_id = secrets.token_hex(16)

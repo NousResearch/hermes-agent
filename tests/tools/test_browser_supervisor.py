@@ -162,6 +162,7 @@ def _test_page_url() -> str:
 
 def _fire_on_page(cdp_url: str, expression: str) -> None:
     """Navigate the first page target to a data URL and fire `expression`."""
+    import asyncio
     import websockets as _ws_mod
 
     async def run():
@@ -308,6 +309,13 @@ def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     assert "PYTEST-TOOL-END2END" in r["dialog"]["message"]
 
 
+def test_browser_cdp_frame_id_is_rejected_at_capability_boundary():
+    """OOPIF observation does not create a public frame-routing transport."""
+    from tools.browser_cdp_tool import CDP_CAPABILITY_ERROR, _validate_cdp_capability
+
+    assert _validate_cdp_capability(
+        "Runtime.evaluate", {"expression": "document.title"}, None, "oopif-1"
+    ) == CDP_CAPABILITY_ERROR
 
 
 def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):

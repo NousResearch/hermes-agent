@@ -25,6 +25,45 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Controller transports are action-level only.  CDP target attachment/routing
+# fields would let a controller turn an otherwise safe browser action into a
+# cross-target primitive, so reject every wire spelling before broker dispatch.
+_CONTROLLER_ROUTING_ARGUMENTS = frozenset({
+    "target_id", "targetid", "frame_id", "frameid", "session_id", "sessionid",
+    "target", "frame", "session", "target_info", "targetinfo",
+})
+
+
+def _controller_arguments_safe(action: str, args: Dict[str, Any]) -> bool:
+    """Reject CDP-style attachment/routing fields and unsafe controller navigation."""
+    def has_routing_key(value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                normalized = str(key).replace("-", "_").lower()
+                compact = normalized.replace("_", "")
+                if normalized in _CONTROLLER_ROUTING_ARGUMENTS or compact in _CONTROLLER_ROUTING_ARGUMENTS:
+                    return True
+                if has_routing_key(nested):
+                    return True
+        elif isinstance(value, (list, tuple)):
+            return any(has_routing_key(item) for item in value)
+        return False
+
+    if has_routing_key(args):
+        return False
+    if action == "browser_navigate":
+        url = args.get("url")
+        if not isinstance(url, str):
+            return False
+        try:
+            # Shared browser policy: metadata is always blocked; normal private
+            # address handling follows the configured browser guard policy.
+            from tools.browser_tool import evaluate_url_safety
+            return evaluate_url_safety(url) is None
+        except Exception:
+            return False
+    return True
+
 
 def _bound_identity() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """(session_id, principal_id, transport_family) from the session context."""
@@ -91,6 +130,9 @@ def route_browser_tool(
 
     if broker.select(scope, action) is None:
         raise _controller_unavailable(f"bound browser controller cannot execute {action}")
+
+    if not _controller_arguments_safe(action, args):
+        raise _controller_unavailable(f"bound browser controller refused unsafe {action} arguments")
 
     # Controller is authoritative: never retry the legacy backend. Registry
     # handlers must return a string; keep string results byte-identical and

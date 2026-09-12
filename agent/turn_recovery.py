@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import math
-import math
 import re
 import time
 from dataclasses import dataclass
@@ -1023,6 +1022,7 @@ _ZAI_POLICY_NOTES = {
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
     is_zai_coding_overload: bool, base_url: Any, model: Any,
+    error_context: Optional[Dict[str, Any]] = None,
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for
     rate limits and any other retryable error (generic headers capped at 600s; a
@@ -1059,11 +1059,21 @@ def compute_error_backoff(
             # past, which the parser clamps to 0.0) carries no usable wait —
             # treat it as absent so we never hot-loop the provider.
             _retry_after = None
-    # Native adapters normalize structured provider hints onto the exception. Do not
-    # shorten that minimum (or discard its fractional part) with the generic header cap.
-    _adapter_retry_after = parse_retry_after_seconds(getattr(api_error, "retry_after", None))
-    if _adapter_retry_after is not None and math.isfinite(_adapter_retry_after) and _adapter_retry_after > 0:
-        _retry_after = max(_retry_after or 0.0, _adapter_retry_after)
+    # Native adapters and the shared classifier normalize structured provider hints.
+    # Neither minimum may be shortened by the generic header/body cap. The classifier
+    # path is load-bearing for OpenAI-SDK-compatible Gemini routes, whose exception has
+    # no adapter-specific ``retry_after`` attribute even when RetryInfo is present.
+    for _normalized_retry_after in (
+        getattr(api_error, "retry_after", None),
+        (error_context or {}).get("retry_after"),
+    ):
+        _normalized_retry_after = parse_retry_after_seconds(_normalized_retry_after)
+        if (
+            _normalized_retry_after is not None
+            and math.isfinite(_normalized_retry_after)
+            and _normalized_retry_after > 0
+        ):
+            _retry_after = max(_retry_after or 0.0, _normalized_retry_after)
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload

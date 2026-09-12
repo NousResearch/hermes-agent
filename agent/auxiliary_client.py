@@ -6836,8 +6836,11 @@ def _rung(step: "_LadderStep", accept: Callable[[Exception], bool]):
 def _param_rung_accepts(exc: Exception) -> bool:
     """After a parameter-strip retry: fall through to the max_tokens/payment/auth
     chains with the stripped kwargs; re-raise anything those chains won't handle."""
-    return (_is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
-            or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc))
+    return (
+        _is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
+        or _is_rate_limit_error(exc)
+        or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc)
+    )
 
 
 def _credential_rung_accepts(exc: Exception) -> bool:
@@ -7051,11 +7054,20 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     if reason is None or not (is_auto or is_capacity_error):
         return None
     if reason == "payment error":
-        # Mark the concrete backend (not the "auto" label) unhealthy so later aux calls skip
-        # it instead of paying another doomed RTT.
-        _mark_provider_unhealthy(
-            _recoverable_pool_provider(resolved_provider, route.client, main_runtime=route.main_runtime)
-            or resolved_provider, base_url=route.base_info)
+        payment = classify_api_error(
+            first_err, provider=_normalize_aux_provider(resolved_provider),
+            model=route.final_model or "",
+        )
+        # Ambiguous billing bodies still justify fallback for this request, but are
+        # not evidence that later requests should skip the endpoint for the full
+        # 600s payment-health TTL.
+        if not payment.billing_unverified:
+            _mark_provider_unhealthy(
+                _recoverable_pool_provider(
+                    resolved_provider, route.client, main_runtime=route.main_runtime
+                ) or resolved_provider,
+                base_url=route.base_info,
+            )
     logger.info("Auxiliary %s%s: %s on %s (%s), trying fallback",
                 task or "call", tag, reason, resolved_provider, first_err)
     # Skip only the failed model for model-specific failures; 401/402 are provider-wide, so

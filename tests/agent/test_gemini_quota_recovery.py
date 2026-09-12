@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
+from openai import RateLimitError
 
 from agent.agent_runtime_helpers import extract_api_error_context, recover_with_credential_pool
 from agent.credential_pool import CredentialPool, PooledCredential, STATUS_EXHAUSTED, load_pool, _normalize_error_context
@@ -198,3 +199,22 @@ def test_body_retry_floor_reaches_backoff_reset_and_fallback(monkeypatch, retry_
     agent.model = "gemini-test-flash"
     agent._rate_limit_backoff_count = 0
     assert _arm_rate_limit_cooldown(agent, classified.reason) != cooldown
+
+
+def test_sdk_gemini_retryinfo_reaches_actual_backoff():
+    body = quota_body(limit=250000, delay="30s")
+    response = httpx.Response(
+        429, json=body, headers={"Retry-After": "2"},
+        request=httpx.Request("POST", BASE_URL + "/openai/chat/completions"),
+    )
+    error = RateLimitError("Gemini quota", response=response, body=body)
+    classified = classify_api_error(error, provider="gemini", model=MODEL)
+    assert classified.reason == FailoverReason.upstream_rate_limit
+    assert classified.error_context["retry_after"] == pytest.approx(30.0)
+    wait = compute_error_backoff(
+        recovery_agent(), error, retry_count=1, max_retries=3,
+        is_rate_limited=True, is_zai_coding_overload=False,
+        base_url=BASE_URL + "/openai", model=MODEL,
+        error_context=classified.error_context,
+    )
+    assert wait == pytest.approx(30.0)

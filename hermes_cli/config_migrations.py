@@ -627,6 +627,26 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
         message="  ✓ Model catalog now refreshes every 20 minutes (model_catalog.ttl_minutes)",
         extra_guard=lambda raw: "ttl_minutes" not in raw)),
     (41, _migrate_to_41),
+    # 41 → 42: cron.model_drift_guard is gone. Unpinned jobs now run on their creation snapshot
+    # instead of failing closed when the global model changes, so the toggle has nothing to gate.
+    (42, functools.partial(
+        _rewrite_key, section="cron", key="model_drift_guard", new=None,
+        match=lambda cur: cur is not None,
+        added="removed cron.model_drift_guard",
+        message=(
+            "  ✓ Removed cron.model_drift_guard — unpinned cron jobs now keep running on the "
+            "model/provider they were created under when the global default changes, instead "
+            "of being skipped. Pin a job or set cron.model to move it."))),
+    # 42 → 43: gateway.multiplex_profile_allowlist is gone. A multiplexing default gateway serves
+    # every live profile under profiles/; a profile that must not be served is archived or deleted.
+    (43, functools.partial(
+        _rewrite_key, section="gateway", key="multiplex_profile_allowlist", new=None,
+        match=lambda _cur: True,
+        added="removed gateway.multiplex_profile_allowlist",
+        message=(
+            "  ✓ Removed gateway.multiplex_profile_allowlist — the multiplexing gateway now serves "
+            "every profile under profiles/. Delete or archive a profile you do not want served."),
+        extra_guard=lambda raw: "multiplex_profile_allowlist" in raw)),
 )
 
 

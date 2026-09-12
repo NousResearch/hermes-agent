@@ -44,11 +44,21 @@ def test_boundary_is_exported_only_for_the_verbatim_current_row(user_message, me
     result = export_current_turn_boundary(agent, {"messages": messages}, user_message)
     if expected_idx is None:
         assert "current_turn_user_idx" not in result and "turn_id" not in result
-        assert agent._persist_user_message_idx is None
     else:
         assert result["current_turn_user_idx"] == expected_idx
         assert result["turn_id"] == agent._current_turn_id
-        assert agent._persist_user_message_idx == expected_idx
+    # the persist funnel has already run by the time the envelope is stamped: never re-anchor it here
+    assert agent._persist_user_message_idx is None
+
+
+def test_preflight_timeout_envelope_exports_nothing():
+    """The preflight-timeout result carries the prior history without this turn's row (#7100);
+    a repeated prompt must not be resolved to its historical copy."""
+    agent = _Agent()
+    result = {"messages": [{"role": "user", "content": "continue"}, {"role": "assistant", "content": "old"}],
+              "turn_exit_reason": "context_compression_timeout"}
+    out = export_current_turn_boundary(agent, result, "continue")
+    assert "current_turn_user_idx" not in out and "turn_id" not in out
 
 
 @pytest.fixture()

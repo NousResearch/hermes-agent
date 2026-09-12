@@ -28,20 +28,24 @@ class TestBrowserSecretExfil:
         parsed = json.loads(result)
         assert parsed["success"] is False
 
-    def test_cloud_blocks_opaque_sensitive_query_param(self):
-        """Cloud browser providers must not receive opaque token query params."""
+    def test_cloud_browser_allows_credential_named_query_param(self):
+        """Magic links / OAuth callbacks / signed assets carry ``?token=``-style params and must
+        reach a cloud browser too: the browser is where the agent signs in, and it already sees the
+        session's cookies and typed passwords. Only Hermes-secret-shaped values stay blocked."""
         from tools.browser_tool import browser_navigate
 
+        url = "https://example.com/callback?token=opaque-oauth-code&signature=abc123"
+        mock_result = {"success": True, "data": {"title": "ok", "url": url}}
         with patch("tools.browser_tool_cloud._is_local_backend", return_value=False), \
              patch("tools.browser_tool._navigation_session_key", return_value="default"), \
-             patch("tools.browser_tool_session._run_browser_command") as mock_run:
-            result = browser_navigate("https://example.com/callback?token=opaque-oauth-code")
+             patch("tools.browser_tool_session._get_session_info", return_value={"_first_nav": False}), \
+             patch("tools.browser_tool_session._run_browser_command", return_value=mock_result) as mock_run:
+            allowed = json.loads(browser_navigate(url))
+            blocked = json.loads(browser_navigate("https://example.com/callback?token=" + "sk-or-v1-" + "b" * 30))
 
-        parsed = json.loads(result)
-        assert parsed["success"] is False
-        assert "credential-like query parameter" in parsed["error"]
-        assert "token" in parsed["error"]
-        mock_run.assert_not_called()
+        assert allowed["success"] is True
+        assert blocked["success"] is False and "Blocked" in blocked["error"]
+        assert all(call.args[1] != "open" or "sk-or-v1-" not in call.args[2][0] for call in mock_run.call_args_list)
 
     def test_local_browser_allows_opaque_sensitive_query_param(self):
         """Local browser/CDP sessions may navigate magic-link style URLs."""
@@ -104,17 +108,15 @@ class TestWebExtractSecretExfil:
         assert "Blocked" in parsed["error"]
 
     @pytest.mark.asyncio
-    async def test_blocks_opaque_sensitive_query_param(self):
+    async def test_allows_credential_named_query_param(self):
+        """``?access_token=`` is how magic links and signed URLs look; the extract backend may fetch them.
+        Only Hermes-secret-shaped VALUES are blocked (see test_blocks_api_key_in_url)."""
         from tools.web_tools import web_extract_tool
 
-        result = await web_extract_tool(
-            urls=["https://example.com/callback?access_token=opaque-oauth-value"],
-        )
-
+        result = await web_extract_tool(urls=["https://example.com/callback?access_token=opaque-oauth-value"])
         parsed = json.loads(result)
-        assert parsed["success"] is False
-        assert "credential-like query parameter" in parsed["error"]
-        assert "access_token" in parsed["error"]
+        assert "credential-like query parameter" not in parsed.get("error", "")
+        assert "Blocked" not in parsed.get("error", "")
 
     @pytest.mark.asyncio
     async def test_allows_ambiguous_english_word_query_param(self):

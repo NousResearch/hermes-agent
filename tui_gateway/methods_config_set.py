@@ -140,7 +140,15 @@ def _set_model(rid, params, key, value, session):
             with _session_profile_runtime_scope(session):
                 _persist_live_session_runtime(session)
     else:
-        result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
+        # --once keeps its specific 5001; other sessionless model sets 4001 so
+        # --global cannot persist profile defaults before session.create (#106397:
+        # an older Desktop client sent a fresh-draft pick this way).
+        from hermes_cli.model_switch import parse_model_switch_args
+        if parse_model_switch_args(str(value)).is_once:
+            result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
+        else:
+            return _err(rid, 4001, "config.set model requires a live session; "
+                        "use Settings -> Models to change the profile default")
     return _kv(rid, key, result["value"], warning=result["warning"],
                confirm_required=result.get("confirm_required", False),
                confirm_message=result.get("confirm_message", ""), scope=result.get("scope", "session"))
@@ -336,7 +344,10 @@ def _word_setters() -> dict:
                   lambda w: _write_config_key("display.tui_theme", w)),
         # _raw_word: 0/False/[] keep their text so the error names what was sent.
         "indicator": (_raw_word, INDICATOR_STYLES, "unknown indicator: {raw!r}; pick one of " + "|".join(INDICATOR_STYLES),
-                      lambda w: _write_config_key("display.tui_status_indicator", w))}
+                      lambda w: _write_config_key("display.tui_status_indicator", w)),
+        # Which engine the desktop voice button mounts; applies to the NEXT conversation.
+        "voice.voice_chat_mode": (_word, {"chained", "gpt-live"}, "unknown voice chat mode: {value}; pick chained|gpt-live",
+                                  lambda w: _write_config_key("voice.voice_chat_mode", w))}
 
 
 def _set_word(rid, params, key, value, session):
@@ -450,7 +461,7 @@ _CONFIG_SETTERS = {
     "approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,
     "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
     "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
-    "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word,
+    "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
 

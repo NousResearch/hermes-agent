@@ -104,7 +104,8 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
         (
             ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit", 3),
             ("session_id", "session_id"), ("around_message_id", "around_message_id"),
-            ("window", "window", 5), ("sort", "sort"), ("detail", "detail", "adaptive"),
+            ("window", "window", 5), ("sort", "sort"), ("profile", "profile"),
+            ("detail", "detail", "adaptive"),
         ),
         db=session_db, current_session_id=agent.session_id,
     )

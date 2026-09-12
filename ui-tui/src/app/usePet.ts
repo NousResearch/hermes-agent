@@ -50,7 +50,7 @@ export function derivePetState({ busy, toolRunning, reasoning, awaitingInput }: 
 function isAwaitingInput(): boolean {
   const o = getOverlayState()
 
-  return Boolean(o.clarify || o.approval || o.sudo || o.secret || o.confirm)
+  return Boolean(o.clarify || o.approval || o.sudo || o.secret || o.vaultUnlock || o.confirm)
 }
 
 // A kitty Unicode-placeholder frame set: a static placeholder grid (painted by

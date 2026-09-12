@@ -42,6 +42,50 @@ def _reset_configured_delete_override_warned_paths():
     hermes_state_wal._delete_overridden_warned_paths.clear()
 
 
+def test_wal_probe_unknown_never_emits_set_pragma(monkeypatch, tmp_path, caplog):
+    """Probe failure (None) on the configured-WAL path must not reach any journal-mode
+    pragma: the file may be held by a sibling whose -wal/-shm sidecars WAL-init would
+    unlink. The DELETE branch already refused; this binds the WAL branch to the same rule,
+    and ``require_wal=True`` must raise instead of reporting an unverified "wal"."""
+    import logging
+
+    from hermes_state_wal import WalUnsupportedError, apply_wal_with_fallback
+
+    _configure_mode(monkeypatch, tmp_path, "wal")
+    _disable_vulnerable_gate(monkeypatch)
+    hermes_state_wal._wal_probe_unknown_paths.clear()
+
+    class _SpyConnection(sqlite3.Connection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.pragmas: list[str] = []
+
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if str(sql).lstrip().lower().startswith("pragma"):
+                self.pragmas.append(str(sql))
+            return super().execute(sql, *args, **kwargs)
+
+    db_path = tmp_path / "probe-unknown.db"
+    sibling = sqlite3.connect(str(db_path))
+    try:
+        assert sibling.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        monkeypatch.setattr("hermes_state_wal._on_disk_journal_mode", lambda _conn: None)
+        conn = sqlite3.connect(str(db_path), factory=_SpyConnection)
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_state_wal"):
+                assert apply_wal_with_fallback(conn, db_label="probe-unknown.db") == "wal"
+            assert conn.pragmas == []  # nothing touched while ownership is unproven
+            assert sibling.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+            assert any("could not verify the on-disk journal mode" in r.getMessage() for r in caplog.records)
+            with pytest.raises(WalUnsupportedError, match="could not verify the on-disk journal mode"):
+                apply_wal_with_fallback(conn, db_label="probe-unknown.db", require_wal=True)
+            assert conn.pragmas == []
+        finally:
+            conn.close()
+    finally:
+        sibling.close()
+
+
 def test_database_journal_mode_has_a_canonical_default():
     from hermes_cli.config import DEFAULT_CONFIG
 

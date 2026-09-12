@@ -634,6 +634,11 @@ def _plugin_auth_hint(name: str, provides_tools: list) -> tuple:
     return False, ""
 
 
+def _plugin_runtime_status(aliases: set, enabled_set: set, disabled_set: set) -> str:
+    """enabled / disabled / inactive for a plugin's name+key alias set (disabled wins)."""
+    return "disabled" if aliases & disabled_set else "enabled" if aliases & enabled_set else "inactive"
+
+
 def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     """Agent discovery + dashboard manifests + provider picker metadata.
 
@@ -662,6 +667,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         _get_enabled_set,
         _read_manifest as _read_plugin_manifest_at,
     )
+    from hermes_cli.plugins_cmd_catalog import removed_annotation
 
     dashboard_list = _get_dashboard_plugins()
     dash_by_name = {str(p["name"]): p for p in dashboard_list}
@@ -675,12 +681,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         # Both the path-derived key (nested category plugins) and the bare manifest name
         # count for enabled/disabled state, matching the runtime loader's back-compat lookup.
         aliases = {name, key} if key else {name}
-        if aliases & disabled_set:
-            runtime_status = "disabled"
-        elif aliases & enabled_set:
-            runtime_status = "enabled"
-        else:
-            runtime_status = "inactive"
+        runtime_status = _plugin_runtime_status(aliases, enabled_set, disabled_set)
 
         dir_path = Path(dir_str)
         dm = dash_by_name.get(name)
@@ -708,6 +709,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
             "auth_required": auth_required,
             "auth_command": auth_command,
             "user_hidden": name in hidden_plugins,
+            "removed_reason": removed_annotation(name, dir_str),
         })
 
     agent_names = {r["name"] for r in rows}

@@ -4,6 +4,7 @@ turn tracking and turn-failure detail. Bodies are rebound onto server.py's globa
 from __future__ import annotations
 
 from .method_ctx import bind_module
+from agent.prompt_builder import STEER_DISPLAY_KIND
 
 
 def _active_image_routing_identity(agent: Any) -> tuple[str, str]:
@@ -202,7 +203,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
-        if role == "user" and m.get("display_kind") == "steer":
+        if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
             # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
             from agent.conversation_compression import _extract_steer_text_from_message
             content_text = _extract_steer_text_from_message(m) or content_text
@@ -249,7 +250,13 @@ def _coerce_seed_history(value: Any) -> list[dict]:
             continue
         content = item.get("text") if item.get("content") is None else item.get("content")
         if isinstance(content, str) and content.strip():
-            history.append({"role": item["role"], "content": content})
+            row = {"role": item["role"], "content": content}
+            # "hidden" is the one display_kind a seeding client may author: model-facing scaffolding the
+            # renderer must not paint (a guided-chat runbook). Every other kind is stamped by the gateway
+            # at turn time, so it is not accepted from the wire.
+            if item.get("display_kind") == "hidden":
+                row["display_kind"] = "hidden"
+            history.append(row)
     return history
 
 

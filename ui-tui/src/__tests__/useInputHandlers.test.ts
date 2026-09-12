@@ -184,7 +184,7 @@ describe('dismissSensitivePrompt', () => {
     await pending
   })
 
-  it('declines a vault save-login overlay with an empty login so the blocked wait resolves', async () => {
+  it('declines a vault save-login overlay with an empty login string so the blocked wait resolves', async () => {
     resetOverlayState()
     patchOverlayState({ vaultSaveLogin: { origin: 'https://example.com', requestId: 'save-1', site: 'example.com' } })
     const rpc = vi.fn().mockResolvedValue(null)
@@ -194,7 +194,7 @@ describe('dismissSensitivePrompt', () => {
 
     expect(getOverlayState().vaultSaveLogin).toBeNull()
     expect(sys).toHaveBeenCalledWith('login for example.com not saved')
-    expect(rpc).toHaveBeenCalledWith('vault.save_login.respond', { login: {}, request_id: 'save-1' })
+    expect(rpc).toHaveBeenCalledWith('vault.save_login.respond', { login: '', request_id: 'save-1' })
     await pending
   })
 })

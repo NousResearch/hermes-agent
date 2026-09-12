@@ -180,7 +180,7 @@ export function dismissSensitivePrompt(
     patchOverlayState({ vaultSaveLogin: null })
     sys(`login for ${overlay.vaultSaveLogin.site} not saved`)
 
-    return rpc<SecretRespondResponse>('vault.save_login.respond', { login: {}, request_id: requestId })
+    return rpc<SecretRespondResponse>('vault.save_login.respond', { login: '', request_id: requestId })
   }
 }
 

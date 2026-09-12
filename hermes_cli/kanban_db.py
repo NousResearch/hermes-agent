@@ -21,6 +21,7 @@ import subprocess
 import sys
 import logging
 import time
+from hashlib import sha256
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
@@ -517,7 +518,7 @@ def worker_logs_dir(board: Optional[str] = None) -> Path:
 
 
 def board_metadata_path(board: Optional[str] = None) -> Path:
-    """``board.json`` path — display metadata only; the directory slug is the identity."""
+    """``board.json`` settings path; the directory slug is the identity."""
     return board_dir(_slug_or_default(board)) / "board.json"
 
 
@@ -526,9 +527,13 @@ def _default_board_display_name(slug: str) -> str:
     return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part) or slug
 
 
-def read_board_metadata(board: Optional[str] = None) -> dict:
-    """``board.json`` merged over defaults, plus ``slug`` and ``db_path``. Never
-    raises — a missing/malformed file yields the synthesized entry."""
+def read_board_metadata(
+    board: Optional[str] = None, *, strict: bool = False, metadata_path: Optional[Path] = None,
+) -> dict:
+    """Native settings plus defaults. Strict policy reads reject malformed files;
+    the ordinary display read still synthesizes defaults. Missing is unconfigured.
+    ``metadata_path`` lets enforcement bind to an already-open DB, not a selector.
+    """
     slug = _slug_or_default(board)
     meta: dict[str, Any] = {
         "slug": slug,
@@ -543,16 +548,20 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "archived": False,
     }
     try:
-        p = board_metadata_path(slug)
-        if p.exists():
-            raw = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                # Never let the metadata file claim a different slug than
-                # its directory — trust the filesystem.
-                raw["slug"] = slug
-                meta.update(raw)
-    except (OSError, json.JSONDecodeError):
+        p = metadata_path if metadata_path is not None else board_metadata_path(slug)
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            # Never let the metadata file claim a different slug than
+            # its directory — trust the filesystem.
+            raw["slug"] = slug
+            meta.update(raw)
+        elif strict:
+            raise ValueError("board metadata must be an object")
+    except FileNotFoundError:
         pass
+    except (OSError, ValueError, UnicodeError):
+        if strict:
+            raise
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
 
@@ -561,6 +570,7 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    pre_claim: Optional[dict] = None, clear_pre_claim: bool = False,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
@@ -570,6 +580,13 @@ def write_board_metadata(
     meta = read_board_metadata(slug)
     # db_path is derived on every read; never persist it into board.json.
     meta.pop("db_path", None)
+    if pre_claim is not None:
+        from hermes_cli.kanban_db_policy import validate_policy
+        if clear_pre_claim:
+            raise ValueError("cannot set and clear pre_claim together")
+        meta["pre_claim"] = validate_policy(pre_claim)
+    elif clear_pre_claim:
+        meta.pop("pre_claim", None)
     if name is not None:
         meta["name"] = str(name).strip() or _default_board_display_name(slug)
     for key, value in (("description", description), ("icon", icon), ("color", color)):
@@ -2018,6 +2035,10 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
+    from hermes_cli import kanban_db_policy
+    policy = kanban_db_policy.board_policy(conn)
+    if policy is not None:
+        return kanban_db_policy.recompute_ready(conn, policy, failure_limit)
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
@@ -2136,10 +2157,13 @@ def claim_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
     """
-    now = int(time.time())
     lock = claimer or _claimer_id()
-    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
-    with write_txn(conn):
+    from hermes_cli.kanban_db_policy import policy_transaction
+    with policy_transaction(conn, task_id, "ready") as allowed:
+        if not allowed:
+            return None
+        now = int(time.time())
+        expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
         # Single enforcement point: never ready -> running with an undone
         # parent, whichever writer set 'ready'. Demote to 'todo';
         # recompute_ready re-promotes when the parents finish.
@@ -2169,10 +2193,13 @@ def claim_review_task(
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
     separately from the implementer."""
-    now = int(time.time())
     lock = claimer or _claimer_id()
-    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
-    with write_txn(conn):
+    from hermes_cli.kanban_db_policy import policy_transaction
+    with policy_transaction(conn, task_id, "review") as allowed:
+        if not allowed:
+            return None
+        now = int(time.time())
+        expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
         if not _parents_satisfied(conn, task_id):
             demoted = conn.execute(
                 "UPDATE tasks SET status = 'todo' "
@@ -3299,13 +3326,96 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
-def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def validate_review_feedback(expected_event_id, feedback_id, feedback_comment_id, feedback_comment_sha256):
+    """Validate the all-or-none native reference before opening a CLI connection."""
+    if any(type(value) is not int or value <= 0 for value in (expected_event_id, feedback_comment_id)):
+        raise ValueError("feedback event/comment IDs must be positive integers")
+    if any(
+        not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+        for value in (feedback_id, feedback_comment_sha256)
+    ):
+        raise ValueError("feedback identity/comment digest must be lowercase SHA256")
+
+
+def reopen_review_task(
+    conn: sqlite3.Connection, task_id: str, *, expected_event_id=None,
+    feedback_id=None, feedback_comment_id=None, feedback_comment_sha256=None,
+    with_reason: bool = False,
+):
     """``review`` -> ``ready``/``todo`` so the implementer re-runs on the new
     comments; restores the implementer from the ``review_requested`` event.
     Preserves ``consecutive_failures`` and the block loop counter (review is
-    not a block; only :func:`complete_task` clears them)."""
+    not a block; only :func:`complete_task` clears them).
+
+    Guarded feedback also accepts stopped, previously reviewed blocked/triage
+    tasks. It consumes a caller-authenticated reference once, without reclaiming
+    a run or changing the spec/counters. Core verifies bytes, not the signer.
+    """
+    def result(ok, reason=None):
+        return (ok, reason) if with_reason else ok
+
+    guarded = any(value is not None for value in (
+        expected_event_id, feedback_id, feedback_comment_id, feedback_comment_sha256,
+    ))
+    if guarded:
+        validate_review_feedback(expected_event_id, feedback_id, feedback_comment_id, feedback_comment_sha256)
     now = int(time.time())
     with write_txn(conn):
+        if guarded:
+            # This branch must precede the legacy dangling-run recovery below.
+            for event in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='review_reopened'", (task_id,),
+            ):
+                receipt = _json_dict(event["payload"])
+                if receipt.get("feedback_id") == feedback_id:
+                    return result(False, "feedback already consumed")
+            task = get_task(conn, task_id)
+            if task is None or task.status not in ("review", "blocked", "triage"):
+                return result(False, "task is not parked for review feedback")
+            if any(getattr(task, name) is not None for name in (
+                "current_run_id", "claim_lock", "claim_expires", "worker_pid",
+            )) or conn.execute(
+                "SELECT 1 FROM task_runs WHERE task_id=? AND ended_at IS NULL LIMIT 1", (task_id,),
+            ).fetchone():
+                return result(False, "task has an active or dangling run/claim")
+            latest = conn.execute(
+                "SELECT MAX(id) FROM task_events WHERE task_id=?", (task_id,),
+            ).fetchone()[0]
+            if latest != expected_event_id:
+                return result(False, "stale feedback event snapshot")
+            review = conn.execute(
+                "SELECT e.payload, r.ended_at, r.outcome FROM task_events e "
+                "LEFT JOIN task_runs r ON r.id=e.run_id AND r.task_id=e.task_id "
+                "WHERE e.task_id=? AND e.kind='review_requested' ORDER BY e.id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            handoff = _json_dict(_row_get(review, "payload"))
+            implementer = handoff.get("implementer")
+            if (
+                not isinstance(implementer, str) or not implementer.strip()
+                or review["ended_at"] is None or review["outcome"] != "review_requested"
+            ):
+                return result(False, "no valid ended review handoff")
+            comment = conn.execute(
+                "SELECT body FROM task_comments WHERE id=? AND task_id=?", (feedback_comment_id, task_id),
+            ).fetchone()
+            if (
+                comment is None or not isinstance(comment["body"], str)
+                or sha256(comment["body"].encode("utf-8")).hexdigest() != feedback_comment_sha256
+            ):
+                return result(False, "feedback comment reference does not match")
+            new_status = _landing_status_after_parents(conn, task_id)
+            conn.execute(
+                "UPDATE tasks SET status=?, assignee=? WHERE id=?",
+                (new_status, implementer, task_id),
+            )
+            _append_event(conn, task_id, "review_reopened", {
+                "status": new_status, "implementer": implementer,
+                "previous_status": task.status, "expected_event_id": expected_event_id,
+                "feedback_id": feedback_id, "feedback_comment_id": feedback_comment_id,
+                "feedback_comment_sha256": feedback_comment_sha256,
+            })
+            return result(True)
         _reclaim_dangling_run(
             conn, task_id, statuses=("review",), now=now,
             note="invariant recovery on review reopen",

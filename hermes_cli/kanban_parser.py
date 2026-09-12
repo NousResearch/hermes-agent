@@ -110,6 +110,12 @@ _BOARD_SPECS = [
         _SLUG,
         _arg("path", nargs="?", help="Absolute path to use as default workdir. Omit to clear."),
     ], help="Set the default workspace path for tasks on a board"),
+    _cmd("set-pre-claim", [
+        _arg("--timeout", type=float, default=10, help="Command timeout, 1–60 seconds (before slug)"),
+        _arg("--clear", action="store_true", help="Remove the board's pre-claim policy"),
+        _json_flag(), _SLUG,
+        _arg("policy_command", nargs=argparse.REMAINDER, help="Fixed argv after --; executable must be absolute"),
+    ], help="Configure the optional board pre-claim policy (options before slug)"),
     _cmd("export", [
         _arg("slug", nargs="?", help="Board to export (default: the current board)"),
         _arg("-o", "--output", help="Archive path (default: ./<slug>.tar.gz)"),
@@ -217,6 +223,7 @@ _SPECS = [
     ], help="Create a Kanban Swarm v1 graph (parallel workers → verifier → synthesizer)"),
     _cmd("list", [
         _arg("--mine", action="store_true", help="Filter by $HERMES_PROFILE as assignee"),
+        _arg("--no-promote", action="store_true", help="Read-only inventory: no initialization or promotion"),
         _arg("--assignee"),
         _arg("--status", choices=sorted(kb.VALID_STATUSES)),
         _arg("--tenant"),
@@ -230,7 +237,9 @@ _SPECS = [
         _arg("--step-key", dest="current_step_key", metavar="KEY",
              help="Restrict to tasks with this current_step_key"),
     ], aliases=["ls"], help="List tasks"),
-    _cmd("show", [_TASK_ID, _json_flag(), *_run_state_args("filter listed runs by task_runs column")],
+    _cmd("show", [_TASK_ID, _json_flag(),
+                  _arg("--read-only", action="store_true", help="Read an initialized board without migrations"),
+                  *_run_state_args("filter listed runs by task_runs column")],
          help="Show a task with comments + events"),
     _cmd("assign", [_TASK_ID, _arg("profile", help="Profile name (or 'none' to unassign)")],
          help="Assign or reassign a task"),
@@ -324,6 +333,10 @@ _SPECS = [
     _cmd("reopen-review", [
         _TASK_IDS,
         _reason("Optional reason/note — recorded as a comment before reopening. Quote multi-word reasons."),
+        _arg("--expected-event-id", type=int, help="Latest native event ID after persisting guarded feedback"),
+        _arg("--feedback-id", help="Stable opaque SHA256 wake identity; consumed only once per task"),
+        _arg("--feedback-comment-id", type=int, help="Stored native comment carrying authenticated feedback"),
+        _arg("--feedback-comment-sha256", help="SHA256 of the exact stored UTF-8 comment body"),
     ], help="Send one or more review tasks back for changes (review -> ready/todo)"),
     _cmd("promote", [
         _TASK_ID,

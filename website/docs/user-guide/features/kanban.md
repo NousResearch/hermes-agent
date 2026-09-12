@@ -45,6 +45,55 @@ This is the shape that covers the workloads `delegate_task` can't:
 
 For the full design rationale, comparative analysis against Cline Kanban / Paperclip / NanoClaw / Google Gemini Enterprise, and the eight canonical collaboration patterns, see `docs/hermes-kanban-v1-spec.pdf` in the repository.
 
+## Optional pre-claim policy
+
+An initial intake check is not sufficient when external prerequisites can change
+after a task is admitted. A board can require an operator-owned command before
+automatic promotion and **every** Ready/Review claim, including direct CLI/API
+claims and resumptions. This is disabled by default and contains no provider or
+issue-tracker policy of its own.
+
+Configure fixed argv in the existing board metadata through the native CLI.
+Put options before the board slug; `--` separates the executable and its arguments:
+
+```bash
+hermes kanban boards set-pre-claim --timeout 10 --json example -- /usr/local/bin/board-policy --check
+hermes kanban boards set-pre-claim --clear --json example
+```
+
+The command receives UTF-8 JSON on stdin: `board`, `phase` (`promote` or `claim`),
+`source_status`, and `task` containing only `id`, `status`, `assignee`, `project_id`,
+and `idempotency_key`. Task titles/bodies are not sent. It must exit zero and return
+an object shaped like `{"allow":true,"reason":"policy_allowed"}` or an equivalent denial object.
+`allow` must be a boolean; `reason` is a nonsecret string of at most 512 UTF-8 bytes;
+the whole response is limited to 4096 bytes. Timeout is 1–60 seconds. Invalid
+configuration, errors, timeout, or malformed output deny; stderr is not published.
+
+The command runs without a SQLite transaction but under the existing board dispatch
+lock. **Do not acquire that lock in the command.** For native inventory, use
+`kanban list --no-promote --json` and `kanban show ID --read-only --json`. These
+require an initialized board and neither initialize, migrate nor promote it.
+Task JSON includes the existing `idempotency_key` for independent source binding.
+Show events include their native integer `id`; use that revision rather than wall
+clock timestamps when ordering lifecycle evidence.
+
+A validated denial leaves the original task in Todo with a `dependency_wait` event
+whose `source` is `pre_claim`. Unchanged repeated denial is deduplicated; Review
+resumptions retain their review lane. No run, worker, failure count or replacement
+workspace is allocated. Incomplete native parents still veto an external allow;
+sticky and breaker-limited Blocked tasks are not automatically released. Lock
+contention, a caller-owned transaction or a changed task/configuration leaves the
+task untouched instead of applying stale evidence. Each real claim checks again;
+promotion is not a reusable permit. Opted-in dry-runs do not invoke policy or mutate
+tasks, and their previews are **not** policy approvals.
+
+This is a trusted operator extension, not an OS sandbox. Metadata can be changed
+or removed by its owner, and arbitrary custom DB files cannot be configured through
+this native board setter. External facts can change after the response: the lock
+and native snapshot recheck do not make external APIs and SQLite atomic. Standard
+subprocess timeout bounds the direct command only; descendant cleanup or finally
+blocks (such as token revocation) are not guaranteed after forced termination.
+
 ## PR completion contracts
 
 Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact
@@ -847,6 +896,37 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 ```
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
+
+### Guarded feedback recovery
+
+An integration can resume a stopped, previously reviewed Review/Blocked/Triage
+task without rewriting its spec or clearing block/failure counters:
+
+```bash
+hermes kanban --board BOARD reopen-review TASK \
+  --expected-event-id EVENT_ID --feedback-id FEEDBACK_SHA256 \
+  --feedback-comment-id COMMENT_ID --feedback-comment-sha256 BODY_SHA256
+```
+
+The four options are all-or-none, require one task, and cannot accompany
+`--reason`. Read the existing comment's ID/body and latest event ID from native
+`show --read-only --json` after persisting the feedback. Hash the **stored** UTF-8
+body, not pre-write bytes. Choose a stable opaque feedback digest that does not
+change on retry, body edit or a later parked episode.
+
+Core atomically verifies the stopped task, ended review provenance, latest-event
+snapshot and exact comment reference, then records consumption in the existing
+`review_reopened` event. It neither authenticates the comment's external signer
+nor repairs dangling claims. Integrations remain responsible for trusted source,
+freshness and signature verification; a body hash is not authentication.
+
+Successful recovery prints `Reopened TASK` and exits 0. Repeated consumption
+prints `Already consumed feedback for TASK` and exits 0 without another
+transition; integrations should verify the exact native receipt. Other state or
+reference refusals exit 1; invalid guarded arguments exit 2 before opening the
+database. Without these options, ordinary Review batch recovery is unchanged.
+Parent checks and configured preclaim policy still gate the subsequent coding
+claim; reopening allocates no run/lease and never grants merge approval.
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 

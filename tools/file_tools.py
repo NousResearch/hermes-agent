@@ -253,12 +253,11 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     so a file tool that runs before any terminal command still gets the configured backend."""
     from tools.terminal_tool_config import _is_container_backend
     from tools.terminal_tool import (
-        _create_configured_env, _get_env_config, _is_unusable_container_cwd,
-        _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
+        _create_configured_env, _is_unusable_container_cwd,
+        _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_config)
 
-    config = _get_env_config()
+    config, overrides = resolve_task_config(raw_task_id)
     env_type = config["env_type"]
-    overrides = resolve_task_overrides(raw_task_id)
     try:
         recorded_cwd = get_session_cwd(raw_task_id)
     except Exception:

@@ -402,10 +402,13 @@ def _get_or_create_env(task_id: str):
     first use (same double-checked per-task lock pattern as file_tools._get_file_ops)."""
     from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
     from tools.terminal_tool import (
-        _active_environments, _env_lock, _get_env_config, _last_activity,
-        _start_cleanup_thread, _creation_locks, _creation_locks_lock, _task_env_overrides,
+        _active_environments, _env_lock, _last_activity,
+        _start_cleanup_thread, _creation_locks, _creation_locks_lock,
         _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend, _select_image,
+        resolve_task_config,
     )
+    config, overrides = resolve_task_config(task_id)
+    env_type = config["env_type"]
     effective_task_id = _resolve_container_task_id(task_id)
     def _cached():
         with _env_lock:
@@ -415,16 +418,13 @@ def _get_or_create_env(task_id: str):
         return env
     env = _cached()
     if env is not None:
-        return env, _get_env_config()["env_type"]
+        return env, env_type
     with _creation_locks_lock:
         task_lock = _creation_locks.setdefault(effective_task_id, threading.Lock())
     with task_lock:
         env = _cached()
         if env is not None:
-            return env, _get_env_config()["env_type"]
-        config = _get_env_config()
-        env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
+            return env, env_type
         container_config = None
         if _is_container_backend(env_type):
             # Shared shaper: execute_code's own key subset dropped docker_extra_args / docker_forward_env /

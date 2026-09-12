@@ -333,8 +333,8 @@ _ISOLATION_OVERRIDE_KEYS = frozenset({
 
 def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     """True when *task_id* registered image/env_type overrides — the single
-    "isolated RL/benchmark rollout" predicate shared by key resolution and
-    container creation so the two can't drift."""
+    task-scoped backend predicate shared by key resolution and environment
+    creation so ACP/RL routes cannot collapse into a profile environment."""
     if not task_id or task_id not in _task_env_overrides:
         return False
     return bool(set(_task_env_overrides[task_id].keys()) & _ISOLATION_OVERRIDE_KEYS)
@@ -400,8 +400,9 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """Map a tool-call ``task_id`` to the ``_active_environments`` key. Order matters —
     earlier branches are authoritative where they apply:
 
-    1. Image/``env_type`` overrides (RL/benchmark rollouts) key their own sandbox;
+    1. Image/``env_type`` overrides (ACP/RL/benchmark routes) key their own environment;
        CWD-only overrides (ACP workspace tracking) are NOT isolation signals.
+       Delegated children follow a parent carrying one of these overrides.
     2. Per-session isolation (docker + ``container_persistent: false``): each
        session's task_id is its own key (a fresh chat gets a fresh sandbox with only
        ITS mounts); delegate_task children follow the alias registry to the parent.
@@ -417,6 +418,10 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     if task_id and _has_isolation_overrides(task_id):
         return task_id
+    if task_id:
+        parent = _resolve_container_alias(task_id)
+        if parent != task_id and _has_isolation_overrides(parent):
+            return parent
     scope = _session_scope()
     if task_id and scope.session_isolated:
         return _resolve_container_alias(task_id)
@@ -459,6 +464,17 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
         or _task_env_overrides.get(_resolve_container_task_id(raw))
         or {}
     )
+
+
+def resolve_task_config(
+    task_id: Optional[str], *, host_local: bool = False
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Return profile config plus this task's backend route and its raw overrides."""
+    overrides = {} if host_local else resolve_task_overrides(task_id)
+    config = {**_get_env_config(), **overrides}
+    if host_local:
+        config["env_type"] = "local"
+    return config, overrides
 
 
 # Backends that take an image, keyed to the override/config key carrying it.
@@ -921,8 +937,8 @@ def _plan_execution(
             f"Invalid command: expected string, got {type(command).__name__}", status="error",
         ))
 
-    config = _get_env_config()
-    env_type = "local" if _host_local else config["env_type"]
+    config, overrides = resolve_task_config(task_id, host_local=_host_local)
+    env_type = config["env_type"]
 
     # Fail closed under a refusal scope: the routed profile's terminal
     # policy could not be resolved, so running with the launch process's
@@ -939,14 +955,15 @@ def _plan_execution(
         # the configured Docker/SSH backend; keep their env cache separate.
         effective_task_id = f"host-local-{effective_task_id}"
 
-    # Per-task overrides (RL/benchmark envs, ACP workspace cwd) win over
-    # the global env-var config; ``resolve_task_overrides`` reads the raw
-    # task id first, then the collapsed container id.
-    overrides = resolve_task_overrides(task_id)
+    # Per-task overrides (RL/benchmark envs, ACP workspace routes) win over
+    # the profile config. Host-local control-plane children ignore them.
     image = _select_image(env_type, overrides, config)
 
-    cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
-    host_cwd = _resolve_task_host_cwd(config, task_id)
+    if _host_local:
+        cwd, host_cwd = config["cwd"], None
+    else:
+        cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
+        host_cwd = _resolve_task_host_cwd(config, task_id)
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach
     # `docker run -w` and fail with exit 125. Re-apply the guard to the

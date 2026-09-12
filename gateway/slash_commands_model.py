@@ -258,6 +258,7 @@ class GatewayModelCommandsMixin:
             f"{format_model_for_display(result.new_model)} "
             f"via {result.provider_label or result.target_provider}. "
             f"{'This override applies to the next turn only. ' if one_turn else ''}"
+            f"Continue responding in the language already established in this conversation. "
             f"Adjust your self-identification accordingly.]"
         )
         self._session_model_overrides[ctx.session_key] = {

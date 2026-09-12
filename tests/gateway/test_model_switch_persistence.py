@@ -191,6 +191,56 @@ class TestOneTurnModelOverrideRestore:
         assert runner._session_model_overrides[sk] == previous
 
 
+@pytest.mark.asyncio
+async def test_model_switch_note_preserves_session_language_and_is_consumed_once():
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.slash_commands_model import _ModelSwitchContext
+
+    runner = _make_runner()
+    source = _make_source()
+    session_key = build_session_key(source)
+    other_key = "agent:main:telegram:dm:other-chat"
+    runner._async_session_store = SimpleNamespace(set_model_override=AsyncMock())
+    runner._pending_model_notes[other_key] = "[Note: other session.]"
+    ctx = _ModelSwitchContext(
+        session_key=session_key,
+        source=source,
+        config_path=None,
+        persist_global=False,
+        current_model="old/model",
+    )
+    result = SimpleNamespace(
+        new_model="new/model",
+        target_provider="openrouter",
+        provider_label="OpenRouter",
+        api_key="sk-test",
+        base_url="https://openrouter.ai/api/v1",
+        api_mode="chat_completions",
+        request_overrides={},
+        runtime_capabilities={},
+    )
+
+    await runner._record_model_switch(
+        result, ctx, source=source, one_turn=False, picker=False
+    )
+
+    note = runner._pending_model_notes[session_key]
+    assert (
+        "Continue responding in the language already established in this conversation."
+        in note
+    )
+
+    first_turn = SimpleNamespace(session_key=session_key, message="Next question")
+    TurnRunner(runner, first_turn)._prepend_pending_note("_pending_model_notes")
+    assert first_turn.message == f"{note}\n\nNext question"
+    assert session_key not in runner._pending_model_notes
+    assert runner._pending_model_notes[other_key] == "[Note: other session.]"
+
+    second_turn = SimpleNamespace(session_key=session_key, message="Later question")
+    TurnRunner(runner, second_turn)._prepend_pending_note("_pending_model_notes")
+    assert second_turn.message == "Later question"
+
+
 class TestOneTurnNeverPersisted:
     """/model --once must never write through to the session store.
 

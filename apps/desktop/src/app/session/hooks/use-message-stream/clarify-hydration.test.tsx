@@ -36,6 +36,9 @@ const toolComplete = (payload: Record<string, unknown>) =>
 const clarifyExpire = (requestId: string) =>
   act(() => stream.handleEvent({ payload: { request_id: requestId }, session_id: SID, type: 'clarify.expire' }))
 
+const clarifyCancel = (requestId: string) =>
+  act(() => stream.handleEvent({ payload: { request_id: requestId }, session_id: SID, type: 'clarify.cancel' }))
+
 function clarifyParts() {
   const messages = stream.state().messages ?? []
 
@@ -84,6 +87,37 @@ describe('clarify.request stream hydration', () => {
     clarifyRequest({ choices: ['yes', 'no'], question: 'Ship it?', request_id: 'req-reveal' })
 
     expect(scrollToBottom).toHaveBeenCalledOnce()
+  })
+
+  it('keeps an unexpired clarify parked across a spurious turn completion', () => {
+    mountStream()
+
+    clarifyRequest({
+      choices: ['yes', 'no'],
+      question: 'Ship it?',
+      request_id: 'req-complete',
+      timeout_seconds: 600
+    })
+
+    act(() => stream.handleEvent({ payload: { text: '' }, session_id: SID, type: 'message.complete' }))
+
+    expect($clarifyRequests.get()[SID]?.requestId).toBe('req-complete')
+    expect($clarifyRequests.get()[SID]?.timeoutSeconds).toBe(600)
+  })
+
+  it('keeps an unexpired clarify parked across a spurious stream error', () => {
+    mountStream()
+
+    clarifyRequest({
+      choices: ['yes', 'no'],
+      question: 'Ship it?',
+      request_id: 'req-error',
+      timeout_seconds: 600
+    })
+
+    act(() => stream.handleEvent({ payload: { message: 'stream reconnected' }, session_id: SID, type: 'error' }))
+
+    expect($clarifyRequests.get()[SID]?.requestId).toBe('req-error')
   })
 
   it('does not move the active thread for a background session clarify', () => {
@@ -265,6 +299,24 @@ describe('clarify.request stream hydration', () => {
     expect(clarifyParts()[0]).not.toHaveProperty('result')
 
     clarifyExpire('req-expire')
+
+    expect($clarifyRequests.get()[SID]).toBeUndefined()
+    expect(clarifyParts()).toHaveLength(1)
+    expect(clarifyParts()[0]).toHaveProperty('result')
+    expect(stream.state().needsInput).toBe(false)
+  })
+
+  it('cancels only the matching clarify request and deactivates its card', () => {
+    mountStream()
+
+    toolStart({ args: { choices: ['a'], question: 'Pick' }, name: 'clarify', tool_id: 'call-provider' })
+    clarifyRequest({ choices: ['a'], question: 'Pick', request_id: 'req-cancel' })
+    clarifyCancel('req-other')
+
+    expect($clarifyRequests.get()[SID]?.requestId).toBe('req-cancel')
+    expect(clarifyParts()[0]).not.toHaveProperty('result')
+
+    clarifyCancel('req-cancel')
 
     expect($clarifyRequests.get()[SID]).toBeUndefined()
     expect(clarifyParts()).toHaveLength(1)

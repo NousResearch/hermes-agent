@@ -57,6 +57,10 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     const rawChoices = payload?.choices
     const choices = normalizeChoices(rawChoices)
     const multiSelect = payload?.multi_select === true
+
+    const timeoutSeconds =
+      typeof payload?.timeout_seconds === 'number' && payload.timeout_seconds > 0 ? payload.timeout_seconds : null
+
     // Batch (multi-question) clarify: `questions` replaces question/choices
     // on the wire. `answers` rides along only on reconnect replay, carrying
     // the per-question locks the server already accepted.
@@ -80,7 +84,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         questions,
         receivedAt: Date.now() / 1000,
         requestId,
-        sessionId: sessionId ?? null
+        sessionId: sessionId ?? null,
+        timeoutSeconds
       }
 
       setClarifyRequest(request)
@@ -128,7 +133,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         choices: choices.length > 0 ? choices : null,
         multiSelect,
         receivedAt: Date.now() / 1000,
-        sessionId: sessionId ?? null
+        sessionId: sessionId ?? null,
+        timeoutSeconds
       }
 
       setClarifyRequest(request)
@@ -203,7 +209,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (event.type === 'clarify.expire') {
+  if (event.type === 'clarify.expire' || event.type === 'clarify.cancel') {
     if (!sessionId) {
       return true
     }
@@ -211,8 +217,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
     const request = $clarifyRequests.get()[sessionId]
 
-    // Expiry is request-correlated: a delayed event from an older prompt must
-    // not erase a newer clarify raised by the same session.
+    // Expiry/cancellation is request-correlated: a delayed event from an older
+    // prompt must not erase a newer clarify raised by the same session.
     if (!requestId || !request || request.requestId !== requestId) {
       return true
     }

@@ -3,7 +3,7 @@ import { textPart } from '@/lib/chat-messages'
 import { coerceGatewayText } from '@/lib/chat-runtime'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
-import { clearClarifyRequest } from '@/store/clarify'
+import { clarifyStillBlocking, clearClarifyRequest, sessionClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting, setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { applyGoalStatusText } from '@/store/goals'
@@ -175,7 +175,11 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // the failed turn (same intent as the message.complete clear).
     if (sessionId) {
       clearAllPrompts(sessionId)
-      clearClarifyRequest(undefined, sessionId)
+
+      if (!clarifyStillBlocking(sessionClarifyRequest(sessionId).get())) {
+        clearClarifyRequest(undefined, sessionId)
+      }
+
       clearActiveSessionTodos(sessionId)
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)

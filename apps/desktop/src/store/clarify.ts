@@ -16,13 +16,19 @@ export interface ClarifyRequest {
   question: string
   choices: string[] | null
   multiSelect: boolean
-  /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
+  /** Local receipt time (Unix seconds), used for lifecycle guards. */
   receivedAt?: number
   sessionId: string | null
   /** Batch (multi-question) clarify: present instead of question/choices. */
   questions?: ClarifyQuestion[]
   /** Answers already locked server-side (reconnect replay): qid → answer. */
   lockedAnswers?: Record<string, string>
+  /**
+   * How long the server-side bridge stays blocked waiting for an answer.
+   * null/undefined means the renderer has no finite deadline and must wait
+   * for an explicit answer, cancel, or expire event.
+   */
+  timeoutSeconds?: number | null
 }
 
 /**
@@ -132,6 +138,37 @@ export const sessionClarifyRequest = (sessionId: string | null) =>
 
 export function setClarifyRequest(request: ClarifyRequest): void {
   $clarifyRequests.set({ ...$clarifyRequests.get(), [keyFor(request.sessionId)]: request })
+}
+
+// `_block()` starts its Event wait immediately after emitting the request. The
+// renderer can therefore start its wall-clock estimate a fraction earlier than
+// the server starts waiting. Keep a small conservative margin so a turn-end at
+// that boundary cannot remove the only UI capable of releasing the bridge.
+const CLARIFY_TIMEOUT_GRACE_SECONDS = 2
+
+/**
+ * True when the server-side bridge may STILL be blocked on this request.
+ *
+ * The desktop clears parked clarify dialogs when a turn ends or errors, but
+ * the Python side stays blocked on clarify.respond until the user answers OR
+ * its own clarify timeout expires. A turn-end event that arrives while the
+ * bridge is still blocked (stream reconnect, HUD overlay focus churn —
+ * #83319) must not wipe the dialog, or the user loses the only thing that
+ * can unblock the agent. A finite timeout means the server gives up on its
+ * own after timeoutSeconds — past that point the dialog is stale and safe
+ * to drop. A null timeout means the server waits forever, so the dialog
+ * must survive turn-end events and only an explicit answer/skip clears it.
+ */
+export const clarifyStillBlocking = (request: ClarifyRequest | null, now: number = Date.now() / 1000): boolean => {
+  if (!request) {
+    return false
+  }
+
+  if (request.timeoutSeconds == null || request.receivedAt == null) {
+    return true
+  }
+
+  return now - request.receivedAt < request.timeoutSeconds + CLARIFY_TIMEOUT_GRACE_SECONDS
 }
 
 export function clearClarifyRequest(requestId?: string, sessionId?: string | null): void {

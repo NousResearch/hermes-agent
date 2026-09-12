@@ -4,10 +4,12 @@ import {
   $clarifyRequest,
   $clarifyRequests,
   type ClarifyRequest,
+  clarifyStillBlocking,
   clearClarifyRequest,
   hasClarifyRequest,
   normalizeChoices,
   normalizeQuestions,
+  sessionClarifyRequest,
   setClarifyRequest,
   skipClarifyRequest
 } from './clarify'
@@ -20,7 +22,9 @@ function clarify(sessionId: string | null, requestId: string): ClarifyRequest {
     question: `question-${requestId}`,
     choices: null,
     multiSelect: false,
-    sessionId
+    sessionId,
+    receivedAt: 0,
+    timeoutSeconds: null
   }
 }
 
@@ -211,5 +215,46 @@ describe('normalizeQuestions', () => {
 
     expect(result[0]?.multiSelect).toBe(true)
     expect(result[1]?.multiSelect).toBe(false)
+  })
+})
+
+describe('clarifyStillBlocking (#83319 guard)', () => {
+  const req = (receivedAt: number, timeoutSeconds: number | null): ClarifyRequest => ({
+    requestId: 'r1',
+    question: 'q',
+    choices: ['a'],
+    multiSelect: false,
+    sessionId: 's1',
+    receivedAt,
+    timeoutSeconds
+  })
+
+  it('false when there is no parked request', () => {
+    expect(clarifyStillBlocking(null)).toBe(false)
+  })
+
+  it('true while a finite server timeout has not elapsed', () => {
+    expect(clarifyStillBlocking(req(1_000, 600), 1_100)).toBe(true)
+  })
+
+  it('keeps a finite request through the server/renderer deadline boundary', () => {
+    expect(clarifyStillBlocking(req(1_000, 600), 1_601)).toBe(true)
+  })
+
+  it('returns false after the finite timeout safety margin (dialog is stale)', () => {
+    expect(clarifyStillBlocking(req(1_000, 600), 1_603)).toBe(false)
+  })
+
+  it('true forever when the server waits for a real answer (null timeout)', () => {
+    expect(clarifyStillBlocking(req(1_000, null), 4_600)).toBe(true)
+  })
+
+  it('stays conservative when an older payload has no timeout metadata', () => {
+    expect(clarifyStillBlocking({ ...req(1_000, null), timeoutSeconds: undefined }, 4_600)).toBe(true)
+  })
+
+  it('preserves an unanswered wait-forever dialog across turn-end clears', () => {
+    setClarifyRequest(req(1_000, null))
+    expect(clarifyStillBlocking(sessionClarifyRequest('s1').get())).toBe(true)
   })
 })

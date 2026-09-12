@@ -351,10 +351,9 @@ function mintBrowserTabId(): RightRailTabId {
   return `url:browser-${unique}`
 }
 
-/** The Browser a URL should open in: the one you're looking at, else the one
- *  you used last. A link from chat navigates the browser you already have
- *  rather than stacking another identical tab — new tabs are something you
- *  ask for (the strip's "+"), the way they are in a real browser. */
+/** The Browser a tool should open in: the one you're looking at, else the one
+ *  you used last. Tool-driven opens reuse a Browser to avoid tab spam; explicit
+ *  user-clicked links skip this resolver and mint a new tab. */
 function browserTabId(tabs: PreviewTab[]): RightRailTabId {
   const active = tabs.find(tab => tab.id === $rightRailActiveTabId.get())
 
@@ -385,7 +384,14 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
 export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
   const resolved = previewTargetForSource(target, source)
   const current = $previewTabs.get()
-  const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
+
+  const id =
+    resolved.kind === 'url'
+      ? source === 'explicit-link'
+        ? mintBrowserTabId()
+        : browserTabId(current)
+      : previewTabId(resolved)
+
   const index = current.findIndex(tab => tab.id === id)
   const tab: PreviewTab = { id, target: resolved }
 

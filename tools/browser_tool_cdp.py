@@ -33,9 +33,9 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     san = _bt._sanitize_url_for_logs
     try:
         import requests  # lazy — shared module object, test patches still apply
-        response = requests.get(version_url, timeout=10)
-        response.raise_for_status()
-        payload = response.json()
+        with requests.get(version_url, timeout=10) as response:
+            response.raise_for_status()
+            payload = response.json()
     except Exception as exc:
         _bt.logger.warning("Failed to resolve CDP endpoint %s via %s: %s", san(raw), san(version_url), san(exc))
         return raw

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 
 import { ArchiveSkillConfirmDialog, fireOptimistic } from '@/app/learning/archive-skill-confirm-dialog'
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -33,6 +33,14 @@ interface EditState {
 
 /** Right-click actions for a star-map node: edit (modal) or delete (confirm). */
 export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  const [menuPosition, setMenuPosition] = useState<{
+    target: NodeMenuTarget
+    x: number
+    y: number
+  } | null>(null)
+
   const [editing, setEditing] = useState<EditState | null>(null)
   const [deleting, setDeleting] = useState<Omit<NodeMenuTarget, 'x' | 'y'> | null>(null)
   const [loading, setLoading] = useState(false)
@@ -54,6 +62,19 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
   })
 
   const noun = target?.kind === 'memory' ? 'memory' : 'skill'
+
+  useLayoutEffect(() => {
+    if (!target || !menuRef.current) {
+      return
+    }
+
+    const { height, width } = menuRef.current.getBoundingClientRect()
+    setMenuPosition({
+      target,
+      x: Math.min(Math.max(0, target.x), Math.max(0, window.innerWidth - width)),
+      y: Math.min(Math.max(0, target.y), Math.max(0, window.innerHeight - height))
+    })
+  }, [target])
 
   const openEdit = async () => {
     if (!target) {
@@ -116,7 +137,11 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
               the target is a canvas point, not a DOM anchor. */}
           <div
             className="fixed z-50 min-w-36 rounded-lg border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_96%,transparent)] p-1 shadow-md backdrop-blur-md"
-            style={{ left: target.x, top: target.y }}
+            ref={menuRef}
+            style={{
+              left: menuPosition?.target === target ? menuPosition.x : target.x,
+              top: menuPosition?.target === target ? menuPosition.y : target.y
+            }}
           >
             <div className="truncate px-2 py-1 text-[0.68rem] text-muted-foreground">{target.label}</div>
             <button

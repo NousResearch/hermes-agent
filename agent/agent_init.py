@@ -10,6 +10,7 @@ Symbols that tests patch on ``run_agent.*`` (``OpenAI``, ``get_tool_definitions`
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import sys
@@ -358,6 +359,19 @@ def _cfg_dict(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
     """``cfg[key]`` if it is a mapping, else ``{}`` (malformed sections are ignored)."""
     section = cfg.get(key, {})
     return section if isinstance(section, dict) else {}
+
+
+def _bounded_compression_float(raw: Any, default: float, minimum: float, maximum: float) -> float:
+    """Parse a finite compression ratio, failing open to the established default."""
+    if isinstance(raw, bool):
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value):
+        return default
+    return max(minimum, min(value, maximum))
 
 
 class CompressionSettings(SimpleNamespace):
@@ -1369,7 +1383,7 @@ def _compression_threshold(agent, cfg: Dict[str, Any]) -> tuple[float, bool]:
     """Global threshold merged with the per-model override; stashes the autoraise notice.
     Codex gpt-5.4/5.5 raise to 85% (272K cap → 50% would compact at ~136K); the opt-out flag
     restores the global value, and the notice has its own display gate."""
-    threshold = float(cfg.get("threshold", 0.50))
+    threshold = _bounded_compression_float(cfg.get("threshold", 0.50), 0.50, 0.0, 1.0)
     autoraise = _cfg_flag(cfg, "codex_gpt55_autoraise", True)
     notice_enabled = _cfg_flag(cfg, "codex_gpt55_autoraise_notice", True)
     agent._compression_threshold_autoraised = None
@@ -1426,8 +1440,9 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     """Parse the ``compression`` section. Defaults here MUST match DEFAULT_CONFIG."""
     cfg = _cfg_dict(_agent_cfg, "compression")
     threshold, autoraise_notice_enabled = _compression_threshold(agent, cfg)
-    # Plain int()/float() coercions raise on garbage; evaluated up front, in config order.
-    target_ratio = float(cfg.get("target_ratio", 0.20))
+    target_ratio = _bounded_compression_float(
+        cfg.get("target_ratio", 0.20), 0.20, 0.10, 0.80
+    )
     protect_last = int(cfg.get("protect_last_n", 20))
     # max_attempts: retry rounds before "max compression attempts reached"; some sessions
     # need >3 (incompressible tool schemas). Default 3, floor 1, cap 10.
@@ -1472,12 +1487,12 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         ),
         protect_first=protect_first,
         abort_on_summary_failure=_cfg_flag(cfg, "abort_on_summary_failure", False),
-        # Per-model threshold overrides: keys substring-matched against the model name
-        # (longest match wins); {} = global threshold for all models.
-        model_thresholds={
-            str(k): float(v) for k, v in _cfg_dict(cfg, "model_thresholds").items()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
-        },
+        model_thresholds={str(k): v for k, v in _cfg_dict(cfg, "model_thresholds").items()},
+        context_window_profiles=(
+            list(cfg["context_window_profiles"])
+            if isinstance(cfg.get("context_window_profiles"), list)
+            else []
+        ),
         threshold_tokens=threshold_tokens,
         checkpoint_required=checkpoint_required,
         # In-place compaction: no session-id rotation. default=True MUST match DEFAULT_CONFIG
@@ -1841,6 +1856,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             provider=agent.provider, api_mode=agent.api_mode,
             abort_on_summary_failure=cs.abort_on_summary_failure,
             max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
+            context_window_profiles=cs.context_window_profiles,
             threshold_tokens_cap=cs.threshold_tokens,
             proactive_prune_tokens=cs.proactive_prune_tokens,
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,

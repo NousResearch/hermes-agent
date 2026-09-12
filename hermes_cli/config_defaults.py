@@ -626,11 +626,12 @@ DEFAULT_CONFIG = {
         # (active=0, compacted=1) — still session_search-able. False = legacy rotating-compaction
         # path.
         "in_place": True,
-        # Per-model threshold overrides: keys substring-match the model name (longest wins), values
-        # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a key with "<provider>:" to
-        # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter/Nous at the
-        # global value). The <512K floor (0.75) still applies raise-only on top.
+        # Values may be legacy threshold scalars or {threshold, target_ratio} profiles. Structured
+        # thresholds explicitly bypass the legacy <512K 0.75 floor; scalar values retain it.
         "model_thresholds": {},
+        # Ordered context-window buckets. The first valid min_context/max_context match supplies
+        # threshold/target_ratio fields not already supplied by a model profile.
+        "context_window_profiles": [],
         # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts
         # up front, before the first reply. Time-based complement to `threshold`; skipped when
         # already at/below threshold × target_ratio; honors the same cooldown/ anti-thrash/lock

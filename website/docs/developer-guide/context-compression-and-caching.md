@@ -164,9 +164,15 @@ All compression settings are read from `config.yaml` under the `compression` key
 compression:
   enabled: true              # Enable/disable compression (default: true)
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
-  # model_thresholds:        # Per-model threshold overrides (substring match,
-  #   "glm-5.2": 0.40        # longest key wins). See "Per-model threshold
-  #   "claude-sonnet": 0.35  # overrides" below.
+  # model_thresholds:        # Legacy scalar thresholds remain supported.
+  #   "glm-5.2": 0.40
+  #   "glm-5.2-1M":         # Structured profiles tune both values.
+  #     threshold: 0.25
+  #     target_ratio: 0.10
+  # context_window_profiles: # First matching declared bucket wins.
+  #   - max_context: 250000
+  #     threshold: 0.70
+  #     target_ratio: 0.30
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   tail_mode: lean            # Tail retention policy: lean | legacy (default: lean)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
@@ -191,7 +197,8 @@ auxiliary:
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
 | `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` |
-| `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins); `"<provider>:<substring>"` keys apply only on that provider. The small-context floor still applies on top (see below) |
+| `model_thresholds` | `{}` | map | Per-model scalar thresholds or `{threshold, target_ratio}` profiles. Exact model wins, then longest substring; `"<provider>:<substring>"` scopes a key. Structured thresholds bypass the small-context floor; legacy scalars retain it |
+| `context_window_profiles` | `[]` | list | Ordered `min_context`/`max_context` buckets with optional `threshold` and `target_ratio`; first valid matching bucket supplies fields not set by a model override |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` (legacy mode only — `lean` uses its own clamp) |
 | `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
@@ -227,27 +234,35 @@ recomputes `threshold_tokens × target_ratio` (102,400 tokens at 512K × 0.20).
 These are tail-selection budgets, not strict limits on the entire compacted context:
 protected messages, boundary alignment, summaries, and anchors can add tokens.
 
-### Per-model threshold overrides
+### Per-model and context-window policy overrides
 
-`compression.model_thresholds` lets you trigger compaction at different points
-depending on the active model — useful when you swap between models with very
-different context windows (e.g. a 1M-context model can compress later while a
-128K model should compress earlier):
+`compression.model_thresholds` accepts its original scalar form and a structured
+profile that tunes both the trigger and retained-tail ratio. Context-window
+profiles cover models that share the same window policy without enumerating names:
 
 ```yaml
 compression:
   threshold: 0.50
+  target_ratio: 0.20
   model_thresholds:
     "glm-5.2": 0.40
-    "glm-5.2-1M": 0.25
-    "claude-sonnet": 0.35
+    "glm-5.2-1M":
+      threshold: 0.25
+      target_ratio: 0.05
     "openai-codex:astra": 0.85   # only on the Codex OAuth route (272K cap)
+  context_window_profiles:
+    - max_context: 250000
+      threshold: 0.70
+      target_ratio: 0.30
+    - min_context: 1000000
+      threshold: 0.30
+      target_ratio: 0.05
 ```
 
 Resolution rules:
 
-- Keys are **substring-matched** against the model name; the **longest
-  matching key wins** (`glm-5.2-1M` beats `glm-5.2` for model `glm-5.2-1M`).
+- Resolution is per field: **exact model**, **longest matching substring**,
+  **first valid matching context-window profile**, then the global value.
 - Keys may be **provider-scoped** as `"<provider>:<substring>"` (e.g.
   `"openai-codex:astra": 0.85`). A scoped key only matches when the session's
   provider is that route, so the same slug served with a different window
@@ -255,13 +270,16 @@ Resolution rules:
   Ranking uses the model substring only, so `"astra-900k"` still beats
   `"openai-codex:astra"` for the 900K picker; a scoped key beats a bare key
   with the identical substring.
-- When no key matches (or the map is empty), the global `threshold` applies.
-- The override is re-resolved on every `/model` switch; switching to a model
-  with no matching key falls back to the global `threshold`.
-- The **small-context floor still applies on top** of overrides (raise-only):
-  models with context windows below 512K are floored at `0.75`, so an
-  override below the floor is raised to `0.75`, while an override above it
-  (e.g. `0.80`) wins.
+- A bucket matches inclusively; omit either bound for an open-ended bucket.
+  Malformed buckets or fields are ignored. Valid ratios are clamped to the
+  documented bounds (`threshold` 0–1, `target_ratio` 0.10–0.80).
+- Both values are re-resolved at construction, every `/model` switch, and a
+  live Desktop/TUI config refresh. Missing or malformed fields continue down
+  the precedence chain, ultimately preserving global behavior.
+- A structured model or context-window `threshold` is explicit policy and
+  bypasses the legacy `<512K` 0.75 floor. A scalar `model_thresholds` entry
+  keeps its historical behavior: it overrides only `threshold`, inherits the
+  other fields, and still receives the raise-only floor.
 
 Plugin context engines can reuse the same resolution logic via
 `from agent.context_compressor import resolve_model_threshold`; engines that

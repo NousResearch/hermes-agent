@@ -302,7 +302,7 @@ export default function SystemPage() {
   const sharedGateway = sharedGatewayProfiles(status);
   const [sharedRestartOpen, setSharedRestartOpen] = useState(false);
   const [servedNotice, setServedNotice] = useState<string | null>(null);
-  const runGateway = async (verb: "start" | "stop" | "restart") => {
+  const runGateway = async (verb: "start" | "stop" | "restart"): Promise<boolean> => {
     setServedNotice(null);
     try {
       if (verb === "start") {
@@ -317,13 +317,15 @@ export default function SystemPage() {
       }
       showToast(`Gateway ${verb} started`, "success");
       setTimeout(loadAll, 3000);
+      return true;
     } catch (e) {
       const refusal = servedProfileRefusal(e);
       if (refusal) {
         setServedNotice(refusal);
-        return;
+        return false;
       }
       showToast(`Gateway ${verb} failed: ${e}`, "error");
+      return false;
     }
   };
   const requestRestart = () => {
@@ -332,6 +334,23 @@ export default function SystemPage() {
       return;
     }
     void runGateway("restart");
+  };
+  // Same completion rule as the Desktop: the restart child exiting 0, or still running when the
+  // bounded poll ends (in a no-service install it BECOMES the gateway and never exits), is
+  // success — then the "(N bots)" toast; a non-zero exit is the action log's failure to show.
+  const restartShared = async () => {
+    const bots = sharedGateway?.length ?? 0;
+    const started = await runGateway("restart");
+    if (!started) return;
+    for (let attempt = 0; attempt < 18; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 1200));
+      const st = await api.getActionStatus("gateway-restart", 1).catch(() => null);
+      if (st && !st.running) {
+        if (st.exit_code != null && st.exit_code !== 0) return;
+        break;
+      }
+    }
+    showToast(sharedGatewayRestartedMessage(bots), "success");
   };
 
   const migrateToMultiplex = async () => {
@@ -445,9 +464,6 @@ export default function SystemPage() {
 
   const handleActionComplete = useCallback(
     (action: string, exitCode: number | null) => {
-      if (action === "gateway-restart" && exitCode === 0 && sharedGateway) {
-        showToast(sharedGatewayRestartedMessage(sharedGateway.length), "success");
-      }
       if (action === "backup" && pendingBackupArchive) {
         if (exitCode === 0) {
           setDownloadableBackupArchive(pendingBackupArchive);
@@ -457,7 +473,7 @@ export default function SystemPage() {
         }
       }
     },
-    [pendingBackupArchive, sharedGateway, showToast],
+    [pendingBackupArchive, showToast],
   );
 
   const downloadBackup = async () => {
@@ -706,7 +722,7 @@ export default function SystemPage() {
         onCancel={() => setSharedRestartOpen(false)}
         onConfirm={() => {
           setSharedRestartOpen(false);
-          void runGateway("restart");
+          void restartShared();
         }}
         title="Restart the shared gateway?"
         description={sharedGatewayRestartDescription(sharedGateway ?? [])}

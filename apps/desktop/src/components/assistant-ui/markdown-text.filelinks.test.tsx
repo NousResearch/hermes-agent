@@ -35,6 +35,31 @@ describe('MarkdownLink filesystem hrefs', () => {
     expect(screen.getAllByRole('button', { name: 'Open preview' })).toHaveLength(2)
   })
 
+  it('routes angle-bracket file links whose path contains spaces', async () => {
+    // CommonMark requires `<...>` destinations for paths with spaces; the
+    // old FILE_LINK_RE charset `[^\)\s]*` couldn't match them, so the link
+    // fell through to harden and rendered as "label [blocked]".
+    render(
+      <MarkdownTextContent isRunning={false} text={'See [notes](<~/My Notes/todo with spaces.md>)'} />
+    )
+
+    await screen.findByText('todo with spaces.md')
+    expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
+    expect(screen.queryByText(/blocked/)).toBeNull()
+  })
+
+  it('routes percent-encoded file links through the same preview pipeline', async () => {
+    // Markdown renderers emit the href percent-encoded; the renderer keeps
+    // the encoded form in the card label, and the electron side retries the
+    // decoded on-disk path when the file is opened.
+    render(
+      <MarkdownTextContent isRunning={false} text={'See [notes](~/My%20Notes/todo%20with%20spaces.md)'} />
+    )
+
+    await screen.findByText('todo%20with%20spaces.md')
+    expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
+  })
+
   it('renders a media player for a media-extension path link', async () => {
     const { container } = render(<MarkdownTextContent isRunning={false} text="[clip](/tmp/demo.mp4)" />)
 

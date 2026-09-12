@@ -326,12 +326,11 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
               }
               icon={<Codicon className={iconClass} name="target" size="0.8rem" />}
               label={headerLabel}
+              stickyHeader
             >
               <div className="space-y-1.5 px-1 py-1">
-                {/* Full goal title */}
-                <div className="text-xs font-normal leading-relaxed text-foreground/92 break-words">{goal.title}</div>
-
-                {/* Optional reasons */}
+                {/* Pinned status: why waiting/paused/blocked stays visible —
+                  it is state chrome, not scrollable content. */}
                 {!detailsOpen && goal.wait_barrier && (
                   <div className="text-[0.7rem] italic text-muted-foreground/80">
                     {goal.wait_barrier.reason
@@ -346,103 +345,108 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
                   <div className="text-[0.7rem] italic text-muted-foreground/80">{goal.last_reason}</div>
                 )}
 
-                {/* View details button */}
-                {hasDetails && (
-                  <div>
-                    <Button
-                      className="text-[0.7rem] text-muted-foreground/75 hover:text-foreground/90"
-                      onClick={() => setDetailsOpen(true)}
-                      size="micro"
-                      type="button"
-                      variant="text"
-                    >
-                      {ctrl.viewDetails}
-                    </Button>
-                  </div>
-                )}
+                {/* Scrollable body: long titles and criteria lists scroll in
+                  their own container — header above and the criteria footer
+                  below stay put, so collapse/add are always reachable. */}
+                <div className="max-h-[30vh] space-y-1.5 overflow-y-auto overscroll-contain pr-0.5">
+                  {/* Full goal title */}
+                  <div className="text-xs font-normal leading-relaxed text-foreground/92 break-words">{goal.title}</div>
 
-                {/* Criteria subsection */}
-                <div className="mt-2 border-t border-(--ui-stroke-tertiary)/40 pt-1.5">
-                  <div className="flex items-center justify-between pb-1 text-[0.68rem] font-medium text-muted-foreground/75">
-                    <div className="flex items-center gap-1.5">
-                      <span aria-hidden="true" className={`inline-flex ${iconClass}`} data-slot="criteria-state-marker">
-                        <Codicon name="target" size="0.68rem" />
-                      </span>
-                      <span>{ctrl.criteriaHeader(goal.subgoals.length)}</span>
-                    </div>
-                    <div className="flex items-center gap-1">
+                  {/* View details button */}
+                  {hasDetails && (
+                    <div>
                       <Button
-                        className="text-[0.68rem] text-muted-foreground/75 hover:text-foreground/90"
-                        disabled={isBusy}
-                        onClick={openAddCriterion}
+                        className="text-[0.7rem] text-muted-foreground/75 hover:text-foreground/90"
+                        onClick={() => setDetailsOpen(true)}
                         size="micro"
                         type="button"
                         variant="text"
                       >
-                        {ctrl.addCriterion}
+                        {ctrl.viewDetails}
                       </Button>
-                      {goal.subgoals.length > 0 && (
-                        <Button
-                          className="text-[0.68rem] text-muted-foreground/60 hover:text-destructive"
-                          disabled={isBusy}
-                          onClick={confirmClearCriteria}
-                          size="micro"
-                          type="button"
-                          variant="text"
-                        >
-                          {ctrl.clearCriteria}
-                        </Button>
-                      )}
                     </div>
-                  </div>
-
-                  {goal.subgoals.length > 0 ? (
-                    <div className="space-y-1">
-                      {goal.subgoals.map((subgoal, idx) => {
-                        const index = idx + 1
-
-                        return (
-                          <div
-                            className="group/criterion flex items-start justify-between gap-1.5 rounded px-1 py-0.5 text-xs text-foreground/85 hover:bg-(--ui-control-active-background)/40"
-                            key={`${index}-${subgoal}`}
-                          >
-                            <div className="flex min-w-0 flex-1 items-start gap-1.5 leading-relaxed">
-                              <span className="shrink-0 text-muted-foreground/60 tabular-nums">{index}.</span>
-                              <span className="break-words">{subgoal}</span>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-0.5 opacity-80 group-hover/criterion:opacity-100">
-                              <Tip label={ctrl.copyCriterion(index)}>
-                                <Button
-                                  aria-label={ctrl.copyCriterion(index)}
-                                  className="size-6 rounded text-muted-foreground/60 hover:text-foreground/90"
-                                  onClick={() => void copyCriterionText(subgoal)}
-                                  size="icon-xs"
-                                  type="button"
-                                  variant="ghost"
-                                >
-                                  <Codicon name="copy" size="0.7rem" />
-                                </Button>
-                              </Tip>
-                              <Tip label={ctrl.removeCriterion(index)}>
-                                <Button
-                                  aria-label={ctrl.removeCriterion(index)}
-                                  className="size-6 rounded text-muted-foreground/60 hover:text-destructive"
-                                  disabled={isBusy}
-                                  onClick={() => confirmRemoveCriterion(index)}
-                                  size="icon-xs"
-                                  type="button"
-                                  variant="ghost"
-                                >
-                                  <Codicon name="close" size="0.7rem" />
-                                </Button>
-                              </Tip>
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  ) : null}
+                  )}
                 </div>
+                {/* Pinned footer: count + add/clear stay visible under the scroll body. */}
+                <div className="flex items-center justify-between border-t border-(--ui-stroke-tertiary)/40 pt-1 text-[0.68rem] font-medium text-muted-foreground/75">
+                  <div className="flex items-center gap-1.5">
+                    <span aria-hidden="true" className={`inline-flex ${iconClass}`} data-slot="criteria-state-marker">
+                      <Codicon name="target" size="0.68rem" />
+                    </span>
+                    <span>{ctrl.criteriaHeader(goal.subgoals.length)}</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      className="text-[0.68rem] text-muted-foreground/75 hover:text-foreground/90"
+                      disabled={isBusy}
+                      onClick={openAddCriterion}
+                      size="micro"
+                      type="button"
+                      variant="text"
+                    >
+                      {ctrl.addCriterion}
+                    </Button>
+                    {goal.subgoals.length > 0 && (
+                      <Button
+                        className="text-[0.68rem] text-muted-foreground/60 hover:text-destructive"
+                        disabled={isBusy}
+                        onClick={confirmClearCriteria}
+                        size="micro"
+                        type="button"
+                        variant="text"
+                      >
+                        {ctrl.clearCriteria}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
+                {goal.subgoals.length > 0 ? (
+                  <div className="space-y-1">
+                    {goal.subgoals.map((subgoal, idx) => {
+                      const index = idx + 1
+
+                      return (
+                        <div
+                          className="group/criterion flex items-start justify-between gap-1.5 rounded px-1 py-0.5 text-xs text-foreground/85 hover:bg-(--ui-control-active-background)/40"
+                          key={`${index}-${subgoal}`}
+                        >
+                          <div className="flex min-w-0 flex-1 items-start gap-1.5 leading-relaxed">
+                            <span className="shrink-0 text-muted-foreground/60 tabular-nums">{index}.</span>
+                            <span className="break-words">{subgoal}</span>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-0.5 opacity-80 group-hover/criterion:opacity-100">
+                            <Tip label={ctrl.copyCriterion(index)}>
+                              <Button
+                                aria-label={ctrl.copyCriterion(index)}
+                                className="size-6 rounded text-muted-foreground/60 hover:text-foreground/90"
+                                onClick={() => void copyCriterionText(subgoal)}
+                                size="icon-xs"
+                                type="button"
+                                variant="ghost"
+                              >
+                                <Codicon name="copy" size="0.7rem" />
+                              </Button>
+                            </Tip>
+                            <Tip label={ctrl.removeCriterion(index)}>
+                              <Button
+                                aria-label={ctrl.removeCriterion(index)}
+                                className="size-6 rounded text-muted-foreground/60 hover:text-destructive"
+                                disabled={isBusy}
+                                onClick={() => confirmRemoveCriterion(index)}
+                                size="icon-xs"
+                                type="button"
+                                variant="ghost"
+                              >
+                                <Codicon name="close" size="0.7rem" />
+                              </Button>
+                            </Tip>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : null}
               </div>
             </StatusSection>
           </div>

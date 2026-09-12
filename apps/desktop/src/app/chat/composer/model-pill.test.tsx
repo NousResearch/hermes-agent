@@ -158,7 +158,16 @@ describe('ModelPill per-surface model label', () => {
       </SessionViewProvider>
     )
 
-    expect(screen.getByText('Sonnet · High')).toBeTruthy()
+    expect(screen.getByText('Sonnet')).toBeTruthy()
     expect(screen.queryByText(/primary/i)).toBeNull()
+    // Effort is a fill pill, not text: high fills 4 of 7 with the label inside.
+    const meter = screen.getByTitle('High')
+
+    expect(meter.getAttribute('role')).toBe('img')
+    const track = meter.lastElementChild as HTMLElement
+    const fill = track.firstElementChild as HTMLElement
+
+    expect(fill.style.width).toContain('57.1')
+    expect(meter.textContent).toContain('High')
   })
 })

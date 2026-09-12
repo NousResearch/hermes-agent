@@ -147,6 +147,7 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
         <ContextMenuTrigger asChild>
           <div data-slot="session-control-heartbeat">
             <StatusSection
+              stickyHeader
               accessory={
                 <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
                   <Tip label={ctrl.heartbeatActions}>

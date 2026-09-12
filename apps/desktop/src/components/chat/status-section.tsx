@@ -15,6 +15,10 @@ interface StatusSectionProps {
   /** Optional glyph between the caret and the label (e.g. a `Codicon`). */
   icon?: ReactNode
   label: ReactNode
+  /** Pin the header while the section body scrolls (long goal/subagent
+   *  sections) so collapse stays reachable mid-scroll. Paints the composer
+   *  fill — only set inside the composer dock card. */
+  stickyHeader?: boolean
 }
 
 /**
@@ -30,13 +34,20 @@ export function StatusSection({
   defaultCollapsed = true,
   icon,
   label,
-  preview
+  preview,
+  stickyHeader = false
 }: StatusSectionProps) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
 
   return (
     <div>
-      <div className="flex items-center gap-1 pr-1">
+      <div
+        className={
+          stickyHeader
+            ? 'sticky top-0 z-10 flex items-center gap-1 bg-(--composer-fill) pr-1'
+            : 'flex items-center gap-1 pr-1'
+        }
+      >
         <button
           aria-expanded={!collapsed}
           className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-xs font-normal text-muted-foreground/92 transition-colors hover:text-foreground/90"

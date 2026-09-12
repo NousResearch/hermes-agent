@@ -6,6 +6,11 @@ import type { ContextBreakdown, UsageStats } from '@/types/hermes'
 
 import { ContextUsagePanel } from './context-usage-panel'
 import { useContextBreakdown } from './hooks/use-context-breakdown'
+import {
+  loadContextUsageSnapshot,
+  saveContextUsageSnapshot,
+  type ContextUsageVersion
+} from '@/store/context-usage-cache'
 
 const usage: UsageStats = {
   calls: 1,
@@ -29,6 +34,7 @@ const breakdown: ContextBreakdown = {
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  window.localStorage.clear()
 })
 
 describe('useContextBreakdown', () => {
@@ -98,8 +104,140 @@ describe('useContextBreakdown', () => {
 
     await waitFor(() => expect(result.current.breakdown?.context_used).toBe(12_000))
   })
-})
 
+  it('zeroes the occupancy for an empty conversation (baseline estimate is not usage)', async () => {
+    const empty: ContextBreakdown = {
+      categories: [{ color: 'gray', id: 'system_prompt', label: 'System prompt', tokens: 22_200 }],
+      context_max: 2_000_000,
+      context_percent: 1,
+      context_source: 'local_estimate',
+      context_used: 22_200,
+      estimated_total: 22_200,
+      model: 'test-model'
+    }
+    const requestGateway = vi.fn().mockResolvedValue(empty)
+
+    const { result } = renderHook(() =>
+      useContextBreakdown({ busy: false, enabled: true, requestGateway, sessionId: 'runtime-1' })
+    )
+
+    await waitFor(() => expect(result.current.breakdown?.context_max).toBe(2_000_000))
+    expect(result.current.breakdown?.context_used).toBe(0)
+    expect(result.current.breakdown?.context_percent).toBe(0)
+    expect(result.current.breakdown?.categories).toEqual([])
+  })
+
+  it('paints the durable last-known read while the live fetch is pending', async () => {
+    const version: ContextUsageVersion = { input_tokens: 100, message_count: 4, model: 'm', output_tokens: 50 }
+    saveContextUsageSnapshot(
+      'stored-1',
+      { context_max: 200_000, context_percent: 34, context_used: 68_000, model: 'm' },
+      { profile: 'coder' },
+      version
+    )
+    const requestGateway = vi.fn().mockReturnValue(new Promise(() => {}))
+
+    const { result } = renderHook(() =>
+      useContextBreakdown({
+        busy: false,
+        enabled: true,
+        persist: { scope: { profile: 'coder' }, storedSessionId: 'stored-1', version },
+        requestGateway,
+        sessionId: 'runtime-1'
+      })
+    )
+
+    await waitFor(() => expect(result.current.loading).toBe(true))
+    expect(result.current.breakdown?.context_source).toBe('restored')
+    expect(result.current.breakdown?.context_used).toBe(68_000)
+    expect(result.current.breakdown?.context_max).toBe(200_000)
+  })
+
+  it('keeps the restored read when the backend reports a no-agent payload', async () => {
+    const version: ContextUsageVersion = { input_tokens: 100, message_count: 4, model: 'm', output_tokens: 50 }
+    saveContextUsageSnapshot(
+      'stored-1',
+      { context_max: 200_000, context_percent: 34, context_used: 68_000, model: 'm' },
+      { profile: 'coder' },
+      version
+    )
+    const noData: ContextBreakdown = {
+      categories: [],
+      context_max: 0,
+      context_percent: 0,
+      context_used: 0,
+      estimated_total: 0,
+      model: ''
+    }
+    const requestGateway = vi.fn().mockResolvedValue(noData)
+
+    const { result } = renderHook(() =>
+      useContextBreakdown({
+        busy: false,
+        enabled: true,
+        persist: { scope: { profile: 'coder' }, storedSessionId: 'stored-1', version },
+        requestGateway,
+        sessionId: 'runtime-1'
+      })
+    )
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalled())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.breakdown?.context_source).toBe('restored')
+    expect(result.current.breakdown?.context_used).toBe(68_000)
+  })
+
+  it('replaces the restored read with live data and banks the new read', async () => {
+    const version: ContextUsageVersion = { input_tokens: 100, message_count: 4, model: 'm', output_tokens: 50 }
+    saveContextUsageSnapshot(
+      'stored-1',
+      { context_max: 200_000, context_percent: 34, context_used: 68_000, model: 'm' },
+      { profile: 'coder' },
+      version
+    )
+    const requestGateway = vi.fn().mockResolvedValue(breakdown)
+
+    const { result } = renderHook(() =>
+      useContextBreakdown({
+        busy: false,
+        enabled: true,
+        persist: { scope: { profile: 'coder' }, storedSessionId: 'stored-1', version },
+        requestGateway,
+        sessionId: 'runtime-1'
+      })
+    )
+
+    await waitFor(() => expect(result.current.breakdown).toEqual(breakdown))
+    expect(loadContextUsageSnapshot('stored-1', { profile: 'coder' }, version)?.context_used).toBe(241_400)
+  })
+
+  it('ignores a restored read whose version drifted', async () => {
+    saveContextUsageSnapshot(
+      'stored-1',
+      { context_max: 200_000, context_percent: 34, context_used: 68_000, model: 'm' },
+      { profile: 'coder' },
+      { input_tokens: 100, message_count: 4, model: 'm', output_tokens: 50 }
+    )
+    const requestGateway = vi.fn().mockReturnValue(new Promise(() => {}))
+
+    const { result } = renderHook(() =>
+      useContextBreakdown({
+        busy: false,
+        enabled: true,
+        persist: {
+          scope: { profile: 'coder' },
+          storedSessionId: 'stored-1',
+          version: { input_tokens: 100, message_count: 5, model: 'm', output_tokens: 50 }
+        },
+        requestGateway,
+        sessionId: 'runtime-1'
+      })
+    )
+
+    await waitFor(() => expect(result.current.loading).toBe(true))
+    expect(result.current.breakdown).toBeNull()
+  })
+})
 describe('ContextUsagePanel', () => {
   it('marks estimates but preserves the provider-usage header', () => {
     for (const estimated of [true, false]) {

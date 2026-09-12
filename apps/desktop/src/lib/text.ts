@@ -43,3 +43,18 @@ export function searchFold(v: unknown): string {
 export function foldIncludes(text: unknown, query: unknown): boolean {
   return searchFold(text).includes(searchFold(query))
 }
+
+/** Token-AND matcher: every whitespace-separated query token must occur in the
+ *  haystack, in any order — `deepseek v4 flash opencode` finds
+ *  `opencode/deepseek-v4-flash`. Single-token queries behave like foldIncludes. */
+export function foldIncludesAllTokens(text: unknown, query: unknown): boolean {
+  const tokens = searchFold(query).split(/\s+/).filter(Boolean)
+
+  if (tokens.length === 0) {
+    return true
+  }
+
+  const haystack = searchFold(text)
+
+  return tokens.every(token => haystack.includes(token))
+}

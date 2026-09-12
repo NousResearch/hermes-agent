@@ -7,25 +7,28 @@ import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { EffortMeter, resolveEffortMeter } from '@/components/ui/effort-meter'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { releaseTypingFocus } from '@/components/ui/keyboard-first'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
-import { formatModelStatusLabel } from '@/lib/model-status-label'
+import { displayModelName } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $currentModelSource, $defaultReasoningEffort, setModelPickerOpen } from '@/store/session'
+
+import { ComposerContextMeter } from './context-meter'
 
 import { onComposerModelMenuRequest } from './focus'
 import { RICH_INPUT_SLOT } from './rich-editor'
 import { useComposerScope } from './scope'
 import type { ChatBarState } from './types'
 
-// `shrink` (not `shrink-0`) with a truncating label: the pill is the one
+// `shrink` (not `shrink-0`) with an untruncated label: the pill is the one
 // control in the row that can give width back continuously, so it absorbs the
 // squeeze between collapse stages instead of pushing Send past the edge.
 const PILL = cn(
-  'h-(--composer-control-size) min-w-0 max-w-40 shrink gap-1 rounded-md px-2 text-xs font-normal',
+  'h-(--composer-control-size) min-w-0 shrink gap-1 rounded-md px-2 text-xs font-normal',
   'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
 )
 
@@ -47,6 +50,7 @@ export function ModelPill({
   model: ChatBarState['model']
 }) {
   const copy = useI18n().t.shell.statusbar
+  const copyMenu = useI18n().t.shell.modelMenu
   // Two return branches below, one handle: only ever one of them mounts.
   const tourMarker = useTourMarker('model-pill')
   const view = useSessionView()
@@ -126,17 +130,25 @@ export function ModelPill({
   // The model resolves a beat after the gateway/session comes up. Rather than
   // flash a literal "No model", show a quiet loader (inherits the pill text
   // color at half opacity) until a model lands.
+  // Pill mirrors the catalog rows: pretty name (truncates) + fast bolt + effort
+  // meter (pinned). The tooltip carries provider, exact id and effort text.
+  const { label: pillEffort } = resolveEffortMeter(reasoningEffort, defaultEffort)
+
   const label = compact ? (
     <ChevronDown className="size-3.5 shrink-0 opacity-70" />
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">
-          {formatModelStatusLabel(currentModel, { defaultEffort, fastMode, reasoningEffort })}
-        </span>
+        <span className="whitespace-nowrap">{displayModelName(currentModel)}</span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}
+      {currentModel.trim() && fastMode ? (
+        <span aria-label={copyMenu.fast} className="shrink-0 text-[0.75rem]" role="img" title={copyMenu.fast}>
+          ⚡
+        </span>
+      ) : null}
+      {currentModel.trim() ? <EffortMeter fallback={defaultEffort} value={reasoningEffort} /> : null}
       {pinnedOverride && (
         <span
           aria-label={copy.modelPinned}
@@ -159,26 +171,29 @@ export function ModelPill({
     : PILL
 
   const baseTitle = currentProvider
-    ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
+    ? `${copy.modelTitle(currentProvider, currentModel || copy.modelNone)} · ${fastMode ? `${copyMenu.fast} ` : ''}${pillEffort}`
     : copy.switchModel
 
   const title = pinnedOverride ? `${baseTitle} — ${copy.modelPinned}` : baseTitle
 
   if (!model.modelMenuContent) {
     return (
-      <Tip label={pinnedOverride ? `${copy.openModelPicker} — ${copy.modelPinned}` : copy.openModelPicker} side="top">
-        <Button
-          aria-label={copy.openModelPicker}
-          className={pillClass}
-          data-tour={tourMarker}
-          disabled={disabled}
-          onClick={() => setModelPickerOpen(true)}
-          type="button"
-          variant="ghost"
-        >
-          {label}
-        </Button>
-      </Tip>
+      <>
+        {compact ? null : <ComposerContextMeter />}
+        <Tip label={pinnedOverride ? `${copy.openModelPicker} — ${copy.modelPinned}` : copy.openModelPicker} side="top">
+          <Button
+            aria-label={copy.openModelPicker}
+            className={pillClass}
+            data-tour={tourMarker}
+            disabled={disabled}
+            onClick={() => setModelPickerOpen(true)}
+            type="button"
+            variant="ghost"
+          >
+            {label}
+          </Button>
+        </Tip>
+      </>
     )
   }
 
@@ -194,41 +209,44 @@ export function ModelPill({
   }
 
   return (
-    <DropdownMenu onOpenChange={setMenuOpen} open={open}>
-      <Tip label={title} side="top">
-        <DropdownMenuTrigger asChild>
-          <Button
-            aria-label={title}
-            className={pillClass}
-            data-tour={tourMarker}
-            disabled={disabled}
-            type="button"
-            variant="ghost"
-          >
-            {label}
-          </Button>
-        </DropdownMenuTrigger>
-      </Tip>
-      <DropdownMenuContent
-        align="end"
-        className="w-64 p-0"
-        onCloseAutoFocus={event => {
-          if (restoreSelection.current) {
-            event.preventDefault()
-            restoreSelection.current()
+    <>
+      {compact ? null : <ComposerContextMeter />}
+      <DropdownMenu onOpenChange={setMenuOpen} open={open}>
+        <Tip label={title} side="top">
+          <DropdownMenuTrigger asChild>
+            <Button
+              aria-label={title}
+              className={pillClass}
+              data-tour={tourMarker}
+              disabled={disabled}
+              type="button"
+              variant="ghost"
+            >
+              {label}
+            </Button>
+          </DropdownMenuTrigger>
+        </Tip>
+        <DropdownMenuContent
+          align="end"
+          className="w-64 p-0"
+          onCloseAutoFocus={event => {
+            if (restoreSelection.current) {
+              event.preventDefault()
+              restoreSelection.current()
+              restoreSelection.current = null
+            }
+          }}
+          onInteractOutside={() => {
             restoreSelection.current = null
-          }
-        }}
-        onInteractOutside={() => {
-          restoreSelection.current = null
-        }}
-        side="top"
-        sideOffset={8}
-      >
-        <ModelMenuCloseContext.Provider value={() => setMenuOpen(false)}>
-          {model.modelMenuContent}
-        </ModelMenuCloseContext.Provider>
-      </DropdownMenuContent>
-    </DropdownMenu>
+          }}
+          side="top"
+          sideOffset={8}
+        >
+          <ModelMenuCloseContext.Provider value={() => setMenuOpen(false)}>
+            {model.modelMenuContent}
+          </ModelMenuCloseContext.Provider>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </>
   )
 }

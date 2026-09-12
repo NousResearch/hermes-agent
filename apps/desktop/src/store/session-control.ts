@@ -4,6 +4,7 @@ import { $gateway } from './gateway'
 import { refreshSessionGoal } from './goals'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { ambientRequestFor } from './session-gone-latch'
+import { isSessionOwnerResolutionError } from './session-owner-resolution'
 import { requestForOwnedSession } from './session-states'
 
 export type SessionControlGoalStatus = 'active' | 'done' | 'paused'
@@ -684,8 +685,18 @@ function publishFailure(sessionId: string, token: number, error: unknown, clearP
   })
 }
 
-function finishGoneRequest(sessionId: string, token: number, clearPendingAction: boolean): void {
+/** Settle a read that never reached a backend (e.g. draft with no owner):
+ *  clear loading, publish no error, cache nothing — the next refresh retries. */
+function finishSilentRequest(sessionId: string, token: number): void {
   if (!isCurrent(sessionId, token)) {
+    return
+  }
+
+  const current = $sessionControlBySession.get()[sessionId] ?? emptyEntry()
+  publishEntry(sessionId, { ...current, loading: false })
+}
+
+function finishGoneRequest(sessionId: string, token: number, clearPendingAction: boolean): void {  if (!isCurrent(sessionId, token)) {
     return
   }
 
@@ -789,6 +800,21 @@ export async function refreshSessionControl(
 
     if (isSessionGoneForBackgroundPolling(error)) {
       finishGoneRequest(sessionId, token, false)
+
+      return $sessionControlBySession.get()[sessionId]
+    }
+
+    // Owner-unresolved with no prior control state: a draft chat the backend
+    // hasn't minted yet. Settle silently (no banner, nothing cached) and let a
+    // later refresh — after the first turn binds the session — resolve it.
+    // "Prior state" means a snapshot, a published error, or a pinned
+    // capability — not the idle shell beginRead publishes, which every fresh
+    // read creates. Established sessions keep the loud failure: a lost owner
+    // there is a real routing regression, not a draft.
+    const hasPriorState = Boolean(existing && (existing.snapshot || existing.error))
+
+    if (isSessionOwnerResolutionError(error) && !hasPriorState) {
+      finishSilentRequest(sessionId, token)
 
       return $sessionControlBySession.get()[sessionId]
     }

@@ -124,6 +124,7 @@ import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
+import { dropContextUsageSnapshotEverywhere } from '@/store/context-usage-cache'
 import {
   dropTranscriptTail,
   dropTranscriptTailEverywhere,
@@ -2489,6 +2490,7 @@ export function useSessionActions({
         await deleteSession(storedSessionId, removedOwner)
 
         dropTranscriptTailEverywhere(storedSessionId)
+        dropContextUsageSnapshotEverywhere(storedSessionId)
         // Only after the RPC lands — the optimistic eviction above can roll
         // back, and a rolled-back row must keep its watermark/marker.
         forgetSessionUnread(removedIds, profile)

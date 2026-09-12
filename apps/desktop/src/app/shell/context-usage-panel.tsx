@@ -32,6 +32,10 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
     [breakdown?.categories, copy]
   )
 
+  // A restored read has the numbers but no category detail yet — phrase it as
+  // still loading, never as "no data".
+  const restored = usage.context_source === 'restored'
+
   const segmentTotal = categories.reduce((sum, category) => sum + category.tokens, 0) || contextUsed || 1
 
   return (
@@ -68,9 +72,13 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
         ))}
       </ul>
 
-      {loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.loading}</p>}
+      {(loading || restored) && !categories.length && (
+        <p className="text-[0.6875rem] text-muted-foreground">{copy.loading}</p>
+      )}
 
-      {!loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.empty}</p>}
+      {!loading && !restored && !categories.length && (
+        <p className="text-[0.6875rem] text-muted-foreground">{copy.empty}</p>
+      )}
     </div>
   )
 }

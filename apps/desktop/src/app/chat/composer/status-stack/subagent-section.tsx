@@ -64,6 +64,7 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
   return (
     <div className="composer-no-drag min-w-0" data-slot="composer-subagents">
       <StatusSection
+        stickyHeader
         collapsedIndicator={
           <GlyphSpinner
             ariaLabel={live.some(item => item.status === 'running') ? t.agents.running : t.agents.queued}

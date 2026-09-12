@@ -264,9 +264,39 @@ export function useStatusbarItems({
   // toggled off, so this covers the rest.
   const contextItemHidden = useStore($statusbarHiddenIds).includes('context-usage')
 
+  // Durable last-known read for the focused session, so a cold boot paints the
+  // stored numbers while the live agent rebinds. Keyed by stored id (+ owning
+  // scope, + row counters as the version) — never the ephemeral runtime id.
+  const activeStoredSessionId = primaryFocused ? selectedStoredSessionId : focusedStoredSessionId
+  const activeStoredRow = useStoreSelector($sessions, sessions =>
+    activeStoredSessionId
+      ? (sessions.find(session => sessionMatchesStoredId(session, activeStoredSessionId)) ?? null)
+      : null
+  )
+  const persistContextUsage = useMemo(
+    () =>
+      activeStoredSessionId && activeStoredRow
+        ? {
+            scope: {
+              connectionId: activeStoredRow.connection_id ?? '',
+              profile: activeStoredRow.profile ?? 'default'
+            },
+            storedSessionId: activeStoredSessionId,
+            version: {
+              input_tokens: activeStoredRow.input_tokens,
+              message_count: activeStoredRow.message_count,
+              model: activeStoredRow.model,
+              output_tokens: activeStoredRow.output_tokens
+            }
+          }
+        : null,
+    [activeStoredRow, activeStoredSessionId]
+  )
+
   const { breakdown: contextBreakdown, loading: contextBreakdownLoading } = useContextBreakdown({
     busy,
     enabled: !contextItemHidden,
+    persist: persistContextUsage,
     requestGateway,
     sessionId: activeSessionId
   })

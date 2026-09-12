@@ -10,6 +10,7 @@ vi.mock('./goals', async importOriginal => ({
 
 import { $gateway } from './gateway'
 import { resetBackgroundPollingGuard } from './runtime-gone'
+import { SessionOwnerResolutionError } from './session-owner-resolution'
 import {
   $sessionControlBySession,
   applySessionControlSnapshot,
@@ -319,8 +320,24 @@ describe('session-control store', () => {
     })
   })
 
-  it('does not let a late read overwrite a newer event', async () => {
-    const slow = deferred<unknown>()
+  it('stays silent on owner-unresolved drafts and retries later reads', async () => {
+    const request = vi.fn(async () => {
+      throw new SessionOwnerResolutionError('draft-1', 'session.control.read')
+    })
+
+    useGateway(request)
+
+    // No prior state (a draft the backend hasn't minted): no banner, settled
+    // idle, and nothing cached as unsupported.
+    await expect(refreshSessionControl('draft-1')).resolves.toMatchObject({ error: null, loading: false })
+    expect($sessionControlBySession.get()['draft-1']).toMatchObject({ error: null, loading: false })
+
+    // …and nothing sticky: the next refresh tries again instead of giving up.
+    await expect(refreshSessionControl('draft-1')).resolves.toMatchObject({ error: null, loading: false })
+    expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not let a late read overwrite a newer event', async () => {    const slow = deferred<unknown>()
     useGateway(vi.fn(() => slow.promise))
 
     const read = refreshSessionControl('s1')

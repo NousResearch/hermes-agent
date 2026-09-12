@@ -116,6 +116,9 @@ class GatewayProfileReconcileMixin:
                 result["removed"].append(name)
             claimed = self._live_resource_claims(active)
             for name in added + changed:
+                # Only acknowledge the configuration observed before connecting;
+                # a setup save during an awaited handshake needs another scan.
+                scan_signature = profile_serve_signature(current[name])
                 try:
                     connected = await self._start_one_profile_adapters(name, current[name], claimed)
                 except MultiplexConfigError as exc:
@@ -125,7 +128,7 @@ class GatewayProfileReconcileMixin:
                 except Exception:
                     logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
                     connected = 0
-                sigs[name] = profile_serve_signature(current[name])
+                sigs[name] = scan_signature
                 if name in added:
                     logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
                     result["added"].append(name)

@@ -80,12 +80,14 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       try {
         const method = request.respondMethod ?? 'sudo.respond'
         const reply = { password: value, request_id: request.requestId }
+
         // Pinned to the socket the request came from: the foreground gateway may be another host.
         if (request.origin) {
           await requestGatewayForAgent<{ status?: string }>(request.origin.connectionId, request.origin.profile, method, reply)
         } else {
           await gateway.request<{ status?: string }>(method, reply)
         }
+
         triggerHaptic('submit')
         clearSudoRequest(request.sessionId, request.requestId)
       } catch (error) {

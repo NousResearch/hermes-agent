@@ -2719,8 +2719,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 summary["unchanged"] += 1
                 continue
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(http.delete_global_command, app_id, current.id)
+                # Upsert BEFORE delete: upsert replaces by name, so the command
+                # stays available even if a 429 aborts the sync before the
+                # delete completes.  The old command ID may already be gone
+                # after the upsert replaced it, so tolerate 404 on delete.
+                old_id = current.id
                 await mutate(http.upsert_global_command, app_id, desired)
+                try:
+                    await mutate(http.delete_global_command, app_id, old_id)
+                except Exception:
+                    pass
                 summary["recreated"] += 1
                 continue
             await mutate(http.edit_global_command, app_id, current.id, desired)

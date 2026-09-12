@@ -9,6 +9,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from plugins.memory.honcho.client import _first_parsed, _host_block, profile_host_key, resolve_active_host, resolve_config_path, HOST
+from plugins.memory.honcho.session_peers import sanitize_peer_id
 from hermes_cli.config import cfg_get
 
 RULE = "─" * 40
@@ -733,7 +734,7 @@ def cmd_setup(args) -> None:
     _migrate_pin_key(cfg)  # canonicalize legacy pinPeerName before detection/writes
     _migrate_pin_key(hermes_host)
     # Taken before the prompts populate the block: an existing install must not default to pinning every account.
-    new_host = not any(k in hermes_host for k in (*_IDENTITY_MAPPING_KEYS, "peerName", "workspace", "enabled"))
+    new_host = not any(k in hermes_host or k in cfg for k in (*_IDENTITY_MAPPING_KEYS, "peerName", "workspace", "enabled"))
 
     # --- 1. Cloud or local? ---
     print("  Deployment:\n    cloud -- Honcho cloud (api.honcho.dev)\n    local -- self-hosted Honcho server")
@@ -956,10 +957,10 @@ def _state_db_path() -> Path:
 
 
 def _seen_gateway_accounts(db_path: Path) -> list[dict]:
-    """Gateway accounts recorded in state.db, most recent first; bot authors are skipped.
+    """Gateway accounts recorded in state.db, most recent first.
 
-    A session row keeps only its last routing peer, so a shared thread contributes
-    its most recent author and not every participant.
+    A session row keeps only its last routing peer, so a shared thread contributes its most recent
+    author and not every participant. The row's origin does not record whether the author was a bot.
     """
     if not db_path.exists():
         return []
@@ -992,8 +993,6 @@ def _seen_gateway_accounts(db_path: Path) -> list[dict]:
             origin = dict(json.loads(origin_json)) if origin_json else {}
         except Exception:
             origin = {}
-        if origin.get("is_bot"):
-            continue
         accounts.append({
             "platform": source or "?",
             "user_id": str(user_id),
@@ -1003,11 +1002,6 @@ def _seen_gateway_accounts(db_path: Path) -> list[dict]:
             "profiles": sorted(profiles.split(",")) if profiles else [],
         })
     return accounts
-
-
-def _sanitize_peer_id(s: str) -> str:
-    import re
-    return re.sub(r'[^a-zA-Z0-9_-]', '-', s)
 
 
 def _preview_peer_resolution(
@@ -1063,14 +1057,13 @@ def _api_workspace_peers(client) -> list[str] | None:
         return None
     try:
         peers: list[str] = []
-        page = 1
-        while len(peers) < _PEERS_MAP_FETCH_CAP:
-            batch = list(client.peers(page=page, size=50))
-            peers += [str(p.id) for p in batch]
-            if len(batch) < 50:
-                break
-            page += 1
-        return peers
+        page = client.peers(page=1, size=50)
+        # Iterating a SyncPage walks every following page; .items is the one page asked for.
+        while True:
+            peers += [str(p.id) for p in page.items]
+            if len(peers) >= _PEERS_MAP_FETCH_CAP or not page.has_next_page():
+                return peers[:_PEERS_MAP_FETCH_CAP]
+            page = page.get_next_page()
     except Exception:
         return None
 
@@ -1080,7 +1073,7 @@ def _api_workspaces(client) -> list[str] | None:
     if client is None:
         return None
     try:
-        return [str(w) for w in client.workspaces(size=50)]
+        return [str(w) for w in client.workspaces(size=50).items]
     except Exception:
         return None
 
@@ -1113,12 +1106,12 @@ def _classify_workspace_peers(
         ai = block.get("aiPeer") or cfg.get("aiPeer") or hostk
         if pn:
             labels.setdefault(
-                _sanitize_peer_id(pn),
+                sanitize_peer_id(pn),
                 "your peer (peerName)" if hostk == active_host
                 else f"peerName of profile {name}",
             )
         who = "this profile" if hostk == active_host else f"profile {name}"
-        labels.setdefault(_sanitize_peer_id(ai), f"AI peer · {who}")
+        labels.setdefault(sanitize_peer_id(ai), f"AI peer · {who}")
 
     # Host blocks that are not Hermes profiles: other apps sharing the config.
     for hostk, block in (cfg.get("hosts") or {}).items():
@@ -1127,16 +1120,16 @@ def _classify_workspace_peers(
         for key, kind in (("peerName", "peer"), ("aiPeer", "AI peer")):
             val = block.get(key)
             if isinstance(val, str) and val.strip():
-                labels.setdefault(_sanitize_peer_id(val.strip()), f"{kind} of app '{hostk}'")
+                labels.setdefault(sanitize_peer_id(val.strip()), f"{kind} of app '{hostk}'")
 
     for target in aliases.values():
         if isinstance(target, str) and target.strip():
-            labels.setdefault(_sanitize_peer_id(target.strip()), "alias target")
+            labels.setdefault(sanitize_peer_id(target.strip()), "alias target")
 
     for acct in accounts:
         rid = acct["user_id"]
         for candidate in ([rid, prefix + rid] if prefix else [rid]):
-            labels.setdefault(_sanitize_peer_id(candidate), f"runtime peer · {acct['platform']} {rid}")
+            labels.setdefault(sanitize_peer_id(candidate), f"runtime peer · {acct['platform']} {rid}")
 
     return {
         pid: labels.get(pid) or ("fallback peer (pre-identity traffic)" if pid.startswith("user-") else "unrecognized")
@@ -1316,7 +1309,7 @@ def cmd_peers_map(args) -> None:
     labels = show()
     print("\n  Map: account number or a runtime ID · pN inspects a peer ·")
     print("  w lists workspaces · blank finishes.")
-    changed = False
+    changed = repointed = False
     while True:
         sel = _prompt("Account (blank to finish)", default="").strip()
         if not sel:
@@ -1328,6 +1321,7 @@ def cmd_peers_map(args) -> None:
             if switched:
                 workspace, client, ws_peers = switched
                 labels = show()
+                repointed = True
             continue
 
         if low.startswith("p") and low[1:].isdigit() and ws_peers:
@@ -1363,13 +1357,13 @@ def cmd_peers_map(args) -> None:
             working[rid] = entered
             changed = True
             print(f"    {rid} → {entered} — future messages resolve to '{entered}'")
-            if ws_peers is not None and _sanitize_peer_id(entered) not in ws_peers:
+            if ws_peers is not None and sanitize_peer_id(entered) not in ws_peers:
                 print(f"    '{entered}' is a new peer — created on first message.")
-            if prev_resolved in (ws_peers or ()) and prev_resolved != _sanitize_peer_id(entered):
+            if prev_resolved in (ws_peers or ()) and prev_resolved != sanitize_peer_id(entered):
                 print(f"    peer '{prev_resolved}' keeps its existing history.")
 
     if not changed:
-        print("  Nothing changed.\n")
+        print("  Aliases unchanged.\n" if repointed else "  Nothing changed.\n")
         return
     _save_alias_map(cfg, host, working, aliases_from_root)
 

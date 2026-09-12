@@ -8,6 +8,7 @@ import pytest
 
 import plugins.memory.honcho.cli as honcho_cli
 from plugins.memory.honcho.cli import _preview_peer_resolution, _seen_gateway_accounts
+from plugins.memory.honcho.session_peers import sanitize_peer_id
 
 
 def _make_state_db(path, rows):
@@ -24,8 +25,8 @@ def _make_state_db(path, rows):
     conn.close()
 
 
-def _origin(user_name=None, is_bot=False, user_id_alt=None):
-    return json.dumps({"user_name": user_name, "is_bot": is_bot, "user_id_alt": user_id_alt})
+def _origin(user_name=None, user_id_alt=None):
+    return json.dumps({"user_name": user_name, "user_id_alt": user_id_alt})
 
 
 def _row(user_id, platform="telegram", name="eri", started=100.0):
@@ -43,7 +44,6 @@ class TestSeenGatewayAccounts:
             ("s1", "telegram", "111", None, "Eri", _origin("eri"), 100.0),  # predates session_key
             ("s2", "telegram", "111", "", "Eri", _origin("eri"), 200.0),
             ("s3", "discord", "222", "k2", "Tek DM", None, 900.0),
-            ("s4", "discord", "333", "k3", "Bot", _origin("webhook", is_bot=True), 950.0),
             ("s5", "cli", None, None, None, None, 999.0),
         ])
         assert _seen_gateway_accounts(db) == [
@@ -91,7 +91,7 @@ def test_prefixed_preview_matches_runtime_hash_suffix(user_id, peer_name):
         config=HonchoClientConfig(peer_name=peer_name, runtime_peer_prefix="tg_"), runtime_user_peer_name=user_id,
     )
     runtime = manager._resolve_user_peer_id("telegram:dm:1")
-    assert runtime.startswith(honcho_cli._sanitize_peer_id(f"tg_{user_id}") + "-")
+    assert runtime.startswith(sanitize_peer_id(f"tg_{user_id}") + "-")
     assert _preview_peer_resolution(user_id, pin=False, aliases={}, prefix="tg_", peer_name=peer_name) == f"{runtime} (prefixed)"
 
 
@@ -224,6 +224,44 @@ class TestWorkspaceSwitch:
         assert own.workspace_id == "hermes"
         assert browsed.workspace_id == "cosmania-dex"
         assert [c.workspace_id for c in seen] == ["hermes", "cosmania-dex"]
+
+
+class _Page:
+    """The honcho SDK's SyncPage: iterating it walks every page, ``items`` is this page only."""
+
+    def __init__(self, pages, index=0):
+        self._pages, self._index = pages, index
+        self.items = [SimpleNamespace(id=p) for p in pages[index]]
+
+    def __iter__(self):
+        for page in self._pages[self._index:]:
+            yield from (SimpleNamespace(id=p) for p in page)
+
+    def has_next_page(self):
+        return self._index + 1 < len(self._pages)
+
+    def get_next_page(self):
+        return _Page(self._pages, self._index + 1)
+
+
+def test_api_workspace_peers_reads_only_the_pages_the_cap_needs():
+    """Iterating a SyncPage walks the whole workspace; a 300-peer workspace with a 200 cap must touch
+    four pages, list each peer once, and never fetch page five."""
+    pages = [[f"p{i}" for i in range(n, n + 50)] for n in range(0, 300, 50)]
+    fetched = []
+
+    class _CountingPage(_Page):
+        def __init__(self, pages, index=0):
+            super().__init__(pages, index)
+            fetched.append(index)
+
+        def get_next_page(self):
+            return _CountingPage(self._pages, self._index + 1)
+
+    client = SimpleNamespace(peers=lambda page, size: _CountingPage(pages, page - 1))
+    peers = honcho_cli._api_workspace_peers(client)
+    assert len(peers) == len(set(peers)) == honcho_cli._PEERS_MAP_FETCH_CAP
+    assert fetched == [0, 1, 2, 3]
 
 
 class TestSaveScope:

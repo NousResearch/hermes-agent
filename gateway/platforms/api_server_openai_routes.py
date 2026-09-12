@@ -434,6 +434,8 @@ class OpenAICompatRoutesMixin:
             body = await request.json()
         except Exception:
             return _error_response("Invalid JSON in request body", 400)
+        from gateway.platforms.api_server import _request_relay_metadata
+        relay_metadata = _request_relay_metadata(body)
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return _invalid_request("Missing or invalid 'messages' field")
@@ -515,6 +517,7 @@ class OpenAICompatRoutesMixin:
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
             gateway_session_key=gateway_session_key, **agent_overrides, route=route,
+            relay_metadata=relay_metadata,
             # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
             # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
             # and the client can resume the session by sending it again). A fingerprint-derived
@@ -787,6 +790,8 @@ class OpenAICompatRoutesMixin:
             body = await request.json()
         except Exception:
             return _invalid_request("Invalid JSON in request body")
+        from gateway.platforms.api_server import _request_relay_metadata
+        relay_metadata = _request_relay_metadata(body)
         raw_input = body.get("input")
         if raw_input is None:
             return _error_response("Missing 'input' field", 400)
@@ -867,7 +872,7 @@ class OpenAICompatRoutesMixin:
             user_message=user_message, conversation_history=conversation_history,
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
-            **agent_overrides, route=route)
+            **agent_overrides, route=route, relay_metadata=relay_metadata)
         if getattr(self.gateway_runner, 'session_authority', None) is not None:
             key = request.headers.get('Idempotency-Key')
             if key:

@@ -35,7 +35,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -46,10 +46,8 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
-    from .wisdom_adapter import SlackWisdomMixin
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
-    from wisdom_adapter import SlackWisdomMixin  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -853,7 +851,7 @@ def _extra_or_env_channel_set_getter(
     return getter
 
 
-class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
+class SlackAdapter(BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -965,9 +963,6 @@ class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
         # Slash-command contexts so send() can route the first reply ephemerally. Keyed
         # (team_id, channel_id, user_id), two-part when no team id → {"response_url", "ts"}.
         self._slash_command_contexts: Dict[Tuple[str, ...], Dict[str, Any]] = {}
-        # Retain the profile that rendered each opaque control.
-        self._wisdom_callback_profiles: Dict[Tuple[str, str, str], Tuple[Optional[str], float]] = {}
-        self._WISDOM_CALLBACK_PROFILE_MAX = 2000
         # Native streaming state per chat_id: {"ts", "draft_id", "sent", "started"}.
         # ``sent`` is raw pre-mrkdwn text; the API is append-only so deltas diff against it.
         self._active_streams: Dict[str, Dict[str, Any]] = {}
@@ -1533,7 +1528,6 @@ class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
         for _action_id in self._CONFIRM_CHOICES:
             self._app.action(_action_id)(self._handle_slash_confirm_action)
         self._app.action("hermes_feedback")(self._handle_feedback_action)
-        self._app.action(re.compile(r"^hermes_wisdom_(?:[a-z0-9_]+)$"))(self._handle_wisdom_action)
         # Clarify buttons (tools/clarify_gateway.py); indexed action IDs because
         # Block Kit requires unique IDs within an actions block.
         self._app.action(re.compile(r"^hermes_clarify_choice_\d+$"))(self._handle_clarify_action)
@@ -2944,8 +2938,11 @@ class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
         return await self._react(channel, timestamp, emoji, team_id, remove=True)
 
     def _reactions_enabled(self) -> bool:
-        """Whether message reactions are enabled (``SLACK_REACTIONS`` env)."""
-        return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        """Whether message reactions are enabled (``extra.reactions`` / ``SLACK_REACTIONS``)."""
+        configured = self.config.extra.get("reactions")
+        if configured is None:
+            configured = os.getenv("SLACK_REACTIONS", "true")
+        return str(configured).lower() not in {"false", "0", "no"}
 
     def _reacting_target(self, event: MessageEvent) -> Optional[Tuple[str, str, Any]]:
         """``(ts, team_id, marker)`` when reactions are on and ``event`` is being tracked."""
@@ -6458,22 +6455,27 @@ _YAML_LIST_KEYS = (
 
 
 def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
-    """``apply_yaml_config_fn`` hook: ``slack:`` YAML keys → ``SLACK_*`` env vars (the adapter reads
-    ``os.getenv()``; explicit env wins). Returns None: nothing is seeded into ``extra``.
+    """``apply_yaml_config_fn`` hook: ``slack:`` YAML keys → ``SLACK_*`` env vars (explicit env wins) and
+    ``PlatformConfig.extra`` (extra-first readers; the env write is skipped under a multiplexed
+    secondary profile's scope so its policy never becomes the default profile's).
 
     Implements the ``apply_yaml_config_fn`` contract (#24849). Mirrors the legacy ``slack_cfg`` block that
     used to live in ``gateway/config.py::load_gateway_config()`` before this migration.
     """
+    _set_env = _yaml_env_setter()
+    seeded: dict = {}
     for key, env in _YAML_BOOL_KEYS:
-        if key in slack_cfg and not os.getenv(env):
-            os.environ[env] = str(slack_cfg[key]).lower()
+        if key in slack_cfg:
+            seeded[key] = slack_cfg[key]  # original type: the shared-key loop already seeded bools as bools
+            _set_env(env, str(slack_cfg[key]).lower())
     for key, env, list_types in _YAML_LIST_KEYS:
         val = slack_cfg.get(key)
-        if val is not None and not os.getenv(env):
+        if val is not None:
+            seeded[key] = val
             if list_types and isinstance(val, list_types):
                 val = ",".join(str(v) for v in val)
-            os.environ[env] = str(val)
-    return None
+            _set_env(env, str(val))
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

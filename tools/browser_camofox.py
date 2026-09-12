@@ -25,6 +25,7 @@ import requests
 
 from agent.secret_scope import get_secret
 from hermes_cli.config import cfg_get, load_config, read_raw_config
+from hermes_constants import hermes_home_key
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 
@@ -36,24 +37,30 @@ _DEFAULT_TIMEOUT = 30  # fallback when config is unreadable
 _NO_SESSION_ERROR = "No browser session. Call browser_navigate first."
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
-_cached_cmd_timeout: Optional[int] = None  # browser.command_timeout, resolved lazily like browser_tool
+# browser.command_timeout, resolved lazily like browser_tool; keyed by profile home because the
+# multiplexed gateway serves every profile from one process.
+_cached_cmd_timeout: Optional[Dict[str, int]] = None
 _cmd_timeout_resolved = False
 
 
 def _get_command_timeout() -> int:
-    """``browser.command_timeout`` (floor 5s, default 30s), cached after first read."""
+    """``browser.command_timeout`` (floor 5s, default 30s), cached per profile home after first read."""
     global _cached_cmd_timeout, _cmd_timeout_resolved
-    if _cmd_timeout_resolved:
-        return _cached_cmd_timeout  # type: ignore[return-value]
-    _cmd_timeout_resolved = True
-    _cached_cmd_timeout = _DEFAULT_TIMEOUT
+    home = hermes_home_key()
+    if _cached_cmd_timeout is None:
+        _cached_cmd_timeout = {}
+    if _cmd_timeout_resolved and home in _cached_cmd_timeout:
+        return _cached_cmd_timeout[home]
+    timeout = _DEFAULT_TIMEOUT
     try:
         val = cfg_get(read_raw_config(), "browser", "command_timeout")
         if val is not None:
-            _cached_cmd_timeout = max(int(val), 5)
+            timeout = max(int(val), 5)
     except Exception as exc:
         logger.debug("Could not read browser.command_timeout: %s", exc)
-    return _cached_cmd_timeout
+    _cached_cmd_timeout[home] = timeout
+    _cmd_timeout_resolved = True
+    return timeout
 
 
 def _auth_headers() -> Dict[str, str]:

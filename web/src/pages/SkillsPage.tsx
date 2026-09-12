@@ -42,7 +42,6 @@ import type {
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";
-import { CollectiveWisdomPanel } from "@/components/CollectiveWisdomPanel";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -122,19 +121,6 @@ function toolsetIcon(
   return Wrench;
 }
 
-type SkillPresentation = {
-  name: string;
-  description: string;
-  editorial_name?: string;
-  editorial_description?: string;
-};
-
-const skillDisplayName = (skill: SkillPresentation) =>
-  skill.editorial_name?.trim() || skill.name;
-
-const skillDisplayDescription = (skill: SkillPresentation) =>
-  skill.editorial_description?.trim() || skill.description;
-
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -143,15 +129,8 @@ export default function SkillsPage() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  // Keep the response profile-keyed so a profile switch fails closed before
-  // its first request settles. Positive responses are also bounded by exp.
-  const [wisdomEntitlement, setWisdomEntitlement] = useState<{
-    scope: { profile: string };
-    entitled: boolean;
-    expiresAt: number | null;
-  } | null>(null);
   const [search, setSearch] = useState("");
-  const [view, setView] = useState<"skills" | "toolsets" | "hub" | "collective">("skills");
+  const [view, setView] = useState<"skills" | "toolsets" | "hub">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
   const [configToolset, setConfigToolset] = useState<ToolsetInfo | null>(null);
@@ -172,8 +151,6 @@ export default function SkillsPage() {
   const {
     profile: selectedProfile,
   } = useProfileScope();
-  // A return visit must not reuse the previous visit's successful probe.
-  const wisdomScope = useMemo(() => ({ profile: selectedProfile }), [selectedProfile]);
 
   useEffect(() => {
     // Promise-chain shape: setState fires only inside async callbacks so the
@@ -195,51 +172,6 @@ export default function SkillsPage() {
       cancelled = true;
     };
   }, [selectedProfile]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let pollTimer: ReturnType<typeof setTimeout> | undefined;
-    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const schedulePoll = () => {
-      pollTimer = setTimeout(probe, 15_000);
-    };
-    const probe = () => {
-      api
-        .getWisdomEntitlement(selectedProfile || undefined)
-        .then((result) => {
-          if (cancelled) return;
-          clearTimeout(expiryTimer);
-          const expiresAt = typeof result.expires_at === "number" ? result.expires_at : null;
-          const entitled =
-            result.entitled === true && expiresAt !== null && expiresAt * 1000 > Date.now();
-          setWisdomEntitlement({ scope: wisdomScope, entitled, expiresAt });
-          if (entitled) {
-            expiryTimer = setTimeout(
-              () =>
-                !cancelled &&
-                setWisdomEntitlement({ scope: wisdomScope, entitled: false, expiresAt }),
-              Math.min(expiresAt * 1000 - Date.now(), 2_147_483_647),
-            );
-          }
-        })
-        // A failed recheck replaces, rather than preserves, prior positive data.
-        .catch(() =>
-          !cancelled &&
-          setWisdomEntitlement({ scope: wisdomScope, entitled: false, expiresAt: null }),
-        )
-        .finally(() => !cancelled && schedulePoll());
-    };
-
-    probe();
-    return () => {
-      cancelled = true;
-      clearTimeout(pollTimer);
-      clearTimeout(expiryTimer);
-    };
-  }, [selectedProfile, wisdomScope]);
-  const wisdomEntitled =
-    wisdomEntitlement?.scope === wisdomScope && wisdomEntitlement.entitled === true;
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
@@ -339,8 +271,6 @@ export default function SkillsPage() {
       (s) =>
         s.name.toLowerCase().includes(lowerSearch) ||
         s.description.toLowerCase().includes(lowerSearch) ||
-        skillDisplayName(s).toLowerCase().includes(lowerSearch) ||
-        skillDisplayDescription(s).toLowerCase().includes(lowerSearch) ||
         (s.category ?? "").toLowerCase().includes(lowerSearch),
     );
   }, [skills, isSearching, lowerSearch]);
@@ -348,18 +278,14 @@ export default function SkillsPage() {
   const activeSkills = useMemo(() => {
     if (isSearching) return [];
     if (!activeCategory)
-      return [...skills].sort((a, b) =>
-        skillDisplayName(a).localeCompare(skillDisplayName(b)),
-      );
+      return [...skills].sort((a, b) => a.name.localeCompare(b.name));
     return skills
       .filter((s) =>
         activeCategory === "__none__"
           ? !s.category
           : s.category === activeCategory,
       )
-      .sort((a, b) =>
-        skillDisplayName(a).localeCompare(skillDisplayName(b)),
-      );
+      .sort((a, b) => a.name.localeCompare(b.name));
   }, [skills, activeCategory, isSearching]);
 
   const allCategories = useMemo(() => {
@@ -489,24 +415,13 @@ export default function SkillsPage() {
                 />
                 <PanelItem
                   icon={Search}
-                  label={t.skills.wisdom.browseHub}
+                  label="Browse hub"
                   active={view === "hub"}
                   onClick={() => {
                     setView("hub");
                     setSearch("");
                   }}
                 />
-                {wisdomEntitled && (
-                  <PanelItem
-                    icon={Sparkles}
-                    label={t.skills.wisdom.tab}
-                    active={view === "collective"}
-                    onClick={() => {
-                      setView("collective");
-                      setSearch("");
-                    }}
-                  />
-                )}
               </div>
 
               {view === "skills" &&
@@ -651,8 +566,6 @@ export default function SkillsPage() {
                 )}
               </CardContent>
             </Card>
-          ) : view === "collective" && wisdomEntitled ? (
-            <CollectiveWisdomPanel profile={selectedProfile || undefined} />
           ) : view === "toolsets" ? (
             /* Toolsets grid */
             <>
@@ -843,11 +756,11 @@ function SkillRow({
               skill.enabled ? "text-foreground" : "text-muted-foreground"
             }`}
           >
-            {skillDisplayName(skill)}
+            {skill.name}
           </span>
         </div>
         <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
-          {skillDisplayDescription(skill) || noDescriptionLabel}
+          {skill.description || noDescriptionLabel}
         </p>
       </div>
       <Button
@@ -1358,11 +1271,11 @@ function HubResultCard({
           type="button"
           className="flex-1 min-w-0 text-left"
           onClick={onOpen}
-          aria-label={`Open ${skillDisplayName(result)}`}
+          aria-label={`Open ${result.name}`}
         >
           <div className="flex flex-wrap items-center gap-2 mb-0.5">
             <span className="font-mono-ui text-sm hover:underline">
-              {skillDisplayName(result)}
+              {result.name}
             </span>
             <Badge tone={trust.tone} className="text-xs">
               {trust.label}
@@ -1377,7 +1290,7 @@ function HubResultCard({
             )}
           </div>
           <p className="text-xs text-text-secondary line-clamp-2">
-            {skillDisplayDescription(result)}
+            {result.description}
           </p>
           <div className="flex flex-wrap items-center gap-1 mt-1">
             {result.tags.slice(0, 5).map((tag) => (
@@ -1476,7 +1389,7 @@ function SkillDetailDialog({
         <DialogHeader>
           <DialogTitle className="flex flex-wrap items-center gap-2 text-sm">
             <Package className="h-4 w-4" />
-            {skillDisplayName(result)}
+            {result.name}
             <Badge tone={trust.tone} className="text-xs">
               {trust.label}
             </Badge>
@@ -1490,15 +1403,13 @@ function SkillDetailDialog({
             )}
           </DialogTitle>
           <DialogDescription className="sr-only">
-            Preview the SKILL.md source and run a security scan for{" "}
-            {skillDisplayName(result)} before installing.
+            Preview the SKILL.md source and run a security scan for {result.name}{" "}
+            before installing.
           </DialogDescription>
         </DialogHeader>
 
         <div className="mt-1 flex flex-col gap-1">
-          <p className="text-xs text-text-secondary">
-            {skillDisplayDescription(result)}
-          </p>
+          <p className="text-xs text-text-secondary">{result.description}</p>
           <p className="text-xs font-mono text-text-tertiary truncate">
             {result.identifier}
           </p>

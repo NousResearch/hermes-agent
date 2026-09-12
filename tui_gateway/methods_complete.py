@@ -215,7 +215,6 @@ def _(rid, params: dict) -> dict:
 
 
 @method("complete.slash")
-@_profile_scoped
 @_catch(5020)
 def _(rid, params: dict) -> dict:
     from tui_gateway.command_discovery import slash_completions

@@ -332,12 +332,6 @@ class GatewayGoalsMixin:
                 await hook(session_entry=session_entry, source=source, final_response=final_text)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
-        try:
-            await self._defer_wisdom_candidate_notice_after_delivery(
-                source, str(session_entry.session_id), user_activity=not is_internal,
-            )
-        except Exception as exc:
-            logger.debug("Wisdom candidate notification hook failed: %s", exc)
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:

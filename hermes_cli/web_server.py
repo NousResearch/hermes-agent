@@ -69,7 +69,6 @@ from hermes_cli.web_server_lifecycle import (  # noqa: E402
     _report_port_in_use,
     _start_parent_death_watchdog,
     _warm_gateway_module,
-    _wisdom_checker_loop,
     _write_dashboard_ready_file,
     _write_machine_sentinel_line,
 )
@@ -98,17 +97,25 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     start_kwargs: dict = {"interval": interval}
     if isinstance(provider, InProcessCronScheduler):
         try:
-            from hermes_cli.profiles import profiles_to_serve
+            from hermes_cli.profiles import (
+                _check_gateway_running, _served_by_running_multiplexer, profiles_to_serve)
+            from hermes_cli.web_server_cron import _default_multiplex_profile_allowlist
 
-            profile_homes = list(profiles_to_serve(multiplex=True))
-            if len(profile_homes) > 1:
+            # Same served set as the multiplexer (allowlist honoured): a profile the default
+            # gateway deliberately does not serve must not be ticked from the Desktop either.
+            profile_homes = list(profiles_to_serve(
+                multiplex=True, profile_allowlist=_default_multiplex_profile_allowlist()))
+            if profile_homes:
+                # Even one profile needs the per-tick gateway gate; otherwise
+                # Desktop races its dedicated gateway for the same cron store.
                 start_kwargs["profile_homes"] = profile_homes
-                # Stand down, per tick, for a profile whose OWN gateway runs:
-                # it ticks with live adapters, and the tick-lock race would
-                # otherwise deliver through the standalone path (#100489).
-                from hermes_cli.profiles import _check_gateway_running
-
-                start_kwargs["profile_gate"] = lambda _name, home: not _check_gateway_running(Path(home))
+                # Stand down, per tick, for a profile already owned by a gateway — its OWN
+                # process, or the live default multiplexer (a served satellite has no gateway.pid
+                # of its own). That gateway ticks with live adapters; winning the tick-lock race
+                # here would deliver through the standalone path (#100489, #107485).
+                start_kwargs["profile_gate"] = lambda name, home: not (
+                    _check_gateway_running(Path(home))
+                    or (name != "default" and _served_by_running_multiplexer(name)))
                 from hermes_logging import enable_profile_log_routing
 
                 enable_profile_log_routing(profile_homes)
@@ -810,7 +817,6 @@ from hermes_cli.web_routers import (  # noqa: E402
     mcp as _mcp_routes,
     ops as _ops_routes,
     skills as _skills_routes,
-    wisdom as _wisdom_routes,
     tools as _tools_routes,
     analytics as _analytics_routes,
     chat_ws as _chat_ws_routes,
@@ -841,7 +847,6 @@ app.include_router(_ops_routes.router)
 app.include_router(_skills_routes.hub_router)
 app.include_router(_profiles_routes.router)
 app.include_router(_skills_routes.router)
-app.include_router(_wisdom_routes.router)
 app.include_router(_tools_routes.router)
 app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)

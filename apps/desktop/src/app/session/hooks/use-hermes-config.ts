@@ -19,6 +19,7 @@ import {
   setDefaultReasoningEffort,
   setIntroPersonality
 } from '@/store/session'
+import { refreshVoiceLiveStatus } from '@/store/voice-live'
 import {
   applyAutoSpeakFromConfig,
   applyThinkingSoundFromConfig,
@@ -160,6 +161,8 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         applyAutoSpeakFromConfig(config)
         applyVoiceStopPhraseFromConfig(config)
         applyThinkingSoundFromConfig(config)
+        // Resolved server-side (mode + whether a key resolves); non-critical.
+        void refreshVoiceLiveStatus().catch(() => undefined)
       } catch {
         // Config is nice-to-have; chat still works without it.
       }

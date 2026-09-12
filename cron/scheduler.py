@@ -3123,7 +3123,13 @@ def _launch_external_cron_worker(job: dict) -> bool:
         str(ack_path),
     ]
 
-    from agent.secret_scope import is_multiplex_active
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        is_multiplex_active,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
     from tools.environments.local import build_subprocess_env
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
@@ -3165,11 +3171,17 @@ def _launch_external_cron_worker(job: dict) -> bool:
         payload_path.unlink(missing_ok=True)
         raise
 
-    worker_env = build_subprocess_env(
-        scrub_secrets=multiplex_active,
-        inherit_profile_home=True,
-        extra={"HERMES_HOME": str(_get_hermes_home().resolve())},
-    )
+    profile_home = _get_hermes_home().resolve()
+    hydrate_profile_secret_sources(profile_home)
+    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    try:
+        worker_env = build_subprocess_env(
+            scrub_secrets=multiplex_active,
+            inherit_profile_home=True,
+            extra={"HERMES_HOME": str(profile_home)},
+        )
+    finally:
+        reset_secret_scope(secret_token)
     worker_env = systemd_user_bus_env(worker_env)
     try:
         process = subprocess.Popen(

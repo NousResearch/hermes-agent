@@ -396,22 +396,30 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
 
 
 # ---- Module-level state (every mutation under ``_lock``) ----
+#
+# Every ledger below is keyed by the CONNECTION KEY from ``tools.mcp_tool_scope``: the bare
+# server name outside a multiplexer, ``(owner_scope, name)`` under one. Two profiles naming the
+# same server with their own credentials are two connections; a name-keyed ledger let the first
+# profile's connection shadow the second's (never connected, silently tool-less — #106005).
 
-_servers: Dict[str, MCPServerTask] = {}
+_servers: Dict[Any, MCPServerTask] = {}
 # Profile registry scope per live connection (None outside multiplex) so a multiplexed
 # /reload-mcp tears down only its own profile's servers.
-_server_scope_keys: Dict[str, Optional[str]] = {}
+_server_scope_keys: Dict[Any, Optional[str]] = {}
 # Registry scopes that have adopted a live server connection. The owning scope above remains
 # authoritative for connection teardown; this set preserves visibility for shared connections.
-_server_tool_scopes: Dict[str, set] = {}
-_server_connecting: set[str] = set()
-_server_connect_errors: Dict[str, str] = {}
+_server_tool_scopes: Dict[Any, set] = {}
+_server_connecting: set = set()
+_server_connect_errors: Dict[Any, str] = {}
+# adopter scope -> server names whose shared connection an owner's scoped shutdown tore down;
+# drained by the next discovery pass so the adopter is re-registered (see mcp_tool_lifecycle).
+_orphaned_adopters: Dict[str, set] = {}
 # Lazy startup: servers registered from the schema cache without connecting; popped on
 # first real connection.
-# Keyed by server name; entries are popped once a real connection is established on first use. See #56832.
-_lazy_server_configs: Dict[str, dict] = {}
-_lazy_server_fingerprints: Dict[str, str] = {}
-_lazy_server_tool_names: Dict[str, List[str]] = {}
+# Keyed by connection key; entries are popped once a real connection is established on first use. See #56832.
+_lazy_server_configs: Dict[Any, dict] = {}
+_lazy_server_fingerprints: Dict[Any, str] = {}
+_lazy_server_tool_names: Dict[Any, List[str]] = {}
 # Task-local claim around ``_connect_server``: discovery retains a recoverable parked task
 # while standalone probes never publish failed servers into module-global ownership.
 _connect_server_claim: contextvars.ContextVar[Optional[Callable[[MCPServerTask], None]]] = (
@@ -432,8 +440,8 @@ _connect_server_claim: contextvars.ContextVar[Optional[Callable[[MCPServerTask],
 # ``retry_after`` deadline with exponential backoff. ``register_mcp_servers`` skips a server whose cooldown
 # has not elapsed, so a chronically failing server is retried on a backoff schedule instead of on every
 # worker session -- isolating it from the rest of the bridge. A successful connection clears the state.
-_server_connect_retry_after: Dict[str, float] = {}   # name -> monotonic deadline
-_server_connect_failures: Dict[str, int] = {}        # name -> consecutive failures
+_server_connect_retry_after: Dict[Any, float] = {}   # connection key -> monotonic deadline
+_server_connect_failures: Dict[Any, int] = {}        # connection key -> consecutive failures
 _CONNECT_RETRY_BASE_BACKOFF_SEC, _CONNECT_RETRY_MAX_BACKOFF_SEC = 30.0, 600.0
 
 # Per-server circuit breaker: closed -> open (calls short-circuit until the cooldown) ->
@@ -446,8 +454,8 @@ _CONNECT_RETRY_BASE_BACKOFF_SEC, _CONNECT_RETRY_MAX_BACKOFF_SEC = 30.0, 600.0
 # ``_server_breaker_opened_at`` records the monotonic timestamp when the breaker most recently transitioned
 # into the open state. Use the ``_bump_server_error`` / ``_reset_server_error`` helpers to mutate this state
 # — they keep the count and timestamp in sync.
-_server_error_counts: Dict[str, int] = {}
-_server_breaker_opened_at: Dict[str, float] = {}
+_server_error_counts: Dict[Any, int] = {}
+_server_breaker_opened_at: Dict[Any, float] = {}
 _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 
 # Trust-tier gating (``trust: full | untrusted``): on an untrusted server every write-capable
@@ -456,24 +464,29 @@ _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 # already warned about, never widen access. Missing trust = full; unrecognized = untrusted (a
 # typo must never disable the gate). Classified at CALL time from DISCOVERY data: no schema
 # mutation, prompt cache intact.
-_server_trust_levels: Dict[str, str] = {}
-_tool_read_only_hints: Dict[str, Dict[str, bool]] = {}
+_server_trust_levels: Dict[Any, str] = {}
+_tool_read_only_hints: Dict[Any, Dict[str, bool]] = {}
 
 _TRUST_FULL, _TRUST_UNTRUSTED = "full", "untrusted"
 
 
 def _bump_server_error(server_name: str) -> None:
-    """Count a failure; at the threshold (re)stamp the breaker-open time."""
-    n = _server_error_counts.get(server_name, 0) + 1
-    _server_error_counts[server_name] = n
+    """Count a failure; at the threshold (re)stamp the breaker-open time. Keyed by the calling
+    scope's connection so one profile's failing server never opens another profile's breaker."""
+    from tools.mcp_tool_scope import _resolve_server_key
+    key = _resolve_server_key(server_name)
+    n = _server_error_counts.get(key, 0) + 1
+    _server_error_counts[key] = n
     if n >= _CIRCUIT_BREAKER_THRESHOLD:
-        _server_breaker_opened_at[server_name] = time.monotonic()
+        _server_breaker_opened_at[key] = time.monotonic()
 
 
 def _reset_server_error(server_name: str) -> None:
     """Close the breaker on any unambiguous success signal."""
-    _server_error_counts[server_name] = 0
-    _server_breaker_opened_at.pop(server_name, None)
+    from tools.mcp_tool_scope import _resolve_server_key
+    key = _resolve_server_key(server_name)
+    _server_error_counts[key] = 0
+    _server_breaker_opened_at.pop(key, None)
 
 
 # Raw server names opted into parallel tool calls (``foo-bar``/``foo_bar`` sanitize alike but
@@ -626,20 +639,22 @@ def _mcp_registry_scope() -> Optional[str]:
     return registry.current_scope_key()
 
 
-def _server_registry_scope(name: str) -> Optional[str]:
-    """Scope owning *name*'s tools: the one captured at adoption (teardown runs on the MCP
-    loop without the discovering profile's context), else the current one."""
-    if name in _server_scope_keys:
-        return _server_scope_keys[name]
-    return _mcp_registry_scope()
+def _server_registry_scope(key) -> Optional[str]:
+    """Scope owning the connection under *key*'s tools: the one captured at adoption (teardown
+    runs on the MCP loop without the discovering profile's context), else the current one."""
+    if key in _server_scope_keys:
+        return _server_scope_keys[key]
+    from tools.mcp_tool_scope import _key_scope
+    return _key_scope(key) or _mcp_registry_scope()
 
 
-def _server_visible_in_scope(name: str, scope: Optional[str]) -> bool:
-    """Whether a live server is visible from ``scope`` without changing its teardown owner."""
+def _server_visible_in_scope(key, scope: Optional[str]) -> bool:
+    """Whether the live connection under *key* is visible from ``scope`` without changing its
+    teardown owner."""
     if scope is None:
         return True
-    return (_server_scope_keys.get(name) == scope
-            or scope in _server_tool_scopes.get(name, ()))
+    return (_server_scope_keys.get(key) == scope
+            or scope in _server_tool_scopes.get(key, ()))
 
 
 # Cross-process discovery guard: advisory file lock so gateway + CLI + TUI don't all discover.

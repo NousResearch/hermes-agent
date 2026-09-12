@@ -1,5 +1,7 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import contextlib
+import re
 import sqlite3
 import time
 import json
@@ -619,6 +621,56 @@ class TestMessageStorage:
         assert messages[1]["role"] == "assistant"
 
 
+
+    def test_settled_open_issues_no_main_db_writes(self, tmp_path, monkeypatch):
+        """Opening a database that needs no repair must not execute any write statement.
+
+        A write statement takes the write lock even when it changes nothing, so an
+        unconditional INSERT OR IGNORE / UPDATE / marker stamp blocks every open behind
+        a sibling process's transaction. The FTS5 capability probe on ``temp`` is exempt.
+        """
+        db_path = tmp_path / "state.db"
+        SessionDB(db_path=db_path).close()  # mints stamp + FTS layout marker
+        SessionDB(db_path=db_path).close()
+
+        writes = []
+        real_connect = sqlite3.connect
+
+        def tracing_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            conn.set_trace_callback(
+                lambda stmt: writes.append(stmt)
+                if re.match(r"\s*(INSERT|UPDATE|DELETE|REPLACE|ALTER|DROP\s+TRIGGER)\b", stmt, re.I) and "temp." not in stmt
+                else None
+            )
+            return conn
+
+        monkeypatch.setattr(sqlite3, "connect", tracing_connect)
+        SessionDB(db_path=db_path).close()
+        assert writes == []
+
+    def test_open_completes_while_sibling_holds_write_lock(self, tmp_path):
+        """A settled read-write open must not wait on another connection's write transaction."""
+        db_path = tmp_path / "state.db"
+        SessionDB(db_path=db_path).close()
+        SessionDB(db_path=db_path).close()
+
+        holder = sqlite3.connect(db_path, timeout=60)
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute("UPDATE state_meta SET value = value WHERE key = 'nonexistent'")
+        release = threading.Timer(4.0, holder.rollback)
+        release.start()
+        try:
+            started = time.perf_counter()
+            SessionDB(db_path=db_path).close()
+            elapsed = time.perf_counter() - started
+        finally:
+            release.cancel()
+            with contextlib.suppress(sqlite3.Error):
+                holder.rollback()
+            holder.close()
+        # Pre-fix this waited for the whole 4 s hold (retry loop around the busy timeout).
+        assert elapsed < 2.0, f"open blocked on the write lock for {elapsed:.3f}s"
 
     def test_startup_heals_null_active_rows(self, tmp_path):
         """Rows written as active=NULL before the fix are un-hidden on startup.
@@ -1839,6 +1891,135 @@ class TestSchemaInit:
                 )
 
 
+class TestAsyncDelegationsSchemaAgreement:
+    """One durable-shape authority for async_delegations (#94691).
+
+    The delegation tool used to carry its own CREATE TABLE + ALTER column
+    list; it drifted from SCHEMA_SQL (a same-name column with a different
+    shape depending on which authority touched the database first). The
+    tool's initializer now routes through the canonical reconciler, so
+    every opening order must land on the same canonical shape — compared
+    over FULL PRAGMA table_info metadata (type, notnull, dflt_value, pk),
+    not just column names, and with the canonical index set pinned.
+    """
+
+    def _table_info(self, conn):
+        return {
+            row[1]: (row[2], row[3], row[4], row[5])
+            for row in conn.execute(
+                "PRAGMA table_info(async_delegations)"
+            ).fetchall()
+        }
+
+    def _canonical_shape(self):
+        ref = __import__("sqlite3").connect(":memory:")
+        try:
+            from hermes_state_common import SCHEMA_SQL
+
+            ref.executescript(SCHEMA_SQL)
+            return self._table_info(ref), {
+                row[0]
+                for row in ref.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='async_delegations' AND sql IS NOT NULL"
+                ).fetchall()
+            }
+        finally:
+            ref.close()
+
+    def _legacy_db(self, db_path):
+        """A database created before origin_session_id existed, carrying a
+        pre-existing delegation row that must survive every opening order."""
+        import sqlite3
+
+        from hermes_state_common import SCHEMA_SQL
+
+        legacy_sql = SCHEMA_SQL.replace(
+            "    origin_session_id TEXT NOT NULL DEFAULT ''\n", ""
+        ).replace(
+            "    delivery_claimed_at REAL,\n",
+            "    delivery_claimed_at REAL\n",
+        )
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executescript(legacy_sql)
+            conn.execute(
+                "INSERT INTO async_delegations (delegation_id, origin_session, origin_ui_session_id, state, dispatched_at, updated_at) VALUES ('legacy-1', 'sess-a', '', 'completed', 1.0, 1.0)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _assert_canonical(self, conn):
+        expected_cols, expected_indexes = self._canonical_shape()
+        live_cols = self._table_info(conn)
+        assert live_cols == expected_cols
+        live_indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='async_delegations' AND sql IS NOT NULL"
+            ).fetchall()
+        }
+        assert live_indexes == expected_indexes
+        row = conn.execute(
+            "SELECT delegation_id, IFNULL(origin_session_id, '<null>') FROM async_delegations WHERE delegation_id='legacy-1'"
+        ).fetchone()
+        if row is not None:
+            # The legacy row survived and the canonical '' default
+            # backfilled the added column (SQLite ADD COLUMN ... DEFAULT
+            # populates existing rows with the default).
+            assert row[1] == ""
+
+    def test_fresh_session_db_then_tool(self, tmp_path):
+        import sqlite3
+
+        from tools.async_delegation import _initialize_schema
+
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        db.close()
+
+        conn = sqlite3.connect(db_path)
+        try:
+            shape_before = self._table_info(conn)
+            _initialize_schema(conn)
+            conn.commit()
+            assert self._table_info(conn) == shape_before
+            self._assert_canonical(conn)
+        finally:
+            conn.close()
+
+    def test_legacy_store_then_session_db(self, tmp_path):
+        db_path = tmp_path / "legacy-state.db"
+        self._legacy_db(db_path)
+
+        db = SessionDB(db_path=db_path)
+        try:
+            self._assert_canonical(db._conn)
+        finally:
+            db.close()
+
+    def test_legacy_store_then_tool_then_session_db(self, tmp_path):
+        import sqlite3
+
+        from tools.async_delegation import _initialize_schema
+
+        db_path = tmp_path / "legacy-tool-state.db"
+        self._legacy_db(db_path)
+
+        conn = sqlite3.connect(db_path)
+        try:
+            _initialize_schema(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
+        db = SessionDB(db_path=db_path)
+        try:
+            self._assert_canonical(db._conn)
+        finally:
+            db.close()
+
+
 class TestReconcileColumnsErrorHandling:
     """_reconcile_columns must not bury migration failures (#79531/#80037).
 
@@ -2368,6 +2549,59 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich()
         assert len(sessions) == 1
         assert "Help me refactor the auth module" in sessions[0]["preview"]
+
+    @pytest.mark.parametrize(
+        "unsafe_model_config",
+        ["{not-json", "[]", '"scalar"', "5", "null"],
+    )
+    def test_unsafe_model_config_does_not_break_session_surfaces(
+        self, db, unsafe_model_config
+    ):
+        db.create_session("root", "telegram")
+        db.append_message("root", "user", "root message")
+        db.create_session("compression-parent", "telegram")
+        db.end_session("compression-parent", "compression")
+        db.create_session(
+            "compression-child",
+            "telegram",
+            parent_session_id="compression-parent",
+        )
+        db.append_message("compression-child", "user", "child message")
+        db.create_session("routing-orphan", "telegram")
+        db.append_message("routing-orphan", "user", "orphan message")
+        db._conn.execute(
+            "UPDATE sessions SET model_config = ? "
+            "WHERE id IN (?, ?, ?)",
+            (unsafe_model_config, "root", "compression-child", "routing-orphan"),
+        )
+        db._conn.commit()
+
+        listed = db.list_sessions_rich(source="telegram")
+        ordered = db.list_sessions_rich(
+            source="telegram", order_by_last_active=True
+        )
+
+        assert "root" in {row["id"] for row in listed}
+        assert "root" in {row["id"] for row in ordered}
+        assert db.session_count(source="telegram", exclude_children=True) == 3
+        assert db.session_count_by_source(exclude_children=True)["telegram"] == 3
+        assert db.get_compression_chain("compression-parent") == [
+            "compression-parent",
+            "compression-child",
+        ]
+        db.record_gateway_session_peer(
+            "compression-child",
+            source="telegram",
+            session_key="agent:main:telegram:dm:recovered",
+            include_compression_ancestors=True,
+        )
+        assert db.get_session("compression-parent")["session_key"] == (
+            "agent:main:telegram:dm:recovered"
+        )
+        assert any(
+            row["orphan_id"] == "routing-orphan"
+            for row in db.find_orphaned_gateway_sessions()
+        )
 
 
 

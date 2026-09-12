@@ -402,10 +402,21 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
 
 
 def default_db_path() -> Path:
-    """Return the gateway-wide state database for the active install."""
+    """Return the hosted-room coordination database for the active install.
+
+    Profile gateways (``~/.hermes/profiles/<name>/``) resolve to the shared
+    ROOT ``shared-state.db`` instead of the master ``state.db``: hosted-room
+    coordination is the only thing this module owns, and pointing profile
+    gateways at the master session store makes every profile process a
+    long-lived writer on state.db — the recurring multi-writer corruption
+    vector observed across a 6-gateway fleet (state.db WAL/FTS collisions
+    during bot-gateway restart storms, 2026-09-03). Keeping the hosted_room*
+    tables in a dedicated file means profile gateways never open the master
+    session store writable.
+    """
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
-    return (home.parent.parent if home.parent.name == "profiles" else home) / "state.db"
+    return (home.parent.parent if home.parent.name == "profiles" else home) / "shared-state.db"
 
 
 def local_authority_gateway_id() -> str:
@@ -418,7 +429,7 @@ def local_authority_gateway_id() -> str:
 
 
 _connect = partial(
-    connect, db_label="state.db (hosted_rooms)", ready=_schema_is_current,
+    connect, db_label="shared-state.db (hosted_rooms)", ready=_schema_is_current,
     initialize=lambda conn: _initialize_schema(conn), lock_retries=_JOURNAL_MODE_LOCK_RETRIES)
 
 

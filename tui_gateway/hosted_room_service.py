@@ -127,9 +127,15 @@ class HostedRoomService:
         return self.db_path.parent
 
     def local_profiles(self) -> tuple[str, ...]:
+        from hermes_constants import named_profile_is_deleted
+
         profiles, profiles_dir = {"default"}, self.root / "profiles"
         if profiles_dir.is_dir():
-            profiles.update(path.name for path in profiles_dir.iterdir() if path.is_dir())
+            # ``profiles/.deleted/`` is the tombstone dir `hermes profile delete` leaves behind, not a
+            # profile: feeding it to validate_roster failed plan_next_task on every cycle (#106847).
+            profiles.update(
+                path.name for path in profiles_dir.iterdir()
+                if path.is_dir() and not path.name.startswith(".") and not named_profile_is_deleted(path))
         return tuple(sorted(profiles))
 
     def bindings(self) -> tuple[HostedRoomBinding, ...]:

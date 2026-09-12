@@ -298,7 +298,9 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "reasoning_config": g("reasoning_config") or _load_reasoning_config(str(g("model", "") or "")),
         "service_tier": g("service_tier") or _load_service_tier(),
         "request_overrides": dict(g("request_overrides", {}) or {}),
-        "platform": "tui", "session_db": _get_db(), "fallback_model": fallback}
+        # The side agent persists into the PARENT's store: a named-profile chat's ``bg_*`` rows
+        # belong to that profile's state.db, not the launch handle.
+        "platform": "tui", "session_db": getattr(agent, "_session_db", None) or _get_db(), "fallback_model": fallback}
 
 
 def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:

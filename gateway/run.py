@@ -1159,18 +1159,23 @@ def _csv_or_list_to_set(raw: Any) -> set[str]:
     return {part.strip() for part in str(raw).split(",") if part.strip()}
 
 
-def _slack_ignored_channels_from_gateway_config(config: Any) -> set[str]:
+def _slack_ignored_channels_from_gateway_config(config: Any, adapter: Any = None) -> set[str]:
     """Return Slack channels that the generic gateway must never dispatch.
 
-    Duplicates the adapter's drop as a fail-safe so bypasses can't reach auth, pairing or sessions."""
-    platform_cfg = getattr(config, "platforms", {}).get(Platform.SLACK)
+    Duplicates the adapter's drop as a fail-safe so bypasses can't reach auth, pairing or sessions.
+    ``adapter`` is the source's routed adapter: under multiplex ``config`` is the DEFAULT profile's
+    GatewayConfig, so a secondary Slack bot's list lives only in its adapter's ``extra``."""
     raw = None
-    if platform_cfg is not None:
+    if adapter is not None:
+        raw = (getattr(getattr(adapter, "config", None), "extra", None) or {}).get("ignored_channels")
+    platform_cfg = getattr(config, "platforms", {}).get(Platform.SLACK)
+    if raw is None and platform_cfg is not None and adapter is None:
         raw = getattr(platform_cfg, "extra", {}).get("ignored_channels")
     if raw is None:
-        # Top-level ``slack.ignored_channels`` arrives via the plugin's YAML→env bridge, not PlatformConfig.extra.
-        # See #46925.
-        raw = os.getenv("SLACK_IGNORED_CHANNELS") or None
+        # Top-level ``slack.ignored_channels`` arrives via the plugin's YAML→env bridge, not PlatformConfig.extra
+        # (#46925); scoped read so a secondary never inherits the default profile's list (first-writer env).
+        from gateway.authz_mixin import _platform_gate_env
+        raw = _platform_gate_env("SLACK_IGNORED_CHANNELS") or None
     return _csv_or_list_to_set(raw)
 
 
@@ -1179,10 +1184,11 @@ def _slack_parent_channel_id(chat_id: Any) -> str:
     return str(chat_id).split(":", 1)[0] if chat_id else ""
 
 
-def _is_slack_ignored_channel(config: Any, chat_id: Any) -> bool:
-    """Check the generic Slack gateway blacklist for channel or thread IDs."""
+def _is_slack_ignored_channel(config: Any, chat_id: Any, adapter: Any = None) -> bool:
+    """Check the generic Slack gateway blacklist for channel or thread IDs (``adapter`` = the source's
+    routed adapter, whose ``extra`` is authoritative for a secondary profile)."""
     channel_id = _slack_parent_channel_id(chat_id)
-    ignored = _slack_ignored_channels_from_gateway_config(config)
+    ignored = _slack_ignored_channels_from_gateway_config(config, adapter)
     return bool(channel_id and ("*" in ignored or channel_id in ignored))
 
 
@@ -1614,9 +1620,20 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
 def _current_max_iterations() -> int:
     """Return the per-turn iteration budget after runtime env refresh; ``resolve_turn_limit`` maps
     ``agent.max_turns: none``/``unlimited`` (bridged as a string) to the unlimited sentinel, not an
-    ``int()`` crash."""
+    ``int()`` crash. A routed profile (HERMES_HOME override, multiplexed turns) reads ITS
+    ``agent.max_turns`` straight from config: the ``HERMES_MAX_ITERATIONS`` bridge is one process-wide
+    slot holding the launch profile's value, so every secondary would inherit the default's budget."""
     _reload_runtime_env_preserving_config_authority()
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+    override = get_hermes_home_override()
+    if override:
+        config_path = Path(override) / 'config.yaml'
+        try:
+            cfg = _load_bridge_config(config_path) if config_path.exists() else {}
+        except Exception:
+            cfg = {}
+        agent_cfg = cfg.get("agent")
+        return _resolve_turn_limit(agent_cfg.get("max_turns") if isinstance(agent_cfg, dict) else None)
     return _resolve_turn_limit(os.getenv("HERMES_MAX_ITERATIONS"))
 
 
@@ -1646,6 +1663,23 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     from hermes_cli.profiles import profiles_to_serve
     return list(profiles_to_serve(
         multiplex=True, profile_allowlist=getattr(config, "multiplex_profile_allowlist", None)))
+
+
+def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
+    """Profile homes the in-process ticker visits under multiplex: the served set PLUS the
+    process-active profile. ``profiles_to_serve`` starts at default + allowlist, so a
+    ``--profile <name>`` multiplexer was omitted unless allowlisted — and allowlisting it would
+    start a second adapter on its own bot token. Adapter startup already skips ``active``."""
+    from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+
+    homes = _multiplex_profile_homes(config)
+    active = get_active_profile_name() or "default"
+    if any(name == active for name, _home in homes):
+        return homes
+    try:
+        return homes + [(active, get_profile_dir(active))]
+    except Exception:
+        return homes
 
 
 def _enable_multiplex_log_routing(config: object) -> bool:
@@ -2123,7 +2157,6 @@ from gateway.run_watchers import GatewaySessionWatchersMixin
 from gateway.run_notifications import GatewayNotificationsMixin
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
-from gateway.run_wisdom import GatewayWisdomMixin, WisdomCardRefresh, enqueue_weekly_review
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -2915,13 +2948,27 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
+_PROFILE_ID_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
 def _parse_session_key(session_key: str) -> "dict | None":
-    """Parse a session key (``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
-    For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id`` is omitted.
+    """Parse a session key (``agent:{ns}:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
+
+    ``{ns}`` is ``main`` for the default profile or a named-profile id (profile ids match
+    ``[a-z0-9][a-z0-9_-]{0,63}`` — never contain ``:`` — so a plain split stays unambiguous).
+    For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id``
+    is omitted. Named profiles are reported as ``profile``; ``main`` keys keep their historical
+    shape exactly (no ``profile`` key) so equality assertions on parsed dicts stay stable.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    if (
+        len(parts) >= 5
+        and parts[0] == "agent"
+        and (parts[1] == "main" or _PROFILE_ID_KEY_RE.match(parts[1]))
+    ):
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
+        if parts[1] != "main":
+            result["profile"] = parts[1]
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result
@@ -3292,7 +3339,7 @@ class GatewayRunner(
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
-    GatewayAgentCacheMixin, GatewayRuntimeInitMixin, GatewayWisdomMixin):
+    GatewayAgentCacheMixin, GatewayRuntimeInitMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.
@@ -3727,9 +3774,8 @@ class GatewayRunner(
         config all read the transport profile's ``gateway.bot_loop_guard``."""
         return self._under_authorization_profile(source, lambda: self._admit_bot_message(source))
 
-    @staticmethod
-    def _under_authorization_profile(source: SessionSource, check):
-        authorization_home = getattr(source, "_authorization_profile_home", None)
+    def _under_authorization_profile(self, source: SessionSource, check):
+        authorization_home = self._authorization_home_for_source(source)
         if authorization_home is None:
             return check()
         with _profile_runtime_scope(Path(authorization_home)):
@@ -3823,16 +3869,13 @@ class GatewayRunner(
             # fallback. See #210.
             team_id = getattr(source, "scope_id", None)
             user_id = getattr(source, "user_id", None)
-            profile = getattr(source, "profile", None)
-            if team_id or user_id or profile:
+            if team_id or user_id:
                 metadata = dict(metadata or {})
                 if team_id:
                     metadata["slack_team_id"] = str(team_id)
                     metadata.setdefault("scope_id", str(team_id))
                 if user_id:
                     metadata.setdefault("user_id", str(user_id))
-                if profile:
-                    metadata.setdefault("profile", str(profile))
         from gateway.session_context import source_route_metadata
         metadata = source_route_metadata(source, metadata)
         # Routed profile for shared state.db namespaces: under profile_routes the transport adapter's
@@ -4028,23 +4071,32 @@ class GatewayRunner(
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
 
-    def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
+    def _profile_name_for_source(
+        self, source: SessionSource, adapter_profile: Optional[str] = None,
+    ) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes (most specific wins).
-        ``None`` = default/active profile. Gated on ``multiplex_profiles``, since the scoped run only
-        activates under multiplexing; otherwise keys would be profile-namespaced while the agent ran in
-        ``agent:main``."""
+        ``None`` = default/active profile (or, for a secondary adapter, its own profile — the caller
+        stamps it). Gated on ``multiplex_profiles``, since the scoped run only activates under
+        multiplexing; otherwise keys would be profile-namespaced while the agent ran in ``agent:main``.
+        ``adapter_profile`` is the profile owning the receiving bot; only routes declaring it as
+        ``bot_profile`` apply (#104933)."""
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None
+        if adapter_profile is None:
+            # Sources built outside ``build_source`` may still carry the receiving adapter as provenance.
+            owner = self._transport_owner(source) if callable(getattr(source, "_transport_adapter_ref", None)) else None
+            if isinstance(owner, tuple):
+                adapter_profile = owner[1]
         from gateway.profile_routing import ProfileRouteRejected, match_profile_route
         try:
             matched = match_profile_route(
                 routes, platform=source.platform.value, guild_id=getattr(source, "guild_id", None),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
-                parent_chat_id=getattr(source, "parent_chat_id", None))
+                parent_chat_id=getattr(source, "parent_chat_id", None), adapter_profile=adapter_profile)
         except Exception:
             logger.warning(
                 "Profile route matching failed for %s/%s, falling back to default",
@@ -4330,9 +4382,6 @@ def _start_gateway_housekeeping(
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
     chores: list[tuple[int, str, Any]] = []
-    wisdom_cards = WisdomCardRefresh(adapters, loop)
-    chores.append((1, "Wisdom publication-card refresh", wisdom_cards.tick))
-    chores.append((60, "Wisdom agent-led review tick", enqueue_weekly_review))
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.

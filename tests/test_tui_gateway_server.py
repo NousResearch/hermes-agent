@@ -9216,21 +9216,6 @@ def test_complete_slash_returns_plain_string_fields():
         assert isinstance(item["meta"], str), item
 
 
-def test_complete_slash_returns_documented_wisdom_subcommands(monkeypatch):
-    from tests.wisdom.local_auth import authorize_local
-    authorize_local(monkeypatch)
-    resp = server.handle_request(
-        {"id": "1", "method": "complete.slash", "params": {"text": "/wisdom "}}
-    )
-
-    items = {item["text"]: item for item in resp["result"]["items"]}
-    assert items["show"]["display"] == "show"
-    assert items["show"]["meta"].startswith("<skill> — View its description")
-    assert items["installed"]["meta"] == (
-        "List and manage skills installed on this device"
-    )
-
-
 def test_complete_slash_includes_tui_details_command():
     resp = server.handle_request(
         {"id": "1", "method": "complete.slash", "params": {"text": "/det"}}
@@ -11515,8 +11500,7 @@ def test_commands_catalog_has_no_duplicate_or_alias_colliding_names():
     )
 
 
-def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible(monkeypatch):
-    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: True)
+def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible():
     resp = server.handle_request(
         {"id": "1", "method": "commands.catalog", "params": {}}
     )
@@ -11537,19 +11521,13 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/update" in pairs
     assert canon["/update"] == "/update"
 
-    assert "/wisdom" in pairs
-    assert canon["/wisdom"] == "/wisdom"
-    assert canon["/collective-wisdom-install"] == "/wisdom"
-    assert "/collective-wisdom-install" not in pairs
-
     assert "/topic" not in canon
     assert "/approve" not in canon
     assert "/deny" not in canon
     assert "/set-home" not in canon
 
 
-def test_commands_catalog_includes_desktop_meta_without_skills(monkeypatch):
-    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: True)
+def test_commands_catalog_includes_desktop_meta_without_skills():
     resp = server.handle_request(
         {"id": "1", "method": "commands.catalog", "params": {}}
     )
@@ -11559,25 +11537,10 @@ def test_commands_catalog_includes_desktop_meta_without_skills(monkeypatch):
     assert commands["/clear"]["desktop"] == "terminal"
     assert commands["/model"]["desktop"] == "hidden"
     assert commands["/compact"]["argument_mode"] == commands["/compress"]["argument_mode"]
-    assert commands["/wisdom"] == {"argument_mode": "mixed", "desktop": None}
 
     for skill in resp["result"]["skills"]:
         assert skill not in commands
 
-
-def test_commands_catalog_hides_wisdom_without_local_entitlement(monkeypatch):
-    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: False)
-
-    resp = server.handle_request(
-        {"id": "1", "method": "commands.catalog", "params": {}}
-    )
-
-    result = resp["result"]
-    assert "/wisdom" not in dict(result["pairs"])
-    assert "/wisdom" not in result["commands"]
-    assert "/wisdom" not in result["canon"]
-    assert "/collective-wisdom-install" not in result["canon"]
-    assert "/wisdom" not in result["sub"]
 
 def test_commands_catalog_includes_plugin_commands(monkeypatch):
     monkeypatch.setattr(
@@ -18425,104 +18388,6 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
             process_registry.completion_queue.get_nowait()
 
 
-def test_wisdom_activity_notice_is_profile_throttled_and_session_scoped(
-    monkeypatch, tmp_path
-):
-    from tests.wisdom.local_auth import authorize_local
-    from hermes_wisdom.store import WisdomStore
-
-    authorize_local(monkeypatch, "org")
-    monkeypatch.setattr("hermes_wisdom.service._config", lambda: {
-        "enabled": True, "disclosure_acknowledged_at": "fixture",
-    })
-    state = WisdomStore(tmp_path / "wisdom")
-    state.activate_installation_identity("installation", "org")
-    checks = []
-
-    class _Wisdom:
-        store = state
-        def check(self, *, apply_automatic):
-            checks.append(apply_automatic)
-
-        def notifications(self, *, mark_seen):
-            assert mark_seen is False
-            return {"events": [{"event_id": "org-1"}]}
-
-        def local_candidate_events(self, *, session_id):
-            return [{"id": "candidate-1"}] if session_id == "session-a" else []
-
-    monkeypatch.setattr("hermes_wisdom.service.WisdomService", _Wisdom)
-    monkeypatch.setattr(server, "_hermes_home", str(tmp_path / "profile"))
-    server._wisdom_profile_last_poll.clear()
-
-    success, first = server._collect_wisdom_activity_notice(
-        {"session_key": "session-a", "history_lock": threading.Lock()}
-    )
-    second_success, second = server._collect_wisdom_activity_notice(
-        {"session_key": "session-b", "history_lock": threading.Lock()}
-    )
-
-    assert success is True
-    assert first == (
-        "Collective Wisdom: 1 team update and 1 skill ready to review. "
-        "Run /wisdom notifications or /wisdom candidates to manage them."
-    )
-    assert second_success is True
-    assert second == (
-        "Collective Wisdom: 1 team update. "
-        "Run /wisdom notifications to manage them."
-    )
-    assert checks == [False]
-
-
-def test_wisdom_activity_notice_replaces_clears_and_survives_failures(monkeypatch):
-    monkeypatch.setattr("hermes_wisdom.service._config", lambda: {"notifications": {"delivery_mode": "fixed"}})
-    emitted = []
-    projections = iter(
-        [
-            (True, "Collective Wisdom: 1 team update."),
-            (True, "Collective Wisdom: 2 team updates."),
-            (False, None),
-            (True, None),
-        ]
-    )
-    monkeypatch.setattr(
-        server, "_collect_wisdom_activity_notice", lambda _session: next(projections)
-    )
-    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
-    session = {"session_key": "session-a"}
-
-    for _ in range(4):
-        server._sync_wisdom_activity_notice("sid", session)
-
-    shows = [item for item in emitted if item[0] == "notification.show"]
-    clears = [item for item in emitted if item[0] == "notification.clear"]
-    assert [item[2]["text"] for item in shows] == [
-        "Collective Wisdom: 1 team update.",
-        "Collective Wisdom: 2 team updates.",
-    ]
-    assert all(item[2]["key"] == server._WISDOM_NOTICE_KEY for item in shows)
-    assert clears == [
-        ("notification.clear", "sid", {"key": server._WISDOM_NOTICE_KEY})
-    ]
-    assert "_wisdom_notice_text" not in session
-
-
-def test_wisdom_activity_notice_defers_while_a_turn_is_busy(monkeypatch):
-    instantiated = []
-
-    class _Wisdom:
-        def __init__(self):
-            instantiated.append(True)
-
-    monkeypatch.setattr("hermes_wisdom.service.WisdomService", _Wisdom)
-
-    assert server._collect_wisdom_activity_notice(
-        {"session_key": "session-a", "running": True}
-    ) == (False, None)
-    assert instantiated == []
-
-
 def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):
     """TUI /save (session.save RPC) must snapshot under the Hermes profile
     home — not the project/workspace CWD — and include the system prompt,
@@ -19136,112 +19001,6 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
         assert all("result" in r for r in results), results
     finally:
         server._sessions.pop("race-spawn", None)
-
-
-def test_slash_exec_wisdom_uses_native_profile_scoped_controller(monkeypatch, tmp_path):
-    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: True)
-    monkeypatch.setattr("gateway.wisdom_command.require_entitlement", lambda _org_id=None: None)
-    class _ExplodingWorker:
-        def __init__(self, *args, **kwargs):
-            raise AssertionError("native /wisdom must not spawn the CLI worker")
-
-    profile_home = tmp_path / "profile"
-    profile_home.mkdir()
-    session = _session(
-        profile_home=str(profile_home),
-        session_key="wisdom-session",
-        slash_worker=None,
-    )
-    server._sessions["wisdom-native"] = session
-    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
-
-    try:
-        resp = server.handle_request({
-            "id": "wisdom",
-            "method": "slash.exec",
-            "params": {
-                "command": "wisdom help",
-                "session_id": "wisdom-native",
-            },
-        })
-    finally:
-        server._sessions.pop("wisdom-native", None)
-
-    assert "result" in resp
-    assert "Collective Wisdom commands" in resp["result"]["output"]
-    assert "/wisdom browse" in resp["result"]["output"]
-    assert session["slash_worker"] is None
-
-
-def test_command_dispatch_wisdom_alias_denied_without_entitlement(monkeypatch):
-    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: False)
-
-    resp = server.handle_request({
-        "id": "wisdom-denied",
-        "method": "command.dispatch",
-        "params": {
-            "name": "collective-wisdom-install",
-            "arg": "skill-1",
-            "session_id": "missing",
-        },
-    })
-
-    assert resp["error"]["code"] == 4030
-    assert "unavailable" in resp["error"]["message"]
-
-
-@pytest.mark.parametrize("method, command", [
-    ("slash.exec", {"command": "wisdom help"}),
-    ("command.dispatch", {"name": "wisdom"}),
-])
-@pytest.mark.parametrize("session_entitled", [True, False])
-def test_wisdom_dispatch_checks_session_not_launch_profile(monkeypatch, tmp_path, method, command, session_entitled):
-    from hermes_constants import get_hermes_home
-
-    profile_home = tmp_path / "session-profile"
-    profile_home.mkdir()
-    session = _session(profile_home=str(profile_home), slash_worker=None)
-    monkeypatch.setitem(server._sessions, "wisdom-profile", session)
-    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: (
-        session_entitled if get_hermes_home() == profile_home else not session_entitled
-    ))
-    monkeypatch.setattr(server, "_live_slash_command_output", lambda *args: "allowed")
-    monkeypatch.setattr(server, "_dispatch_quick", lambda rid, *args: server._ok(rid, {"output": "allowed"}))
-
-    response = server.handle_request({
-        "id": "profile-gate", "method": method,
-        "params": {**command, "session_id": "wisdom-profile"},
-    })
-
-    if session_entitled:
-        assert response["result"]["output"] == "allowed"
-    else:
-        assert response["error"]["code"] == 4030
-
-
-@pytest.mark.parametrize("entitled", [True, False])
-def test_wisdom_discovery_checks_requested_profile(monkeypatch, tmp_path, entitled):
-    from hermes_constants import get_hermes_home
-
-    profile_home = tmp_path / "requested-profile"
-    profile_home.mkdir()
-    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: profile_home)
-    monkeypatch.setattr(server, "_profile_home", lambda name: profile_home)
-    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: (
-        entitled if get_hermes_home() == profile_home else not entitled
-    ))
-
-    def request(method, **params):
-        return server.handle_request({
-            "id": "profile-discovery", "method": method,
-            "params": {"profile": "requested-profile", **params},
-        })
-
-    catalog = request("commands.catalog")["result"]
-    assert ("/wisdom" in catalog["canon"]) is entitled
-    assert ("result" in request("command.resolve", name="wisdom")) is entitled
-    completions = request("complete.slash", text="/wisdom")["result"]["items"]
-    assert any(item["display"] == "/wisdom" for item in completions) is entitled, completions
 
 
 def test_session_close_rpc_claims_then_tears_down(monkeypatch):

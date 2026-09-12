@@ -10,6 +10,10 @@
   font-size: var(--titlebar-icon-size);
 }
 
+/* v4 gates hover: on @media (hover: hover). Some Windows hosts with a
+   digitizer answer false even with a mouse, so hover-reveal controls stay
+   opacity-0 (clickable, invisible). Trust :hover itself. */
+@custom-variant hover (&:hover);
 @custom-variant dark (&:is(.dark *));
 
 /* Blanket reduced-motion override: kill ALL CSS animations and transitions
@@ -28,9 +32,9 @@
   }
 }
 
-/* Continuous decorative animations otherwise keep Chromium's renderer awake
-   behind another app. main.tsx owns this attribute only for the primary
-   window; wake/pet overlays retain their purpose-built visibility behavior. */
+/* Pause continuous animations only when the window is hidden/minimized, not
+   merely unfocused. main.tsx owns this attribute for the primary window;
+   wake/pet overlays retain their purpose-built visibility behavior. */
 :root[data-renderer-animations-paused]
   :is(
     .shimmer,
@@ -391,6 +395,11 @@
     --dt-popover-foreground: var(--ui-text-primary);
     --dt-primary: var(--theme-primary);
     --dt-primary-foreground: #fcfcfc;
+    /* Boot-paint fallbacks. themes/context.tsx replaces --dt-primary-solid with
+       the hue deepened until #fcfcfc clears AA on it; until it runs, the raw
+       primary is the closest honest guess. */
+    --dt-primary-solid: var(--theme-primary);
+    --dt-primary-solid-foreground: #fcfcfc;
     --dt-secondary: var(--theme-secondary);
     --dt-secondary-foreground: var(--ui-text-secondary);
     --dt-accent: var(--theme-accent-soft);
@@ -423,7 +432,12 @@
     --dt-destructive-foreground: #ffffff;
     --dt-sidebar-bg: var(--ui-bg-sidebar);
     --dt-sidebar-border: var(--ui-stroke-secondary);
-    --dt-user-bubble: var(--ui-chat-bubble-background);
+    /* `--user-bubble-keep` is the Settings → Appearance → Message Bubble lever
+       (store/user-bubble-transparency.ts): the share of the theme's bubble
+       fill to keep. Unset at the default, so the mix is a no-op and the bubble
+       is the theme's fill exactly as before. The border stays put either way —
+       at full transparency the outline is what still marks your turn. */
+    --dt-user-bubble: color-mix(in srgb, var(--ui-chat-bubble-background) var(--user-bubble-keep, 100%), transparent);
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
     --dt-font-sans:
@@ -673,6 +687,16 @@
       transparent
     );
     --ui-editor-surface-background: var(--ui-bg-chrome);
+  }
+
+  /* The status bar spans the rail AND the content column. Transparent, it
+     showed the body's hard stop through itself, and the seam cut whichever
+     item sat on it (the free-tier chip, in the guided window). Finder's
+     shape: the bar belongs to the opaque content column across the full
+     width, and the rail's glass ends at its top edge. Window scope has no
+     seam, so the bar stays transparent there. */
+  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'] [data-slot='statusbar'] {
+    --ui-sidebar-surface-background: var(--ui-bg-chrome);
   }
 
   /* Clear mode (native window opacity) fades EVERYTHING in the window
@@ -989,6 +1013,26 @@
     background-color: var(--ui-row-hover-background);
     transition: none;
   }
+}
+
+/* The guided-onboarding thread is marked with [data-thread-type='onboarding']
+   — the hook for onboarding-only transcript styling. */
+
+/* Guided chat is a conversation, not a work surface: hide per-message action
+   chrome (branch/copy/read-aloud/regenerate bar, reaction slot) and the turn-
+   duration stamp — regenerate/branch would derail the scripted flow. */
+[data-thread-type='onboarding'] [data-slot='aui_msg-actions'],
+[data-thread-type='onboarding'] [data-slot='aui_msg-reactions'],
+[data-thread-type='onboarding'] [data-slot='aui_turn-duration'] {
+  display: none;
+}
+
+/* Hermes speaks first here: no user bubble sits above the opening assistant
+   turn, so the first painted row would press against the pane chrome. The
+   utility class on the row pulls the top pad 0.5rem ABOVE the titlebar; give
+   the air back, and only in this thread. */
+[data-slot='aui_thread-content'][data-thread-type='onboarding'] {
+  padding-top: calc(var(--titlebar-height) + 1rem);
 }
 
 @keyframes arc-border {
@@ -1470,9 +1514,31 @@ body.guest-pointer-lock :is(webview, iframe) {
   width: 100%;
 }
 
+/* Remove label pixels under the hover close button; translucent paint would
+   stack the glass tint and still let the label bleed through. */
+[data-slot='pane-tab'][data-closeable] {
+  --pane-tab-close-width: 1.5rem;
+}
+
+[data-slot='pane-tab'][data-closeable]:hover > .pane-tab-content {
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - var(--pane-tab-close-width) - 1rem),
+    transparent calc(100% - var(--pane-tab-close-width))
+  );
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md,
 [data-slot='aui_assistant-message-content'] .aui-md :where(p, li, blockquote, table, pre) {
   font-size: inherit;
+}
+
+/* Ask / onboarding pills sit flush with the prose left edge. `.aui-md` is
+   `overflow-hidden` so wide code/tables don't blow the column; that same clip
+   shears the first pill's left cap. Cards opt the surface out; tables/code keep
+   their own overflow. */
+[data-slot='aui_assistant-message-content'] .aui-md:has([data-onboarding-card]) {
+  overflow: visible;
 }
 
 /* Tailwind Typography sets `.prose :where(p) { margin: 1.25em }` (~16px). That
@@ -1536,7 +1602,14 @@ body.guest-pointer-lock :is(webview, iframe) {
 }
 
 [data-slot='aui_user-message-root'] {
-  top: var(--sticky-human-top);
+  --sticky-human-offset: calc(var(--sticky-human-top) + 1px);
+  top: var(--sticky-human-offset);
+}
+
+/* The sticky prompt owns no field paint. Clip only the scrolling siblings
+   behind it, including the top gap, so bubble transparency still works. */
+[data-sticky-prompt-clip] {
+  clip-path: inset(var(--sticky-prompt-clip) 0 0);
 }
 
 [data-slot='aui_user-message-root'],
@@ -1610,6 +1683,19 @@ body.guest-pointer-lock :is(webview, iframe) {
 
   display: flex;
   container-type: inline-size;
+}
+
+/* The display lettering an empty chat is titled with. Kept here beside
+   `.fit-text` rather than as utilities on the element: the two always travel
+   together, and the face is the whole point of the treatment — it must not be
+   something a class-merge or a missed scan can quietly drop, leaving the
+   wordmark rendered in body text. */
+.wordmark {
+  font-family: 'Collapse', var(--font-sans);
+  font-weight: 700;
+  line-height: 0.9;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .fit-text > [aria-hidden] {
@@ -2824,6 +2910,37 @@ button[data-slot='aui_msg-reactions'] svg {
   pointer-events: auto;
 }
 
+/* A held band is the interface — clarify / approval / a live turn. It must
+   take clicks even if the composer never received focus. On click-through
+   hosts that is a deliberate dead zone over the game; on a prompt it is a
+   surface you cannot use. */
+[data-hud-shell][data-hud-held] [data-slot='composer-bounds'] {
+  pointer-events: auto;
+}
+
+/* Linux X11 is a solid window: ignore-mouse cannot restore, so a visible
+   band that still has pointer-events:none swallows the click and does
+   nothing. Once the band is up it is the surface. */
+[data-hud-shell][data-hud-input='solid'][data-hud-recent] [data-slot='composer-bounds'] {
+  pointer-events: auto;
+}
+
+/* Widgets and links opt in even when the band is a ghost, so a click-through
+   HUD can still answer a clarify option or open an OAuth URL without sitting
+   in the composer first. Children inherit auto from these roots. */
+[data-hud-shell]
+  :is(
+    [data-slot='clarify-inline'],
+    [data-clarify-choices],
+    [data-clarify-batch],
+    [data-slot='tool-approval-inline'],
+    [data-slot='tool-approval-fallback'],
+    [data-slot='tool-approval-actions'],
+    a[href]
+  ) {
+  pointer-events: auto;
+}
+
 /* Three states, not two. A turn landing brings the transcript up, but only part
    way — it is there to be glanced at over whatever you are actually doing, and
    full-strength text over another app reads as the HUD demanding attention it
@@ -2901,7 +3018,8 @@ button[data-slot='aui_msg-reactions'] svg {
    Widgets on the shared shell (components/chat/widget-shell.ts →
    `--ui-widget-surface-background`) and any chat-surface card are matched on
    their class, so new ones inherit this without touching the list. */
-[data-hud-shell] [data-slot='composer-bounds']
+[data-hud-shell]
+  [data-slot='composer-bounds']
   :is(
     [data-slot='clarify-inline'],
     [data-slot='tool-block'],
@@ -3444,11 +3562,14 @@ html:has([data-hud-shell]) [data-slot='popover-content'] [class*='max-h-'] {
   max-height: max(5rem, calc(100dvh - 9rem)) !important;
 }
 
-/* The menu panels themselves: never taller than the window minus the bar. */
+/* The menu panels themselves: never taller than the window minus the bar.
+   Portalled out of the shell, they must still take the pointer — the HUD
+   defaults to none and a right-click menu that cannot be clicked is dead. */
 html:has([data-hud-shell]) [data-slot='dropdown-menu-content'],
 html:has([data-hud-shell]) [data-slot='popover-content'] {
   max-height: calc(100dvh - 4.5rem) !important;
   overflow-y: auto;
+  pointer-events: auto;
 }
 
 /* Hide the scrollbar — a HUD with a visible track stops reading as an overlay. */

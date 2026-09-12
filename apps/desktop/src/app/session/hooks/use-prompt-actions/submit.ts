@@ -21,6 +21,7 @@ import {
 import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
+import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $sessions,
   resolveComposerSessionKey,
@@ -44,6 +45,7 @@ import {
   inlineErrorMessage,
   isProviderSetupError,
   isSessionBusyError,
+  isSessionNotOwnedError,
   isTargetSessionBusy,
   releaseSubmitInFlight,
   SessionRecoveryAborted,
@@ -208,6 +210,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // must never inherit the currently selected session after the user moves
       // to another chat.
       let targetStoredSessionId = options?.storedSessionId ?? selectedStoredSessionIdRef.current
+
+      // A read-only stored-transcript open (#94724: owner unresolvable under
+      // registry topology) has no routable live runtime — refuse the send
+      // with the explanation rather than minting a prompt on a backend that
+      // never owned the session.
+      if (isStoredTranscriptReadOnly(targetStoredSessionId)) {
+        notify({ kind: 'info', message: copy.readOnlyTranscriptSendBlocked })
+
+        return false
+      }
 
       let targetStartedInCurrentView =
         !targetStoredSessionId || targetStoredSessionId === selectedStoredSessionIdRef.current
@@ -698,6 +710,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         startingStoredSessionId = selectedStoredSessionIdRef.current
         startingSelectedStoredSessionId = selectedStoredSessionIdRef.current
         startingRouteToken = getRouteToken()
+        // The target too: it was captured BEFORE the create (null for a fresh
+        // draft) and seedOptimistic hands it to updateSessionState as the
+        // stored id, which the state cache reads as a deliberate DETACH — so
+        // the freshly bound stored↔runtime mapping was severed the moment the
+        // chat existed. Every later session-scoped RPC then failed to
+        // translate the runtime id to the stored id, never saw the session's
+        // tile route / owner hint / row, probed REST by a runtime id, and fell
+        // to the ambient socket — the fresh-chat owner loss behind #94071.
+        targetStoredSessionId = selectedStoredSessionIdRef.current
 
         seedOptimistic(sessionId)
       }
@@ -744,6 +765,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // rather than at Hermes. The gateway turns this into a per-turn hint
           // to read the window underneath and work in it.
           ...($hudMode.get() && { surface: 'hud' }),
+          // A GPT-Live delegation: the text is a voice transcript and the reply
+          // will be spoken by the voice model. Wins over HUD for this turn.
+          ...(options?.surface && { surface: options.surface }),
+          ...(options?.surface && options.voiceContext && { voice_context: options.voiceContext }),
           // A queue drain is a "run after" message, never a live-turn
           // correction. The flag tells the gateway's busy path to hold it for
           // the next turn untouched — without it, losing the settle race
@@ -775,9 +800,19 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               onRecovered: recoveredId => {
                 if (onRuntimeRecovered) {
                   onRuntimeRecovered(recoveredId)
-                } else if (targetIsCurrentView()) {
-                  activeSessionIdRef.current = recoveredId
-                  setActiveSessionId(recoveredId)
+                } else {
+                  // Publish stored-to-runtime ownership before retrying the
+                  // session-scoped request. The window router needs this
+                  // binding to keep a recovered remote runtime on the gateway
+                  // that owns its durable session.
+                  if (recoverStoredSessionId) {
+                    updateSessionState(recoveredId, state => state, recoverStoredSessionId)
+                  }
+
+                  if (targetIsCurrentView()) {
+                    activeSessionIdRef.current = recoveredId
+                    setActiveSessionId(recoveredId)
+                  }
                 }
               }
             },
@@ -825,6 +860,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         const message = inlineErrorMessage(err, copy.promptFailed)
         const occurredAt = Date.now() / 1000
+        // Another surface owns the session (#106217): a deterministic gateway
+        // refusal, so the error card drops Retry and offers a new session.
+        const notOwned = isSessionNotOwnedError(err)
 
         updateSessionState(
           sessionId,
@@ -837,6 +875,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 role: 'assistant',
                 parts: [],
                 error: message || copy.promptFailed,
+                ...(notOwned && { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }),
                 branchGroupId: state.pendingBranchGroup ?? undefined,
                 completedAt: occurredAt,
                 timestamp: occurredAt

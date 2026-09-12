@@ -303,6 +303,21 @@ class TestDefaultContextLengths:
                         model, provider="kimi-coding", base_url=base_url
                     ) == 1_048_576
 
+    @pytest.mark.parametrize("model, provider, base_url", [
+        ("muse-spark-1.3-contributor-free", "opencode-free", "https://opencode.ai/zen/v1"),
+        ("muse-spark-1.3-contributor", "opencode-go", "https://opencode.ai/zen/go/v1"),
+        ("muse-spark-1.3", "meta-ai", "https://api.meta.ai/v1"),
+        ("meta/muse-spark-1.3", "commandcode", "https://api.commandcode.ai/provider/v1"),
+    ])
+    def test_muse_spark_resolves_1m_without_network(self, model, provider, base_url):
+        """Muse Spark is 1,048,576 on every host even when models.dev and the
+        live /models probe are unavailable (fresh HERMES_HOME, offline)."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            assert get_model_context_length(model, provider=provider, base_url=base_url) == 1_048_576
+
     def test_empty_model_uses_fallback_context(self):
         assert get_model_context_length("") == DEFAULT_FALLBACK_CONTEXT
         assert get_model_context_length(None) == DEFAULT_FALLBACK_CONTEXT  # type: ignore[arg-type]
@@ -343,6 +358,8 @@ class TestDefaultContextLengths:
             "deepseek-v4-flash": 1_000_000,
             "deepseek-chat": 1_000_000,
             "deepseek-reasoner": 1_000_000,
+            # Version-less canonical Flash id (2026-09 Flash refresh).
+            "deepseek-flash": 1_000_000,
         }
         for key, value in expected_keys.items():
             assert key in DEFAULT_CONTEXT_LENGTHS, f"{key} missing"
@@ -364,6 +381,8 @@ class TestDefaultContextLengths:
                 ("deepseek/deepseek-v4-flash", 1_000_000),
                 ("deepseek-chat", 1_000_000),
                 ("deepseek-reasoner", 1_000_000),
+                ("deepseek-flash", 1_000_000),
+                ("deepseek/deepseek-flash", 1_000_000),
             ]
             for model_id, expected_ctx in cases:
                 actual = get_model_context_length(model_id)
@@ -799,6 +818,36 @@ class TestFetchEndpointModelMetadata:
         not_found.close.assert_called_once()
         success.close.assert_called_once()
 
+    def test_remote_probe_is_memoized_on_disk_across_processes(self, tmp_path, monkeypatch):
+        """A fresh process (cleared in-memory cache) must answer from the disk
+        memo within the TTL instead of re-probing the endpoint — the cost every
+        one-shot Bot Mode DM hop paid on startup. Expired memos re-probe."""
+        import agent.model_metadata as mm
+
+        monkeypatch.setattr(
+            mm, "_get_endpoint_metadata_cache_path", lambda: tmp_path / "endpoint_model_metadata.json"
+        )
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = {"data": [{"id": "test/model", "context_length": 32768}]}
+
+        with patch("agent.model_metadata.requests.get", return_value=success) as mock_get:
+            assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
+            # "New process": drop the in-memory cache only.
+            mm._endpoint_model_metadata_cache.clear()
+            mm._endpoint_model_metadata_cache_time.clear()
+            assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
+        mock_get.assert_called_once()
+
+        # Past the TTL the memo is stale and the endpoint is probed again.
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+        with patch("agent.model_metadata.time.time", return_value=time.time() + mm._ENDPOINT_MODEL_CACHE_TTL + 1), patch(
+            "agent.model_metadata.requests.get", return_value=success
+        ) as mock_get:
+            mm.fetch_endpoint_model_metadata("https://custom.example/v1")
+        mock_get.assert_called_once()
+
 
 # =========================================================================
 # Nous Portal context-window resolution (provider="nous")
@@ -1043,13 +1092,14 @@ class TestGetModelContextLength:
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {}
 
-        # GLM-5-TEE matches the "glm" entry in DEFAULT_CONTEXT_LENGTHS
+        # GLM-5-TEE resolves through DEFAULT_CONTEXT_LENGTHS (longest matching GLM key), not the generic default.
         result = get_model_context_length(
             "zai-org/GLM-5-TEE",
             base_url="https://llm.chutes.ai/v1",
             api_key="test-key",
         )
-        assert result == 202752  # "glm" entry in DEFAULT_CONTEXT_LENGTHS
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        assert result == _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "zai-org/glm-5-tee")[1]
 
 
 
@@ -1217,7 +1267,7 @@ class TestStripProviderPrefix:
 
     def test_registered_profile_name_and_alias_are_stripped(self, monkeypatch):
         import providers
-        from providers import ProviderProfile
+        from providers.base import ProviderProfile
 
         monkeypatch.setattr(providers, "_REGISTRY", {})
         monkeypatch.setattr(providers, "_ALIASES", {})
@@ -1413,6 +1463,29 @@ class TestParseContextLimitFromError:
         fell through to None."""
         assert parse_context_limit_from_error(msg) == expected
 
+    @pytest.mark.parametrize("msg,expected", [
+        # Google Gemini/Gemma overflow phrasing (#57275): the limit follows
+        # "supports up to"; the larger input count before it must NOT win.
+        ("Unable to submit request because the input token count is 32825 "
+         "but model only supports up to 32768. Reduce the input token count "
+         "and try again.", 32768),
+        ("input token count is 140000 but model only supports up to 131072", 131072),
+        ("model supports up to 65536 tokens", 65536),
+    ])
+    def test_google_supports_up_to_variants(self, msg, expected):
+        """Google's overflow error was previously unparseable — recovery kept
+        the wrong window and burned its attempts (#57275, residual claim 5)."""
+        assert parse_context_limit_from_error(msg) == expected
+
+    def test_google_supports_up_to_recalibrates_window(self):
+        from agent.model_metadata import get_context_length_from_provider_error
+
+        msg = ("Unable to submit request because the input token count is "
+               "32825 but model only supports up to 32768.")
+        assert get_context_length_from_provider_error(msg, 131072) == 32768
+        # Parsed limit not below current window → no recalibration.
+        assert get_context_length_from_provider_error(msg, 32768) is None
+
     def test_get_context_length_from_vllm_max_model_len_error(self):
         from agent.model_metadata import get_context_length_from_provider_error
 
@@ -1578,6 +1651,18 @@ class TestGrok43StaleCacheGuard:
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
 
 
+class TestMuseSparkStaleCacheGuard:
+    """Muse Spark (1M window per OpenRouter live metadata) had no catalog
+    entry, so older builds persisted the 256K default fallback. The cache
+    guard must flag that stale value and keep correct/probed values."""
+
+    def test_stale_muse_spark_detected_by_generic_guard(self):
+        from agent.model_metadata import _stale_pre_catalog_cache_entry
+        for slug in ("muse-spark-1.3", "meta/muse-spark-1.3-contributor", "muse-spark-1.2-contributor"):
+            assert _stale_pre_catalog_cache_entry(slug, 256_000), slug
+            assert not _stale_pre_catalog_cache_entry(slug, 1_048_576), slug
+
+
 class TestGrok46StaleCacheGuard:
     """Pre-catalog builds resolved grok-4.6 via the generic 'grok-4' catch-all
     (256,000) and persisted it before the 500K catalog entry existed.
@@ -1635,6 +1720,13 @@ class TestGenericPreCatalogStaleGuard:
         assert not _stale_pre_catalog_cache_entry("grok-4.20", 2_000_000)
         # Sibling qwen slugs with legitimately small windows are untouched.
         assert not _stale_pre_catalog_cache_entry("qwen3-coder", 131_072)
+        # DeepSeek V4 / V4.1 Flash: 1M. Pre-entry builds persisted the 128K
+        # ``deepseek`` catch-all; a leftover must drop, a 1M value must not.
+        assert _stale_pre_catalog_cache_entry("deepseek-flash", 128_000)
+        assert _stale_pre_catalog_cache_entry("deepseek/deepseek-flash", 128_000)
+        assert _stale_pre_catalog_cache_entry("deepseek-v4-pro", 128_000)
+        assert not _stale_pre_catalog_cache_entry("deepseek-flash", 1_000_000)
+        assert not _stale_pre_catalog_cache_entry("deepseek", 128_000)
 
     def test_unknown_models_never_dropped(self):
         from agent.model_metadata import _stale_pre_catalog_cache_entry
@@ -1849,3 +1941,34 @@ class TestFallbackWarning:
             if r.levelno == logging.WARNING and "falling back" in r.getMessage()
         ]
         assert len(fallback_warnings) == 0
+
+
+# =========================================================================
+# get_model_context_length — OpenRouter routing-variant suffixes
+# =========================================================================
+
+class TestOpenRouterRoutingVariantContextLength:
+    """`:nitro`/`:floor`/`:exacto`/`:online` are request-time routing modifiers, not catalog
+    models: /models lists only the base id and the variant runs the same model, so a variant
+    must resolve to whatever its base resolves to instead of a generic family default (#97820).
+    `:free`/`:batch` are real SKUs with their own windows and must NOT be stripped."""
+
+    _CATALOG = {
+        "x-ai/grok-4.6": {"context_length": 2_000_000},
+        "thinkingmachines/inkling": {"context_length": 1_000_000},
+        "thinkingmachines/inkling:free": {"context_length": 64_000},
+    }
+
+    @pytest.mark.parametrize("suffix", ["nitro", "floor", "exacto", "online"])
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_variant_matches_base_but_real_sku_keeps_own_window(
+        self, mock_fetch, mock_models_dev, mock_cache, suffix
+    ):
+        mock_fetch.return_value = self._CATALOG
+        base_ctx = get_model_context_length("x-ai/grok-4.6", provider="openrouter")
+        variant_ctx = get_model_context_length(f"x-ai/grok-4.6:{suffix}", provider="openrouter")
+        assert variant_ctx == base_ctx == 2_000_000
+        assert variant_ctx != DEFAULT_CONTEXT_LENGTHS.get("grok")
+        assert get_model_context_length("thinkingmachines/inkling:free", provider="openrouter") == 64_000

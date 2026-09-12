@@ -69,6 +69,7 @@ gateway:
     running_processes:     "**Running background processes:** {count}"
     async_jobs:            "**Gateway async jobs:** {count}"
     background_delegations: "**Background delegations:** {count}"
+    kanban_tasks:          "**Kanban tasks running:** {count}"
     none:                  "No active agents or running tasks."
     state_starting:        "starting"
     state_running:         "running"

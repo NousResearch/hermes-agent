@@ -60,24 +60,36 @@ def _extract_inherited_flags(argv: Sequence[str]) -> list[str]:
 
 def resolve_hermes_bin() -> Optional[str]:
     """Hermes entry point: ``sys.argv[0]`` if a real executable, else ``which hermes``, else ``None``
-    (caller falls back to ``python -m hermes_cli.main``)."""
+    (caller falls back to ``python -m hermes_cli.main``).
+
+    Git installs run the Python source launcher with the managed venv. Executing its
+    ``#!/usr/bin/env python3`` shebang on POSIX can escape that venv, so skip it.
+    """
     argv0 = sys.argv[0]
     _is_windows = sys.platform == "win32"
 
-    def _is_python_script(p: str) -> bool:
-        return p.lower().endswith((".py", ".pyc"))
+    def _is_unsafe_python_launcher(p: str) -> bool:
+        if _is_windows:
+            return p.lower().endswith((".py", ".pyc"))
+        try:
+            with open(p, "rb") as fh:
+                shebang = fh.readline(256).lower()
+        except OSError:
+            return False
+        return shebang.startswith(b"#!") and b"python" in shebang
 
     # Absolute executable (nix store, venv wrappers, …), then relative-to-CWD, then PATH.
     if (
         os.path.isabs(argv0) and os.path.isfile(argv0) and os.access(argv0, os.X_OK)
-        and not (_is_windows and _is_python_script(argv0))
+        and not _is_unsafe_python_launcher(argv0)
     ):
         return argv0
     if not argv0.startswith("-") and os.path.isfile(argv0):
         abs_path = os.path.abspath(argv0)
-        if os.access(abs_path, os.X_OK) and not (_is_windows and _is_python_script(abs_path)):
+        if os.access(abs_path, os.X_OK) and not _is_unsafe_python_launcher(abs_path):
             return abs_path
-    return shutil.which("hermes") or None
+    path_bin = shutil.which("hermes")
+    return path_bin if path_bin and not _is_unsafe_python_launcher(path_bin) else None
 
 
 def build_relaunch_argv(

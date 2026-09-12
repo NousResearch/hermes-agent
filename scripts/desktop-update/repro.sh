@@ -180,6 +180,35 @@ case "$MODE" in
     rm -rf "$L"
     [ "$fails" -eq 0 ] && say "launch matrix: all pass" || { say "launch matrix: $fails FAILED"; exit 1; }
     ;;
+  mac-target)
+    # macOS canonical target gate matrix.  Builds fake .app directories
+    # under /tmp and asserts gate decisions — same pattern as `gate` mode.
+    # Includes a symlink alias inside the install tree that resolves to an
+    # outside bundle, proving it remains untouched.
+    M="/tmp/hermes-mac-target-test.$$"
+    CANONICAL="$M/hermes-agent/apps/desktop/release/mac-arm64/Hermes.app"
+    OUTSIDE="/tmp/hermes-mac-target-test-outside.$$/Hermes.app"
+    mkdir -p "$CANONICAL" "$OUTSIDE"
+    # Symlink escape: an alias inside the install tree pointing outside
+    mkdir -p "$M/hermes-agent/apps/desktop/release"
+    ln -sf "$OUTSIDE" "$M/hermes-agent/apps/desktop/release/escaped-link.app" 2>/dev/null || true
+
+    fails=0
+    expect() {
+      if [ "$2" = "$3" ]; then printf 'ok   %s -> %s\n' "$1" "$3"
+      else printf 'FAIL %s -> %s (want %s)\n' "$1" "$3" "$2"; fails=$((fails+1)); fi
+    }
+    decide() {
+      bash "$SCRIPT_DIR/posix.sh" --self-test-mac-target --install-root "$M/hermes-agent" "$@"
+    }
+
+    expect "canonical mac-arm64"  canonical    "$(decide --relaunch-target "$CANONICAL")"
+    expect "outside path"         noncanonical "$(decide --relaunch-target "$OUTSIDE")"
+    expect "symlink escape"       noncanonical "$(decide --relaunch-target "$M/hermes-agent/apps/desktop/release/escaped-link.app")"
+
+    rm -rf "$M" "$(dirname "$OUTSIDE")"
+    [ "$fails" -eq 0 ] && say "mac-target matrix: all pass" || { say "mac-target matrix: $fails FAILED"; exit 1; }
+    ;;
   *)
     sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
     exit 64

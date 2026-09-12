@@ -35,6 +35,7 @@ import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
+import { useStoresSelector } from '@/lib/use-session-slice'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
@@ -51,7 +52,7 @@ import {
   sessionPinId
 } from '@/store/session'
 import { isSessionRemovalPending } from '@/store/session-removal'
-import { requestForSessionProfile } from '@/store/session-request-router'
+import { requestForSessionProfile, type SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTileDelegateRevision,
@@ -71,7 +72,7 @@ import { SessionDraftTitle } from './session-draft-title'
 import { startSessionDrag } from './session-drag'
 import { SessionStatusDot } from './session-status-dot'
 import { useSessionTileActions } from './session-tile-actions'
-import { tileOwnerRoute } from './session-tile-owner'
+import { ownerRouteKey, tileOwnerRoute } from './session-tile-owner'
 import { type SessionView, SessionViewProvider } from './session-view'
 import { SessionContextMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser } from './thread-loading'
@@ -189,15 +190,39 @@ function TileChat({
   // NOT on every render: this component re-renders per streamed token, and the
   // lookup spreads three arrays before scanning them.
   const tiles = useStore($sessionTiles)
-  const sessionRows = useStore($sessions)
-  const cronRows = useStore($cronSessions)
-  const messagingRows = useStore($messagingSessions)
 
-  const ownerRoute = useMemo(() => {
-    const rows = cronRows.length || messagingRows.length ? [...sessionRows, ...cronRows, ...messagingRows] : sessionRows
+  // The route is derived through a SCALAR key instead of a `$sessions` array
+  // subscription: `$sessions` is republished whenever ANY row's last_active
+  // moves (a sessions.changed tick — multi-profile / Bots setups tick every
+  // ~2s), and `tileOwnerRoute` returns a fresh object per call, so a plain
+  // useMemo over the array would re-create the route — and with it
+  // `requestTileGateway`, `selectModel` and the model menu, all of which feed
+  // the memo'd ChatView — on every unrelated tick. The key only changes when
+  // THIS tile's owner fields change, so unrelated list churn stops at the
+  // `Object.is` bail-out and the tile's chat shell stays still.
+  const ownerKey = useStoresSelector(
+    [$sessionTiles, $sessions, $cronSessions, $messagingSessions],
+    () => {
+      const sessionRows = $sessions.get()
+      const cronRows = $cronSessions.get()
+      const messagingRows = $messagingSessions.get()
 
-    return tileOwnerRoute(tiles, rows, storedSessionId)
-  }, [cronRows, messagingRows, sessionRows, storedSessionId, tiles])
+      const rows =
+        cronRows.length || messagingRows.length ? [...sessionRows, ...cronRows, ...messagingRows] : sessionRows
+
+      return ownerRouteKey(tileOwnerRoute($sessionTiles.get(), rows, storedSessionId))
+    }
+  )
+
+  const ownerRoute = useMemo<SessionOwnerRoute | undefined>(() => {
+    if (!ownerKey) {
+      return undefined
+    }
+
+    const [connectionId, profile, targetProfile] = ownerKey.split('\u0000')
+
+    return { connectionId, profile, ...(targetProfile ? { targetProfile } : {}) }
+  }, [ownerKey])
 
   const requestTileGateway = useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal): Promise<T> =>

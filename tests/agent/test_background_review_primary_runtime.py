@@ -266,6 +266,26 @@ def test_active_primary_cooldown_keeps_live_fallback():
     assert rt["routed"] is False
 
 
+def test_entitlement_rejected_primary_keeps_live_fallback():
+    """Auxiliary review and /btw forks must not probe a permanently rejected primary."""
+    agent = _FakeAgent(
+        provider="anthropic", model="claude-fallback",
+        _fallback_activated=True, _provider_fallback_active=True,
+        _primary_runtime=PRIMARY_SNAPSHOT,
+        _fallback_runtime=FALLBACK_RUNTIME,
+    )
+    agent._entitlement_rejected_models = {("openai", "gpt-primary")}
+
+    with patch("agent.credential_pool.load_pool") as load_pool:
+        rt = _resolve_review_runtime(agent, task_cfg={})
+
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-fallback"
+    assert rt["api_key"] == "sk-fallback"
+    assert rt["routed"] is False
+    load_pool.assert_not_called()
+
+
 def test_model_once_restore_flag_does_not_masquerade_as_provider_fallback():
     """_fallback_activated is shared by /model --once; provenance must use its dedicated flag."""
     agent = _FakeAgent(

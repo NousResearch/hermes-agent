@@ -14,7 +14,15 @@ import unicodedata
 from typing import List, Optional, Tuple
 
 # Hard cap on scanned text: scanners are advisory, so bound worst-case runtime.
+# The whole input is still scanned — just in bounded chunks of this size — so a
+# payload past the cap (which the renderer may still emit as a tail) is not
+# silently dropped, while worst-case per-chunk runtime stays predictable.
 MAX_SCAN_CHARS = 65_536
+# Overlap between adjacent scan chunks.  The widest pattern matches are the
+# ``[^\n]{0,2048}`` / ``[^>]{0,2048}`` spans in the exfil / config-mod patterns,
+# so an overlap comfortably larger than 2048 guarantees a pattern straddling a
+# chunk boundary is still seen whole by the following chunk.
+_CHUNK_OVERLAP = 4096
 # Bounded filler between key attack words (unbounded ``(?:\w+\s+)*`` backtracks badly).
 _FILLER = r"(?:\w+\s+){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
@@ -120,13 +128,29 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
         return []
     if (patterns := _COMPILED.get(scope)) is None:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
-    content = content[:MAX_SCAN_CHARS]
-    # Invisible unicode is checked on the RAW content: NFKC below can strip these codepoints.
+    # Invisible unicode is checked on the RAW content: NFKC below can strip these
+    # codepoints.  Checked over the COMPLETE input, not just the first scan chunk.
     findings: List[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in set(content) & INVISIBLE_CHARS]
-    # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
-    # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
-    normalised = unicodedata.normalize("NFKC", content)
-    findings.extend(pid for compiled, pid in patterns if compiled.search(normalised))
+    # Threat patterns — scan the COMPLETE input in bounded chunks with overlap so a
+    # payload past ``MAX_SCAN_CHARS`` (which the renderer may still emit as a tail)
+    # is not silently skipped.  Findings are deduplicated: a pattern can legitimately
+    # fire in more than one overlapping chunk.  NFKC is applied per chunk; the
+    # overlap mitigates (but cannot fully eliminate) a multi-codepoint composition
+    # or ``\b``-anchored keyword straddling a chunk boundary — it guarantees the
+    # widest spans (``[^\n]{0,2048}`` / ``[^>]{0,2048}``) are seen whole.
+    found_ids: set[str] = set()
+    step = max(1, MAX_SCAN_CHARS - _CHUNK_OVERLAP)
+    for start in range(0, len(content), step):
+        # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against
+        # homograph bypass.  It does NOT fold cross-script confusables (Cyrillic
+        # ``а``) — that needs a TR#39 database.
+        normalised = unicodedata.normalize("NFKC", content[start:start + MAX_SCAN_CHARS])
+        for compiled, pid in patterns:
+            if pid in found_ids:
+                continue
+            if compiled.search(normalised):
+                found_ids.add(pid)
+                findings.append(pid)
     return findings
 
 

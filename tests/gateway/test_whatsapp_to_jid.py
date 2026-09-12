@@ -22,6 +22,8 @@ class TestToWhatsappJid:
             # human-formatted phone numbers get stripped to digits
             ("+1 (555) 123-4567", "15551234567@s.whatsapp.net"),
             ("+1.555.123.4567", "15551234567@s.whatsapp.net"),
+            # bare numeric group id (>15 digits) → group JID (#102328)
+            ("120363012345678901", "120363012345678901@g.us"),
         ],
     )
     def test_bare_phone_becomes_user_jid(self, raw, expected):
@@ -39,5 +41,3 @@ class TestToWhatsappJid:
     )
     def test_fully_qualified_jid_passes_through(self, jid):
         assert to_whatsapp_jid(jid) == jid
-
-

@@ -412,6 +412,13 @@ class CompressionCommitFence:
             raise ValueError("total compression ceiling must be positive")
         self._deadline = time.monotonic() + seconds
 
+    def set_precommit_deadline_monotonic(self, deadline: float) -> None:
+        """Arm one absolute pre-commit deadline shared across route attempts."""
+        deadline = float(deadline)
+        if deadline <= 0:
+            raise ValueError("compression deadline must be positive")
+        self._deadline = deadline
+
     def touch_progress(self) -> None:
         """Record forward progress (a streamed token); a bare float store is atomic, so no lock."""
         self._last_progress = time.monotonic()
@@ -814,7 +821,7 @@ def resolve_compression_fallback_route() -> Optional[dict]:
 
 def _retry_compression_on_fallback_chain(
     *, worker: Callable[[CompressionCommitFence], Tuple[list, str]], messages: list,
-    system_prompt_fallback: Any, idle_timeout_seconds: float, total_ceiling_seconds: float,
+    system_prompt_fallback: Any, idle_timeout_seconds: float, precommit_deadline_monotonic: float,
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
     on_timeout_cause: Optional[Callable[[bool, bool], None]] = None, telemetry_agent: Any = None,
     new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
@@ -824,10 +831,8 @@ def _retry_compression_on_fallback_chain(
     before. The entry's ``timeout`` sets the idle window. Re-runs the whole worker, so pre-compression
     callbacks must be idempotent.
 
-    The retry is bounded the same way the primary was: silence for one idle window ends it, while a fallback
-    that is streaming keeps its ceiling. The entry's own ``timeout`` (when declared) sets that idle window,
-    so a fallback tuned for a slower-but-healthy backend is not held to a deadline the stalled primary
-    defined (#62452 semantics, applied to the stall path).
+    The retry spends only the primary's remaining pre-commit budget. Its route timeout still defines the
+    idle window, clamped to the shared monotonic deadline so a stalled primary cannot mint a second ceiling.
     Known limitation (accepted, #96634 review): the retry re-runs the COMPLETE worker, which repeats
     memory/plugin pre-compression callbacks. Built-in callbacks are idempotent (re-reads and overwrites of
     attempt-scoped state); third-party plugin callbacks are advised to be. Splitting the worker to resume
@@ -837,6 +842,9 @@ def _retry_compression_on_fallback_chain(
     # the same event anyway, but starting one at all makes /stop look ignored.
     hard_cancel = getattr(telemetry_agent, "_hard_interrupt_requested", None)
     if callable(getattr(hard_cancel, "is_set", None)) and hard_cancel.is_set():
+        return None
+    if time.monotonic() >= precommit_deadline_monotonic:
+        logger.info("Skipping compression stall fallback: the shared pre-commit ceiling is exhausted")
         return None
     route = resolve_compression_fallback_route()
     if route is None:
@@ -860,20 +868,26 @@ def _retry_compression_on_fallback_chain(
             "hard-interrupt admission will read the aborted attempt's fence rather than the retry's commit boundary"
         )
         retry_fence = CompressionCommitFence()
-    idle = float(route.get("timeout") or idle_timeout_seconds)
-    ceiling = max(float(total_ceiling_seconds), idle)
+    remaining_ceiling = precommit_deadline_monotonic - time.monotonic()
+    if remaining_ceiling <= 0:
+        retry_fence.revoke_commit_admission()
+        logger.info("Skipping compression stall fallback: its setup exhausted the shared pre-commit ceiling")
+        return None
+    idle = min(float(route.get("timeout") or idle_timeout_seconds), remaining_ceiling)
     logger.warning(
         "Context compression stalled on the configured summary route — "
-        "retrying once on %s (%s) before continuing without compression", route["label"], route["model"],
+        "retrying once on %s (%s) within %.1fs of shared pre-commit budget before continuing without "
+        "compression", route["label"], route["model"], remaining_ceiling,
     )
     try:
         from agent.context_compressor import pin_summary_route
         with pin_summary_route(route):
             result_msgs, result_prompt = run_compress_context_with_progress_timeout(
                 worker=worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
-                idle_timeout_seconds=idle, total_ceiling_seconds=ceiling, on_commit_overrun=on_commit_overrun,
+                idle_timeout_seconds=idle, total_ceiling_seconds=remaining_ceiling,
+                on_commit_overrun=on_commit_overrun,
                 on_timeout_cause=on_timeout_cause, fence=retry_fence, telemetry_agent=telemetry_agent,
-                stall_fallback=False,
+                stall_fallback=False, precommit_deadline_monotonic=precommit_deadline_monotonic,
             )
     except Exception:
         # The primary already failed; a failing fallback must degrade, never
@@ -997,6 +1011,7 @@ def run_compress_context_with_progress_timeout(
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
     fence: Optional[CompressionCommitFence] = None, telemetry_agent: Any = None, stall_fallback: bool = True,
     new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
+    precommit_deadline_monotonic: Optional[float] = None,
 ) -> Tuple[list, str]:
     """Run ``worker(fence)`` under a sync progress-aware (idle + ceiling) timeout.
     Budgets bound the PRE-commit phase only: an admitted commit always completes (overrun logged, surfaced
@@ -1011,10 +1026,20 @@ def run_compress_context_with_progress_timeout(
     def _resolve_fallback_prompt() -> str:
         return system_prompt_fallback() if callable(system_prompt_fallback) else system_prompt_fallback
 
-    ceiling = max(float(total_ceiling_seconds), float(idle_timeout_seconds))
-    idle = float(idle_timeout_seconds)
+    requested_ceiling = max(float(total_ceiling_seconds), float(idle_timeout_seconds))
+    wait_started = time.monotonic()
+    if precommit_deadline_monotonic is None:
+        precommit_deadline_monotonic = wait_started + requested_ceiling
+    else:
+        precommit_deadline_monotonic = float(precommit_deadline_monotonic)
+    ceiling = min(requested_ceiling, precommit_deadline_monotonic - wait_started)
+    if ceiling <= 0:
+        if fence is not None:
+            fence.revoke_commit_admission()
+        return messages, _resolve_fallback_prompt()
+    idle = min(float(idle_timeout_seconds), ceiling)
     fence = fence if fence is not None else CompressionCommitFence()
-    fence.set_total_ceiling_seconds(ceiling)
+    fence.set_precommit_deadline_monotonic(precommit_deadline_monotonic)
     # Sync mirror of gateway hygiene's run_in_executor + wait_for loop: offload,
     # poll idle budget + ceiling, fence-cancel on timeout so no late commit lands.
     from tools.thread_context import propagate_context_to_thread
@@ -1058,7 +1083,6 @@ def run_compress_context_with_progress_timeout(
         _release_compression_admission()
         raise
     future.add_done_callback(_release_compression_admission)
-    wait_started = time.monotonic()
     # EVERY host unwind must revoke commit admission or a detached worker could
     # later mutate durable state; handled_exit marks paths that settle it themselves
     handled_exit = False
@@ -1110,7 +1134,8 @@ def run_compress_context_with_progress_timeout(
         if stall_fallback:
             recovered = _retry_compression_on_fallback_chain(
                 worker=worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
-                idle_timeout_seconds=idle, total_ceiling_seconds=ceiling, on_commit_overrun=on_commit_overrun,
+                idle_timeout_seconds=idle, precommit_deadline_monotonic=precommit_deadline_monotonic,
+                on_commit_overrun=on_commit_overrun,
                 on_timeout_cause=on_timeout_cause, telemetry_agent=telemetry_agent, new_fence=new_fence,
             )
             if recovered is not None:

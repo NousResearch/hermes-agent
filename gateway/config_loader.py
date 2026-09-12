@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from gateway.config import Platform, _dict_slot, _normalize_choice
+from gateway.config import Platform, PlatformConfig, _coerce_dict, _dict_slot, _normalize_choice
 
 # Logger name parity with the origin module: records stay under "gateway.config".
 logger = logging.getLogger("gateway.config")
@@ -205,8 +205,15 @@ _SHARED_KEYS: tuple = (
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
 )
 
-def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict) -> dict:
+def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_block: bool = False) -> dict:
+    """Shared-key bridge; a ROOT-level ``<platform>:`` block (which ``merge_platform_sections``
+    never copies into ``platforms_data``) also gets its adapter keys promoted into ``extra``, with
+    the same typed-key exclusion and explicit-``extra`` precedence as ``PlatformConfig.from_dict``."""
     bridged: dict = {}
+    if root_block:
+        typed = PlatformConfig._TYPED_KEYS | {"channel_overrides"}
+        bridged.update({k: v for k, v in platform_cfg.items() if k not in typed})
+        bridged.update(_coerce_dict(platform_cfg.get("extra", {})))
     for key, only, transform in _SHARED_KEYS:
         if key not in platform_cfg or (only is not None and plat not in only):
             continue
@@ -243,7 +250,7 @@ def bridge_platform_shared_keys(
         platform_cfg, cfg_toplevel = platform_section(yaml_cfg, plat.value, gateway_platforms)
         if not isinstance(platform_cfg, dict):
             continue
-        bridged = _bridged_keys(plat, platform_cfg, gw_data)
+        bridged = _bridged_keys(plat, platform_cfg, gw_data, root_block=cfg_toplevel)
         has_channel_overrides = "channel_overrides" in platform_cfg
         if has_channel_overrides and isinstance(platform_cfg.get("channel_overrides"), dict):
             plat_data = _dict_slot(platforms_data, plat.value)

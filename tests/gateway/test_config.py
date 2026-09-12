@@ -1055,6 +1055,21 @@ class TestWebhookPortBridging:
         assert wh.extra.get("host") == "0.0.0.0"
 
 
+    def test_root_level_platform_block_adapter_keys_reach_extra(self, tmp_path, monkeypatch):
+        """A ROOT-level ``webhook:`` block (not under ``platforms:``) is a supported spelling; its
+        adapter keys must reach ``extra`` like the nested form, with nested ``extra:`` winning."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "webhook:\n  enabled: true\n  port: 9100\n  host: 127.0.0.2\n  secret: fixture\n"
+            "  extra:\n    port: 9999\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_PORT", raising=False)
+        wh = load_gateway_config().platforms[Platform.WEBHOOK]
+        assert (wh.extra.get("port"), wh.extra.get("host"), wh.extra.get("secret")) == (9999, "127.0.0.2", "fixture")
+
     def test_msgraph_webhook_port_host_secret_bridged_from_toplevel(self, tmp_path, monkeypatch):
         """msgraph_webhook top-level port/host/secret must be bridged into extra,
         with an explicit extra: value still winning over the top-level one."""

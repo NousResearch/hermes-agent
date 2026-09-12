@@ -636,6 +636,8 @@ def finalize_turn(
             turn_exit_reason=_turn_exit_reason,
             model=agent.model,
             platform=_platform,
+            user_message=original_user_message,
+            assistant_response=final_response,
         )
 
     agent._turn_preflight_display_snapshot = None

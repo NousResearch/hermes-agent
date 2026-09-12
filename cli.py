@@ -885,11 +885,29 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
         with suppress(Exception):
             cli.session_id = session_id
 
+    # Extract message content from agent state so on_session_end hooks can capture
+    # what the user typed and any partial assistant output before interruption (#108808).
+    _user_msg = None
+    _assistant_resp = None
+    try:
+        _msgs = getattr(agent, "_session_messages", None)
+        if isinstance(_msgs, list) and _msgs:
+            for _m in reversed(_msgs):
+                if _user_msg is None and isinstance(_m, dict) and _m.get("role") == "user":
+                    _user_msg = _m.get("content")
+                if _assistant_resp is None and isinstance(_m, dict) and _m.get("role") == "assistant":
+                    _assistant_resp = _m.get("content")
+                if _user_msg is not None and _assistant_resp is not None:
+                    break
+    except Exception:
+        pass
     _invoke_interrupted_session_end(
         agent, session_id, reason,
         task_id=getattr(agent, "_current_task_id", "") or "",
         turn_id=getattr(agent, "_current_turn_id", "") or "",
         api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+        user_message=_user_msg,
+        assistant_response=_assistant_resp,
     )
 
 

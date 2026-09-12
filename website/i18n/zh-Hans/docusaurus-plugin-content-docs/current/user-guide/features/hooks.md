@@ -390,7 +390,7 @@ def register(ctx):
 | `post_api_request` | 观察者 | Provider success 归一化后；忽略返回值。 | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | 可用已清理的 `response`，但原始归一化 `assistant_message` 可能含模型/用户内容；`usage` 是计费数据。 |
 | `api_request_error` | 观察者 | 每次失败的 provider attempt；忽略返回值。 | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request` | Error 文本可能含 provider/用户数据；`request` 设计为已清理。 |
 | `on_session_start` | 观察者 | 新 session 第一轮；忽略返回值。 | `session_id`, `model`, `platform` | 仅标识符和 routing metadata。 |
-| `on_session_end` | 观察者 | Canonical 路径在每轮 finalize；CLI/TUI 退出还有精简 legacy shape。 | Canonical：`session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`；退出路径可能增加 `reason`/`api_request_id` 并省略字段。 | ID、model/platform 和结果；canonical payload 无消息正文。 |
+| `on_session_end` | 观察者 | Canonical 路径在每轮 finalize；CLI/TUI 退出还有精简 legacy shape。 | Canonical：`session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`, `user_message`（原始用户输入或 `None`），`assistant_response`（最终/部分响应文本或 `None`）；退出路径可能增加 `reason`/`api_request_id` 并省略字段。 | ID、model/platform、结果和消息内容；`user_message`/`assistant_response` 可能包含原始用户/模型文本。 |
 | `on_session_finalize` | 观察者 | CLI/TUI/gateway 通过 `finalize_session` teardown；gateway 关闭时可只 finalize 而不 reset。忽略返回值。 | 按 surface：`session_id`, `platform`，可选 `reason`, `old_session_id`, `new_session_id` | Session 和 routing 标识。 |
 | `on_session_reset` | 观察者 | CLI/TUI session boundary，或 gateway 创建替代 session 后；忽略返回值。 | CLI：`session_id`, `platform`, `reason`；TUI：`session_id`, `platform`；gateway：另有 `reason`, `old_session_id`, `new_session_id` | Session 和 routing 标识。 |
 | `on_skill_lifecycle` | 观察者 | 权威 skill 使用状态变更后；忽略返回值。 | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | 暴露本地 skill 名和 provenance。 |
@@ -721,6 +721,8 @@ def my_callback(session_id: str, completed: bool, interrupted: bool,
 | `interrupted` | `bool` | 轮次被中断时为 `True`（用户发送新消息、`/stop` 或退出） |
 | `model` | `str` | 模型标识符 |
 | `platform` | `str` | 会话运行环境 |
+| `user_message` | `str \| list \| None` | 本轮的原始用户输入（可能是字符串或多模态 parts 列表），不可用时为 `None` |
+| `assistant_response` | `str \| None` | 助手的最终或部分响应文本，中断前未产生则为 `None` |
 
 **触发位置：** 两处：
 1. **`run_agent.py`** — 每次 `run_conversation()` 调用结束时，所有清理完成后。始终触发，即使轮次出错。

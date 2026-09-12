@@ -123,6 +123,11 @@ VALID_HOOKS: Set[str] = {
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
+    # on_session_end: fires at every run_conversation() finalization (including interrupted turns)
+    # and from CLI shutdown when the agent was mid-turn. Kwargs: session_id, task_id, turn_id,
+    # completed, failed, interrupted, turn_exit_reason, model, platform, user_message (original
+    # user input, or None if unavailable), assistant_response (final/partial response text, or
+    # None if none was produced). Exit paths may add reason/api_request_id and omit fields.
     "on_session_finalize", "on_session_reset",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",

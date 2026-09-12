@@ -7,7 +7,8 @@ import {
   fileEditPath,
   inlineDiffFromResult,
   isFileEditTool,
-  parseMaybeObject
+  parseMaybeObject,
+  toolPresentation
 } from '@/components/assistant-ui/tool/fallback-model'
 
 export interface ChangedFile {
@@ -21,6 +22,7 @@ export interface ChangedFile {
 
 interface ChangedFilePart {
   args?: unknown
+  presentation?: unknown
   result?: unknown
   toolName?: unknown
   type?: unknown
@@ -41,7 +43,10 @@ export function deriveChangedFiles(parts: readonly unknown[]): ChangedFile[] {
       continue
     }
 
-    const result = parseMaybeObject(part.result)
+    const result = toolPresentation({
+      presentation: parseMaybeObject(part.presentation),
+      result: part.result
+    })
     const diff = inlineDiffFromResult(result)
 
     if (!diff) {

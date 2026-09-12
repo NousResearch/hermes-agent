@@ -488,3 +488,26 @@ describe('buildToolView memory status', () => {
     expect(view.subtitle).toContain('Memory is full')
   })
 })
+
+describe('buildToolView settled tool results', () => {
+  it('does not label a stopped tool without a result as success', () => {
+    const view = buildToolView(
+      part({
+        completedAt: 12,
+        result: undefined,
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.status).not.toBe('success')
+  })
+
+  it('renders a plain-text tool result as usable output', () => {
+    const view = buildToolView(part({ result: 'ok', toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('success')
+    expect(`${view.detail}\n${view.subtitle}`).toContain('ok')
+    expect(view.detail).not.toMatch(/^\s*\{\s*\}\s*$/)
+  })
+})

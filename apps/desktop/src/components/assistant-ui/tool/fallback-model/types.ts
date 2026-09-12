@@ -5,6 +5,7 @@ export interface ToolPart {
   args?: unknown
   completedAt?: number
   isError?: boolean
+  presentation?: Record<string, unknown>
   result?: unknown
   timestamp?: number
   toolCallId?: string

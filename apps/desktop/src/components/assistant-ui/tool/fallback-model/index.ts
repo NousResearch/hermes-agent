@@ -694,9 +694,39 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
   return ''
 }
 
+/** Event-level hints plus object-result fields. Object-result keys win. */
+export function toolPresentation(part: Pick<ToolPart, 'presentation' | 'result'>): Record<string, unknown> {
+  const hints = isRecord(part.presentation) ? part.presentation : {}
+
+  return {
+    ...hints,
+    ...parseMaybeObject(part.result)
+  }
+}
+
+function scalarResultText(result: unknown): string {
+  if (typeof result === 'string') {
+    return result
+  }
+
+  if (typeof result === 'number' || typeof result === 'boolean') {
+    return String(result)
+  }
+
+  if (result === null) {
+    return 'null'
+  }
+
+  if (Array.isArray(result)) {
+    return formatToolResultSummary(result) || prettyJson(result)
+  }
+
+  return ''
+}
+
 function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): ToolStatus {
   if (part.result === undefined) {
-    return 'running'
+    return part.completedAt !== undefined ? 'warning' : 'running'
   }
 
   // Explicit success wins over isError / nested-error heuristics. Memory writes
@@ -989,7 +1019,7 @@ function toolSubtitle(
       ? resultRecord.lines.filter((line): line is string => typeof line === 'string').join('\n')
       : ''
 
-    const previewSource = (output || lines).trim()
+    const previewSource = (output || lines || scalarResultText(part.result)).trim()
 
     if (previewSource) {
       const firstMeaningfulLine = previewSource
@@ -1089,6 +1119,12 @@ function toolDetailText(
 
     if (output || lines) {
       return [output, lines].filter(Boolean).join('\n')
+    }
+
+    const scalar = scalarResultText(part.result)
+
+    if (scalar) {
+      return scalar
     }
 
     // A terminal row with no output already shows its command in the `$`
@@ -1302,10 +1338,11 @@ function dynamicTitle(
   result: Record<string, unknown>,
   fallback: ToolTitleParts
 ): ToolTitleParts {
-  const verb = (gerund: string, past: string) => (part.result === undefined ? gerund : past)
+  const awaitingResult = part.result === undefined && part.completedAt === undefined
+  const verb = (gerund: string, past: string) => (awaitingResult ? gerund : past)
 
   const titledAction = (action: string, title: string): ToolTitleParts =>
-    titlePartsFromAction(title, part.result === undefined ? action : undefined)
+    titlePartsFromAction(title, awaitingResult ? action : undefined)
 
   if (part.toolName === 'web_extract') {
     const url = findFirstUrl(args, result)
@@ -1411,7 +1448,7 @@ function dynamicTitle(
 
 export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const argsRecord = parseMaybeObject(part.args)
-  const resultRecord = parseMaybeObject(part.result)
+  const resultRecord = toolPresentation(part)
   const meta = toolMeta(part.toolName)
   const status = toolStatus(part, resultRecord)
   // Skip residual error-heuristic text once status is success (stale isError
@@ -1419,19 +1456,19 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const error = status === 'success' ? '' : toolErrorText(part, resultRecord)
   // Over-budget memory refusals stay amber — don't claim "Saved".
   const memoryMissed = part.toolName === 'memory' && part.result !== undefined && status !== 'success'
+  const awaitingResult = part.result === undefined && part.completedAt === undefined
 
-  const baseTitle =
-    part.result === undefined
-      ? meta.pending
-      : memoryMissed
-        ? translateNow('assistant.tool.memoryWriteNoted')
-        : meta.done
+  const baseTitle = awaitingResult
+    ? meta.pending
+    : memoryMissed
+      ? translateNow('assistant.tool.memoryWriteNoted')
+      : meta.done
 
   const titleParts = dynamicTitle(
     part,
     argsRecord,
     resultRecord,
-    titlePartsFromAction(baseTitle, part.result === undefined ? meta.pendingAction : undefined)
+    titlePartsFromAction(baseTitle, awaitingResult ? meta.pendingAction : undefined)
   )
 
   const title = titleParts.title

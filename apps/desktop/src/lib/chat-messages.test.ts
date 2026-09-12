@@ -16,6 +16,7 @@ import {
   sealOpenToolParts,
   stripPendingClarifyProjectionForCache,
   toChatMessages,
+  toolPresentation,
   upsertToolPart,
   withUniqueToolCallIdsWithinMessage
 } from './chat-messages'
@@ -766,9 +767,10 @@ describe('upsertToolPart', () => {
     const [part] = parts
 
     expect(part?.type).toBe('tool-call')
-    expect(part && 'result' in part ? part.result : undefined).toMatchObject({
-      inline_diff: '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
-    })
+    expect(part && Object.hasOwn(part, 'result') ? part.result : undefined).toBeUndefined()
+    expect(part ? toolPresentation(part).inline_diff : undefined).toBe(
+      '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+    )
   })
 
   it('keeps live todo rows stable across sparse progress payloads', () => {
@@ -828,10 +830,8 @@ describe('upsertToolPart', () => {
       'complete'
     )
 
-    const completedResult =
-      completed[0] && 'result' in completed[0] ? (completed[0].result as Record<string, unknown>) : {}
-
-    const clearedResult = cleared[0] && 'result' in cleared[0] ? (cleared[0].result as Record<string, unknown>) : {}
+    const completedResult = completed[0] ? toolPresentation(completed[0]) : {}
+    const clearedResult = cleared[0] ? toolPresentation(cleared[0]) : {}
 
     expect(completedResult.todos).toEqual([{ content: 'Boil water', id: 'boil', status: 'in_progress' }])
     expect(clearedResult.todos).toEqual([])
@@ -885,13 +885,7 @@ describe('upsertToolPart', () => {
 
     const contexts = webParts.map(part => String((part.args as Record<string, unknown>)?.context || ''))
 
-    const summaries = webParts.map(part => {
-      if (!('result' in part) || !part.result || typeof part.result !== 'object') {
-        return ''
-      }
-
-      return String((part.result as Record<string, unknown>).summary || '')
-    })
+    const summaries = webParts.map(part => String(toolPresentation(part).summary || ''))
 
     expect(webParts).toHaveLength(2)
     expect(contexts).toEqual(['tokyo weather', 'reykjavik weather'])
@@ -957,9 +951,8 @@ describe('upsertToolPart', () => {
     expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).args).toMatchObject({
       context: 'auckland weather today and tomorrow forecast'
     })
-    expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).result).toMatchObject({
-      summary: 'Did 5 searches in 1.1s'
-    })
+    expect(part ? toolPresentation(part).summary : undefined).toBe('Did 5 searches in 1.1s')
+    expect(part ? toolPresentation(part).duration_s : undefined).toBe(1.1)
   })
 
   it('does not append phantom same-name tool rows for id-less progress updates', () => {
@@ -1026,7 +1019,7 @@ describe('upsertToolPart', () => {
 
     expect(webParts).toHaveLength(1)
     expect(webParts[0].toolCallId).toBe('search-asuncion')
-    expect(webParts[0].result).toMatchObject({ summary: 'Did 5 searches in 1.1s' })
+    expect(toolPresentation(webParts[0]).summary).toBe('Did 5 searches in 1.1s')
   })
 
   it('matches id-less live starts with later identified progress updates', () => {
@@ -1125,10 +1118,7 @@ describe('upsertToolPart', () => {
       .map(part => ({
         id: part.toolCallId,
         query: String((part.args as Record<string, unknown>)?.query || ''),
-        summary:
-          part.result && typeof part.result === 'object'
-            ? String((part.result as Record<string, unknown>).summary || '')
-            : ''
+        summary: String(toolPresentation(part).summary || '')
       }))
 
     expect(webParts).toEqual([
@@ -1173,9 +1163,84 @@ describe('upsertToolPart', () => {
 
     expect(part?.type).toBe('tool-call')
     expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).result).toMatchObject({
-      data: { web: [{ title: 'Suva forecast' }] },
-      summary: 'Did 1 search in 0.5s'
+      data: { web: [{ title: 'Suva forecast' }] }
     })
+    expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).result).not.toHaveProperty('summary')
+    expect(part ? toolPresentation(part).summary : undefined).toBe('Did 1 search in 0.5s')
+  })
+
+  it('preserves a plain-text tool result instead of mixing display hints into it', () => {
+    const parts = upsertToolPart(
+      [],
+      { name: 'terminal', tool_id: 'example', result: 'ok', summary: 'done' },
+      'complete'
+    )
+    const result = parts[0] && 'result' in parts[0] ? parts[0].result : undefined
+    expect(result).toBe('ok')
+  })
+
+  it.each([
+    { label: 'array', result: [] as unknown },
+    { label: 'false', result: false as unknown },
+    { label: 'zero', result: 0 as unknown },
+    { label: 'empty string', result: '' as unknown },
+    { label: 'null', result: null as unknown }
+  ])('preserves a $label tool result as the canonical payload', ({ result }) => {
+    const parts = upsertToolPart([], { name: 'terminal', result, summary: 'done', tool_id: 'scalar' }, 'complete')
+    const stored = parts[0] && 'result' in parts[0] ? parts[0].result : undefined
+
+    expect(stored).toEqual(result)
+  })
+
+  it('does not overwrite an object result summary with the outer gateway summary', () => {
+    const parts = upsertToolPart(
+      [],
+      { name: 'terminal', result: { summary: 'inner' }, summary: 'outer', tool_id: 'nested' },
+      'complete'
+    )
+    const stored = parts[0] && 'result' in parts[0] ? parts[0].result : undefined
+
+    expect(stored).toEqual({ summary: 'inner' })
+  })
+
+  it('keeps a stored result when a sparse duplicate complete omits the result key', () => {
+    const completed = upsertToolPart(
+      [],
+      { name: 'terminal', result: 'ok', tool_id: 'dup' },
+      'complete'
+    )
+    const sparse = upsertToolPart(completed, { name: 'terminal', tool_id: 'dup' }, 'complete')
+    const stored = sparse[0] && 'result' in sparse[0] ? sparse[0].result : undefined
+
+    expect(stored).toBe('ok')
+  })
+
+  it('does not invent a result when a completion never received one', () => {
+    const parts = upsertToolPart([], { name: 'terminal', summary: 'done', tool_id: 'empty' }, 'complete')
+
+    expect(parts[0] && Object.hasOwn(parts[0], 'result') ? parts[0].result : undefined).toBeUndefined()
+    expect(parts[0] && 'completedAt' in parts[0] ? parts[0].completedAt : undefined).toBeTypeOf('number')
+  })
+
+  it('keeps distinct identified parallel starts from overwriting one another', () => {
+    const first = upsertToolPart([], { name: 'terminal', result: 'one', tool_id: 'a' }, 'complete')
+    const both = upsertToolPart(first, { name: 'terminal', result: 'two', tool_id: 'b' }, 'complete')
+
+    expect(both).toHaveLength(2)
+    expect(both[0] && 'result' in both[0] ? both[0].result : undefined).toBe('one')
+    expect(both[1] && 'result' in both[1] ? both[1].result : undefined).toBe('two')
+  })
+
+  it('keeps distinct identified completions that never received a result', () => {
+    const first = upsertToolPart([], { name: 'read_file', tool_id: 'a' }, 'complete')
+    const both = upsertToolPart(first, { name: 'read_file', tool_id: 'b' }, 'complete')
+    const tools = both.filter(part => part.type === 'tool-call')
+
+    expect(tools).toHaveLength(2)
+    expect(tools[0]?.toolCallId).toBe('a')
+    expect(tools[1]?.toolCallId).toBe('b')
+    expect(tools[0] && Object.hasOwn(tools[0], 'result') ? tools[0].result : undefined).toBeUndefined()
+    expect(tools[1] && Object.hasOwn(tools[1], 'result') ? tools[1].result : undefined).toBeUndefined()
   })
 })
 
@@ -1426,7 +1491,8 @@ describe('sealOpenToolParts', () => {
 
     const next = sealOpenToolParts(messages)
 
-    expect(next[0].parts[0]).toHaveProperty('result')
+    expect(next[0].parts[0]).not.toHaveProperty('result')
+    expect(next[0].parts[0]).toHaveProperty('completedAt')
   })
 
   it('leaves already-completed tool parts untouched', () => {
@@ -1453,7 +1519,8 @@ describe('sealOpenToolParts', () => {
     const next = sealOpenToolParts(messages)
 
     expect(next[0].parts[0]).toBe(text)
-    expect(next[0].parts[1]).toHaveProperty('result')
+    expect(next[0].parts[1]).not.toHaveProperty('result')
+    expect(next[0].parts[1]).toHaveProperty('completedAt')
   })
 
   it('returns the same array reference when nothing needs sealing', () => {
@@ -1461,5 +1528,14 @@ describe('sealOpenToolParts', () => {
     const messages = [assistantWithParts([done])]
 
     expect(sealOpenToolParts(messages)).toBe(messages)
+  })
+
+  it('does not invent an empty-object success payload for tools that never returned a result', () => {
+    const messages = [assistantWithParts([toolPart()])]
+    const next = sealOpenToolParts(messages)
+    const sealed = next[0].parts[0]
+
+    expect(sealed && Object.hasOwn(sealed, 'result') ? sealed.result : undefined).toBeUndefined()
+    expect(sealed && 'completedAt' in sealed ? sealed.completedAt : undefined).toBeTypeOf('number')
   })
 })

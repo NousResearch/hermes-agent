@@ -10,6 +10,8 @@ export interface TimelinePartMetadata {
   timestamp?: number
   /** Unix seconds when this segment stopped or handed off to the next one. */
   completedAt?: number
+  /** Event-level tool display hints. Never a substitute for `result`. */
+  presentation?: Record<string, unknown>
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata

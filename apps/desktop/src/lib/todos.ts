@@ -248,7 +248,8 @@ export function todosFromMessageContent(content: unknown): null | TodoItem[] {
       continue
     }
 
-    const parsed = parseTodos(part.todos) ?? parseTodos(part.result) ?? parseTodos(part.args)
+    const parsed =
+      parseTodos(part.todos) ?? parseTodos(part.presentation) ?? parseTodos(part.result) ?? parseTodos(part.args)
 
     if (parsed !== null) {
       latest = parsed

@@ -184,7 +184,15 @@ function findToolPartIndex(
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index]
 
-    if (part.type === 'tool-call' && part.toolName === name && part.result === undefined) {
+    // A complete without a payload used to become `result: {}`. That fake
+    // success is gone, so `completedAt` is what keeps the row out of the
+    // pending pool — otherwise a later identified sibling overwrites it.
+    if (
+      part.type === 'tool-call' &&
+      part.toolName === name &&
+      part.result === undefined &&
+      part.completedAt === undefined
+    ) {
       pendingIndices.push(index)
     }
   }
@@ -264,23 +272,73 @@ function toolArgs(payload: GatewayEventPayload | undefined, prevArgs?: unknown):
   }
 }
 
-function toolResult(
-  payload: GatewayEventPayload | undefined,
-  prevResult?: unknown,
-  prevArgs?: unknown
-): Record<string, unknown> {
-  const parsedResult = parseMaybeJsonObject(payload?.result)
+function canonicalizeToolResult(value: unknown): unknown {
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value)
 
-  return {
-    ...parsedResult,
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed
+      }
+    } catch {
+      return value
+    }
+  }
+
+  return value
+}
+
+function eventPresentation(
+  payload: GatewayEventPayload | undefined,
+  prevPresentation?: unknown,
+  ...carryFrom: unknown[]
+): Record<string, unknown> | undefined {
+  const next = {
+    ...(recordFromUnknown(prevPresentation) ?? {}),
     ...(payload?.inline_diff ? { inline_diff: payload.inline_diff } : {}),
     ...(payload?.summary ? { summary: payload.summary } : {}),
     ...(payload?.message ? { message: payload.message } : {}),
     ...(payload?.preview ? { preview: payload.preview } : {}),
     ...(payload?.duration_s !== undefined ? { duration_s: payload.duration_s } : {}),
-    ...carryTodos(payload, prevResult, prevArgs),
+    ...carryTodos(payload, ...carryFrom),
     ...(payload?.error ? { error: payload.error } : {})
   }
+
+  return Object.keys(next).length > 0 ? next : undefined
+}
+
+function objectResultRecord(result: unknown): Record<string, unknown> {
+  return parseMaybeJsonObject(result)
+}
+
+/** Derived card/diff/todo hints: event-level presentation plus object-result fields.
+ *  Object-result keys win so an inner `summary` is not overwritten by the gateway. */
+export function toolPresentation(
+  part: ChatMessagePart | { presentation?: unknown; result?: unknown }
+): Record<string, unknown> {
+  const hints = recordFromUnknown('presentation' in part ? part.presentation : undefined) ?? {}
+  const result = 'result' in part ? part.result : undefined
+
+  return {
+    ...hints,
+    ...objectResultRecord(result)
+  }
+}
+
+function nextToolResult(
+  payload: GatewayEventPayload | undefined,
+  prev: ChatMessagePart | null,
+  prevResult: unknown
+): { include: true; result: unknown } | { include: false } {
+  if (payload && Object.hasOwn(payload, 'result')) {
+    return { include: true, result: canonicalizeToolResult(payload.result) }
+  }
+
+  if (prev && Object.hasOwn(prev, 'result')) {
+    return { include: true, result: prevResult }
+  }
+
+  return { include: false }
 }
 
 function completeOpenStreamParts(parts: ChatMessagePart[], completedAt: number): ChatMessagePart[] {
@@ -314,7 +372,13 @@ export function upsertToolPart(
   const prev = index >= 0 ? next[index] : null
   const prevArgs = prev && 'args' in prev ? prev.args : undefined
   const prevResult = prev && 'result' in prev ? prev.result : undefined
+  const prevPresentation = prev && 'presentation' in prev ? prev.presentation : undefined
   const args = toolArgs(payload, prevArgs)
+  const resolvedResult = nextToolResult(payload, prev, prevResult)
+  const presentation =
+    phase === 'complete'
+      ? eventPresentation(payload, prevPresentation, prevResult, prevArgs, prevPresentation)
+      : (recordFromUnknown(prevPresentation) ?? undefined)
 
   const id =
     stableId ||
@@ -328,10 +392,11 @@ export function upsertToolPart(
     args: args as never,
     argsText: JSON.stringify(args),
     timestamp: prev?.timestamp ?? occurredAt,
+    ...(presentation ? { presentation } : {}),
     ...(phase === 'complete' && {
       completedAt: occurredAt,
-      result: toolResult(payload, prevResult, prevArgs),
-      isError: Boolean(payload?.error)
+      isError: Boolean(payload?.error),
+      ...(resolvedResult.include ? { result: resolvedResult.result } : {})
     })
   } satisfies ChatMessagePart
 
@@ -579,13 +644,13 @@ export function sealOpenToolParts(messages: ChatMessage[]): ChatMessage[] {
     let partChanged = false
 
     const parts = message.parts.map(part => {
-      if (part.type !== 'tool-call' || Object.hasOwn(part, 'result')) {
+      if (part.type !== 'tool-call' || part.completedAt !== undefined || Object.hasOwn(part, 'result')) {
         return part
       }
 
       partChanged = true
 
-      return { ...part, result: {} }
+      return { ...part, completedAt: part.timestamp ?? 0 }
     })
 
     if (!partChanged) {

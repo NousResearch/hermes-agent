@@ -341,6 +341,31 @@ _WINDOWS_NODE_SHIMS = {
 }
 
 
+def _probe_file(candidate: Path) -> bool | None:
+    """Three-state ``is_file()``: True, False, or ``None`` for unstattable.
+
+    ``Path.is_file()`` only swallows the Windows errors listed in
+    ``pathlib._IGNORED_WINERRORS`` (21, 123, 1921). ``ERROR_CANT_ACCESS_FILE``
+    (1920) is not among them, so an unresolvable reparse point raises
+    ``OSError`` instead of reporting "not a file" — e.g. a POSIX Node tarball
+    unpacked into a Windows ``HERMES_HOME`` leaves ``node/bin/npm`` as a symlink
+    Windows cannot traverse. Every probe below scans directories that can
+    contain exactly that, and the raise escapes far enough to abort
+    ``hermes dashboard``.
+
+    ``None`` is deliberately distinct from ``False``. A directory entry that
+    raises is *present* — it just cannot be inspected — so managed-tree callers
+    must read it as broken-and-heal-me, not as absent. Collapsing the two would
+    let a present-but-broken tree fall through to system npm, reversing
+    65be0061e ("heal broken managed Node tree instead of PATH fallback"). PATH
+    scanning wants the opposite: skip the entry and keep looking.
+    """
+    try:
+        return candidate.is_file()
+    except OSError:
+        return None
+
+
 def _candidate_node_command_names(command: str) -> list[str]:
     base = Path(command).name
     if sys.platform != "win32" or "." in base:
@@ -350,11 +375,12 @@ def _candidate_node_command_names(command: str) -> list[str]:
 
 
 def _iter_managed_node_candidates(names: list[str], home: Path | None = None):
-    """Yield existing (and on POSIX, executable) ``<node-dir>/<name>`` files."""
+    """Yield existing or uninspectable candidates; unreadable means broken, not absent."""
     for directory in iter_hermes_node_dirs(home):
         for name in names:
             candidate = directory / name
-            if candidate.is_file() and (sys.platform == "win32" or os.access(candidate, os.X_OK)):
+            present = _probe_file(candidate)
+            if present is None or (present and (sys.platform == "win32" or os.access(candidate, os.X_OK))):
                 yield candidate
 
 
@@ -405,7 +431,7 @@ def node_tool_runnable(path: str | None) -> bool:
     """True only when *path* is a Node/npm/npx binary that actually runs (``--version`` probe)."""
     if not path:
         return False
-    present = Path(path).is_file() if sys.platform == "win32" else _is_executable_file(path)
+    present = _probe_file(Path(path)) is True if sys.platform == "win32" else _is_executable_file(path)
     return present and _version_probe_ok(path)
 
 
@@ -503,7 +529,7 @@ def _stage_windows_node_zip(home: Path, node_arch: str) -> Path | None:
 
     A sibling makes the later swap a same-volume rename. ``None`` on any failure.
     """
-    import tempfile
+    import io
     import uuid
     import zipfile
 
@@ -519,21 +545,30 @@ def _stage_windows_node_zip(home: Path, node_arch: str) -> Path | None:
     zip_bytes = _fetch_url(f"{index_url}{zip_name}", 300)
     if zip_bytes is None:
         return None
-    staged = home / f"node.new-{uuid.uuid4().hex[:8]}"
+    staged = home / f"node.new-{uuid.uuid4().hex}"
+    unpack = home / f"{staged.name}.unpack"
+    unpack_owned = False
     try:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            (tmp_path / zip_name).write_bytes(zip_bytes)
-            extract_dir = tmp_path / "extract"
-            extract_dir.mkdir()
-            with zipfile.ZipFile(tmp_path / zip_name) as archive:
-                archive.extractall(extract_dir)
-            extracted = next(extract_dir.glob("node-v*"), None)
-            if extracted is None or not extracted.is_dir():
-                return None
-            shutil.move(str(extracted), str(staged))
-    except OSError:
+        if os.path.lexists(staged):
+            return None
+        # A same-volume move preserves the source ACL. Extract under the
+        # destination's inheritance instead of carrying tempfile's protected
+        # OWNER RIGHTS descriptor into the installed runtime (#104212).
+        unpack.mkdir()
+        unpack_owned = True
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+            archive.extractall(unpack)
+        extracted = next(unpack.glob("node-v*"), None)
+        if extracted is None or not extracted.is_dir():
+            return None
+        # Windows rename refuses an existing destination instead of nesting
+        # inside it (shutil.move) or falling back to a partial cross-volume copy.
+        os.rename(extracted, staged)
+    except (OSError, zipfile.BadZipFile):
         return None
+    finally:
+        if unpack_owned:
+            shutil.rmtree(unpack, ignore_errors=True)
     return staged
 
 
@@ -704,11 +739,11 @@ def find_node_executable_on_path(command: str) -> str | None:
         return shutil.which(command)
     command_str = str(command)
     if any(sep and sep in command_str for sep in (os.sep, os.altsep, "/", "\\")):
-        return command_str if Path(command_str).is_file() else None
+        return command_str if _probe_file(Path(command_str)) is True else None
     directories = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
     for name in _candidate_node_command_names(command_str):
         for directory in directories:
-            if (Path(directory) / name).is_file():
+            if _probe_file(Path(directory) / name) is True:
                 return str(Path(directory) / name)
     return None
 
@@ -726,11 +761,50 @@ def find_node_executable(command: str) -> str | None:
     return find_node_executable_on_path(command)
 
 
+def path_entry_usable(candidate: Path) -> bool:
+    """Return True when *candidate* is a directory we can actually enumerate.
+
+    A PATH entry has to clear a higher bar than "is a directory". An
+    unreadable directory — one whose ACL denies traversal, which an
+    interrupted or elevated install can leave behind at ``$HERMES_HOME/node``
+    — still stats as a directory, so an ``is_dir()`` check happily puts it on
+    PATH. Windows process creation then *fails* on that entry rather than
+    skipping it: ``spawn`` returns ``EPERM`` (errno -4048) as soon as an
+    unreadable directory precedes the real one, so a single bad entry breaks
+    every child process, not just the ones wanting a managed runtime.
+
+    That is not hypothetical. It is how the packaged desktop build died —
+    ``cross-env`` could not spawn ``node`` at all, because the managed tree
+    prepended here was unreadable::
+
+        Error: spawn EPERM
+            at ChildProcess.spawn (node:internal/child_process:441:11)
+            at spawn (node_modules/cross-spawn/index.js:12:24)
+
+    So probe by *listing*, not by stat-ing: a tree we cannot enumerate has to
+    stay off PATH entirely. ``scandir`` raises on the first entry when the
+    directory is unreadable, so this stays O(1) rather than walking the tree.
+    """
+    try:
+        with os.scandir(candidate) as entries:
+            next(entries, None)
+    except OSError:
+        return False
+    return True
+
+
 def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
     """Return *env* with Hermes-managed Node directories prepended to PATH."""
     merged = dict(os.environ if env is None else env)
-    parts = [p for p in merged.get("PATH", "").split(os.pathsep) if p]
-    for entry in reversed([str(path) for path in iter_hermes_node_dirs() if path.is_dir()]):
+    candidates = iter_hermes_node_dirs()
+    managed = [str(path) for path in candidates if path_entry_usable(path)]
+    # An installer may have already put the damaged tree on PATH. Do not retain
+    # that entry simply because this call did not add it (#97212 / #83589).
+    unusable = {os.path.normcase(os.path.normpath(str(path))) for path in candidates
+                if str(path) not in managed}
+    parts = [p for p in merged.get("PATH", "").split(os.pathsep)
+             if p and os.path.normcase(os.path.normpath(p)) not in unusable]
+    for entry in reversed(managed):
         if entry not in parts:
             parts.insert(0, entry)
     merged["PATH"] = os.pathsep.join(parts)

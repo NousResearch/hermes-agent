@@ -35,11 +35,13 @@ class TestGetDefaultHermesRoot:
 
     @pytest.mark.linux_only
     def test_no_hermes_home_returns_native(self, tmp_path, monkeypatch):
-        """When HERMES_HOME is not set, returns ~/.hermes."""
+        """Without either override, use this host's native home-relative path."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        assert get_default_hermes_root() == tmp_path / ".hermes"
+        expected = tmp_path / "AppData" / "Local" / "hermes" if os.name == "nt" else tmp_path / ".hermes"
+        assert get_default_hermes_root() == expected
 
 
 

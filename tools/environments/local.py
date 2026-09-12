@@ -519,8 +519,8 @@ def _managed_runtime_path_entries() -> list[str]:
     ``$HERMES_HOME/bin`` (managed ``uv``). Per call, not cached: home is
     profile-scoped and a managed tree can appear mid-process."""
     try:
-        from hermes_constants import get_hermes_home, iter_hermes_node_dirs
-        return [str(d) for d in (*iter_hermes_node_dirs(), get_hermes_home() / "bin") if d.is_dir()]
+        from hermes_constants import get_hermes_home, iter_hermes_node_dirs, path_entry_usable
+        return [str(d) for d in (*iter_hermes_node_dirs(), get_hermes_home() / "bin") if path_entry_usable(d)]
     except Exception:
         return []
 

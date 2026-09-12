@@ -3350,6 +3350,15 @@ export interface Translations {
         runtime: string
         streaming: string
       }
+      recoveryMissing: string
+      recoveryUnfinished: string
+      recoveryPutBack: string
+      recoveryHide: string
+      recoveryHidden: string
+      recoveryUndo: string
+      recoveryActivityHint: string
+      recoveryHideHint: string
+      recoveryAttachmentHint: string
       errorRetry: string
       /** Escape hatch when Retry would only reproduce SESSION_NOT_OWNED (#106217). */
       errorStartNewSession: string

@@ -46,7 +46,7 @@ import {
   REF_RE,
   renderComposerContents
 } from '../rich-editor'
-import { useComposerScope } from '../scope'
+import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
 interface UseComposerDraftArgs {
@@ -77,6 +77,7 @@ export function useComposerDraft({
   const aui = useAui()
   const composerRuntime = useComposerRuntime()
   const paneVisible = usePaneVisible()
+  const surfaceId = useComposerSurfaceId()
   // Which composer this is on the focus bus + which attachment set it owns.
   const { attachments: attachmentScope, target } = useComposerScope()
 
@@ -230,8 +231,8 @@ export function useComposerDraft({
       setFocusRequestId(id => id + 1)
     })
 
-    const offInsert = onComposerInsertRequest(({ mode, target: requested, text }) => {
-      if (requested === target) {
+    const offInsert = onComposerInsertRequest(({ mode, target: requested, text, surfaceId: requestedSurface }) => {
+      if (requested === target && (!requestedSurface || requestedSurface === surfaceId)) {
         appendExternalText(text, mode)
       }
     })
@@ -240,7 +241,7 @@ export function useComposerDraft({
       offFocus()
       offInsert()
     }
-  }, [appendExternalText, inputDisabled, paintDraft, target])
+  }, [appendExternalText, inputDisabled, paintDraft, surfaceId, target])
 
   const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
     stashSessionDraft(scope, text, attachments)

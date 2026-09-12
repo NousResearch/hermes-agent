@@ -2102,7 +2102,38 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     return _attempt
 
 
-_SUMMARY_ATTEMPT_BUILDERS = {"codex_responses": _codex_summary_attempt, "anthropic_messages": _anthropic_summary_attempt}
+def _bedrock_summary_no_client(reason, kind="openai"):
+    """``make_client`` for the bedrock summary dispatch — never invoked. The ``bedrock_converse``
+    branch of ``_dispatch_nonstreaming_api_request`` calls ``_bedrock_converse_call`` and owns its own
+    boto3 client. Raise rather than return None so a refactor that does start calling it here fails
+    loudly instead of handing None to an SDK."""
+    raise AssertionError(
+        f"bedrock summary dispatch asked for a {kind!r} client (reason={reason!r}); "
+        "bedrock_converse owns its own boto3 client")
+
+
+def _bedrock_summary_attempt(agent, api_messages: list, api_request_id: str):
+    """Summary over Converse — the api_mode this table used to omit, which sent Bedrock sessions to
+    ``_chat_summary_attempt`` and its opening ``_ensure_primary_openai_client()``. With no OpenAI
+    client that raised and ``handle_max_iterations``'s ``except Exception`` turned it into the
+    "couldn't summarize" string; with one configured it was worse — a chat.completions request
+    carrying the whole conversation, addressed to ``agent.base_url`` with a Bedrock ``modelId``.
+    Dispatching through ``_dispatch_nonstreaming_api_request`` keeps per-api_mode routing in the one
+    place that helper promises and inherits its cachePoint-rejection and stale-connection recovery;
+    ``tools_for_api=[]`` suppresses ``toolConfig``, mirroring the ``pop("tools")`` in the codex
+    builder above, because the summary prompt tells the model not to call more tools."""
+    def _attempt(retry_count: int) -> str:
+        bedrock_kwargs = agent._build_api_kwargs(api_messages, tools_for_api=[])
+        response = _managed_summary_call(
+            agent, api_request_id, bedrock_kwargs,
+            lambda request: _dispatch_nonstreaming_api_request(agent, request, make_client=_bedrock_summary_no_client),
+            retry_count=retry_count)
+        return _summary_text(agent, response)
+    return _attempt
+
+
+_SUMMARY_ATTEMPT_BUILDERS = {"codex_responses": _codex_summary_attempt, "anthropic_messages": _anthropic_summary_attempt,
+                             "bedrock_converse": _bedrock_summary_attempt}
 
 
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:

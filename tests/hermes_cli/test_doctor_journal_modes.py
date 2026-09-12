@@ -480,7 +480,13 @@ class TestConfiguredDeleteNeverApplied:
         assert "never applied" in out
         # The remediation must name the offline step; the setting alone will not convert it.
         assert "PRAGMA journal_mode=DELETE" in out
-        assert "gateway stop" in out
+        # ...and the COMPLETE holder set. `hermes gateway stop` alone is the current profile's
+        # gateway only; the dashboard / `hermes serve` are separate processes on their own
+        # lifecycle and are database holders too — that gateway+dashboard pair IS the topology
+        # in #100896. A hint naming only the gateway lets the operator run the PRAGMA while the
+        # dashboard still holds the file, leaving the conversion unapplied (review finding).
+        assert "gateway stop --all" in out
+        assert "dashboard --stop" in out
 
     def test_rollback_on_disk_with_delete_configured_is_quiet(self, tmp_path, capsys, monkeypatch):
         """The setting DID apply — this is the healthy state and must not nag."""

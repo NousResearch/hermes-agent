@@ -2070,6 +2070,158 @@ class TestWebServerEndpoints:
         model_cfg = load_config()["model"]
         assert model_cfg["api_key"] == "sk-legacy"
 
+    @staticmethod
+    def _probe_stub(monkeypatch, status_code=200, models=("m",)):
+        """Stub ``httpx.AsyncClient`` for the /validate probe; returns the captured request."""
+        captured = {}
+
+        class _Resp:
+            def __init__(self):
+                self.status_code = status_code
+                self.is_success = 200 <= status_code < 300
+
+            def json(self):
+                return {"data": [{"id": m} for m in models]}
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, *args, headers=None, **kwargs):
+                captured["url"] = url
+                captured["headers"] = headers
+                return _Resp()
+
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+        return captured
+
+    def _save_proxy(self, api_key="sk-saved-key-0123456789"):
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "m",
+                "api_key": api_key,
+            },
+        )
+
+    def test_validate_uses_the_saved_key_when_the_field_is_blank(self, monkeypatch):
+        """Save moves the key to .env and clears the form field ("Leave blank to
+        keep current key"); Test on that saved endpoint must send the saved key,
+        not go out unauthenticated and report the key as rejected."""
+        self._save_proxy()
+        captured = self._probe_stub(monkeypatch)
+
+        response = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={"id": "proxy", "name": "Proxy", "base_url": "https://llm.example.com/v1", "model": "m"},
+        )
+
+        assert response.json()["ok"] is True
+        assert captured["headers"]["Authorization"] == "Bearer sk-saved-key-0123456789"
+
+    def test_validate_prefers_a_submitted_key_over_the_saved_one(self, monkeypatch):
+        self._save_proxy(api_key="sk-old-key-0123456789")
+        captured = self._probe_stub(monkeypatch)
+
+        self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "m",
+                "api_key": "sk-new-key-0123456789",
+            },
+        )
+
+        assert captured["headers"]["Authorization"] == "Bearer sk-new-key-0123456789"
+
+    def test_validate_does_not_borrow_a_key_for_an_unsaved_endpoint(self, monkeypatch):
+        """No ``id`` means a new endpoint: never attach some other entry's key."""
+        self._save_proxy()
+        captured = self._probe_stub(monkeypatch)
+
+        self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={"name": "Proxy", "base_url": "https://llm.example.com/v1", "model": "m"},
+        )
+
+        assert "Authorization" not in captured["headers"]
+
+    def test_validate_401_names_whether_a_key_was_sent(self, monkeypatch):
+        """Three different situations used to collapse into "rejected the API key"."""
+        self._probe_stub(monkeypatch, status_code=401)
+        unsaved = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={"name": "New", "base_url": "https://llm.example.com/v1", "model": "m"},
+        ).json()
+        assert unsaved["ok"] is False and unsaved["reachable"] is True
+        assert "none is saved" in unsaved["message"]
+
+        self._save_proxy()
+        self._probe_stub(monkeypatch, status_code=401)
+        saved = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={"id": "proxy", "name": "Proxy", "base_url": "https://llm.example.com/v1", "model": "m"},
+        ).json()
+        assert "rejected the saved API key" in saved["message"]
+
+        submitted = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={"id": "proxy", "name": "Proxy", "base_url": "https://llm.example.com/v1", "model": "m", "api_key": "sk-typed"},
+        ).json()
+        assert submitted["message"] == "The endpoint rejected the API key."
+
+    def test_validate_falls_back_to_the_direct_config_model_block(self, monkeypatch):
+        """The synthesized ``custom`` row (provider: custom on ``model``) has no
+        providers entry; its key lives on the model block."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {
+            "provider": "custom",
+            "default": "m",
+            "base_url": "https://llm.example.com/v1",
+            "api_key": "sk-direct-key-0123456789",
+        }
+        cfg.pop("providers", None)
+        save_config(cfg)
+        captured = self._probe_stub(monkeypatch)
+
+        self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={"id": "custom", "name": "Custom", "base_url": "https://llm.example.com/v1", "model": "m"},
+        )
+
+        assert captured["headers"]["Authorization"] == "Bearer sk-direct-key-0123456789"
+
+    def test_custom_endpoint_response_masks_the_value_behind_key_env(self):
+        """The row shows what the key_env resolves to (masked), not the bare
+        ``${VAR}`` template, and says so when the var is missing."""
+        from hermes_cli.config import custom_endpoint_key_env, remove_env_value
+
+        self._save_proxy(api_key="sk-live-key-0123456789abcdef")
+        listed = self.client.get("/api/providers/custom-endpoints").json()
+        endpoint = next(e for e in listed["endpoints"] if e["id"] == "proxy")
+        assert endpoint["has_api_key"] is True
+        assert endpoint["api_key_preview"] == "sk-l...cdef"
+        assert "sk-live-key-0123456789abcdef" not in endpoint["api_key_preview"]
+
+        remove_env_value(custom_endpoint_key_env("proxy"))
+        listed = self.client.get("/api/providers/custom-endpoints").json()
+        endpoint = next(e for e in listed["endpoints"] if e["id"] == "proxy")
+        assert endpoint["has_api_key"] is False
+        assert endpoint["api_key_preview"] == "${HERMES_CUSTOM_PROXY_API_KEY} (not set)"
+
     def test_get_sessions_rejects_negative_limit(self):
         """limit=-1 must be rejected (422), not passed through to SQLite as
         LIMIT -1 (unbounded) — issue #74316."""

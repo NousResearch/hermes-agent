@@ -20,7 +20,7 @@ from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_ids,
 )
 from fastapi import HTTPException, Request
-from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, redact_key, _deep_merge
+from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_env_value, redact_key, _deep_merge
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -340,8 +340,44 @@ def _api_key_display(entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         return True, redact_key(plaintext)
     key_env = str(entry.get("key_env") or "").strip()
     if key_env:
-        return True, f"${{{key_env}}}"
+        # Show the masked value the var resolves to, not the bare ``${VAR}``
+        # template: after Save blanks the field, the template read as "the
+        # key is gone" even though it was sitting in .env. A var that does not
+        # resolve is reported as such so the row matches what requests do.
+        resolved = str(get_env_value(key_env) or "").strip()
+        if resolved:
+            return True, redact_key(resolved)
+        return False, f"${{{key_env}}} (not set)"
     return False, None
+
+
+def _stored_custom_endpoint_key(cfg: Dict[str, Any], endpoint_id: str) -> Optional[str]:
+    """The credential on file for a saved endpoint, or ``None``.
+
+    Mirrors the runtime's precedence for a named custom provider: inline
+    ``api_key`` (legacy plaintext, or a hand-written ``${VAR}`` that
+    ``load_config()`` already expanded), then ``key_env`` resolved through
+    ``.env`` (what Save writes, #69449). The synthesized ``direct-config``
+    row has no ``providers`` entry, so it falls back to the ``model`` block.
+    """
+    _stored, entry = find_provider_entry(cfg.get("providers"), endpoint_id)
+    if not isinstance(entry, dict):
+        model_cfg = cfg.get("model")
+        if (
+            endpoint_id == "custom"
+            and isinstance(model_cfg, dict)
+            and str(model_cfg.get("provider") or "").strip().lower() == "custom"
+        ):
+            entry = model_cfg
+        else:
+            return None
+    plaintext = str(entry.get("api_key") or "").strip()
+    if plaintext:
+        return plaintext
+    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+    if key_env:
+        return str(get_env_value(key_env) or "").strip() or None
+    return None
 
 
 def _raw_provider_api_key(endpoint_id: str) -> Any:
@@ -618,16 +654,33 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
 
 
 @router.post("/api/providers/custom-endpoints/validate")
-async def validate_custom_endpoint(body: CustomEndpointUpdate):
-    """Probe a custom endpoint by calling its OpenAI-compatible /models URL."""
+async def validate_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
+    """Probe a custom endpoint by calling its OpenAI-compatible /models URL.
+
+    A blank ``api_key`` on a saved endpoint (``id``) means "use the key on
+    file", the same contract the form states ("Leave blank to keep current
+    key"). Save writes the key to ``.env`` and clears the field, so without
+    this the very next Test went out with no ``Authorization`` header and
+    reported "rejected the API key" for a key that works. Profile-scoped like
+    the other custom-endpoint routes so the key is read from the profile
+    that saved it.
+    """
     base_url = (body.base_url or "").strip().rstrip("/")
     if not base_url:
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
+    api_key = (body.api_key or "").strip()
+    key_source: Optional[str] = "submitted" if api_key else None
+    endpoint_id = _custom_endpoint_id(body.id) if (body.id or "").strip() else ""
+    if not api_key and endpoint_id:
+        with _config_profile_scope(profile):
+            api_key = _stored_custom_endpoint_key(load_config(), endpoint_id) or ""
+        key_source = "saved" if api_key else None
+
     url = base_url + "/models"
     headers = {"Accept": "application/json"}
-    if body.api_key and body.api_key.strip():
-        headers["Authorization"] = f"Bearer {body.api_key.strip()}"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     try:
         async with _endpoint_probe_client(url, 8.0) as client:
@@ -636,7 +689,13 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
         return {"ok": False, "reachable": False, "message": f"Could not reach {url}.", "models": []}
 
     if resp.status_code in (401, 403):
-        return {"ok": False, "reachable": True, "message": "The endpoint rejected the API key.", "models": []}
+        if key_source is None:
+            message = "The endpoint requires an API key and none is saved for it. Enter one and test again."
+        elif key_source == "saved":
+            message = "The endpoint rejected the saved API key. Enter a new one and save again."
+        else:
+            message = "The endpoint rejected the API key."
+        return {"ok": False, "reachable": True, "message": message, "models": []}
     if not resp.is_success:
         return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
 

@@ -65,6 +65,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_resources"] is True
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
+    assert features["profile_header"] == "X-Hermes-Profile"
     assert features["session_fork"] is True
     assert features["run_steer"] is True
     assert features["admin_config_rw"] is False

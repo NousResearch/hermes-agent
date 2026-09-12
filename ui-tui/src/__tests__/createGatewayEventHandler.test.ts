@@ -1522,6 +1522,147 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(0)
   })
 
+  it('keeps a canonical turn live when interrupt is pending or rejected, without retrying', async () => {
+    vi.useFakeTimers()
+
+    try {
+      for (const error of [new Error('stale_generation'), new Error('transport disconnected')]) {
+        turnController.fullReset()
+        const appended: Msg[] = []
+        const ctx = buildCtx(appended)
+        let reject!: (error: Error) => void
+        ctx.gateway.gw.isCanonical = true
+        ctx.gateway.gw.request = vi.fn(() => new Promise((_, fail) => { reject = fail }))
+        const onEvent = createGatewayEventHandler(ctx)
+        const info = { model: 'test', tools: {}, skills: {}, execution_epoch: 'owner', execution_generation: 2 }
+        patchUiState({ sid: 'sess-1', info })
+
+        const emit = (type: string, payload = {}) =>
+          onEvent({ type, session_id: 'sess-1', payload: { ...info, ...payload } } as any)
+
+        emit('message.start')
+        emit('reasoning.delta', { text: 'working' })
+        emit('tool.start', { name: 'search', tool_id: 't-1' })
+        emit('message.delta', { text: 'partial' })
+        emit('approval.request', { request_id: 'approval', command: 'test' })
+        const live = getTurnState()
+        const overlay = getOverlayState().approval
+
+        const pending = turnController.interruptTurn({
+          appendMessage: ctx.transcript.appendMessage, gw: ctx.gateway.gw, sid: 'sess-1', sys: ctx.system.sys
+        }, { keepBusy: true })
+
+        expect(turnController.interrupted).toBe(false)
+        expect(getUiState().busy).toBe(true)
+        expect(getTurnState()).toEqual(live)
+        expect(getOverlayState().approval).toBe(overlay)
+        expect(appended).toEqual([])
+        reject(error)
+        await pending
+
+        expect(ctx.gateway.gw.request).toHaveBeenCalledExactlyOnceWith('session.interrupt', {
+          session_id: 'sess-1', execution_generation: info.execution_generation
+        })
+        expect(ctx.system.sys).toHaveBeenCalledExactlyOnceWith(`interrupt failed: ${error.message}`)
+        expect(turnController.interrupted).toBe(false)
+        expect(getUiState()).toMatchObject({ sid: 'sess-1', busy: true, info })
+        expect(getTurnState()).toEqual(live)
+        expect(getOverlayState().approval).toBe(overlay)
+        emit('message.delta', { text: ' continues' })
+        expect(turnController.bufRef).toBe('partial continues')
+        emit('message.complete', { text: 'legitimate completion' })
+        expect(getUiState().busy).toBe(false)
+        expect(appended.some(msg => msg.text === 'legitimate completion')).toBe(true)
+        expect(appended.some(msg => msg.text.includes('[interrupted]'))).toBe(false)
+      }
+    } finally {
+      turnController.fullReset()
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
+  it('applies canonical interrupt acknowledgement only to the still-active turn, letting completion win', async () => {
+    vi.useFakeTimers()
+
+    try {
+      for (const race of ['none', 'completion', 'idle snapshot', 'settled acknowledgement', 'session', 'generation', 'epoch']) {
+        for (const keepBusy of [false, true]) {
+          turnController.fullReset()
+          const appended: Msg[] = []
+          const ctx = buildCtx(appended)
+          let resolve!: (result: unknown) => void
+          ctx.gateway.gw.isCanonical = true
+          ctx.gateway.gw.request = vi.fn(() => new Promise(done => { resolve = done }))
+          const onEvent = createGatewayEventHandler(ctx)
+          const info = { model: 'test', tools: {}, skills: {}, execution_epoch: 'owner', execution_generation: 2 }
+          patchUiState({ sid: 'sess-1', info })
+
+          const emit = (type: string, payload = {}) =>
+            onEvent({ type, session_id: 'sess-1', payload: { ...info, ...payload } } as any)
+
+          emit('message.start')
+          emit('message.delta', { text: 'partial' })
+
+          const pending = turnController.interruptTurn({
+            appendMessage: ctx.transcript.appendMessage, gw: ctx.gateway.gw, sid: 'sess-1', sys: ctx.system.sys
+          }, { keepBusy })
+
+          expect(turnController.interrupted).toBe(false)
+          expect(getUiState().busy).toBe(true)
+          expect(appended).toEqual([])
+
+          if (race === 'completion') {
+            emit('message.complete', { text: 'completed before acknowledgement' })
+            expect(appended).toContainEqual({ role: 'assistant', text: 'completed before acknowledgement' })
+          } else if (race === 'idle snapshot') {
+            emit('session.info', { running: false })
+          } else if (race !== 'none' && race !== 'settled acknowledgement') {
+            patchUiState({
+              sid: race === 'session' ? 'sess-2' : 'sess-1',
+              info: { ...info, execution_epoch: race === 'epoch' ? 'replacement' : info.execution_epoch,
+                execution_generation: race === 'generation' ? 3 : info.execution_generation }
+            })
+            turnController.startMessage()
+            turnController.hydrateStreamingText('new active turn')
+          }
+
+          const beforeAck = { ui: getUiState(), turn: getTurnState(), messages: [...appended] }
+          // Canonical success is a SessionHandle, not the legacy {ok: true}.
+          resolve({ ref: { profile_id: 'default', session_id: 'sess-1' }, instance_id: 'instance',
+            authority_epoch: 1, revision: 3, execution_generation: 2,
+            execution_state: race === 'settled acknowledgement' ? 'idle' : 'running' })
+          await pending
+
+          expect(ctx.gateway.gw.request).toHaveBeenCalledTimes(1)
+          expect(ctx.system.sys).not.toHaveBeenCalled()
+
+          if (race === 'none') {
+            expect(turnController.interrupted).toBe(true)
+            expect(getUiState()).toMatchObject({ busy: keepBusy, status: keepBusy ? 'interrupting…' : 'interrupted' })
+            expect(appended).toEqual([{ role: 'assistant', text: 'partial\n\n*[interrupted]*' }])
+            emit('message.complete', { text: 'cancelled turn response' })
+            expect(getUiState().busy).toBe(false)
+            expect(appended).toHaveLength(1)
+          } else {
+            expect(turnController.interrupted).toBe(false)
+            expect({ ui: getUiState(), turn: getTurnState(), messages: appended }).toEqual(beforeAck)
+          }
+
+          if (race === 'settled acknowledgement') {
+            emit('message.complete', { text: 'completed before the interrupt reached the server' })
+            expect(appended).toEqual([{ role: 'assistant', text: 'completed before the interrupt reached the server' }])
+            expect(getUiState().busy).toBe(false)
+          }
+        }
+      }
+    } finally {
+      turnController.fullReset()
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
   it('drops stale reasoning/tool/todos events after ctrl-c until the next message starts', () => {
     // Repro for the discord report: ctrl-c interrupts, but late reasoning/tool
     // events from the still-winding-down agent loop kept populating the UI for

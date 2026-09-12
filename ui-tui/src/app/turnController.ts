@@ -8,6 +8,7 @@ import {
 import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
+import { rpcErrorMessage } from '../lib/rpc.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,
@@ -22,6 +23,7 @@ import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '
 import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
+import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -306,9 +308,45 @@ class TurnController {
   // while `interrupted`) instead of racing the still-unwinding turn — the race
   // duplicated the user bubble, leaked a "queued: …" note, and surfaced the
   // cancelled turn's "[interrupted]" reply.
-  interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
+  async interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
+    if (gw.isCanonical) {
+      const destination = captureDestination()
+      const info = getUiState().info
+
+      const isActiveTurn = () => {
+        const current = getUiState()
+
+        return current.sid === sid && isCurrentDestination(destination) && current.busy && !this.interrupted &&
+          current.info?.execution_epoch === info?.execution_epoch &&
+          current.info?.execution_generation === info?.execution_generation
+      }
+
+      try {
+        const response = await gw.request<SessionInterruptResponse>('session.interrupt', {
+          session_id: sid, execution_generation: info?.execution_generation
+        })
+
+        // An already-settled handle is a successful no-op, not a cancelled turn.
+        if (response.execution_state !== 'running' || response.execution_generation !== info?.execution_generation) {
+          return
+        }
+      } catch (error) {
+        if (isActiveTurn()) {
+          sys(`interrupt failed: ${rpcErrorMessage(error)}`)
+        }
+
+        return
+      }
+
+      // Completion or navigation may win the RPC race; never cancel its successor.
+      if (!isActiveTurn()) {
+        return
+      }
+    } else {
+      gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
+    }
+
     this.interrupted = true
-    gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid, ...(gw.isCanonical ? { execution_generation: getUiState().info?.execution_generation } : {}) }).catch(() => {})
 
     this.closeReasoningSegment()
 

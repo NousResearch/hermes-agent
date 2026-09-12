@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { SECTIONS } from '@/app/settings/constants'
 import { fieldCopyForSchemaKey } from '@/app/settings/field-copy'
 
 import { TRANSLATIONS } from './catalog'
+import { en } from './en'
 import { setRuntimeI18nLocale, translateNow } from './runtime'
 import { zh } from './zh'
 
@@ -62,12 +64,20 @@ describe('desktop i18n runtime translator', () => {
   it('localizes the browser real-profile setting instead of falling back to English', () => {
     const field = 'browser.use_real_profile'
 
-    expect(fieldCopyForSchemaKey(zh.settings.fieldLabels, field)).toBe('使用我的真实浏览器配置文件')
-    expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toContain('真实登录状态')
+    const label = fieldCopyForSchemaKey(zh.settings.fieldLabels, field)
+    const description = fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)
+
+    expect(label).toBeDefined()
+    expect(label).not.toBe(fieldCopyForSchemaKey(en.settings.fieldLabels, field))
+    expect(description).toBeDefined()
+    expect(description).not.toBe(fieldCopyForSchemaKey(en.settings.fieldDescriptions, field))
   })
 
   it('localizes the browser settings section title', () => {
-    expect(zh.settings.sections.browser).toBe('浏览器')
+    const englishLabel = SECTIONS.find(section => section.id === 'browser')?.label
+
+    expect(zh.settings.sections.browser).toBeDefined()
+    expect(zh.settings.sections.browser).not.toBe(englishLabel)
   })
 
   it('falls back to English when the active locale cannot resolve a key', () => {

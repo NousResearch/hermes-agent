@@ -235,3 +235,56 @@ def test_transient_park_is_not_confused_with_a_different_prior_kind(
         task = _park_transient(conn, tid)
     assert task.status == "scheduled"
     assert task.block_recurrences == 1
+
+
+def test_transient_park_from_review_comes_back_as_review(kanban_home: Path) -> None:
+    """Regression: parking in ``scheduled`` must not lose the phase it
+    interrupted. A reviewer that parks on a transient wait and is woken up
+    has to resume as a REVIEW run — returning it as an implementation run
+    silently redoes work that was already done."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="reviewed thing", assignee="builder")
+        impl = kb.claim_task(conn, tid, claimer="builder:test")
+        assert impl is not None
+        assert kb.request_review(
+            conn, tid, summary="ready for review", reviewer="reviewer",
+            expected_run_id=impl.current_run_id,
+        )
+        review = kb.claim_review_task(conn, tid)
+        assert review is not None
+        assert kb.get_task(conn, tid).status == "running"
+
+        _park_transient(conn, tid, reason="waiting on the CI run")
+        assert kb.get_task(conn, tid).status == "scheduled"
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "review", (
+            "a transient park must return the reviewer to review, not to ready"
+        )
+
+
+def test_hand_scheduled_card_does_not_resurrect_a_stale_review_phase(
+    kanban_home: Path,
+) -> None:
+    """The other half of the same gate: reading resume phase for ``scheduled``
+    must not dig a phase out of an event older than the park a human made."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="reviewed thing", assignee="builder")
+        impl = kb.claim_task(conn, tid, claimer="builder:test")
+        assert kb.request_review(
+            conn, tid, summary="r", reviewer="reviewer",
+            expected_run_id=impl.current_run_id,
+        )
+        assert kb.claim_review_task(conn, tid) is not None
+        # Block first, so a listed event carrying ``source_status='review'``
+        # exists, THEN let a human park the card on top of it. Reading the
+        # phase for ``scheduled`` must stop at the human's park rather than
+        # digging past it — otherwise the human's "revisit later" silently
+        # becomes "resume the review run".
+        kb.block_task(conn, tid, reason="needs a human", kind="needs_input")
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.schedule_task(conn, tid, reason="human: revisit on Monday")
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready", (
+            "a hand-made schedule carries no phase; taking one from an event "
+            "the human parked over would be an invention, not a restoration"
+        )

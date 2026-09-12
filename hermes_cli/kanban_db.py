@@ -1994,7 +1994,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
         "SELECT payload FROM task_events "
         "WHERE task_id = ? AND kind IN ("
         "'blocked', 'block_loop_detected', 'dependency_wait', 'transient_wait', "
-        "'gave_up', "
+        "'scheduled', 'gave_up', "
         "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
         "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
         ") ORDER BY id DESC LIMIT 1", (task_id,),
@@ -3292,9 +3292,16 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     when that is where it left off), closing any leaked run first."""
     now = int(time.time())
     with write_txn(conn):
+        # ``scheduled`` is read too: a transient park (``_route_block``) lands
+        # there carrying the phase it interrupted, and gating on ``blocked``
+        # alone would silently return a reviewer's card as an implementation
+        # run — the exact conversion ``_retry_status_for_run`` exists to stop.
+        # A hand-parked card is unaffected: ``schedule_task`` writes the newest
+        # ``scheduled`` event, whose payload carries no phase, so it reads
+        # ``ready`` rather than resurrecting one from an older event.
         resume_status = (
             _resume_status_from_events(conn, task_id)
-            if _task_status(conn, task_id) == "blocked"
+            if _task_status(conn, task_id) in ("blocked", "scheduled")
             else "ready"
         )
         _reclaim_dangling_run(

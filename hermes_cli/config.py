@@ -1396,8 +1396,23 @@ def _warn_invalid_platform_toolsets(results: Dict[str, Any], quiet: bool) -> Non
         from hermes_cli.toolset_validation import validate_platform_toolsets
         from hermes_cli.toolset_scope import toolset_allowed_for_platform
 
+        raw = read_raw_config()
+        try:
+            from hermes_cli.tools_config import enabled_mcp_server_names
+
+            mcp_names = enabled_mcp_server_names(raw)
+
+            def _mcp_ok(name: str) -> bool:
+                # Bare and mcp-<server> forms both name an enabled MCP server; no_mcp is the
+                # reserved sentinel that disables the MCP allowlist (see _merge_mcp_servers).
+                return (name in mcp_names
+                        or (name.startswith("mcp-") and name[4:] in mcp_names)
+                        or name == "no_mcp")
+        except Exception:
+            _mcp_ok = None
         for w in validate_platform_toolsets(
-                read_raw_config().get("platform_toolsets"), validate_toolset, toolset_allowed_for_platform):
+                raw.get("platform_toolsets"), validate_toolset, toolset_allowed_for_platform,
+                is_valid_mcp_server=_mcp_ok):
             results["warnings"].append(w)
             if not quiet:
                 print(f"  ⚠ {w}")

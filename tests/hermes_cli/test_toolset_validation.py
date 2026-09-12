@@ -197,3 +197,105 @@ def test_populated_platforms_produce_no_empty_list_warning():
     cfg = {"cli": ["hermes-cli"], "telegram": ["hermes-telegram"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
     assert warnings == []
+
+
+# --- MCP-awareness (#78102): platform_toolsets legitimately holds MCP server names ---
+# (per-platform MCP allowlist; see tools_config._merge_mcp_servers / _save_platform_tools).
+
+
+def test_bare_mcp_server_name_accepted_via_predicate():
+    cfg = {"telegram": ["linear", "web"]}
+    warnings = validate_platform_toolsets(
+        cfg, _is_valid, is_valid_mcp_server=lambda n: n in {"linear"})
+    # 'linear' is not a toolset, but the MCP predicate vouches for it: no warning at all.
+    assert not any("telegram" in w for w in warnings)
+
+
+def test_prefixed_mcp_server_name_accepted_via_predicate():
+    cfg = {"cli": ["mcp-codegraph", "hermes-cli"]}
+    warnings = validate_platform_toolsets(
+        cfg, _is_valid, is_valid_mcp_server=lambda n: n in {"mcp-codegraph"})
+    assert not any("unknown toolset 'mcp-codegraph'" in w for w in warnings)
+    assert not any("zero valid toolsets" in w for w in warnings)
+
+
+def test_mcp_only_platform_list_does_not_trip_zero_valid_safety_net():
+    # Both names are MCP allowlist entries, neither is a toolset: the platform has tools
+    # (the MCP allowlist), so neither the per-platform nor the global net may fire.
+    cfg = {"telegram": ["linear", "fellow"]}
+    warnings = validate_platform_toolsets(
+        cfg, _is_valid, is_valid_mcp_server=lambda n: n in {"linear", "fellow"})
+    assert warnings == []
+
+
+def test_mixed_list_flags_only_the_genuinely_unknown_name():
+    cfg = {"cli": ["hermes-cli", "linear", "bogus"]}
+    warnings = validate_platform_toolsets(
+        cfg, _is_valid, is_valid_mcp_server=lambda n: n in {"linear"})
+    assert [w for w in warnings if "unknown toolset" in w] == [
+        w for w in warnings if "'bogus'" in w
+    ]
+    assert len(warnings) == 1
+
+
+def test_mcp_names_still_warn_without_predicate():
+    # Legacy callers pass no predicate (explicit None = the default): behavior is
+    # unchanged, MCP names keep warning.
+    cfg = {"telegram": ["linear"]}
+    warnings = validate_platform_toolsets(cfg, _is_valid, is_valid_mcp_server=None)
+    assert any("unknown toolset 'linear'" in w for w in warnings)
+
+
+def test_config_validator_accepts_mcp_names_and_no_mcp_sentinel(monkeypatch):
+    # Caller-level: _warn_invalid_platform_toolsets must build the MCP predicate from the
+    # raw config, so bare MCP names and the no_mcp sentinel pass without warnings.
+    import hermes_cli.config as config_mod
+
+    cfg = {
+        "mcp_servers": {
+            "linear": {"transport": "stdio"},
+            "fellow": {"transport": "stdio"},
+        },
+        "platform_toolsets": {"telegram": ["web", "linear", "fellow", "no_mcp"]},
+    }
+    monkeypatch.setattr(config_mod, "read_raw_config", lambda: cfg)
+    results = {"warnings": []}
+    config_mod._warn_invalid_platform_toolsets(results, quiet=True)
+    assert results["warnings"] == []
+
+
+def test_config_validator_still_flags_bogus_name_alongside_mcp_names(monkeypatch):
+    # The predicate widens acceptance, never blinds it: an unknown name still warns.
+    import hermes_cli.config as config_mod
+
+    cfg = {
+        "mcp_servers": {
+            "linear": {"transport": "stdio"},
+            "fellow": {"transport": "stdio"},
+        },
+        "platform_toolsets": {"telegram": ["web", "linear", "fellow", "no_mcp", "bogus"]},
+    }
+    monkeypatch.setattr(config_mod, "read_raw_config", lambda: cfg)
+    results = {"warnings": []}
+    config_mod._warn_invalid_platform_toolsets(results, quiet=True)
+    assert len(results["warnings"]) == 1
+    assert "unknown toolset 'bogus'" in results["warnings"][0]
+
+
+def test_config_validator_flags_mcp_name_of_disabled_server(monkeypatch):
+    # A disabled MCP server's name is not in the allowlist: the warning is genuinely
+    # useful there (its tools are silently absent at runtime), so it must fire.
+    import hermes_cli.config as config_mod
+
+    cfg = {
+        "mcp_servers": {
+            "linear": {"transport": "stdio", "enabled": False},
+        },
+        "platform_toolsets": {"telegram": ["linear"]},
+    }
+    monkeypatch.setattr(config_mod, "read_raw_config", lambda: cfg)
+    results = {"warnings": []}
+    config_mod._warn_invalid_platform_toolsets(results, quiet=True)
+    # The unknown-name warning fires (plus the zero-valid safety nets, since nothing
+    # in the list is valid) — the disabled server is not vouched for.
+    assert any("unknown toolset 'linear'" in w for w in results["warnings"])

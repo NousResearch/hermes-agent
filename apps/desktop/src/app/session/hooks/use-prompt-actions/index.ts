@@ -256,6 +256,9 @@ interface RestoreMessageTarget {
   userOrdinal?: number | null
 }
 
+const isStaleTargetError = (err: unknown) =>
+  /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
+
 export function usePromptActions({
   activeSessionId,
   activeSessionIdRef,
@@ -1016,6 +1019,48 @@ export function usePromptActions({
 
         applySurvivorRowIds(sessionId, survivorRowIds)
       } catch (err) {
+        let surfaced: unknown = err
+
+        // A restore target can be addressed by a cached durable row id that
+        // went stale after optimistic sends, resume drift, or session.branch
+        // row-id remapping. Mirror edit's recovery: reload the selected stored
+        // session, recompute the restore plan against fresh history, and retry
+        // once instead of leaving Restore uniquely fail-closed (#107593).
+        if ((plan.truncateMessageId || plan.truncateRowId !== undefined) && isStaleTargetError(err)) {
+          try {
+            const storedId = selectedStoredSessionIdRef.current
+
+            if (storedId) {
+              await resumeStoredSession(storedId)
+            }
+
+            const refreshed = $messages.get()
+            const retryPlan = planRestore(refreshed, messageId, {
+              text: target?.text ?? plan.sourceText,
+              userOrdinal: target?.userOrdinal ?? plan.truncateOrdinal
+            })
+
+            if (retryPlan.truncateMessageId || retryPlan.truncateRowId !== undefined) {
+              const survivorRowIds = await submitRewindPrompt(
+                sessionId,
+                retryPlan.text,
+                retryPlan.truncateOrdinal,
+                retryPlan.truncateMessageId,
+                false,
+                retryPlan.truncateRowId,
+                retryPlan.sourceText,
+                durableRowIdsForRebind(refreshed)
+              )
+
+              applySurvivorRowIds(sessionId, survivorRowIds)
+
+              return
+            }
+          } catch (retryErr) {
+            surfaced = retryErr
+          }
+        }
+
         // The rewind never landed (e.g. the gateway stayed busy past the retry
         // deadline). Roll the optimistic truncation back to the full original
         // history so the UI doesn't desync from what's persisted — leaving it
@@ -1031,10 +1076,18 @@ export function usePromptActions({
           turnStartedAt: null,
           messages
         }))
-        throw err
+        throw surfaced
       }
     },
-    [activeSessionIdRef, applySurvivorRowIds, busyRef, submitRewindPrompt, updateSessionState]
+    [
+      activeSessionIdRef,
+      applySurvivorRowIds,
+      busyRef,
+      resumeStoredSession,
+      selectedStoredSessionIdRef,
+      submitRewindPrompt,
+      updateSessionState
+    ]
   )
 
   const editMessage = useCallback(
@@ -1068,9 +1121,6 @@ export function usePromptActions({
       setBusy(true)
       setAwaitingResponse(true)
       updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
-
-      const isStaleTargetError = (err: unknown) =>
-        /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
 
       const isCompressedAwayError = (err: unknown) => {
         if (!(err instanceof JsonRpcGatewayError) || err.code !== 4018) {

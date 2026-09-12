@@ -348,15 +348,18 @@ permission to manage tasks. Enable the `kanban` toolset for the profile and
 platform that should orchestrate work:
 
 ```bash
-hermes -p planner tools enable kanban
+hermes -p planner tools enable kanban                      # CLI / TUI / Desktop chats
+hermes -p planner tools enable kanban --platform telegram  # a gateway platform
 ```
 
-This saves `platform_toolsets.cli`, used by CLI, TUI and Desktop chats. Other
-messaging platforms have independent selections. Start a new chat after changing
-this setting; existing conversations retain their tool schemas and prompt cache.
-Explicitly empty selections and `agent.disabled_toolsets` remain authoritative.
-Legacy top-level `toolsets: [kanban]` remains a fallback when no platform selection
-was saved; `all` alone is not a Kanban opt-in.
+Each platform has its own selection under `platform_toolsets.<platform>` in
+`config.yaml`; the toolset is also a checkbox in `hermes tools` and the dashboard.
+A gateway agent that has it can `kanban_create` from a chat and is auto-subscribed
+to that task's completion/block notifications in the same thread. Start a new chat
+after changing this setting; existing conversations retain their tool schemas and
+prompt cache. `agent.disabled_toolsets` remains authoritative. Legacy top-level
+`toolsets: [kanban]` is honoured as a fallback only when no platform selection was
+saved; `all` alone is not a Kanban opt-in.
 
 Dispatcher-owned workers receive their task lifecycle tools automatically.
 `delegate_task` children do not gain permission to mutate the board.

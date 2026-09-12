@@ -74,6 +74,13 @@ def _read_existing(path: Path) -> tuple[Optional[str], bool]:
     return (existing, False) if _INSTALL_ID_RE.fullmatch(existing) else (None, True)
 
 
+def read_existing_install_id(root: Path | None = None) -> Optional[str]:
+    """Read the current install id without creating files or consulting cache."""
+    root = get_default_hermes_root() if root is None else root
+    existing, _mint = _read_existing(root / _INSTALL_ID_FILENAME)
+    return existing
+
+
 def read_or_create_install_id(root: Path | None = None) -> Optional[str]:
     """Read or atomically mint the opaque id for the physical install.
 
@@ -132,4 +139,4 @@ def get_install_id(*, cache: dict[str, Optional[str]] | None = None) -> Optional
         return value
 
 
-__all__ = ["get_install_id", "read_or_create_install_id"]
+__all__ = ["get_install_id", "read_existing_install_id", "read_or_create_install_id"]

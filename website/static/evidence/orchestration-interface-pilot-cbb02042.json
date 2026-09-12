@@ -1,0 +1,1553 @@
+{
+  "candidate": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+  "claim_class": "advisory",
+  "warning": "Preserved runner outputs. qualified means four scenario assertions passed, not registry admission. Cost aggregation is incomplete; corrective turns and unobserved malformed calls are unknown. Duplicate metric counts run identities, not external effects. Wire agreement checks provider/model receipts and effective tools; these reports do not include transmitted effort values. No automatic entry enabled.",
+  "samples": [
+    {
+      "source_receipt": "interface-live-luna-hermes-cbb02042.json",
+      "sha256": "bb4ec6c7d427e5e9ab2933ee167d04a86cd36bb990d09525fc6dc92807a21a0d",
+      "report": {
+        "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+        "claim_class": "advisory",
+        "proof_boundary": "Exact candidate and selected routes for these four scenarios only; no statistical superiority, release, runtime, fleet, or customer-readiness claim.",
+        "qualification": "unqualified",
+        "qualified": false,
+        "receipts": [
+          {
+            "advertised_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "assertions": [
+              {
+                "assertion": "Parent discovers and selects two distinct configured routes.",
+                "passed": true
+              },
+              {
+                "assertion": "A durable message targets a RUNNING worker and its ID is recorded.",
+                "passed": false
+              },
+              {
+                "assertion": "Follow-up uses the same worker and a new run, without supplying the retained labels.",
+                "passed": false
+              },
+              {
+                "assertion": "The follow-up result contains both retained labels.",
+                "passed": true
+              },
+              {
+                "assertion": "Requested/resolved/transmitted route and effective tool receipts agree with actual requests.",
+                "passed": true
+              },
+              {
+                "assertion": "All three terminal runs are acknowledged without duplicate execution.",
+                "passed": false
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 78.077,
+            "error_type": null,
+            "guidance_delivery_evidence": [],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "known",
+              "usd": 0.0
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "parent_model": "gpt-5.6-luna",
+            "parent_provider": "openai-codex",
+            "requested_interface": "hermes",
+            "scenario_id": "two_provider_retained_workflow",
+            "selected_interface": "hermes",
+            "task_completed": false,
+            "token_usage": {
+              "cache_read_tokens": 14848,
+              "cache_write_tokens": 0,
+              "input_tokens": 11432,
+              "output_tokens": 617,
+              "reasoning_tokens": 163,
+              "total_tokens": 26897
+            },
+            "wire_route_agreement": true
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "assertions": [
+              {
+                "assertion": "The parent submits the requested selection through its advertised interface.",
+                "passed": true
+              },
+              {
+                "assertion": "A visible structured rejection occurs before launching any worker.",
+                "passed": true
+              },
+              {
+                "assertion": "Worker and run counts remain unchanged; no substitute route is executed.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 6.709,
+            "error_type": null,
+            "guidance_delivery_evidence": [],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "unknown"
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "parent_model": "gpt-5.6-luna",
+            "parent_provider": "openai-codex",
+            "requested_interface": "hermes",
+            "scenario_id": "invalid_profile_rejected",
+            "selected_interface": "hermes",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 6343,
+              "output_tokens": 129,
+              "reasoning_tokens": 44,
+              "total_tokens": 6472
+            },
+            "wire_route_agreement": "not_applicable"
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "assertions": [
+              {
+                "assertion": "The ownership check rejects inspection without revealing the foreign conversation.",
+                "passed": true
+              },
+              {
+                "assertion": "The foreign worker, run, message and acknowledgment state are unchanged.",
+                "passed": true
+              },
+              {
+                "assertion": "No substitute identity or non-orchestration access path is used.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 3.911,
+            "error_type": null,
+            "guidance_delivery_evidence": [],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "unknown"
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "parent_model": "gpt-5.6-luna",
+            "parent_provider": "openai-codex",
+            "requested_interface": "hermes",
+            "scenario_id": "foreign_worker_denied",
+            "selected_interface": "hermes",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 2560,
+              "cache_write_tokens": 0,
+              "input_tokens": 3732,
+              "output_tokens": 84,
+              "reasoning_tokens": 0,
+              "total_tokens": 6376
+            },
+            "wire_route_agreement": "not_applicable"
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "assertions": [
+              {
+                "assertion": "Guidance is durably queued without creating or launching a new run.",
+                "passed": true
+              },
+              {
+                "assertion": "An explicit follow-up creates exactly one new linked run.",
+                "passed": true
+              },
+              {
+                "assertion": "The retained answer includes sapphire and silver without those labels being supplied in the follow-up task.",
+                "passed": true
+              },
+              {
+                "assertion": "The new run is acknowledged; no previously completed run is replayed.",
+                "passed": false
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 33.693,
+            "error_type": null,
+            "guidance_delivery_evidence": [
+              {
+                "accepted": true,
+                "delivery": "NEXT_RUN",
+                "selected_run_status": "SUCCEEDED"
+              },
+              {
+                "accepted": true,
+                "delivery": "NEXT_RUN",
+                "selected_run_status": "SUCCEEDED"
+              }
+            ],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "known",
+              "usd": 0.0
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "parent_model": "gpt-5.6-luna",
+            "parent_provider": "openai-codex",
+            "requested_interface": "hermes",
+            "scenario_id": "idle_guidance_then_followup",
+            "selected_interface": "hermes",
+            "task_completed": false,
+            "token_usage": {
+              "cache_read_tokens": 33792,
+              "cache_write_tokens": 0,
+              "input_tokens": 12458,
+              "output_tokens": 744,
+              "reasoning_tokens": 177,
+              "total_tokens": 46994
+            },
+            "wire_route_agreement": true
+          }
+        ],
+        "suite": "hermes-orchestration-parity-v2/interface-qualification-v1"
+      }
+    },
+    {
+      "source_receipt": "interface-live-luna-codex-cbb02042.json",
+      "sha256": "92417edbbbd9fd1c6f3ea34fbd7bf6d03bcf73c918a09f70872f11d4e3acbdea",
+      "report": {
+        "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+        "claim_class": "advisory",
+        "proof_boundary": "Exact candidate and selected routes for these four scenarios only; no statistical superiority, release, runtime, fleet, or customer-readiness claim.",
+        "qualification": "unqualified",
+        "qualified": false,
+        "receipts": [
+          {
+            "advertised_orchestration_tool_names": [
+              "cancel_agent_tree",
+              "followup_task",
+              "inspect_agent",
+              "interrupt_agent",
+              "list_agents",
+              "send_message",
+              "spawn_agent",
+              "wait_agent",
+              "worker_capabilities",
+              "worker_control"
+            ],
+            "assertions": [
+              {
+                "assertion": "Parent discovers and selects two distinct configured routes.",
+                "passed": true
+              },
+              {
+                "assertion": "A durable message targets a RUNNING worker and its ID is recorded.",
+                "passed": true
+              },
+              {
+                "assertion": "Follow-up uses the same worker and a new run, without supplying the retained labels.",
+                "passed": true
+              },
+              {
+                "assertion": "The follow-up result contains both retained labels.",
+                "passed": true
+              },
+              {
+                "assertion": "Requested/resolved/transmitted route and effective tool receipts agree with actual requests.",
+                "passed": true
+              },
+              {
+                "assertion": "All three terminal runs are acknowledged without duplicate execution.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 56.815,
+            "error_type": null,
+            "guidance_delivery_evidence": [
+              {
+                "accepted": true,
+                "delivery": "RUNNING_STEER_PENDING_CHECKPOINT",
+                "selected_run_status": "RUNNING"
+              }
+            ],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "known",
+              "usd": 0.0
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "followup_task",
+              "inspect_agent",
+              "send_message",
+              "spawn_agent",
+              "wait_agent",
+              "worker_capabilities",
+              "worker_control"
+            ],
+            "parent_model": "gpt-5.6-luna",
+            "parent_provider": "openai-codex",
+            "requested_interface": "codex",
+            "scenario_id": "two_provider_retained_workflow",
+            "selected_interface": "codex",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 32768,
+              "cache_write_tokens": 0,
+              "input_tokens": 24725,
+              "output_tokens": 1314,
+              "reasoning_tokens": 244,
+              "total_tokens": 58807
+            },
+            "wire_route_agreement": true
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "cancel_agent_tree",
+              "followup_task",
+              "inspect_agent",
+              "interrupt_agent",
+              "list_agents",
+              "send_message",
+              "spawn_agent",
+              "wait_agent",
+              "worker_capabilities",
+              "worker_control"
+            ],
+            "assertions": [
+              {
+                "assertion": "The parent submits the requested selection through its advertised interface.",
+                "passed": true
+              },
+              {
+                "assertion": "A visible structured rejection occurs before launching any worker.",
+                "passed": true
+              },
+              {
+                "assertion": "Worker and run counts remain unchanged; no substitute route is executed.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 4.58,
+            "error_type": null,
+            "guidance_delivery_evidence": [],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "unknown"
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "worker_capabilities"
+            ],
+            "parent_model": "gpt-5.6-luna",
+            "parent_provider": "openai-codex",
+            "requested_interface": "codex",
+            "scenario_id": "invalid_profile_rejected",
+            "selected_interface": "codex",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 4953,
+              "output_tokens": 48,
+              "reasoning_tokens": 0,
+              "total_tokens": 5001
+            },
+            "wire_route_agreement": "not_applicable"
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "cancel_agent_tree",
+              "followup_task",
+              "inspect_agent",
+              "interrupt_agent",
+              "list_agents",
+              "send_message",
+              "spawn_agent",
+              "wait_agent",
+              "worker_capabilities",
+              "worker_control"
+            ],
+            "assertions": [
+              {
+                "assertion": "The ownership check rejects inspection without revealing the foreign conversation.",
+                "passed": true
+              },
+              {
+                "assertion": "The foreign worker, run, message and acknowledgment state are unchanged.",
+                "passed": true
+              },
+              {
+                "assertion": "No substitute identity or non-orchestration access path is used.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 5.446,
+            "error_type": null,
+            "guidance_delivery_evidence": [],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "unknown"
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "inspect_agent"
+            ],
+            "parent_model": "gpt-5.6-luna",
+            "parent_provider": "openai-codex",
+            "requested_interface": "codex",
+            "scenario_id": "foreign_worker_denied",
+            "selected_interface": "codex",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 4996,
+              "output_tokens": 76,
+              "reasoning_tokens": 0,
+              "total_tokens": 5072
+            },
+            "wire_route_agreement": "not_applicable"
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "cancel_agent_tree",
+              "followup_task",
+              "inspect_agent",
+              "interrupt_agent",
+              "list_agents",
+              "send_message",
+              "spawn_agent",
+              "wait_agent",
+              "worker_capabilities",
+              "worker_control"
+            ],
+            "assertions": [
+              {
+                "assertion": "Guidance is durably queued without creating or launching a new run.",
+                "passed": true
+              },
+              {
+                "assertion": "An explicit follow-up creates exactly one new linked run.",
+                "passed": true
+              },
+              {
+                "assertion": "The retained answer includes sapphire and silver without those labels being supplied in the follow-up task.",
+                "passed": true
+              },
+              {
+                "assertion": "The new run is acknowledged; no previously completed run is replayed.",
+                "passed": false
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 17.894,
+            "error_type": null,
+            "guidance_delivery_evidence": [
+              {
+                "accepted": true,
+                "delivery": "NEXT_RUN",
+                "selected_run_status": "SUCCEEDED"
+              }
+            ],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "known",
+              "usd": 0.0
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "followup_task",
+              "inspect_agent",
+              "send_message",
+              "wait_agent"
+            ],
+            "parent_model": "gpt-5.6-luna",
+            "parent_provider": "openai-codex",
+            "requested_interface": "codex",
+            "scenario_id": "idle_guidance_then_followup",
+            "selected_interface": "codex",
+            "task_completed": false,
+            "token_usage": {
+              "cache_read_tokens": 12288,
+              "cache_write_tokens": 0,
+              "input_tokens": 9055,
+              "output_tokens": 487,
+              "reasoning_tokens": 139,
+              "total_tokens": 21830
+            },
+            "wire_route_agreement": true
+          }
+        ],
+        "suite": "hermes-orchestration-parity-v2/interface-qualification-v1"
+      }
+    },
+    {
+      "source_receipt": "interface-live-luna-claude-cbb02042.json",
+      "sha256": "ce435f37f57dc408a90777db455777508a18e73cce6c9fe582aa3b9fd40a3b2d",
+      "report": {
+        "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+        "claim_class": "advisory",
+        "proof_boundary": "Exact candidate and selected routes for these four scenarios only; no statistical superiority, release, runtime, fleet, or customer-readiness claim.",
+        "qualification": "unqualified",
+        "qualified": false,
+        "receipts": [
+          {
+            "advertised_orchestration_tool_names": [
+              "Agent",
+              "SendMessage",
+              "TaskCapabilities",
+              "TaskList",
+              "TaskOutput",
+              "TaskStop",
+              "worker_control"
+            ],
+            "assertions": [
+              {
+                "assertion": "Parent discovers and selects two distinct configured routes.",
+                "passed": true
+              },
+              {
+                "assertion": "A durable message targets a RUNNING worker and its ID is recorded.",
+                "passed": true
+              },
+              {
+                "assertion": "Follow-up uses the same worker and a new run, without supplying the retained labels.",
+                "passed": true
+              },
+              {
+                "assertion": "The follow-up result contains both retained labels.",
+                "passed": true
+              },
+              {
+                "assertion": "Requested/resolved/transmitted route and effective tool receipts agree with actual requests.",
+                "passed": true
+              },
+              {
+                "assertion": "All three terminal runs are acknowledged without duplicate execution.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 41.154,
+            "error_type": null,
+            "guidance_delivery_evidence": [
+              {
+                "accepted": true,
+                "delivery": "RUNNING_STEER_PENDING_CHECKPOINT",
+                "selected_run_status": "RUNNING"
+              }
+            ],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "known",
+              "usd": 0.0
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "Agent",
+              "SendMessage",
+              "TaskCapabilities",
+              "TaskOutput",
+              "worker_control"
+            ],
+            "parent_model": "gpt-5.6-luna",
+            "parent_provider": "openai-codex",
+            "requested_interface": "claude",
+            "scenario_id": "two_provider_retained_workflow",
+            "selected_interface": "claude",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 26112,
+              "cache_write_tokens": 0,
+              "input_tokens": 16195,
+              "output_tokens": 1064,
+              "reasoning_tokens": 214,
+              "total_tokens": 43371
+            },
+            "wire_route_agreement": true
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "Agent",
+              "SendMessage",
+              "TaskCapabilities",
+              "TaskList",
+              "TaskOutput",
+              "TaskStop",
+              "worker_control"
+            ],
+            "assertions": [
+              {
+                "assertion": "The parent submits the requested selection through its advertised interface.",
+                "passed": true
+              },
+              {
+                "assertion": "A visible structured rejection occurs before launching any worker.",
+                "passed": true
+              },
+              {
+                "assertion": "Worker and run counts remain unchanged; no substitute route is executed.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 5.996,
+            "error_type": null,
+            "guidance_delivery_evidence": [],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "unknown"
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "TaskCapabilities"
+            ],
+            "parent_model": "gpt-5.6-luna",
+            "parent_provider": "openai-codex",
+            "requested_interface": "claude",
+            "scenario_id": "invalid_profile_rejected",
+            "selected_interface": "claude",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 4825,
+              "output_tokens": 59,
+              "reasoning_tokens": 14,
+              "total_tokens": 4884
+            },
+            "wire_route_agreement": "not_applicable"
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "Agent",
+              "SendMessage",
+              "TaskCapabilities",
+              "TaskList",
+              "TaskOutput",
+              "TaskStop",
+              "worker_control"
+            ],
+            "assertions": [
+              {
+                "assertion": "The ownership check rejects inspection without revealing the foreign conversation.",
+                "passed": true
+              },
+              {
+                "assertion": "The foreign worker, run, message and acknowledgment state are unchanged.",
+                "passed": true
+              },
+              {
+                "assertion": "No substitute identity or non-orchestration access path is used.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 5.465,
+            "error_type": null,
+            "guidance_delivery_evidence": [],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "unknown"
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "TaskOutput"
+            ],
+            "parent_model": "gpt-5.6-luna",
+            "parent_provider": "openai-codex",
+            "requested_interface": "claude",
+            "scenario_id": "foreign_worker_denied",
+            "selected_interface": "claude",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 1536,
+              "cache_write_tokens": 0,
+              "input_tokens": 3359,
+              "output_tokens": 120,
+              "reasoning_tokens": 29,
+              "total_tokens": 5015
+            },
+            "wire_route_agreement": "not_applicable"
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "Agent",
+              "SendMessage",
+              "TaskCapabilities",
+              "TaskList",
+              "TaskOutput",
+              "TaskStop",
+              "worker_control"
+            ],
+            "assertions": [
+              {
+                "assertion": "Guidance is durably queued without creating or launching a new run.",
+                "passed": true
+              },
+              {
+                "assertion": "An explicit follow-up creates exactly one new linked run.",
+                "passed": true
+              },
+              {
+                "assertion": "The retained answer includes sapphire and silver without those labels being supplied in the follow-up task.",
+                "passed": true
+              },
+              {
+                "assertion": "The new run is acknowledged; no previously completed run is replayed.",
+                "passed": false
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 19.262,
+            "error_type": null,
+            "guidance_delivery_evidence": [
+              {
+                "accepted": true,
+                "delivery": "NEXT_RUN",
+                "selected_run_status": "SUCCEEDED"
+              }
+            ],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "known",
+              "usd": 0.0
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "SendMessage",
+              "TaskList",
+              "TaskOutput",
+              "worker_control"
+            ],
+            "parent_model": "gpt-5.6-luna",
+            "parent_provider": "openai-codex",
+            "requested_interface": "claude",
+            "scenario_id": "idle_guidance_then_followup",
+            "selected_interface": "claude",
+            "task_completed": false,
+            "token_usage": {
+              "cache_read_tokens": 12800,
+              "cache_write_tokens": 0,
+              "input_tokens": 6448,
+              "output_tokens": 429,
+              "reasoning_tokens": 114,
+              "total_tokens": 19677
+            },
+            "wire_route_agreement": true
+          }
+        ],
+        "suite": "hermes-orchestration-parity-v2/interface-qualification-v1"
+      }
+    },
+    {
+      "source_receipt": "interface-live-astra-hermes-cbb02042.json",
+      "sha256": "a50ab70ad55bf6858b84a651510c27079a113ea318e806555a93534f74c56c75",
+      "report": {
+        "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+        "claim_class": "advisory",
+        "proof_boundary": "Exact candidate and selected routes for these four scenarios only; no statistical superiority, release, runtime, fleet, or customer-readiness claim.",
+        "qualification": "qualified",
+        "qualified": true,
+        "receipts": [
+          {
+            "advertised_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "assertions": [
+              {
+                "assertion": "Parent discovers and selects two distinct configured routes.",
+                "passed": true
+              },
+              {
+                "assertion": "A durable message targets a RUNNING worker and its ID is recorded.",
+                "passed": true
+              },
+              {
+                "assertion": "Follow-up uses the same worker and a new run, without supplying the retained labels.",
+                "passed": true
+              },
+              {
+                "assertion": "The follow-up result contains both retained labels.",
+                "passed": true
+              },
+              {
+                "assertion": "Requested/resolved/transmitted route and effective tool receipts agree with actual requests.",
+                "passed": true
+              },
+              {
+                "assertion": "All three terminal runs are acknowledged without duplicate execution.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 90.629,
+            "error_type": null,
+            "guidance_delivery_evidence": [
+              {
+                "accepted": true,
+                "delivery": "RUNNING_STEER_PENDING_CHECKPOINT",
+                "selected_run_status": "RUNNING"
+              },
+              {
+                "accepted": true,
+                "delivery": "NEXT_RUN",
+                "selected_run_status": "SUCCEEDED"
+              }
+            ],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "known",
+              "usd": 0.0
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "parent_model": "gpt-6-astra",
+            "parent_provider": "openai-codex",
+            "requested_interface": "hermes",
+            "scenario_id": "two_provider_retained_workflow",
+            "selected_interface": "hermes",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 74368,
+              "cache_write_tokens": 0,
+              "input_tokens": 20766,
+              "output_tokens": 1233,
+              "reasoning_tokens": 24,
+              "total_tokens": 96367
+            },
+            "wire_route_agreement": true
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "assertions": [
+              {
+                "assertion": "The parent submits the requested selection through its advertised interface.",
+                "passed": true
+              },
+              {
+                "assertion": "A visible structured rejection occurs before launching any worker.",
+                "passed": true
+              },
+              {
+                "assertion": "Worker and run counts remain unchanged; no substitute route is executed.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 6.124,
+            "error_type": null,
+            "guidance_delivery_evidence": [],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "unknown"
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "parent_model": "gpt-6-astra",
+            "parent_provider": "openai-codex",
+            "requested_interface": "hermes",
+            "scenario_id": "invalid_profile_rejected",
+            "selected_interface": "hermes",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 6279,
+              "output_tokens": 79,
+              "reasoning_tokens": 0,
+              "total_tokens": 6358
+            },
+            "wire_route_agreement": "not_applicable"
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "assertions": [
+              {
+                "assertion": "The ownership check rejects inspection without revealing the foreign conversation.",
+                "passed": true
+              },
+              {
+                "assertion": "The foreign worker, run, message and acknowledgment state are unchanged.",
+                "passed": true
+              },
+              {
+                "assertion": "No substitute identity or non-orchestration access path is used.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 6.83,
+            "error_type": null,
+            "guidance_delivery_evidence": [],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "unknown"
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "parent_model": "gpt-6-astra",
+            "parent_provider": "openai-codex",
+            "requested_interface": "hermes",
+            "scenario_id": "foreign_worker_denied",
+            "selected_interface": "hermes",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 2944,
+              "cache_write_tokens": 0,
+              "input_tokens": 3328,
+              "output_tokens": 63,
+              "reasoning_tokens": 0,
+              "total_tokens": 6335
+            },
+            "wire_route_agreement": "not_applicable"
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "assertions": [
+              {
+                "assertion": "Guidance is durably queued without creating or launching a new run.",
+                "passed": true
+              },
+              {
+                "assertion": "An explicit follow-up creates exactly one new linked run.",
+                "passed": true
+              },
+              {
+                "assertion": "The retained answer includes sapphire and silver without those labels being supplied in the follow-up task.",
+                "passed": true
+              },
+              {
+                "assertion": "The new run is acknowledged; no previously completed run is replayed.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 43.562,
+            "error_type": null,
+            "guidance_delivery_evidence": [
+              {
+                "accepted": true,
+                "delivery": "NEXT_RUN",
+                "selected_run_status": "SUCCEEDED"
+              }
+            ],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "known",
+              "usd": 0.0
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "delegate_task"
+            ],
+            "parent_model": "gpt-6-astra",
+            "parent_provider": "openai-codex",
+            "requested_interface": "hermes",
+            "scenario_id": "idle_guidance_then_followup",
+            "selected_interface": "hermes",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 25344,
+              "cache_write_tokens": 0,
+              "input_tokens": 16532,
+              "output_tokens": 573,
+              "reasoning_tokens": 0,
+              "total_tokens": 42449
+            },
+            "wire_route_agreement": true
+          }
+        ],
+        "suite": "hermes-orchestration-parity-v2/interface-qualification-v1"
+      }
+    },
+    {
+      "source_receipt": "interface-live-astra-codex-cbb02042.json",
+      "sha256": "df45337cccc4930aac2f0f4f6a8c3251e1caa38026ab33e9545683e13f9db8c3",
+      "report": {
+        "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+        "claim_class": "advisory",
+        "proof_boundary": "Exact candidate and selected routes for these four scenarios only; no statistical superiority, release, runtime, fleet, or customer-readiness claim.",
+        "qualification": "unqualified",
+        "qualified": false,
+        "receipts": [
+          {
+            "advertised_orchestration_tool_names": [
+              "cancel_agent_tree",
+              "followup_task",
+              "inspect_agent",
+              "interrupt_agent",
+              "list_agents",
+              "send_message",
+              "spawn_agent",
+              "wait_agent",
+              "worker_capabilities",
+              "worker_control"
+            ],
+            "assertions": [
+              {
+                "assertion": "Parent discovers and selects two distinct configured routes.",
+                "passed": true
+              },
+              {
+                "assertion": "A durable message targets a RUNNING worker and its ID is recorded.",
+                "passed": true
+              },
+              {
+                "assertion": "Follow-up uses the same worker and a new run, without supplying the retained labels.",
+                "passed": true
+              },
+              {
+                "assertion": "The follow-up result contains both retained labels.",
+                "passed": true
+              },
+              {
+                "assertion": "Requested/resolved/transmitted route and effective tool receipts agree with actual requests.",
+                "passed": true
+              },
+              {
+                "assertion": "All three terminal runs are acknowledged without duplicate execution.",
+                "passed": false
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 94.835,
+            "error_type": null,
+            "guidance_delivery_evidence": [
+              {
+                "accepted": true,
+                "delivery": "RUNNING_STEER_PENDING_CHECKPOINT",
+                "selected_run_status": "RUNNING"
+              }
+            ],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "known",
+              "usd": 0.0
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "followup_task",
+              "inspect_agent",
+              "send_message",
+              "spawn_agent",
+              "wait_agent",
+              "worker_capabilities",
+              "worker_control"
+            ],
+            "parent_model": "gpt-6-astra",
+            "parent_provider": "openai-codex",
+            "requested_interface": "codex",
+            "scenario_id": "two_provider_retained_workflow",
+            "selected_interface": "codex",
+            "task_completed": false,
+            "token_usage": {
+              "cache_read_tokens": 69120,
+              "cache_write_tokens": 0,
+              "input_tokens": 18666,
+              "output_tokens": 1364,
+              "reasoning_tokens": 39,
+              "total_tokens": 89150
+            },
+            "wire_route_agreement": true
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "cancel_agent_tree",
+              "followup_task",
+              "inspect_agent",
+              "interrupt_agent",
+              "list_agents",
+              "send_message",
+              "spawn_agent",
+              "wait_agent",
+              "worker_capabilities",
+              "worker_control"
+            ],
+            "assertions": [
+              {
+                "assertion": "The parent submits the requested selection through its advertised interface.",
+                "passed": true
+              },
+              {
+                "assertion": "A visible structured rejection occurs before launching any worker.",
+                "passed": true
+              },
+              {
+                "assertion": "Worker and run counts remain unchanged; no substitute route is executed.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 6.29,
+            "error_type": null,
+            "guidance_delivery_evidence": [],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "unknown"
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "spawn_agent"
+            ],
+            "parent_model": "gpt-6-astra",
+            "parent_provider": "openai-codex",
+            "requested_interface": "codex",
+            "scenario_id": "invalid_profile_rejected",
+            "selected_interface": "codex",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 2304,
+              "cache_write_tokens": 0,
+              "input_tokens": 2685,
+              "output_tokens": 77,
+              "reasoning_tokens": 0,
+              "total_tokens": 5066
+            },
+            "wire_route_agreement": "not_applicable"
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "cancel_agent_tree",
+              "followup_task",
+              "inspect_agent",
+              "interrupt_agent",
+              "list_agents",
+              "send_message",
+              "spawn_agent",
+              "wait_agent",
+              "worker_capabilities",
+              "worker_control"
+            ],
+            "assertions": [
+              {
+                "assertion": "The ownership check rejects inspection without revealing the foreign conversation.",
+                "passed": true
+              },
+              {
+                "assertion": "The foreign worker, run, message and acknowledgment state are unchanged.",
+                "passed": true
+              },
+              {
+                "assertion": "No substitute identity or non-orchestration access path is used.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 9.064,
+            "error_type": null,
+            "guidance_delivery_evidence": [],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "unknown"
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "inspect_agent"
+            ],
+            "parent_model": "gpt-6-astra",
+            "parent_provider": "openai-codex",
+            "requested_interface": "codex",
+            "scenario_id": "foreign_worker_denied",
+            "selected_interface": "codex",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 4983,
+              "output_tokens": 60,
+              "reasoning_tokens": 0,
+              "total_tokens": 5043
+            },
+            "wire_route_agreement": "not_applicable"
+          },
+          {
+            "advertised_orchestration_tool_names": [
+              "cancel_agent_tree",
+              "followup_task",
+              "inspect_agent",
+              "interrupt_agent",
+              "list_agents",
+              "send_message",
+              "spawn_agent",
+              "wait_agent",
+              "worker_capabilities",
+              "worker_control"
+            ],
+            "assertions": [
+              {
+                "assertion": "Guidance is durably queued without creating or launching a new run.",
+                "passed": true
+              },
+              {
+                "assertion": "An explicit follow-up creates exactly one new linked run.",
+                "passed": true
+              },
+              {
+                "assertion": "The retained answer includes sapphire and silver without those labels being supplied in the follow-up task.",
+                "passed": true
+              },
+              {
+                "assertion": "The new run is acknowledged; no previously completed run is replayed.",
+                "passed": true
+              }
+            ],
+            "authorization_violations": 0,
+            "candidate_sha": "cbb0204203e6c43900cb4fa8c4f6d8b7cd40a071",
+            "corrective_turns": "unknown",
+            "duplicate_owned_executions": 0,
+            "elapsed_seconds": 42.28,
+            "error_type": null,
+            "guidance_delivery_evidence": [
+              {
+                "accepted": true,
+                "delivery": "NEXT_RUN",
+                "selected_run_status": "SUCCEEDED"
+              }
+            ],
+            "interface_version": "worker-interface-v1",
+            "invalid_tool_calls": {
+              "malformed_or_unobserved": "unknown",
+              "structured": 0
+            },
+            "known_or_unknown_cost": {
+              "status": "known",
+              "usd": 0.0
+            },
+            "limits": {
+              "max_child_iterations": 3,
+              "max_child_seconds": 90,
+              "max_children": 2,
+              "max_parent_iterations": 16,
+              "max_parent_tokens": 4096,
+              "max_seconds_per_scenario": 240
+            },
+            "observed_orchestration_tool_names": [
+              "followup_task",
+              "inspect_agent",
+              "send_message",
+              "wait_agent",
+              "worker_control"
+            ],
+            "parent_model": "gpt-6-astra",
+            "parent_provider": "openai-codex",
+            "requested_interface": "codex",
+            "scenario_id": "idle_guidance_then_followup",
+            "selected_interface": "codex",
+            "task_completed": true,
+            "token_usage": {
+              "cache_read_tokens": 26752,
+              "cache_write_tokens": 0,
+              "input_tokens": 9875,
+              "output_tokens": 545,
+              "reasoning_tokens": 10,
+              "total_tokens": 37172
+            },
+            "wire_route_agreement": true
+          }
+        ],
+        "suite": "hermes-orchestration-parity-v2/interface-qualification-v1"
+      }
+    }
+  ]
+}

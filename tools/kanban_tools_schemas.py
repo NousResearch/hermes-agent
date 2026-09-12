@@ -40,6 +40,52 @@ def _schema(name: str, description: str, properties: dict[str, Any], required: l
     }
 
 
+KANBAN_TEAM_SCHEMA = {
+    "name": "kanban_team",
+    "description": (
+        "Coordinate parent-managed Kanban work through durable Hermes workers. "
+        "Create dependency tasks, start an assigned worker or reviewer, guide an "
+        "active task/Bot/room, submit or decide review, request retained-context "
+        "correction, or cancel an exact attached execution."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": [
+                    "create", "start", "guide", "submit_review", "accept",
+                    "request_changes", "cancel",
+                ],
+                "description": "The team coordination operation.",
+            },
+            "task_ref": _prop("string", "Typed task reference returned by discovery or create."),
+            "title": _prop("string", "Title for a new parent-managed task."),
+            "body": _prop("string", "Optional task instructions."),
+            "profile": _prop("string", "Configured profile assigned to the task."),
+            "parent_refs": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Typed task references that must be accepted first.",
+            },
+            "targets": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Typed task, Bot, or room references to guide independently.",
+            },
+            "message": _prop("string", "Guidance, correction request, or replacement run prompt."),
+            "reviewer": _prop("string", "Configured reviewer profile."),
+            "summary": _prop("string", "Review handoff or acceptance summary."),
+            "idempotency_key": _prop("string", "Stable retry key for create or guidance."),
+            "timeout_seconds": {
+                "type": "number", "minimum": 0, "maximum": 60,
+                "description": "How long cancellation may wait for terminal worker evidence.",
+            },
+        },
+        "required": ["action"],
+        "additionalProperties": False,
+    },
+}
+
+
 KANBAN_SHOW_SCHEMA = _schema(
     "kanban_show",
     (

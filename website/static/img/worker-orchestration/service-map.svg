@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 790" role="img" aria-labelledby="title desc">
+<title id="title">One parent interface. Four existing state owners.</title><desc id="desc">Planned interface and discovery route to workers, Bots, rooms and Kanban without merging their databases or permission boundaries.</desc>
+<defs><style>text{font-family:Arial,Helvetica,sans-serif;fill:#e2e8f0} .sub{fill:#94a3b8;font-size:15px}.label{font-size:18px;font-weight:600}</style><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width=".6"/></pattern><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#94a3b8"/></marker></defs>
+<rect width="1200" height="790" fill="#0f172a"/><rect width="1200" height="790" fill="url(#grid)"/>
+<text x="40" y="48" font-size="27" font-weight="700">One parent interface. Four existing state owners.</text>
+<text x="40" y="78" class="sub" text-anchor="start">DASHED = PLANNED CONNECTION / SOLID = EXISTING SERVICE CONTRACT</text>
+<rect x="375" y="115" width="450" height="90" rx="12" fill="#0f172a" stroke="#22d3ee" stroke-width="2"/>
+<text x="600.0" y="145" class="label" text-anchor="middle">User-configured parent</text>
+<text x="600.0" y="172" class="sub" text-anchor="middle">Models, profiles, limits and authority</text>
+<path d="M600 205L600 245" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)" stroke-dasharray="7 5"/>
+<rect x="200" y="245" width="800" height="95" rx="12" fill="#0f172a" stroke="#fbbf24" stroke-width="2" stroke-dasharray="8 5"/>
+<text x="600.0" y="275" class="label" text-anchor="middle">Model-facing interfaces — follow-up 1</text>
+<text x="600.0" y="302" class="sub" text-anchor="middle">Canonical Hermes / Codex-style / Claude-style; one surface per session</text>
+<path d="M600 340L600 380" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)" stroke-dasharray="7 5"/>
+<rect x="200" y="380" width="800" height="90" rx="12" fill="#0f172a" stroke="#fb923c" stroke-width="2" stroke-dasharray="8 5"/>
+<text x="600.0" y="410" class="label" text-anchor="middle">Typed discovery and routing — follow-ups 2–3</text>
+<text x="600.0" y="437" class="sub" text-anchor="middle">Visible references do not grant permission to act</text>
+<path d="M600 470V495H172V520" fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+<path d="M600 470V495H457V520" fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+<path d="M600 470V495H742V520" fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+<path d="M600 470V495H1027V520" fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+<rect x="40" y="520" width="265" height="120" rx="12" fill="#0f172a" stroke="#34d399" stroke-width="2"/>
+<text x="172.5" y="550" class="label" text-anchor="middle">Workers</text>
+<text x="172.5" y="577" class="sub" text-anchor="middle">Retained conversations</text>
+<text x="172.5" y="599" class="sub" text-anchor="middle">Run IDs / leases / receipts</text>
+<rect x="325" y="520" width="265" height="120" rx="12" fill="#0f172a" stroke="#22d3ee" stroke-width="2"/>
+<text x="457.5" y="550" class="label" text-anchor="middle">Bots</text>
+<text x="457.5" y="577" class="sub" text-anchor="middle">Full isolated profiles</text>
+<text x="457.5" y="599" class="sub" text-anchor="middle">Canonical chat / ingress</text>
+<rect x="610" y="520" width="265" height="120" rx="12" fill="#0f172a" stroke="#a78bfa" stroke-width="2"/>
+<text x="742.5" y="550" class="label" text-anchor="middle">Rooms</text>
+<text x="742.5" y="577" class="sub" text-anchor="middle">Shared Bot discussion</text>
+<text x="742.5" y="599" class="sub" text-anchor="middle">Coordinator / fencing</text>
+<rect x="895" y="520" width="265" height="120" rx="12" fill="#0f172a" stroke="#34d399" stroke-width="2"/>
+<text x="1027.5" y="550" class="label" text-anchor="middle">Kanban</text>
+<text x="1027.5" y="577" class="sub" text-anchor="middle">Tasks / dependencies</text>
+<text x="1027.5" y="599" class="sub" text-anchor="middle">Claims / review / acceptance</text>
+<text x="600" y="685" class="label" text-anchor="middle">Follow-up 4: saved workflows reference these owners; they do not replace them.</text>
+<text x="600" y="721" class="sub" text-anchor="middle">Queued message ≠ consumed guidance. Finished run ≠ accepted task.</text>
+<text x="600" y="749" class="sub" text-anchor="middle">Workers: PR #106268. Bot/room/Kanban foundations: inspected Hermes main.</text>
+</svg>

@@ -965,6 +965,7 @@ def _attach_built_agent(current: dict, agent) -> None:
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
     current["agent"] = agent
+    current["discovery_scope"] = getattr(agent, "_shared_discovery_scope", None)
     _session_todo_state(current)
     # Baseline for the per-turn config sync (profile home override still active).
     current["config_model_seen"] = _config_model_target()
@@ -2274,7 +2275,8 @@ def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
-    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None):
+    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
+    discovery_scope=None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -2314,6 +2316,12 @@ def _make_agent(
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
         **_agent_cbs(sid))
+    if discovery_scope is None:
+        from tui_gateway.session_discovery import build_gateway_discovery_scope
+        discovery_scope = build_gateway_discovery_scope(
+            sys.modules[__name__], sid=sid, cfg=cfg, source=platform,
+        )
+    agent._shared_discovery_scope = discovery_scope
     if context_cwd_is_launch_artifact is None:
         with _sessions_lock:
             context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(_sessions.get(sid))
@@ -2372,6 +2380,7 @@ def _init_session(
             "model_override": None,
             # Async events go to the transport that created the session (stdio for Ink, WS for the dashboard).
             "transport": current_transport() or _stdio_transport,
+            "discovery_scope": getattr(agent, "_shared_discovery_scope", None),
         }
         _session_todo_state(_sessions[sid])
     _hydrate_session_cwd(sid, key, session_db, profile_home)

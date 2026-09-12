@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 700" role="img" aria-labelledby="title desc"><title id="title">What changed in orchestration?</title><desc id="desc">A scoped comparison: existing capabilities, new controls, and evidence boundaries.</desc>
+<defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#94a3b8"/></marker></defs><style>text{font-family:Arial,Helvetica,sans-serif} .title{font-size:28px;font-weight:700;fill:#f8fafc}.label{font-size:19px;font-weight:600;fill:#f8fafc}.body{font-size:16px;fill:#cbd5e1}.note{font-size:14px;fill:#94a3b8}</style>
+<rect width="1100" height="700" fill="#0f172a"/><rect width="1100" height="700" fill="url(#grid)"/>
+<text x="35" y="48" class="title">What changed in orchestration?</text>
+<text x="35" y="78" class="body">A scoped comparison: existing capabilities, new controls, and evidence boundaries.</text>
+<rect x="35" y="115" width="320" height="480" rx="12" fill="#0f172a"/><rect x="35" y="115" width="320" height="480" rx="12" fill="#22d3ee" fill-opacity="0.09" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="53" y="146" class="label">CODEX REFERENCE</text>
+<text x="53" y="172" class="body">Custom agent descriptions</text>
+<text x="53" y="196" class="body">Per-agent model and effort</text>
+<text x="53" y="220" class="body">Parallel delegated work</text>
+<text x="53" y="244" class="body">Follow-up, steering and waiting</text>
+<text x="53" y="268" class="body">Inspect and interrupt agents</text>
+<text x="53" y="292" class="body">Inherited permission controls</text>
+<text x="53" y="316" class="body">Configurable concurrency</text>
+<text x="53" y="340" class="body"></text>
+<text x="53" y="364" class="body">Observed harness also exposes:</text>
+<text x="53" y="388" class="body">messages and follow-up tools</text>
+<text x="53" y="412" class="body"></text>
+<text x="53" y="436" class="body">Restart guarantees:</text>
+<text x="53" y="460" class="body">not established by this comparison</text>
+<rect x="390" y="115" width="320" height="480" rx="12" fill="#0f172a"/><rect x="390" y="115" width="320" height="480" rx="12" fill="#fbbf24" fill-opacity="0.09" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="408" y="146" class="label">HERMES BEFORE</text>
+<text x="408" y="172" class="body">Parallel batches and summaries</text>
+<text x="408" y="196" class="body">Delegation model overrides</text>
+<text x="408" y="220" class="body">Steer / list / stop</text>
+<text x="408" y="244" class="body">Optional nested orchestrators</text>
+<text x="408" y="268" class="body">Depth and concurrency controls</text>
+<text x="408" y="292" class="body">Optional Git worktrees</text>
+<text x="408" y="316" class="body">Plugin lifecycle API</text>
+<text x="408" y="340" class="body"></text>
+<text x="408" y="364" class="body">Missing this unified workflow:</text>
+<text x="408" y="388" class="body">discoverable worker profiles</text>
+<text x="408" y="412" class="body">retained runs + message queue</text>
+<text x="408" y="436" class="body">shared durable worker ownership</text>
+<text x="408" y="460" class="body">restart reconciliation + receipts</text>
+<rect x="745" y="115" width="320" height="480" rx="12" fill="#0f172a"/><rect x="745" y="115" width="320" height="480" rx="12" fill="#34d399" fill-opacity="0.09" stroke="#34d399" stroke-width="1.5"/>
+<text x="763" y="146" class="label">HERMES WITH THIS PR</text>
+<text x="763" y="172" class="body">User-created worker profiles</text>
+<text x="763" y="196" class="body">Profile-only or allowed routes</text>
+<text x="763" y="220" class="body">Model + supported effort choice</text>
+<text x="763" y="244" class="body">Retained workers and follow-ups</text>
+<text x="763" y="268" class="body">Shared parent / plugin service</text>
+<text x="763" y="292" class="body">Native + MCP tool ceilings</text>
+<text x="763" y="316" class="body">Tree-wide execution budgets</text>
+<text x="763" y="340" class="body">Durable messages and results</text>
+<text x="763" y="364" class="body">Lease-based recovery</text>
+<text x="763" y="388" class="body">Uncertain effects need a decision</text>
+<text x="763" y="412" class="body">Traceable execution receipts</text>
+<text x="763" y="436" class="body">CLI configuration and discovery</text>
+<text x="763" y="460" class="body"></text>
+<text x="763" y="484" class="body">Provider-independent design</text>
+<text x="35" y="637" class="body">Existing Hermes features are extended, not reintroduced. The guide maps each addition to tests.</text>
+<text x="35" y="667" class="note">Codex reference: official subagent docs + exposed harness contracts; no blanket parity claim.</text>
+</svg>

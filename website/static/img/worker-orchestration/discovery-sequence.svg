@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="820" viewBox="0 0 1100 820" role="img" aria-labelledby="title desc">
+  <title id="title">Shared discovery: every request needs permission</title>
+  <desc id="desc">Proposed increment 2. A parent asks the shared discovery adapter for eligible workers, Bots, rooms and tasks. The adapter uses read-only queries against each existing service and returns compact typed references. Following a reference checks current permissions again. Revoked or stale access returns a denial. Discovery does not create or recover work.</desc>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width=".5"/></pattern>
+    <marker id="arrow" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0 0L9 3.5L0 7Z" fill="#94a3b8"/></marker>
+    <style>text{font-family:Arial,Helvetica,sans-serif;fill:#e2e8f0}.heading{font-size:30px;font-weight:700}.label{font-size:18px;font-weight:700}.body{font-size:16px}.note{font-size:14px;fill:#94a3b8}.line{fill:none;stroke:#94a3b8;stroke-width:2;marker-end:url(#arrow)}.box{fill:#0f172a;stroke-width:1.5}</style>
+  </defs>
+  <rect width="1100" height="820" fill="#0f172a"/>
+  <rect width="1100" height="820" fill="url(#grid)"/>
+  <text x="40" y="54" class="heading">Shared discovery: every request needs permission</text>
+  <text x="40" y="84" class="body">Increment 2 design · compact references connect existing services</text>
+
+  <path d="M286 173H356" class="line"/>
+  <path d="M660 173H740V276" class="line"/>
+  <path d="M550 223V248H170V276" class="line"/>
+  <path d="M550 248H425V276" class="line"/>
+  <path d="M550 248H935V276" class="line"/>
+  <rect x="40" y="123" width="246" height="100" rx="10" class="box" stroke="#22d3ee"/>
+  <text x="64" y="155" class="label">Parent agent</text>
+  <text x="64" y="185" class="body">“Who can I work with?”</text>
+  <rect x="356" y="123" width="304" height="100" rx="10" class="box" stroke="#34d399"/>
+  <text x="378" y="155" class="label">One discovery adapter</text>
+  <text x="378" y="185" class="body">Check this session's permissions</text>
+  <text x="800" y="160" class="note">Read existing state only</text>
+  <text x="800" y="183" class="note">No launch, recovery or migration</text>
+
+  <rect x="40" y="276" width="240" height="115" rx="10" class="box" stroke="#a78bfa"/>
+  <text x="60" y="307" class="label">Workers and runs</text>
+  <text x="60" y="337" class="body">Owned conversations</text>
+  <text x="60" y="362" class="note">Worker service owns lifecycle</text>
+  <rect x="300" y="276" width="240" height="115" rx="10" class="box" stroke="#a78bfa"/>
+  <text x="320" y="307" class="label">Bots</text>
+  <text x="320" y="337" class="body">Eligible profile peers</text>
+  <text x="320" y="362" class="note">Bot services own delivery</text>
+  <rect x="560" y="276" width="240" height="115" rx="10" class="box" stroke="#a78bfa"/>
+  <text x="580" y="307" class="label">Rooms</text>
+  <text x="580" y="337" class="body">Explicit session grants</text>
+  <text x="580" y="362" class="note">Room coordinator owns authority</text>
+  <rect x="820" y="276" width="240" height="115" rx="10" class="box" stroke="#a78bfa"/>
+  <text x="840" y="307" class="label">Tasks</text>
+  <text x="840" y="337" class="body">Current authorized board</text>
+  <text x="840" y="362" class="note">Kanban owns claims/acceptance</text>
+
+  <path d="M160 391V424H550V450" class="line"/>
+  <path d="M420 391V424" fill="none" stroke="#94a3b8" stroke-width="2"/>
+  <path d="M680 391V424H550" fill="none" stroke="#94a3b8" stroke-width="2"/>
+  <path d="M940 391V424H680" fill="none" stroke="#94a3b8" stroke-width="2"/>
+  <rect x="190" y="450" width="720" height="100" rx="10" class="box" stroke="#22d3ee"/>
+  <text x="215" y="482" class="label">Return only eligible references</text>
+  <text x="215" y="512" class="body">Kind + stable ID + owner scope + supported actions + availability + freshness</text>
+  <path d="M550 550V605" class="line"/>
+  <rect x="340" y="605" width="420" height="88" rx="10" class="box" stroke="#fbbf24"/>
+  <text x="363" y="636" class="label">Parent asks to inspect one reference</text>
+  <text x="363" y="665" class="body">Resolve it again; recheck current permission</text>
+  <path d="M340 650H294" class="line"/>
+  <path d="M760 650H806" class="line"/>
+  <rect x="40" y="605" width="254" height="88" rx="10" class="box" stroke="#34d399"/>
+  <text x="60" y="638" class="label">Allowed now</text>
+  <text x="60" y="667" class="body">Return permitted details</text>
+  <rect x="806" y="605" width="254" height="88" rx="10" class="box" stroke="#fb7185"/>
+  <text x="826" y="638" class="label">Revoked or stale</text>
+  <text x="826" y="667" class="body">Deny without disclosure</text>
+  <text x="40" y="745" class="body">Room checks bind the live session, current policy, service identity and authority epoch.</text>
+  <text x="40" y="773" class="note">A reference identifies an object. Every inspection or action still needs current authorization from its owning service.</text>
+</svg>

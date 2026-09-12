@@ -24,6 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
+    KANBAN_TEAM_SCHEMA,
     KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
@@ -987,13 +988,25 @@ def _handle_link(args: dict, **kw) -> str:
         return _ok(parent_id=parent_id, child_id=child_id)
 
 
+@_kanban_handler("kanban_team")
+def _handle_team(args: dict, **kw) -> str:
+    """Route canonical calls through the same service used by styled aliases."""
+    _reject_delegated_child_mutation("kanban_team")
+    _require_orchestrator_tool("kanban_team")
+    agent = kw.get("agent")
+    _check(agent is not None, "kanban_team requires the active agent context")
+    from agent.team_orchestration import TeamOrchestrationService
+    return json.dumps(TeamOrchestrationService(agent).dispatch(args), ensure_ascii=False)
+
+
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
 # kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock", "kanban_team"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
+    ("kanban_team", KANBAN_TEAM_SCHEMA, _handle_team, "👥"),
     ("kanban_complete", KANBAN_COMPLETE_SCHEMA, _handle_complete, "✔"),
     ("kanban_block", KANBAN_BLOCK_SCHEMA, _handle_block, "⏸"),
     ("kanban_request_review", KANBAN_REQUEST_REVIEW_SCHEMA, _handle_request_review, "👀"),

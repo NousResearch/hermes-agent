@@ -6,6 +6,9 @@ description: "Spawn isolated child agents for parallel workstreams with delegate
 
 # Subagent Delegation
 
+For user-defined roles, per-task provider/model selection, messaging, and retained
+worker conversations, see [Worker profiles and orchestration](./worker-profiles.md).
+
 The `delegate_task` tool spawns child AIAgent instances with isolated context, inherited tool access, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
 
 Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.

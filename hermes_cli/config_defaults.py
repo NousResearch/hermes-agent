@@ -1223,6 +1223,12 @@ DEFAULT_CONFIG = {
     # cheaper/faster model. Uses the same runtime provider resolution as CLI/gateway startup, so
     # every configured provider is supported.
     "delegation": {
+        # Worker definitions are local to the active Hermes profile. Model-facing
+        # discovery reads these on demand without rewriting cached tool schemas.
+        "profiles": {},
+        "default_profile": None,
+        "routing_mode": "profile_only",
+        "enabled_models": [],  # explicit provider/model catalog for dynamic routing
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
         # Fallback chain for delegated children (same entry format as the top-level list).
@@ -1282,6 +1288,20 @@ DEFAULT_CONFIG = {
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
+    },
+    # Model-facing worker vocabulary. "auto" uses only provider/model pairs
+    # qualified by recorded live evidence; otherwise it preserves Hermes's
+    # canonical delegate_task surface. Explicit codex/claude styles are
+    # experimental presentation adapters and never alter model routing.
+    "orchestration": {
+        "interface": "auto",  # auto | hermes | codex | claude
+        # Trusted TUI/Desktop sessions may discover only these existing hosted
+        # rooms. Entries are read-only in this increment; an empty list grants
+        # no room references. Profile configuration is a ceiling, not a token a
+        # model or worker can present to mint authority.
+        "discovery": {
+            "rooms": [],  # [{id: "room-id", actions: ["inspect"], participants: ["profile"]}]
+        },
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.

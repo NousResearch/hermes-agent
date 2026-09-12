@@ -733,6 +733,25 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     return conn
 
 
+def connect_existing_readonly(
+    db_path: Optional[Path] = None, *, board: Optional[str] = None,
+) -> sqlite3.Connection | None:
+    """Open an initialized board read-only without mkdir, migration, or WAL changes."""
+    path = Path(db_path if db_path is not None else _kb.kanban_db_path(board=board))
+    if not path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        if not _schema_is_present(conn):
+            conn.close()
+            return None
+        return conn
+    except sqlite3.Error:
+        return None
+
+
 @contextlib.contextmanager
 def connect_closing(db_path: Optional[Path] = None, *, board: Optional[str] = None):
     """Open a kanban DB connection and guarantee it is closed on exit. Use
@@ -795,6 +814,7 @@ _LATER_TASK_COLUMNS = (
     ("max_runtime_seconds", "max_runtime_seconds INTEGER"),
     ("last_heartbeat_at", "last_heartbeat_at INTEGER"),
     ("current_run_id", "current_run_id INTEGER"),
+    ("execution_mode", "execution_mode TEXT NOT NULL DEFAULT 'dispatcher'"),
     ("workflow_template_id", "workflow_template_id TEXT"),
     ("current_step_key", "current_step_key TEXT"),
     # JSON array of skill names the dispatcher force-loads via --skills.

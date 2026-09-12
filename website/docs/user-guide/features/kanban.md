@@ -84,24 +84,24 @@ verification and publication alone are not remote acceptance.
 
 ## Kanban vs. `delegate_task`
 
-They look similar; they are not the same primitive.
+Delegation owns an agent conversation; Kanban owns a task lifecycle. With the retained worker service, both can preserve useful state across restarts, but they coordinate different objects.
 
 | | `delegate_task` | Kanban |
 |---|---|---|
-| Shape | RPC call (fork → join) | Durable message queue + state machine |
-| Parent | Blocks until child returns | Fire-and-forget after `create` |
-| Child identity | Anonymous subagent | Named profile with persistent memory |
-| Resumability | None — failed = failed | Block → unblock → re-run; crash → reclaim |
-| Human in the loop | Not supported | Comment / unblock at any point |
-| Agents per task | One call = one subagent | N agents over task's life (retry, review, follow-up) |
-| Audit trail | Lost on context compression | Durable rows in SQLite forever |
-| Coordination | Hierarchical (caller → callee) | Peer — any profile reads/writes any task |
+| Shape | Parent-owned worker runs; foreground or background | Durable task queue and state machine |
+| Parent | Can wait or receive background completion | Can continue after `create` |
+| Child identity | Stable worker ID when using worker profiles | Profile assigned to a durable task |
+| Resumability | Retained worker checkpoints; new linked runs; uncertain effects require reconciliation | Block → unblock → re-run; crash → reclaim under board rules |
+| Human in the loop | User steers through the parent conversation | Task comments, review and explicit unblock |
+| Assignments | One retained worker can receive ordered follow-up runs | Multiple participants over a task's retry/review lifecycle |
+| Audit trail | Worker/run records, checkpoints and execution receipts | Task/run/claim/handoff records in the board |
+| Coordination | Ownership-scoped delegation and optional sibling messaging | Shared task graph; task-scoped workers and authorized orchestrator operations |
 
-**One-sentence distinction:** `delegate_task` is a function call; Kanban is a work queue where every handoff is a row any profile (or human) can see and edit.
+**One-sentence distinction:** `delegate_task` manages a parent's workers; Kanban manages work that can change assignees, wait on dependencies and pass through review. Discovery does not grant permission to edit or cancel another participant's work.
 
-**Use `delegate_task` when** the parent agent needs a short reasoning answer before continuing, no humans involved, result goes back into the parent's context.
+**Use `delegate_task` when** a parent needs a delegated answer, ongoing worker guidance or retained follow-ups with results returned to that parent. See [worker profiles](worker-profiles.md) for the durable workflow and legacy compatibility boundaries.
 
-**Use Kanban when** work crosses agent boundaries, needs to survive restarts, might need human input, might be picked up by a different role, or needs to be discoverable after the fact.
+**Use Kanban when** work needs shared task visibility, dependencies, reassignment, explicit review or human input. A completed worker turn is not by itself an accepted Kanban task.
 
 They coexist: a kanban worker may call `delegate_task` internally during its run.
 

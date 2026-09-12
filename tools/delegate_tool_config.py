@@ -362,12 +362,78 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         command=pinned_command, args=list(runtime.get("args") or []),
     )
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+def _resolve_profile_credentials(
+    profile_name: str,
+    cfg: dict,
+    parent_agent,
+    *,
+    requested_provider: Optional[str] = None,
+    requested_model: Optional[str] = None,
+    requested_reasoning_effort: Optional[str] = None,
+) -> dict:
+    """Resolve one configured worker profile into the existing credential-bundle shape."""
+    from agent.delegation_model_routing import resolve_profile_route
+    route = resolve_profile_route(
+        profile_name,
+        cfg,
+        parent_agent,
+        requested_provider=requested_provider,
+        requested_model=requested_model,
+        requested_reasoning_effort=requested_reasoning_effort,
+    )
+    bundle = _credential_bundle(
+        route.model, route.provider, route.base_url, route.api_key, route.api_mode, None,
+    )
+    bundle.update({
+        "requested_profile": route.requested_profile,
+        "requested_provider": route.requested_provider,
+        "requested_model": route.requested_model,
+        "requested_reasoning_effort": route.requested_reasoning_effort,
+        "resolved_provider": route.provider,
+        "resolved_model": route.model,
+        "resolved_reasoning_effort": route.resolved_reasoning_effort,
+        "route_provenance": f"delegation.profiles.{route.requested_profile}",
+        "normalization_events": [],
+        "transmitted_model": route.transmitted_model,
+        "provider_reported_model": route.provider_reported_model,
+        "fallback_model": [{"provider": item.provider, "model": item.model} for item in route.fallback],
+        "reasoning_config": route.reasoning_config,
+        "max_iterations": route.max_iterations,
+        "supports_tools": route.supports_tools,
+        "tool_policy": route.tool_policy,
+        "workspace_context": route.workspace_context,
+        "execution_limits": route.execution_limits,
+    })
+    return bundle
+
+
+def _resolve_delegation_credentials(
+    cfg: dict,
+    parent_agent,
+    model_profile: Optional[str] = None,
+    *,
+    requested_provider: Optional[str] = None,
+    requested_model: Optional[str] = None,
+    requested_reasoning_effort: Optional[str] = None,
+) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
     endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
+    from agent.delegation_model_routing import select_profile_name
+    selected_profile = select_profile_name(model_profile, None, cfg)
+    if selected_profile:
+        return _resolve_profile_credentials(
+            selected_profile,
+            cfg,
+            parent_agent,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
+            requested_reasoning_effort=requested_reasoning_effort,
+        )
+    if requested_provider or requested_model or requested_reasoning_effort:
+        raise ValueError("Per-task provider/model/reasoning_effort overrides require a delegation profile.")
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
@@ -439,6 +505,8 @@ def _resolve_child_runtime(
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
     routing_cfg: Optional[Dict[str, Any]] = None,
+    override_fallback_model: Optional[List[Dict[str, Any]]] = None,
+    override_reasoning_config: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -491,7 +559,7 @@ def _resolve_child_runtime(
         # Forced ACP transport requires provider copilot-acp for run_agent to init the client.
         effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
 
-    # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
+    # Reasoning: profile route > delegation.reasoning_effort > parent. Keep the raw value — a
     # YAML ``false`` must disable thinking, not coerce to "" and inherit.
     child_reasoning = getattr(parent_agent, "reasoning_config", None)
     try:
@@ -505,6 +573,8 @@ def _resolve_child_runtime(
                 child_reasoning = parsed
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
+    if override_reasoning_config is not None:
+        child_reasoning = override_reasoning_config
 
     kwargs: Dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
@@ -514,9 +584,14 @@ def _resolve_child_runtime(
         "reasoning_config": child_reasoning,
         # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or
         # model never borrows the parent's chain; an explicitly declared child chain still remains available.
-        "fallback_model": _resolve_child_fallback_chain(
-            parent_agent, delegation_cfg if routing_cfg is None else routing_cfg,
-            pinned=bool(override_provider or override_base_url or model)),
+        "fallback_model": (
+            list(override_fallback_model)
+            if override_fallback_model is not None
+            else _resolve_child_fallback_chain(
+                parent_agent, delegation_cfg if routing_cfg is None else routing_cfg,
+                pinned=bool(override_provider or override_base_url or model),
+            )
+        ),
         "openrouter_min_coding_score": getattr(parent_agent, "openrouter_min_coding_score", None),
         # Routing filters reset to their defaults under a pinned provider (see _ROUTING_FILTER_DEFAULTS).
         **{a: d if override_provider else getattr(parent_agent, a, d) for a, d in _ROUTING_FILTER_DEFAULTS},

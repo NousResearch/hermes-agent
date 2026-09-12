@@ -116,6 +116,20 @@ async def get_health():
             "auth_required": bool(getattr(app.state, "auth_required", False))}
 
 
+@router.get("/api/desktop/pool-busy")
+async def get_desktop_pool_busy(request: Request):
+    """Backend-side work signal for Electron's pooled-backend idle reaper (#108863).
+
+    The reaper's only prior signal, `lastActiveAt`, is refreshed by renderer attention
+    (chat WS open/streaming) and cannot see a cron job running with no window attached,
+    so it reaped backends mid-run. Reuses the same turn-or-cron probe the SSH-isolated
+    idle-exit watchdog already relies on for the identical class of blind spot.
+    """
+    _require_token(request)
+    from hermes_cli.web_server_idle_exit import turn_in_flight
+    return {"busy": await run_in_threadpool(turn_in_flight)}
+
+
 # Profile segment mirrors hermes_cli.profiles._PROFILE_ID_RE. Platform segment mirrors the
 # Platform enum's normalized values: built-in members plus plugin directory names
 # (lowercased), which allow hyphens as well as underscores (e.g. ``reviewer:foo-bar``).

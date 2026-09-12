@@ -292,6 +292,7 @@ import {
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { evictPoolEntries } from './pool-eviction'
+import { reapIdleBackends } from './pool-idle-reap'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import {
   isBackgroundSlotWaitTimeout,
@@ -12349,6 +12350,29 @@ async function evictLruPoolBackends(keep) {
   )
 }
 
+// Ask a pooled backend whether it has in-flight work (an agent turn or a
+// cron job) before the idle reaper acts on `lastActiveAt` alone — that field
+// only reflects renderer attention and cannot see backend-side work (#108863).
+// Process-less descriptor entries (remote/cloud registry sources) have
+// nothing local to probe and are left to the existing lastActiveAt behavior.
+// A probe that cannot reach the backend fails closed (reports busy): an
+// indeterminate answer must not read as "safe to kill".
+async function isPoolBackendBusy(entry): Promise<boolean> {
+  if (!entry || !entry.process || !entry.port || !entry.token) {
+    return false
+  }
+
+  try {
+    const response: any = await fetchJson(`http://127.0.0.1:${entry.port}/api/desktop/pool-busy`, entry.token, {
+      timeoutMs: 5_000
+    })
+
+    return response?.busy !== false
+  } catch {
+    return true
+  }
+}
+
 function startPoolIdleReaper() {
   if (poolIdleReaper) {
     return
@@ -12357,12 +12381,16 @@ function startPoolIdleReaper() {
   poolIdleReaper = setInterval(() => {
     const now = Date.now()
 
-    for (const [profile, entry] of [...backendPool.entries()]) {
-      if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
+    void reapIdleBackends(
+      backendPool.entries(),
+      now,
+      poolIdleMs(),
+      profile => isPoolBackendBusy(backendPool.get(profile)),
+      async profile => {
         rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(poolIdleMs() / 1000)}s)`)
-        stopPoolBackend(profile)
+        await stopPoolBackend(profile)
       }
-    }
+    )
 
     if (backendPool.size === 0 && poolIdleReaper) {
       clearInterval(poolIdleReaper)

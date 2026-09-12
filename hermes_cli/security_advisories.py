@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,14 +28,23 @@ logger = logging.getLogger(__name__)
 class Advisory:
     """``id`` is lowercase-hyphen, stable and never reused (it is what acks key on). ``remediation``
     is ordered: uninstall command first, then credential audit/rotation guidance.
+
+    ``vulnerable_below``: ``(version_source, fixed_version)`` pairs for range-based advisories
+    (e.g. Node CVEs, "vulnerable below the version that fixed it") — as opposed to ``compromised``,
+    which is for an exact set of known-bad releases (e.g. a compromised PyPI package snapshot).
+    ``version_source`` is either a PyPI package name (resolved the same way as ``compromised``, via
+    ``importlib.metadata``) or the reserved name ``"node"`` (resolved via
+    ``hermes_constants.find_node_executable`` + ``--version`` — whichever Node Hermes actually
+    uses, not only the managed tree).
     """
 
     id: str
     title: str
     summary: str
     url: str
-    compromised: tuple[tuple[str, frozenset[str]], ...]
-    remediation: tuple[str, ...]
+    compromised: tuple[tuple[str, frozenset[str]], ...] = ()
+    vulnerable_below: tuple[tuple[str, str], ...] = ()
+    remediation: tuple[str, ...] = ()
     published: str = ""
     severity: str = "high"  # low / medium / high / critical
 
@@ -97,14 +107,61 @@ def _installed_version(pkg_name: str) -> Optional[str]:
         return None
 
 
+def _installed_node_version() -> Optional[str]:
+    """``node --version`` (stripped of the leading ``v``) for whichever Node Hermes actually
+    resolves and uses — reuses ``find_node_executable``'s existing managed-first, PATH-fallback
+    precedence rather than a bespoke lookup, so this always matches what Hermes' own Node-dependent
+    tools would execute against."""
+    try:
+        from hermes_constants import find_node_executable
+        node_bin = find_node_executable("node")
+    except Exception:
+        return None
+    if not node_bin:
+        return None
+    try:
+        result = subprocess.run(
+            [node_bin, "--version"], capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False, timeout=10)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip().lstrip("v") or None
+
+
+def _semver_tuple(version: str) -> tuple[int, int, int]:
+    """``(major, minor, patch)``, ignoring any pre-release/build suffix (so e.g. ``"24.0.0-rc.1"``
+    compares as ``24.0.0`` — never treated as LOWER than a fixed version by virtue of the suffix)."""
+    core = version.split("-", 1)[0].split("+", 1)[0]
+    parts: list[int] = []
+    for piece in core.split("."):
+        try:
+            parts.append(int(piece))
+        except ValueError:
+            break
+    while len(parts) < 3:
+        parts.append(0)
+    return (parts[0], parts[1], parts[2])
+
+
 def detect_compromised(advisories: Iterable[Advisory] = ADVISORIES) -> list[AdvisoryHit]:
-    """All hits: package installed AND version in the compromised set (or the set is empty)."""
-    return [
+    """All hits: package installed AND version in the compromised set (or the set is empty), plus
+    any ``vulnerable_below`` range hit."""
+    hits = [
         AdvisoryHit(advisory, pkg_name, installed)
         for advisory in advisories
         for pkg_name, bad_versions in advisory.compromised
         if (installed := _installed_version(pkg_name)) is not None and (not bad_versions or installed in bad_versions)
     ]
+    for advisory in advisories:
+        for source, fixed_version in advisory.vulnerable_below:
+            # "node" is looked up by name (not a dict of bound functions) so tests can monkeypatch
+            # _installed_node_version directly on this module and have it take effect here.
+            installed = _installed_node_version() if source == "node" else _installed_version(source)
+            if installed is not None and _semver_tuple(installed) < _semver_tuple(fixed_version):
+                hits.append(AdvisoryHit(advisory, source, installed))
+    return hits
 
 
 # ─── Acknowledgement persistence ──────────────────────────────────────────────

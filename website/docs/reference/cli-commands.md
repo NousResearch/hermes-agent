@@ -845,12 +845,22 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 ## `hermes doctor`
 
 ```bash
-hermes doctor [--fix]
+hermes doctor [--fix] [--upgrade-node[=MAJOR]] [--ack ADVISORY_ID]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+| `--upgrade-node[=MAJOR]` | Upgrade the Hermes-managed Node.js runtime (`~/.hermes/node`). Bare flag targets the newest major this checkout's `package.json` `engines.node` names; `--upgrade-node=24` targets a specific major, refused (exit code 2) if `engines.node` doesn't allow it. Rebuilds `node_modules`/web against the new Node ABI afterward, failing with exit code 1 if either the install or the rebuild fails. A no-op (exit code 0) if the managed install is already on the target major. See [Node.js runtime lifecycle](#nodejs-runtime-lifecycle) below. |
+| `--ack ADVISORY_ID` | Acknowledge a security advisory by ID so it stops triggering startup banners. |
+
+### Node.js runtime lifecycle
+
+Hermes provisions its own pinned Node.js release under `~/.hermes/node/`, used by the TUI, browser tools, and the WhatsApp bridge. The target major is derived from this checkout's `package.json` `engines.node` range, not a hardcoded version:
+
+- **Automatic, silent:** if the managed Node falls below the *minimum* major `engines.node` requires (or the install is broken), normal Hermes startup and `hermes update` repair it in place. This is a correctness fix, not a proactive version upgrade — it never crosses to a newer major than that floor.
+- **Opt-in only:** if the managed install satisfies `engines.node` but isn't on the newest major it names, `hermes doctor` prints an informational note (it never counts as a failing check). Run `hermes doctor --upgrade-node` to bump to that newest major (or `--upgrade-node=MAJOR` for a specific one). Major version bumps are never applied silently, since a Node major bump is an ABI break and can require native modules to be rebuilt — `--upgrade-node` rebuilds `node_modules`/web as part of the same command.
+- **Manual override:** set the `HERMES_NODE_TARGET_MAJOR` environment variable to pin the automatic heal to an exact major, bypassing the `engines.node`-derived floor. This only affects the automatic heal path — `--upgrade-node` always installs its own computed target major and ignores this variable (see [Environment Variables](./environment-variables.md)).
 
 ## `hermes dump`
 

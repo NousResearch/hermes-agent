@@ -4,6 +4,7 @@ Import-safe, stdlib-only — importable from anywhere without circular-import ri
 """
 
 import contextlib
+import json
 import os
 import re
 import shutil
@@ -386,7 +387,64 @@ def _version_probe_ok(path: str) -> bool:
     return result is not None and result.returncode == 0
 
 
-_HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22"))
+_ENGINES_NODE_CLAUSE_RE = re.compile(r"(\^|>=)?\s*(\d+)\.\d+\.\d+")
+
+
+def _parse_engines_node_clauses(package_json_path: Path | None = None) -> list[tuple[str, int]]:
+    """``[(operator, major), ...]`` from package.json's ``engines.node`` (e.g.
+    ``"^22.22.0 || ^24.11.0 || >=26.0.0"`` -> ``[("^", 22), ("^", 24), (">=", 26)]``).
+
+    ``operator`` is ``"^"`` (exact-major pin) or ``">="`` (major and any greater). Falls back to a
+    single ``(">=", 20)`` floor when package.json is missing/unreadable or the field is absent —
+    mirrors the ``>=12.0.0`` npm fallback in ``_nb_npm_range()`` (node-bootstrap.sh).
+    """
+    path = package_json_path or (Path(__file__).resolve().parent / "package.json")
+    try:
+        range_str = json.loads(path.read_text(encoding="utf-8")).get("engines", {}).get("node", "")
+    except (OSError, ValueError, AttributeError):
+        range_str = ""
+    if not isinstance(range_str, str):
+        range_str = ""
+    clauses: list[tuple[str, int]] = []
+    for chunk in range_str.split("||"):
+        match = _ENGINES_NODE_CLAUSE_RE.search(chunk.strip())
+        if match:
+            clauses.append((match.group(1) or "^", int(match.group(2))))
+    return clauses or [(">=", 20)]
+
+
+def engines_node_minimum_major(package_json_path: Path | None = None) -> int:
+    """Lowest major any ``engines.node`` clause allows — the floor automatic heal repairs up to."""
+    return min(major for _, major in _parse_engines_node_clauses(package_json_path))
+
+
+def engines_node_allows_major(major: int, package_json_path: Path | None = None) -> bool:
+    """True when *major* satisfies at least one ``engines.node`` clause.
+
+    A ``"^"`` clause pins its exact major; a ``">="`` clause allows its major and any greater one.
+    A major sitting numerically between two ``"^"``-pinned majors satisfies neither and is refused
+    (e.g. 23 and 25 are not allowed by ``"^22.22.0 || ^24.11.0 || >=26.0.0"``).
+    """
+    for op, clause_major in _parse_engines_node_clauses(package_json_path):
+        if op == "^" and major == clause_major:
+            return True
+        if op == ">=" and major >= clause_major:
+            return True
+    return False
+
+
+def engines_node_default_upgrade_major(package_json_path: Path | None = None) -> int:
+    """Newest major ``engines.node`` explicitly names — the default ``--upgrade-node`` target.
+
+    An open ``">=N"`` clause is represented here by ``N`` itself: a still-newer major that would
+    also satisfy that clause is only reachable by naming it explicitly to
+    ``--upgrade-node=MAJOR`` (validated via :func:`engines_node_allows_major`), not by this default.
+    """
+    return max(major for _, major in _parse_engines_node_clauses(package_json_path))
+
+
+_HERMES_NODE_TARGET_MAJOR = int(
+    os.environ.get("HERMES_NODE_TARGET_MAJOR") or engines_node_minimum_major())
 _managed_node_heal_attempted = False
 _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 
@@ -498,20 +556,23 @@ def _fetch_url(url: str, timeout: int) -> bytes | None:
         return None
 
 
-def _stage_windows_node_zip(home: Path, node_arch: str) -> Path | None:
+def _stage_windows_node_zip(home: Path, node_arch: str, target_major: int | None = None) -> Path | None:
     """Download the target-major portable Node zip into a sibling ``node.new-*`` dir.
 
-    A sibling makes the later swap a same-volume rename. ``None`` on any failure.
+    A sibling makes the later swap a same-volume rename. ``None`` on any failure. ``target_major``
+    defaults to ``_HERMES_NODE_TARGET_MAJOR`` (the engines.node-derived floor); an explicit caller
+    (``hermes doctor --upgrade-node``) overrides it for a one-off, different-major install.
     """
     import tempfile
     import uuid
     import zipfile
 
-    index_url = f"https://nodejs.org/dist/latest-v{_HERMES_NODE_TARGET_MAJOR}.x/"
+    target_major = _HERMES_NODE_TARGET_MAJOR if target_major is None else target_major
+    index_url = f"https://nodejs.org/dist/latest-v{target_major}.x/"
     index_bytes = _fetch_url(index_url, 60)
     if index_bytes is None:
         return None
-    pattern = rf"node-v{_HERMES_NODE_TARGET_MAJOR}\.\d+\.\d+-win-{node_arch}\.zip"
+    pattern = rf"node-v{target_major}\.\d+\.\d+-win-{node_arch}\.zip"
     match = re.search(pattern, index_bytes.decode("utf-8", errors="replace"))
     if not match:
         return None
@@ -532,7 +593,7 @@ def _stage_windows_node_zip(home: Path, node_arch: str) -> Path | None:
             if extracted is None or not extracted.is_dir():
                 return None
             shutil.move(str(extracted), str(staged))
-    except OSError:
+    except (OSError, zipfile.BadZipFile):
         return None
     return staged
 
@@ -570,13 +631,15 @@ def _swap_node_tree(target: Path, staged: Path) -> bool | None:
     return True
 
 
-def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
+def _heal_managed_node_windows(home: Path | None = None, target_major: int | None = None) -> bool | None:
     """Redownload the portable Node zip into ``%HERMES_HOME%\\node`` on Windows.
 
     ``True`` on success, ``False`` on genuine failure (offline, bad archive), ``None`` when the
     tree is in use and the heal is deferred — callers must not record the once-per-process attempt
     for ``None``. Staging-first (extract to ``node.new-*``, rename live aside, rename staged in) so
     an interrupted heal cannot gut the install; a refused rename *is* the in-use signal.
+    ``target_major`` defaults to ``_HERMES_NODE_TARGET_MAJOR``; pass an explicit value to install a
+    specific major (``hermes doctor --upgrade-node``).
 
     The replacement is staging-first: the new tree is fully downloaded and extracted to a sibling
     ``node.new-*`` directory, then the live tree is renamed aside (``node.old-*``) and the staged tree
@@ -606,7 +669,7 @@ def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
                 shutil.rmtree(stale, ignore_errors=True)
         except OSError:
             continue
-    staged = _stage_windows_node_zip(home, node_arch)
+    staged = _stage_windows_node_zip(home, node_arch, target_major)
     if staged is None:
         return False
     return _swap_node_tree(target, staged) and node_tool_runnable(str(target / "node.exe"))
@@ -696,6 +759,28 @@ def find_hermes_node_executable(command: str) -> str | None:
         if healed:
             return healed
     return resolved
+
+
+def managed_node_major() -> int | None:
+    """Major version of the Hermes-managed Node tree specifically (not whatever's on PATH), or
+    None if there is no managed install or it's unparsable/broken. Shared by ``hermes doctor``'s
+    freshness note and ``hermes doctor --upgrade-node``'s current-version check."""
+    import subprocess
+
+    node_bin = find_hermes_node_executable("node")
+    if not node_bin:
+        return None
+    try:
+        result = subprocess.run(
+            [node_bin, "--version"], capture_output=True, text=True, timeout=10, check=False)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip().lstrip("v").split(".")[0])
+    except (ValueError, IndexError):
+        return None
 
 
 def find_node_executable_on_path(command: str) -> str | None:

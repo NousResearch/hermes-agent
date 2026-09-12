@@ -524,7 +524,6 @@ def ledger_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
 import json  # noqa: F401,E402
-import json  # noqa: F401,E402
 
 def debug_rows(limit: int = 20) -> str:
     """Human-readable dump for ad-hoc inspection (sqlite3-free path)."""

@@ -962,3 +962,56 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+def test_zai_models_pricing_entry_exists():
+    """Regression test for #104719: z-ai / zai provider models must resolve from official docs snapshot."""
+    for model in (
+        "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "glm-5-turbo",
+        "glm-5.3-flash", "glm-4.7", "glm-4.5", "glm-4.5-air", "glm-4.5-flash"
+    ):
+        for provider in ("z-ai", "zai", "glm"):
+            entry = get_pricing_entry(model, provider=provider)
+            assert entry is not None, f"Missing pricing for {model} with provider={provider}"
+            assert entry.source == "official_docs_snapshot"
+
+
+def test_zai_billing_route_resolution():
+    """resolve_billing_route resolves z-ai provider aliases and base URLs to official docs snapshot."""
+    route_zai = resolve_billing_route("glm-5.3", provider="zai")
+    assert route_zai.provider == "z-ai"
+    assert route_zai.billing_mode == "official_docs_snapshot"
+
+    route_host = resolve_billing_route("glm-5", base_url="https://api.z.ai/api/paas/v4")
+    assert route_host.provider == "z-ai"
+    assert route_host.billing_mode == "official_docs_snapshot"
+
+    route_cn = resolve_billing_route("glm-5", base_url="https://open.bigmodel.cn/api/paas/v4")
+    assert route_cn.provider == "z-ai"
+    assert route_cn.billing_mode == "official_docs_snapshot"
+
+
+def test_zai_model_normalization_and_aliases():
+    """GLM model alias spellings and prefixes normalize to canonical rates."""
+    canonical = get_pricing_entry("glm-5.3", provider="z-ai")
+    assert canonical is not None
+
+    alias_p = get_pricing_entry("glm-5p3", provider="z-ai")
+    assert alias_p == canonical
+
+    alias_dash = get_pricing_entry("glm-5-3", provider="z-ai")
+    assert alias_dash == canonical
+
+    prefix_entry = get_pricing_entry("z-ai/glm-5.3", provider="z-ai")
+    assert prefix_entry == canonical
+
+
+def test_zai_cost_estimation():
+    """estimate_usage_cost correctly computes cost on Z.AI models."""
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+    result = estimate_usage_cost("glm-5.3-flash", usage, provider="z-ai")
+    assert result.status == "estimated"
+    # input: $0.15 + output: $0.50 + cache_read: $0.03 = $0.68
+    assert result.amount_usd == Decimal("0.68")
+    assert format_cost_label(result.amount_usd) == "~$0.68"
+

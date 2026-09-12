@@ -52,6 +52,18 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 
 logger = logging.getLogger(__name__)
 
+
+class _SuppressBoltDuplicateTokenWarning(logging.Filter):
+    """Drop Bolt's known duplicate-token warning for a prebuilt client only."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage().replace("`", "")
+        return "As you gave client as well, token will be unused." not in message
+
+
+_bolt_logger = logging.getLogger(f"{__name__}.bolt")
+_bolt_logger.addFilter(_SuppressBoltDuplicateTokenWarning())
+
 # User-Agent prefix (``HermesAgent/<version>``) for platform-partner attribution of API calls.
 try:
     from hermes_cli import __version__ as _HERMES_VERSION
@@ -1652,9 +1664,16 @@ class SlackAdapter(BasePlatformAdapter):
             # Reset so a reconnect with dropped/rotated tokens carries no stale identities.
             self._bot_user_id = self._bot_display_name = None
             self._team_clients, self._team_bot_user_ids, self._team_bot_names = {}, {}, {}
+            # AsyncWebClient already owns the token. Bolt reads SLACK_BOT_TOKEN
+            # when token=None, then warns that its duplicate token is unused.
+            # Keep the environment unchanged for concurrent profile connections
+            # and suppress only that known warning on this dedicated logger.
             self._app = AsyncApp(
-                token=bot_tokens[0], client=self._new_web_client(bot_tokens[0], proxy_url),
-                before_authorize=_slack_per_request_proxy_middleware(proxy_url))
+                token=None,
+                client=self._new_web_client(bot_tokens[0], proxy_url),
+                before_authorize=_slack_per_request_proxy_middleware(proxy_url),
+                logger=_bolt_logger,
+            )
             _apply_slack_proxy(self._app.client, proxy_url)
             for token in bot_tokens:
                 await self._authenticate_workspace(token, proxy_url)

@@ -8,7 +8,7 @@ import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
-import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
+import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway } from '@/hermes'
 import type { ActionStatusResponse, AnalyticsResponse, SessionInfo, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -31,6 +31,7 @@ import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $sessions, sessionPinId } from '@/store/session'
+import { startActiveUpdate } from '@/store/updates'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -264,11 +265,11 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   }, [logQuery, logs])
 
   const runSystemAction = useCallback(
-    async (kind: 'restart' | 'update') => {
+    async () => {
       setSystemError('')
 
       try {
-        const started = kind === 'restart' ? await restartGateway() : await updateHermes()
+        const started = await restartGateway()
         let nextStatus: ActionStatusResponse | null = null
 
         for (let attempt = 0; attempt < 18; attempt += 1) {
@@ -442,10 +443,10 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                         </div>
                       </div>
                       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 whitespace-nowrap max-[47.5rem]:whitespace-normal">
-                        <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
+                        <Button onClick={() => void runSystemAction()} size="xs" variant="text">
                           {cc.restartGateway}
                         </Button>
-                        <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
+                        <Button onClick={() => startActiveUpdate('backend')} size="xs" variant="textStrong">
                           {cc.updateHermes}
                         </Button>
                       </div>

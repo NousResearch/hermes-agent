@@ -3119,6 +3119,7 @@ class _StreamingCall(StreamingWaitMonitor):
         if not self.deltas_were_sent["yes"] and not getattr(self.agent, "_stream_options_unsupported", False) and _rejects_stream_options(e):
             # Nothing streamed yet: drop the usage extension for this session and re-open.
             self.agent._stream_options_unsupported = True
+            self._compat_retries = 1
             logger.info("Endpoint rejected stream_options (HTTP %s); retrying without it for this session.",
                         getattr(e, "status_code", None))
             self._cancel_current_stream_attempt("stream_options_rejected_retry")
@@ -3176,8 +3177,14 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _call(self):
         _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
+        # The one stream_options compatibility retry (#9705) is not a network retry and must not
+        # consume the transient budget: on the last attempt (or HERMES_STREAM_RETRIES=0) the
+        # handler returned True and the loop ended with neither a response nor an error set.
+        self._compat_retries = 0
+        _stream_attempt = -1
         try:
-            for _stream_attempt in range(_max_stream_retries + 1):
+            while _stream_attempt < _max_stream_retries + self._compat_retries:
+                _stream_attempt += 1
                 stream_attempt_id = self._start_stream_attempt()
                 # Otherwise /stop closes the connection and the retry opens a
                 # FRESH one, blocking up to a full read timeout per attempt.

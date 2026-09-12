@@ -105,4 +105,168 @@ async def test_distinct_status_keys_do_not_collide(adapter):
     assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
     assert adapter._status_message_ids[("chat-1", "model-switch")] == "200"
 
+@pytest.mark.asyncio
+async def test_delete_message_drops_cached_status_id(adapter):
+    """cleanup_progress deletes the bubble; the status cache must not keep that id."""
+    adapter._status_message_ids[("chat-1", "lifecycle")] = "3202"
+    adapter._bot.delete_message = AsyncMock(return_value=True)
+
+    ok = await adapter.delete_message("chat-1", "3202")
+
+    assert ok is True
+    assert ("chat-1", "lifecycle") not in adapter._status_message_ids
+
+
+@pytest.mark.asyncio
+async def test_status_after_delete_sends_fresh_instead_of_editing_tombstone(adapter):
+    """Next status emit after cleanup must send, not edit the deleted id."""
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="3202"),
+        SendResult(success=True, message_id="3203"),
+    ]
+    adapter._bot.delete_message = AsyncMock(return_value=True)
+
+    first = await adapter.send_or_update_status("chat-1", "lifecycle", "starting")
+    assert first.message_id == "3202"
+    await adapter.delete_message("chat-1", "3202")
+
+    second = await adapter.send_or_update_status("chat-1", "lifecycle", "still working")
+
+    assert second.message_id == "3203"
+    adapter.edit_message.assert_not_awaited()
+    assert adapter.send.await_count == 2
+    assert adapter._status_message_ids[("chat-1", "lifecycle")] == "3203"
+
+
+@pytest.mark.asyncio
+async def test_finalize_missing_message_does_not_retry_plain_text(monkeypatch):
+    """A gone message is not a MarkdownV2 format failure (no second plain-text edit)."""
+    _install_fake_telegram(monkeypatch)
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    adapter._bot = MagicMock()
+    gone = Exception("Bad Request: message to edit not found")
+    adapter._bot.edit_message_text = AsyncMock(side_effect=gone)
+    adapter._status_message_ids[("123", "lifecycle")] = "456"
+
+    result = await adapter.edit_message("123", "456", "still working", finalize=True)
+
+    assert result.success is False
+    assert "not found" in (result.error or "").lower()
+    assert adapter._bot.edit_message_text.await_count == 1
+    assert ("123", "lifecycle") not in adapter._status_message_ids
+
+@pytest.mark.asyncio
+async def test_delete_invalidates_equivalent_chat_id_forms(adapter):
+    """Whitespace / int / str chat ids must share one status-cache key."""
+    adapter._bot.delete_message = AsyncMock(return_value=True)
+    adapter._status_message_ids[("-100123", "lifecycle")] = "100"
+    adapter._status_message_ids[("-100123", "other")] = "200"
+    adapter._status_message_ids[("chat-2", "lifecycle")] = "100"
+
+    deleted = await adapter.delete_message("  -100123  ", "100")
+
+    assert deleted is True
+    assert ("-100123", "lifecycle") not in adapter._status_message_ids
+    assert adapter._status_message_ids[("-100123", "other")] == "200"
+    assert adapter._status_message_ids[("chat-2", "lifecycle")] == "100"
+
+    adapter.send.return_value = SendResult(success=True, message_id="300")
+    result = await adapter.send_or_update_status(-100123, "lifecycle", "next status")
+
+    assert result.success is True
+    adapter.send.assert_awaited_once()
+    adapter.edit_message.assert_not_awaited()
+    assert adapter._status_message_ids[("-100123", "lifecycle")] == "300"
+
+@pytest.mark.parametrize(
+    "err",
+    [
+        "Bad Request: message to edit not found",
+        "Bad Request: message to delete not found",
+        "Bad Request: message can't be edited",
+        "Bad Request: message cannot be edited",
+        "Bad Request: message can’t be edited",
+        "Bad Request: message can't be deleted",
+        "Bad Request: MESSAGE_ID_INVALID",
+        "Bad Request: message identifier is not specified",
+    ],
+)
+def test_stale_target_classifier_matches_bot_api_refusals(monkeypatch, err):
+    _install_fake_telegram(monkeypatch)
+    from plugins.platforms.telegram.adapter import _is_stale_telegram_edit_target
+
+    assert _is_stale_telegram_edit_target(Exception(err)) is True
+
+
+@pytest.mark.parametrize(
+    "err",
+    [
+        "Bad Request: message is not modified",
+        "httpx.ConnectError: Connection refused",
+        "flood_control:30.0",
+        "Forbidden: bot was blocked by the user",
+        "Bad Request: not enough rights to edit the message",
+        "Method not found",
+        "Message thread not found",
+    ],
+)
+def test_stale_target_classifier_ignores_non_tombstone_errors(monkeypatch, err):
+    _install_fake_telegram(monkeypatch)
+    from plugins.platforms.telegram.adapter import _is_stale_telegram_edit_target
+
+    assert _is_stale_telegram_edit_target(Exception(err)) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "err",
+    [
+        "Bad Request: message to edit not found",
+        "Bad Request: message can't be edited",
+        "Bad Request: MESSAGE_ID_INVALID",
+    ],
+)
+async def test_finalize_uneditable_target_does_not_retry_plain_text(monkeypatch, err):
+    """Gone or uneditable ids must not get a second plain-text edit."""
+    _install_fake_telegram(monkeypatch)
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    adapter._bot = MagicMock()
+    adapter._bot.edit_message_text = AsyncMock(side_effect=Exception(err))
+    adapter._status_message_ids[("123", "lifecycle")] = "456"
+
+    result = await adapter.edit_message("123", "456", "still working", finalize=True)
+
+    assert result.success is False
+    assert adapter._bot.edit_message_text.await_count == 1
+    assert ("123", "lifecycle") not in adapter._status_message_ids
+
+
+@pytest.mark.asyncio
+async def test_delete_already_gone_still_drops_cache(adapter):
+    adapter._status_message_ids[("chat-1", "lifecycle")] = "3202"
+    adapter._bot.delete_message = AsyncMock(
+        side_effect=Exception("Bad Request: message to delete not found")
+    )
+
+    ok = await adapter.delete_message("chat-1", "3202")
+
+    assert ok is False
+    assert ("chat-1", "lifecycle") not in adapter._status_message_ids
+
+
+@pytest.mark.asyncio
+async def test_delete_failure_that_is_not_stale_keeps_cache(adapter):
+    adapter._status_message_ids[("chat-1", "lifecycle")] = "3202"
+    adapter._bot.delete_message = AsyncMock(
+        side_effect=Exception("httpx.ReadTimeout: timed out")
+    )
+
+    ok = await adapter.delete_message("chat-1", "3202")
+
+    assert ok is False
+    assert adapter._status_message_ids[("chat-1", "lifecycle")] == "3202"
 

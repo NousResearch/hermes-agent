@@ -48,7 +48,9 @@ jobs:
           PTY="$APP_DIR/Contents/Resources/app/dist/node_modules/node-pty/prebuilds/darwin-${{ matrix.arch }}/pty.node"
           test -f "$PTY"
           file "$PTY"
-          lipo -archs "$PTY" | grep -F "${{ matrix.arch }}"
+          EXPECTED_ARCH="${{ matrix.arch }}"
+          if [ "$EXPECTED_ARCH" = "x64" ]; then EXPECTED_ARCH="x86_64"; fi
+          lipo -archs "$PTY" | grep -Fx "$EXPECTED_ARCH"
           codesign --force --deep --sign - "$APP_DIR"
           codesign --verify --deep --strict --verbose=2 "$APP_DIR"
           "$APP_DIR/Contents/MacOS/Hermes" --disable-gpu > /tmp/hermes-smoke.log 2>&1 &

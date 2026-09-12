@@ -39,7 +39,14 @@ const members: GroupMember[] = [
   { name: 'builder', title: 'Builder' }
 ]
 
-beforeEach(() => runTimersInline())
+beforeEach(() => {
+  runTimersInline()
+  // Inline model turns can all complete in one real millisecond on fast
+  // runners. Give sequential events distinct times so the mirror's stable
+  // timestamp/UUID tie-break does not randomize this scheduling assertion.
+  let now = Date.now()
+  vi.spyOn(Date, 'now').mockImplementation(() => ++now)
+})
 
 // Model a plain JSON-RPC/IPC rejection rather than the Error instance the
 // existing scripted gateway returns. Preserve successes and all poll behavior.

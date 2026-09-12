@@ -59,8 +59,9 @@ class GatewayAuthError(ToolGatewayError):
 class GatewayUnavailable(ToolGatewayError):
     """404 from any connector route — connectors are dark for this principal.
 
-    This is the silent-degradation signal: callers fall back to local-only
-    behavior and the model never sees a connector error.
+    Search and describe use this as a silent-degradation signal; the explicit
+    connection-management surface renders it as a machine-readable unavailable
+    state rather than pretending the connector inventory is known.
     """
 
 

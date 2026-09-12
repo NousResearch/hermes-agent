@@ -12,6 +12,7 @@ import pytest
 
 import tools.connections_tool  # registers the tool
 from tools.connections_tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
+from tools.tool_gateway.errors import GatewayUnavailable
 
 
 class FakeClient:
@@ -130,6 +131,26 @@ def test_gateway_failure_is_a_model_actionable_error():
         manage_connections({"action": "status"}, client_factory=exploding)
     )
     assert "connector gateway request failed" in out["error"]
+
+
+def test_dark_gateway_is_an_unavailable_state_not_disconnected_inventory():
+    def dark():
+        raise GatewayUnavailable("route concealed", code="NOT_FOUND", status=404)
+
+    out = json.loads(
+        manage_connections({"action": "status"}, client_factory=dark)
+    )
+
+    assert out == {
+        "status": "unavailable",
+        "code": "CONNECTORS_UNAVAILABLE",
+        "connectors": [],
+        "message": "Connector service is not available for this account or session.",
+        "hint": (
+            "Do not infer connection state or retry automatically. "
+            "The user can manage connections in the Nous Portal."
+        ),
+    }
 
 
 def test_mcp_actions_are_not_this_tools_business():
@@ -285,6 +306,27 @@ def test_wait_tolerates_transient_gateway_blips_but_not_a_dead_gateway(no_sleep)
     assert out["pending"] == ["gmail"]
     assert "NOT an error" in out["note"]
     assert dead.polls == 3  # gave up on the third consecutive failure
+
+
+def test_wait_propagates_dark_gateway_as_unavailable():
+    client = WaitClient(flips_on=None)
+    client.on_poll = lambda _n: (_ for _ in ()).throw(
+        GatewayUnavailable("route concealed", code="NOT_FOUND", status=404)
+    )
+
+    out = _wait(client, timeout_seconds=180)
+
+    assert out == {
+        "status": "unavailable",
+        "code": "CONNECTORS_UNAVAILABLE",
+        "connectors": [],
+        "message": "Connector service is not available for this account or session.",
+        "hint": (
+            "Do not infer connection state or retry automatically. "
+            "The user can manage connections in the Nous Portal."
+        ),
+    }
+    assert client.polls == 1
 
 
 def test_wait_interrupted_mid_wait_reports_interrupted_not_an_error(no_sleep):

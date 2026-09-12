@@ -3290,17 +3290,50 @@ class FeishuAdapter(BasePlatformAdapter):
         return None
 
     def _require_mention_for(self, chat_id: str) -> bool:
-        rule = self._group_rules.get(chat_id) if chat_id else None
+        rule = self._effective_group_rule(chat_id)
         if rule and rule.require_mention is not None:
             return rule.require_mention
         return self._require_mention
+
+    def _effective_group_rule(self, chat_id: str) -> Optional[FeishuGroupRule]:
+        """Boot-time rule overlaid with the hot-reload entry for this chat.
+
+        Hot entries mirror the config.yaml group_rules shape and override per field,
+        so a one-key edit (e.g. ``{"require_mention": false}``) cannot silently drop
+        the rest of an existing rule. Missing keys keep the boot-time value.
+        """
+        if not chat_id:
+            return None
+        boot = self._group_rules.get(chat_id)
+        try:
+            from plugins.platforms.feishu.feishu_group_rules import load_group_rules
+
+            hot = load_group_rules().get(chat_id)
+        except Exception:
+            logger.exception("[Feishu] Failed to load hot-reload group rules")
+            return boot
+        if not hot:
+            return boot
+        if boot is None:
+            return FeishuGroupRule(
+                policy=str(hot.get("policy", "open")).strip().lower(),
+                allowlist=set(hot.get("allowlist", ())),
+                blacklist=set(hot.get("blacklist", ())),
+                require_mention=hot.get("require_mention"),
+            )
+        return FeishuGroupRule(
+            policy=hot.get("policy", boot.policy),
+            allowlist=set(hot.get("allowlist", boot.allowlist)),
+            blacklist=set(hot.get("blacklist", boot.blacklist)),
+            require_mention=hot.get("require_mention", boot.require_mention),
+        )
 
     def _allow_group_message(self, sender_id: Any, chat_id: str = "", *, is_bot: bool = False) -> bool:
         """Per-group policy gate for non-DM traffic."""
         sender_ids = {getattr(sender_id, "open_id", None), getattr(sender_id, "user_id", None)} - {None}
         if sender_ids and self._admins and (sender_ids & self._admins):
             return True
-        rule = self._group_rules.get(chat_id) if chat_id else None
+        rule = self._effective_group_rule(chat_id)
         if rule:
             policy, allowlist, blacklist = rule.policy, rule.allowlist, rule.blacklist
         else:

@@ -261,6 +261,49 @@ def test_successful_receipt_with_pre_update_plan_shas_does_not_retrigger(
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+@pytest.mark.parametrize(
+    ("changes", "pending"),
+    [
+        pytest.param({}, False, id="successful-before-later-checkout-change"),
+        pytest.param({"outcome": None, "exit_code": 0}, False, id="exit-zero-success"),
+        pytest.param(
+            {"fleet": [{"profile": "default", "code_sha": "a" * 40, "state": "stale"}]},
+            True, id="explicit-stale-row",
+        ),
+        pytest.param({"outcome": "partial"}, True, id="partial"),
+        pytest.param({"gateway_restart": {"incomplete": True}}, True, id="incomplete"),
+        pytest.param({"exit_code": 1}, True, id="failed-exit"),
+        pytest.param({"post_update": {}}, True, id="legacy-without-target"),
+        pytest.param({"post_update": {"sha": "c" * 40}}, True, id="fleet-missed-update-target"),
+    ],
+)
+def test_historical_fleet_uses_successful_updates_own_target(monkeypatch, capsys, changes, pending):
+    """Later Git integration cannot retroactively make a completed restart fail."""
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "b" * 40)
+    receipt = {
+        "outcome": "success",
+        "post_update": {"sha": "a" * 40},
+        "gateway_restart": {"incomplete": False},
+        "fleet": [{"profile": "default", "code_sha": "a" * 40, "state": "current"}],
+        "plan": {"runtimes": [{"kind": "serve", "profile": "default"}]},
+    }
+    receipt.update(changes)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    path = receipt_dir / "latest.json"
+    original = json.dumps(receipt)
+    path.write_text(original, encoding="utf-8")
+
+    assert update_cmd_fleet._receipt_reports_stale_runtime() is pending
+    update_cmd_fleet._warn_pending_fleet_restart_on_startup()
+    assert ("did not restart running gateways" in capsys.readouterr().err) is pending
+    assert path.read_text(encoding="utf-8") == original
+
+    # A newer interrupted update's explicit marker still takes precedence.
+    update_cmd._fleet_restart_pending_marker_path().touch()
+    assert update_cmd_fleet._pending_fleet_restart_needed() is True
+
+
 def test_successful_command_boundary_receipt_without_fleet_does_not_retrigger(
     monkeypatch,
 ):

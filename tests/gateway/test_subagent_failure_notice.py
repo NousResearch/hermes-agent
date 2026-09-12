@@ -117,6 +117,21 @@ def _make_runner_and_captured(monkeypatch, run_still_current=True):
 
 
 class TestGatewayFailureNotice:
+    def test_recalled_details_are_fenced_before_line_selection_and_truncation(self, monkeypatch):
+        from gateway.config import Platform
+
+        runner, captured = _make_runner_and_captured(monkeypatch)
+        runner._ctx.source.platform = Platform.TELEGRAM
+        fence = "<memory-context>" + "PRIVATE_CHILD " * 30 + "</memory-context>"
+        runner.progress_callback(
+            "subagent.complete", status="failed", goal=fence + "public goal",
+            summary=fence + "public failure", duration_seconds=8,
+        )
+        assert len(captured) == 1
+        assert "PRIVATE_CHILD" not in captured[0]
+        assert "public goal" in captured[0]
+        assert "public failure" in captured[0]
+
     @pytest.mark.parametrize("status", sorted(SUBAGENT_FAILURE_STATUSES))
     def test_failure_statuses_deliver_notice(self, monkeypatch, status):
         runner, captured = _make_runner_and_captured(monkeypatch)

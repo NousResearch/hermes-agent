@@ -2171,7 +2171,7 @@ def strip_opaque_replay_items(items: Any) -> Any:
 def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Shadow of a message holding only what the provider actually receives.
     * ``api_content`` SUBSTITUTES ``content`` (mirrors ``turn_context.substitute_api_content`` exactly):
-      only a non-empty STRING sidecar on a user/assistant row displaces content; substituting any
+      only a non-empty STRING sidecar on a non-empty string role displaces content; substituting any
       other shape would UNDERcount — the dangerous direction.
     * Base64 images become a placeholder; ``_count_image_tokens`` charges them flat.
     * ``reasoning`` never ships as-is (request builds pop it after optionally promoting it into
@@ -2181,7 +2181,7 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
       checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
       prices them, and the usage anchor carries that price forward."""
     sidecar = msg.get("api_content")
-    sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant")
+    sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and isinstance(msg.get("role"), str) and bool(msg.get("role"))
     _rc = msg.get("reasoning_content")
     drop_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     shadow: Dict[str, Any] = {}

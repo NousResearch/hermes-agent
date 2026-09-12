@@ -164,7 +164,7 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     # get_messages_as_conversation replays rows through sanitize_context().strip(); capture the sent bytes
     # when they would differ (compared in wire form).
     if (
-        api_content is None and role in ("user", "assistant") and isinstance(content, str) and content
+        api_content is None and isinstance(content, str) and content
         and sanitize_context(content).strip() != content.strip()
     ):
         api_content = content

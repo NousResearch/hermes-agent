@@ -150,7 +150,7 @@ def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwa
 
 
 def _notif_loop_status(sid: str, text: str) -> None:
-    _emit("status.update", sid, {"kind": "loop", "text": text})
+    _emit("status.update", sid, {"kind": "loop", "text": sanitize_context(text)})
 
 
 def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) -> None:
@@ -370,7 +370,7 @@ def _notif_poll_kanban(sid: str, session: dict) -> None:
         _notif_log_failure("kanban notification poll failed", exc)
         texts = []
     for text in texts:
-        _emit("status.update", sid, {"kind": "process", "text": text})
+        _emit("status.update", sid, {"kind": "process", "text": sanitize_context(text)})
     if texts:
         session.setdefault("_kanban_pending", []).extend(texts)
     if not session.get("_kanban_pending") or not _notif_claim_turn(session):
@@ -433,7 +433,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     if dedup_key not in emitted:
         from tools.process_registry_notifications import async_delegation_display_text
         display_text = async_delegation_display_text(evt) if is_delegation else text
-        _emit("status.update", sid, {"kind": "process", "text": display_text})
+        _emit("status.update", sid, {"kind": "process", "text": sanitize_context(display_text)})
         emitted.add(dedup_key)
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))

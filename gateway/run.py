@@ -645,6 +645,96 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+def _sanitize_gateway_agent_text(platform: Any, text: str) -> str:
+    """Fence provider-derived text before human-facing gateway delivery."""
+    if not text:
+        return text
+    if _gateway_surface_passes_raw_text(platform):
+        return text
+
+    # Streaming responses already pass through StreamingContextScrubber, but
+    # completed agent-text lanes can reach adapters directly. Apply the same
+    # memory-context fence at their shared human-facing boundary.
+    from agent.memory_manager import sanitize_context
+
+    visible_text = sanitize_context(str(text))
+    if not visible_text.strip():
+        return ""
+    return _redact_gateway_user_facing_secrets(visible_text)
+
+
+def _sanitize_gateway_tool_display_value(platform: Any, value: Any) -> Any:
+    """Copy tool metadata with provider strings fenced for presentation.
+
+    Tool arguments remain raw for execution and programmatic gateway surfaces.
+    Human-facing progress/status rendering gets this copied view *before*
+    shell summarization, truncation, or adapter formatting can destroy the
+    memory-context delimiters while retaining their payload.
+    """
+    if _gateway_surface_passes_raw_text(platform):
+        return value
+    try:
+        if isinstance(value, str):
+            return _sanitize_gateway_agent_text(platform, value)
+        if isinstance(value, dict):
+            safe: dict[Any, Any] = {}
+            next_suffix: dict[str, int] = {}
+            for key, item in value.items():
+                safe_key = _sanitize_gateway_tool_display_value(platform, key)
+                try:
+                    hash(safe_key)
+                except TypeError:
+                    safe_key = str(safe_key)
+                if safe_key in safe:
+                    base = str(safe_key)
+                    suffix = next_suffix.get(base, 2)
+                    candidate = f"{base}#{suffix}"
+                    while candidate in safe:
+                        suffix += 1
+                        candidate = f"{base}#{suffix}"
+                    next_suffix[base] = suffix + 1
+                    safe_key = candidate
+                safe[safe_key] = _sanitize_gateway_tool_display_value(platform, item)
+            return safe
+        if isinstance(value, list):
+            return [
+                _sanitize_gateway_tool_display_value(platform, item) for item in value
+            ]
+        if isinstance(value, tuple):
+            return tuple(
+                _sanitize_gateway_tool_display_value(platform, item) for item in value
+            )
+        return value
+    except RecursionError:
+        return ""
+
+
+def _sanitize_gateway_interim_text(platform: Any, text: Any) -> str:
+    """Fence interim prose without changing meaningful outer whitespace."""
+    return _sanitize_gateway_agent_text(platform, str(text or ""))
+
+
+def _sanitize_gateway_provider_detail(
+    platform: Any,
+    detail: Any,
+    *,
+    fallback: str = "provider error",
+) -> str:
+    """Return a safe diagnostic fragment for human-facing gateway prose.
+
+    Provider exceptions and status details are often interpolated into a
+    larger, useful gateway notice. Fence the fragment before composition so a
+    fully recalled-context value cannot expose its payload or leave an empty
+    detail. Programmatic surfaces retain their established raw-text contract
+    through ``_sanitize_gateway_agent_text``.
+    """
+    raw_detail = str(detail or "").strip()
+    if not raw_detail:
+        return fallback
+    safe_detail = _sanitize_gateway_agent_text(platform, raw_detail).strip()
+    return safe_detail or fallback
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies for chat surfaces: concise, secret-redacted provider failure
     categories instead of raw HTTP bodies, request IDs, leaked credentials, or policy text."""
@@ -667,10 +757,58 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = _sanitize_gateway_agent_text(platform, text)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
+
+
+def _prepare_gateway_final_delivery(
+    platform: Any,
+    agent_result: Any,
+    *,
+    history_len: int = 0,
+) -> str:
+    """Return the chat-safe completed response, including an empty fallback.
+
+    A provider can return a non-empty response consisting entirely of a
+    recalled-memory fence. The low-level fence correctly returns an empty
+    string, but treating that as a successful final delivery would silently
+    drop the turn (especially on streaming and queued-message paths). Reuse
+    the existing empty-response classifier to produce its generic retry
+    notice, while preserving deliberate interrupt and exact silence-marker
+    semantics.
+
+    Raw/programmatic surfaces still return their established payload through
+    ``_sanitize_gateway_final_response`` before this helper can need a
+    fallback.
+    """
+    if not isinstance(agent_result, dict):
+        return _sanitize_gateway_final_response(platform, str(agent_result or ""))
+
+    raw_response = agent_result.get("final_response")
+    safe_response = _sanitize_gateway_final_response(platform, raw_response or "")
+    if safe_response or not raw_response:
+        return safe_response
+
+    try:
+        from gateway.response_filters import is_intentional_silence_agent_result
+
+        if is_intentional_silence_agent_result(agent_result, raw_response):
+            return ""
+    except Exception:
+        pass
+    if agent_result.get("interrupted"):
+        return ""
+
+    fallback = _normalize_empty_agent_response(
+        agent_result,
+        "",
+        history_len=history_len,
+    )
+    if not fallback:
+        return ""
+    return _sanitize_gateway_final_response(platform, fallback)
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
@@ -683,7 +821,9 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     if _gateway_surface_passes_raw_text(platform):
         return text
 
-    text = _redact_gateway_user_facing_secrets(text)
+    text = _sanitize_gateway_agent_text(platform, text).strip()
+    if not text:
+        return None
     # Opt-in `compression.progress_notices` lets ROUTINE (template-derived) progress through; other noise stays.
     if _TELEGRAM_NOISY_STATUS_RE.search(text) and not (
         _gateway_compression_progress_notices_enabled() and _COMPRESSION_PROGRESS_STATUS_RE.search(text)

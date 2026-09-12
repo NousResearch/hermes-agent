@@ -530,7 +530,7 @@ class SessionTranscriptMixin:
             )
             try:
                 expected_active_ids = db.get_active_message_ids(session_id)
-                durable = db.get_messages_as_conversation(session_id, include_row_ids=True)
+                durable = db.get_messages_as_conversation(session_id, include_row_ids=True, display_projection=False)
                 user_indices = [
                     index for index, message in enumerate(durable)
                     if user_originated_turn_view(message) is not None

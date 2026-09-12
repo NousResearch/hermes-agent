@@ -15,6 +15,8 @@ from .method_ctx import bind_module
 # Child-session live mirror: a delegated child's activity reaches the gateway only as
 # relayed ``subagent.*`` events on the PARENT sid; translate them into native stream
 # events on the CHILD sid (write_json routes by sid) so its own window is not silent.
+_display_scrubbers: dict[str, dict] = {}
+_display_scrubbers_lock = threading.Lock()
 _child_mirrors: dict[str, dict] = {}
 _child_mirrors_lock = threading.Lock()
 # Child sids with a run in flight (refreshed per relayed event, popped on complete) so a
@@ -31,7 +33,11 @@ def _child_run_active(child_key: str) -> bool:
     return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
 
 
-def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
+def _mirror_subagent_to_child(
+    event_type: str,
+    payload: dict,
+    raw_stream_text: str | None = None,
+) -> None:
     child_key = str(payload.get("child_session_id") or "")
     if not child_key:
         return
@@ -56,6 +62,11 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             _emit("message.start", csid)
         # thinking/text/start (the child's goal, as a one-time header) are plain deltas.
         if event_type in _CHILD_DELTA_EVENTS:
+            if event_type == "subagent.start":
+                text = sanitize_context(text)
+            else:
+                scrubber = st.setdefault(event_type, StreamingContextScrubber())
+                text = scrubber.feed(raw_stream_text if raw_stream_text is not None else text)
             if text:
                 _emit(_CHILD_DELTA_EVENTS[event_type], csid,
                       {"text": f"{text}\n" if event_type == "subagent.start" else text})
@@ -68,14 +79,194 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             st["seq"] += 1
             tool = {"name": str(payload.get("tool_name") or "tool"),
                     "tool_id": f"submirror:{child_key}:{st['seq']}", "args": {}}
-            if preview := str(payload.get("tool_preview") or payload.get("text") or ""):
+            if preview := sanitize_context(str(payload.get("tool_preview") or payload.get("text") or "")):
                 tool["preview"] = preview
             st["open_tool"] = tool
             _emit("tool.start", csid, tool)
         else:
-            summary = str(payload.get("summary") or payload.get("text") or "")
+            for stream, event_name in (("subagent.text", "message.delta"), ("subagent.thinking", "reasoning.delta")):
+                if scrubber := st.pop(stream, None):
+                    tail = scrubber.flush()
+                    if tail:
+                        _emit(event_name, csid, {"text": tail})
+            summary = sanitize_context(str(payload.get("summary") or payload.get("text") or ""))
             _emit("message.complete", csid, {"text": summary})
             _child_mirrors.pop(child_key, None)
+
+
+def _reset_tui_display_scrubbers(sid: str) -> None:
+    """Start independent strict reasoning/thinking scrubbers for one turn."""
+    with _display_scrubbers_lock:
+        _display_scrubbers[sid] = {
+            "reasoning": StreamingContextScrubber(),
+            "thinking": StreamingContextScrubber(),
+            "text": StreamingContextScrubber(),
+        }
+
+
+
+def _feed_tui_display_stream_delta(sid: str, stream: str, text: object) -> str:
+    """Fence one provider delta without losing split-tag parser state."""
+    if stream not in {"reasoning", "thinking", "text"}:
+        return ""
+    try:
+        with _display_scrubbers_lock:
+            scrubbers = _display_scrubbers.setdefault(sid, {})
+            scrubber = scrubbers.setdefault(stream, StreamingContextScrubber())
+            return scrubber.feed(str(text or ""))
+    except Exception:
+        # Presentation fencing is fail closed: replace corrupt parser state and
+        # omit this delta instead of exposing the provider text.
+        with _display_scrubbers_lock:
+            _display_scrubbers.setdefault(sid, {})[stream] = StreamingContextScrubber()
+        return ""
+
+
+
+def _emit_tui_display_stream_delta(sid: str, stream: str, text: object) -> None:
+    visible = _feed_tui_display_stream_delta(sid, stream, text)
+    if not visible:
+        return
+    event_type = "reasoning.delta" if stream == "reasoning" else "thinking.delta"
+    payload = {"text": visible}
+    if stream == "reasoning" and _session_verbose(sid):
+        payload["verbose"] = True
+    _emit(event_type, sid, payload)
+
+
+
+def _flush_tui_display_scrubbers(sid: str) -> None:
+    """Flush and retire per-turn display scrubbers at provider EOF."""
+    with _display_scrubbers_lock:
+        scrubbers = _display_scrubbers.pop(sid, {})
+    for stream, scrubber in scrubbers.items():
+        try:
+            visible = scrubber.flush()
+        except Exception:
+            visible = ""
+        if not visible:
+            continue
+        event_type = (
+            "reasoning.delta"
+            if stream == "reasoning"
+            else "thinking.delta"
+            if stream == "thinking"
+            else "message.delta"
+        )
+        payload = {"text": visible}
+        if stream == "reasoning" and _session_verbose(sid):
+            payload["verbose"] = True
+        _emit(event_type, sid, payload)
+
+
+
+def _discard_tui_display_scrubbers(sid: str) -> None:
+    """Drop unfinished per-turn parser state without emitting provider text."""
+    with _display_scrubbers_lock:
+        _display_scrubbers.pop(sid, None)
+
+
+
+def _emit_tui_interim_assistant(
+    sid: str,
+    text: object,
+    *,
+    already_streamed: bool = False,
+) -> None:
+    """Emit a strict presentation copy of completed interim assistant text."""
+    try:
+        visible = sanitize_context(str(text or ""))
+    except Exception:
+        return
+    if visible == "":
+        return
+    _emit(
+        "message.interim",
+        sid,
+        {"text": visible, "already_streamed": bool(already_streamed)},
+    )
+
+
+
+def _request_tui_clarify(
+    sid: str,
+    question: object,
+    choices: list[object] | None,
+    *,
+    multi_select: bool = False,
+) -> str:
+    """Fence provider text in the human-facing clarify presentation only."""
+    safe_question = sanitize_context(str(question or "")).strip()
+    if not safe_question:
+        return "[clarify prompt could not be delivered]"
+
+    safe_choices = None
+    if choices is not None:
+        safe_choices = []
+        for choice in choices:
+            safe_choice = sanitize_context(str(choice)).strip()
+            # Preserve the provider's choice indices after fencing. A removed
+            # choice must remain selectable without exposing its contents.
+            safe_choices.append(safe_choice or "[details withheld]")
+
+    # multi_select is a pass-through hint: renderers with checkbox support can
+    # honor it; older renderers ignore the extra field and stay single-select
+    # (a single answer still parses as a one-element list on the tool side).
+    # Only emit it when true so single-select payloads retain their exact shape.
+    payload = {"question": safe_question, "choices": safe_choices}
+    if multi_select:
+        payload["multi_select"] = True
+    return _block(
+        "clarify.request",
+        sid,
+        payload,
+        timeout=_clarify_timeout_seconds(),
+    )
+
+
+
+def _tui_subagent_stream_key(event_type: str, payload: dict) -> str:
+    """Return a turn-local key for one child's streamed presentation text."""
+    identity = (
+        payload.get("child_session_id")
+        or payload.get("subagent_id")
+        or f"task:{payload.get('task_index', 0)}"
+    )
+    return f"{event_type}:{identity}"
+
+
+
+def _feed_tui_subagent_display_delta(
+    sid: str,
+    event_type: str,
+    payload: dict,
+    text: object,
+) -> str:
+    """Fence a parent-side child stream without sharing the mirror parser."""
+    key = _tui_subagent_stream_key(event_type, payload)
+    try:
+        with _display_scrubbers_lock:
+            scrubbers = _display_scrubbers.setdefault(sid, {})
+            scrubber = scrubbers.setdefault(key, StreamingContextScrubber())
+            return scrubber.feed(str(text or ""))
+    except Exception:
+        # Presentation is fail closed and a corrupt stream cannot poison later
+        # deltas from the same delegated child.
+        with _display_scrubbers_lock:
+            _display_scrubbers.setdefault(sid, {})[key] = StreamingContextScrubber()
+        return ""
+
+
+
+def _discard_tui_subagent_display_state(sid: str, payload: dict) -> None:
+    """Retire parser state when one delegated child finishes."""
+    with _display_scrubbers_lock:
+        scrubbers = _display_scrubbers.get(sid)
+        if scrubbers is None:
+            return
+        for event_type in ("subagent.text", "subagent.thinking"):
+            scrubbers.pop(_tui_subagent_stream_key(event_type, payload), None)
+
 
 
 def _agent_cbs(sid: str) -> dict:
@@ -92,16 +283,15 @@ def _agent_cbs(sid: str) -> dict:
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
-        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        "thinking_callback": lambda text: _emit_tui_display_stream_delta(sid, "thinking", text),
         # Affection reaction (ily / <3 / good bot) → hearts; core-detected so TUI/desktop share it.
         "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
-        "reasoning_callback": lambda text: _emit(
-            "reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})}),
+        "reasoning_callback": lambda text: _emit_tui_display_stream_delta(sid, "reasoning", text),
         "status_callback": lambda kind, text=None: _status_update(sid, str(kind), None if text is None else str(text)),
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
         "notice_callback": lambda n: _emit(
             "notification.show", sid,
-            {"text": n.text, "level": n.level, "kind": n.kind, "ttl_ms": n.ttl_ms, "key": n.key, "id": n.id}),
+            {"text": sanitize_context(str(n.text or "")), "level": n.level, "kind": n.kind, "ttl_ms": n.ttl_ms, "key": n.key, "id": n.id}),
         "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
         "clarify_callback": lambda q, c, multi_select=False, questions=None: (
             _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
@@ -121,8 +311,8 @@ def _agent_cbs(sid: str) -> dict:
     # Interim assistant commentary (text alongside tool calls), gated on display.interim_assistant_
     # messages; _run_prompt_submit overwrites it per turn and clears it so a stale closure can't fire.
     if _load_interim_assistant_messages():
-        callbacks["interim_assistant_callback"] = lambda text, *, already_streamed=False: _emit(
-            "message.interim", sid, {"text": str(text), "already_streamed": bool(already_streamed)})
+        callbacks["interim_assistant_callback"] = lambda text, *, already_streamed=False: _emit_tui_interim_assistant(
+            sid, text, already_streamed=bool(already_streamed))
     return callbacks
 
 

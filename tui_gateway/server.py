@@ -21,6 +21,7 @@ from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable:
 
 # Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
+from agent.memory_manager import StreamingContextScrubber, sanitize_context, sanitize_context_for_transcript  # noqa: F401
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, profile_name_for_home,
@@ -689,7 +690,7 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
-    if not (body := (text if text is not None else kind).strip()):
+    if not (body := sanitize_context(text if text is not None else kind).strip()):
         return
     out_kind = kind if text is not None else "status"
     # Auto-compaction arrives as a generic "lifecycle" status; re-tag so drivers can show a
@@ -1315,12 +1316,15 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     (``multi_select`` only when True — older renderers never see a new field); batch calls emit one
     clarify.request with only the wire fields (the tool-side entries carry result-assembly keys too)."""
     if questions:
-        wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
+        if any(not sanitize_context(str(e["question"] or "")).strip() for e in questions):
+            return "[clarify prompt could not be delivered]"
+        wire = [{"qid": e["qid"], "question": sanitize_context(str(e["question"])),
+                 "choices": [sanitize_context(str(choice)).strip() or "[details withheld]" for choice in e["choices"]] if e["choices"] is not None else None,
+                 "multi_select": bool(e["multi_select"])}
                 for e in questions]
         return _block("clarify.request", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
                       batch_qids=[e["qid"] for e in questions])
-    payload = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
-    return _block("clarify.request", sid, payload, timeout=_clarify_timeout_seconds())
+    return _request_tui_clarify(sid, q, c, multi_select=multi_select)
 
 
 # A tour action is a DOM op the renderer answers in ms; the generous deadline exists only because a
@@ -2125,8 +2129,43 @@ def _tool_ctx(name: str, args: dict) -> str:
     ``build_tool_label`` here would stutter ("Running Running …") and leak into the desktop's ``args.context``."""
     with contextlib.suppress(Exception):
         from agent.display import build_tool_preview
-        return build_tool_preview(name, args, max_len=80) or ""
+        return build_tool_preview(name, _sanitize_tool_display_value(args), max_len=80) or ""
     return ""
+
+
+def _sanitize_tool_display_value(value: Any) -> Any:
+    """Return a recursively fenced copy of provider-generated tool arguments."""
+    try:
+        if isinstance(value, str):
+            return sanitize_context(value)
+        if isinstance(value, dict):
+            safe: dict[Any, Any] = {}
+            next_suffix: dict[str, int] = {}
+            for key, item in value.items():
+                safe_key = _sanitize_tool_display_value(key)
+                try:
+                    hash(safe_key)
+                except TypeError:
+                    safe_key = str(safe_key)
+                if safe_key in safe:
+                    base = str(safe_key)
+                    suffix = next_suffix.get(base, 2)
+                    candidate = f"{base}#{suffix}"
+                    while candidate in safe:
+                        suffix += 1
+                        candidate = f"{base}#{suffix}"
+                    next_suffix[base] = suffix + 1
+                    safe_key = candidate
+                safe[safe_key] = _sanitize_tool_display_value(item)
+            return safe
+        if isinstance(value, list):
+            return [_sanitize_tool_display_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(_sanitize_tool_display_value(item) for item in value)
+        return value
+    except RecursionError:
+        return ""
+
 
 
 def _emit_session_info_for_session(sid: str, session: dict) -> None:
@@ -2605,7 +2644,7 @@ def _session_live_title(session: dict, key: str) -> str:
     title = str(session.get("pending_title") or "").strip()
     with contextlib.suppress(Exception), _session_db(session) as db:
         title = str(db.get_session_title(key) or title or "").strip() if db is not None else title
-    return title
+    return sanitize_context(title)
 
 
 def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
@@ -2616,7 +2655,7 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     inflight = _inflight_snapshot(session)
     queued = _queued_prompt_snapshot(session)
     preview = next((" ".join(text.split())[:160] for msg in reversed(history)
-                    if (text := _content_display_text(msg.get("content", msg.get("text", ""))).strip())), "")
+                    if (text := (sanitize_context_for_transcript if msg.get("role") == "user" else sanitize_context)(_content_display_text(msg.get("content", msg.get("text", "")))).strip())), "")
     if queued:
         preview = " ".join(str(queued.get("user") or preview).split())[:160]
     elif inflight:

@@ -102,6 +102,10 @@ class TurnRunner:
         if event_type == "subagent.complete":
             self._progress_subagent_notice(preview, kwargs)
             return
+        from gateway.run import _sanitize_gateway_agent_text, _sanitize_gateway_tool_display_value
+        # Only the presentation copy is fenced; execution still owns the original args.
+        args = _sanitize_gateway_tool_display_value(ctx.source.platform, args)
+        preview = _sanitize_gateway_tool_display_value(ctx.source.platform, preview)
         self._progress_live_status(event_type, tool_name, args)
         # "log" mode: append tool.started lines to the log queue, silent in chat. Handled before
         # the progress_queue guard because log mode runs without a chat progress queue.
@@ -118,6 +122,7 @@ class TurnRunner:
         # only relayed when the platform explicitly opted into thinking_progress.
         if event_type == "_thinking" or tool_name == "_thinking":
             thinking_text = (preview if tool_name == "_thinking" else tool_name) if ctx._thinking_enabled else None
+            thinking_text = _sanitize_gateway_agent_text(ctx.source.platform, str(thinking_text or "")).strip()
             if thinking_text:
                 ctx.progress_queue.put(f"💬 {thinking_text}")
             return
@@ -155,9 +160,11 @@ class TurnRunner:
         status = kwargs.get("status")
         try:
             from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
+            from gateway.run import _sanitize_gateway_agent_text
             if status in SUBAGENT_FAILURE_STATUSES and ctx._run_still_current():
                 line = format_subagent_failure_line(
-                    kwargs.get("goal"), status, error=kwargs.get("summary") or preview,
+                    _sanitize_gateway_agent_text(ctx.source.platform, str(kwargs.get("goal") or "")), status,
+                    error=_sanitize_gateway_agent_text(ctx.source.platform, str(kwargs.get("summary") or preview or "")),
                     duration_seconds=kwargs.get("duration_seconds"),
                 )
                 self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error")
@@ -174,7 +181,9 @@ class TurnRunner:
         try:
             if event_type == "tool.started" and tool_name and ctx._run_still_current():
                 from agent.display import build_status_phrase
-                adapter.set_status_text(ctx.source.chat_id, build_status_phrase(tool_name, args if ctx._live_status_mode == "full" else None))
+                from gateway.run import _sanitize_gateway_agent_text
+                phrase = build_status_phrase(tool_name, args if ctx._live_status_mode == "full" else None)
+                adapter.set_status_text(ctx.source.chat_id, _sanitize_gateway_agent_text(ctx.source.platform, phrase or "").strip() or None)
             elif event_type == "tool.completed":
                 # Between tools the model is genuinely "thinking" again — revert to the static default.
                 adapter.set_status_text(ctx.source.chat_id, None)
@@ -253,7 +262,10 @@ class TurnRunner:
                 code = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
             elif code is None:
                 code = f"{emoji} {tool_name}: \"{preview}\"" if preview else f"{emoji} {tool_name}..."
-            ctx.progress_queue.put(code)
+            from gateway.run import _sanitize_gateway_agent_text
+            code = _sanitize_gateway_agent_text(ctx.source.platform, code).strip()
+            if code:
+                ctx.progress_queue.put(code)
             return None
         if code is not None:
             return code
@@ -273,6 +285,10 @@ class TurnRunner:
         """Dedup consecutive identical lines (execute_code boilerplate), then route to the native
         stream bubble when the consumer accepts tool progress, else the progress queue."""
         ctx = self._ctx
+        from gateway.run import _sanitize_gateway_agent_text
+        msg = _sanitize_gateway_agent_text(ctx.source.platform, msg).strip()
+        if not msg:
+            return
         sc = self._stream_consumer()
         native = sc is not None and getattr(sc, "accepts_tool_progress", False)
         if msg == ctx.last_progress_msg[0]:
@@ -726,10 +742,12 @@ class TurnRunner:
         if not self._native_card_gate():
             return
         from agent.display import build_tool_preview
+        from gateway.run import _sanitize_gateway_tool_display_value
         name = str(tool_name or "tool")
+        display_args = _sanitize_gateway_tool_display_value(self._ctx.source.platform, args or {})
         self._ctx.progress_queue.put({
             "type": "tool.started", "tool_call_id": str(call_id or ""), "tool_name": name,
-            "preview": build_tool_preview(name, args or {}, max_len=64) or "",
+            "preview": build_tool_preview(name, display_args, max_len=64) or "",
         })
 
     def native_tool_complete_callback(self, call_id, tool_name, args, result):
@@ -781,7 +799,10 @@ class TurnRunner:
 
     def _send_status_text(self, text: str, metadata, log_message: str) -> None:
         ctx = self._ctx
-        self._schedule(ctx._status_adapter.send(ctx._status_chat_id, text, metadata=metadata), log_message)
+        from gateway.run import _sanitize_gateway_agent_text
+        text = _sanitize_gateway_agent_text(ctx.source.platform, text)
+        if text.strip():
+            self._schedule(ctx._status_adapter.send(ctx._status_chat_id, text, metadata=metadata), log_message)
 
     def _attach_session_title_callback(self, agent, ctx) -> None:
         """Wire the platform thread-rename lane onto the agent as `_on_session_title`.
@@ -884,6 +905,8 @@ class TurnRunner:
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            from gateway.run import _sanitize_gateway_interim_text
+            text = _sanitize_gateway_interim_text(ctx.source.platform, text)
             if stts is not None:
                 # Flush accepted deltas; completed commentary is a separate speech segment.
                 stts.on_delta(None)
@@ -891,7 +914,10 @@ class TurnRunner:
                     stts.on_delta(text)
                     stts.on_delta(None)
             if stream_consumer is not None:
-                stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
+                if already_streamed:
+                    stream_consumer.on_segment_break()
+                elif text.strip():
+                    stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
                 self._send_status_text(text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
 
@@ -1234,12 +1260,19 @@ class TurnRunner:
         """Present a clarify prompt and block on a response (clarify_tool's synchronous contract):
         schedule send_clarify on the gateway loop, block on the primitive's threading.Event with a
         timeout. Returns the response string, or a sentinel when none arrived."""
-        from gateway.run import _clarify_send_then_wait
+        from gateway.run import _clarify_send_then_wait, _sanitize_gateway_agent_text
         from tools import clarify_gateway as clarify_mod
         import uuid
         ctx = self._ctx
         if not ctx._status_adapter:
             return ""
+        question = _sanitize_gateway_agent_text(ctx.source.platform, str(question or "")).strip()
+        if not question:
+            return "[clarify prompt could not be delivered]"
+        choices = [
+            _sanitize_gateway_agent_text(ctx.source.platform, str(choice)).strip() or "[details withheld]"
+            for choice in choices or ()
+        ]
         session_key = ctx.session_key or ""
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
@@ -1535,7 +1568,8 @@ class TurnRunner:
                 kwargs["persist_user_timestamp"] = persist_user_timestamp_override
             # The RAW inbound id (not event_message_id, the reply anchor) rides the persisted user
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
-            if ctx.inbound_message_id is not None:
+            if (ctx.inbound_message_id is not None
+                    and _accepts_keyword(agent.run_conversation, "persist_user_platform_id")):
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
             return agent.run_conversation(api_message, **kwargs)
         finally:

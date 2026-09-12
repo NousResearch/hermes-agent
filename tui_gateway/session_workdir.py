@@ -410,7 +410,7 @@ def _rewind_active_session_history(
             if db is None:
                 raise RuntimeError("session database is unavailable")
             expected_active_ids = db.get_active_message_ids(session_key)
-            durable = db.get_messages_as_conversation(session_key, include_row_ids=True)
+            durable = db.get_messages_as_conversation(session_key, include_row_ids=True, display_projection=False)
             durable_user_indices = _user_indices(durable)
             if len(durable_user_indices) != len(user_indices):
                 raise RuntimeError("session history changed before the rewind could be persisted")

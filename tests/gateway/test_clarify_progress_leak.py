@@ -54,6 +54,26 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class NativeClarifyCaptureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.SLACK):
+        super().__init__(platform=platform)
+        self.clarifies = []
+
+    async def send_clarify(
+        self, chat_id, question, choices, clarify_id, session_key, metadata=None
+    ) -> SendResult:
+        self.clarifies.append(
+            {
+                "chat_id": chat_id,
+                "question": question,
+                "choices": choices,
+                "clarify_id": clarify_id,
+                "session_key": session_key,
+            }
+        )
+        return SendResult(success=True, message_id="clarify-native-1")
+
+
 class ClarifyThenToolAgent:
     """Emits a clarify tool.started (with raw args) then a normal tool."""
 
@@ -74,6 +94,33 @@ class ClarifyThenToolAgent:
             cb("tool.started", "terminal", "pwd", {})
             time.sleep(0.35)
         return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class FencedClarifyAgent:
+    PRIVATE_QUESTION = "PRIVATE_SENTINEL_81312_CLARIFY_QUESTION"
+    PRIVATE_CHOICE = "PRIVATE_SENTINEL_81312_CLARIFY_CHOICE"
+    RAW_QUESTION = (
+        "Visible question?\n"
+        f"<memory-context>\n{PRIVATE_QUESTION}\n</memory-context>"
+    )
+    RAW_CHOICES = [
+        "Visible choice",
+        f"<memory-context>\n{PRIVATE_CHOICE}\n</memory-context>",
+    ]
+
+    def __init__(self, **kwargs):
+        self.tools = []
+        self.clarify_callback = None
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        assert self.clarify_callback is not None
+        response = self.clarify_callback(self.RAW_QUESTION, self.RAW_CHOICES)
+        return {"final_response": response, "messages": [], "api_calls": 1}
+
+
+class EmptyFencedClarifyAgent(FencedClarifyAgent):
+    RAW_QUESTION = "<memory-context>\nPRIVATE_ONLY_QUESTION\n</memory-context>"
+    RAW_CHOICES = ["visible choice"]
 
 
 def _make_runner(adapter):
@@ -99,7 +146,7 @@ def _make_runner(adapter):
     return runner
 
 
-def _install_fakes(monkeypatch, mode):
+def _install_fakes(monkeypatch, mode, agent_cls=ClarifyThenToolAgent):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", mode)
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -107,7 +154,7 @@ def _install_fakes(monkeypatch, mode):
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = ClarifyThenToolAgent
+    fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
     import tools.terminal_tool  # noqa: F401 — register terminal emoji
 
@@ -154,3 +201,72 @@ async def test_clarify_tool_never_renders_progress_bubble(monkeypatch, tmp_path,
     assert "Asking" not in all_content
     # The unrelated terminal tool still renders progress normally.
     assert "pwd" in all_content
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.asyncio
+async def test_clarify_fences_question_and_choices_before_native_or_fallback_delivery(
+    monkeypatch, tmp_path, native, request
+):
+    adapter = NativeClarifyCaptureAdapter() if native else ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, "off", FencedClarifyAgent)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    from tools import clarify_gateway
+
+    monkeypatch.setattr(clarify_gateway, "wait_for_response", lambda *_a, **_k: "chosen")
+    source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm")
+    session_key = f"agent:main:slack:dm:C1:{native}"
+    request.addfinalizer(lambda: clarify_gateway.clear_session(session_key))
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id=f"sess-clarify-context-{native}",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "chosen"
+    if native:
+        assert len(adapter.clarifies) == 1
+        delivered = adapter.clarifies[0]
+        assert delivered["question"] == "Visible question?"
+        assert delivered["choices"] == ["Visible choice", "[details withheld]"]
+        visible = delivered["question"] + " " + " ".join(delivered["choices"])
+    else:
+        visible = " ".join(call["content"] for call in adapter.sent)
+        assert "Visible question?" in visible
+        assert "Visible choice" in visible
+    assert FencedClarifyAgent.PRIVATE_QUESTION not in visible
+    assert FencedClarifyAgent.PRIVATE_CHOICE not in visible
+    assert "memory-context" not in visible
+
+
+@pytest.mark.asyncio
+async def test_clarify_fails_closed_when_sanitized_question_is_empty(monkeypatch, tmp_path):
+    adapter = NativeClarifyCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, "off", EmptyFencedClarifyAgent)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-clarify-empty-context",
+        session_key="agent:main:slack:dm:C1:empty",
+    )
+
+    assert result["final_response"] == "[clarify prompt could not be delivered]"
+    assert adapter.clarifies == []
+
+
+def test_programmatic_clarify_text_keeps_raw_contract():
+    from gateway.run import _sanitize_gateway_agent_text
+
+    raw = FencedClarifyAgent.RAW_QUESTION
+    assert _sanitize_gateway_agent_text(Platform.API_SERVER, raw) == raw

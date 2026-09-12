@@ -1,11 +1,126 @@
 """Standalone single-file HTML export (single or multi-session with sidebar); no remote deps."""
 
 import datetime
+import json
 import secrets
 from typing import Any, Dict, List
 from urllib.parse import quote
 
 from hermes_cli.timefmt import coerce_epoch
+from agent.memory_manager import sanitize_context, sanitize_context_for_transcript
+
+
+def _unique_sanitized_key(
+    key: Any, sanitizer, existing: dict, next_suffix: dict[str, int]
+) -> Any:
+    """Fence string keys without silently overwriting a sibling entry."""
+    safe_key = sanitizer(key) if isinstance(key, str) else key
+    try:
+        hash(safe_key)
+    except TypeError:
+        safe_key = str(safe_key)
+    if safe_key not in existing:
+        return safe_key
+    base = str(safe_key)
+    suffix = next_suffix.get(base, 2)
+    candidate = f"{base}#{suffix}"
+    while candidate in existing:
+        suffix += 1
+        candidate = f"{base}#{suffix}"
+    next_suffix[base] = suffix + 1
+    return candidate
+
+
+def _sanitize_tool_argument_value(value: Any) -> Any:
+    """Return a recursively fenced copy for the HTML presentation sink."""
+    try:
+        return _sanitize_tool_argument_value_inner(value)
+    except RecursionError:
+        return ""
+
+
+def _sanitize_tool_argument_value_inner(value: Any) -> Any:
+    """Recursive implementation kept behind a fail-soft public wrapper."""
+    if isinstance(value, str):
+        return sanitize_context(value)
+    if isinstance(value, dict):
+        safe: dict[Any, Any] = {}
+        next_suffix: dict[str, int] = {}
+        for key, item in value.items():
+            safe_key = _unique_sanitized_key(
+                key, sanitize_context, safe, next_suffix
+            )
+            safe[safe_key] = _sanitize_tool_argument_value_inner(item)
+        return safe
+    if isinstance(value, list):
+        return [_sanitize_tool_argument_value_inner(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_tool_argument_value_inner(item) for item in value)
+    return value
+
+
+def _sanitize_tool_arguments_for_display(arguments: Any) -> str:
+    """Parse, recursively fence, and serialize tool args; malformed input is hidden."""
+    if not isinstance(arguments, str):
+        try:
+            return json.dumps(
+                _sanitize_tool_argument_value(arguments),
+                ensure_ascii=False,
+                default=str,
+            )
+        except Exception:
+            return ""
+    try:
+        parsed = json.loads(arguments)
+        safe = _sanitize_tool_argument_value(parsed)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        # Some legacy/provider records contain a plain argument preview rather
+        # than JSON. Preserve that presentation contract when strict fencing
+        # leaves it byte-identical, but hide malformed fenced payloads instead
+        # of exposing a partially sanitized JSON fragment.
+        try:
+            return arguments if sanitize_context(arguments) == arguments else ""
+        except Exception:
+            return ""
+    if safe == parsed:
+        return arguments
+    try:
+        return json.dumps(safe, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _sanitize_message_content_for_html(role: Any, content: Any) -> Any:
+    """Fence provider-derived message content for the HTML display sink."""
+    try:
+        return _sanitize_message_content_for_html_inner(role, content)
+    except RecursionError:
+        return ""
+
+
+def _sanitize_message_content_for_html_inner(role: Any, content: Any) -> Any:
+    """Recursive implementation kept behind a fail-soft public wrapper."""
+    sanitizer = (
+        sanitize_context_for_transcript
+        if str(role or "") == "user"
+        else sanitize_context
+    )
+    if isinstance(content, str):
+        return sanitizer(content)
+    if isinstance(content, dict):
+        safe: dict[Any, Any] = {}
+        next_suffix: dict[str, int] = {}
+        for key, value in content.items():
+            safe_key = _unique_sanitized_key(key, sanitizer, safe, next_suffix)
+            safe[safe_key] = _sanitize_message_content_for_html_inner(role, value)
+        return safe
+    if isinstance(content, list):
+        return [_sanitize_message_content_for_html_inner(role, part) for part in content]
+    if isinstance(content, tuple):
+        return tuple(
+            _sanitize_message_content_for_html_inner(role, part) for part in content
+        )
+    return content
 
 # --- Icons (Lucide-style SVGs) ---
 ICON_USER = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-user"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
@@ -652,6 +767,11 @@ def _escape_html(text: Any) -> str:
     )
 
 
+def _sanitize_export_title(value: Any, fallback: str) -> str:
+    """Fence persisted titles before escaping or truncating them for HTML."""
+    return sanitize_context(str(value or "")).strip() or fallback
+
+
 def _format_timestamp(ts: Any) -> str:
     # A corrupt cell renders as N/A; never raw text (a TEXT timestamp would otherwise reach an HTML sink).
     return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts and (ts := coerce_epoch(ts)) else "N/A"
@@ -697,7 +817,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
         role = msg.get("role", "unknown")
         if role == "session_meta":  # internal metadata, never rendered
             continue
-        content = _content_text(msg.get("content") or "")
+        content = _content_text(_sanitize_message_content_for_html(role, msg.get("content") or ""))
         # The role feeds two sinks and is externally influenced for tool/MCP messages: HTML-escape
         # the display text; reduce the class token to alnum/-/_ so a crafted role can neither break
         # out of the attribute nor split into extra classes (real roles keep matching `.message-<role>`).
@@ -715,12 +835,12 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
             fn = tc.get("function", {})
             html += _collapsible(
                 "tool-call", ICON_WRENCH, f"Tool Call: {_escape_html(fn.get('name', 'unknown'))}",
-                f"<pre><code>{_escape_html(fn.get('arguments', '{}'))}</code></pre>", " " * 16,
+                f"<pre><code>{_escape_html(_sanitize_tool_arguments_for_display(fn.get('arguments', '{}')))}</code></pre>", " " * 16,
             )
         if content:
             escaped = _escape_html(content)
             html += f'  <div class="content">{f"<pre><code>{escaped}</code></pre>" if role == "tool" else escaped}</div>'
-        if reasoning := msg.get("reasoning") or msg.get("reasoning_content"):
+        if reasoning := _sanitize_message_content_for_html("assistant", msg.get("reasoning") or msg.get("reasoning_content")):
             html += _collapsible(
                 "reasoning", ICON_SPARKLES, "Reasoning", f'<div class="content">{_escape_html(reasoning)}</div>', " " * 12,
             )
@@ -730,7 +850,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
 
 def _sidebar_item_html(s: Dict[str, Any]) -> str:
     sid = str(s.get("id", "N/A"))
-    title = s.get("title") or s.get("preview") or "Untitled Session"
+    title = _sanitize_export_title(s.get("title") or s.get("preview"), "Untitled Session")
     title = title[:47] + "..." if len(title) > 50 else title
     return f"""
             <a class="session-item" data-id="{_escape_html(sid)}" href="#{quote(sid, safe='')}">
@@ -766,13 +886,13 @@ def _session_view_html(s: Dict[str, Any], is_multi: bool) -> str:
     escaped_sid = _escape_html(str(s.get("id", "N/A")))
     system_html = _collapsible(
         "system-prompt", ICON_SHIELD, "System Prompt (Persona)",
-        f'<div class="content">{_escape_html(s["system_prompt"])}</div>', " " * 12,
+        f'<div class="content">{_escape_html(sanitize_context(str(s["system_prompt"])))}</div>', " " * 12,
         outer_class="system-prompt-section active",
     ) if s.get("system_prompt") else ""
     return f"""
         <div class="{"session-view" if is_multi else "session-view active"}" id="view-{escaped_sid}">
             <header class="fade-in">
-                <h1>{_escape_html(s.get("title") or "Hermes Session")}</h1>
+                <h1>{_escape_html(_sanitize_export_title(s.get("title"), "Hermes Session"))}</h1>
                 <div class="meta">
                     <div class="meta-item"><strong>ID:</strong> {escaped_sid}</div>
                     <div class="meta-item"><strong>Model:</strong> {_escape_html(s.get("model") or "Unknown")}</div>
@@ -792,7 +912,7 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
         return "<html><body><h1>No sessions to export.</h1></body></html>"
     is_multi = len(sessions) > 1
     return HTML_TEMPLATE.format(
-        page_title="Hermes Session Export" if is_multi else _escape_html(sessions[0].get("title") or "Hermes Session"),
+        page_title="Hermes Session Export" if is_multi else _escape_html(_sanitize_export_title(sessions[0].get("title"), "Hermes Session")),
         sidebar_html=_sidebar_html(sessions) if is_multi else "",
         sessions_html="\n".join(_session_view_html(s, is_multi) for s in sessions),
         main_margin="var(--sidebar-width)" if is_multi else "0",

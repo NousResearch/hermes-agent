@@ -15,6 +15,7 @@ from agent.reasoning_effort import (
 )
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
+from agent.turn_context import substitute_api_content
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
@@ -311,6 +312,9 @@ def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
     if msg.get("role") == "tool" and "name" in msg:
         strip_keys.append("name")
     out_msg = {k: v for k, v in msg.items() if k not in strip_keys}
+    if "api_content" in msg:
+        out_msg["api_content"] = msg["api_content"]
+        substitute_api_content(out_msg)
     tool_calls = msg.get("tool_calls")
     copied_tool_calls = None
     if msg.get("role") == "assistant" and "tool_calls" in msg and (tool_calls is None or (isinstance(tool_calls, list) and not tool_calls)):

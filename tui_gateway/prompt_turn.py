@@ -516,6 +516,9 @@ def _invoke_agent(
     agent = st.agent
 
     def _stream(delta):
+        delta = _feed_tui_display_stream_delta(sid, "text", delta)
+        if not delta:
+            return
         with session["history_lock"]:
             _append_inflight_delta(session, delta)
         payload = {"text": delta}
@@ -528,7 +531,7 @@ def _invoke_agent(
     # Interim assistant text (commentary beside tool calls, pre-nudge final answer) is sealed
     # by the desktop as its own segment instead of being lost to message.complete.
     def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
-        _emit("message.interim", sid, {"text": text, "already_streamed": already_streamed})
+        _emit_tui_interim_assistant(sid, text, already_streamed=already_streamed)
     agent.interim_assistant_callback = (
         _interim_assistant_cb if _load_interim_assistant_messages() else None)
     # A synthesized turn is typed at turn START so a crash persist writes a timeline event,
@@ -631,7 +634,9 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     settles the hosted-room terminal receipt."""
     result, agent = st.result, st.agent
     raw, status, last_reasoning = _turn_outcome(result)
-    payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+    visible = sanitize_context(str(raw or ""))
+    last_reasoning = sanitize_context(str(last_reasoning or ""))
+    payload = {"text": visible, "usage": _get_usage(agent), "status": status}
     if last_reasoning:
         payload["reasoning"] = last_reasoning
     if status_note:
@@ -642,7 +647,7 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if _billing_block := result.get("billing_block"):
         payload["billing"] = _billing_block
         payload["failure_reason"] = result.get("failure_reason")
-    if rendered := render_message(raw, cols):
+    if rendered := render_message(visible, cols):
         payload["rendered"] = rendered
     # Advisory {layer, code, retryable} descriptor; computed before the retain so resume
     # replay carries the same one.
@@ -667,7 +672,7 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         else:
             _clear_inflight_turn(session)
     if status == "error":
-        payload["error"] = str(error_value or raw)
+        payload["error"] = sanitize_context(str(error_value or raw))
         payload["recoverable"] = True
         if _error_surface:
             payload["error_surface"] = _error_surface
@@ -712,7 +717,7 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
         print(
             f"[gateway-turn] terminal error emit failed: {type(emit_exc).__name__}: {emit_exc}",
             file=sys.stderr, flush=True)
-        _emit("error", sid, {"message": str(e)})
+        _emit("error", sid, {"message": sanitize_context(str(e))})
 
 
 def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
@@ -823,6 +828,7 @@ def _run_prompt_submit(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
+        _reset_tui_display_scrubbers(sid)
         goal_followup = None
         try:
             prepared = _prepare_turn_input(sid, session, st, text, images)
@@ -840,6 +846,7 @@ def _run_prompt_submit(
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
+            _flush_tui_display_scrubbers(sid)
             _emit("message.complete", sid, payload)
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":
@@ -850,6 +857,7 @@ def _run_prompt_submit(
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:
+            _discard_tui_display_scrubbers(sid)
             _finish_turn(sid, session, st)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)

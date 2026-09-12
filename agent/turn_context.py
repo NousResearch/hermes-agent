@@ -94,11 +94,16 @@ def compose_user_api_content(
     return content + "\n\n" + "\n\n".join(injections)
 
 
+def is_api_content_replay_role(role: Any) -> bool:
+    """Accept raw replay sidecars for persisted messages with a real role."""
+    return isinstance(role, str) and bool(role)
+
+
 def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:
     """Pop the ``api_content`` sidecar and substitute it into ``content`` (keeps the
     prompt-cache prefix byte-stable). Returns the popped sidecar, or ``None``."""
     sidecar = api_msg.pop("api_content", None)
-    if isinstance(sidecar, str) and sidecar and api_msg.get("role") in ("user", "assistant"):
+    if isinstance(sidecar, str) and sidecar and is_api_content_replay_role(api_msg.get("role")):
         api_msg["content"] = sidecar
     return sidecar
 
@@ -1077,7 +1082,7 @@ def build_api_messages(
                     api_msg["content"] = _composed
         elif (
             isinstance(_api_content, str) and _api_content
-            and msg.get("role") in ("user", "assistant")
+            and is_api_content_replay_role(msg.get("role"))
         ):
             # Historical row: replay the exact bytes sent live so the prompt-cache
             # prefix stays byte-stable. User rows carry the injection sidecar; user

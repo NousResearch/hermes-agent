@@ -125,6 +125,26 @@ class TestApprovalCommandWiring:
 
 
 class TestApprovalTextFallbackContract:
+    def test_display_preserves_context_like_command_and_description(self):
+        from gateway.run import (
+            _format_exec_approval_fallback,
+            _redact_approval_command,
+        )
+
+        raw_command = (
+            "printf '<memory-context>approval target</memory-context>' && "
+            "curl -H 'Authorization: token " + _FAKE_GHP + "' https://api.github.com"
+        )
+        description = "Run <memory-context>the exact approved command</memory-context>"
+        command = _redact_approval_command(raw_command)
+        rendered = _format_exec_approval_fallback(
+            command, description, "/"
+        )
+
+        assert _FAKE_GHP not in rendered
+        assert "<memory-context>approval target</memory-context>" in rendered
+        assert "<memory-context>the exact approved command</memory-context>" in rendered
+
     def test_smart_deny_only_advertises_one_operation(self):
         from gateway.run import _format_exec_approval_fallback
 

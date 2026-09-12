@@ -340,13 +340,14 @@ def _inflight_snapshot(session: dict) -> dict | None:
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
         return None
-    user, assistant = str(turn.get("user") or "").strip(), str(turn.get("assistant") or "")
-    streaming, error = bool(turn.get("streaming")), str(turn.get("error") or "").strip()
+    user = sanitize_context_for_transcript(str(turn.get("user") or "")).strip()
+    assistant = sanitize_context(str(turn.get("assistant") or ""))
+    streaming, error = bool(turn.get("streaming")), sanitize_context(str(turn.get("error") or "")).strip()
     if not (user or assistant or streaming or error):
         return None
     snapshot = {"assistant": assistant, "streaming": streaming, "user": user}
     raw_offsets = turn.get("correction_offsets") or []
-    correction_pairs = [(str(c), raw_offsets[i] if i < len(raw_offsets) else None)
+    correction_pairs = [(sanitize_context_for_transcript(str(c)), raw_offsets[i] if i < len(raw_offsets) else None)
                         for i, c in enumerate(turn.get("corrections") or []) if str(c).strip()]
     if correction_pairs:
         # Mid-turn redirects alongside (not over) the original prompt so resume can rebuild every user bubble; offsets
@@ -375,10 +376,15 @@ def _emit_terminal_turn_error(
             error_surface = build_error_surface_from_exception(
                 error, provider=str(getattr(agent, "provider", "") or ""), model=str(getattr(agent, "model", "") or ""))
     with session["history_lock"]:
-        _fail_inflight_turn(session, error, error_surface=error_surface)
+        if error_surface is None:
+            _fail_inflight_turn(session, error)
+        else:
+            _fail_inflight_turn(session, error, error_surface=error_surface)
         turn = session.get("inflight_turn") or {}
         message, partial = str(turn.get("error") or "turn failed"), str(turn.get("assistant") or "")
         cols = int(session.get("cols", 80))
+    message = sanitize_context(message).strip() or "turn failed"
+    partial = sanitize_context(partial)
     text = partial or f"Error: {message}"
     rendered = ""
     with contextlib.suppress(Exception):
@@ -407,7 +413,7 @@ def _queued_prompt_snapshot(session: dict) -> dict | None:
     """The accepted next-turn prompt without its transport handle, for the live-session projection (Desktop may
     reconnect while it is still queued)."""
     queued = session.get("queued_prompt")
-    user = _inflight_text(queued.get("text")) if isinstance(queued, dict) else ""
+    user = sanitize_context_for_transcript(_inflight_text(queued.get("text"))) if isinstance(queued, dict) else ""
     return {"user": user} if user else None
 
 

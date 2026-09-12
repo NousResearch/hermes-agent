@@ -38,7 +38,7 @@ def _cap_tui_verbose_text(text: str) -> str:
 def _redact_tui_verbose_text(text: str) -> str:
     try:
         from agent.redact import redact_sensitive_text
-        redacted = redact_sensitive_text(str(text), force=True)
+        redacted = redact_sensitive_text(sanitize_context(str(text)), force=True)
     except Exception:
         return ""
     return _cap_tui_verbose_text(redacted)
@@ -54,7 +54,7 @@ def _verbose_text(render, fallback) -> str:
 
 
 def _tool_args_text(args: dict) -> str:
-    return _verbose_text(lambda: json.dumps(args or {}, indent=2, ensure_ascii=False, default=str), lambda: str(args or {}))
+    return _verbose_text(lambda: json.dumps(_sanitize_tool_display_value(args or {}), indent=2, ensure_ascii=False, default=str), lambda: "")
 
 
 def _tool_result_text(result: object) -> str:
@@ -246,7 +246,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         # Full args (not just the 80-char `context` preview) so the desktop's expanded tool row is complete
         # while the tool runs. args.todos may be a partial merge — tool.complete is the truth.
         if args:
-            payload["args"] = args
+            payload["args"] = _sanitize_tool_display_value(args)
         if _session_verbose(sid) and (args_text := _tool_args_text(args)):
             payload["args_text"] = args_text
         _emit_tool_lifecycle("tool.start", sid, name, args, payload)
@@ -255,7 +255,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
     if _connector_lifecycle_is_stale(sid, name, args):
         return
-    payload = {"tool_id": tool_call_id, "name": name, "args": args}
+    payload = {"tool_id": tool_call_id, "name": name, "args": _sanitize_tool_display_value(args)}
     session = _sessions.get(sid)
     snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None) if session is not None else None
     started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None) if session is not None else None
@@ -263,12 +263,12 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     if duration_s is not None:
         payload["duration_s"] = duration_s
     try:
-        payload["result"] = json.loads(result)
+        payload["result"] = _sanitize_tool_display_value(json.loads(result))
     except Exception:
-        payload["result"] = result
+        payload["result"] = sanitize_context(str(result or ""))
     summary = _tool_summary(name, result, duration_s)
     if summary:
-        payload["summary"] = summary
+        payload["summary"] = sanitize_context(summary)
     if _session_verbose(sid) and (result_text := _tool_result_text(result)):
         payload["result_text"] = result_text
     todo_state = _normalize_todo_state(payload.get("result")) if name in _TODO_TOOL_NAMES else None
@@ -280,7 +280,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         from agent.display import render_edit_diff_with_delta
         rendered: list[str] = []
         if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
-            payload["inline_diff"] = "\n".join(rendered)
+            payload["inline_diff"] = sanitize_context("\n".join(rendered))
     if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
             or name in _TODO_TOOL_NAMES or _connector_tool_lifecycle(name, args)):
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)
@@ -299,18 +299,18 @@ def _progress_output_risk(sid, name, preview, kw):
     if isinstance(metadata, dict):
         _emit("tool.output_risk", sid, {
             "tool_id": str(kw.get("tool_call_id") or ""), "name": str(name), "risk": str(metadata.get("risk") or "low"),
-            "findings": [str(item) for item in metadata.get("findings", [])], "redacted": bool(metadata.get("redacted", False)),
+            "findings": [sanitize_context(str(item)) for item in metadata.get("findings", [])], "redacted": bool(metadata.get("redacted", False)),
         })
 
 
 def _progress_reasoning(sid, name, preview, kw):
-    _emit("reasoning.available", sid, {"text": str(preview), **({"verbose": True} if _session_verbose(sid) else {})})
+    _emit("reasoning.available", sid, {"text": sanitize_context(str(preview)), **({"verbose": True} if _session_verbose(sid) else {})})
 
 
 def _progress_moa_reference(sid, name, preview, kw):
     # MoA reference-model output, rendered as a labelled block before the aggregator's response.
     # `name` is the slot label, `preview` the text.
-    ref_payload: dict[str, object] = {"label": str(name), "text": str(preview or "")}
+    ref_payload: dict[str, object] = {"label": str(name), "text": sanitize_context(str(preview or ""))}
     for key, out in (("moa_index", "index"), ("moa_count", "count")):
         if kw.get(key) is not None:
             ref_payload[out] = kw[key]
@@ -373,21 +373,31 @@ _SUBAGENT_FIELDS = (
 
 
 def _progress_subagent(sid, name, preview, kw, event_type):
-    payload = {"goal": str(kw.get("goal") or ""), "task_count": int(kw.get("task_count") or 1), "task_index": int(kw.get("task_index") or 0)}
+    payload = {"goal": sanitize_context(str(kw.get("goal") or "")), "task_count": int(kw.get("task_count") or 1), "task_index": int(kw.get("task_index") or 0)}
     source = {**kw, "tool_name": name, "text": preview}
     for key, present, coerce in _SUBAGENT_FIELDS:
         if present(source.get(key)):
             val = coerce(source[key])
             if val is not None:
                 payload[key] = val
+    raw_stream_text = str(preview or "")
+    for key in ("text", "summary", "status", "output_tail"):
+        if key in payload:
+            payload[key] = _sanitize_tool_display_value(payload[key])
+    if event_type == "subagent.thinking":
+        payload.pop("text", None)
+        if visible := _feed_tui_subagent_display_delta(sid, event_type, payload, raw_stream_text):
+            payload["text"] = visible
     if preview and event_type == "subagent.tool":
-        payload["tool_preview"] = str(preview)
-        payload["text"] = str(preview)
+        payload["tool_preview"] = sanitize_context(str(preview))
+        payload["text"] = sanitize_context(str(preview))
     # subagent.text is the child's per-token reply, relayed solely to feed a watch window's live mirror
     # (keyed off the child sid); on the parent it's hundreds of ignored frames, so skip it.
     if event_type != "subagent.text":
         _emit(event_type, sid, payload)
-    _mirror_subagent_to_child(event_type, payload)
+    _mirror_subagent_to_child(event_type, payload, raw_stream_text if event_type in {"subagent.text", "subagent.thinking"} else None)
+    if event_type == "subagent.complete":
+        _discard_tui_subagent_display_state(sid, payload)
 
 
 # event_type -> (handler, requires): `requires` names the arg that must be truthy for the row to be

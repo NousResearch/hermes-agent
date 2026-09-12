@@ -226,7 +226,7 @@ class TestMemoryManager:
         assert "external memory prefetch output truncated" in result
         spill_files = list((tmp_path / "session-1").glob("*.txt"))
         assert len(spill_files) == 1
-        assert spill_files[0].read_text() == provider._prefetch_result + "\n"
+        assert spill_files[0].read_text(encoding="utf-8") == provider._prefetch_result + "\n"
 
     def test_builtin_prefetch_is_not_spilled(self, tmp_path, monkeypatch):
         self._set_spill_config(monkeypatch, tmp_path, max_chars=10)
@@ -439,10 +439,10 @@ class TestUserInstalledProviderDiscovery:
             "    def sync_turn(self, *a, **kw): pass\n"
             "    def get_tool_schemas(self): return []\n"
             "    def handle_tool_call(self, *a, **kw): return '{}'\n"
-        )
+        , encoding="utf-8")
         (plugin_dir / "plugin.yaml").write_text(
             f"name: {name}\ndescription: Test user provider\n"
-        )
+        , encoding="utf-8")
         return plugin_dir
 
 
@@ -475,7 +475,7 @@ class TestUserInstalledProviderDiscovery:
             "    def sync_turn(self, *a, **kw): pass\n"
             "    def get_tool_schemas(self): return []\n"
             "    def handle_tool_call(self, *a, **kw): return '{}'\n"
-        )
+        , encoding="utf-8")
         monkeypatch.setattr(
             "plugins.memory._get_user_plugins_dir",
             lambda: tmp_path / "plugins",
@@ -600,7 +600,7 @@ class TestEntryPointMemoryProviderDiscovery:
             skill_md.write_text(
                 "---\nname: maintenance\ndescription: Memory maintenance\n---\n\n"
                 "Packaged provider maintenance body.\n"
-            )
+            , encoding="utf-8")
             register_skill = (
                 "    ctx.register_skill(\n"
                 "        'maintenance',\n"

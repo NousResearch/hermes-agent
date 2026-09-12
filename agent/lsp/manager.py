@@ -358,8 +358,11 @@ class LSPService:
         srv = find_server_for_file(file_path)
         if not (ws and gated and srv):
             return []
+        root = srv.resolve_root(file_path, ws)
+        if root is None:
+            return []
         with self._state_lock:
-            client = self._clients.get(_client_key(srv, ws))
+            client = self._clients.get(_client_key(srv, root))
         return list(client.diagnostics_for(file_path, fresh_only=True)) if client else []
 
     async def _get_or_spawn(self, file_path: str) -> Optional[LSPClient]:

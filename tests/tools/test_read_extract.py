@@ -11,6 +11,7 @@ Run with:  python -m pytest tests/tools/test_read_extract.py -v
 """
 
 import base64
+import codecs
 import json
 import os
 import tempfile
@@ -901,6 +902,80 @@ class TestPdfCoverageNote(unittest.TestCase):
             )
         note.assert_not_called()
         self.assertEqual(text, "converted\n")
+
+
+class TestXmlHardening(unittest.TestCase):
+    """Documents parsed by the stdlib extractor must not trigger XXE or
+    billion-laughs expansion through DTD/entity declarations (S314)."""
+
+    def test_docx_with_dtd_entity_is_rejected(self):
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as fh:
+            _write_docx(
+                fh.name,
+                '<!DOCTYPE root [<!ENTITY x "B">]><root>&x;</root>',
+            )
+        try:
+            with self.assertRaises(ExtractionError):
+                extract_document_text(fh.name)
+        finally:
+            os.unlink(fh.name)
+
+    def test_docx_comment_with_dtd_substring_still_works(self):
+        """A benign OOXML comment containing the literal DTD substring should
+        not be mistaken for an actual DTD declaration."""
+        valid_xml = (
+            f'<w:document xmlns:w="{_NS_W}">'
+            '<w:body><w:p><!-- <!DOCTYPE root> --><w:r><w:t>safe</w:t></w:r></w:p></w:body>'
+            '</w:document>'
+        )
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as fh:
+            _write_docx(fh.name, valid_xml)
+        try:
+            self.assertEqual(extract_document_text(fh.name), "safe\n")
+        finally:
+            os.unlink(fh.name)
+
+    def test_docx_utf16_dtd_is_rejected(self):
+        """A UTF-16 document with a real DTD must be rejected, even though the
+        byte-level pre-screen does not see an ASCII-style ``<!DOCTYPE``."""
+        xml = (
+            '<?xml version="1.0" encoding="UTF-16"?>'
+            '<!DOCTYPE root [<!ENTITY x "B">]><root>&x;</root>'
+        )
+        data = codecs.BOM_UTF16_LE + xml.encode("utf-16-le")
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as fh:
+            _write_docx(fh.name, data)
+        try:
+            with self.assertRaises(ExtractionError):
+                extract_document_text(fh.name)
+        finally:
+            os.unlink(fh.name)
+
+    def test_billion_laughs_payload_is_rejected(self):
+        """Nested internal entities must be rejected before expansion."""
+        dtd = '<?xml version="1.0"?><!DOCTYPE lolz ['
+        for i in range(1, 9):
+            prev = f"&lol{i - 1};" if i > 1 else "lol"
+            dtd += f'<!ENTITY lol{i} "{prev * 10}">'
+        dtd += ']><lolz>&lol8;</lolz>'
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as fh:
+            _write_docx(fh.name, dtd)
+        try:
+            with self.assertRaises(ExtractionError):
+                extract_document_text(fh.name)
+        finally:
+            os.unlink(fh.name)
+
+    def test_undeclared_entity_still_raises(self):
+        """An undeclared entity reference is still a parse error, not a
+        security pass-through."""
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as fh:
+            _write_docx(fh.name, "<?xml version=\"1.0\"?><root>&x;</root>")
+        try:
+            with self.assertRaises(ExtractionError):
+                extract_document_text(fh.name)
+        finally:
+            os.unlink(fh.name)
 
 
 if __name__ == "__main__":

@@ -55,7 +55,6 @@ from .policy import (
     hermes_attribution_line,
     load_policy,
 )
-from .post_merge import PostMergeExecutor
 from .stack import StackEntry
 from .stack_controller import StackController, _ordered
 from .superseded import SupersededPullRequestController
@@ -2100,6 +2099,8 @@ def _run_merge_scan_for_policy(
                         merge_policy.repository, number
                     )
                     if getattr(existing, "status", None) != "completed":
+                        from .post_merge import PostMergeExecutor
+
                         deployment = PostMergeExecutor(
                             merge_policy.post_merge, ledger
                         ).run(result.receipt)

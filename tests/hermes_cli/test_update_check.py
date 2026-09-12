@@ -26,7 +26,10 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     cache_file = tmp_path / ".update_check"
     cache_file.write_text(
         json.dumps(
-            {"ts": time.time(), "behind": 3, "rev": "test-head", "ver": __version__}
+            {
+                "ts": time.time(), "behind": 3, "rev": "test-head",
+                "target": "test-head", "ver": __version__,
+            }
         ),
         encoding="utf-8",
     )
@@ -38,6 +41,43 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
 
     assert result == 3
     mock_run.assert_not_called()
+
+
+def test_check_for_updates_invalidates_cache_when_tracking_tip_changes(
+    tmp_path, monkeypatch
+):
+    """A successful fetch must not leave the startup banner on old evidence."""
+    import hermes_cli.banner as banner
+    from hermes_cli import __version__
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({
+        "ts": time.time(), "behind": 369, "rev": "local-head",
+        "target": "old-upstream-tip", "ver": __version__,
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    monkeypatch.setattr(banner, "_resolve_repo_dir", lambda: repo_dir)
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda _root: "git")
+    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: repo_dir)
+
+    def git_stdout(args, *, cwd, timeout=5):
+        if args == ["rev-parse", "HEAD"]:
+            return "local-head"
+        if args == ["rev-parse", "origin/main"]:
+            return "new-upstream-tip"
+        return None
+
+    monkeypatch.setattr(banner, "_git_stdout", git_stdout)
+    monkeypatch.setattr(banner, "_check_via_local_git", lambda _repo_dir: 428)
+
+    assert banner.check_for_updates() == 428
+    cached = json.loads(cache_file.read_text())
+    assert cached["target"] == "new-upstream-tip"
+    assert cached["behind"] == 428
 
 
 def test_check_for_updates_invalidates_cache_when_checkout_head_changes(
@@ -298,4 +338,3 @@ def test_check_for_updates_does_not_cache_none(tmp_path, monkeypatch):
 
     # The cache file must NOT have been written with a None result
     assert not cache_file.exists(), "None result must not be cached"
-

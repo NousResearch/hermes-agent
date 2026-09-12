@@ -82,6 +82,61 @@ for candidate in "${VENV_CANDIDATES[@]}"; do
   fi
 done
 
+# If no suitable interpreter exists, create an isolated test venv automatically.
+# Never install this checkout into a discovered/shared runtime: editable-install
+# metadata would retarget that runtime to this worktree.
+#
+# Check HERMES_PYTHON first: in a Nix devShell (or any env that exports a
+# pytest-capable interpreter) we can skip the expensive bootstrap entirely.
+# We guard with an import check because HERMES_PYTHON may point at the release
+# venv (no pytest) when inherited from a wrapped `hermes` binary.
+MANAGED_UV="${HERMES_HOME:-$HOME/.hermes}/bin/uv"
+UV_BIN=""
+if [ -x "$MANAGED_UV" ]; then
+  UV_BIN="$MANAGED_UV"
+elif command -v uv >/dev/null 2>&1; then
+  UV_BIN="$(command -v uv)"
+fi
+
+if [ -z "$VENV" ] \
+    && [ -n "${HERMES_PYTHON:-}" ] \
+    && [ -x "$HERMES_PYTHON" ] \
+    && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
+  VENV_PYTHON="$HERMES_PYTHON"
+  VENV="$HERMES_PYTHON"   # non-empty sentinel; VENV_PYTHON is what matters
+elif [ -z "$VENV" ] && [ -n "$UV_BIN" ];
+then
+  bootstrap_venv="$(mktemp -d "${TMPDIR:-/tmp}/hermes-test-venv.XXXXXX")"
+  requirements_file="$(mktemp "${TMPDIR:-/tmp}/hermes-test-requirements.XXXXXX")"
+  uv_cache_dir="${TMPDIR:-/tmp}/hermes-uv-cache-${UID:-${USERNAME:-user}}"
+  # Keep the cleanup trap active through the entire test run so the randomly
+  # named bootstrap venv is deleted on exit.  Remove only the temporary
+  # requirements file early once the install succeeds.
+  cleanup_bootstrap() { rm -rf "$bootstrap_venv" "$requirements_file"; }
+  trap cleanup_bootstrap EXIT
+  echo "▶ no checkout Python — creating $bootstrap_venv" >&2
+  if UV_CACHE_DIR="$uv_cache_dir" "$UV_BIN" venv \
+      --python 3.13.6 "$bootstrap_venv" >/dev/null \
+      && UV_CACHE_DIR="$uv_cache_dir" "$UV_BIN" export \
+      --locked --extra dev --no-emit-project --format requirements-txt \
+      --project "$REPO_ROOT" --output-file "$requirements_file" >/dev/null; then
+    bootstrap_python="$bootstrap_venv/bin/python"
+    if [ ! -x "$bootstrap_python" ]; then
+      bootstrap_python="$bootstrap_venv/Scripts/python.exe"
+    fi
+    if (cd "$REPO_ROOT" && UV_CACHE_DIR="$uv_cache_dir" "$UV_BIN" pip install \
+        --python "$bootstrap_python" -r "$requirements_file" >/dev/null) \
+        && "$bootstrap_python" -c 'import pytest' 2>/dev/null; then
+    VENV="$bootstrap_venv"
+    VENV_PYTHON="$bootstrap_python"
+    rm -rf "$requirements_file"
+    echo "▶ created isolated test venv: $bootstrap_venv" >&2
+    fi
+  else
+    echo "▶ unable to create a pytest test venv" >&2
+  fi
+fi
+
 if [ -n "$SKIPPED_VENVS" ]; then
   for skipped in $SKIPPED_VENVS; do
     echo "▶ skipping venv without pytest: $skipped" >&2
@@ -174,7 +229,7 @@ echo "▶ pre-compiling bytecode cache"
 "$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
 
 echo "▶ launching test runner"
-exec env -i \
+env -i \
   PATH="$PATH" \
   HOME="$HOME" \
   ${WIN_ENV[@]+"${WIN_ENV[@]}"} \

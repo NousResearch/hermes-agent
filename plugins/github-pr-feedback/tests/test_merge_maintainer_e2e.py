@@ -64,6 +64,7 @@ class CanonicalFakeGitHub:
         self.feedback = (codex_review_comment(), *feedback)
         self.merge_calls: list[tuple[str, int, str, str]] = []
         self.comments: list[tuple[str, int, str]] = []
+        self.labels: list[str] = []
 
     def list_open_pull_requests(self, repository: str, owner: str) -> tuple[PullRequest, ...]:
         return (
@@ -98,6 +99,19 @@ class CanonicalFakeGitHub:
 
     def list_feedback(self, repository: str, number: int) -> tuple[Feedback, ...]:
         return self.feedback
+
+    def get_pull_request(self, repository: str, number: int) -> PullRequest:
+        pull_request = self.list_open_pull_requests(repository, "owner")[0]
+        return replace(pull_request, labels=tuple(self.labels))
+
+    def add_issue_labels(self, repository: str, number: int, labels: tuple[str, ...]) -> None:
+        self.labels.extend(labels)
+
+    def ensure_issue_label(self, repository: str, label: str, *, color: str, description: str) -> None:
+        return None
+
+    def remove_issue_label(self, repository: str, number: int, label: str) -> None:
+        self.labels = [item for item in self.labels if item.casefold() != label.casefold()]
 
     def merge_pull_request(
         self, repository: str, number: int, head_sha: str, *, method: str

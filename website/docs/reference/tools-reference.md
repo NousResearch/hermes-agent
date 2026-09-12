@@ -331,6 +331,16 @@ The single `video_generate` tool covers both modalities — pass `image_url` to 
 |------|-------------|----------------------|
 | `x_search` | Search X (Twitter) posts, profiles, and threads using xAI's built-in `x_search` Responses tool. Read-only public X discovery for current discussion, reactions, or claims on public X (not general web pages). Does not post, reply, like, DM, upload media, delete, or inspect the authenticated X account — those need a separate authenticated X API surface (e.g. the `xurl` skill). Off by default — opt in via `hermes tools` → 🐦 X (Twitter) Search. Schema is only registered when xAI credentials are configured (check_fn-gated). | XAI_API_KEY **or** xAI Grok OAuth (SuperGrok / Premium+) login |
 
+## `open_codereview` toolset
+
+Opt-in toolset (not loaded in the default `hermes-cli` set). Point `open_codereview.command` at the [Open Code Review](https://open-codereview.ai) CLI (`ocr` by default) and enable it in `hermes tools` → 🔎 Open Code Review. The review tool's own flags are argv templates in config.yaml (`provider_args`, `model_args`, `review_args`, with `{provider}`/`{model}`/`{target}` placeholders), so a different CLI surface is adapted in config rather than in code.
+
+With `mode: auto` (the default), the first review after the provider/model Hermes is using changes pushes those values into the review tool before reviewing — the hand-configuration step the integration removes. `mode: manual` only pushes on the explicit `sync` action. The API key named by `api_key_env` (`OPEN_CODEREVIEW_API_KEY` by default) is handed to the child process through its environment; it is never written to the review tool's config file or passed on a command line. Successfully-pushed values are recorded under `$HERMES_HOME/open_codereview.json` so an unchanged assignment is not re-pushed.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `open_codereview` | Run the local Open Code Review command and keep it pinned to Hermes's active provider/model. `action='review'` reviews `target` (a revision range such as `HEAD~1..HEAD`, a commit, or a path) and returns the report into the conversation; `action='sync'` pushes the provider/model now; `action='status'` reports both sides and whether a sync is pending. Off by default — opt in via `hermes tools` → 🔎 Open Code Review. The schema is only registered when `open_codereview.command` resolves (check_fn-gated). | The Open Code Review command on `PATH` (or an absolute `open_codereview.command`), plus its own API key in `OPEN_CODEREVIEW_API_KEY` when that command needs one |
+
 ## `tts` toolset
 
 | Tool | Description | Requires environment |

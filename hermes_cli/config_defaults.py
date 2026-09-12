@@ -2174,6 +2174,28 @@ DEFAULT_CONFIG = {
         # Retries on 5xx / ReadTimeout / ConnectionError (backoff 1.5x attempt s, cap 5s).
         "retries": 2,
     },
+    # Open Code Review (open-codereview.ai) bridge. Registers when the configured command
+    # resolves AND the toolset is enabled in `hermes tools`. The review command's own flags are
+    # NOT Hermes's to guess, so they are argv templates with {provider}/{model}/{target}
+    # placeholders — adapt them to the installed CLI without patching Hermes.
+    "open_codereview": {
+        # The review CLI (`ocr` for open-codereview.ai); a full path works when it is not on PATH.
+        "command": "ocr",
+        # Pushed when Hermes's active provider/model changes (see "mode").
+        "provider_args": ["config", "provider", "{provider}"],
+        "model_args": ["config", "model", "{model}"],
+        # Used by action="review"; {target} is the revision range or path being reviewed.
+        "review_args": ["review", "{target}"],
+        # Env var holding the review tool's API key: forwarded to the child process, never written
+        # to the review tool's config file or a command line. Also list extra parent env vars to
+        # forward in env_passthrough.
+        "api_key_env": "OPEN_CODEREVIEW_API_KEY",
+        "env_passthrough": [],
+        # Seconds before a stalled review command is killed (with its process tree).
+        "timeout": 600,
+        # auto = re-push provider/model before each review when they changed; manual = only on sync.
+        "mode": "auto",
+    },
     # External secret sources — pull credentials from secret managers at startup instead of storing
     # them in ~/.hermes/.env.
     # Browser credential vault: which login sources browser_vault_list/fill may draw from. The local
@@ -2586,6 +2608,10 @@ OPTIONAL_ENV_VARS = {
         "Keenable API key for fast independent-index web search and page fetch (optional — "
         "keyless free tier works without it)", "Keenable API key", "https://keenable.ai",
         tools=["web_search", "web_extract"]),
+    "OPEN_CODEREVIEW_API_KEY": _tool(
+        "Open Code Review (open-codereview.ai) API key, forwarded to the review command by the "
+        "`open_codereview` tool (optional — only when the installed command needs a key)",
+        "Open Code Review API key", "https://open-codereview.ai/", tools=["open_codereview"]),
     "SEARXNG_URL": _tool("URL of your SearXNG instance for free self-hosted web search",
         "SearXNG URL (e.g. http://localhost:8080)", "https://searxng.github.io/searxng/",
         tools=["web_search"], password=False),

@@ -328,11 +328,14 @@ def _(rid, params: dict) -> dict:
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = _str_param(params, "parent_session_id") or None
-    # Only an explicitly chosen existing workspace persists as cwd; the launch-dir fallback is "No workspace".
-    explicit_cwd = False
-    raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
-    with contextlib.suppress(Exception):
-        explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
+    # Desktop sends its selected project explicitly; it may name a workspace that a local filesystem probe cannot
+    # see. An omitted cwd still uses the launch-dir fallback and remains "No workspace".
+    raw_cwd = _str_param(params, "cwd")
+    explicit_cwd = source == "desktop" and bool(raw_cwd)
+    session_cwd = raw_cwd if explicit_cwd else _completion_cwd(params)
+    if not explicit_cwd:
+        with contextlib.suppress(Exception):
+            explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     _enable_gateway_prompts()
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
@@ -347,7 +350,7 @@ def _(rid, params: dict) -> dict:
             "explicit_cwd": explicit_cwd,
             "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
-            "cwd": _completion_cwd(params), "inflight_turn": None, "last_active": now,
+            "cwd": session_cwd, "inflight_turn": None, "last_active": now,
             "model_override": session_model_override,
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,

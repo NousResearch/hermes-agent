@@ -427,7 +427,11 @@ import {
 } from './window-connection-route'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
-import { createWindowRevealController } from './window-reveal'
+import {
+  createWindowRevealController,
+  isTerminalFailedLoadBeforeReveal,
+  isTerminalRendererGoneBeforeReveal
+} from './window-reveal'
 import {
   bindGeometryPersistence,
   computeWindowOptions,
@@ -13383,18 +13387,35 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 // reveal, then fall back a few seconds after the renderer loads. `show` and
 // `onRevealed` carry the caller's reveal action and post-visible work; whichever
 // path wins runs them exactly once.
-function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onRevealed?: () => void } = {}) {
+function wireWindowReveal(
+  win,
+  { show, onRevealed, onFailed }: { show?: () => void; onRevealed?: () => void; onFailed?: () => void } = {}
+) {
   const controller = createWindowRevealController(
     {
       isDestroyed: () => win.isDestroyed(),
       isVisible: () => win.isVisible(),
       show: show ?? (() => win.show())
     },
-    { onRevealed }
+    { onRevealed, onFailed }
   )
 
   win.once('ready-to-show', controller.reveal)
   win.webContents.once('did-finish-load', controller.scheduleFallback)
+
+  if (onFailed) {
+    win.webContents.on('did-fail-load', (_event, errorCode, _description, _url, isMainFrame) => {
+      if (isTerminalFailedLoadBeforeReveal(errorCode, isMainFrame)) {
+        controller.fail()
+      }
+    })
+    win.webContents.on('render-process-gone', (_event, details) => {
+      if (isTerminalRendererGoneBeforeReveal(details?.reason)) {
+        controller.fail()
+      }
+    })
+  }
+
   win.on('closed', controller.dispose)
 
   return controller
@@ -14261,6 +14282,9 @@ function spawnHudWindow(sessionId, profile) {
       // Compositor overlay adapters (Hyprland float+pin today). Electron
       // alwaysOnTop is already set; this is the dialect some WMs actually hear.
       void promoteHudOverlay({ title: HUD_WINDOW_TITLE })
+    },
+    onFailed: () => {
+      win.destroy()
     }
   })
 

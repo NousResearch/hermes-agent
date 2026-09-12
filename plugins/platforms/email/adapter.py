@@ -26,7 +26,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes, cache_image_from_bytes,
 )
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, is_email_send_only
 from utils import is_truthy_value
 from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port
 
@@ -175,12 +175,15 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
 
 
 def check_email_requirements() -> bool:
-    """True when all email settings are present and non-blank (blank keys left by an abandoned setup must not enable the platform).
+    """Return whether the bundled adapter has enough credentials to send.
 
-    Treats blank/whitespace-only values as missing so an abandoned setup that left empty ``EMAIL_*`` keys in
-    ``.env`` does not enable the platform (#40715).
+    SMTP credentials are sufficient for the adapter to be available. Runtime
+    enablement still requires IMAP unless send-only mode is explicitly selected.
     """
-    return all(_get_secret(name, "").strip() for name in ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"))
+    return all(
+        _get_secret(name, "").strip()
+        for name in ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST")
+    )
 
 
 def _safe_decode(payload: bytes, charset: "Optional[str]") -> str:
@@ -341,7 +344,7 @@ class EmailAdapter(BasePlatformAdapter):
         setting = lambda env, key: _get_secret(env, "") or extra.get(key, "")  # noqa: E731
         tls_verify = lambda env, key: _esecret_bool(env, is_truthy_value(extra.get(key), default=True))  # noqa: E731
         self._address = setting("EMAIL_ADDRESS", "address").strip()
-        self._password = _get_secret("EMAIL_PASSWORD", "")
+        self._password = _get_secret("EMAIL_PASSWORD", "") or extra.get("password", "")
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
         self._imap_security = _normalize_security(setting("EMAIL_IMAP_SECURITY", "imap_security"))
@@ -351,6 +354,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_security = _normalize_security(setting("EMAIL_SMTP_SECURITY", "smtp_security"), default="tls" if self._smtp_port == 465 else "starttls")
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
+        self._send_only = is_email_send_only(extra)
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
@@ -476,16 +480,26 @@ class EmailAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         # Validate up front so a missing host is an actionable config error, not IMAP4_SSL("") raising ``[Errno 8]``.
-        required = (("EMAIL_ADDRESS", self._address), ("EMAIL_PASSWORD", self._password), ("EMAIL_IMAP_HOST", self._imap_host), ("EMAIL_SMTP_HOST", self._smtp_host))
+        required = [
+            ("EMAIL_ADDRESS", self._address),
+            ("EMAIL_PASSWORD", self._password),
+            ("EMAIL_SMTP_HOST", self._smtp_host),
+        ]
+        if not self._send_only:
+            required.append(("EMAIL_IMAP_HOST", self._imap_host))
         if missing := [name for name, value in required if not value]:
             message = f"Not configured — missing {', '.join(missing)}. Set it via `hermes gateway setup` (env) or platforms.email in config.yaml."
             # Non-retryable: a blank-but-present env var used to drive an indefinite retry loop that leaked until OOM.
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
-        if not self._probe_imap(is_reconnect) or not self._probe_smtp():
+        if (not self._send_only and not self._probe_imap(is_reconnect)) or not self._probe_smtp():
             return False
         self._running = True
-        self._poll_task = asyncio.create_task(self._poll_loop())
-        print(f"[Email] Connected as {self._address}")
+        if self._send_only:
+            logger.info("[Email] Send-only mode active; IMAP polling disabled.")
+            print(f"[Email] Connected as {self._address} (send-only)")
+        else:
+            self._poll_task = asyncio.create_task(self._poll_loop())
+            print(f"[Email] Connected as {self._address}")
         self._wire_plugin_handlers(None)  # plugin-registered native handlers
         return True
 
@@ -799,11 +813,15 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
 
 def _is_connected(config) -> bool:
-    """Connected when an address is configured (PlatformConfig.extra or EMAIL_ADDRESS)."""
-    if (getattr(config, "extra", {}) or {}).get("address"):
-        return True
+    """Return whether Email has credentials for its resolved operating mode."""
+    extra = getattr(config, "extra", {}) or {}
+    send_only = is_email_send_only(extra)
     import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
+    address = str(extra.get("address") or gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip()
+    password = str(extra.get("password") or gateway_mod.get_env_value("EMAIL_PASSWORD") or "").strip()
+    smtp = str(extra.get("smtp_host") or gateway_mod.get_env_value("EMAIL_SMTP_HOST") or "").strip()
+    imap = str(extra.get("imap_host") or gateway_mod.get_env_value("EMAIL_IMAP_HOST") or "").strip()
+    return bool(address and password and smtp and (send_only or imap))
 
 
 def _build_adapter(config):

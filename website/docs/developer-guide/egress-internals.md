@@ -85,7 +85,8 @@ hermes egress setup [--from-bitwarden | --no-bitwarden] [--rotate-tokens]
                  Write CA key via os.open(O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW, 0o600)
                    + os.replace.  Never exists on disk under default umask.
                  Write CA cert with 0o644 (public).
-       Step 3. discover_provider_mappings() or pull names from BWS via
+       Step 3. validate proxy.extra_secrets via parse_extra_secret_specs(), then
+                 discover_provider_mappings() or pull names from BWS via
                  fetch_bitwarden_secrets() when --from-bitwarden.
                  merge_mappings(existing=load_mappings(), discovered,
                                 rotate=args.rotate_tokens) preserves prior
@@ -167,6 +168,8 @@ All write paths use `os.open(O_WRONLY | O_CREAT | O_NOFOLLOW, 0o600)` + `os.fsta
 
 Regression: `test_subprocess_env_strips_unrelated_secrets`, `test_subprocess_env_strips_proxy_recursion_vars`, `test_subprocess_env_keeps_infrastructure_vars`.
 
+Operator-defined `proxy.extra_secrets` entries pass through `parse_extra_secret_specs()` before discovery. The parser accepts only uppercase env-var names, exact fully-qualified DNS hosts, and RFC-token header names; it rejects IP literals, wildcard scopes, URL components, built-in/duplicate env names, and routing/framing/hop-by-hop headers. Exact hosts are required because wildcard scopes can include attacker-controlled tenants under public or private suffixes. This validation is the security boundary that prevents a broad or malformed mapping from sending one credential to unintended requests.
+
 ### Bind policy
 
 `_default_http_listen` returns a single-element list: on Linux the docker bridge gateway IP (containers reach the proxy via `host.docker.internal:host-gateway`, which resolves to the bridge gateway — a loopback bind is unreachable from inside containers there); on macOS/Windows Docker Desktop, loopback (VPNkit routes `host.docker.internal` to the host).  Linux without a detectable docker0 bridge falls back to loopback with a warning.  Never `0.0.0.0`, never `:PORT` (INADDR_ANY).
@@ -235,6 +238,10 @@ Regression: `test_merge_mappings_preserves_existing_tokens`, `test_merge_mapping
 Tested via the `cmd_setup` flow in CLI tests (the bitwarden-preservation path is exercised when `--from-bitwarden` is followed by a plain `setup` re-run).
 
 ## Extension points
+
+### Adding an operator-defined credential
+
+For services that authenticate with a static request header but do not belong in Hermes' bundled provider table, use `proxy.extra_secrets` in `config.yaml`. Setup validates each entry, discovers its env var from the host/`.env`/Bitwarden, mints a proxy token, and includes its hosts in the rendered allowlist through the mapping. Do not add user-specific services to the built-in tables.
 
 ### Adding a new bearer-token provider
 

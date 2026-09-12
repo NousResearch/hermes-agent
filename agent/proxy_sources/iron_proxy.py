@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -27,7 +28,7 @@ import urllib.request
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,14 @@ _HEADER_AUTH_PROVIDERS: Dict[str, Dict[str, Tuple[str, ...]]] = {
 # Creds that static header replacement can't swap (SigV4, SDK-minted OAuth): warning only.
 _NON_BEARER_PROVIDERS: Tuple[str, ...] = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GOOGLE_APPLICATION_CREDENTIALS")
 
+_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+_DNS_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_FORBIDDEN_MATCH_HEADERS = frozenset({
+    "connection", "content-length", "host", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade",
+})
+
 # Default SSRF deny list (docs promise: cloud metadata IPs refused regardless of allowlist);
 # callers pass [] to disable (hermetic tests only).
 _DEFAULT_UPSTREAM_DENY_CIDRS: Tuple[str, ...] = (
@@ -121,6 +130,36 @@ _VERSION_CACHE: Dict[str, str] = {}
 _HERMES_IRON_PROXY_NONCE_ENV = "HERMES_IRON_PROXY_NONCE"
 _proxy_nonce: Optional[str] = None
 
+# Names owned by the proxy process or Docker egress plumbing. A custom mapping under one of
+# these names could replace routing/trust configuration with an opaque credential token.
+_EGRESS_CONTROL_ENV_NAMES = frozenset({
+    "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
+    "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "HERMES_EGRESS_PROXY",
+    "_HERMES_EGRESS_NODE_OPTIONS_APPEND", _MGMT_API_KEY_ENV,
+    _HERMES_IRON_PROXY_NONCE_ENV,
+})
+
+# Names that can change host subprocess loading, executable resolution, invoked programs, or
+# Hermes policy. Custom credentials are copied into iron-proxy's own env, so accepting these
+# would turn credential configuration into subprocess control.
+_SUBPROCESS_EXECUTION_ENV_NAMES = frozenset({
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG",
+    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_FALLBACK_FRAMEWORK_PATH",
+    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
+    "PYTHONEXECUTABLE", "PYTHONNOUSERSITE", "NODE_OPTIONS", "NODE_PATH",
+    "PATH", "SHELL", "BROWSER", "EDITOR", "VISUAL", "PAGER",
+    "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "GIT_SHELL",
+    "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
+    "HERMES_CONFIG_PATH", "HERMES_ENV_PATH", "HERMES_OPTIONAL_MCPS",
+    "HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS",
+    "HERMES_YOLO_MODE", "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS",
+    "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_GATEWAY_SESSION",
+    "HERMES_CRON_SESSION", "HERMES_SINGLE_QUERY_SESSION", "HERMES_SESSION_KEY",
+    "HERMES_SESSION_PLATFORM",
+})
+
 
 @dataclass
 class ProxyStatus:
@@ -152,6 +191,150 @@ class TokenMapping:
     upstream_hosts: Tuple[str, ...]
     match_headers: Tuple[str, ...] = ("Authorization",)
     alias_env_names: Tuple[str, ...] = ()
+    match_query: bool = True
+
+
+@dataclass(frozen=True)
+class CredentialMappingSpec:
+    """Validated operator-defined static-header credential mapping."""
+
+    env_var: str
+    hosts: Tuple[str, ...]
+    match_headers: Tuple[str, ...]
+
+
+def _host_scopes_overlap(left: str, right: str) -> bool:
+    """Return whether two validated exact/wildcard DNS scopes intersect."""
+    left_wildcard, right_wildcard = left.startswith("*."), right.startswith("*.")
+    left_suffix = left[2:] if left_wildcard else left
+    right_suffix = right[2:] if right_wildcard else right
+    if not left_wildcard and not right_wildcard:
+        return left_suffix == right_suffix
+    if left_wildcard and right_wildcard:
+        return (
+            left_suffix == right_suffix
+            or left_suffix.endswith(f".{right_suffix}")
+            or right_suffix.endswith(f".{left_suffix}")
+        )
+    exact, wildcard_suffix = (
+        (right_suffix, left_suffix) if left_wildcard else (left_suffix, right_suffix)
+    )
+    return exact.endswith(f".{wildcard_suffix}")
+
+
+def _validate_extra_secret_host(value: object, *, path: str) -> str:
+    if not isinstance(value, str) or not (host := value.strip()):
+        raise ValueError(f"{path} must be a non-empty hostname")
+    if host.startswith("*."):
+        raise ValueError(f"{path} must be an exact DNS hostname; wildcard credential scopes are not allowed")
+    if host != host.rstrip(".") or "://" in host or any(c in host for c in "/:@?#"):
+        raise ValueError(f"{path} must be a hostname without a scheme, port, path, or trailing dot")
+    hostname = host
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        raise ValueError(f"{path} must be a DNS hostname, not an IP address")
+    labels = hostname.split(".")
+    if len(labels) < 2 or len(hostname) > 253 or any(not _DNS_LABEL_RE.fullmatch(label) for label in labels):
+        raise ValueError(f"{path} must be a valid fully-qualified DNS hostname")
+    return hostname.lower()
+
+
+def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
+    """Validate ``proxy.extra_secrets`` without ever reading secret values.
+
+    Hosts are deliberately limited to exact DNS names, and
+    hop-by-hop/routing headers are rejected so a typo cannot turn token replacement into request
+    routing or framing mutation.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("proxy.extra_secrets must be a list")
+
+    builtins = set(_BEARER_PROVIDERS) | set(_HEADER_AUTH_PROVIDERS)
+    builtin_aliases = {
+        alias
+        for provider in _HEADER_AUTH_PROVIDERS.values()
+        for alias in provider.get("aliases", ())
+    }
+    reserved_env_names = (
+        builtins
+        | builtin_aliases
+        | set(_NON_BEARER_PROVIDERS)
+        | set(_EGRESS_CONTROL_ENV_NAMES)
+        | set(_SUBPROCESS_EXECUTION_ENV_NAMES)
+        | set(_PROXY_SUBPROCESS_ENV_ALLOWLIST)
+    )
+    claimed_hosts = [
+        (env_name, host)
+        for env_name, hosts in _BEARER_PROVIDERS.items()
+        for host in hosts
+    ] + [
+        (env_name, host)
+        for env_name, provider in _HEADER_AUTH_PROVIDERS.items()
+        for host in provider["hosts"]
+    ]
+    seen_env_names = set()
+    specs: List[CredentialMappingSpec] = []
+    for index, item in enumerate(raw):
+        path = f"proxy.extra_secrets[{index}]"
+        if not isinstance(item, dict):
+            raise ValueError(f"{path} must be a mapping")
+        if any(not isinstance(key, str) for key in item):
+            raise ValueError(f"{path} keys must be strings")
+        unknown = set(item) - {"env_var", "hosts", "match_headers"}
+        if unknown:
+            raise ValueError(f"{path} has unsupported field(s): {', '.join(sorted(unknown))}")
+
+        env_var = item.get("env_var")
+        if not isinstance(env_var, str) or not _ENV_NAME_RE.fullmatch(env_var):
+            raise ValueError(f"{path}.env_var must be an uppercase environment variable name")
+        if env_var in reserved_env_names or env_var.startswith("HERMES_PROXY_TOKEN_"):
+            raise ValueError(f"{path}.env_var uses reserved egress credential name {env_var}")
+        if env_var in seen_env_names:
+            raise ValueError(f"{path}.env_var duplicates an earlier custom mapping")
+
+        raw_hosts = item.get("hosts")
+        if not isinstance(raw_hosts, list) or not raw_hosts:
+            raise ValueError(f"{path}.hosts must be a non-empty list")
+        hosts = tuple(dict.fromkeys(
+            _validate_extra_secret_host(host, path=f"{path}.hosts[{host_index}]")
+            for host_index, host in enumerate(raw_hosts)
+        ))
+        for host in hosts:
+            if conflict := next(
+                ((owner, claimed) for owner, claimed in claimed_hosts
+                 if _host_scopes_overlap(host, claimed)),
+                None,
+            ):
+                owner, claimed = conflict
+                raise ValueError(
+                    f"{path}.hosts scope {host} overlaps mapping {owner} scope {claimed}"
+                )
+
+        raw_headers = item.get("match_headers", ["Authorization"])
+        if not isinstance(raw_headers, list) or not raw_headers:
+            raise ValueError(f"{path}.match_headers must be a non-empty list")
+        headers: List[str] = []
+        seen_headers = set()
+        for header_index, header in enumerate(raw_headers):
+            header_path = f"{path}.match_headers[{header_index}]"
+            if not isinstance(header, str) or not _HEADER_NAME_RE.fullmatch(header):
+                raise ValueError(f"{header_path} must be a valid HTTP header name")
+            normalized = header.lower()
+            if normalized in _FORBIDDEN_MATCH_HEADERS:
+                raise ValueError(f"{header_path} cannot target routing, framing, or hop-by-hop header {header}")
+            if normalized not in seen_headers:
+                headers.append(header)
+                seen_headers.add(normalized)
+
+        seen_env_names.add(env_var)
+        specs.append(CredentialMappingSpec(env_var, hosts, tuple(headers)))
+        claimed_hosts.extend((env_var, host) for host in hosts)
+    return specs
 
 
 def _hermes_bin_dir() -> Path:
@@ -525,7 +708,7 @@ def build_proxy_config(
         "source": {"type": "env", "var": m.real_env_name},
         "replace": {
             "proxy_value": m.proxy_token, "match_headers": list(m.match_headers or ("Authorization",)),
-            "match_query": True, "match_body": False, "require": True,
+            "match_query": m.match_query, "match_body": False, "require": True,
         },
         "rules": [{"host": h} for h in m.upstream_hosts],
     } for m in mappings]
@@ -599,6 +782,7 @@ def write_mappings(mappings: List[TokenMapping]) -> Path:
     payload = {"version": 1, "tokens": [{
         "proxy_token": m.proxy_token, "env_name": m.real_env_name, "upstream_hosts": list(m.upstream_hosts),
         "match_headers": list(m.match_headers), "alias_env_names": list(m.alias_env_names),
+        "match_query": m.match_query,
     } for m in mappings]}
     return _write_state_file_atomic(_proxy_state_dir(), "mappings.json", lambda f: json.dump(payload, f, indent=2))
 
@@ -615,24 +799,44 @@ def load_mappings() -> List[TokenMapping]:
     out: List[TokenMapping] = []
     for item in payload.get("tokens", []):
         with suppress(KeyError, TypeError):  # pre-header-auth files load with the bearer defaults they were written under
-            out.append(TokenMapping(item["proxy_token"], item["env_name"], tuple(item.get("upstream_hosts") or ()),
-                                    tuple(item.get("match_headers") or ("Authorization",)), tuple(item.get("alias_env_names") or ())))
+            out.append(TokenMapping(
+                item["proxy_token"], item["env_name"], tuple(item.get("upstream_hosts") or ()),
+                tuple(item.get("match_headers") or ("Authorization",)),
+                tuple(item.get("alias_env_names") or ()), bool(item.get("match_query", True)),
+            ))
     return out
 
 
-def discover_provider_mappings(*, available_env_names: Optional[List[str]] = None) -> List[TokenMapping]:
-    """One TokenMapping per known provider whose env var is set (bearer providers first).  Canonical OR any alias
+def discover_provider_mappings(
+    *,
+    available_env_names: Optional[List[str]] = None,
+    extra_specs: Sequence[CredentialMappingSpec] = (),
+) -> List[TokenMapping]:
+    """One TokenMapping per configured credential whose env var is set (built-ins first). Canonical OR any alias
     present -> ONE mapping on the canonical name (the subprocess-env builder mirrors aliases).
     ``available_env_names`` (Bitwarden adapter) overrides the non-empty names in the host env."""
     names = set(available_env_names) if available_env_names is not None else {k for k, v in os.environ.items() if v}
-    specs = [(n, h, ("Authorization",), ()) for n, h in _BEARER_PROVIDERS.items()] + [
-        (n, tuple(s["hosts"]), tuple(s["match_headers"]), tuple(s.get("aliases") or ())) for n, s in _HEADER_AUTH_PROVIDERS.items()
-    ]
+    specs = [(n, h, ("Authorization",), (), True) for n, h in _BEARER_PROVIDERS.items()] + [
+        (n, tuple(s["hosts"]), tuple(s["match_headers"]), tuple(s.get("aliases") or ()), True)
+        for n, s in _HEADER_AUTH_PROVIDERS.items()
+    ] + [(s.env_var, s.hosts, s.match_headers, (), False) for s in extra_specs]
     return [
-        TokenMapping(mint_proxy_token(prefix=env_name.lower().replace("_api_key", "")), env_name, hosts, headers, aliases)
-        for env_name, hosts, headers, aliases in specs
+        TokenMapping(
+            mint_proxy_token(prefix=env_name.lower().replace("_api_key", "")),
+            env_name, hosts, headers, aliases, match_query,
+        )
+        for env_name, hosts, headers, aliases, match_query in specs
         if env_name in names or any(a in names for a in aliases)
     ]
+
+
+def known_credential_env_names(*, extra_env_names: Sequence[str] = ()) -> set[str]:
+    """Return every configured credential name recognized by egress discovery."""
+    names = set(_BEARER_PROVIDERS) | set(_NON_BEARER_PROVIDERS) | set(extra_env_names)
+    for env_name, spec in _HEADER_AUTH_PROVIDERS.items():
+        names.add(env_name)
+        names.update(spec.get("aliases") or ())
+    return names
 
 
 def discover_uncovered_providers(*, available_env_names: Optional[List[str]] = None) -> List[str]:
@@ -641,11 +845,25 @@ def discover_uncovered_providers(*, available_env_names: Optional[List[str]] = N
     return [n for n in _NON_BEARER_PROVIDERS if n in names]
 
 
+def _mapping_authority(mapping: TokenMapping) -> Tuple:
+    """Normalized authority granted to one sandbox-visible capability token."""
+    return (
+        mapping.real_env_name,
+        tuple(sorted(mapping.upstream_hosts)),
+        tuple(sorted(header.lower() for header in mapping.match_headers)),
+        tuple(sorted(mapping.alias_env_names)),
+        mapping.match_query,
+    )
+
+
 def merge_mappings(*, existing: List[TokenMapping], discovered: List[TokenMapping], rotate: bool = False) -> List[TokenMapping]:
-    """Existing tokens are preserved (containers baked with them keep working), hosts/headers/aliases refresh
-    from ``discovered``; ``rotate=True`` re-mints; undiscovered providers drop."""
-    by_name = {} if rotate else {m.real_env_name: m for m in existing}
-    return [replace(d, proxy_token=by_name[d.real_env_name].proxy_token) if d.real_env_name in by_name else d for d in discovered]
+    """Preserve tokens only while their complete authority remains unchanged."""
+    by_authority = {} if rotate else {_mapping_authority(m): m for m in existing}
+    return [
+        replace(d, proxy_token=by_authority[authority].proxy_token)
+        if (authority := _mapping_authority(d)) in by_authority else d
+        for d in discovered
+    ]
 
 
 def _pidfile() -> Path:
@@ -1030,10 +1248,10 @@ def _reset_for_tests() -> None:
 
 
 __all__ = [
-    "ProxyStatus", "TokenMapping", "build_proxy_config", "discover_provider_mappings",
+    "CredentialMappingSpec", "ProxyStatus", "TokenMapping", "build_proxy_config", "discover_provider_mappings",
     "discover_uncovered_providers", "ensure_audit_log", "ensure_ca_cert", "ensure_management_token",
-    "find_iron_proxy", "get_status", "install_iron_proxy", "iron_proxy_version", "load_mappings",
-    "merge_mappings", "mint_proxy_token", "reload_proxy", "start_proxy", "stop_proxy",
+    "find_iron_proxy", "get_status", "install_iron_proxy", "iron_proxy_version", "known_credential_env_names",
+    "load_mappings", "merge_mappings", "mint_proxy_token", "parse_extra_secret_specs", "reload_proxy", "start_proxy", "stop_proxy",
     "write_mappings", "write_proxy_config",
 ]
 

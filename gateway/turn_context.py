@@ -51,6 +51,7 @@ class TurnContext:
     # Raw inbound platform id (not the event_message_id reply anchor); stamped on the user turn.
     inbound_message_id: Optional[str] = None
     moa_config: Optional[dict] = None
+    title_user_message: Optional[str] = None
     persist_user_message: Optional[Any] = None
     persist_user_timestamp: Optional[float] = None
     # display_kind of the persisted user row for a self-injected turn; DB-only, never sent.

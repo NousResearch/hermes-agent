@@ -1330,6 +1330,12 @@ If you do not want Hermes to auto-generate titles after the first exchange, set
 `auxiliary.title_generation.enabled: false`. Manual titles still work through
 `/title` and `hermes sessions rename`.
 
+In the local messaging gateway, text messages supply their original request to
+session titling, before channel-bound skills and platform context are added.
+The main model and conversation history still retain the full skill content.
+Attachment-only turns retain the existing enriched-message title fallback.
+This affects new title generation; it does not repair previously named sessions.
+
 ### Stream-only endpoints
 
 Some OpenAI-compatible endpoints reject non-streaming chat requests outright (e.g. Tencent Copilot returns HTTP 400 `"Non-stream chat request is currently not supported"`). Interactive chat already streams, but auxiliary tasks (title generation, compression, vision) use non-streaming calls and would fail on every attempt. Hermes always treats `copilot.tencent.com` as stream-only; for any other such endpoint, list a URL substring under `auxiliary.stream_only_base_urls`:

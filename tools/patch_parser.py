@@ -179,10 +179,10 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
                 if hunk.context_hint:
                     occurrences, ambiguous = _hint_ambiguity(simulated, hunk.context_hint)
                     if occurrences == 0:
-                        errors.append(f"{op.file_path}: addition-only hunk context hint "
+                        errors.append(f"{op.file_path}: addition-only hunk {hunk_index} context hint "
                                       f"'{hunk.context_hint}' not found")
                     elif ambiguous:
-                        errors.append(f"{op.file_path}: addition-only hunk {ambiguous}")
+                        errors.append(f"{op.file_path}: addition-only hunk {hunk_index} {ambiguous}")
                 continue
             search_pattern, replacement = '\n'.join(search_lines), '\n'.join(replace_lines)
             new_simulated, count, _strategy, match_error = fuzzy_find_and_replace(
@@ -337,7 +337,7 @@ def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> Tup
         occurrences, ambiguous = _hint_ambiguity(
             new_content, hunk.context_hint, " — provide a more unique hint")
         if ambiguous:
-            return None, f"Addition-only hunk: {ambiguous}"
+            return None, ambiguous
         if occurrences == 1:
             eol = new_content.find('\n', new_content.find(hunk.context_hint))
             if eol == -1:
@@ -354,7 +354,7 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
     if read_result.error:
         return _fail(f"Cannot read file: {read_result.error}")
     current_content = new_content = read_result.content
-    for hunk in op.hunks:
+    for hunk_index, hunk in enumerate(op.hunks, start=1):
         search_lines, replace_lines = _split_hunk(hunk)
         if search_lines and search_lines == replace_lines:
             continue
@@ -362,7 +362,7 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
         if not search_lines:
             new_content, err = _insert_addition_only(new_content, hunk, replacement)
             if err:
-                return _fail(err)
+                return _fail(f"Addition-only hunk {hunk_index}: {err}")
             continue
         new_content, count, _strategy, error = fuzzy_find_and_replace(
             new_content, search_pattern, replacement, replace_all=False)
@@ -383,7 +383,7 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
             if is_already_applied(new_content, search_pattern, replacement):
                 continue
             hint = _no_match_hint(error, search_pattern, new_content)
-            return _fail(f"Could not apply hunk: {error}" + hint)
+            return _fail(f"Could not apply hunk {hunk_index}: {error}" + hint)
     # Pass pre_content to skip a redundant re-read inside write_file when supported.
     extra = {"pre_content": current_content} if _write_file_accepts_pre_content(file_ops) else {}
     write_result = file_ops.write_file(op.file_path, new_content, **extra)

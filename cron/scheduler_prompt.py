@@ -263,7 +263,9 @@ def _build_job_prompt(
         # instruction carries the volatile per-run data (cron hint + prompt + script output + run context).
         # See #81867.
         stable_prefix = append_user_instruction(parts, prompt)
-    assembled = _scan_assembled_cron_prompt("\n".join(parts), job, has_skills=True)
+    assembled = _scan_assembled_cron_prompt(
+        "\n".join(parts), job, has_skills=True, user_prompt=user_prompt,
+    )
     if (
         stable_prefix
         and len(assembled) > len(stable_prefix)
@@ -294,7 +296,10 @@ def _scan_assembled_cron_prompt(
     if has_skills or has_injected_data:
         # The cleaned (sanitized) prompt is what actually runs.
         assembled, scan_error = _scan_cron_skill_assembled(assembled)
-        if not scan_error and not has_skills and user_prompt:
+        # The user-authored prompt keeps the STRICT scan even when the looser tier was
+        # selected for vetted/injected content — the assembled downgrade (#105877) must
+        # not widen the user-authored attack surface for legacy or hand-edited jobs.
+        if not scan_error and user_prompt:
             scan_error = _scan_cron_prompt(user_prompt)
     else:
         scan_error = _scan_cron_prompt(assembled)

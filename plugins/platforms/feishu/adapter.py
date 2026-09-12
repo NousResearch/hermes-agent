@@ -2589,6 +2589,7 @@ class FeishuAdapter(BasePlatformAdapter):
         existing.timestamp = event.timestamp
         if event.message_id:
             existing.message_id = event.message_id
+            existing.source.message_id = event.message_id
         self._schedule_media_batch_flush(key)
 
     def _schedule_media_batch_flush(self, key: str) -> None:
@@ -2847,6 +2848,7 @@ class FeishuAdapter(BasePlatformAdapter):
         existing.timestamp = event.timestamp
         if event.message_id:
             existing.message_id = event.message_id
+            existing.source.message_id = event.message_id
         self._pending_text_batch_counts[key] = next_count
         self._schedule_text_batch_flush(key)
 

@@ -971,14 +971,18 @@ class TestAdapterBehavior(unittest.TestCase):
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter.handle_message = AsyncMock()
-        source = SessionSource(
-            platform=adapter.platform,
-            chat_id="oc_chat",
-            chat_name="Feishu DM",
-            chat_type="dm",
-            user_id="ou_user",
-            user_name="张三",
-        )
+
+        def _source(message_id: str) -> SessionSource:
+            # Each inbound message carries its own source, pinned to that message's id.
+            return SessionSource(
+                platform=adapter.platform,
+                chat_id="oc_chat",
+                chat_name="Feishu DM",
+                chat_type="dm",
+                user_id="ou_user",
+                user_name="张三",
+                message_id=message_id,
+            )
 
         async def _sleep(_delay):
             return None
@@ -986,13 +990,13 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _run() -> None:
             with patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=_sleep):
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="A", message_type=MessageType.TEXT, source=source, message_id="om_1")
+                    MessageEvent(text="A", message_type=MessageType.TEXT, source=_source("om_1"), message_id="om_1")
                 )
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="B", message_type=MessageType.TEXT, source=source, message_id="om_2")
+                    MessageEvent(text="B", message_type=MessageType.TEXT, source=_source("om_2"), message_id="om_2")
                 )
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="C", message_type=MessageType.TEXT, source=source, message_id="om_3")
+                    MessageEvent(text="C", message_type=MessageType.TEXT, source=_source("om_3"), message_id="om_3")
                 )
                 pending = list(adapter._pending_text_batch_tasks.values())
                 self.assertEqual(len(pending), 1)
@@ -1005,6 +1009,10 @@ class TestAdapterBehavior(unittest.TestCase):
         second = adapter.handle_message.await_args_list[1].args[0]
         self.assertEqual(first.text, "A\nB")
         self.assertEqual(second.text, "C")
+        # Coalescing advances the event id to the latest message; the reply anchor
+        # (source.message_id) must move with it or replies/session tools disagree.
+        self.assertEqual(first.message_id, "om_2")
+        self.assertEqual(first.source.message_id, first.message_id)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_media_batch_merges_rapid_photo_messages(self):

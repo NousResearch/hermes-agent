@@ -78,6 +78,8 @@ class ContextEngine(ABC):
         ``prompt_tokens``/``completion_tokens``/``total_tokens`` are always present; the
         canonical buckets (``input_tokens``, ``output_tokens``, ``cache_read_tokens``,
         ``cache_write_tokens``, ``reasoning_tokens``) are optional on older hosts.
+        These counts describe the acting model's request. MoA advisor usage is
+        included in session totals, but does not occupy this context window.
         """
 
     @abstractmethod

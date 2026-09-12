@@ -6015,7 +6015,7 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
 
     No default cap elsewhere (omitted = provider default; avoids max_completion_tokens / ZAI-vision
     quirks). Forward only where mandatory or honored: Anthropic Messages wire (400 without it);
-    NVIDIA NIM (empty choices[] when omitted); MoA reference slots; Gemini native (fixed 65,535
+    NVIDIA NIM (empty choices[] when omitted); MoA reference and aggregator slots; Gemini native (fixed 65,535
     ceiling otherwise); OpenRouter (budgets the FULL window when omitted → 402 on low credit);
     managed local llama-server (uncapped decode with no EOS burns the GPU to the context window).
     """
@@ -6024,7 +6024,7 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
         or _nous_on_messages_wire(provider_norm, model)
         or provider_norm in _NVIDIA_PROVIDER_NAMES
         or base_url_host_matches(effective_base, "integrate.api.nvidia.com")
-        or str(task) == "moa_reference"
+        or task in {"moa_reference", "moa_aggregator"}
         or _is_gemini_native_route(provider_norm, effective_base)
         or provider_norm == "openrouter"
         or base_url_host_matches(effective_base, "openrouter.ai")

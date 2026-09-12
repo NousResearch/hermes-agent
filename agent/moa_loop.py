@@ -1106,9 +1106,12 @@ class MoAChatCompletions:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
         # Pop the runtime's extra_body so the explicit kwarg never collides with **agg_runtime.
         agg_extra_body = _merge_slot_extra_body(agg_runtime.pop("extra_body", None), api_kwargs.get("extra_body"))
+        acting_cap = api_kwargs.get("max_completion_tokens")
+        if acting_cap is None:
+            acting_cap = api_kwargs.get("max_tokens")
         agg_response = call_llm(
             task="moa_aggregator", messages=agg_messages, temperature=prepared["aggregator_temperature"],
-            max_tokens=api_kwargs.get("max_tokens"), tools=tools, extra_body=agg_extra_body,
+            max_tokens=acting_cap, tools=tools, extra_body=agg_extra_body,
             reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,
         )

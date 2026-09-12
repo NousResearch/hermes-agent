@@ -1109,6 +1109,28 @@ _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS = _RUN_CLAIM_HEARTBEAT_SECONDS * 3
 
 
+def _cron_heartbeat_seconds() -> float:
+    """Return the fire-claim heartbeat interval (job-run liveness cadence).
+
+    Configurable via ``cron.heartbeat_seconds``; the default stays fail-closed
+    (short interval → grace window = 3x expires quickly on a wedged run).
+    """
+    default = _RUN_CLAIM_HEARTBEAT_SECONDS
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("heartbeat_seconds")
+        if configured is not None:
+            interval = float(configured)
+            if interval > 0:
+                return interval
+    except Exception:
+        pass
+    return default
+
+
 def _cron_cleanup_timeout_seconds() -> float:
     """Return the wall-clock bound for cron post-run cleanup."""
     default = 10.0
@@ -2379,7 +2401,8 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
 
     def _heartbeat_loop() -> None:
         last_confirmed = time.monotonic()
-        while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
+        heartbeat_interval = _cron_heartbeat_seconds()
+        while not stop.wait(heartbeat_interval):
             try:
                 if not heartbeat_fire_claim(job_id, expected_owner=owner):
                     lost_ownership.set()
@@ -2390,16 +2413,17 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
                 last_confirmed = time.monotonic()
             except Exception:
                 logger.debug("Job '%s': fire_claim heartbeat failed", job_id, exc_info=True)
+                grace = heartbeat_interval * 3
                 if (
                     time.monotonic() - last_confirmed
-                    >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
+                    >= grace
                 ):
                     lost_ownership.set()
                     logger.warning(
                         "Job '%s': fire_claim could not be renewed within %.1fs; "
                         "interrupting uncertain run",
                         job_id,
-                        _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS)
+                        grace)
                     return
 
     heartbeat_thread = _start_heartbeat_thread(
@@ -2493,12 +2517,56 @@ def run_one_job(
 
 
 _OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completion."
+# Fire-claim ownership was lost before the save/compose/deliver phase started, so nothing was
+# delivered and nothing was recorded: this is NOT a shutdown and must not reuse the shutdown
+# string (the two were previously indistinguishable in executions.db — see the 2026-09-12
+# morning-interruption investigation, 20-case ledger).
+_FIRE_CLAIM_LOST_PRE_DELIVERY = (
+    "Fire claim ownership lost before delivery; run result discarded (not a shutdown).")
 
 
-def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], execution_id: str) -> None:
+def _record_fire_ownership_lost(
+    job_id: str,
+    fire_owner: Optional[str],
+    execution_id: str,
+    *,
+    delivered: bool = False,
+    success: bool = False,
+    pre_delivery: bool = False,
+) -> None:
     """Bookkeeping after fire-claim ownership loss. A transport-level cancel (dashboard drain) is
     not a real loss — we still own the claim, so record the interruption via the owner-fenced
-    terminal write instead of leaving fire_claim/last_status stale; otherwise discard."""
+    terminal write instead of leaving fire_claim/last_status stale; otherwise discard.
+
+    ``delivered``: the run's save/compose/deliver phase already completed with a successful
+    delivery before the ownership loss was detected. The work product reached its destination,
+    so the run is recorded as a completed-with-warning instead of an interruption — writing the
+    shutdown/interrupted string here misclassified healthy runs (12 of 20 investigated cases).
+    ``pre_delivery``: the loss was detected before any delivery was attempted (K3 term ①) —
+    recorded with the distinct ``_FIRE_CLAIM_LOST_PRE_DELIVERY`` reason, never the shutdown
+    string. The shutdown-string path keeps its original semantics (real shutdowns still record
+    the interrupted marker via the owner-fenced write).
+    """
+    if delivered:
+        warning = (
+            "Fire claim ownership lost after successful delivery; recorded as completed "
+            "(delivery confirmed).")
+        mark_job_run(job_id, success, warning, expected_fire_owner=fire_owner)
+        finish_execution(execution_id, success=success, error=warning)
+        return
+    if pre_delivery:
+        # K3 term ①: a loss BEFORE the delivery phase must not reuse the shutdown string —
+        # the two were indistinguishable in executions.db (root cause of the 误记 ledger).
+        # Keep the owner-fenced write so fire_claim/last_status don't go stale.
+        fenced = mark_job_run(
+            job_id, False, _FIRE_CLAIM_LOST_PRE_DELIVERY, expected_fire_owner=fire_owner)
+        if not fenced:
+            finish_execution(
+                execution_id, success=False,
+                error="Fire claim ownership lost; stale result was discarded.")
+            return
+        finish_execution(execution_id, success=False, error=_FIRE_CLAIM_LOST_PRE_DELIVERY)
+        return
     if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):
         mark_job_run(job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner)
         finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
@@ -2883,7 +2951,11 @@ def _run_one_job_body(
 
         if _fire_claim_ownership_lost():
             _teardown_deferred()
-            _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
+            # Loss before the save/compose/deliver phase: record the distinct pre-delivery
+            # reason (K3 term ①) instead of the shutdown string.
+            _record_fire_ownership_lost(
+                job["id"], fire_owner, execution_id,
+                pre_delivery=True)
             return True
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
@@ -2901,7 +2973,15 @@ def _run_one_job_body(
             _teardown_deferred()
 
         if d.side_effect_ownership_lost or _fire_claim_ownership_lost():
-            _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
+            # Delivery already attempted: a successful delivery means the work product reached
+            # its destination and the run must NOT be recorded as an interruption (this was the
+            # main misclassification source — delivered-then-误记). A failed/no delivery keeps
+            # the ownership-lost bookkeeping (stale/duplicate risk), but with the run's own
+            # success flag rather than a fabricated shutdown string.
+            _record_fire_ownership_lost(
+                job["id"], fire_owner, execution_id,
+                delivered=bool(d.delivery_attempted and not d.delivery_error),
+                success=bool(d.success and not d.error))
             return True
 
         # Empty final_response is a soft failure so last_status is not "ok".

@@ -146,6 +146,8 @@ def finish_text_response(
             )
         codex_ack_continuations += 1
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+        if promoted_clean_stop:
+            interim_msg["content"] = agent._strip_think_blocks(final_response).strip()
         append_message(messages, interim_msg)
         agent._emit_interim_assistant_message(interim_msg)
         append_message(messages, {"role": "user", "content": _CODEX_ACK_CONTINUATION_NUDGE})

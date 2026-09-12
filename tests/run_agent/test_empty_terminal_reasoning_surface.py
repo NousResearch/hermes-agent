@@ -79,6 +79,23 @@ def _truly_empty_response():
     )
 
 
+def _text_response(content):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(
+                content=content,
+                reasoning=None,
+                reasoning_content=None,
+                reasoning_details=None,
+                tool_calls=None,
+            ),
+            finish_reason="stop",
+        )],
+        usage=None,
+        model="test-model",
+    )
+
+
 def _tool_call_response():
     tool_call = SimpleNamespace(
         id="call_1",
@@ -120,6 +137,33 @@ def test_clean_stop_reasoning_is_promoted_without_retry(tmp_path, monkeypatch):
     assert calls == 1
     assert result["messages"][-1]["content"] == expected
     assert result["messages"][-1]["reasoning"] == expected
+
+
+def test_clean_stop_promotion_survives_stall_guard_continuation(tmp_path, monkeypatch):
+    agent = _build_agent(tmp_path, monkeypatch)
+    agent.valid_tool_names = {"todo"}
+    promoted = "The tests pass. I will now run the linter."
+    responses = [
+        _reasoning_only_response(reasoning=promoted),
+        _text_response("The linter passes."),
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: responses.pop(0),
+    )
+
+    result = agent.run_conversation("verify the change")
+
+    assert result["final_response"] == "The linter passes."
+    assert not responses
+    assistant_messages = [
+        message for message in result["messages"] if message["role"] == "assistant"
+    ]
+    assert assistant_messages[0]["content"] == promoted
+    assert assistant_messages[-1]["content"] == "The linter passes."
+    roles = [message["role"] for message in result["messages"]]
+    assert all(left != right for left, right in zip(roles, roles[1:]))
 
 
 def test_clean_stop_promotion_removes_prior_thinking_prefill(tmp_path, monkeypatch):

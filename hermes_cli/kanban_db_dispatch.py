@@ -1122,6 +1122,41 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _blocked_outcome_hold_reason(
+    conn: sqlite3.Connection, task_id: str, ended_at: int,
+) -> Optional[str]:
+    """Hold a parentless ready card whose latest ended run is ``blocked``.
+
+    Release requires a strictly-later operator/input signal (``unblocked``,
+    ``status``, ``promoted_manual``, a comment / ``commented``). A bare
+    ``promoted`` from ``recompute_ready`` is not a release. Linked parents
+    fail open — parent completion is the new input. See #107784.
+    """
+    parent = conn.execute(
+        "SELECT 1 FROM task_links WHERE child_id = ? LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if parent is not None:
+        return None
+    release = conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND created_at > ? "
+        "AND kind IN ('unblocked', 'status', 'promoted_manual', 'commented') "
+        "LIMIT 1",
+        (task_id, ended_at),
+    ).fetchone()
+    if release is not None:
+        return None
+    comment = conn.execute(
+        "SELECT 1 FROM task_comments "
+        "WHERE task_id = ? AND created_at > ? LIMIT 1",
+        (task_id, ended_at),
+    ).fetchone()
+    if comment is not None:
+        return None
+    return "blocked_outcome"
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1133,11 +1168,15 @@ def check_respawn_guard(
     ``last_failure_error`` that would otherwise park the task forever — that
     path never increments ``consecutive_failures``), ``"blocker_auth"``
     (quota/auth pattern; the breaker still trips eventually), then for the
-    ready lane only ``"recent_success"`` (completed run within the window, unless
-    a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
-    dead claim locks are NOT a guard reason — the reclaim passes own those.
+    ready lane only ``"blocked_outcome"`` (latest ended run ``blocked``, no
+    linked parents, and no strictly-later release: ``unblocked`` / ``status`` /
+    ``promoted_manual`` / comment; a bare ``promoted`` is not a release and
+    the hold does not expire on a time window), ``"recent_success"`` (completed
+    run within the window, unless a re-queue event arrived after it — a
+    deliberate re-run) and ``"active_pr"`` (PR URL in a recent comment;
+    re-spawning risks a duplicate PR). The review lane skips the ready-only
+    guards: they are the *inputs* to a review handoff. Stale / dead claim
+    locks are NOT a guard reason — the reclaim passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1179,6 +1218,16 @@ def check_respawn_guard(
     # are the canonical *inputs* to a review handoff, not duplicate-work signals.
     if lane == "review":
         return None
+
+    # Parentless ready card whose latest ended run is ``blocked``, with no
+    # operator/input after that run. A bare ``promoted`` from recompute_ready
+    # is not a release — see #107784.
+    if latest_run is not None and latest_run["outcome"] == "blocked":
+        ended_at = latest_run["ended_at"]
+        if ended_at is not None:
+            blocked_hold = _blocked_outcome_hold_reason(conn, task_id, int(ended_at))
+            if blocked_hold is not None:
+                return blocked_hold
 
     # 3. Completed run within guard window. Exception: an explicit re-queue
     #    AFTER that success (done→ready drag, re-promotion, unblock, reclaim) is

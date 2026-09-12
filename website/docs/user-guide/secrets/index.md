@@ -8,6 +8,10 @@ Supported:
 - [1Password](./onepassword) — `op://` references via the official `op` CLI; service-account or desktop session auth.
 - [Command helper](./command) — any CLI vault (`keepassxc-cli`, `secret-tool`, `pass`, custom scripts) via a user-configured helper that prints `KEY=VALUE` lines.
 
+Startup apply writes resolved values into this Hermes process's `os.environ`. The model, tools, `printenv`, terminal snapshots, and child processes can observe them. Log and UI redaction is display-layer only — it is not a custody boundary.
+
+Use this path for **provider keys** Hermes itself needs to call a model. Do not put site passwords, SSNs, bank details, recovery codes, or account statements on the Bitwarden / 1Password / command source-apply path — those belong in [Passwords & Logins](/user-guide/features/credential-vault) (`hermes vault`).
+
 ## Multiple sources at once
 
 You can enable more than one secret source at the same time — for example a team Bitwarden project alongside a personal vault plugin. Sources compose per env var with a deterministic precedence ladder:
@@ -47,4 +51,4 @@ Both apply to every source — bundled and plugin — because they live in the o
 
 Third-party secret managers ship as standalone plugins, not core PRs. A backend subclasses `agent.secret_sources.base.SecretSource` (one required method: `fetch(cfg, home_path) -> FetchResult`) and registers via `ctx.register_secret_source(MySource())` in the plugin's `register(ctx)`. The orchestrator owns precedence, conflict handling, timeouts, and provenance — your source only fetches. Full guide with the contract rules, subprocess-safety helper, and conformance kit: [Building a Secret Source Plugin](/developer-guide/secret-source-plugin).
 
-The bundled set is deliberately closed (same policy as memory providers): Bitwarden and 1Password ship in-tree. Everything else — Infisical, Proton Pass, HashiCorp Vault, AWS Secrets Manager, OS keystores — belongs in plugin repos; share them in the Nous Research Discord (`#plugins-skills-and-skins`).
+The bundled set is deliberately closed (same policy as memory providers): Bitwarden and 1Password ship in-tree. Everything else — Infisical, Proton Pass, HashiCorp Vault, AWS Secrets Manager, OS keystores, HTTP inject proxies — belongs in plugin repos; share them in the Nous Research Discord (`#plugins-skills-and-skins`).

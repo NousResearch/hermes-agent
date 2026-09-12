@@ -1588,8 +1588,9 @@ def test_route_failure_respects_crash_grace_window():
     fake_pid = 995001
     kbd._record_worker_exit(fake_pid, 0)  # os.W_EXITCODE(status=0, signal=0) == 0
     try:
+        host_prefix = kb._claimer_id().split(":", 1)[0]
         dead = kbd._classify_dead_worker(
-            fake_pid, "hermes01:mock",
+            fake_pid, f"{host_prefix}:mock",
             last_heartbeat_at=None, elapsed=5.0,
         )
         assert dead.event_kind != "route_failure", (
@@ -1621,15 +1622,16 @@ def test_reap_status_recorded_on_both_clean_exit_branches():
     kbd._record_worker_exit(route_pid, 0)
     kbd._record_worker_exit(pv_pid, 0)
     try:
+        host_prefix = kb._claimer_id().split(":", 1)[0]
         route_dead = kbd._classify_dead_worker(
-            route_pid, "hermes01:mock",
+            route_pid, f"{host_prefix}:mock",
             last_heartbeat_at=None, elapsed=9999.0,
         )
         assert route_dead.event_kind == "route_failure"
         assert route_dead.event_payload.get("reap_status") == "observed"
 
         pv_dead = kbd._classify_dead_worker(
-            pv_pid, "hermes01:mock",
+            pv_pid, f"{host_prefix}:mock",
             last_heartbeat_at=1234567, elapsed=9999.0,
         )
         assert pv_dead.event_kind == "protocol_violation"

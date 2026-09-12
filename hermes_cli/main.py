@@ -2755,6 +2755,23 @@ def _should_background_mcp_startup(args) -> bool:
     return not _is_tui_chat_launch(args) and args.command in {None, "chat", "rl"}
 
 
+def _apply_hindsight_bank_override(args) -> None:
+    """Bridge the ``--hindsight-bank`` CLI flag into the memory provider
+    before agent startup.
+
+    The Hindsight provider reads the override from an internal environment
+    variable at initialize() time. This is the single shared pre-dispatch
+    hook — reachable from the classic/light/Termux dispatch paths and from
+    main()'s own dispatch — so both ``hermes --hindsight-bank BANK`` (with
+    ``-z/--oneshot``) and ``hermes chat --hindsight-bank BANK`` work
+    identically. The env var is internal only: the public interfaces are the
+    CLI flag and per-directory ``.hindsight/config.toml`` files.
+    """
+    bank = getattr(args, "hindsight_bank", None)
+    if bank:
+        os.environ["HERMES_HINDSIGHT_BANK_OVERRIDE"] = str(bank).strip()
+
+
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
     # --yolo chokepoint: HERMES_YOLO_MODE must be set before any discovery
@@ -2767,6 +2784,7 @@ def _prepare_agent_startup(args) -> None:
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
+    _apply_hindsight_bank_override(args)
 
     if not (args.command in _AGENT_COMMANDS or _agent_subcommand_selected(args)):
         return

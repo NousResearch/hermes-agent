@@ -72,6 +72,81 @@ def _warn_memory_provider_unavailable(name: str, reason: str = "") -> None:
     )
 
 
+def _resolve_agent_workspace() -> str:
+    """Resolve the memory-provider workspace name from the agent's working
+    directory.
+
+    The workspace is the registered project whose primary folder contains the
+    agent's resolved cwd (longest path prefix wins, mirroring the desktop's
+    ``projectIdForCwd`` logic). Returns the project slug (e.g. ``acme``),
+    or ``""`` when no registered project covers the cwd — so the ``{workspace}``
+    placeholder in ``bank_id_template`` renders empty and the provider falls
+    back to the configured ``bank_id`` (an agent's own private bank), exactly
+    the "workspace when available, else my default bank" semantics.
+
+    Never raises: a missing/malformed projects.db or a non-resolvable cwd
+    yields ``""``, preserving the pre-workspace behavior for every provider.
+    """
+    try:
+        from agent.runtime_cwd import resolve_agent_cwd
+        cwd = resolve_agent_cwd()
+    except Exception:
+        return ""
+    if not cwd:
+        return ""
+
+    try:
+        cwd_str = str(cwd)
+        from hermes_cli.projects_db import connect_closing, list_projects, projects_db_path
+        from pathlib import Path
+        # Two candidate registries: the active profile's projects.db (projects
+        # registered from within this profile) and the default profile's. Users
+        # typically register projects once from the default profile (desktop /
+        # `hermes project add`), while bot sessions run under their own profile
+        # whose projects.db is often empty — so a match in the default profile's
+        # registry must still scope the workspace. The active profile wins ties.
+        db_paths: list = []
+        try:
+            db_paths.append(Path(projects_db_path()))
+        except Exception:
+            pass
+        try:
+            from hermes_cli.profiles import _get_default_hermes_home
+            default_db = Path(_get_default_hermes_home()) / "projects.db"
+            if str(default_db) not in [str(p) for p in db_paths]:
+                db_paths.append(default_db)
+        except Exception:
+            pass
+
+        best_slug = ""
+        best_len = -1
+        for db_path in db_paths:
+            if not Path(db_path).exists():
+                continue
+            try:
+                with connect_closing(db_path=Path(db_path)) as conn:
+                    for proj in list_projects(conn):
+                        if proj.archived:
+                            continue
+                        for folder in proj.folders:
+                            prefix = folder.path.rstrip("/\\")
+                            if not prefix:
+                                continue
+                            # Longest matching path prefix wins — a project whose
+                            # folder is a parent of the cwd (incl. nested
+                            # worktrees) scopes the workspace; ties prefer the
+                            # longer prefix (first DB = active profile wins).
+                            if cwd_str == prefix or cwd_str.startswith(prefix + "/"):
+                                if len(prefix) > best_len:
+                                    best_len = len(prefix)
+                                    best_slug = proj.slug
+            except Exception:
+                continue
+        return best_slug
+    except Exception:
+        return ""
+
+
 def _provider_default_routes(provider: str) -> set[str]:
     """Return known exact default routes for a canonical provider id."""
     routes: set[str] = set()
@@ -1222,7 +1297,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     with suppress(Exception):
         from hermes_cli.profiles import get_active_profile_name
         kwargs["agent_identity"] = get_active_profile_name()
-        kwargs["agent_workspace"] = "hermes"
+        kwargs["agent_workspace"] = _resolve_agent_workspace()
     return kwargs
 
 

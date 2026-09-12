@@ -130,6 +130,11 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "Provider override for this invocation (e.g. openrouter, anthropic). "
         "Applies to -z/--oneshot and --tui. The persistent provider lives in config.yaml "
         "under model.provider — use `hermes setup` or edit the file to change it."))
+    inherited(parser, "--hindsight-bank", default=None, metavar="BANK", help=(
+        "Force the Hindsight long-term-memory bank id for this invocation. "
+        "Applies to -z/--oneshot and --tui. Overrides the closest "
+        ".hindsight/config.toml `bank_id` and the configured bank_id/"
+        "bank_id_template for this run only."))
     inherited(parser, "--reasoning", default=None, metavar="LEVEL", help=(
         "Reasoning effort for this invocation: none, minimal, low, medium, "
         "high, xhigh, max, or ultra. Overrides agent.reasoning_effort in "
@@ -221,6 +226,10 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     # too; runtime resolution (resolve_runtime_provider) validates, same as the top-level flag.
     inherited(chat_parser, "--provider", default=SUPPRESS,
               help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.")
+    # Mirrors the top-level flag; SUPPRESS so the subparser only sets the attribute when the
+    # user explicitly passes it after `chat`, matching -m/--model and the other inherited flags.
+    inherited(chat_parser, "--hindsight-bank", default=SUPPRESS, metavar="BANK",
+              help="Force the Hindsight long-term-memory bank id for this session (overrides .hindsight/config.toml and configured bank_id/bank_id_template).")
     add("-v", "--verbose", action="store_true", default=SUPPRESS, help="Verbose output")
     add("-Q", "--quiet", action="store_true",
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.")

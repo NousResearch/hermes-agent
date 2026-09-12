@@ -1,7 +1,7 @@
 """Gateway runner - entry point for messaging platform integrations.
 
 Provides ``start_gateway()`` (start all configured adapters) and ``GatewayRunner`` (lifecycle).
-Run via ``python -m gateway.run`` or ``python cli.py --gateway``."""
+Run via ``hermes gateway run`` (or ``hermes gateway start`` for service mode)."""
 
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:

@@ -308,6 +308,17 @@ class SessionSessionsMixin:
         """
         if not (profile_name or "").strip():
             profile_name = self._own_profile_name()
+        # Invariant: a gateway main session (session_key set) must never carry
+        # _delegate_from — that marker hides the row from every picker while
+        # the gateway keeps routing into it (#109073).
+        if model_config and session_key and "_delegate_from" in model_config:
+            model_config = {k: v for k, v in model_config.items() if k != "_delegate_from"}  # type: ignore[assignment]
+            logger.warning(
+                "Stripped _delegate_from from gateway session %s (session_key=%r) at insert",
+                session_id, session_key,
+            )
+            if not model_config:
+                model_config = None  # type: ignore[assignment]
         def _do(conn):
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
             conn.execute(
@@ -676,7 +687,7 @@ class SessionSessionsMixin:
         """SELECT + tolerant-parse + merge ``patch`` into model_config (the one place that keeps
         ``_branched_from``/``_delegate_from`` alive); ``None`` deletes a key. Returns serialized JSON
         (``None`` when empty) or ``_MODEL_CONFIG_ROW_MISSING`` (``on_missing="raise"`` → ValueError)."""
-        row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        row = conn.execute("SELECT model_config, session_key FROM sessions WHERE id = ?", (session_id,)).fetchone()
         if row is None:
             if on_missing == "raise":
                 raise ValueError(f"Session not found: {session_id}")
@@ -687,6 +698,20 @@ class SessionSessionsMixin:
                 config.pop(key, None)
             else:
                 config[key] = value
+        # Invariant: gateway rows (session_key set) must never carry _delegate_from
+        # (#109073) — a polluted marker makes the main chat vanish from every
+        # picker while the gateway keeps routing into it.
+        if "_delegate_from" in config:
+            try:
+                sk = row[1] if len(row) > 1 else None
+            except Exception:
+                sk = None
+            if sk:
+                config.pop("_delegate_from", None)
+                logger.warning(
+                    "Stripped _delegate_from from gateway session %s (session_key=%r) at merge",
+                    session_id, sk,
+                )
         return json.dumps(config) if config else None
 
     def patch_session_model_config(self, session_id: str, patch: Dict[str, Any]) -> None:

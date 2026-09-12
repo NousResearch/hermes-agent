@@ -195,6 +195,35 @@ async def test_status_command_uses_most_recent_persisted_model_route(tmp_path):
         db.close()
 
 
+def test_recent_persisted_model_route_breaks_clock_ties_in_call_order(tmp_path):
+    """Equal wall-clock readings still preserve route order, including A -> B -> A."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("sess-1", "telegram", model="model-a")
+        with patch("hermes_state_usage.time.time", return_value=777.0):
+            for model, provider in (
+                ("model-a", "provider-a"),
+                ("model-b", "provider-b"),
+            ):
+                db.update_token_counts(
+                    "sess-1", model=model, billing_provider=provider,
+                    input_tokens=1, api_call_count=1,
+                )
+
+            route = db.get_recent_session_model_route("sess-1")
+            assert (route["model"], route["billing_provider"]) == ("model-b", "provider-b")
+
+            db.update_token_counts(
+                "sess-1", model="model-a", billing_provider="provider-a",
+                input_tokens=1, api_call_count=1,
+            )
+
+        route = db.get_recent_session_model_route("sess-1")
+        assert (route["model"], route["billing_provider"]) == ("model-a", "provider-a")
+    finally:
+        db.close()
+
+
 @pytest.mark.asyncio
 async def test_status_command_prefers_rehydrated_session_model_override(tmp_path):
     """A committed /model switch is current before the selected model records usage."""

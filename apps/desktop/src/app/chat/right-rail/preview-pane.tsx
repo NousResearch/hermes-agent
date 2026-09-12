@@ -28,6 +28,7 @@ import {
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
+import { type RightRailTabId } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $browserPages,
@@ -131,10 +132,17 @@ interface GuestContextMenuParams {
 interface PreviewPaneProps {
   embedded?: boolean
   onRestartServer?: (url: string, context?: string) => Promise<string>
+  /** The session that owns this preview tab (stamped at open from the routed
+   *  event's `session_id`). The page reader registers under this identity —
+   *  never under the ambient `$activeSessionId` — so a background bot's
+   *  preview stays attributed to the bot even when the foreground chat
+   *  changes (#95459). Absent for user-opened tabs; they register under the
+   *  active session. */
+  ownerSessionId?: string
   reloadRequest?: number
   /** The preview tab this pane renders. Keys the per-tab console store the
    *  browser bar's console toggle and the console panel both read. */
-  tabId?: string
+  tabId?: RightRailTabId
   target: PreviewTarget
 }
 
@@ -244,7 +252,14 @@ function PreviewLoadError({
   )
 }
 
-export function PreviewPane({ embedded = false, onRestartServer, reloadRequest = 0, tabId, target }: PreviewPaneProps) {
+export function PreviewPane({
+  embedded = false,
+  onRestartServer,
+  ownerSessionId,
+  reloadRequest = 0,
+  tabId,
+  target
+}: PreviewPaneProps) {
   const { t } = useI18n()
   const copy = t.preview.web
   // The console store belongs to the TAB, not this render: the toggles live on
@@ -754,21 +769,33 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       return
     }
 
-    return registerPreviewPageReader(tabId, async () => {
-      const webview = webviewRef.current
+    // Bind the reader to the session that OWNS this tab. A routed open stamps
+    // `ownerSessionId` from the event's `session_id` — the immutable origin —
+    // so a background bot's preview is attributed to the bot, not to whichever
+    // chat is ambient-active at registration (#95459). Only user-opened tabs
+    // (no owner) fall back to the selected stored session, and only at
+    // register time.
+    const owningSessionId = ownerSessionId ?? $selectedStoredSessionId.get() ?? undefined
 
-      if (!webview?.executeJavaScript) {
-        throw new Error('preview webview is not ready')
-      }
+    return registerPreviewPageReader(
+      tabId,
+      async () => {
+        const webview = webviewRef.current
 
-      const text = await webview.executeJavaScript('document.body ? document.body.innerText : ""')
+        if (!webview?.executeJavaScript) {
+          throw new Error('preview webview is not ready')
+        }
 
-      return {
-        text: typeof text === 'string' ? text : '',
-        ...guestPage(webview)
-      }
-    })
-  }, [isWebPreview, tabId])
+        const text = await webview.executeJavaScript('document.body ? document.body.innerText : ""')
+
+        return {
+          text: typeof text === 'string' ? text : '',
+          ...guestPage(webview)
+        }
+      },
+      owningSessionId
+    )
+  }, [isWebPreview, ownerSessionId, tabId])
 
   // Publish the SCRIPT runner for this tab: the one channel into the guest
   // page, shared by the tour tool (injected driver.js walkthroughs) and the

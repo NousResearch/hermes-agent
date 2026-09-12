@@ -60,6 +60,10 @@ export type PreviewRecordSource = 'explicit-link' | 'file-browser' | 'manual' | 
 export interface PreviewTab {
   id: RightRailTabId
   target: PreviewTarget
+  /** Runtime session ID that owns this tab. Set by `openPreview` when the
+   * preview is created via a routed command. Dropped at hydration so restored
+   * tabs are unowned and can be re-stamped by the next routed openPreview. */
+  ownerSessionId?: string
 }
 
 const TABS_STORAGE_KEY = 'hermes.desktop.previewTabs.v2'
@@ -91,7 +95,12 @@ function isPreviewTab(value: unknown): value is PreviewTab {
 
   const r = value as Record<string, unknown>
 
-  return typeof r.id === 'string' && (r.id.startsWith('file:') || r.id.startsWith('url:')) && isPreviewTarget(r.target)
+  return (
+    typeof r.id === 'string' &&
+    (r.id.startsWith('file:') || r.id.startsWith('url:')) &&
+    isPreviewTarget(r.target) &&
+    (r.ownerSessionId === undefined || typeof r.ownerSessionId === 'string')
+  )
 }
 
 function isPdfFileTarget(target: PreviewTarget): boolean {
@@ -116,15 +125,26 @@ function isPdfFileTarget(target: PreviewTarget): boolean {
 
 /** Upgrade tabs persisted by builds that classified PDFs as generic binary.
  * Without this restore-time migration, an already-open PDF keeps taking the
- * obsolete raw-binary path after Desktop itself has been upgraded. */
+ * obsolete raw-binary path after Desktop itself has been upgraded.
+ *
+ * Also drops ownerSessionId at hydration so restored tabs become unowned
+ * and can be re-stamped by the next routed openPreview. This fixes the
+ * restart case where the session runtime ID changes but the persisted
+ * ownerSessionId (a runtime ID) stays stale (#95459, #95475). */
 export function decodePreviewTabs(raw: string): PreviewTab[] {
   const parsed = JSON.parse(raw) as unknown
 
-  return (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab =>
-    isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
+  return (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab => {
+    const upgraded = isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
       ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
       : tab
-  )
+    // Drop stale runtime-id owner at hydration so restored tabs are unowned
+    // and can be re-stamped by the next routed openPreview.
+    if (upgraded.ownerSessionId) {
+      return { ...upgraded, ownerSessionId: undefined }
+    }
+    return upgraded
+  })
 }
 
 export const $previewTabs = persistentAtom<PreviewTab[]>(TABS_STORAGE_KEY, [], {
@@ -382,12 +402,18 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
 /** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes
  *  its target so a stale label/path can't outlive the thing it points at. The
  *  only way anything reaches a preview. */
-export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
+export function openPreview(
+  target: PreviewTarget,
+  source: PreviewRecordSource = 'manual',
+  ownerSessionId?: string
+) {
   const resolved = previewTargetForSource(target, source)
   const current = $previewTabs.get()
   const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
   const index = current.findIndex(tab => tab.id === id)
-  const tab: PreviewTab = { id, target: resolved }
+  const existingOwner = index !== -1 ? current[index].ownerSessionId : undefined
+  const owner = existingOwner ?? ownerSessionId
+  const tab: PreviewTab = { id, target: resolved, ...(owner ? { ownerSessionId: owner } : {}) }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   selectRightRailTab(id)

@@ -142,6 +142,59 @@ describe('preview routing', () => {
       }
     })
 
+    // #95459 production boundary: the tab's OWNER is the session that produced
+    // the `preview.open` event, not whichever chat is ambient-active at
+    // registration. A background bot session (B) opens a preview while the
+    // user is looking at session A; the tab must be owned by B, and switching
+    // the active session must NOT re-bind it to A. This is the regression the
+    // registry-only tests cannot see — they register with a literal owner.
+    it('binds the tab to the opening session, not the ambient-active one', async () => {
+      const { $sessionTiles } = await import('@/store/session-states')
+      const tiles = $sessionTiles.get()
+
+      const { isLivePreviewTabOwnedBySession, registerPreviewPageReader } = await import(
+        '@/app/chat/right-rail/preview-reader'
+      )
+
+      const { $previewTabs } = await import('@/store/preview')
+
+      // Foreground is A; B is a background tile.
+      $activeSessionId.set('session-A')
+      $sessionTiles.set([{ dir: 'right', runtimeId: 'session-B', storedSessionId: 'stored-B' }])
+      render(<Harness />)
+
+      try {
+        // B (on-screen as a tile) opens a preview — an explicit request the
+        // routing honors for any on-screen session.
+        await emitPreviewOpen('/tmp/bot-owned.html', 'session-B')
+        await waitFor(() => expect($previewTarget.get()?.path).toBe('/tmp/bot-owned.html'))
+
+        const tab = $previewTabs.get()[0]
+        expect(tab.ownerSessionId).toBe('session-B')
+
+        // Simulate the pane registering its reader from that immutable owner
+        // (PreviewPane does this), NOT from the ambient $activeSessionId.
+        const unregister = registerPreviewPageReader(tab.id, async () => ({ text: '', title: '', url: '' }), tab.ownerSessionId)
+
+        // A is ambient-active but must NOT gain authority over B's preview;
+        // B owns the exact live tab.
+        expect(isLivePreviewTabOwnedBySession(tab.id, 'session-A')).toBe(false)
+        expect(isLivePreviewTabOwnedBySession(tab.id, 'session-B')).toBe(true)
+
+        // Later active-session changes must not rewrite the tab's owner.
+        await act(async () => {
+          $activeSessionId.set('session-C')
+        })
+        expect($previewTabs.get()[0].ownerSessionId).toBe('session-B')
+        expect(isLivePreviewTabOwnedBySession(tab.id, 'session-A')).toBe(false)
+        expect(isLivePreviewTabOwnedBySession(tab.id, 'session-B')).toBe(true)
+
+        unregister()
+      } finally {
+        $sessionTiles.set(tiles)
+      }
+    })
+
     it('opens a second target as its own tab rather than replacing the first', async () => {
       render(<Harness />)
 

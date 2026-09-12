@@ -22,7 +22,7 @@ from agent.conversation_compression import (
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
     _apply_grown_window, _blocked_compress_reason, _clear_overflow_warn, _refund_api_call,
-    _reset_retry_state_after_compaction,
+    _reanchor, _reset_retry_state_after_compaction,
 )
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -235,13 +235,14 @@ class PostToolCompressionVerdict:
     compression_attempts: int
     final_response: Any
     turn_exit_reason: Any
+    current_turn_user_idx: int
 
 
 def compress_after_tool_results(
     agent: Any, *, messages: List[Dict[str, Any]], system_message: Any, user_message: Any,
     active_system_prompt: Any, conversation_history: Any, compression_attempts: int,
     max_compression_attempts: int, effective_task_id: Any, final_response: Any,
-    turn_exit_reason: Any,
+    turn_exit_reason: Any, current_turn_user_idx: int,
 ) -> PostToolCompressionVerdict:
     """Post-tool-call compression decision. Pressure comes from API-reported
     ``prompt_tokens`` (a tight lower bound; thinking models inflate completion tokens),
@@ -260,6 +261,7 @@ def compress_after_tool_results(
             end_turn=end_turn, messages=messages, active_system_prompt=active_system_prompt,
             conversation_history=conversation_history, compression_attempts=compression_attempts,
             final_response=final_response, turn_exit_reason=turn_exit_reason,
+            current_turn_user_idx=current_turn_user_idx,
         )
 
     _compressor = agent.context_compressor
@@ -346,6 +348,7 @@ def compress_after_tool_results(
                     final_response = _HANDOFF_SKIP_FINAL_RESPONSE
                 turn_exit_reason = "compaction_handoff_not_actionable"
                 return _verdict(True)
+            current_turn_user_idx = _reanchor(agent, messages, user_message)
     elif agent.compression_enabled:
         # Over threshold but compression blocked (cooldown/anti-thrash): deduped
         # warning so context can't silently overflow. ``attempts_spent`` names the

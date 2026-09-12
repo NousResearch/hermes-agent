@@ -173,6 +173,60 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         return result
 
 
+def _is_anonymous_auth_rejection(stderr: str) -> bool:
+    """git's fast signature for an anonymous fetch GitHub answered with 401.
+
+    With terminal prompts disabled the 401 never blocks on a ``Username:``
+    prompt — git exits immediately with ``could not read Username`` /
+    ``terminal prompts disabled``. GitHub does this during outages, and
+    persistently from IPs it throttles (datacenter VPSes): the anonymous
+    protocol-v2 ``POST /git-upload-pack`` is answered with a fast 401 over
+    HTTP/2 while the anonymous ``GET /info/refs`` still succeeds and HTTP/1.1
+    still works (#101584).
+    """
+    stderr = stderr or ""
+    return "could not read Username" in stderr or "terminal prompts disabled" in stderr
+
+
+def _fetch_with_http1_fallback(git_cmd, fetch_args):
+    """One bounded fetch with a one-shot HTTP/1.1 retry (#95777, #101584).
+
+    Two failure signatures are HTTP/2-specific degradations of GitHub's
+    anonymous protocol-v2 channel and get exactly one retry over HTTP/1.1:
+
+    * a dead-stall — the transport received zero bytes until the per-attempt
+      bound expired (``_git_run`` reports it as returncode 124);
+    * a fast 401 — GitHub answered the anonymous upload-pack POST with 401
+      and git exited immediately with the no-prompt signature
+      (``_is_anonymous_auth_rejection``).
+
+    Every other failure is returned as-is so ``_classify_fetch_failure``
+    keeps diagnosing it untouched.
+    """
+    result = _git_run(git_cmd, ["fetch"] + list(fetch_args), network=True)
+    if result.returncode == 0:
+        return result
+    stalled = result.returncode == 124
+    if not stalled and not _is_anonymous_auth_rejection(result.stderr):
+        return result
+
+    if stalled:
+        print("  ⚠ fetch stalled; retrying over HTTP/1.1")
+    else:
+        print("  ⚠ GitHub rejected the anonymous fetch; retrying over HTTP/1.1")
+    retry = _git_run(git_cmd, ["-c", "http.version=HTTP/1.1", "fetch"] + list(fetch_args), network=True)
+    if retry.returncode == 124:
+        # Both transports dead-stalled within the bound: name it for the user
+        # instead of the per-attempt line (which would read "git -c timed out").
+        retry = subprocess.CompletedProcess(
+            retry.args, 124, stdout=retry.stdout,
+            stderr=(
+                "git fetch timed out twice — once over HTTP/2 and once over HTTP/1.1 —"
+                " after a bounded wait each. A proxy, VPN, or middlebox is likely"
+                " breaking the connection to the remote."))
+    return retry
+
+
 def _capture_head_sha(git_cmd, cwd) -> str | None:
     """Return the current HEAD SHA, or None if it can't be resolved."""
     try:
@@ -519,12 +573,12 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     fetch_result = None
     if branch == "main" and _git_run(git_cmd, ["remote", "get-url", "upstream"]).returncode == 0:
         print("→ Fetching from upstream...")
-        fetch_result = _git_run(git_cmd, ["fetch"] + depth_args + ["upstream", branch], network=True)
+        fetch_result = _fetch_with_http1_fallback(git_cmd, depth_args + ["upstream", branch])
     if fetch_result is not None and fetch_result.returncode == 0:
         compare_branch = f"upstream/{branch}"
     else:
         print("→ Fetching from origin...")
-        fetch_result = _git_run(git_cmd, ["fetch"] + depth_args + ["origin", branch], network=True)
+        fetch_result = _fetch_with_http1_fallback(git_cmd, depth_args + ["origin", branch])
         compare_branch = f"origin/{branch}"
 
     if fetch_result.returncode != 0:
@@ -1351,7 +1405,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
-        fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+        fetch_result = _fetch_with_http1_fallback(git_cmd, ["origin", branch])
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             sys.exit(1)

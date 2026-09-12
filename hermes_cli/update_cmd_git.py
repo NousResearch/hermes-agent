@@ -331,10 +331,17 @@ _FETCH_FAILURE_RULES = (
      "✗ GitHub appears to be having an outage — try again in a few minutes (https://www.githubstatus.com)."),
     (lambda s: "Could not resolve host" in s or "unable to access" in s,
      "✗ Network error — cannot reach the remote repository."),
+    # Signature synthesized by update_cmd._fetch_with_http1_fallback when both the HTTP/2
+    # attempt and its HTTP/1.1 retry dead-stalled within the bounded wait.
+    (lambda s: "timed out twice" in s,
+     "✗ The remote never answered — the fetch stalled on both HTTP/2 and HTTP/1.1 within the"
+     " bounded wait. A proxy, VPN, or middlebox is likely breaking the connection."),
     (lambda s: "could not read Username" in s or "terminal prompts disabled" in s,
-     "✗ GitHub rejected the anonymous fetch (asked for a login) — this usually means a GitHub outage;"
-     " try again in a few minutes (https://www.githubstatus.com). If it persists, check"
-     " `git remote -v` points at a public repo."),
+     "✗ GitHub rejected the anonymous fetch (asked for a login) — this happens during GitHub"
+     " outages (https://www.githubstatus.com) and, persistently, from IPs GitHub throttles such"
+     " as datacenter VPSes. Both HTTP/2 and HTTP/1.1 were just tried. Workarounds: `git config"
+     " --global http.https://github.com.version HTTP/1.1`, an authenticated remote, or waiting"
+     " out the outage; also check `git remote -v` points at a public repo."),
     (lambda s: "Authentication failed" in s,
      "✗ Authentication failed — check your git credentials or SSH key."),
 )

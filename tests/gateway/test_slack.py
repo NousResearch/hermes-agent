@@ -3334,6 +3334,9 @@ class TestAssistantThreadLifecycle:
             # connector's chat.startStream recipient fields.
             "scope_id": "T_OTHER",
             "user_id": "U_USER",
+            # Triggering ts: lets the reply_in_thread=false path tell this synthetic
+            # thread key (thread_id == own ts) from a real thread.
+            "message_id": "171.111",
         }
 
     @pytest.mark.asyncio

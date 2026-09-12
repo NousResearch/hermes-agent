@@ -9,6 +9,7 @@ from pathlib import Path
 from agent.gemini_daily_review import (
     DailyReviewRunner,
     SolReviewer,
+    _parse_verdict,
     build_review_prompt,
     sample_receipt_ids,
 )
@@ -16,6 +17,16 @@ from agent.gemini_route_receipts import GeminiReceiptStore
 
 
 UTC = timezone.utc
+
+
+def test_verdict_parser_maps_faithful_contract_to_internal_pass_fail():
+    assert _parse_verdict({"verdict": "faithful", "reason": "matched the evidence"}) == {
+        "verdict": "pass",
+        "reason": "matched the evidence",
+    }
+    assert _parse_verdict(
+        {"verdict": "unfaithful", "reason": "invented an unsupported result"}
+    ) == {"verdict": "fail", "reason": "invented an unsupported result"}
 
 
 def add_attempt(
@@ -83,7 +94,7 @@ def test_review_prompt_contains_full_attempt_and_strict_schema(tmp_path: Path):
     assert "bounded context" in prompt
     assert "response grt_a" in prompt
     assert "route_reason" in prompt
-    assert '"verdict": "pass|fail"' in prompt
+    assert '"verdict": "faithful|unfaithful"' in prompt
     assert "Return JSON only" in prompt
 
 
@@ -136,7 +147,8 @@ def test_runner_reviews_started_failures_and_fallbacks_and_stays_silent_on_pass(
         reviewer_factory=lambda: reviewer,
         reviewer_provider="openai-codex",
         reviewer_model="gpt-5.6-sol",
-        alert_sender=alerts.append,
+        alert_sender=lambda message: alerts.append(message)
+            or {"success": True, "chat_id": "C_ROUTE_FAILURES", "message_id": "1.1"},
         alert_channel_id="C_ROUTE_FAILURES",
     ).run(target_day=date(2026, 9, 11), seed=bytes.fromhex("33" * 32))
 
@@ -161,16 +173,100 @@ def test_runner_alerts_only_sanitized_receipt_ids_and_reasons_on_quality_failure
         ),
         reviewer_provider="openai-codex",
         reviewer_model="gpt-5.6-sol",
-        alert_sender=alerts.append,
+        alert_sender=lambda message: alerts.append(message)
+            or {"success": True, "chat_id": "C_ROUTE_FAILURES", "message_id": "1.1"},
         alert_channel_id="C_ROUTE_FAILURES",
     ).run(target_day="2026-09-11", seed=bytes.fromhex("44" * 32))
 
     assert result["status"] == "failed"
     assert len(alerts) == 1
-    assert "grt_a" in alerts[0]
-    assert "unsupported conclusion" in alerts[0]
+    assert "grt_a" not in alerts[0]
+    assert "unsupported conclusion" not in alerts[0]
     assert "goal grt_a" not in alerts[0]
     assert "response grt_a" not in alerts[0]
+
+
+def test_successful_failure_alert_persists_exact_channel_and_message_ts(tmp_path: Path):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    add_attempt(store, "grt_a")
+
+    result = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: (
+            lambda _prompt: {"verdict": "fail", "reason": "private review reason"}
+        ),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=lambda _message: {
+            "success": True,
+            "chat_id": "C_ROUTE_FAILURES",
+            "message_id": "1720000000.000001",
+        },
+        alert_channel_id="C_ROUTE_FAILURES",
+    ).run(target_day="2026-09-11", seed=bytes.fromhex("45" * 32))
+
+    batch = store.get_review_batch("2026-09-11")
+    assert batch is not None
+    assert result["alert_status"] == "sent"
+    assert batch["slack_channel_id"] == "C_ROUTE_FAILURES"
+    assert batch["slack_message_ts"] == "1720000000.000001"
+    assert batch["alert_status"] == "sent"
+
+
+def test_alert_message_is_aggregate_only_and_excludes_review_content(tmp_path: Path):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    add_attempt(store, "grt_private")
+    alerts: list[str] = []
+
+    DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: (
+            lambda _prompt: {"verdict": "fail", "reason": "PRIVATE_REVIEW_REASON"}
+        ),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=lambda message: alerts.append(message)
+        or {
+            "success": True,
+            "chat_id": "C_ROUTE_FAILURES",
+            "message_id": "1720000000.000002",
+        },
+        alert_channel_id="C_ROUTE_FAILURES",
+    ).run(target_day="2026-09-11", seed=bytes.fromhex("46" * 32))
+
+    assert len(alerts) == 1
+    assert alerts[0].startswith("Gemini daily review 2026-09-11: FAIL — 1/1")
+    assert "PRIVATE_REVIEW_REASON" not in alerts[0]
+    assert "grt_private" not in alerts[0]
+    assert "routing.sqlite3 batch grb_" in alerts[0]
+
+
+def test_wrong_channel_delivery_remains_pending_and_retries_same_batch(tmp_path: Path):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    add_attempt(store, "grt_a")
+    calls: list[str] = []
+
+    def wrong_sender(message: str) -> dict:
+        calls.append(message)
+        return {"success": True, "chat_id": "C_WRONG", "message_id": "1.2"}
+
+    runner = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: (
+            lambda _prompt: {"verdict": "fail", "reason": "bad"}
+        ),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=wrong_sender,
+        alert_channel_id="C_ROUTE_FAILURES",
+    )
+    first = runner.run(target_day="2026-09-11", seed=bytes.fromhex("47" * 32))
+    second = runner.run(target_day="2026-09-11", seed=bytes.fromhex("48" * 32))
+
+    assert first["status"] == second["status"] == "failed"
+    assert first["alert_status"] == second["alert_status"] == "pending"
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
 
 
 def test_runner_fail_closes_and_alerts_on_malformed_reviewer_output(tmp_path: Path):
@@ -183,14 +279,15 @@ def test_runner_fail_closes_and_alerts_on_malformed_reviewer_output(tmp_path: Pa
         reviewer_factory=lambda: (lambda _prompt: "not-json"),
         reviewer_provider="openai-codex",
         reviewer_model="gpt-5.6-sol",
-        alert_sender=alerts.append,
+        alert_sender=lambda message: alerts.append(message)
+            or {"success": True, "chat_id": "C_ROUTE_FAILURES", "message_id": "1.1"},
         alert_channel_id="C_ROUTE_FAILURES",
     ).run(target_day="2026-09-11", seed=bytes.fromhex("55" * 32))
 
     assert result["status"] == "pipeline_failed"
     assert result["reviewed_count"] == 1
     assert len(alerts) == 1
-    assert "reviewer_output_invalid" in alerts[0]
+    assert "PIPELINE FAIL" in alerts[0]
 
 
 def test_second_run_reuses_terminal_batch_without_duplicate_reviews_or_alerts(tmp_path: Path):
@@ -214,7 +311,8 @@ def test_second_run_reuses_terminal_batch_without_duplicate_reviews_or_alerts(tm
         reviewer_factory=reviewer_factory,
         reviewer_provider="openai-codex",
         reviewer_model="gpt-5.6-sol",
-        alert_sender=alerts.append,
+        alert_sender=lambda message: alerts.append(message)
+            or {"success": True, "chat_id": "C_ROUTE_FAILURES", "message_id": "1.1"},
         alert_channel_id="C_ROUTE_FAILURES",
     )
     first = runner.run(target_day="2026-09-11", seed=bytes.fromhex("66" * 32))

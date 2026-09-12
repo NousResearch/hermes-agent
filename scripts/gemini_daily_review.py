@@ -15,12 +15,17 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from agent.gemini_daily_review_runtime import run_configured_review
+from agent.gemini_daily_review import main as run_configured_review
 
 
 def main() -> int:
     try:
-        run_configured_review()
+        result = run_configured_review()
+        if (
+            result.get("status") in {"failed", "pipeline_failed"}
+            and result.get("alert_status") != "sent"
+        ):
+            raise RuntimeError("required Slack alert remains pending")
     except Exception as exc:
         print(f"Gemini daily review failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

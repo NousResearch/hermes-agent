@@ -7,6 +7,7 @@ import hmac
 import json
 import secrets
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from agent.gemini_route_receipts import GeminiReceiptStore, _canonical_json
@@ -67,15 +68,16 @@ def build_review_prompt(attempt: Mapping[str, Any]) -> str:
         "error_message": attempt.get("error_message"),
     }
     return (
-        "You are an isolated quality reviewer. Evaluate whether the routed attempt "
-        "faithfully addressed its stated goal, respected its output contract, and "
-        "reported failures honestly. A failed or fallback attempt is not automatically "
-        "a quality failure; judge whether its recorded behavior was correct and useful.\n\n"
+        "You are an isolated quality reviewer. Evaluate the recorded Gemini result for "
+        "correctness, completeness, grounding in the supplied evidence, calibrated "
+        "uncertainty, and compliance with the requested output contract. A failed or "
+        "fallback attempt is not automatically a quality failure; judge whether its "
+        "recorded behavior was correct, useful, and honest.\n\n"
         "Attempt JSON:\n"
         f"{_canonical_json(evidence)}\n\n"
         "Return JSON only, with exactly this semantic shape:\n"
-        '{"verdict": "pass|fail", "reason": "brief concrete reason"}\n'
-        "The verdict must be the literal string pass or fail. The reason must be a "
+        '{"verdict": "faithful|unfaithful", "reason": "brief concrete reason"}\n'
+        "The verdict must be the literal string faithful or unfaithful. The reason must be a "
         "non-empty string. Do not include Markdown fences or other text."
     )
 
@@ -90,11 +92,18 @@ def _parse_verdict(value: Mapping[str, Any] | str) -> dict[str, str]:
         raise ValueError("reviewer_output_invalid: expected an object")
     verdict = value.get("verdict")
     reason = value.get("reason")
-    if verdict not in {"pass", "fail"}:
-        raise ValueError("reviewer_output_invalid: verdict must be pass or fail")
+    verdict_map = {
+        "faithful": "pass",
+        "unfaithful": "fail",
+        # Internal/test callers may already use the persisted vocabulary.
+        "pass": "pass",
+        "fail": "fail",
+    }
+    if verdict not in verdict_map:
+        raise ValueError("reviewer_output_invalid: verdict must be faithful or unfaithful")
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("reviewer_output_invalid: reason must be non-empty")
-    return {"verdict": verdict, "reason": reason.strip()}
+    return {"verdict": verdict_map[verdict], "reason": reason.strip()}
 
 
 class SolReviewer:
@@ -196,6 +205,10 @@ class DailyReviewRunner:
         existing = self.store.get_review_batch(day)
         if existing is not None:
             if existing["status"] in {"passed", "failed", "pipeline_failed"}:
+                if existing["alert_status"] == "pending":
+                    alert = self._alert_for_batch(existing)
+                    self._deliver_alert(existing, alert)
+                    existing = self.store.get_review_batch(day) or existing
                 return self._result_from_batch(existing)
             if existing["status"] == "reviewing":
                 return self._result_from_batch(existing, status="in_progress")
@@ -278,10 +291,11 @@ class DailyReviewRunner:
                 day,
                 [{"receipt_id": "pipeline", "reason": pipeline_error}],
                 pipeline=True,
+                batch=batch,
             )
         elif failures:
             status = "failed"
-            alert = self._failure_alert(day, failures, pipeline=False)
+            alert = self._failure_alert(day, failures, pipeline=False, batch=batch)
         else:
             status = "passed"
             alert = None
@@ -294,39 +308,74 @@ class DailyReviewRunner:
             alert_message=alert,
         )
         if alert:
-            try:
-                self.alert_sender(alert)
-            except Exception as exc:
-                self.store.update_review_batch(
-                    batch["batch_id"],
-                    status=status,
-                    pipeline_error=pipeline_error,
-                    alert_status="failed",
-                )
-            else:
-                self.store.update_review_batch(
-                    batch["batch_id"],
-                    status=status,
-                    pipeline_error=pipeline_error,
-                    alert_status="sent",
-                )
+            current_batch = self.store.get_review_batch(day) or {**batch, "status": status}
+            self._deliver_alert(current_batch, alert)
         completed = self.store.get_review_batch(day) or batch
         return self._result_from_batch(completed)
 
     def _failure_alert(
-        self, day: str, failures: Sequence[Mapping[str, str]], *, pipeline: bool
+        self,
+        day: str,
+        failures: Sequence[Mapping[str, str]],
+        *,
+        pipeline: bool,
+        batch: Mapping[str, Any],
     ) -> str:
-        heading = "Gemini routing review pipeline failure" if pipeline else "Gemini routing quality failure"
-        lines = [
-            f"{heading} for {day}",
-            f"Channel: {self.alert_channel_id}",
-        ]
-        for failure in failures:
-            lines.append(
-                f"- {_safe_fragment(failure.get('receipt_id'), limit=80)}: "
-                f"{_safe_fragment(failure.get('reason'))}"
+        sampled = len(json.loads(str(batch["sample_receipt_ids_json"])))
+        reviewed = len(self.store.list_review_items(str(batch["batch_id"])))
+        receipt_path = self._display_receipt_path()
+        if pipeline:
+            return (
+                f"Gemini daily review {day}: PIPELINE FAIL — {reviewed}/{sampled} "
+                f"reviews completed. Receipt: {receipt_path} batch {batch['batch_id']}"
             )
-        return "\n".join(lines)
+        return (
+            f"Gemini daily review {day}: FAIL — {len(failures)}/{sampled} sampled "
+            f"tasks failed; pipeline=ok. Receipt: {receipt_path} batch {batch['batch_id']}"
+        )
+
+    def _display_receipt_path(self) -> str:
+        try:
+            relative = self.store.path.resolve().relative_to(Path.home().resolve())
+        except ValueError:
+            return str(self.store.path)
+        return f"~/{relative}"
+
+    def _alert_for_batch(self, batch: Mapping[str, Any]) -> str:
+        pipeline = batch["status"] == "pipeline_failed"
+        items = self.store.list_review_items(str(batch["batch_id"]))
+        failures = [item for item in items if item.get("verdict") == "fail"]
+        if pipeline and not failures:
+            failures = [{"receipt_id": "pipeline", "reason": "pipeline failure"}]
+        return self._failure_alert(
+            str(batch["routing_day"]), failures, pipeline=pipeline, batch=batch
+        )
+
+    def _deliver_alert(self, batch: Mapping[str, Any], alert: str) -> None:
+        try:
+            delivery = self.alert_sender(alert)
+            if not isinstance(delivery, Mapping) or delivery.get("success") is not True:
+                raise RuntimeError("Slack delivery was not confirmed")
+            channel = str(delivery.get("chat_id") or delivery.get("channel") or "")
+            message_ts = str(delivery.get("message_id") or delivery.get("ts") or "")
+            if channel != self.alert_channel_id or not message_ts:
+                raise RuntimeError("Slack delivery target or message receipt mismatch")
+        except Exception:
+            self.store.update_review_batch(
+                str(batch["batch_id"]),
+                status=str(batch["status"]),
+                pipeline_error=batch.get("pipeline_error"),
+                alert_status="pending",
+            )
+            return
+        self.store.update_review_batch(
+            str(batch["batch_id"]),
+            status=str(batch["status"]),
+            pipeline_error=batch.get("pipeline_error"),
+            alert_status="sent",
+            slack_channel_id=channel,
+            slack_message_ts=message_ts,
+        )
 
     def _result_from_batch(
         self, batch: Mapping[str, Any], *, status: str | None = None
@@ -341,3 +390,10 @@ class DailyReviewRunner:
             "reviewed_count": len(items),
             "alert_status": batch["alert_status"],
         }
+
+
+def main() -> dict[str, Any]:
+    """Run one configured scheduler tick without writing successful output."""
+    from agent.gemini_daily_review_runtime import run_configured_review
+
+    return run_configured_review()

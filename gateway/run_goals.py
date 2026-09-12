@@ -44,6 +44,48 @@ class GatewayGoalsMixin:
         except Exception:
             return 20
 
+    async def _maybe_auto_start_goal(self, event: "MessageEvent", session_id: str, message) -> bool:
+        """Opt-in: draft a goal from a normal gateway message before its first turn."""
+        if getattr(event, "internal", False) or not session_id:
+            return False
+
+        from hermes_cli.goal_command import (
+            goal_auto_start_enabled,
+            goal_objective_text,
+            is_goal_candidate,
+        )
+
+        objective = goal_objective_text(message)
+        if not objective or not is_goal_candidate(objective):
+            return False
+
+        def start():
+            from hermes_cli.config import load_config
+            from hermes_cli.goal_command import auto_start_goal
+            from hermes_cli.goals import GoalManager
+
+            config = getattr(self, "config", None) if isinstance(getattr(self, "config", None), dict) else {}
+            if not config.get("goals"):
+                config = load_config()
+            if not goal_auto_start_enabled(config):
+                return False
+            manager = GoalManager(
+                session_id=session_id,
+                default_max_turns=self._goal_max_turns_from_config(),
+            )
+            return auto_start_goal(manager, objective) is not None
+
+        try:
+            started = await self._run_in_executor_with_context(start)
+        except Exception as exc:
+            # Auto-start is a convenience mode; the original turn must still run when drafting or
+            # persistence is unavailable.
+            logger.debug("automatic gateway goal start failed: %s", exc)
+            return False
+        if started:
+            logger.info("auto-started goal for gateway message: %s", objective[:120])
+        return bool(started)
+
     async def _warm_goals_session_db(self, label: str) -> None:
         """Warm the goals SessionDB cache off-loop (best-effort): a cold cache runs the state.db
         init on the loop thread and freezes the loop. The executor hop keeps the profile home

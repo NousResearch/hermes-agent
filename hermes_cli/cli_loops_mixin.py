@@ -338,6 +338,43 @@ class CLILoopsMixin:
             return make
         return self._session_bound_manager("_goal_manager", "goal manager", load)
 
+    def _maybe_auto_start_goal(self, message) -> bool:
+        """Opt-in: turn a normal interactive message into a drafted goal when none exists."""
+        from hermes_cli.config import load_config
+        from hermes_cli.goal_command import (
+            auto_start_goal,
+            goal_auto_start_enabled,
+            goal_objective_text,
+            is_goal_candidate,
+        )
+        from tools.process_registry_notifications import SubagentNotification
+
+        if isinstance(message, SubagentNotification):
+            return False
+        try:
+            config = self.config if isinstance(getattr(self, "config", None), dict) else {}
+            if not config.get("goals"):
+                config = load_config()
+            if not goal_auto_start_enabled(config):
+                return False
+            objective = goal_objective_text(message)
+            if not objective or not is_goal_candidate(objective):
+                return False
+            manager = self._get_goal_manager()
+            if manager is None:
+                return False
+            result = auto_start_goal(manager, objective)
+            if result is None:
+                return False
+            logging.info("auto-started goal for interactive message: %s", objective[:120])
+            from cli import _DIM, _RST, _cprint
+            _cprint(f"  {_DIM}⊙ Auto-started a goal for this message (goals.auto_start=true){_RST}")
+            return True
+        except Exception as exc:
+            # This convenience feature must never prevent the original message from running.
+            logging.debug("automatic goal start failed: %s", exc)
+            return False
+
     def _get_heartbeat_manager(self):
         """HeartbeatManager bound to the current session_id (see ``_session_bound_manager``)."""
         def load():

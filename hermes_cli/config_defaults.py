@@ -1276,6 +1276,9 @@ DEFAULT_CONFIG = {
     # goal is satisfied, else a continuation prompt re-enters the session until done, budget
     # exhausted, or paused. Judge failures fail OPEN; the budget is the backstop.
     "goals": {
+        # When true, the first eligible execution request in a session automatically becomes a drafted goal.
+        # Explicit /goal commands and sessions with an existing goal keep their normal behavior.
+        "auto_start": False,
         # Max continuation turns before auto-pause (/goal resume) — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,

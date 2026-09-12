@@ -1948,6 +1948,7 @@ class GatewayTurnMixin:
         history, message_text = prepared.history, prepared.message_text
 
         try:
+            await self._maybe_auto_start_goal(event, session_entry.session_id, message_text)
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,

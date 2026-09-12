@@ -13,7 +13,7 @@ import type {
   WebhooksResponse
 } from '@/types/hermes'
 
-import { hermesApi, profileScoped } from './client'
+import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
 
 export function getMessagingPlatforms(profile?: null | string): Promise<MessagingPlatformsResponse> {
   return hermesApi<MessagingPlatformsResponse>({
@@ -137,33 +137,33 @@ export function revokePairing(platform: string, userId: string, profile?: null |
 // shared JSON store the CLI/dashboard also drive. Enable mutates config and
 // best-effort restarts the gateway; subscription changes hot-reload.
 
-export function getWebhooks(): Promise<WebhooksResponse> {
-  return hermesApi<WebhooksResponse>({
-    ...profileScoped(),
+export function getWebhooks(scope?: ProfileScope): Promise<WebhooksResponse> {
+  return window.hermesDesktop.api<WebhooksResponse>({
+    ...capabilityScoped(scope),
     path: '/api/webhooks'
   })
 }
 
-export function enableWebhooks(): Promise<WebhookEnableResponse> {
-  return hermesApi<WebhookEnableResponse>({
-    ...profileScoped(),
+export function enableWebhooks(scope?: ProfileScope): Promise<WebhookEnableResponse> {
+  return window.hermesDesktop.api<WebhookEnableResponse>({
+    ...capabilityScoped(scope),
     path: '/api/webhooks/enable',
     method: 'POST'
   })
 }
 
-export function createWebhook(body: WebhookCreatePayload): Promise<WebhookCreateResponse> {
-  return hermesApi<WebhookCreateResponse>({
-    ...profileScoped(),
+export function createWebhook(body: WebhookCreatePayload, scope?: ProfileScope): Promise<WebhookCreateResponse> {
+  return window.hermesDesktop.api<WebhookCreateResponse>({
+    ...capabilityScoped(scope),
     path: '/api/webhooks',
     method: 'POST',
     body
   })
 }
 
-export function deleteWebhook(name: string): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
-    ...profileScoped(),
+export function deleteWebhook(name: string, scope?: ProfileScope): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...capabilityScoped(scope),
     path: `/api/webhooks/${encodeURIComponent(name)}`,
     method: 'DELETE'
   })
@@ -171,10 +171,11 @@ export function deleteWebhook(name: string): Promise<{ ok: boolean }> {
 
 export function setWebhookEnabled(
   name: string,
-  enabled: boolean
+  enabled: boolean,
+  scope?: ProfileScope
 ): Promise<{ enabled: boolean; name: string; ok: boolean }> {
-  return hermesApi<{ enabled: boolean; name: string; ok: boolean }>({
-    ...profileScoped(),
+  return window.hermesDesktop.api<{ enabled: boolean; name: string; ok: boolean }>({
+    ...capabilityScoped(scope),
     path: `/api/webhooks/${encodeURIComponent(name)}/enabled`,
     method: 'PUT',
     body: { enabled }

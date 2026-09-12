@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import json
 import logging
 import re
+import time
 from typing import Any, Dict, Optional
 
 from agent.provider_projection import splice_provider_projection
@@ -95,6 +96,27 @@ def _fire_post_api_request_hook(
         pass
 
 
+def _fire_runtime_request_succeeded_hook(
+    agent: Any, *, credential_pool_entry_id: Any, api_request_id: Any,
+) -> None:
+    """Emit narrow success evidence without legacy hook request/response payloads."""
+    if not isinstance(credential_pool_entry_id, str) or not credential_pool_entry_id:
+        return
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+        if has_hook("runtime_request_succeeded"):
+            invoke_hook(
+                "runtime_request_succeeded",
+                credential_pool_entry_id=credential_pool_entry_id,
+                occurred_at=time.time(),
+                api_request_id=str(api_request_id or ""),
+                provider=str(agent.provider or ""),
+                model=str(agent.model or ""),
+            )
+    except Exception:
+        pass
+
+
 def _relay_thinking(agent: Any, content: str) -> None:
     """Relay the model's text to the progress callback: subagents send the first line to
     the parent display; any agent with a structured callback gets ``reasoning.available``."""
@@ -115,7 +137,7 @@ def _relay_thinking(agent: Any, content: str) -> None:
 def normalize_model_response(
     agent: Any, *, response: Any, messages: Any, api_messages: Any, conversation_history: Any,
     api_call_count: Any, api_duration: Any, api_start_time: Any, api_request_id: Any,
-    effective_task_id: Any, turn_id: Any,
+    effective_task_id: Any, turn_id: Any, dispatched_credential_pool_entry_id: Any = None,
 ) -> ResponseIntakeVerdict:
     """Normalize ``response`` into ``assistant_message`` (str content, never dict/list) and run
     the post-response hooks and continuation guards, in the original order."""
@@ -139,6 +161,11 @@ def normalize_model_response(
         agent, response, assistant_message, finish_reason, api_messages=api_messages,
         api_call_count=api_call_count, api_duration=api_duration, api_start_time=api_start_time,
         api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
+    )
+    _fire_runtime_request_succeeded_hook(
+        agent,
+        credential_pool_entry_id=dispatched_credential_pool_entry_id,
+        api_request_id=api_request_id,
     )
 
     content = assistant_message.content

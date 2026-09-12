@@ -151,6 +151,10 @@ _DEFAULT_PAYLOADS = {
         # response, so without this an observer cannot see or price the fan-out.
         "moa_references": None,
     },
+    "runtime_request_succeeded": {
+        "credential_pool_entry_id": "opaque-entry", "occurred_at": 1756000001.234,
+        "api_request_id": "test-turn:api:1", "provider": "openai-codex", "model": "gpt-5",
+    },
     "subagent_stop": {
         "parent_session_id": "parent-sess", "child_role": None,
         "child_summary": "Synthetic summary for hooks test", "child_status": "completed",

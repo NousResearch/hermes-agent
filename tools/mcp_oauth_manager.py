@@ -243,6 +243,22 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     await inner.aclose()
                     retry_after_concurrent_auth = True
                     break
+                # A resource 401 is not proof the refresh credential is dead: the server can reject an
+                # access token before its local expiry (restart/boot with a stale token). Attempt one
+                # silent refresh before the SDK falls into authorization-code flow and opens a browser
+                # tab (#107059). Refresh needs a discovered token endpoint — without metadata
+                # `_refresh_token` would guess `{server_url}/token` (wrong for split-origin providers)
+                # and a failed guess wipes good tokens, so fall through to SDK discovery instead.
+                if (getattr(incoming, "status_code", None) == 401 and self.context.can_refresh_token()
+                        and getattr(getattr(self.context, "oauth_metadata", None), "token_endpoint", None)):
+                    refresh_request = await self._refresh_token()
+                    refresh_response = yield refresh_request
+                    await self._maybe_flag_poisoned_client(refresh_response)
+                    if await self._handle_refresh_response(refresh_response):
+                        self._add_auth_header(request)
+                        await inner.aclose()
+                        retry_after_concurrent_auth = True
+                        break
                 # Sniff the response for a dead-client-registration signal before handing it back to the SDK
                 # (best-effort, GH#36767).
                 await self._maybe_flag_poisoned_client(incoming)

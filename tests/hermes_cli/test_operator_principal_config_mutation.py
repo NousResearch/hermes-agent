@@ -63,14 +63,36 @@ def test_proof_is_bound_one_shot_and_expires(monkeypatch, tmp_path):
         broker.consume(proof, "security.tirith_enabled", "unset", "session-2")
 
 
-def test_policy_writer_refuses_without_proof_and_ordinary_key_stays_writable(monkeypatch, tmp_path):
+@pytest.mark.parametrize("operation", ["set", "unset"])
+def test_policy_writer_refuses_without_proof_byte_identical(monkeypatch, tmp_path, operation):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     path = tmp_path / "config.yaml"
-    path.write_text("approvals:\n  mode: manual\ndisplay:\n  skin: default\n", encoding="utf-8")
+    path.write_bytes(b"approvals:\n  mode: manual\ndisplay:\n  skin: default\n")
     before = path.read_bytes()
-    with pytest.raises(PolicyMutationDenied):
-        config.set_config_value("approvals.mode", "off")
+    writer = config.set_config_value if operation == "set" else config.unset_config_value
+    args = ("approvals.mode", "off") if operation == "set" else ("approvals.mode",)
+    with pytest.raises(PolicyMutationDenied) as exc_info:
+        writer(*args)
+    assert str(exc_info.value) == "operator confirmation proof required"
     assert path.read_bytes() == before
+
+
+def test_tui_raw_writer_refuses_policy_mutation_without_proof_byte_identical(monkeypatch, tmp_path):
+    monkeypatch.setattr("tui_gateway.server._hermes_home", tmp_path)
+    path = tmp_path / "config.yaml"
+    path.write_bytes(b"approvals:\n  mode: manual\n")
+    before = path.read_bytes()
+    from tui_gateway.server import _write_config_key
+    with pytest.raises(PolicyMutationDenied) as exc_info:
+        _write_config_key("approvals.mode", "off")
+    assert str(exc_info.value) == "operator confirmation proof required"
+    assert path.read_bytes() == before
+
+
+def test_ordinary_key_stays_writable(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    path.write_text("display:\n  skin: default\n", encoding="utf-8")
     config.set_config_value("display.skin", "dark")
     assert yaml.safe_load(path.read_text(encoding="utf-8"))["display"]["skin"] == "dark"
 

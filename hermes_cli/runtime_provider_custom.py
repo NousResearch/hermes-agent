@@ -481,6 +481,30 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
     return None
 
 
+def _is_explicit_custom_identity(requested_provider: str, custom_entry: Dict[str, Any]) -> bool:
+    """True when the requested SPELLING denotes an explicit custom identity.
+
+    Explicit identities — the ``custom:<name>`` namespace, a display alias
+    (entry ``name`` differing from the durable ``providers.<key>``), and
+    ``custom_providers`` entries requested by a spelling other than their
+    lifted ``provider_key`` — bind their saved credentials to the entry's configured origin: an endpoint override that
+    leaves that origin must bring its own key. The bare durable key
+    (``providers.<key>`` requested as ``<key>``) keeps the documented
+    field-by-field composition under task overrides: a URL-only override wins,
+    the entry fills the blanks including the key (pinned by
+    test_named_provider_defaults_compose_under_task_overrides).
+    Shared predicate for the runtime and auxiliary foreign-origin guards —
+    keep them agreeing on ONE trust rule.
+    """
+    requested_norm = _normalize_custom_provider_name(requested_provider or "")
+    if not requested_norm:
+        return False
+    if requested_norm == "custom" or requested_norm.startswith("custom:"):
+        return True
+    provider_key = _normalize_custom_provider_name(_clean(custom_entry.get("provider_key", "")))
+    return not provider_key or requested_norm != provider_key
+
+
 def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
                                   explicit_base_url: Optional[str] = None,
                                   target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -508,11 +532,20 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     if not base_url:
         return None
     configured_base = str(custom_provider.get("base_url") or "").strip().rstrip("/")
-    endpoint_overridden = bool(
+    origin_left_configured = bool(
         explicit_base_url and configured_base
         and _normalize_base_url_for_match(base_url) != _normalize_base_url_for_match(configured_base)
     )
-    pool_result = None if endpoint_overridden else rp._try_resolve_from_custom_pool(
+    # Full fail-closed (no saved credential at all) only for explicit custom
+    # identities; the bare durable ``providers.<key>`` spelling keeps the
+    # documented field-by-field composition of the ENTRY's own credential.
+    endpoint_overridden = origin_left_configured and _is_explicit_custom_identity(
+        requested_provider, custom_provider
+    )
+    # Pool candidates match name-first without origin affinity, so the pool
+    # stays fail-closed for EVERY spelling once the destination left the
+    # configured origin — a URL-only override must not exfiltrate a pool key.
+    pool_result = None if origin_left_configured else rp._try_resolve_from_custom_pool(
         base_url, "custom", custom_provider.get("api_mode"),
         pool_candidates=_custom_pool_candidates_for_request(
             rp, base_url, requested_provider, custom_provider,

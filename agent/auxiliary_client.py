@@ -4486,12 +4486,16 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
 
 def _named_custom_api_key(
     custom_entry: Dict[str, Any], provider: str, custom_base: str, *, original_provider: str = "",
+    allow_pool: bool = True,
 ) -> Any:
     """Credential for a named custom provider: inline api_key → key_env → key_cmd → credential pool → placeholder.
     Aux resolves named custom providers here, not via _resolve_named_custom_runtime, so key_cmd must be
     honoured at the same precedence or every aux call 401s. Pool candidates are supplied by the
     configured custom entry, which preserves durable ``providers.<key>`` and legacy ``custom:<name>``
-    identities without consulting an unrelated built-in pool."""
+    identities without consulting an unrelated built-in pool. ``allow_pool=False`` composes only the
+    entry's own inline/env/cmd credential — pool candidates match name-first without origin affinity,
+    so a caller that already knows the destination left the configured origin must keep the pool
+    fail-closed for EVERY spelling."""
     custom_key: Any = (custom_entry.get("api_key") or "").strip()
     custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
     if not custom_key and custom_key_env:
@@ -4500,7 +4504,7 @@ def _named_custom_api_key(
     if custom_key_cmd:
         from agent.command_token_source import build_command_token_provider
         custom_key = build_command_token_provider(custom_key_cmd, custom_entry.get("name") or provider) or custom_key
-    if not custom_key:
+    if not custom_key and allow_pool:
         with contextlib.suppress(Exception):
             from agent.credential_pool import custom_provider_pool_key_candidates
             pool_name = custom_entry.get("provider_key") or custom_entry.get("name") or provider
@@ -4846,6 +4850,19 @@ def _named_custom_openai_wire_client(custom_base: str, custom_key: Any):
     return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
 
 
+def _aux_explicit_custom_identity(requested_provider: str, custom_entry: Dict[str, Any]) -> bool:
+    """Shared foreign-origin trust rule (see runtime_provider_custom._is_explicit_custom_identity).
+
+    Import-optional like every runtime_provider collaborator in this module;
+    unresolvable import fails closed (treat as explicit → guard applies).
+    """
+    try:
+        from hermes_cli.runtime_provider_custom import _is_explicit_custom_identity
+        return _is_explicit_custom_identity(requested_provider, custom_entry)
+    except ImportError:
+        return True
+
+
 def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResult]:
     """Named custom provider (config.yaml providers dict / custom_providers list); None if no entry matches."""
     from hermes_cli.runtime_provider import _get_named_custom_provider
@@ -4866,16 +4883,34 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     custom_base = (req.explicit_base_url or custom_entry.get("base_url") or "").strip()
     configured_base = str(custom_entry.get("base_url") or "").strip()
     key_for_explicit_endpoint = (req.explicit_api_key or "").strip()
-    if req.explicit_base_url and configured_base and (
-        base_url_origin(custom_base) != base_url_origin(configured_base)
+    origin_left_configured = bool(
+        req.explicit_base_url
+        and configured_base
+        and base_url_origin(custom_base) != base_url_origin(configured_base)
+    )
+    if origin_left_configured and _aux_explicit_custom_identity(
+        req.original_provider or req.provider, custom_entry
     ):
-        # The entry's inline/env/cmd/pool credentials belong to its configured
-        # origin. An endpoint override crosses a trust boundary and must carry
-        # its own explicit key (or remain keyless), never borrow saved auth.
+        # An explicit custom identity (``custom:<name>``, a display alias, or a
+        # legacy ``custom_providers`` entry) binds its inline/env/cmd/pool
+        # credentials to the entry's configured origin. An endpoint override
+        # that leaves that origin crosses a trust boundary and must carry its
+        # own explicit key (or remain keyless), never borrow saved auth.
+        # The bare durable ``providers.<key>`` spelling keeps the documented
+        # field-by-field composition — a URL-only task override wins and the
+        # entry fills the blanks including the key (pinned by
+        # test_named_provider_defaults_compose_under_task_overrides). Same
+        # predicate as the runtime guard (runtime_provider_custom).
         custom_key = key_for_explicit_endpoint or "no-key-required"
     else:
+        # Bare-spelling composition covers the ENTRY's own credential
+        # (inline api_key / key_env / key_cmd) only. Credential-pool selection
+        # matches name-first without origin affinity, so once the destination
+        # left the configured origin the pool stays fail-closed for every
+        # spelling — otherwise a URL-only override exfiltrates a live pool key.
         custom_key = key_for_explicit_endpoint or _named_custom_api_key(
             custom_entry, provider, custom_base, original_provider=req.original_provider,
+            allow_pool=not origin_left_configured,
         )
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "

@@ -110,16 +110,32 @@ def test_catalog_prices_ple_against_the_active_engine(client, monkeypatch):
     monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
     old_rows = client.get("/api/local-models/catalog").json()["models"]
     old = next(row for row in old_rows if row["id"] == "qwen3.8-flash-next")
+    assert old["needs_engine"] is True
     assert old["spilled"] is True
     assert "disk_backed_lookup_bytes" not in old
 
     monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10679"])
     new_rows = client.get("/api/local-models/catalog").json()["models"]
     new = next(row for row in new_rows if row["id"] == "qwen3.8-flash-next")
+    assert new["needs_engine"] is False
     assert new["spilled"] is False
     assert new["disk_backed_lookup_bytes"] == 28_800_138_240
     assert "disk-backed lookup table" in new["fit_summary"]
     assert "fully on your GPU" not in new["quant_reason"]
+
+
+def test_qwen_download_requires_the_lazy_lookup_engine(client, monkeypatch):
+    """The install path must not stage Flash Next on a build that lacks its automatic PLE mmap path."""
+    from hermes_cli.local_runtime import binaries
+    from hermes_cli.web_routers import local_models
+
+    monkeypatch.setattr(local_models, "_runtime_section", lambda: {"tag": "b10679"})
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+
+    response = client.post("/api/local-models/download", json={"model_id": "qwen3.8-flash-next"})
+
+    assert response.status_code == 409
+    assert "b10679" in response.json()["detail"]
 
 
 def test_advanced_plan_uses_the_active_engine_for_sideloaded_models(monkeypatch):

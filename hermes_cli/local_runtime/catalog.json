@@ -78,7 +78,7 @@
         "size_bytes": 907542944,
         "local": "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
       },
-      "min_engine": "b10678",
+      "min_engine": "b10679",
       "quality": 95,
       "decode_fraction": 0.08
     },

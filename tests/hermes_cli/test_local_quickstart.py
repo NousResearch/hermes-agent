@@ -56,13 +56,14 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
     """Fresh machine: install runtime -> download recommended -> activate.
     Each leg is asserted by its observable call, in order."""
     calls: list[str] = []
+    installed_tags: list[str] = []
 
     # Leg 1: no runtime installed yet; install is the stubbed binaries call.
     monkeypatch.setattr(
         "hermes_cli.local_runtime.binaries.installed_tags", lambda: [])
     monkeypatch.setattr(
         "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
-        lambda tag, backend, progress=None: calls.append("install"))
+        lambda tag, backend, progress=None: installed_tags.append(tag) or calls.append("install"))
     # Asset availability is platform/release-specific; this route contract is sequencing, not
     # the binary resolver (which has its own table tests).
     monkeypatch.setattr(
@@ -103,6 +104,7 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
     assert job["kind"] == "quickstart"
     # Order is the contract: engine, weights, server, default.
     assert calls[0] == "install"
+    assert int(installed_tags[0].lstrip("b")) >= 10679
     assert "download" in calls
     assert calls.index("install") < calls.index("download") < calls.index("assign")
 

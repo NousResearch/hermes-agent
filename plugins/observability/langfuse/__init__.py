@@ -507,6 +507,17 @@ def _usage_and_cost(response: Any, *, provider: str, model: str, base_url: str, 
         return {}, {}
 
 
+def _trace_tags(platform: str) -> list[str]:
+    """Return stable, content-free tags for the root Langfuse trace."""
+    normalized_platform = platform.strip().lower()
+    tags = ["hermes", "langfuse"]
+    if normalized_platform:
+        tags.append(f"platform:{normalized_platform}")
+    trigger = "cron" if normalized_platform == "cron" else "interactive"
+    tags.append(f"trigger:{trigger}")
+    return tags
+
+
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse,
                       turn_id: str = "", api_request_id: str = "") -> TraceState:
@@ -531,7 +542,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     if propagate_attributes is not None:
         try:
             with propagate_attributes(session_id=session_id or task_key, trace_name="Hermes turn",
-                                      tags=["hermes", "langfuse"]):
+                                      tags=_trace_tags(platform)):
                 root_ctx, root_span = open_root()
         except Exception:
             root_ctx = None

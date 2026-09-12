@@ -1138,6 +1138,87 @@ class TestCostTotal:
 # Capture modes: metadata | sanitized | full  (HERMES_LANGFUSE_CAPTURE)
 # ---------------------------------------------------------------------------
 
+class TestTraceTags:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    @pytest.mark.parametrize(
+        ("platform", "expected"),
+        [
+            ("cron", ["hermes", "langfuse", "platform:cron", "trigger:cron"]),
+            (
+                "telegram",
+                ["hermes", "langfuse", "platform:telegram", "trigger:interactive"],
+            ),
+            ("", ["hermes", "langfuse", "trigger:interactive"]),
+        ],
+    )
+    def test_trace_tags_expose_platform_and_trigger(self, platform, expected):
+        mod = self._fresh_plugin()
+
+        assert mod._trace_tags(platform) == expected
+
+    def test_root_trace_propagates_derived_tags(self, monkeypatch):
+        mod = self._fresh_plugin()
+        seen = {}
+
+        class _Attributes:
+            def __enter__(self):
+                return None
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Span:
+            def update(self, **kw):
+                pass
+
+            def end(self, **kw):
+                pass
+
+            def set_trace_io(self, **kw):
+                pass
+
+        class _RootCM:
+            def __enter__(self):
+                return _Span()
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return "t1"
+
+            def start_as_current_observation(self, **kw):
+                return _RootCM()
+
+        def _propagate_attributes(**kwargs):
+            seen.update(kwargs)
+            return _Attributes()
+
+        monkeypatch.setattr(mod, "propagate_attributes", _propagate_attributes)
+
+        mod._start_root_trace(
+            "k",
+            task_id="t",
+            session_id="s",
+            platform="cron",
+            provider="p",
+            model="m",
+            api_mode="chat",
+            messages=[{"role": "user", "content": "hi"}],
+            client=_Client(),
+        )
+
+        assert seen["tags"] == [
+            "hermes",
+            "langfuse",
+            "platform:cron",
+            "trigger:cron",
+        ]
+
 class TestCaptureModes:
     def _fresh_plugin(self):
         sys.modules.pop("plugins.observability.langfuse", None)

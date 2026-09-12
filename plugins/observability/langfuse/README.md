@@ -40,6 +40,9 @@ Generation observations include the Hermes system prompt when the provider
 uses a separate `system` param (Anthropic Messages API). Open an **LLM call**
 child span to inspect `role: system` (truncated via `HERMES_LANGFUSE_MAX_CHARS`).
 
+Root traces include `platform:<name>` and `trigger:cron|interactive` tags, so
+scheduled runs can be filtered separately from interactive sessions.
+
 ## Optional tuning
 
 ```bash

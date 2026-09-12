@@ -60,6 +60,38 @@ def test_compatible_third_party_endpoint_omits_server_only_tools():
     assert converted == []
 
 
+def test_oauth_forcing_a_server_tool_keeps_its_canonical_name():
+    """OAuth renames client tools to ``mcp__*`` but leaves server tools alone — in ``tools[]``
+    and in a forced ``tool_choice`` alike, or the request names a tool that does not exist."""
+    from agent.anthropic_adapter import build_anthropic_kwargs
+
+    tools = [
+        _tool("web_search", {
+            "type": "web_search_20250305", "name": "web_search", "max_uses": 5,
+        }),
+        {"type": "function", "function": {
+            "name": "read_file", "description": "read_file",
+            "parameters": {"type": "object", "properties": {}},
+        }},
+    ]
+    common = dict(
+        model="claude-sonnet-4-6", messages=[{"role": "user", "content": "hi"}],
+        tools=tools, max_tokens=1024, reasoning_config=None, is_oauth=True,
+        base_url="https://api.anthropic.com",
+    )
+
+    forced = build_anthropic_kwargs(tool_choice="web_search", **common)
+
+    assert {t["name"]: t.get("type") for t in forced["tools"]} == {
+        "web_search": "web_search_20250305", "mcp__read_file": None,
+    }
+    assert forced["tool_choice"] == {"type": "tool", "name": "web_search"}
+    # Client tools still take the OAuth wire name.
+    assert build_anthropic_kwargs(tool_choice="read_file", **common)["tool_choice"] == {
+        "type": "tool", "name": "mcp__read_file",
+    }
+
+
 def test_anthropic_native_endpoint_detection_uses_hostname_boundaries():
     assert not _is_third_party_anthropic_endpoint("https://api.anthropic.com/v1")
     assert _is_third_party_anthropic_endpoint(

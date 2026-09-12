@@ -195,6 +195,8 @@ def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str
     record = _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
     if record is not None and record.get('admission_id'):
         home = Path(profile_home).resolve()
+        # The authority compares the stored author to the retry payload; omitting it is a conflict.
         return authority_delivery(home, dict(id=delivery_id,
-            profile=home.name if home.parent.name == 'profiles' else 'default', message=record['message']))
+            profile=home.name if home.parent.name == 'profiles' else 'default', message=record['message'],
+            **({'author': dict(record['author'])} if record.get('author') else {})))
     return record

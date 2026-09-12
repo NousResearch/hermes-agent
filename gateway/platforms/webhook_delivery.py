@@ -67,9 +67,12 @@ def retained_destination(adapter, chat_id):
     # delivery id is unique per route, so an unscoped caller may search every served ledger.
     scoped = active_authority(runner)
     candidates = [scoped] if scoped is not None else all_authorities(runner)
+    # Only the signed ingress admission carries the destination; later automation rows
+    # (process/watch completions) on the same chat share its source but never compete.
     query = """SELECT payload_json FROM session_admissions
         WHERE json_extract(payload_json, '$.native_text_v1.source.chat_id')=?
-          AND json_extract(payload_json, '$.native_text_v1.source.platform')='webhook'"""
+          AND json_extract(payload_json, '$.native_text_v1.source.platform')='webhook'
+          AND json_extract(payload_json, '$.native_text_v1.automation') IS NULL"""
     rows = [row for authority in candidates for row in authority.db._read_all(query, (chat_id,))]
     if len(rows) != 1:
         raise RuntimeStoreError('not_found')

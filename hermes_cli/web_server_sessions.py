@@ -192,11 +192,22 @@ def _session_db_path_for_profile(profile: Optional[str]) -> Path:
 
 
 def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
-    """Open a SessionDB for ``profile`` (None/empty = this process's own state.db).
+    """Open the profile's configured store (None/empty = this process's own).
 
-    Access-mode semantics: see :func:`_open_session_db_at_path`.
+    SQLite retains its bootstrap/schema-heal path. PostgreSQL readers must reach
+    the configured store even when no local ``state.db`` exists.
     """
-    return _open_session_db_at_path(_session_db_path_for_profile(profile), read_only=read_only)
+    from hermes_state_postgres import home_selects_postgres, open_store_for_home, resolve_postgres_dsn
+
+    db_path = _session_db_path_for_profile(profile)
+    if profile:
+        if home_selects_postgres(db_path.parent):
+            return open_store_for_home(db_path.parent, read_only=read_only)
+    elif dsn := resolve_postgres_dsn():
+        from hermes_state import SessionDB
+
+        return SessionDB(db_path=db_path, read_only=read_only, postgres_dsn=dsn)
+    return _open_session_db_at_path(db_path, read_only=read_only)
 
 
 # In-process throttle for the opportunistic auto-archive trigger, keyed by

@@ -458,18 +458,31 @@ class SessionCompressionMixin:
         now = time.time()
         expires_at = now + ttl_seconds
         def _do(conn):
+            if self._is_postgres:
+                from hermes_state_postgres import acquire_compression_lock_sql
+
+                return acquire_compression_lock_sql(conn, session_id, holder, now, expires_at)
             return _claim_lease_row(
                 conn, "compression_locks", "session_id", session_id, holder, now, expires_at,
                 lambda h, e: e < now or _compression_lock_holder_process_is_dead(h))
 
         try:
-            acquired, reclaimed_holder = self._execute_write(_do)
+            result = self._execute_write(_do)
+            if not (isinstance(result, tuple) and len(result) == 2):
+                raise TypeError("try_acquire_compression_lock: expected an (acquired, reclaimed_holder) 2-tuple")
+            acquired, reclaimed_holder = result
             if reclaimed_holder:
                 logger.warning("Reclaimed stale compression lock for session=%s (holder=%s)",
                                session_id, reclaimed_holder)
             return bool(acquired)
         except sqlite3.Error as exc:
             # False makes the caller skip compression — safe when the lock subsystem is broken.
+            logger.warning("try_acquire_compression_lock(%s) failed: %s", session_id, exc)
+            return False
+
+        except Exception as exc:
+            if not self._is_postgres or isinstance(exc, (TypeError, ValueError, AttributeError, KeyError)):
+                raise
             logger.warning("try_acquire_compression_lock(%s) failed: %s", session_id, exc)
             return False
 
@@ -531,7 +544,7 @@ class SessionCompressionMixin:
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             return _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
-                lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
+                lambda h, e: float(e) <= now or (not self._is_postgres and _compression_lock_holder_process_is_dead(h)),
             )[0]
         return bool(self._execute_write(_do, patience_s=patience_s))
 
@@ -559,10 +572,17 @@ class SessionCompressionMixin:
                 if self.try_acquire_session_turn_lease(
                     session_id, holder, ttl_seconds=ttl_seconds, patience_s=acquire_patience_s):
                     return True
-            except sqlite3.Error as exc:
+            except Exception as exc:
+                if not self._is_postgres and not isinstance(exc, sqlite3.Error):
+                    raise
                 # Long holder transactions can exhaust one write-patience budget; keep
                 # polling until wait_seconds or should_abort.
-                if classify_persistence_error(exc) != "locked":
+                retryable = False
+                if self._is_postgres:
+                    from hermes_state_postgres import is_postgres_retryable
+
+                    retryable = is_postgres_retryable(exc)
+                if not retryable and classify_persistence_error(exc) != "locked":
                     raise
             now = time.monotonic()
             remaining = deadline - now

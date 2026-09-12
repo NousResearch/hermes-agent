@@ -216,19 +216,24 @@ def _recency(s: Dict[str, Any]) -> Any:
 
 def _read_profile_db(name: str, home, errors: Optional[List[Dict[str, str]]],
                      fn: Callable[[Any], Any]) -> Any:
-    """``fn(db)`` against the profile's read-only state.db; None when the file is missing,
+    """``fn(db)`` against the profile's read-only store; None when the store is missing,
     the open fails or ``fn`` raises (warned once, recorded in ``errors`` when given).
 
     Read-only on the healthy path: this runs on every sidebar refresh, so it must not
     routinely DDL/write-lock another profile's live DB. The open helper's stale-schema probe
     performs a ONE-TIME writable open when the store predates a schema addition — read-only
     opens skip column reconciliation and would otherwise fail here on every refresh."""
+    from hermes_state_postgres import home_selects_postgres, open_store_for_home
+
     db_path = Path(home) / "state.db"
-    if not db_path.exists():
-        return None
     db = None
     try:
-        db = _open_session_db_at_path(db_path, read_only=True)
+        if home_selects_postgres(home):
+            db = open_store_for_home(home, read_only=True)
+        elif db_path.exists():
+            db = _open_session_db_at_path(db_path, read_only=True)
+        else:
+            return None
         return fn(db)
     except Exception as exc:
         _warn_profile_read_error(name, exc)
@@ -459,19 +464,31 @@ def get_profiles_sessions_sidebar(
         # page, and a total that shrank when you scrolled would be worse than no total at all.
         slices = {"recents": _slice(db, "recents"), "usage": db.usage_totals(),
                   "cron": _slice(db, "cron"), "messaging": _slice(db, "messaging")}
-        _sidebar_profile_cache_put(cache_key, slices)
+        if cache_key is not None:
+            _sidebar_profile_cache_put(cache_key, slices)
         return slices
 
     for name, home in targets:
         if recents_scope != "all" and name != recents_scope:
             continue
+        from hermes_state_postgres import home_selects_postgres
+
         db_path = Path(home) / "state.db"
-        if not db_path.exists():
+        try:
+            postgres = home_selects_postgres(home)
+        except Exception as exc:
+            _warn_profile_read_error(name, exc)
+            errors.append({"profile": name, "error": str(exc)})
             continue
-        profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
-                             tuple(recents_exclude_list), cap["cron"], cap["messaging"],
-                             tuple(messaging_exclude_list))
-        slices = _sidebar_profile_cache_get(profile_cache_key)
+        if not postgres and not db_path.exists():
+            continue
+        # File fingerprints cannot detect writes to PostgreSQL. The enclosing
+        # response cache still coalesces polls for five seconds; each fresh
+        # response must query the remote store again.
+        profile_cache_key = None if postgres else (
+            str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
+            tuple(recents_exclude_list), cap["cron"], cap["messaging"], tuple(messaging_exclude_list))
+        slices = _sidebar_profile_cache_get(profile_cache_key) if profile_cache_key is not None else None
         if slices is None:
             slices = _read_profile_db(name, home, errors,
                                       lambda db: _build_slices(db, profile_cache_key))

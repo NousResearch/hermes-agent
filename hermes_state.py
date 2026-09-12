@@ -27,7 +27,7 @@ from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
-from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
+from hermes_state_common import SCHEMA_VERSION as _SCHEMA_VERSION, escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
@@ -427,7 +427,9 @@ class SessionDB(
         except Exception as exc:
             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
+    def __init__(
+        self, db_path: Path = None, read_only: bool = False, *, postgres_dsn: Optional[str] = None,
+    ):
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
@@ -472,6 +474,8 @@ class SessionDB(
         # _fts_cjk_loaded: tokenizer on the writer connection; _fts_cjk_available: messages_fts_cjk
         # is queryable AND not marked stale.
         self._fts_cjk_loaded = self._fts_cjk_available = self._fts_unavailable_warned = False
+        self._is_postgres = False
+        self._postgres_dsn = postgres_dsn
         self._conn = None
         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.
         self._token_queue: deque = deque()
@@ -485,6 +489,15 @@ class SessionDB(
         self._shared_registry_owned = False
         initialization_complete = False
         try:
+            if db_path is None or postgres_dsn is not None:
+                from hermes_state_postgres import maybe_open_postgres
+
+                self._conn = maybe_open_postgres(read_only, _SCHEMA_VERSION, dsn_override=postgres_dsn)
+                self._is_postgres = self._conn is not None
+                if self._is_postgres:
+                    self._postgres_dsn = postgres_dsn or self._conn._dsn
+                    initialization_complete = True
+                    return
             if read_only:
                 self._open_read_only()
             else:
@@ -776,6 +789,11 @@ class SessionDB(
                 f"SessionDB for {self.db_path} was closed (read-only handle); "
                 f"cannot serve a {context} after close()"
             )
+        if self._is_postgres:
+            from hermes_state_postgres import connect_postgres
+
+            self._conn = connect_postgres(self._postgres_dsn)
+            return
         # A reopen resolves the PATH again: a replaced file would be written through stale WAL/shm
         # assumptions; a quarantined handle must never hand a fresh connection to a damaged file.
         if self._db_corrupt and not (self._db_replaced or self._db_file_was_replaced()):
@@ -784,7 +802,8 @@ class SessionDB(
                 f"structural corruption; refusing to reopen for a {context} "
                 "after close(). "
             )
-        self._halt_if_db_generation_changed()
+        if not self._is_postgres:
+            self._halt_if_db_generation_changed()
         logger.warning(
             "state.db connection for %s was closed while a %s was still in "
             "flight — reopening (teardown/worker race, #94736)", self.db_path, context,
@@ -848,7 +867,7 @@ class SessionDB(
                         raise
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
+                if not self._is_postgres and self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
                     self._try_wal_checkpoint()
                 if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
                     self._try_incremental_merge_fts()
@@ -911,6 +930,13 @@ class SessionDB(
                     # What survives both checks is structural damage: quarantine.
                     if self._is_structural_corruption_error(exc):
                         self._halt_db_corrupt(exc)
+                raise
+            except Exception as exc:
+                if self._is_postgres:
+                    from hermes_state_postgres import is_postgres_retryable
+
+                    if is_postgres_retryable(exc) and self._sleep_before_write_retry(deadline, patience_s):
+                        continue
                 raise
 
     def _write_sql(
@@ -1108,7 +1134,8 @@ class SessionDB(
             raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
         if self._db_wal_generation_lost:
             raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
-        self._halt_if_db_generation_changed()
+        if not self._is_postgres:
+            self._halt_if_db_generation_changed()
 
     @classmethod
     def _is_structural_corruption_error(cls, exc: BaseException) -> bool:
@@ -1330,7 +1357,7 @@ class SessionDB(
                         "before restarting, then run `hermes sessions recover --source %s --inspect-only`.",
                         self.db_path, quarantine_reason, self.db_path,
                     )
-                elif not self.read_only and not generation_lost:  # PASSIVE, not TRUNCATE (see docstring)
+                elif not self._is_postgres and not self.read_only and not generation_lost:  # PASSIVE, not TRUNCATE (see docstring)
                     try:
                         # Every cron run_agent opens+closes a transient SessionDB, so a TRUNCATE here fires
                         # a full WAL reset many times/hour, racing the gateway's long-lived writer on large
@@ -1388,8 +1415,9 @@ class SessionDB(
     CANONICAL_BOT_CHAT_TITLE = "Bot Chat"
 
     # ── Message storage constants (SessionMessagesMixin) ──
-    # Prefix marking JSON-encoded structured content; NUL cannot collide with text.
-    _CONTENT_JSON_PREFIX = "\x00json:"
+    # PostgreSQL text rejects NUL; keep reading the legacy SQLite prefix.
+    _CONTENT_JSON_PREFIX = "\x01json:"
+    _CONTENT_JSON_PREFIX_LEGACY = "\x00json:"
     #: Reactions live inside ``display_metadata`` so they survive row rewrites.
     REACTIONS_METADATA_KEY = "reactions"
     # Columns every conversation projection decodes; ``active`` rides along so a display read

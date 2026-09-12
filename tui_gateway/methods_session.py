@@ -94,8 +94,7 @@ def _make_agent_in_context(sid: str, key: str, **kwargs):
 def _profile_session_db(profile_home):
     """``(db, owns)``: a DEDICATED handle on ``profile_home``'s state.db, else the shared launch db."""
     if profile_home:
-        from hermes_state_registry import acquire
-        return acquire(Path(profile_home) / "state.db"), True
+        return _open_profile_session_db(profile_home), True
     return _get_db(), False
 
 
@@ -849,11 +848,8 @@ def _(rid, params: dict) -> dict:
             return _resume_eager(ctx)
         return _resume_deferred(ctx) if ctx.defer_history else _resume_cold(ctx)
     finally:
-        # Refcounting alone does not release the sqlite fds: SessionDB pins ITSELF (atexit.register) once its
-        # background token writer starts; only close() unregisters.
         if ctx.owns_db and ctx.db is not None:
-            with contextlib.suppress(Exception):
-                ctx.db.close()
+            _release_db(ctx.db)
 
 
 # ── cwd / workspace / live-session bookkeeping ───────────────────────

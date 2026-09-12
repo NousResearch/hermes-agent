@@ -1,7 +1,6 @@
 """CLI handlers for ``hermes migrate ...``.
 
-Currently exposes only ``hermes migrate xai`` — diagnoses and (with --apply) rewrites references to
-xAI models retired on May 15, 2026.
+Migrates retired xAI models and copies SQLite state into PostgreSQL.
 """
 from __future__ import annotations
 
@@ -15,10 +14,16 @@ from hermes_cli.config import load_config
 
 def cmd_migrate(args: Any) -> int:
     """Dispatcher for ``hermes migrate <subtype>``."""
-    if getattr(args, "migrate_type", None) == "xai":
+    sub = getattr(args, "migrate_type", None)
+    if sub == "xai":
         return cmd_migrate_xai(args)
 
-    print("usage: hermes migrate xai [--apply] [--no-backup]", file=sys.stderr)
+    if sub == "state-to-postgres":
+        from hermes_cli.migrate_postgres import cmd_migrate_state_to_postgres
+
+        return cmd_migrate_state_to_postgres(args)
+
+    print("usage: hermes migrate {xai,state-to-postgres} [options]", file=sys.stderr)
     return 2
 
 

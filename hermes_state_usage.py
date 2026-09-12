@@ -27,13 +27,12 @@ def _token_update_sql(delta: bool) -> str:
         return f"COALESCE({col}, 0) + ?" if delta else "?"
     counters = "".join(f"                   {c} = {add(c)},\n" for c in _TOKEN_COUNTERS)
     estimated = "COALESCE(estimated_cost_usd, 0) + COALESCE(?, 0)" if delta else "COALESCE(?, 0)"
+    actual = ("COALESCE(actual_cost_usd + COALESCE(?, 0.0), actual_cost_usd, ?)"
+              if delta else "COALESCE(?, actual_cost_usd, ?)")
     return (
         "UPDATE sessions SET\n" + counters
         + f"""                   estimated_cost_usd = {estimated},
-                   actual_cost_usd = CASE
-                       WHEN ? IS NULL THEN actual_cost_usd
-                       ELSE {add0("actual_cost_usd")}
-                   END,
+                   actual_cost_usd = {actual},
                    cost_status = COALESCE(?, cost_status),
                    cost_source = COALESCE(?, cost_source),
                    pricing_version = COALESCE(?, pricing_version),
@@ -58,16 +57,16 @@ _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode, task)
                DO UPDATE SET
-                   api_call_count = api_call_count + excluded.api_call_count,
-                   input_tokens = input_tokens + excluded.input_tokens,
-                   output_tokens = output_tokens + excluded.output_tokens,
-                   cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
-                   cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
-                   reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
-                   estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
-                   actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd,
-                   cost_status = COALESCE(excluded.cost_status, cost_status),
-                   cost_source = COALESCE(excluded.cost_source, cost_source),
+                   api_call_count = session_model_usage.api_call_count + excluded.api_call_count,
+                   input_tokens = session_model_usage.input_tokens + excluded.input_tokens,
+                   output_tokens = session_model_usage.output_tokens + excluded.output_tokens,
+                   cache_read_tokens = session_model_usage.cache_read_tokens + excluded.cache_read_tokens,
+                   cache_write_tokens = session_model_usage.cache_write_tokens + excluded.cache_write_tokens,
+                   reasoning_tokens = session_model_usage.reasoning_tokens + excluded.reasoning_tokens,
+                   estimated_cost_usd = session_model_usage.estimated_cost_usd + excluded.estimated_cost_usd,
+                   actual_cost_usd = session_model_usage.actual_cost_usd + excluded.actual_cost_usd,
+                   cost_status = COALESCE(excluded.cost_status, session_model_usage.cost_status),
+                   cost_source = COALESCE(excluded.cost_source, session_model_usage.cost_source),
                    last_seen = excluded.last_seen"""
 
 

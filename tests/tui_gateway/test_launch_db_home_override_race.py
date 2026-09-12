@@ -24,6 +24,9 @@ def launch_db_env(monkeypatch, tmp_path):
     foreign_home.mkdir()
 
     monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    import hermes_state
+    # Exercise dynamic temp-home resolution, not conftest's fixed DB constant.
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     monkeypatch.setattr(server, "_hermes_home", str(launch_home))
     monkeypatch.setattr(server, "_db", None)
     monkeypatch.setattr(server, "_db_error", None)

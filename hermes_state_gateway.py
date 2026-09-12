@@ -62,12 +62,14 @@ _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = 
                          COALESCE(s.last_activity_at, s.started_at) DESC
                 LIMIT 1
                 """
+# The standalone nullable owner bind needs a type on PostgreSQL; the other
+# owner binds are separate parameters and cannot supply its type.
 _PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.source = ?
                   AND COALESCE(s.user_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_type, '') = COALESCE(?, '')
                   AND COALESCE(s.thread_id, '') = COALESCE(?, '')
-                  AND (? IS NULL OR COALESCE(s.profile_name, ?) = ?)
+                  AND (CAST(? AS TEXT) IS NULL OR COALESCE(s.profile_name, ?) = ?)
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))
                   AND (COALESCE(s.message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1

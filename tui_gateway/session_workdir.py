@@ -343,8 +343,7 @@ def _workdir_owner_db(session: dict, fail_log: str):
     db, close_db = None, False
     if profile_home := session.get("profile_home"):
         try:
-            from hermes_state_registry import acquire
-            db, close_db = acquire(Path(profile_home) / "state.db"), True
+            db, close_db = _open_profile_session_db(profile_home), True
         except Exception:
             logger.debug(fail_log, exc_info=True)
             db = _WORKDIR_DB_OPEN_FAILED

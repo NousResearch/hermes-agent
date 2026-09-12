@@ -383,13 +383,10 @@ _start_idle_reaper()
 def _get_db():
     global _db, _db_error
     if _db is None:
-        from hermes_state_registry import acquire
         try:
-            # Pin to import-time launch home (#102526). A bare acquire() follows
-            # get_hermes_home(), which the desktop multiplex cron ticker temporarily
-            # overrides per profile at startup — first touch inside a foreign window
-            # permanently binds this process-wide handle to the wrong state.db.
-            _db, _db_error = acquire(Path(_hermes_home) / "state.db"), None
+            # Pin to import-time launch home (#102526). Ambient get_hermes_home()
+            # may point at another profile during a multiplex cron tick.
+            _db, _db_error = _open_profile_session_db(_hermes_home), None
         except Exception as exc:
             _db_error = str(exc)
             logger.warning("TUI session store unavailable — continuing without state.db features: %s", exc)
@@ -419,15 +416,28 @@ def _transfer_db_to_agent(agent, db) -> bool:
 
 
 def _open_profile_session_db(profile_home):
-    """Open a DEDICATED handle on ``profile_home``'s ``state.db`` — FAIL CLOSED: a silent fallback to the
-    launch ``state.db`` would bleed rows into the wrong profile's store exactly when the profile store is
-    briefly unopenable (locked, mid-restore); callers let the error abort the build (→ ``agent_error``)."""
+    """Open the profile's configured store; never fall back to the launch store.
+
+    Profile homes also cover custom/default locations, so resolving the backend
+    from a guessed profile name or ambient context would split session history.
+    """
+    from hermes_state_postgres import home_selects_postgres, open_store_for_home
     from hermes_state_registry import acquire
-    db_path = Path(profile_home) / "state.db"
+
     try:
-        return acquire(db_path)
+        if Path(profile_home).resolve() == Path(_hermes_home).resolve():
+            # Launch credentials may be injected into the process environment.
+            # Pin config/path resolution even inside a foreign profile's scope.
+            token = set_hermes_home_override(_hermes_home)
+            try:
+                return acquire()
+            finally:
+                reset_hermes_home_override(token)
+        if home_selects_postgres(profile_home):
+            return open_store_for_home(profile_home)
+        return acquire(Path(profile_home) / "state.db")
     except Exception as exc:
-        raise RuntimeError(f"profile session store unavailable: {db_path}: {exc}") from exc
+        raise RuntimeError(f"profile session store unavailable: {profile_home}: {exc}") from exc
 
 
 @contextlib.contextmanager
@@ -441,8 +451,7 @@ def _profile_db(params: dict | None = None):
         db, owns = _get_db(), False
     else:
         try:
-            from hermes_state_registry import acquire
-            db, owns = acquire(Path(profile_home) / "state.db"), True
+            db, owns = _open_profile_session_db(profile_home), True
         except Exception as exc:
             logger.warning("TUI profile session store unavailable for %s: %s", profile, exc)
             db, owns = None, False
@@ -451,7 +460,8 @@ def _profile_db(params: dict | None = None):
     finally:
         if owns and db is not None:
             with contextlib.suppress(Exception):
-                db.close()
+                from hermes_state_registry import release_or_close
+                release_or_close(db)
 
 
 def _canonical_profile_request(name: str) -> str:
@@ -1001,7 +1011,8 @@ def _finish_agent_build(sid: str, key: str, current: dict, *, notify_registered:
     # failed, or `replaced`: this agent is discarded and _teardown_session never reaches it).
     if session_db is not None and not _transfer_db_to_agent(None if replaced else current.get("agent"), session_db):
         with contextlib.suppress(Exception):
-            session_db.close()
+            from hermes_state_registry import release_or_close
+            release_or_close(session_db)
 
 
 def _start_agent_build(sid: str, session: dict) -> None:
@@ -2350,7 +2361,8 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
     finally:
         if owns_db and db is not None:
             with contextlib.suppress(Exception):
-                db.close()
+                from hermes_state_registry import release_or_close
+                release_or_close(db)
 
 
 def _init_session(
@@ -2580,7 +2592,8 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
         finally:
             if close_db and hasattr(db, "close"):
                 try:
-                    db.close()
+                    from hermes_state_registry import release_or_close
+                    release_or_close(db)
                 except Exception:
                     logger.debug("failed to close resume db for %s", sid, exc_info=True)
     threading.Thread(target=_run, daemon=True).start()

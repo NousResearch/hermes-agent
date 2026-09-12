@@ -91,10 +91,14 @@ def _scrub_surrogates(value: Any) -> Any:
     return _sanitize_surrogates(value) if isinstance(value, str) else value
 
 
-def _stale_holder(row, now: float) -> bool:
-    """A lock/lease row whose holder is expired or a provably dead local process."""
+def _stale_holder(row, now: float, *, check_local_pid: bool = True) -> bool:
+    """PostgreSQL holders may live on another host; only their TTL proves expiry."""
+    if float(row["expires_at"]) <= now:
+        return True
+    if not check_local_pid:
+        return False
     from hermes_state import _compression_lock_holder_process_is_dead
-    return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
+    return _compression_lock_holder_process_is_dead(row["holder"])
 
 
 class SessionMessagesMixin:
@@ -120,20 +124,28 @@ class SessionMessagesMixin:
         raw, sqlite3 raises UnicodeEncodeError and the session silently stops persisting. Pairs with
         :meth:`_decode_content`."""
         if isinstance(content, str):
-            return _sanitize_surrogates(content)
+            content = _sanitize_surrogates(content)
+            # PostgreSQL TEXT rejects NUL, and either JSON sentinel would be
+            # mistaken for structured content on read. JSON-quote these rare
+            # strings so both backends preserve the original value exactly.
+            if "\x00" in content or content.startswith(cls._CONTENT_JSON_PREFIX):
+                return cls._CONTENT_JSON_PREFIX + json.dumps(content)
+            return content
         if content is None or isinstance(content, (bytes, int, float)):
             return content
         try:
             return cls._CONTENT_JSON_PREFIX + json.dumps(content)  # ensure_ascii escapes surrogates: bindable
         except (TypeError, ValueError):
-            return _sanitize_surrogates(str(content))
+            return cls._encode_content(str(content))
 
     @classmethod
     def _decode_content(cls, content: Any) -> Any:
         """Reverse :meth:`_encode_content`; returns scalars unchanged."""
-        if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
-            return _json_or(content[len(cls._CONTENT_JSON_PREFIX):], content,
-                "Failed to decode JSON-encoded message content; returning raw string")
+        if isinstance(content, str):
+            for prefix in (cls._CONTENT_JSON_PREFIX, cls._CONTENT_JSON_PREFIX_LEGACY):
+                if content.startswith(prefix):
+                    return _json_or(content[len(prefix):], content,
+                        "Failed to decode JSON-encoded message content; returning raw string")
         return content
 
     @staticmethod
@@ -206,7 +218,7 @@ class SessionMessagesMixin:
         if reject_active_compression_lock:
             active_lock = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
             if active_lock is not None:
-                if _stale_holder(active_lock, time.time()):
+                if _stale_holder(active_lock, time.time(), check_local_pid=not self._is_postgres):
                     conn.execute(_DELETE_COMPRESSION_LOCK_SQL, (session_id, active_lock["holder"]))
                 elif active_lock["holder"] != compression_lock_holder:
                     raise SessionCompressionInProgressError(
@@ -226,7 +238,7 @@ class SessionMessagesMixin:
                         "WHERE conversation_id = ? AND holder = ?",
                         (now + max(0.1, float(turn_lease_ttl_seconds)), conversation_id, turn_lease_holder))
             elif lease is not None:
-                if not _stale_holder(lease, now):
+                if not _stale_holder(lease, now, check_local_pid=not self._is_postgres):
                     raise SessionTurnLeaseLostError(
                         f"Session has an active turn lease; refusing transcript mutation for {session_id!r}")
                 # Same reclaim rule as acquisition; deleting also fences a stale late flush after the mutation.
@@ -629,7 +641,14 @@ class SessionMessagesMixin:
     def _message_column_names(self, conn) -> List[str]:
         """Column names of the messages table, cached per-connection era."""
         if not getattr(self, "_message_columns_cache", None):
-            self._message_columns_cache = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+            if self._is_postgres:
+                rows = conn.execute(
+                    "SELECT attname FROM pg_catalog.pg_attribute "
+                    "WHERE attrelid = to_regclass('messages') "
+                    "AND attnum > 0 AND NOT attisdropped ORDER BY attnum").fetchall()
+                self._message_columns_cache = [row[0] for row in rows]
+            else:
+                self._message_columns_cache = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
         return self._message_columns_cache
 
     def set_latest_user_api_content(self, session_id: str, content: Any, api_content: str) -> int:
@@ -692,6 +711,13 @@ class SessionMessagesMixin:
                 "display_metadata": self._decode_display_metadata(row["display_metadata"])})
             if handoff is not None and live_view is not None:
                 dedupe_content = self._encode_content(live_view.get("content"))
+        if isinstance(dedupe_content, str) and dedupe_content.startswith(self._CONTENT_JSON_PREFIX):
+            # Preserve hashes already indexed by SQLite before the PostgreSQL
+            # text sentinel changed. Compaction re-encodes an old row's content;
+            # its archived original and active copy must still form one group.
+            decoded = self._decode_content(dedupe_content)
+            dedupe_content = (decoded if isinstance(decoded, str) else
+                self._CONTENT_JSON_PREFIX_LEGACY + dedupe_content[len(self._CONTENT_JSON_PREFIX):])
         return (row["role"], dedupe_content, row["timestamp"],
                 row["tool_call_id"], row["tool_calls"], row["tool_name"])
 
@@ -1281,7 +1307,8 @@ class SessionMessagesMixin:
     def purge_stale_tool_call_markers(self, *, dry_run: bool = False, backup: bool = True) -> Dict[str, Any]:
         """Permanently clear bare tool-call marker content ("[memory]") left by pre-fix sessions
         (``_rows_to_conversation`` repairs it in memory; this stops the re-scan). Only ``content`` is touched.
-        ``backup``: ``VACUUM INTO`` snapshot first (none when nothing changes)."""
+        ``backup``: SQLite ``VACUUM INTO`` snapshot first (none when nothing changes).
+        PostgreSQL requires a native backup and explicit ``backup=False`` before mutation."""
         from hermes_state import _STALE_TOOL_CALL_MARKER_RE
         def _find_affected(conn) -> List[int]:
             cursor = conn.execute("SELECT id, content FROM messages "
@@ -1296,6 +1323,10 @@ class SessionMessagesMixin:
             return _result(affected_ids)
         backup_path: Optional[str] = None
         if backup:
+            if self._is_postgres:
+                raise RuntimeError(
+                    "Automatic clean-markers backups support SQLite only. Take a PostgreSQL-native backup "
+                    "and rerun `hermes sessions clean-markers --no-backup`.")
             import datetime
             stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_path = str(self.db_path.with_name(f"{self.db_path.name}.pre-clean-markers-backup-{stamp}"))

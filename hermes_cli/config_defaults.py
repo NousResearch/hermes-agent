@@ -2024,6 +2024,25 @@ DEFAULT_CONFIG = {
     # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
+        # Durable session/state backend selector. "sqlite" (default) keeps the
+        # single-file state.db. "postgres" routes session/state storage to an
+        # external PostgreSQL database, opt-in for installs where the
+        # single-file backend is unsuitable (multi-host deployments, shared
+        # state). The connection string is supplied via postgres_dsn (or an
+        # env override) and carries its own TLS/credential settings.
+        "state_backend": "sqlite",
+        # PostgreSQL connection string (DSN), consulted only when
+        # state_backend is "postgres". Empty by default. The DSN is passed
+        # through unchanged to the driver, so sslmode, host, port, and
+        # credentials all come from this value.
+        #
+        # A DSN normally carries a password, and secrets belong in .env rather
+        # than here. Prefer the HERMES_STATE_DATABASE_URL or
+        # HERMES_STATE_POSTGRES_DSN environment variables, which take
+        # precedence over this key. This setting exists for local development
+        # and for deployments whose DSN carries no embedded secret (peer,
+        # ident, or client-certificate authentication).
+        "postgres_dsn": "",
         # Prune ENDED sessions inactive for retention_days (activity = latest message, else
         # creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
         # are never deleted; stale automation sessions whose process died are *closed*, then get a
@@ -2692,6 +2711,13 @@ OPTIONAL_ENV_VARS = {
     "HERMES_LANGFUSE_BASE_URL": _tool("Langfuse server URL (default: https://cloud.langfuse.com)",
         "Langfuse server URL (leave empty for cloud.langfuse.com)", None, password=False,
         advanced=True),
+    # ── PostgreSQL state backend ──
+    "HERMES_STATE_DATABASE_URL": _tool(
+        "PostgreSQL DSN for the optional Postgres session/state backend "
+        "(overrides sessions.postgres_dsn)", "PostgreSQL state DSN", advanced=True),
+    "HERMES_STATE_POSTGRES_DSN": _tool(
+        "Alternate name for HERMES_STATE_DATABASE_URL (either is accepted)",
+        "PostgreSQL state DSN (alias)", advanced=True),
     # ── Messaging platforms ──
     "TELEGRAM_BOT_TOKEN": _msg(
         "Complete Telegram bot token created by @BotFather (numeric bot ID followed by a colon "

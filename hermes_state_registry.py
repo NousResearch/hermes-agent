@@ -197,8 +197,19 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
     replaced (different inode) since the generation opened, that generation is RETIRED
     but stays alive for its holders, and a fresh one is opened in its place. Raises
     whatever ``SessionDB.__init__`` raises; on a replacement-open failure the registry
-    holds NO entry for the path."""
-    from hermes_state import _default_db_path
+    holds NO entry for the path.
+
+    With no explicit path, honor the active PostgreSQL backend first. Its private
+    handle is closed by release_or_close; SQLite file generations remain shared.
+    """
+    from hermes_state import SessionDB, _default_db_path
+
+    if db_path is None:
+        from hermes_state_postgres import resolve_postgres_dsn
+
+        dsn = resolve_postgres_dsn()
+        if dsn:
+            return SessionDB(postgres_dsn=dsn)
 
     raw_path = Path(db_path) if db_path is not None else Path(_default_db_path())
     try:

@@ -2,16 +2,23 @@
 the profile/config scope context managers, skills-hub and tools/analytics catalog helpers.
 """
 
-import logging
+import copy
 import hashlib
+import json
+import logging
 import os
 import re
+import stat
 import sys
 import threading
+from collections import OrderedDict
 from contextlib import contextmanager
-from fastapi import HTTPException
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import yaml
+from fastapi import HTTPException
+
 from hermes_cli.config import DEFAULT_CONFIG, get_process_hermes_home
 from hermes_cli.web_models import MCPServerCreate
 from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
@@ -20,12 +27,93 @@ from hermes_cli.web_server_mcp import _normalize_mcp_server_create
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
 
+_PROFILE_ROSTER_UI_META_MAX_BYTES = 64 * 1024
+_PROFILE_ROSTER_FIELDS_CACHE_MAX = 256
+_ProfileRosterFingerprint = Optional[Tuple[int, int, int, int]]
+_ProfileRosterSignature = Tuple[_ProfileRosterFingerprint, Tuple[bool, ...]]
+_PROFILE_ROSTER_FIELDS_CACHE: OrderedDict[
+    str, Tuple[_ProfileRosterSignature, Dict[str, Any]]
+] = OrderedDict()
+_PROFILE_ROSTER_FIELDS_CACHE_LOCK = threading.Lock()
+
 
 def _safe(callable_: Callable[[], Any], default: Any) -> Any:
     try:
         return callable_()
     except Exception:
         return default
+
+
+def _profile_roster_fingerprint(path: Path) -> _ProfileRosterFingerprint:
+    try:
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    except OSError:
+        return None
+
+
+def _profile_roster_fields(profile_dir: Path) -> Dict[str, Any]:
+    """Return bounded Bot Mode presentation metadata for cross-source rosters."""
+    meta_path = profile_dir / "profile.yaml"
+    assets = profile_dir / "assets"
+    avatar_paths = tuple(assets / f"avatar.{ext}" for ext in ("png", "jpg", "webp"))
+    avatar_presence = tuple(
+        _profile_roster_fingerprint(path) is not None for path in avatar_paths
+    )
+    signature: _ProfileRosterSignature = (
+        _profile_roster_fingerprint(meta_path),
+        avatar_presence,
+    )
+    cache_key = str(profile_dir)
+
+    with _PROFILE_ROSTER_FIELDS_CACHE_LOCK:
+        cached = _PROFILE_ROSTER_FIELDS_CACHE.get(cache_key)
+        if cached is not None and cached[0] == signature:
+            _PROFILE_ROSTER_FIELDS_CACHE.move_to_end(cache_key)
+            return copy.deepcopy(cached[1])
+
+    fields: Dict[str, Any] = {"ui_meta": {}, "has_avatar": False}
+    try:
+        if signature[0] is not None:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+            ui_meta = raw.get("ui_meta") if isinstance(raw, dict) else None
+            bot_meta = ui_meta.get("hermes-bots") if isinstance(ui_meta, dict) else None
+            if isinstance(bot_meta, dict):
+                encoded = json.dumps(
+                    bot_meta,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                encoded_size = len(encoded.encode("utf-8"))
+                if encoded_size <= _PROFILE_ROSTER_UI_META_MAX_BYTES:
+                    fields["ui_meta"] = {"hermes-bots": json.loads(encoded)}
+                else:
+                    _log.warning(
+                        "Ignoring oversized hermes-bots ui_meta in %s (%d bytes; max %d)",
+                        meta_path,
+                        encoded_size,
+                        _PROFILE_ROSTER_UI_META_MAX_BYTES,
+                    )
+            elif bot_meta is not None:
+                _log.warning("Ignoring non-object hermes-bots ui_meta in %s", meta_path)
+    except (TypeError, ValueError) as exc:
+        _log.warning("Ignoring non-JSON hermes-bots ui_meta in %s: %s", meta_path, exc)
+    except Exception as exc:
+        _log.warning("Unable to read roster metadata from %s: %s", meta_path, exc)
+
+    fields["has_avatar"] = any(avatar_presence)
+
+    with _PROFILE_ROSTER_FIELDS_CACHE_LOCK:
+        _PROFILE_ROSTER_FIELDS_CACHE[cache_key] = (signature, copy.deepcopy(fields))
+        _PROFILE_ROSTER_FIELDS_CACHE.move_to_end(cache_key)
+        while len(_PROFILE_ROSTER_FIELDS_CACHE) > _PROFILE_ROSTER_FIELDS_CACHE_MAX:
+            _PROFILE_ROSTER_FIELDS_CACHE.popitem(last=False)
+
+    return fields
 
 
 def _is_current_profile(profile: Optional[str]) -> bool:
@@ -101,16 +189,21 @@ def _parse_model_ids(resp: "Any") -> List[str]:
 def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: bool,
                             has_env: bool, gateway_running: Callable[[], bool]) -> Dict[str, Any]:
     model, provider = _safe(lambda: profiles_mod._read_config_model(home), (None, None))
-    meta = lambda key, default: _safe(  # noqa: E731
-        lambda: profiles_mod.read_profile_meta(home).get(key, default), default)
-    return {
+    profile_meta = _safe(lambda: profiles_mod.read_profile_meta(home), {})
+    if not isinstance(profile_meta, dict):
+        profile_meta = {}
+    row = {
         "name": name, "path": str(home), "is_default": is_default, "model": model,
         "provider": provider, "has_env": has_env,
         "skill_count": _safe(lambda: profiles_mod._count_skills(home), 0),
         "gateway_running": _safe(gateway_running, False),
-        "description": meta("description", ""), "description_auto": meta("description_auto", False),
+        "description": profile_meta.get("description", ""),
+        "description_auto": profile_meta.get("description_auto", False),
+        "display_name": profile_meta.get("display_name", ""),
         "distribution_name": None, "distribution_version": None, "distribution_source": None,
         "has_alias": False}
+    row.update(_profile_roster_fields(home))
+    return row
 
 
 def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:

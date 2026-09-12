@@ -34,11 +34,15 @@ from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
     _user_deny_block_result,
 )
-from tools.approval_gateway_wait import _await_gateway_decision
+from tools.approval_gateway_wait import _ApprovalEntry, _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
 from tools.approval_smart import _smart_verdict
 
 logger = logging.getLogger(__name__)
+
+# Compatibility export for integrations and tests that patched the pre-split
+# facade; new code should call ``approval_context`` directly.
+_fire_approval_hook = approval_context._fire_approval_hook
 
 # Frozen at import: reading os.environ per call would let any skill running in the process set
 # this and bypass every approval check (prompt-injection escalation path).
@@ -117,6 +121,37 @@ def _denial_breaker_addendum(session_key: str) -> str:
 # instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+_gateway_request_sessions: dict[str, str] = {}  # request_id → session_key
+
+
+def _index_gateway_entry_locked(session_key: str, entry) -> None:
+    """Index a queued approval by request id; caller holds ``_lock``."""
+    request_id = entry.data.get("request_id")
+    if request_id:
+        _gateway_request_sessions[request_id] = session_key
+
+
+def _unindex_gateway_entries_locked(session_key: str, entries) -> None:
+    """Remove queued approvals from the request index; caller holds ``_lock``."""
+    for entry in entries:
+        request_id = entry.data.get("request_id")
+        if request_id and _gateway_request_sessions.get(request_id) == session_key:
+            _gateway_request_sessions.pop(request_id, None)
+
+
+def find_gateway_approval_session(request_id: str) -> str | None:
+    """Return the session owning a still-pending gateway approval request."""
+    if not request_id:
+        return None
+    with _lock:
+        session_key = _gateway_request_sessions.get(request_id)
+        if not session_key:
+            return None
+        if any(entry.data.get("request_id") == request_id
+               for entry in _gateway_queues.get(session_key, [])):
+            return session_key
+        _gateway_request_sessions.pop(request_id, None)
+    return None
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -132,6 +167,7 @@ def unregister_gateway_notify(session_key: str) -> None:
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
+        _unindex_gateway_entries_locked(session_key, entries)
     for entry in entries:
         entry.event.set()
 
@@ -162,6 +198,7 @@ def resolve_gateway_approval(session_key: str, choice: str,
             targets = [queue.pop(0)]
         if not queue:
             _gateway_queues.pop(session_key, None)
+        _unindex_gateway_entries_locked(session_key, targets)
 
     for entry in targets:
         entry.result = choice
@@ -256,6 +293,7 @@ def clear_session(session_key: str) -> None:
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
+        _unindex_gateway_entries_locked(session_key, entries)
     for entry in entries:
         # Cancel blocked waits now so the old run unwinds instead of idling until timeout.
         entry.result = "deny"

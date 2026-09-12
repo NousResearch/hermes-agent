@@ -28,6 +28,20 @@ _with_session = _session_arg(lambda params, rid: _sess_nowait(params, rid))  # n
 _with_live_session = _session_arg(lambda params, rid: _sess(params, rid))  # waits for the agent build
 
 
+def _reaction_session(params, rid):
+    """Resolve a reaction's live session, recovering from a stale runtime id."""
+    session, err = _sess_nowait(params, rid)
+    if not err:
+        return session, None
+    code = (err.get("error") or {}).get("code")
+    target = str(params.get("session_id") or "").strip()
+    live = _find_live_session_by_key(target) if code == 4001 and target else None
+    return (live[1], None) if live is not None else (None, err)
+
+
+_with_reaction_session = _session_arg(_reaction_session)
+
+
 def _session_method(name: str, *, live: bool = False):
     """``@method(name)`` over ``_with_live_session`` (waits for the agent build) or ``_with_session``."""
     return lambda fn: method(name)((_with_live_session if live else _with_session)(fn))
@@ -1038,7 +1052,8 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5007, str(e))
 
 
-@_session_method("message.react")
+@method("message.react")
+@_with_reaction_session
 def _(rid, params: dict, session: dict) -> dict:
     """Set/clear one author's emoji reaction (Tapback semantics: one per author, same emoji retracts, null
     clears). ``row_id`` is ``messages.id``; a not-yet-persisted live message names ``newest_role`` instead."""

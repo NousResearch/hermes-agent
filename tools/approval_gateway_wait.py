@@ -138,12 +138,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     entry = _ApprovalEntry(approval_data)
     with _approval._lock:
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
+        _approval._index_gateway_entry_locked(session_key, entry)
 
     def _drop_entry() -> None:
         with _approval._lock:
             queue = _approval._gateway_queues.get(session_key, [])
             if entry in queue:
                 queue.remove(entry)
+                _approval._unindex_gateway_entries_locked(session_key, [entry])
             if not queue:
                 _approval._gateway_queues.pop(session_key, None)
 

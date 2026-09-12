@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 
 BOT_CHAT_TITLE = "Bot Chat"
 _PEER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -27,6 +27,22 @@ _PROFILE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 # One synchronous agent turn can legitimately take minutes.
 DM_TIMEOUT_S = 600
 LIST_TIMEOUT_S = 30
+
+#: Slack added to the caller's wait budget so the gateway's own receipt window
+#: (``bot_mode.receipt_after_seconds``) always fits inside the HTTP timeout.
+_DM_TIMEOUT_SLACK_S = 30
+
+#: The delivery envelope's ``object`` tag (§1.2). Its presence marks a peer that
+#: understands queued receipts; anything else is the legacy reply shape.
+SEND_RESULT_OBJECT = "hermes.peer.send_result"
+
+#: ENUM A -> process exit code (§1.5). ``receipt`` is SUCCESS, never a failure.
+RESULT_EXIT_CODES = {"delivered": 0, "receipt": 0, "failed": 1, "unknown": 1, "refused": 2}
+
+#: Server error codes meaning "the request itself is defective" -> usage exit 2.
+_REFUSAL_ERROR_CODES = frozenset({
+    "invalid_idempotency_key", "idempotency_key_conflict", "idempotency_conflict",
+    "invalid_request", "invalid_payload"})
 
 
 def _peer_key_env(name: str) -> str:
@@ -213,6 +229,143 @@ def _peer_failure(peer_name: str, exc: Exception) -> int:
     return 1
 
 
+def _bot_mode_value(key: str, default):
+    """Read one ``bot_mode`` key, falling back to ``default``."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        value = (cfg.get("bot_mode") or {}).get(key, default)
+    except Exception:
+        value = default
+    return default if value is None else value
+
+
+def _peer_value(key: str, default):
+    """Read one ``peer`` key, falling back to ``default``."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        value = (cfg.get("peer") or {}).get(key, default)
+    except Exception:
+        value = default
+    return default if value is None else value
+
+
+def _resolve_wait_seconds(args) -> float:
+    """``--wait`` sent as ``X-Hermes-Wait-Seconds`` (default ``peer.dm_wait_seconds``)."""
+    raw = getattr(args, "wait_seconds", None)
+    if raw is None:
+        raw = _peer_value("dm_wait_seconds", DM_TIMEOUT_S)
+    try:
+        wait = float(raw)
+    except (TypeError, ValueError):
+        wait = float(DM_TIMEOUT_S)
+    return max(1.0, wait)
+
+
+def _sender_profile() -> str:
+    """This host's profile name, sent as ``X-Hermes-Sender-Profile``."""
+    env = (os.environ.get("HERMES_PROFILE") or "").strip()
+    if env:
+        return env
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return (get_active_profile_name() or "").strip() or "default"
+    except Exception:
+        return "default"
+
+
+def _validate_idempotency_key(key: str) -> str:
+    """1-255 characters, no CR/LF/NUL — the rule already used by ``peer run``."""
+    key = (key or "").strip()
+    if not key or len(key) > 255 or re.search(r"[\r\n\x00]", key):
+        raise ValueError("Idempotency key must be 1-255 characters without control newlines.")
+    return key
+
+
+def _resolve_idempotency_key(args, *, sender_profile: str, target_profile: str,
+                             session_id: str, message: str) -> str:
+    """Explicit ``--idempotency-key``, else the shared §4.1 derivation.
+
+    Must run *after* the Bot Chat session id is resolved: the derived key is
+    bound to ``session_id``, so minting it earlier would make a retry that hit a
+    different session a different logical message.
+    """
+    explicit = (getattr(args, "idempotency_key", None) or "").strip()
+    if explicit:
+        return _validate_idempotency_key(explicit)
+    from hermes_cli.delivery_keys import derive_delivery_key
+
+    try:
+        window = int(_bot_mode_value("dedup_window_seconds", 900))
+    except (TypeError, ValueError):
+        window = 900
+    return derive_delivery_key(sender_profile, target_profile, session_id, message,
+                               dedup_window_seconds=window)
+
+
+def _delivery_headers(idempotency_key: str, sender_profile: str, wait_seconds: float) -> dict:
+    """The three delivery headers the client owns (§5.1)."""
+    return {
+        "Idempotency-Key": idempotency_key,
+        "X-Hermes-Sender-Profile": sender_profile,
+        "X-Hermes-Wait-Seconds": str(int(wait_seconds)),
+    }
+
+
+def _peer_error_body(exc: urllib.error.HTTPError) -> tuple[str, str]:
+    """``(code, message)`` from an HTTPError body — a body can be read only once."""
+    try:
+        raw = exc.read().decode("utf-8", "replace")
+    except Exception:
+        return "", str(exc)
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return "", (raw[:200] or str(exc))
+    if not isinstance(parsed, dict):
+        return "", raw[:200]
+    error = parsed.get("error")
+    if isinstance(error, dict):
+        return (str(error.get("code") or error.get("reason") or ""),
+                str(error.get("message") or raw[:200]))
+    return (str(parsed.get("reason") or parsed.get("code") or ""),
+            str(parsed.get("message") or raw[:200]))
+
+
+def _peer_refusal(peer_name: str, exc: urllib.error.HTTPError) -> int:
+    """Report a refused/rejected request. A defect is exit 2, a delivery error 1."""
+    code, message = _peer_error_body(exc)
+    if code in _REFUSAL_ERROR_CODES:
+        print(f"Peer '{peer_name}' refused the request: {message}", file=sys.stderr)
+        return 2
+    print(f"Peer '{peer_name}' rejected the request (HTTP {exc.code}): {message}",
+          file=sys.stderr)
+    return 1
+
+
+def _emit_dm_envelope(args, envelope: dict, *, session_id: str, idempotency_key: str,
+                      peer_name: str) -> int:
+    """Print one delivery envelope and translate ENUM A into an exit code (§1.5)."""
+    result = str(envelope.get("result") or "")
+    status = str(envelope.get("status") or "")
+    if getattr(args, "json", False):
+        print(json.dumps(envelope))
+    elif result == "delivered":
+        print(str(envelope.get("reply") or "(no reply)"))
+    elif result == "receipt":
+        print(f"{status}: {envelope.get('detail') or ''}")
+        print(f"session_id: {session_id}")
+        print(f"idempotency_key: {idempotency_key}")
+    else:
+        why = envelope.get("error") or envelope.get("detail") or envelope.get("reason") or result
+        print(f"Peer '{peer_name}' {status or result}: {why}", file=sys.stderr)
+    return RESULT_EXIT_CODES.get(result, 1)
+
+
 def _emit(args, payload: dict, text_lines: list[str]) -> int:
     if getattr(args, "json", False):
         print(json.dumps(payload))
@@ -310,11 +463,8 @@ def _turn_body(message: str, *, message_key: str, **extra) -> dict:
 
 
 def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str, key: str) -> int:
-    idempotency_key = (getattr(args, "idempotency_key", None) or f"peer-{uuid.uuid4().hex}").strip()
-    if (not idempotency_key or len(idempotency_key) > 255
-            or re.search(r"[\r\n\x00]", idempotency_key)):
-        print("Idempotency key must be 1-255 characters without control newlines.", file=sys.stderr)
-        return 2
+    sender_profile = _sender_profile()
+    wait_seconds = _resolve_wait_seconds(args)
     try:
         if _peer_run_durability(base, key) is not True:
             print(
@@ -322,13 +472,27 @@ def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str
                 "run replay; keep the run ID and avoid blind retries "
                 "after a gateway restart.", file=sys.stderr)
         session_id = _ensure_bot_chat(base, key)
+        idempotency_key = _resolve_idempotency_key(
+            args, sender_profile=sender_profile, target_profile=profile or sender_profile,
+            session_id=session_id, message=message)
         result = _request(
             f"{base}/v1/runs", key, method="POST",
             body=_turn_body(message, message_key="input", session_id=session_id),
-            headers={"Idempotency-Key": idempotency_key})
+            headers=_delivery_headers(idempotency_key, sender_profile, wait_seconds))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except urllib.error.HTTPError as exc:
+        return _peer_refusal(peer_name, exc)
     except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
         return _peer_failure(peer_name, exc)
-    run_id = str(result.get("run_id") or "")
+    if result.get("object") == SEND_RESULT_OBJECT and result.get("result") == "receipt":
+        envelope = dict(result)
+        envelope.setdefault("peer", peer_name)
+        envelope.setdefault("profile", profile)
+        return _emit_dm_envelope(args, envelope, session_id=session_id,
+                                 idempotency_key=idempotency_key, peer_name=peer_name)
+    run_id = str(result.get("run_id") or result.get("delivery_id") or "")
     if not run_id:
         print(f"Peer '{peer_name}' did not return a run ID.", file=sys.stderr)
         return 1
@@ -343,12 +507,12 @@ def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str
 
 
 def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str, key: str) -> int:
+    wait_seconds = _resolve_wait_seconds(args)
+    sender_profile = _sender_profile()
+    # Upstream's timeout arm reads the id even when `_ensure_bot_chat` never returns one.
     session_id = ""
     try:
         session_id = _ensure_bot_chat(base, key)
-        result = _request(
-            f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/chat", key,
-            method="POST", body=_turn_body(message, message_key="message"), timeout=DM_TIMEOUT_S)
     except RuntimeError as exc:
         print(f"Peer '{peer_name}': {exc}", file=sys.stderr)
         return 1
@@ -365,6 +529,34 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
                   file=sys.stderr)
             return 1
         return _peer_failure(peer_name, exc)
+    # The derived key is bound to the resolved session id, so it is minted here
+    # rather than before the Bot Chat lookup (§4.1).
+    try:
+        idempotency_key = _resolve_idempotency_key(
+            args, sender_profile=sender_profile, target_profile=profile or sender_profile,
+            session_id=session_id, message=message)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    headers = _delivery_headers(idempotency_key, sender_profile, wait_seconds)
+    try:
+        result = _request(
+            f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/chat", key,
+            method="POST", body={"message": message},
+            timeout=wait_seconds + _DM_TIMEOUT_SLACK_S, headers=headers)
+    except urllib.error.HTTPError as exc:
+        return _peer_refusal(peer_name, exc)
+    except RuntimeError as exc:
+        print(f"Peer '{peer_name}': {exc}", file=sys.stderr)
+        return 1
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return _peer_failure(peer_name, exc)
+    if result.get("object") == SEND_RESULT_OBJECT:
+        envelope = dict(result)
+        envelope.setdefault("peer", peer_name)
+        envelope.setdefault("profile", profile)
+        return _emit_dm_envelope(args, envelope, session_id=session_id,
+                                 idempotency_key=idempotency_key, peer_name=peer_name)
     if result.get("object") == "hermes.session.chat.queued":
         # The peer's Bot Chat is open in its Desktop and that turn outlasted the peer's wait: the
         # message is in the open chat and is answered there, so a resend would run it twice.
@@ -373,6 +565,7 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
                             "status": result.get("status") or "queued", "delivery_id": result.get("delivery_id")},
                      [f"Peer '{peer_name}' has its Bot Chat open, so the message went into that chat (session "
                       f"{queued_in}) and is answered there. The reply cannot come back on this call. Do NOT resend."])
+    # Legacy peer without the delivery envelope: keep the pre-receipt reply shape.
     msg = result.get("message")
     reply = str(msg.get("content") or "") if isinstance(msg, dict) else ""
     # A successful bare silence marker is a delivery decision, not a message:
@@ -385,7 +578,8 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
     if is_intentional_silence_response(reply):
         reply = ""
     payload = {"peer": peer_name, "profile": profile,
-               "session_id": result.get("session_id") or session_id, "reply": reply}
+               "session_id": result.get("session_id") or session_id, "reply": reply,
+               "idempotency_key": idempotency_key, "waited_seconds": float(wait_seconds)}
     return _emit(args, payload, [reply or "(no reply)"])
 
 
@@ -436,12 +630,15 @@ def build_peer_parser(subparsers) -> None:
             "  hermes peer list\n"
             '  hermes peer dm spark "Message from 🤖 dixie (@dixie): disk status?"\n'
             '  hermes peer dm spark/researcher "..."   # named profile on a multiplexed peer\n'
+            "  hermes peer dm spark --wait 30 \"...\"    # short wait; a busy peer returns a receipt\n"
             "  hermes peer run spark --idempotency-key ticket-123 < long-task.txt\n"
             "  hermes peer status spark run_abc123\n"
             "  hermes peer stop spark run_abc123\n"
             "  hermes peer remove spark\n"
             "\n"
-            "Exit codes: 0 ok, 1 delivery/peer error, 2 usage error."),
+            "Exit codes: 0 delivered or accepted (queued receipt), "
+            "1 delivery/peer error, 2 usage or refused request.\n"
+            "A receipt means the peer accepted and queued the message — do NOT resend it."),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     peer_sub = parser.add_subparsers(dest="peer_action")
 
@@ -460,15 +657,22 @@ def build_peer_parser(subparsers) -> None:
         sp = peer_sub.add_parser(name, help=help)
         sp.add_argument("target", help="<peer> or <peer>/<agent> (named profile on a multiplexed peer)")
         if run_id:
-            sp.add_argument("run_id", help="Run ID returned by 'hermes peer run'")
+            sp.add_argument(
+                "run_id",
+                help="Run ID or delivery ID returned by 'hermes peer run'/'hermes peer dm'")
         else:
             sp.add_argument("message", nargs="?", default=None, help="Message text (or stdin)")
-            if name == "run":
-                sp.add_argument(
-                    "--idempotency-key", default=None, help="Stable retry key (generated when omitted)")
+            sp.add_argument(
+                "--idempotency-key", default=None,
+                help="Stable retry key; a retry MUST reuse it (derived from the message when omitted)")
+            sp.add_argument(
+                "--wait", dest="wait_seconds", type=float, default=None,
+                help="Seconds to wait for a reply before a queued receipt is returned "
+                     f"(default: peer.dm_wait_seconds, {DM_TIMEOUT_S})")
         sp.add_argument("--json", action="store_true", default=False, help="Emit a JSON result")
 
-    _remote("dm", "Message an agent on a peer gateway and print its reply", run_id=False)
+    _remote("dm", "Message an agent on a peer gateway; returns its reply, else a queued receipt",
+            run_id=False)
     _remote("run", "Start a long peer turn asynchronously and return its run ID", run_id=False)
     _remote("status", "Read the status and final output of an asynchronous peer run", run_id=True)
     _remote("stop", "Stop one asynchronous peer run without affecting another turn", run_id=True)

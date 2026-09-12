@@ -273,6 +273,9 @@ async def _start_gateway_start_control_socket(runner):
             _control_server = None
         else:
             atexit.register(_control_server.cleanup_files)
+            # Hosted-room transports install onto this listener; bind it here so every launcher
+            # that starts the control socket (not only start_gateway) exposes it.
+            runner.session_control_server = _control_server
     except Exception as _cs_exc:
         logger.debug("Control socket startup failed (non-fatal): %s", _cs_exc)
         _control_server = None
@@ -540,7 +543,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _control_server = await _start_gateway_start_control_socket(runner)
         if _control_server is None:
             raise RuntimeError("gateway session bootstrap control listener unavailable")
-        runner.session_control_server = _control_server
         from gateway.run_runtime import start_gateway_runtime_api
         await start_gateway_runtime_api(runner)
 

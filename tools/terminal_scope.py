@@ -149,7 +149,7 @@ def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
             raise TerminalPolicyUnavailable(f"cannot parse {config_path}: {exc}") from exc
         raw_terminal = raw.get("terminal") if isinstance(raw, dict) else None
         if isinstance(raw_terminal, dict):
-            _apply(raw_terminal)
+            _apply_terminal_mapping(scope, raw_terminal)
     _resolve_scope_cwd_placeholder(scope)
     return scope
 

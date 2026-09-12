@@ -2615,8 +2615,11 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     status = _session_live_status(sid, session)
     inflight = _inflight_snapshot(session)
     queued = _queued_prompt_snapshot(session)
+    # display_kind="hidden": model-facing scaffolding (e.g. a seeded session's opening row) the
+    # gateway never paints — must not become the sidebar preview any more than session.list's does.
     preview = next((" ".join(text.split())[:160] for msg in reversed(history)
-                    if (text := _content_display_text(msg.get("content", msg.get("text", ""))).strip())), "")
+                    if msg.get("display_kind") != "hidden"
+                    and (text := _content_display_text(msg.get("content", msg.get("text", ""))).strip())), "")
     if queued:
         preview = " ".join(str(queued.get("user") or preview).split())[:160]
     elif inflight:
@@ -2625,7 +2628,8 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     return {
         "current": sid == current_sid, "id": sid,
         "last_active": float(session.get("last_active") or session.get("created_at") or now),
-        "message_count": len(history),
+        # Hidden seed rows are not on the wire; count what is (as every other resume/create path does).
+        "message_count": len(_history_to_messages(history)),
         "model": str(getattr(agent, "model", "") or _resolve_model()), "preview": preview,
         "session_key": key, "started_at": float(session.get("created_at") or now), "status": status,
         "title": _session_live_title(session, key),

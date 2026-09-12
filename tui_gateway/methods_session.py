@@ -1708,7 +1708,9 @@ def _(rid, params: dict, session: dict) -> dict:
                     # use. See #87059.
                     history = db.get_messages_as_conversation(
                         session["session_key"], include_ancestors=True, include_row_ids=True)
-    return _ok(rid, {"count": len(history), "messages": _history_to_messages(history)})
+    # Hidden seed rows are not on the wire; count what is (as session.create/session.resume do).
+    messages = _history_to_messages(history)
+    return _ok(rid, {"count": len(messages), "messages": messages})
 
 
 @_session_method("session.undo", live=True)
@@ -1978,8 +1980,10 @@ def _(rid, params: dict, session: dict) -> dict:
         agent = _build_branch_agent(session, new_sid, new_key, history, source)
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
+    # Hidden seed rows are not on the wire; count what is (as session.create/session.resume do).
+    branch_messages = _history_to_messages(history)
     return _ok(rid, {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
-                     "message_count": len(history), "messages": _history_to_messages(history),
+                     "message_count": len(branch_messages), "messages": branch_messages,
                      "info": _session_info(agent, _sessions.get(new_sid))})
 
 

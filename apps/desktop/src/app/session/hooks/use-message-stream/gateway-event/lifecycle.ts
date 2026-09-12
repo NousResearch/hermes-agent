@@ -1,5 +1,6 @@
 import type { HermesSkin } from '@hermes/shared/skin'
 
+import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import {
   notifyCronChanged,
   notifyPairingChanged,
@@ -95,9 +96,18 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // conversation and reopening it resumes from the DB.
     const reclaimedRuntimeId = String((payload as { session_id?: string } | undefined)?.session_id ?? '')
 
+    // The compression/reclaim lifecycle invalidates the keyed context
+    // breakdown so the statusbar gauge refetches instead of serving the
+    // pre-compression figure (#94001). The breakdown cache keys on the
+    // STORED id; the reclaim payload carries it alongside the runtime id.
+    const reclaimedStoredId = String(
+      (payload as { stored_session_id?: string } | undefined)?.stored_session_id ?? ''
+    )
+
     if (reclaimedRuntimeId) {
       // Heal while the cached stored-id mapping is still intact, then drop.
       markRuntimeGone(reclaimedRuntimeId)
+      invalidateContextBreakdown(reclaimedStoredId || reclaimedRuntimeId)
       dropSessionState(reclaimedRuntimeId)
       // A tile bound to the reclaimed runtime would otherwise render an
       // empty transcript forever: its view reads $sessionStates[runtime]

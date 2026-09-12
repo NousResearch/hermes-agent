@@ -29,6 +29,7 @@ from gateway.session import (
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
+from gateway.run_turn_runner import _BoundedCallbackQueue
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
@@ -2753,7 +2754,7 @@ class GatewayTurnMixin:
             _display_surface_mode=_display_surface_mode,
             tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
             _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
-            log_queue=queue.Queue() if log_mode_enabled else None,
+            log_queue=_BoundedCallbackQueue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
             needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
@@ -2805,7 +2806,7 @@ class GatewayTurnMixin:
             source=source, message=message, AIAgent=AIAgent, session_key=session_key,
             run_generation=run_generation, _cleanup_progress=_cleanup_progress,
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
-            progress_queue=queue.Queue() if disp.needs_progress_queue else None,
+            progress_queue=_BoundedCallbackQueue() if disp.needs_progress_queue else None,
             _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),
             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
         )
@@ -3633,6 +3634,11 @@ class GatewayTurnMixin:
                 except Exception:
                     # A background task that died of a real error must not abort the cleanup path.
                     logger.debug("background turn task failed during cleanup", exc_info=True)
+
+        for label, callback_queue in (("progress", turn_ctx.progress_queue), ("tool-log", turn_ctx.log_queue)):
+            dropped = getattr(callback_queue, "dropped", 0)
+            if dropped:
+                logger.warning("Dropped %d gateway %s events after the callback queue saturated", dropped, label)
 
     async def _run_agent_edit_streamed_message(
         self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc,

@@ -248,6 +248,25 @@ class GatewayStatusCommandsMixin:
         elif model_name:
             lines.append(t("gateway.status.model", model=model_name))
         try:
+            # Report the config resolved for the displayed model, not a guessed
+            # provider default or a promise about a future turn's route.
+            reasoning_config = self._resolve_session_reasoning_config(
+                source=source, session_key=session_key, model=model_name,
+            )
+            if reasoning_config is None:
+                effort = t("gateway.reasoning.level_provider_default")
+            elif reasoning_config.get("enabled") is False:
+                effort = t("gateway.reasoning.level_disabled")
+            else:
+                effort = _clean_str(reasoning_config.get("effort")) or t(
+                    "gateway.reasoning.level_provider_default"
+                )
+            lines.append(t("gateway.status.effort", effort=effort))
+        except Exception:
+            # Config loading has no narrow exception contract. A broken config
+            # must not take down this diagnostic card.
+            logger.warning("Failed to resolve reasoning effort for /status", exc_info=True)
+        try:
             from hermes_cli.auth import resolve_provider
             from hermes_cli.anon_auth import guest_carries_inference
 

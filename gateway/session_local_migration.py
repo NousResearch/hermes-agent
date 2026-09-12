@@ -6,7 +6,7 @@ The historical ID becomes the stable logical owner without copying its messages.
 Compression and reset may later advance the physical target, never FIFO identity.
 """
 from dataclasses import asdict, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from gateway.config import Platform
@@ -91,7 +91,7 @@ def adopt_legacy_session(authority, actor, row):
     from gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)
-    now = datetime.fromtimestamp(row['started_at'], timezone.utc)
+    now = datetime.fromtimestamp(row['started_at'])
     entry = SessionEntry(route, row['id'], now, now, origin=source, platform=Platform.LOCAL)
     receipt = {'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
                'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy),

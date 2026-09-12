@@ -160,6 +160,32 @@ describe("createPtyCompositionForwarder", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("deduplicates native beforeinput text when xterm data arrived first", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.noteTerminalData("hello from ");
+    forwarder.noteTerminalData("dictation");
+    forwarder.onBeforeInput("insertText", "hello from dictation", true);
+    vi.runAllTimers();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("keeps the fallback when earlier xterm data is stale", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.noteTerminalData("hello from dictation");
+    vi.advanceTimersByTime(32);
+    forwarder.onBeforeInput("insertText", "hello from dictation", true);
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenCalledExactlyOnceWith("hello from dictation");
+  });
+
   it("ignores interim and replacement beforeinput events as fallback commits", () => {
     vi.useFakeTimers();
     const send = vi.fn();

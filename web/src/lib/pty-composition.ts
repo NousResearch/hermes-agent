@@ -10,6 +10,8 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let matchedTerminalPrefix = "";
   let sawUnrelatedTerminalData = false;
+  let recentTerminalData = "";
+  let recentTerminalTimer: ReturnType<typeof setTimeout> | null = null;
 
   const clearPending = () => {
     pending = null;
@@ -21,8 +23,31 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
     }
   };
 
+  const clearRecentTerminalData = () => {
+    recentTerminalData = "";
+    if (recentTerminalTimer) {
+      clearTimeout(recentTerminalTimer);
+      recentTerminalTimer = null;
+    }
+  };
+
+  const rememberTerminalData = (data: string) => {
+    if (data.startsWith("\x1b")) return;
+    recentTerminalData += data;
+    if (recentTerminalData.length > 512) {
+      recentTerminalData = recentTerminalData.slice(-512);
+    }
+    if (recentTerminalTimer) clearTimeout(recentTerminalTimer);
+    recentTerminalTimer = setTimeout(clearRecentTerminalData, 32);
+  };
+
   const scheduleCommit = (data: string | null | undefined) => {
     if (!data) return;
+    if (recentTerminalData.endsWith(data)) {
+      clearPending();
+      clearRecentTerminalData();
+      return;
+    }
     // Preserve rapid consecutive commits instead of discarding the first.
     const previous = pending;
     clearPending();
@@ -50,6 +75,7 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
       scheduleCommit(data);
     },
     noteTerminalData(data: string) {
+      rememberTerminalData(data);
       if (!pending || data.startsWith("\x1b") || sawUnrelatedTerminalData) return;
 
       // xterm may split committed text across callbacks, but only a clean,
@@ -64,7 +90,10 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
         sawUnrelatedTerminalData = true;
       }
     },
-    dispose: clearPending,
+    dispose() {
+      clearPending();
+      clearRecentTerminalData();
+    },
   };
 }
 

@@ -2740,7 +2740,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 kwargs["limits"] = _pool_limits
             return kwargs
 
-        disable_fallback = os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"}
+        custom_base_url = self.config.extra.get("base_url")
+        # Telegram IPs must never receive credentials for a replacement Bot API.
+        disable_fallback = bool(custom_base_url) or os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"}
         fallback_ips = [] if disable_fallback else self._fallback_ips()
         if not fallback_ips and not disable_fallback:
             discovery_timeout = self._env_float_clamped("HERMES_TELEGRAM_FALLBACK_DISCOVERY_TIMEOUT", 5.0, min_value=0.0)
@@ -2755,7 +2757,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 fallback_ips = list(SEED_FALLBACK_IPS)
             else:
                 logger.info("[%s] Auto-discovered Telegram fallback IPs: %s", self.name, ", ".join(fallback_ips))
-        proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org", *fallback_ips])
+        if custom_base_url:
+            from urllib.parse import urlparse
+            custom_host = urlparse(str(custom_base_url)).hostname
+            proxy_targets = [custom_host] if custom_host else []
+        else:
+            proxy_targets = ["api.telegram.org", *fallback_ips]
+        proxy_url = resolve_proxy_url(
+            str(self.config.extra.get("proxy_env_var") or "TELEGRAM_PROXY"),
+            target_hosts=proxy_targets,
+        )
 
         def _pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:
             return (HTTPXRequest(**request_kwargs, **extra, httpx_kwargs=general_httpx),

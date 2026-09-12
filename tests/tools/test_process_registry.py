@@ -1874,6 +1874,56 @@ class TestReaderLoopOrphanedPipe:
 # =========================================================================
 # systemd cgroup isolation for gateway-spawned local executors (#70716)
 # =========================================================================
+def test_worker_memory_limit_uses_configured_ceiling(monkeypatch):
+    import hermes_cli.config as cfg_mod
+    import tools.process_registry as pr
+
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr(
+        cfg_mod,
+        "load_config_readonly",
+        lambda: {"terminal": {"worker_memory_max_mb": 8192}},
+    )
+    monkeypatch.setattr(
+        pr.Path,
+        "read_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
+    )
+    monkeypatch.setattr(
+        pr.os,
+        "sysconf",
+        lambda key: 8 * 1024 * 1024 if key == "SC_PHYS_PAGES" else 4096,
+        raising=False,
+    )
+
+    assert pr._worker_memory_max_bytes() == 8 * gib
+
+
+def test_worker_memory_limit_keeps_stricter_cgroup_bound(monkeypatch):
+    import hermes_cli.config as cfg_mod
+    import tools.process_registry as pr
+
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr(
+        cfg_mod,
+        "load_config_readonly",
+        lambda: {"terminal": {"worker_memory_max_mb": 8192}},
+    )
+    monkeypatch.setattr(
+        pr.Path,
+        "read_text",
+        lambda path, **_kwargs: "0::/gateway\n" if path.name == "cgroup" else str(6 * gib),
+    )
+    monkeypatch.setattr(
+        pr.os,
+        "sysconf",
+        lambda key: 8 * 1024 * 1024 if key == "SC_PHYS_PAGES" else 4096,
+        raising=False,
+    )
+
+    assert pr._worker_memory_max_bytes() == 6 * gib
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: systemd scopes")
 class TestSystemdCgroupIsolation:
     """Verify spawn_local wraps the worker in ``systemd-run --user --scope``

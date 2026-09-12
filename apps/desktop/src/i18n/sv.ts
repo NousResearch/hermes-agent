@@ -2865,6 +2865,7 @@ export const sv = defineLocale({
       startup_failed: 'Start misslyckades'
     },
     unknown: 'Okänt',
+    sharedListenerUrl: 'Betjänas av den delade gatewayens lyssnare på',
     hintPendingRestart: 'Starta om gatewayen från statusraden för att tillämpa denna ändring.',
     hintGatewayStopped: 'Starta gatewayen från statusraden för att ansluta.',
     credentialsSet: 'Inloggningsuppgifter angivna',
@@ -3711,6 +3712,10 @@ export const sv = defineLocale({
     restartGateway: 'Starta om gatewayen',
     openBrowser: 'Öppna webbläsaren',
     gatewayRestartFailed: 'Det gick inte att starta om gatewayen.',
+    sharedGatewayRestartTitle: 'Starta om den delade gatewayen?',
+    sharedGatewayRestartDescription: bots => `Alla botar på den här enheten återansluter: ${bots}`,
+    sharedGatewayRestartConfirm: 'Starta om alla',
+    sharedGatewayRestarted: count => `Den delade gatewayen har startats om (${count} ${count === 1 ? 'bot' : 'botar'})`,
     updateHermes: 'Uppdatera Hermes',
     reloadWindow: 'Läs om fönstret',
     actionRunning: 'körs',

@@ -178,6 +178,10 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
 
 
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
+# The reply TARGET is unusable but the conversation is fine: the reply API rejects the parent
+# message id (``field validation failed``) regardless of payload size — observed on 34-char sends.
+# Inside a topic these recover by addressing the thread itself rather than a parent message.
+_FEISHU_REPLY_TARGET_INVALID_CODES = frozenset({99992402})
 
 # Feishu reactions render as prominent badges, unlike Discord/Telegram's
 # small footer emoji — a success badge on every message would add noise, so
@@ -3538,27 +3542,17 @@ class FeishuAdapter(BasePlatformAdapter):
                 key_msg_type=resolved_message_type, key_payload=key_payload,
                 media_tag={"tag": "media", "file_key": file_key, "file_name": display_name},
             )
-            # Audio may fail with 99992402 under thread_id routing: retry as a reply to the
-            # thread's last message, then fall back to a plain chat_id send.
+            # Audio may fail with 99992402 under thread routing: fall back to a plain chat_id send.
             if (not caption
                     and not self._response_succeeded(message_response)
                     and getattr(message_response, "code", None) == 99992402
                     and resolved_message_type == "audio"
                     and (metadata or {}).get("thread_id")):
                 payload = json.dumps(key_payload, ensure_ascii=False)
-                thread_msg_id = (metadata or {}).get("reply_to_message_id")
-                if not thread_msg_id:
-                    thread_msg_id = await self._fetch_last_message_in_thread((metadata or {}).get("thread_id"))
-                if thread_msg_id:
-                    logger.info("[Feishu] Audio: retrying via reply API in thread")
-                    message_response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=thread_msg_id, metadata=metadata,
-                    )
-                if not self._response_succeeded(message_response):
-                    logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
-                    message_response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=None, metadata=None,
-                    )
+                logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
+                message_response = await self._feishu_send_with_retry(
+                    chat_id=chat_id, msg_type="audio", payload=payload, reply_to=None, metadata=None,
+                )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
@@ -3596,20 +3590,35 @@ class FeishuAdapter(BasePlatformAdapter):
         return None
 
     async def _send_raw_message(
-        self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+        self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]], exclude_reply_to: Optional[str] = None,
     ) -> Any:
         thread_id = (metadata or {}).get("thread_id")
         effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
+        if effective_reply_to and effective_reply_to == exclude_reply_to:
+            effective_reply_to = None
+        if not effective_reply_to and thread_id:
+            # Feishu REJECTS receive_id_type='thread_id' on message create (99992402 "field
+            # validation failed"), so the reply API is the only route into a topic. A turn woken by
+            # an internal notification carries no parent id, so borrow a live message from the topic
+            # as the anchor; ``reply_in_thread`` keeps the send inside the SAME topic.
+            anchor = await self._fetch_last_message_in_thread(thread_id)
+            if anchor and anchor != exclude_reply_to:
+                effective_reply_to = anchor
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
+        # No usable anchor: deliver to the chat rather than losing the message. Never create with
+        # receive_id_type='thread_id' — the API rejects it outright.
         if thread_id:
-            # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
-            receive_id, receive_id_type = thread_id, "thread_id"
-        elif chat_id.startswith("feishu_user_id:"):
+            logger.warning(
+                "[Feishu] No reply anchor available in thread %s; delivering to chat %s instead",
+                thread_id, chat_id,
+            )
+        if chat_id.startswith("feishu_user_id:"):
             receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
         else:
             receive_id, receive_id_type = chat_id, "open_id" if chat_id.startswith("ou_") else "chat_id"
@@ -3760,26 +3769,40 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> Any:
         last_error: Optional[Exception] = None
         active_reply_to = reply_to
+        active_metadata = metadata
+        dead_reply_to: Optional[str] = None
 
         async def _raw(reply_target: Optional[str]) -> Any:
             return await self._send_raw_message(
-                chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_target, metadata=metadata,
+                chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_target,
+                metadata=active_metadata, exclude_reply_to=dead_reply_to,
             )
 
         for attempt in range(_FEISHU_SEND_ATTEMPTS):
             try:
                 response = await _raw(active_reply_to)
+                thread_id = (active_metadata or {}).get("thread_id")
+                # ``_send_raw_message`` replies to metadata's parent id even when reply_to is None,
+                # so a failure is reply-routed whenever EITHER is set.
+                replied = bool(active_reply_to or (thread_id and (active_metadata or {}).get("reply_to_message_id")))
                 # Reply target withdrawn/missing → post a new message to the chat instead.
-                if active_reply_to and not self._response_succeeded(response):
+                if replied and not self._response_succeeded(response):
                     code = getattr(response, "code", None)
-                    if code in _FEISHU_REPLY_FALLBACK_CODES:
-                        if (metadata or {}).get("thread_id"):
+                    if code in _FEISHU_REPLY_FALLBACK_CODES or code in _FEISHU_REPLY_TARGET_INVALID_CODES:
+                        dead_reply_to = active_reply_to or (active_metadata or {}).get("reply_to_message_id")
+                        if thread_id:
+                            # Retry with a DIFFERENT live anchor from the same topic, which keeps
+                            # the message in the topic. Both ids must be dropped, and the dead one
+                            # excluded, or _send_raw_message re-selects the same failing target.
                             logger.warning(
-                                "[Feishu] Reply to %s failed in thread %s (code %s — message withdrawn/missing); "
-                                "skipping top-level fallback to avoid creating a new topic",
-                                active_reply_to, (metadata or {}).get("thread_id"), code,
+                                "[Feishu] Reply to %s failed in thread %s (code %s); "
+                                "retrying via another anchor in the same thread",
+                                dead_reply_to, thread_id, code,
                             )
-                            return response
+                            active_metadata = {k: v for k, v in (active_metadata or {}).items()
+                                               if k != "reply_to_message_id"}
+                            active_reply_to = None
+                            return await _raw(None)
                         logger.warning(
                             "[Feishu] Reply to %s failed (code %s — message withdrawn/missing); "
                             "falling back to new message in chat %s",

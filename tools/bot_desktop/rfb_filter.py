@@ -30,6 +30,11 @@ _SET_ENCODINGS = 2
 _CLIENT_CUT_TEXT = 6
 _FENCE = 248
 
+# Match TigerVNC's default MaxCutText. SetEncodings has a 16-bit count; every
+# accepted message must fit in this buffer even when the WebSocket coalesces many.
+_MAX_CUT_TEXT = 256 * 1024
+_MAX_BUFFER = max(8 + _MAX_CUT_TEXT, 4 + 4 * 0xFFFF)
+
 
 class RfbClientFilter:
     """Feed client bytes with :meth:`feed`; get back the bytes allowed to reach Xvnc.
@@ -44,6 +49,18 @@ class RfbClientFilter:
         self._handshake_left = 12 + 1 + 1  # version + security type + ClientInit(shared flag)
 
     def feed(self, chunk: bytes) -> bytes:
+        out = bytearray()
+        offset = 0
+        while offset < len(chunk):
+            room = _MAX_BUFFER - len(self._buf)
+            if room <= 0:
+                raise ValueError("RFB client message exceeds buffer limit")
+            end = min(len(chunk), offset + room)
+            out += self._feed(chunk[offset:end])
+            offset = end
+        return bytes(out)
+
+    def _feed(self, chunk: bytes) -> bytes:
         self._buf += chunk
         out = bytearray()
         if self._handshake_left:
@@ -84,6 +101,8 @@ class RfbClientFilter:
                 return None
             n = int.from_bytes(self._buf[4:8], "big", signed=True)
             # Extended clipboard (RFB 3.8 + TigerVNC): negative length, |n| bytes follow.
+            if abs(n) > _MAX_CUT_TEXT:
+                raise ValueError("RFB clipboard exceeds 256 KiB limit")
             return 8 + abs(n)
         if t == _FENCE:
             if len(self._buf) < 9:

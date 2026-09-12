@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import secrets
 import sqlite3
@@ -16,6 +18,20 @@ from hermes_constants import get_hermes_home
 
 MAX_PROOF_TTL_SECONDS = 60
 POLICY_CONFIG_KEYS = frozenset({"approvals.", "security.", "command_allowlist", "yolo", "persistent.yolo"})
+_OPERATOR_SETTLEMENT: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+    "operator_settlement", default=None,
+)
+
+
+@contextlib.contextmanager
+def _operator_settlement_scope():
+    """Mark the existing operator-input surface while its handler is executing."""
+    marker = object()
+    token = _OPERATOR_SETTLEMENT.set(marker)
+    try:
+        yield
+    finally:
+        _OPERATOR_SETTLEMENT.reset(token)
 
 
 class PolicyMutationDenied(PermissionError):
@@ -116,7 +132,9 @@ class PolicyMutationBroker:
         return request
 
     def operator_confirm(self, request_id: str) -> PolicyMutationProof:
-        """Settle a pending request following operator confirmation at the surface."""
+        """Mint only while the existing operator-input surface is settling a choice."""
+        if _OPERATOR_SETTLEMENT.get() is None:
+            raise PolicyMutationDenied("operator settlement required")
         now = time.time()
         with self._lock, sqlite3.connect(self.db_path) as db:
             row = db.execute(

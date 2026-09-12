@@ -33,11 +33,21 @@ def test_shared_policy_classification_covers_policy_key_families():
     assert not is_policy_config_key("agent.max_turns")
 
 
+def test_direct_operator_confirm_without_surface_settlement_is_denied(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    broker = PolicyMutationBroker(ttl_seconds=60)
+    request = broker.request("session-1", "approvals.mode", "set")
+    with pytest.raises(PolicyMutationDenied, match="operator settlement"):
+        broker.operator_confirm(request.request_id)
+
+
 def test_proof_is_bound_one_shot_and_expires(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     broker = PolicyMutationBroker(ttl_seconds=60)
     request = broker.request("session-1", "approvals.mode", "set")
-    proof = broker.operator_confirm(request.request_id)
+    from hermes_cli.policy_mutation import _operator_settlement_scope
+    with _operator_settlement_scope():
+        proof = broker.operator_confirm(request.request_id)
     assert proof.policy_digest == broker.policy_digest
     assert proof.target_key == "approvals.mode"
     assert proof.operation == "set"
@@ -46,7 +56,8 @@ def test_proof_is_bound_one_shot_and_expires(monkeypatch, tmp_path):
         broker.consume(proof, "approvals.mode", "set", "session-1")
 
     request = broker.request("session-2", "security.tirith_enabled", "unset")
-    proof = broker.operator_confirm(request.request_id)
+    with _operator_settlement_scope():
+        proof = broker.operator_confirm(request.request_id)
     monkeypatch.setattr(time, "time", lambda: proof.expires_at + 1)
     with pytest.raises(PolicyMutationDenied, match="expired"):
         broker.consume(proof, "security.tirith_enabled", "unset", "session-2")

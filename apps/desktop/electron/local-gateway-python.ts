@@ -6,6 +6,8 @@ interface TicketEndpoint {
   profile_id: string
   instance_id: string
   runtime_protocol: number
+  /** Multiplexer home whose control socket mints tickets for a served secondary. */
+  control_home?: string | null
 }
 
 // Reuse the runtime's SID-validated, deadline-bounded pipe client. No Node pipe
@@ -16,7 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from hermes_cli.gateway_client import _session_ticket
 request = json.loads(sys.stdin.buffer.read(65537))
-endpoint = SimpleNamespace(**request['endpoint'])
+endpoint = SimpleNamespace(control_home=None, **request['endpoint'])
 home = Path(endpoint.profile_id)
 if str(home.resolve()) != endpoint.profile_id or endpoint.runtime_protocol != 1:
     raise ValueError('invalid ticket endpoint')

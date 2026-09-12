@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import agent_browser_runnable, get_hermes_home, is_termux as _is_termux_environment, node_tool_runnable
@@ -216,6 +216,60 @@ def _chromium_search_roots() -> List[str]:
     return roots
 
 
+# macOS ships browsers as app bundles, which are NOT on PATH — a Chrome in
+# /Applications (or a per-user ~/Applications install) is invisible to the
+# shutil.which() probe below, so the browser tool would go unadvertised on a
+# machine that plainly has Chrome. Kept local to the browser-tool runtime path:
+# `hermes browser connect` has its own CDP attach/launch locator in
+# hermes_cli.browser_connect. If a third consumer appears, extract a neutral
+# shared locator instead of growing either side.
+_DARWIN_BROWSER_APP_SUFFIXES = (
+    "Google Chrome.app/Contents/MacOS/Google Chrome",
+    "Chromium.app/Contents/MacOS/Chromium",
+    "Brave Browser.app/Contents/MacOS/Brave Browser",
+    "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+)
+
+
+def _darwin_browser_app_paths(home: Optional[str] = None) -> Tuple[str, ...]:
+    """System and per-user macOS browser bundle executable paths, system first."""
+    if home is None:
+        home = os.path.expanduser("~")
+    roots = ["/Applications"]
+    if home:
+        roots.append(os.path.join(home, "Applications"))
+    return tuple(os.path.join(root, suffix)
+                 for suffix in _DARWIN_BROWSER_APP_SUFFIXES for root in roots)
+
+
+def _detect_system_chromium_executable() -> Optional[str]:
+    """Resolved system browser executable, or None.
+
+    Probe order mirrors _chromium_installed(): explicit
+    ``AGENT_BROWSER_EXECUTABLE_PATH``, then Chrome/Chromium on PATH, then — on
+    macOS only — the app bundles that never appear on PATH.
+    """
+    ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
+    if ab_path:
+        if os.path.isfile(ab_path):
+            return ab_path
+        resolved = shutil.which(ab_path)
+        if resolved:
+            return resolved
+
+    for name in ("google-chrome", "chromium", "chromium-browser", "chrome"):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+
+    if sys.platform == "darwin":
+        for candidate in _darwin_browser_app_paths():
+            if os.path.isfile(candidate):
+                return candidate
+
+    return None
+
+
 def _has_chromium_build(root: str) -> bool:
     """True when ``root`` holds a Playwright ``chromium-*`` / ``chromium_headless_shell-*`` dir (agent-browser accepts either)."""
     try:
@@ -233,10 +287,9 @@ def _chromium_installed() -> bool:
     _bt = _origin()
     if _bt._cached_chromium_installed is not None:
         return _bt._cached_chromium_installed
-    ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
     _bt._cached_chromium_installed = bool(
-        (ab_path and (os.path.isfile(ab_path) or shutil.which(ab_path)))
-        or any(shutil.which(name) for name in ("google-chrome", "chromium", "chromium-browser", "chrome"))
+        # Covers AGENT_BROWSER_EXECUTABLE_PATH, PATH names, and macOS app bundles.
+        _detect_system_chromium_executable()
         or any(root and os.path.isdir(root) and _has_chromium_build(root) for root in _chromium_search_roots())
     )
     return _bt._cached_chromium_installed

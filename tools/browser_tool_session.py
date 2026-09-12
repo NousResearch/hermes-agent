@@ -118,13 +118,23 @@ def _prepare_session_socket_dir(session_name: str) -> str:
     return socket_dir
 
 
-def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
+def _agent_browser_command_env(socket_dir: str, *, include_browser_executable: bool = True) -> Dict[str, str]:
     """Credential-scrubbed env for one command: PATH fallbacks, the session socket dir, and
     daemon-side idle self-termination (agent-browser 0.24+) mirroring the Python janitor
-    unless the user set ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` explicitly."""
+    unless the user set ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` explicitly.
+
+    Local sessions also get a resolved system browser executable: on macOS the browser is an
+    app bundle that is not on PATH, so without this the daemon cannot find the Chrome the
+    availability probe just accepted. Skipped for cloud/CDP sessions, which drive a remote
+    browser and must not be pinned to a local binary.
+    """
     env = _bt._build_browser_env()
     env["PATH"] = _install._merge_browser_path(env.get("PATH", ""))
     env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
+    if include_browser_executable and "AGENT_BROWSER_EXECUTABLE_PATH" not in env:
+        chromium_executable = _install._detect_system_chromium_executable()
+        if chromium_executable:
+            env["AGENT_BROWSER_EXECUTABLE_PATH"] = chromium_executable
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:
         env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(_bt.BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
     return env
@@ -512,7 +522,10 @@ def _spawn_and_collect(
     task_socket_dir = _prepare_session_socket_dir(session_info["session_name"])
     _bt.logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                  command, task_id, task_socket_dir, len(task_socket_dir))
-    browser_env = _agent_browser_command_env(task_socket_dir)
+    # A cdp_url session drives a remote/cloud browser, so it must not be pinned to a
+    # locally discovered executable; local sessions get one.
+    browser_env = _agent_browser_command_env(
+        task_socket_dir, include_browser_executable=not session_info.get("cdp_url"))
 
     # Lightpanda rejects Chromium-only launch flags: strip current and legacy vars;
     # Chrome commands and fallback use the shared Chromium policy.

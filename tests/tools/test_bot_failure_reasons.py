@@ -33,6 +33,27 @@ FIXTURE_TARGET_SCOPE_DETAILED = (
 )
 
 
+def test_closed_vocabulary_contains_every_code():
+    assert fr.ALL_REASONS == {
+        "runtime_offline",
+        "queued_expired",
+        "delivery_timeout",
+        "agent_blocked",
+        "cancelled",
+        "queue_full",
+        "provider_auth_or_access",
+        "provider_quota_limit",
+        "provider_rate_limit",
+        "provider_server_error",
+        "context_overflow",
+        "missing_config",
+        "model_unavailable",
+        "unknown",
+    }
+    # constants match their string values
+    assert fr.RUNTIME_OFFLINE == "runtime_offline"
+    assert fr.PROVIDER_AUTH_OR_ACCESS == "provider_auth_or_access"
+    assert fr.UNKNOWN == "unknown"
 
 
 @pytest.mark.parametrize(

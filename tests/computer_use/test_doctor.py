@@ -321,7 +321,13 @@ class TestDriverCmdResolution:
              patch("sys.stdout", new_callable=StringIO):
             assert doctor.run_doctor() == 0
 
-        health.assert_called_once_with(str(driver), include=(), skip=(), timeout=12.0)
+        health.assert_called_once_with(
+            str(driver),
+            include=(),
+            skip=(),
+            timeout=12.0,
+            invocation=(str(driver), ("mcp",)),
+        )
 
 
 # ── cua-driver 0.10 unclassified health_report fallback ────────────────────

@@ -898,6 +898,28 @@ the `hermes tools` UI.
 
 Leaving the list empty, or omitting the key, is a no-op.
 
+## Per-user gateway toolset allowlists
+
+A gateway platform can expose a toolset only to named authenticated users while
+leaving the platform's other toolsets unchanged:
+
+```yaml
+gateway:
+  toolset_user_allowlists:
+    slack:
+      computer_use:
+        - U0123456789
+        - U9876543210
+```
+
+The platform and toolset names must match `platform_toolsets`. The values are
+exact platform user IDs from the authenticated inbound event. A configured
+empty list, malformed list, missing user identity, or non-matching identity
+denies that toolset. A malformed platform rules block denies all toolsets for
+that platform. Platforms without configured rules keep their existing behavior.
+These rules apply to normal and background gateway turns; they do not change
+CLI sessions.
+
 ## Git Worktree Isolation
 
 Enable isolated git worktrees for running multiple agents in parallel on the same repo:

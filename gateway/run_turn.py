@@ -2132,12 +2132,67 @@ class GatewayTurnMixin:
                 prompt, source, task_id, event_message_id, media_urls, media_types,
             )
 
+    @staticmethod
+    def _apply_toolset_user_allowlists(
+        enabled: list, user_config: dict, source: "SessionSource", platform_key: str,
+    ) -> list:
+        """Apply exact per-platform user allowlists to enabled toolsets.
+
+        ``gateway.toolset_user_allowlists.<platform>.<toolset>`` is an operator-owned
+        list of authenticated platform user IDs. Missing identity, malformed lists,
+        and malformed platform rules deny the affected surface instead of widening it.
+        Platforms without configured rules preserve the existing behavior.
+        """
+        gateway_cfg = user_config.get("gateway")
+        gateway_cfg = gateway_cfg if isinstance(gateway_cfg, dict) else {}
+        if "toolset_user_allowlists" not in gateway_cfg:
+            return list(enabled)
+        all_rules = gateway_cfg.get("toolset_user_allowlists")
+        if not isinstance(all_rules, dict):
+            logger.error("Invalid gateway.toolset_user_allowlists; denying platform toolsets")
+            return []
+        if platform_key not in all_rules:
+            return list(enabled)
+        platform_rules = all_rules.get(platform_key)
+        if not isinstance(platform_rules, dict):
+            logger.error(
+                "Invalid gateway.toolset_user_allowlists.%s; denying platform toolsets",
+                platform_key,
+            )
+            return []
+        principals = {
+            value
+            for value in (
+                getattr(source, "user_id", None),
+                getattr(source, "user_id_alt", None),
+            )
+            if isinstance(value, str) and value
+        }
+        result = list(enabled)
+        for toolset, raw_allowed in platform_rules.items():
+            name = str(toolset).strip()
+            if name not in result:
+                continue
+            valid = (
+                isinstance(raw_allowed, list)
+                and all(
+                    isinstance(item, str)
+                    and bool(item)
+                    and item == item.strip()
+                    for item in raw_allowed
+                )
+            )
+            allowed = set(raw_allowed) if valid else set()
+            if not principals.intersection(allowed):
+                result.remove(name)
+        return result
+
     def _resolve_enabled_toolsets_for_source(
         self, user_config: dict, source: "SessionSource", platform_key: str,
     ) -> list:
         """Enabled toolsets for an agent run, honoring an adapter ``toolsets_for_source()`` override
         validated through the SAME ``_get_platform_tools`` path (unknown / platform-restricted
-        toolsets dropped, not trusted)."""
+        toolsets dropped, not trusted), then exact per-user toolset allowlists."""
         from hermes_cli.tools_config import _get_platform_tools
         try:
             adapter = self._adapter_for_source(source)
@@ -2148,7 +2203,10 @@ class GatewayTurnMixin:
             pts = dict(user_config.get("platform_toolsets") or {})
             pts[platform_key] = [str(x) for x in override]
             user_config = {**user_config, "platform_toolsets": pts}
-        return sorted(_get_platform_tools(user_config, platform_key))
+        enabled = sorted(_get_platform_tools(user_config, platform_key))
+        return self._apply_toolset_user_allowlists(
+            enabled, user_config, source, platform_key,
+        )
 
     def _resolve_turn_toolsets(self, user_config: dict, source: "SessionSource", platform_key: str):
         """``(enabled_toolsets, disabled_toolsets)`` for an agent run on ``source``."""

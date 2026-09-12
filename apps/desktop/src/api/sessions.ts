@@ -1,6 +1,7 @@
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
+import { mergedSidebarRecentsExclude } from '@/lib/sidebar-excluded-sources'
 import { recordTranscriptTail } from '@/store/transcript-tail'
 import type {
   PaginatedSessions,
@@ -379,9 +380,14 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
   })
 }
 
-export function searchSessions(query: string): Promise<SessionSearchResponse> {
+export function searchSessions(query: string, excludeSources?: string[]): Promise<SessionSearchResponse> {
+  const exclude = excludeSources ?? mergedSidebarRecentsExclude()
+  const excludeParam = exclude.length
+    ? `&exclude_sources=${encodeURIComponent(exclude.join(','))}`
+    : ''
+
   return hermesApi<SessionSearchResponse>({
-    path: `/api/sessions/search?q=${encodeURIComponent(query)}`
+    path: `/api/sessions/search?q=${encodeURIComponent(query)}${excludeParam}`
   })
 }
 

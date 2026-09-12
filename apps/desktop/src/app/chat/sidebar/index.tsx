@@ -23,11 +23,12 @@ import {
 } from '@/components/ui/sidebar'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
-import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
+import { getHermesConfigRecord, searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
+import { resolveSidebarRecentsExclude } from '@/lib/sidebar-excluded-sources'
 import { cn } from '@/lib/utils'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
@@ -658,9 +659,16 @@ export function ChatSidebar({
     setSearchPending(true)
 
     const id = window.setTimeout(() => {
-      void searchSessions(trimmedQuery)
+      void resolveSidebarRecentsExclude(getHermesConfigRecord)
+        .then(excludeSources => {
+          if (cancelled) {
+            return undefined
+          }
+
+          return searchSessions(trimmedQuery, excludeSources)
+        })
         .then(res => {
-          if (!cancelled) {
+          if (!cancelled && res) {
             setServerMatches(res.results)
           }
         })

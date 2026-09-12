@@ -26,6 +26,7 @@ import {
   listSessions,
   listSidebarSessions,
   pluginSocket,
+  searchSessions,
   resetSidebarBatchCapability,
   setApiRequestConnection,
   setApiRequestProfile,
@@ -82,6 +83,19 @@ describe('Hermes REST helpers', () => {
         timeoutMs: 60_000
       })
     )
+  })
+
+  it('excludes a2a from session search by default', async () => {
+    api.mockResolvedValue({ results: [] })
+
+    await searchSessions('bug')
+
+    const path = (api.mock.calls[0][0] as { path: string }).path
+    const params = new URLSearchParams(path.slice(path.indexOf('?') + 1))
+
+    expect(path.startsWith('/api/sessions/search?')).toBe(true)
+    expect(params.get('q')).toBe('bug')
+    expect((params.get('exclude_sources') ?? '').split(',')).toContain('a2a')
   })
 
   it('batches the sidebar slices into a single request with per-slice limits + excludes', async () => {

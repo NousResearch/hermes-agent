@@ -955,6 +955,11 @@ group_sessions_per_user: true
 #   vacuum_after_prune: true
 #   min_vacuum_interval_days: 30
 #   min_interval_hours: 24
+#   # Extra sources Desktop sidebar recents + Cmd+Shift+F search exclude on top
+#   # of the built-in list (cron/kanban/subagent/tool/messaging). Unset defaults
+#   # to ["a2a"]; [] restores the previous built-in-only filter. Does not affect
+#   # prune/archive.
+#   exclude_sources: ["a2a"]
 
 # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
 # Leave unset for the safe default: Desktop coordinates cross-gateway rooms and

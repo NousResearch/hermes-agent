@@ -5,7 +5,7 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { PENDING_RELAUNCH_FILENAME, registerUpdateRelaunch } from './relaunch'
+import { PENDING_RELAUNCH_FILENAME, registerUpdateRelaunch, type RelaunchRegistration } from './relaunch'
 import type { RelaunchWaiterHandle } from './relaunch-waiter'
 
 for (const automatic of [true, false]) {
@@ -18,7 +18,7 @@ for (const automatic of [true, false]) {
     let registered = false
 
     try {
-      const pending = registerUpdateRelaunch(home, '1.0', { relaunch: () => ready })
+      const pending: Promise<RelaunchRegistration> = registerUpdateRelaunch({ getPath: (): string => home }, '1.0', { relaunch: (): Promise<RelaunchWaiterHandle | undefined> => ready })
         .then(result => { registered = true;
 
  return result })
@@ -46,14 +46,14 @@ test('start and cancellation failures preserve the cause and still clean owned m
   const failure = new Error('owned child refused to stop')
 
   try {
-    await assert.rejects(registerUpdateRelaunch(home, '1.0', {
+    await assert.rejects(registerUpdateRelaunch({ getPath: (): string => home }, '1.0', {
       relaunch: async () => { throw failure }
     }), error => error === failure)
     assert.equal(fs.existsSync(marker), false)
 
     let attempts = 0
 
-    const registration = await registerUpdateRelaunch(home, '1.0', {
+    const registration: RelaunchRegistration = await registerUpdateRelaunch({ getPath: (): string => home }, '1.0', {
       relaunch: async () => ({ cancel: async () => { attempts++; throw failure } })
     })
 
@@ -62,7 +62,7 @@ test('start and cancellation failures preserve the cause and still clean owned m
     assert.equal(attempts, 1)
     assert.equal(fs.existsSync(marker), false)
 
-    const blocked = await registerUpdateRelaunch(home, '1.0', {
+    const blocked: RelaunchRegistration = await registerUpdateRelaunch({ getPath: (): string => home }, '1.0', {
       relaunch: async () => ({ cancel: async () => { throw failure } })
     })
 

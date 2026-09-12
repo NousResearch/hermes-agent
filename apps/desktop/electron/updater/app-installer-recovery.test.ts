@@ -6,7 +6,7 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import { AppInstallerStrategy, type AppInstallerStrategyDeps } from './app-installer'
-import { PENDING_RELAUNCH_FILENAME, registerUpdateRelaunch } from './relaunch'
+import { PENDING_RELAUNCH_FILENAME, registerUpdateRelaunch, type RelaunchRegistration } from './relaunch'
 
 for (const failureAt of ['prepare', 'register', 'teardown', 'open', 'none']) {
   test(`App Installer restores only after teardown begins (${failureAt})`, async () => {
@@ -40,7 +40,7 @@ for (const failureAt of ['prepare', 'register', 'teardown', 'open', 'none']) {
           return ''
         }
       },
-      registerPendingRelaunch: version => registerUpdateRelaunch(home, version, {
+      registerPendingRelaunch: (version: string): Promise<RelaunchRegistration> => registerUpdateRelaunch({ getPath: (): string => home }, version, {
         relaunch: async () => {
           act('register')
 
@@ -86,7 +86,7 @@ test('handoff errors retain cleanup failures while still restoring the backend',
     python: 'unused', script: 'unused.py', run: async () => ({ code: 0, stdout: '' }),
     channel: 'stable', light: false, appVersion: '1.0', feedBaseUrl: 'https://example.invalid',
     installer: { prepare: async () => 'file', open: async () => { throw original } },
-    registerPendingRelaunch: version => registerUpdateRelaunch(home, version, {
+    registerPendingRelaunch: (version: string): Promise<RelaunchRegistration> => registerUpdateRelaunch({ getPath: (): string => home }, version, {
       relaunch: async () => ({ cancel: async () => { order.push('cancel'); throw cancellation } })
     }),
     teardownBundledBackend: async () => { order.push('stop') },

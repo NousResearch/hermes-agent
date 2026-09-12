@@ -327,7 +327,7 @@ def adopt_skill(skill_name: str) -> Tuple[bool, str]:
 
 # --- Sidecar I/O ---
 def _empty_record() -> Dict[str, Any]:
-    return {"created_by": None, "use_count": 0, "view_count": 0, "last_used_at": None, "last_viewed_at": None,
+    return {"created_by": None, "provenance": None, "use_count": 0, "view_count": 0, "last_used_at": None, "last_viewed_at": None,
             "patch_count": 0, "patch_generation": 0, "last_reused_patch_generation": 0, "last_patched_at": None,
             "created_at": _now_iso(), "state": STATE_ACTIVE, "pinned": False, "archived_at": None}
 
@@ -487,12 +487,23 @@ def bump_patch(skill_name: str, *, action: str = "patch", task_id: Optional[str]
 
 
 def record_created(skill_name: str, *, agent_created: bool, task_id: Optional[str] = None,
-                   session_id: Optional[str] = None) -> None:
-    """Persist creation provenance and emit a create fact; the record is reset (a create is a new logical skill)."""
+                   session_id: Optional[str] = None, provenance: Optional[str] = None) -> None:
+    """Persist creation provenance and emit a create fact; the record is reset (a create is a new logical skill).
+
+    ``agent_created`` controls the curator-management opt-in policy flag
+    (``created_by = "agent"``). ``provenance`` is a separate field that records
+    who authored the skill file — set to ``"agent"`` for *every*
+    ``skill_manage(create)`` call regardless of whether it came from the
+    background review fork or a foreground user-directed session, so the
+    learning graph can identify agent-created skills without conflating them
+    with the curator policy.
+    """
     def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
         rec.clear()
         rec.update(_empty_record(), created_by="agent" if agent_created else None)
-        return {"created_by": rec["created_by"]}
+        if provenance:
+            rec["provenance"] = provenance
+        return {"created_by": rec["created_by"], "provenance": rec["provenance"]}
     _mutate_and_emit(skill_name, "created", _apply, task_id=task_id, session_id=session_id)
 
 

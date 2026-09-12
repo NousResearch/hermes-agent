@@ -31,6 +31,7 @@ class SkillNode:
     use_count: int = 0
     state: str = "active"
     created_by: Optional[str] = None
+    provenance: Optional[str] = None
     pinned: bool = False
     related: list[str] = field(default_factory=list)
 
@@ -103,7 +104,8 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
                 name=name, category=str(cat) if cat else parts[-3] if len(parts) >= 3 else "general", source=source,
                 timestamp=usage_ts or _to_int_ts(skill_md.stat().st_mtime),
                 use_count=int(rec.get("use_count", 0) or 0), state=str(rec.get("state", "active") or "active"),
-                created_by=rec.get("created_by"), pinned=bool(rec.get("pinned", False)), related=_related(fm),
+                created_by=rec.get("created_by"), provenance=rec.get("provenance"),
+                pinned=bool(rec.get("pinned", False)), related=_related(fm),
             )
     return nodes
 
@@ -120,7 +122,7 @@ def density_stats(nodes: dict[str, SkillNode], edges: list[tuple[str, str]]) -> 
     return {
         "nodes": len(nodes), "related_edges": len(edges), "edges_per_node": round(len(edges) / n, 3),
         "linked_nodes": len(linked), "isolated_pct": round(100 * (n - len(linked)) / n, 1), "categories": len(cats),
-        "agent_created": sum(1 for x in nodes.values() if x.created_by == "agent"),
+        "agent_created": sum(1 for x in nodes.values() if x.provenance == "agent"),
         "used": sum(1 for x in nodes.values() if x.use_count > 0),
         "top_categories": sorted(cats.items(), key=lambda kv: -kv[1])[:8],
     }
@@ -167,12 +169,27 @@ def _memory_skill_edges(memory_cards: list[dict[str, Any]], skills: list[SkillNo
 
 
 def build_learning_graph() -> dict[str, Any]:
-    """Full payload for the desktop learning panel: non-base skills with real
-    learning signal (agent-created or used) plus memory chunks as graph nodes."""
+    """Full payload for the desktop learning panel: non-base skills created by
+    the agent (``provenance == "agent"``) plus memory chunks as graph nodes.
+
+    ``provenance`` is a field in ``.usage.json`` set to ``"agent"`` on every
+    ``skill_manage(create)`` call — both foreground (user-directed) and
+    background (self-improvement review fork). It is distinct from
+    ``created_by``, which is a curator-management opt-in policy flag (see
+    ``_is_curator_managed_record`` in ``tools/skill_usage.py``, issue #67140).
+
+    The previous filter used ``created_by == "agent" or use_count > 0``.
+    ``created_by`` only reflects curator policy (not authorship), and
+    ``use_count`` is a telemetry counter incremented on every skill load
+    regardless of provenance. Both caused misclassification: externally
+    installed skills were mislabeled as "learned" via ``use_count > 0``, and
+    foreground agent-created skills were excluded because ``created_by`` is
+    only set for background-review creations.
+    """
     roots = [("base", Path(__file__).resolve().parent.parent / "skills"), ("profile", get_hermes_home() / "skills")]
     learned_skills = {
         name: node for name, node in build_skill_nodes(roots).items()
-        if node.source != "base" and (node.created_by == "agent" or node.use_count > 0)
+        if node.source != "base" and node.provenance == "agent"
     }
     skill_edges, memory_cards = build_edges(learned_skills), _memory_cards()
     memory_edges = _memory_skill_edges(memory_cards, list(learned_skills.values()))
@@ -183,7 +200,8 @@ def build_learning_graph() -> dict[str, Any]:
     graph_nodes = [
         {
             "id": n.name, "label": n.name, "kind": "skill", "timestamp": n.timestamp, "category": n.category,
-            "useCount": n.use_count, "state": n.state, "createdBy": n.created_by, "pinned": n.pinned,
+            "useCount": n.use_count, "state": n.state, "createdBy": n.created_by,
+            "provenance": n.provenance, "pinned": n.pinned,
         }
         for n in learned_skills.values()
     ] + [

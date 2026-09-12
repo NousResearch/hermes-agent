@@ -88,14 +88,78 @@ def _where_sql(clauses: List[str], lead: str = "") -> str:
     return f"{lead}WHERE {' AND '.join(clauses)}" if clauses else ""
 
 
+def _projected_tip_source_sql(session_alias: str = "s") -> str:
+    """SQL expression for a listable session's projected live-tip source.
+
+    Keep the child eligibility and ordering in lockstep with
+    :meth:`SessionDB.get_compression_tip`. The recursive walk is bounded and
+    cycle-safe so malformed lineage cannot make a listing/count query loop.
+    """
+    return f"""
+        COALESCE(NULLIF((
+            WITH RECURSIVE
+            ranked_children(parent_id, child_id) AS (
+                SELECT parent_id, child_id
+                FROM (
+                    SELECT
+                        parent.id AS parent_id,
+                        child.id AS child_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY parent.id
+                            ORDER BY
+                                CASE
+                                    WHEN child.end_reason = 'compression' THEN 0
+                                    WHEN child.ended_at IS NULL THEN 1
+                                    ELSE 2
+                                END,
+                                {_sql_session_last_active("child")} DESC,
+                                child.started_at DESC,
+                                child.id DESC
+                        ) AS child_rank
+                    FROM sessions parent
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND COALESCE(child.source, '') != 'tool'
+                )
+                WHERE child_rank = 1
+            ),
+            tip(id, depth, visited) AS (
+                SELECT {session_alias}.id, 0, ',' || {session_alias}.id || ','
+                UNION ALL
+                SELECT
+                    child.child_id,
+                    tip.depth + 1,
+                    tip.visited || child.child_id || ','
+                FROM tip
+                JOIN ranked_children child ON child.parent_id = tip.id
+                WHERE tip.depth < 100
+                  AND INSTR(tip.visited, ',' || child.child_id || ',') = 0
+            )
+            SELECT leaf.source
+            FROM tip
+            JOIN sessions leaf ON leaf.id = tip.id
+            ORDER BY
+                tip.depth DESC,
+                {_sql_session_last_active("leaf")} DESC,
+                leaf.started_at DESC,
+                leaf.id DESC
+            LIMIT 1
+        ), ''), 'cli')
+    """
+
+
 def _session_filter_where(
     *, exclude_children: bool = False, source: str = None, sources: List[str] = None,
     session_key: str = None, exclude_sources: List[str] = None, cwd_prefix: str = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
+    source_sql: str = "s.source",
 ) -> Tuple[List[str], List[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
-    (``_LISTABLE_CHILD_SQL``). Clause order is part of the SQL text contract."""
+    (``_LISTABLE_CHILD_SQL``). Clause order is part of the SQL text contract.
+    ``source_sql`` overrides the source column expression (e.g. projected tip source)."""
     where: List[str] = []
     params: List[Any] = []
     if exclude_children:
@@ -110,9 +174,9 @@ def _session_filter_where(
     # created before the marker existed.
     include_sources = [source] if source else list(sources or [])
     for clause, values in (
-        (f"s.source IN ({_session_ids_placeholders(include_sources)})", include_sources),
+        (f"{source_sql} IN ({_session_ids_placeholders(include_sources)})", include_sources),
         ("s.session_key = ?", [session_key] if session_key else []),
-        (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
+        (f"{source_sql} NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
         ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
     ):
@@ -980,6 +1044,7 @@ class SessionSessionsMixin:
             for key in (
                 "id", "ended_at", "end_reason", "message_count", "tool_call_count", "title", "last_active",
                 "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                "source",
             ):
                 if key in tip_row:
                     merged[key] = tip_row[key]
@@ -1198,10 +1263,20 @@ class SessionSessionsMixin:
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
         ``include_pinned`` back-fills pins the page missed, still obeying the other filters."""
         self.flush_token_counts()  # rows carry token/cost totals
+        # When projecting compression tips, source membership is defined by the
+        # *live tip* source, not the root. Use a SQL CTE to compute the
+        # projected tip source directly in the WHERE clause so telegram→webui
+        # chains appear under source=webui (#75625).
+        source_sql = (
+            _projected_tip_source_sql("s")
+            if project_compression_tips and not include_children
+            else "s.source"
+        )
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
+            source_sql=source_sql,
         )
         if not include_hidden:
             where_clauses.append("s.hidden = 0")
@@ -1389,11 +1464,18 @@ class SessionSessionsMixin:
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False, exclude_sources: List[str] = None,
     ) -> int:
-        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
+        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches.
+
+        With ``exclude_children=True`` and a source filter, membership matches
+        ``list_sessions_rich`` after compression-tip projection (tip source),
+        not the raw root source (#75625).
+        """
+        source_sql = _projected_tip_source_sql("s") if exclude_children else "s.source"
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
+            source_sql=source_sql,
         )
         return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
 
@@ -1405,18 +1487,33 @@ class SessionSessionsMixin:
         self, *, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False,
     ) -> Dict[str, int]:
-        """``{source: count}`` via one GROUP BY; ``exclude_children`` mirrors listing visibility."""
+        """``{source: count}`` via one GROUP BY; ``exclude_children`` mirrors listing visibility.
+
+        Counts use the **projected tip** source when compression tips are
+        projected (#75625).
+        """
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, archived_only=archived_only,
             include_archived=include_archived,
+        )
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        source_sql = (
+            _projected_tip_source_sql("s")
+            if exclude_children
+            else "COALESCE(NULLIF(s.source, ''), 'cli')"
         )
         with self._read_ctx() as conn:
             if self._conn is None:
                 raise RuntimeError("SessionDB connection is closed")
             rows = conn.execute(
-                "SELECT COALESCE(NULLIF(s.source, ''), 'cli') AS source, COUNT(*) AS count "
-                f"FROM sessions s{_where_sql(where_clauses, ' ')} "
-                "GROUP BY COALESCE(NULLIF(s.source, ''), 'cli') ORDER BY count DESC", params,
+                "SELECT projected_source AS source, COUNT(*) AS count "
+                "FROM ("
+                f"SELECT {source_sql} AS projected_source "
+                f"FROM sessions s{where_sql}"
+                ") "
+                "GROUP BY projected_source "
+                "ORDER BY count DESC, projected_source ASC",
+                params,
             ).fetchall()
         return {str(row["source"]): int(row["count"] or 0) for row in rows}
 

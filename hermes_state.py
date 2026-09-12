@@ -39,7 +39,7 @@ from hermes_state_guard import (
     _set_last_init_error, get_last_init_error,
 )
 from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
-from hermes_state_sessions import SessionSessionsMixin
+from hermes_state_sessions import SessionSessionsMixin, _projected_tip_source_sql
 from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_telegram import SessionTelegramTopicsMixin

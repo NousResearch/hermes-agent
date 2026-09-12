@@ -2642,7 +2642,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
-        "browser",
+        "browser", "secure-worker",
         "verify",
         # Plugin commands missing from top-level --help is an accepted trade-off.
         "help",
@@ -3209,6 +3209,19 @@ def _build_cli_parser():
     build_worktree_parser(subparsers)
     build_browser_parser(subparsers)
     build_secrets_parser(subparsers)
+    secure_worker_parser = subparsers.add_parser(
+        "secure-worker",
+        help="Build and audit fail-closed sanitized remote-model workspaces",
+        description=(
+            "Create manifest-bound context packs, render secure local/remote profiles, "
+            "verify proposal diffs, and destroy disposable packs. This command never "
+            "falls back from Docker to the host."
+        ),
+    )
+    from hermes_cli import secure_worker_cli as _secure_worker_cli
+
+    _secure_worker_cli.register_cli(secure_worker_parser)
+
     # OUTBOUND egress firewall; ``hermes proxy`` (gateway group) is the INBOUND one.
     build_egress_parser(subparsers)
     build_migrate_parser(subparsers)

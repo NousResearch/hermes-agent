@@ -323,8 +323,15 @@ DEFAULT_CONFIG = {
         # ["/home/user/.hermes/cache/documents:/output"]. For gateway MEDIA delivery, write to
         # /output/... inside Docker and emit the host-visible path in MEDIA:, not the container one.
         "docker_volumes": [],
-        "docker_mount_cwd_to_workspace": False,  # mount host cwd at /workspace (weakens isolation)
-        "docker_network": True,  # false = --network=none, no network access from commands
+        # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
+        # Default off because passing host directories into a sandbox weakens isolation.
+        "docker_mount_cwd_to_workspace": False,
+        # Opt-in egress lockdown for Docker terminal sessions. When false,
+        # Docker runs with --network=none so commands cannot reach the network.
+        "docker_network": True,
+        # Suppress automatic credential, skill, cache, and egress-proxy mounts.
+        # Required for secure remote-model task containers; default off for compatibility.
+        "docker_isolate_host_data": False,
         "docker_extra_args": [],        # Extra flags passed verbatim to docker run
         # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently breaks
         # Chromium/Playwright and PyTorch DataLoader workers; tmpfs is lazily allocated so the

@@ -389,6 +389,7 @@ def _cli_config_defaults():
             "modal_image": img, "daytona_image": img, "docker_volumes": [],
             "docker_mount_cwd_to_workspace": False,  # opt-in only: sandbox isolation
             "docker_shared_container_key": "",
+            "docker_isolate_host_data": False,
         },
         "browser": {
             "inactivity_timeout": 120, "record_sessions": False, "engine": "auto",  # auto (Chrome) | lightpanda | chrome

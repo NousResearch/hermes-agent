@@ -41,7 +41,9 @@ _DOCKER_SEARCH_PATHS = [
 ]
 
 _docker_executable: Optional[str] = None  # resolved once, cached
-_ENV_VAR_NAME_RE = _SHELL_ENV_NAME_RE
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_EGRESS_LABEL_KEY = "hermes-egress"
+_HOST_DATA_LABEL_KEY = "hermes-host-data"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -514,7 +516,9 @@ class DockerEnvironment(BaseEnvironment):
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
         shared_container_key: str = "",
-        snap_compat: bool = False):
+        isolate_host_data: bool = False,
+        snap_compat: bool = False,
+    ):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
@@ -525,6 +529,8 @@ class DockerEnvironment(BaseEnvironment):
         self._session_scoped = False
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
+        self._isolate_host_data = bool(isolate_host_data)
+        self._snap_compat = snap_compat
         self._env = _normalize_env_dict(env)
         self._init_unset_passthrough_names: tuple[str, ...] = ()
         self._container_id: Optional[str] = None
@@ -538,11 +544,186 @@ class DockerEnvironment(BaseEnvironment):
 
         _ensure_docker_available()
 
-        resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
-        volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
-        volume_args.extend(_readonly_skill_mount_args())
+        # Build resource limit args (gated by cgroup availability probe so
+        # they degrade gracefully on hosts without controller delegation,
+        # e.g. unprivileged LXCs). The probe runs once per process and is
+        # cached host-wide.
+        resource_args = []
+        if cpu > 0 and _cgroup_limits_available(image):
+            resource_args.extend(["--cpus", str(cpu)])
+        if memory > 0 and _cgroup_limits_available(image):
+            resource_args.extend(["--memory", f"{memory}m"])
+        if _cgroup_limits_available(image):
+            resource_args.extend(["--pids-limit", _DEFAULT_PIDS_LIMIT])
+        # /dev/shm size (not cgroup-gated: --shm-size is a tmpfs mount option,
+        # no controller delegation required). Skip when the user already sets
+        # it via docker_extra_args, or opted out with an empty/"0" value.
+        shm = str(shm_size or "").strip()
+        if shm and shm != "0" and not _extra_args_set_shm_size(extra_args):
+            resource_args.extend(["--shm-size", shm])
+        if disk > 0 and sys.platform != "darwin":
+            if self._storage_opt_supported():
+                resource_args.extend(["--storage-opt", f"size={disk}m"])
+            else:
+                logger.warning(
+                    "Docker storage driver does not support per-container disk limits "
+                    "(requires overlay2 on XFS with pquota). Container will run without disk quota."
+                )
+        if not network:
+            resource_args.append("--network=none")
+
+        # Persistent workspace via bind mounts from a configurable host directory
+        # (TERMINAL_SANDBOX_DIR, default ~/.hermes/sandboxes/). Non-persistent
+        # mode uses tmpfs (ephemeral, fast, gone on cleanup).
+        from tools.environments.base import get_sandbox_dir
+
+        # User-configured volume mounts (from config.yaml docker_volumes)
+        volume_args = []
+        workspace_explicitly_mounted = False
+        for vol in (volumes or []):
+            if not isinstance(vol, str):
+                logger.warning("Docker volume entry is not a string: %r", vol)
+                continue
+            vol = vol.strip()
+            if not vol:
+                continue
+            if ":" in vol:
+                volume_args.extend(["-v", vol])
+                if ":/workspace" in vol:
+                    workspace_explicitly_mounted = True
+            else:
+                logger.warning("Docker volume '%s' missing colon, skipping", vol)
+
+        host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        bind_host_cwd = (
+            auto_mount_cwd
+            and bool(host_cwd_abs)
+            and os.path.isdir(host_cwd_abs)
+            and not workspace_explicitly_mounted
+        )
+        if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
+            logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
+
+        self._workspace_dir: Optional[str] = None
+        self._home_dir: Optional[str] = None
+        writable_args = []
+        if self._persistent:
+            # _sandbox_dir_name(): a raw session-key task_id carries colons,
+            # which `-v` reads as extra spec fields (exit 125).
+            sandbox = get_sandbox_dir() / "docker" / _sandbox_dir_name(task_id)
+            self._home_dir = str(sandbox / "home")
+            os.makedirs(self._home_dir, exist_ok=True)
+            writable_args.extend([
+                "-v", f"{self._home_dir}:/root",
+            ])
+            if not bind_host_cwd and not workspace_explicitly_mounted:
+                self._workspace_dir = str(sandbox / "workspace")
+                os.makedirs(self._workspace_dir, exist_ok=True)
+                writable_args.extend([
+                    "-v", f"{self._workspace_dir}:/workspace",
+                ])
+        else:
+            if not bind_host_cwd and not workspace_explicitly_mounted:
+                writable_args.extend([
+                    "--tmpfs", "/workspace:rw,exec,size=10g",
+                ])
+            writable_args.extend([
+                "--tmpfs", "/home:rw,exec,size=1g",
+                "--tmpfs", "/root:rw,exec,size=1g",
+            ])
+
+        if bind_host_cwd:
+            logger.info("Mounting configured host cwd to /workspace: %s", host_cwd_abs)
+            volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
+        elif workspace_explicitly_mounted:
+            logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
+
+        # Mount credential files (OAuth tokens, etc.) declared by skills.
+        # Read-only so the container can authenticate but not modify host creds.
+        try:
+            from tools.credential_files import (
+                get_credential_file_mounts,
+                get_skills_directory_mount,
+                get_cache_directory_mounts,
+            )
+
+            credential_mounts = [] if self._isolate_host_data else get_credential_file_mounts()
+            for mount_entry in credential_mounts:
+                src = Path(mount_entry["host_path"])
+                if src.is_dir():
+                    # Docker-in-Docker: Docker auto-created the source path as
+                    # a directory when it didn't exist on the host.  Mounting a
+                    # directory over a file destination causes exit 125.
+                    logger.warning(
+                        "Docker: skipping credential mount — source is a directory "
+                        "(likely Docker-in-Docker auto-creation): %s",
+                        src,
+                    )
+                    continue
+                if not src.is_file():
+                    logger.warning(
+                        "Docker: skipping credential mount — source not found: %s", src,
+                    )
+                    continue
+                volume_args.extend([
+                    "-v",
+                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting credential %s -> %s",
+                    mount_entry["host_path"],
+                    mount_entry["container_path"],
+                )
+
+            # Mount skill directories (local + external) so skill
+            # scripts/templates are available inside the container.
+            skills_mounts = [] if self._isolate_host_data else get_skills_directory_mount()
+            for skills_mount in skills_mounts:
+                src = Path(skills_mount["host_path"])
+                if not src.is_dir():
+                    logger.warning(
+                        "Docker: skipping skills mount — source is not a directory: %s",
+                        src,
+                    )
+                    continue
+                volume_args.extend([
+                    "-v",
+                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting skills dir %s -> %s",
+                    skills_mount["host_path"],
+                    skills_mount["container_path"],
+                )
+
+            # Mount host-side cache directories (documents, images, audio,
+            # screenshots) so the agent can access uploaded files and other
+            # cached media from inside the container.  Read-only — the
+            # container reads these but the host gateway manages writes.
+            cache_mounts = [] if self._isolate_host_data else get_cache_directory_mounts()
+            for cache_mount in cache_mounts:
+                src = Path(cache_mount["host_path"])
+                if not src.is_dir():
+                    logger.warning(
+                        "Docker: skipping cache mount — source is not a directory: %s",
+                        src,
+                    )
+                    continue
+                volume_args.extend([
+                    "-v",
+                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting cache dir %s -> %s",
+                    cache_mount["host_path"],
+                    cache_mount["container_path"],
+                )
+        except Exception as e:
+            logger.debug("Docker: could not load credential file mounts: %s", e)
+
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
-            self._egress_and_env_args(extra_args))
+            self._egress_and_env_args(extra_args)
+        )
         volume_args.extend(egress_volume_args)
         user_args = _host_user_args(run_as_host_user)
 
@@ -585,7 +766,9 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-agent": "1",
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
-            _EGRESS_LABEL_KEY: egress_label}
+            _EGRESS_LABEL_KEY: egress_label,
+            _HOST_DATA_LABEL_KEY: "isolated" if self._isolate_host_data else "ambient",
+        }
         # Saved for container recreation on "No such container" recovery.
         self._image = image
         self._image_uses_s6_init = image_uses_s6_init
@@ -608,7 +791,10 @@ class DockerEnvironment(BaseEnvironment):
         validated docker_extra_args. Returns ``(egress_label, volume_args, host_args, env_args,
         validated_extra)``; sets ``self._run_env_values`` (injected into the docker-client
         subprocess env at run time and reused verbatim by container-recreation recovery)."""
-        egress_volume_args, egress_env_overrides, egress_host_args = _egress_proxy_args_for_docker()
+        if self._isolate_host_data:
+            egress_volume_args, egress_env_overrides, egress_host_args = ([], {}, [])
+        else:
+            egress_volume_args, egress_env_overrides, egress_host_args = _egress_proxy_args_for_docker()
         egress_label = _egress_reuse_fingerprint(egress_volume_args, egress_env_overrides, egress_host_args)
         enforce_egress = _egress_enforce_on_docker() if egress_env_overrides else True
         critical_egress_names = _critical_egress_env_names(egress_env_overrides)
@@ -720,7 +906,10 @@ class DockerEnvironment(BaseEnvironment):
         Network guard is lockdown-only: a bridge container under ``docker_network: false``
         is removed and recreated, but a ``none`` container under default config is kept so
         ``--network=none`` in extra args doesn't churn containers every startup."""
-        existing = self._find_reusable_container(task_label, profile_name, egress_label)
+        existing = self._find_reusable_container(
+            task_label, profile_name, egress_label,
+            self._labels.get(_HOST_DATA_LABEL_KEY, "ambient"),
+        )
         if existing is None:
             return False
         container_id, state = existing
@@ -800,14 +989,7 @@ class DockerEnvironment(BaseEnvironment):
 
     # --- Env forwarding ---
     def _docker_client_env(self, values: dict[str, str]) -> dict[str, str] | None:
-        """Env for the docker-client subprocess carrying forwarded values (pairs with name-only
-        ``-e KEY`` flags to keep secrets out of cmdline); ``None`` = inherit when empty.
-
-        Name-only ``-e KEY`` flags make the docker CLI read each value from its own process environment,
-        keeping secrets out of the client's world-readable ``/proc/<pid>/cmdline`` (issue #96268). Values
-        live in ``/proc/<pid>/environ`` instead, which is owner/root-only. Returns ``None`` (inherit as
-        before) when there is nothing to add.
-        """
+        """Return the docker-client environment carrying forwarded values."""
         return client_env_with(values)
 
     def _build_init_env_args(self) -> list[str]:
@@ -881,9 +1063,11 @@ class DockerEnvironment(BaseEnvironment):
         self._container_id = None
 
         existing = self._find_reusable_container(
-            self._labels.get("hermes-task-id", ""),
-            self._labels.get("hermes-profile", ""),
-            self._labels.get(_EGRESS_LABEL_KEY, "off"))
+            task_label,
+            profile_label,
+            self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            self._labels.get(_HOST_DATA_LABEL_KEY, "ambient"),
+        )
         if existing is not None:
             cid, state = existing
             if state == "running":
@@ -964,32 +1148,70 @@ class DockerEnvironment(BaseEnvironment):
         return (result.stdout.strip() or None) if result is not None else None
 
     def _find_reusable_container(
-        self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str]]:
-        """``(container_id, state)`` of an existing container labeled for this task/profile/
-        egress posture, or ``None`` on miss or any failure. The egress posture is a label
-        FILTER for every posture, "off" included: a container built with egress on must not be
-        reused after ``hermes egress disable`` (baked-in proxy env and CA mounts), and every
-        container this class creates carries the label. The ``{{.Label "key"}}`` template
-        function is Docker-only — podman ps exits 125 on it — so the probe never uses it (#99213)."""
-        filters = [
-            "--filter", "label=hermes-agent=1",
-            "--filter", f"label=hermes-task-id={task_label}",
-            "--filter", f"label=hermes-profile={profile_label}",
-            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"]
-        result = _docker_query(
-            [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
-            fail="docker ps probe failed: %s — will start a fresh container",
-            nonzero="docker ps probe returned %d: %s — will start a fresh container")
-        if result is None:
+        self,
+        task_label: str,
+        profile_label: str,
+        egress_label: str,
+        host_data_label: str,
+    ) -> Optional[tuple[str, str]]:
+        """Look for an existing container labeled for this (task, profile).
+
+        Returns ``(container_id, state)`` on hit, ``None`` on miss / on any
+        failure (including ``docker ps`` itself failing). State is one of the
+        values Docker reports via ``{{.State}}`` — e.g. ``running``, ``exited``,
+        ``created``, ``paused``, ``restarting``, ``dead``. The caller decides
+        whether the state warrants ``docker start`` before reuse.
+
+        Restricted to the docker-stored label set this class creates; never
+        matches containers that happened to be named ``hermes-*`` but were
+        started by some other tool.
+        """
+        try:
+            filters = [
+                "--filter", "label=hermes-agent=1",
+                "--filter", f"label=hermes-task-id={task_label}",
+                "--filter", f"label=hermes-profile={profile_label}",
+                "--filter", f"label={_HOST_DATA_LABEL_KEY}={host_data_label}",
+            ]
+            if egress_label != "off":
+                filters.extend(["--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"])
+                fmt = "{{.ID}}\t{{.State}}"
+            else:
+                # When egress is off, we widen the probe to find any
+                # task+profile container (regardless of egress label), then
+                # post-filter in Python: reject containers whose
+                # hermes-egress label is present and not "off".  Without
+                # this, a container created with egress=on can be silently
+                # reused after the operator runs "hermes egress disable",
+                # preserving baked-in proxy env and CA mounts.
+                fmt = '{{.ID}}\t{{.State}}\t{{.Label "' + _EGRESS_LABEL_KEY + '"}}'
+            result = subprocess.run(
+                [
+                    self._docker_exe, "ps", "-a",
+                    *filters,
+                    "--format", fmt,
+                ],
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=10,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("docker ps probe failed: %s — will start a fresh container", e)
             return None
         # Multiple matches can happen after a crash mid-cleanup: prefer a running
         # one, else the first listed; stale duplicates are the orphan reaper's job.
         running = first = None
         for ln in (ln for ln in result.stdout.splitlines() if ln.strip()):
-            parts = ln.split("\t", 1)
-            if len(parts) != 2:
+            parts = ln.split("\t")
+            if len(parts) < 2:
                 continue
             cid, state = parts[0], parts[1].strip().lower()
+            if egress_label == "off" and len(parts) >= 3:
+                found_egress = parts[2].strip()
+                if found_egress not in {"", "<no value>", "off"}:
+                    continue
             if first is None:
                 first = (cid, state)
             if state == "running" and running is None:

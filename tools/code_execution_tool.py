@@ -426,10 +426,37 @@ def _get_or_create_env(task_id: str):
         env_type = config["env_type"]
         overrides = _task_env_overrides.get(effective_task_id, {})
         container_config = None
-        if _is_container_backend(env_type):
-            # Shared shaper: execute_code's own key subset dropped docker_extra_args / docker_forward_env /
-            # docker_env, so a sandbox created from this path lost the operator's configured settings.
-            container_config = _container_config_from_config(config)
+        from tools.terminal_tool import _is_container_backend as _is_container
+
+        if _is_container(env_type):
+            container_config = {
+                "container_cpu": config.get("container_cpu", 1),
+                "container_memory": config.get("container_memory", 5120),
+                "container_disk": config.get("container_disk", 51200),
+                "container_persistent": config.get("container_persistent", True),
+                "vercel_runtime": config.get("vercel_runtime", ""),
+                "docker_volumes": config.get("docker_volumes", []),
+                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                "docker_network": config.get("docker_network", True),
+                "docker_isolate_host_data": config.get("docker_isolate_host_data", False),
+            }
+
+        ssh_config = None
+        if env_type == "ssh":
+            ssh_config = {
+                "host": config.get("ssh_host", ""),
+                "user": config.get("ssh_user", ""),
+                "port": config.get("ssh_port", 22),
+                "key": config.get("ssh_key", ""),
+                "persistent": config.get("ssh_persistent", False),
+            }
+
+        local_config = None
+        if env_type == "local":
+            local_config = {
+                "persistent": config.get("local_persistent", False),
+            }
+
         logger.info("Creating new %s environment for execute_code task %s...",
                      env_type, effective_task_id[:8])
         env = _create_environment(

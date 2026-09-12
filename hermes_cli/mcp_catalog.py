@@ -561,7 +561,9 @@ def _apply_tool_selection(
         return
 
     if not probed:
-        _write_tools_filter(name, "include", None)
+        # Keep a prior explicit selection: "no tools today" must not widen ``include: []`` to
+        # "all tools" the next time the server does advertise some.
+        _write_tools_filter(name, "include", prior_selection)
         _say("  Server reported no tools.", Colors.YELLOW)
         return
 

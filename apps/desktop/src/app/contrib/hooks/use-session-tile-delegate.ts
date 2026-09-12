@@ -15,13 +15,15 @@ import {
   resumeWithStoredTranscriptFallback
 } from '@/store/read-only-transcript'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
+import { setSessionControlOwnerProbe } from '@/store/session-control'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import {
   $sessionTiles,
   publishSessionState,
   sessionTileOwnerRoute,
-  setSessionTileDelegate
+  setSessionTileDelegate,
+  storedSessionIdForRuntimeId
 } from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/hermes'
 
@@ -192,6 +194,18 @@ export function useSessionTileDelegate({
 
       return requestForSessionProfile<T>(owner, requestGateway, method, params, timeoutMs)
     }
+
+    // Session-control reads (#107502): an ownerless runtime id is a routing
+    // state, not a control failure. Re-resolve it here — this cache's
+    // runtime→stored binding outlives the store mirror's entries (a reclaim /
+    // reconnect drops those first), and ownerForStoredSession is the same
+    // owner ladder every other session-scoped RPC uses, including the async
+    // cross-profile probe.
+    setSessionControlOwnerProbe(async runtimeId => {
+      const storedId = storedSessionIdForRuntime(runtimeId) ?? storedSessionIdForRuntimeId(runtimeId) ?? runtimeId
+
+      return ownerForStoredSession(storedId)
+    })
 
     setSessionTileDelegate({
       archiveSession: async storedSessionId => {

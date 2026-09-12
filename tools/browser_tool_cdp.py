@@ -3,10 +3,52 @@
 Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt`` (``tools.browser_tool``, resolved per call) — no import cycle."""
 
 import contextlib
+import ipaddress
 import os
+import socket
+import threading
 from typing import Tuple
+from urllib.parse import urlsplit
 
 from tools.browser_tool_origin import origin_module as _origin
+
+
+LOOPBACK_CDP_DNS_TIMEOUT_S = 0.25
+
+
+def _is_loopback_cdp_override(cdp_url: str) -> bool:
+    """Return whether a configured CDP endpoint resolves only to loopback.
+
+    Hostname DNS is bounded because this check runs on eval/console paths and
+    ``getaddrinfo`` has no timeout. Resolution errors, timeouts, empty answers,
+    and mixed loopback/non-loopback answers all fail closed.
+    """
+    try:
+        host = (urlsplit(cdp_url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        pass
+
+    result: list[bool] = []
+
+    def resolve() -> None:
+        try:
+            addresses = {item[4][0] for item in socket.getaddrinfo(host, None)}
+            result.append(bool(addresses) and all(ipaddress.ip_address(address).is_loopback for address in addresses))
+        except (OSError, ValueError):
+            result.append(False)
+
+    worker = threading.Thread(target=resolve, name="hermes-cdp-loopback-dns", daemon=True)
+    worker.start()
+    worker.join(timeout=LOOPBACK_CDP_DNS_TIMEOUT_S)
+    return not worker.is_alive() and result == [True]
 
 
 def _resolve_cdp_override(cdp_url: str) -> str:

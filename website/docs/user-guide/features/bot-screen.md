@@ -45,9 +45,11 @@ hosted-agent products).
 
 Every bot's computer is one click away in three places of Hermes Desktop:
 
-- **Bots → a bot → Scheduled Jobs**: the **Screen** box at the top of the pane
-  (above the routines) shows whether the screen is running and who holds
-  control; click it to open.
+- **Bots → a bot → Scheduled Jobs**: the bot's screen is the hero at the very
+  top of the pane, above the title and the routines: a live preview of the
+  desktop (refreshed every few seconds while the pane is visible) with who holds
+  control; click the picture to expand into live access. While the screen is off
+  or not installed the same box says so and offers Start / Install.
 - **Bots → right-click a bot → Open Screen**.
 - **Sessions sidebar**, grouped by gateway / profile: the same **Screen** box
   sits under each profile's header, so a profile's machine is reachable from

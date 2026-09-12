@@ -56,6 +56,17 @@ def _(rid, params: dict) -> dict:
         return _err(rid, _DISPLAY_ERR, str(e))
 
 
+@method("display.thumbnail")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """One JPEG grab of the bot's screen (``data_url``: null while stopped). Read-only: no lease change."""
+    try:
+        from tools.bot_desktop.thumbnail import thumbnail_data_url
+        return _ok(rid, {"data_url": thumbnail_data_url()})
+    except Exception as e:
+        return _err(rid, _DISPLAY_ERR, str(e))
+
+
 @method("display.start")
 @_profile_scoped
 def _(rid, params: dict) -> dict:

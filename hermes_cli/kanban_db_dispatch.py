@@ -133,6 +133,10 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    host_capacity_saturated: bool = False
+    """True when ``kanban.max_in_progress`` already has every host worker
+    slot occupied. Ready work is intentionally deferred in this state, so the
+    gateway must not diagnose the dispatcher or profile as stuck."""
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1671,19 +1675,25 @@ def _tick_spawn_budget(
     if max_spawn is not None or max_in_progress is not None:
         running_count = count_running_tasks(conn)
 
-    # Both ready and review loops consume from the same budget.
-    if max_spawn is not None:
-        if running_count >= max_spawn:
-            return False, None
-        spawn_budget = max_spawn - running_count
-
+    # Both ready and review loops consume from the same budget. Check the
+    # host cap before the board-local cap so a full single-slot host is
+    # reported as intentional capacity deferral, regardless of which limit
+    # has the same numeric value.
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
+            result.host_capacity_saturated = True
             return False, None
         remaining = max_in_progress - total_running
         if spawn_budget is None or spawn_budget > remaining:
             spawn_budget = remaining
+
+    if max_spawn is not None:
+        if running_count >= max_spawn:
+            return False, None
+        board_remaining = max_spawn - running_count
+        if spawn_budget is None or spawn_budget > board_remaining:
+            spawn_budget = board_remaining
 
     # Memory-pressure guard: a static cap can't see the host's actual state.
     # critical -> spawn nothing this tick; elevated -> at most one new worker.

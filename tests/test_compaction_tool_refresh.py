@@ -43,7 +43,7 @@ class TestContentAwareRefresh(unittest.TestCase):
         with patch("model_tools.get_tool_definitions",
                    return_value=_defs(new_desc)), \
              patch("tools.mcp_tool_agent._reinject_post_build_tools",
-                   return_value=set()):
+                   return_value=(set(), set())):
             return refresh_agent_mcp_tools(agent, **kw)
 
     def test_content_change_swaps_when_content_aware(self):

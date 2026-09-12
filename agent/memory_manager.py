@@ -115,22 +115,114 @@ def memory_provider_tools_exposed(agent: Any) -> bool:
     tools = getattr(agent, "tools", None)
     present = isinstance(tools, (list, tuple)) and any(_tool_name(t) == "memory" for t in tools)
     enabled, disabled = getattr(agent, "enabled_toolsets", None), getattr(agent, "disabled_toolsets", None)
-    return memory_provider_tools_enabled(enabled, disabled, memory_tool_present=present)
+    return (memory_provider_tools_enabled(enabled, disabled, memory_tool_present=present)
+            and not memory_provider_tools_disabled(disabled))
 
 
-def inject_memory_provider_tools(agent: Any) -> int:
-    """Append external memory-provider tool schemas to an agent tool surface; return count added."""
+def memory_provider_denied_tool_names(
+    disabled_toolsets: Optional[List[str] | str],
+) -> Optional[set[str]]:
+    """Resolve provider-tool subtraction.
+
+    Returns the exact denied tool names, or ``None`` when all provider tools
+    must be denied. Unknown toolsets are ignored, matching the registry tool
+    filtering path. Resolver failures fail closed.
+    """
+    if not disabled_toolsets:
+        return set()
+    if isinstance(disabled_toolsets, str):
+        disabled_toolsets = [disabled_toolsets]
+    if any(name in {"memory", "all", "*"} for name in disabled_toolsets):
+        return None
+
+    try:
+        from toolsets import bundle_non_core_tools, get_toolset, resolve_toolset, validate_toolset
+
+        denied: set[str] = set()
+        for name in disabled_toolsets:
+            if not validate_toolset(name):
+                continue
+            resolved = set(
+                bundle_non_core_tools(name)
+                if name.startswith("hermes-") or (get_toolset(name) or {}).get("posture")
+                else resolve_toolset(name)
+            )
+            if "memory" in resolved:
+                return None
+            denied.update(resolved)
+    except Exception:
+        logger.debug("Failed to resolve disabled toolsets for memory-provider tools", exc_info=True)
+        return None
+    return denied
+
+def memory_provider_tools_disabled(disabled_toolsets: Optional[List[str]]) -> bool:
+    """Return whether subtraction denies the complete provider tool family."""
+    return memory_provider_denied_tool_names(disabled_toolsets) is None
+
+def effective_memory_provider_tool_schemas(
+    raw_schemas,
+    *,
+    enabled_toolsets: Optional[List[str]],
+    disabled_toolsets: Optional[List[str]],
+    memory_selected: bool = False,
+) -> List[Dict[str, Any]]:
+    """Return normalized provider schemas surviving selection and subtraction."""
+    if not memory_selected and not memory_provider_tools_enabled(enabled_toolsets):
+        return []
+
+    denied_names = memory_provider_denied_tool_names(disabled_toolsets)
+    if denied_names is None:
+        return []
+
+    effective = []
+    for raw_schema in raw_schemas:
+        schema = normalize_tool_schema(raw_schema)
+        if schema is None:
+            logger.warning(
+                "Memory provider returned a tool schema with no resolvable "
+                "name; skipping to avoid poisoning the request (%r)",
+                raw_schema,
+            )
+            continue
+        if schema["name"] not in denied_names:
+            effective.append(schema)
+    return effective
+
+
+def memory_provider_owns_tool(agent: Any, function_name: str) -> bool:
+    """Explicit injection ownership is authoritative; absent metadata keeps legacy dispatch."""
+    names = getattr(agent, "_memory_provider_tool_names", None)
+    if isinstance(names, set):
+        return function_name in names
+    manager = getattr(agent, "_memory_manager", None)
+    has_tool = getattr(manager, "has_tool", None)
+    return bool(callable(has_tool) and has_tool(function_name))
+
+
+def inject_memory_provider_tools(agent: Any, *, strict: bool = False) -> int:
+    """Append external memory-provider tool schemas to an agent tool surface."""
+    # This is routing authorization, not merely diagnostic metadata.  Only
+    # schemas this injector actually appends are owned by the provider; a
+    # registry/MCP/plugin collision keeps generic dispatch precedence.
+    agent._memory_provider_tool_names = set()
     memory_manager = getattr(agent, "_memory_manager", None)
     tools = getattr(agent, "tools", None)
     if not memory_manager or tools is None:
         return 0
-
+    existing_tool_names = {
+        tool.get("function", {}).get("name")
+        for tool in tools
+        if isinstance(tool, dict)
+    }
     if not memory_provider_tools_exposed(agent):
-        # Say so once: a silent 0 leaves the provider looking "half on" with no clue which
-        # config key (platform_toolsets / disabled_toolsets) gated it.
-        # See #81014.
-        _providers = [p for p in getattr(memory_manager, "providers", None) or []
-                      if getattr(p, "name", "") != "builtin"]
+        # A provider is configured but the memory toolset is gated off
+        # (platform_toolsets / disabled_toolsets). Say so once — a silent
+        # return 0 here made #81014 undiagnosable: the provider looked
+        # "half on" with no clue which config key suppressed its tools.
+        _providers = [
+            p for p in (getattr(memory_manager, "providers", None) or [])
+            if getattr(p, "name", "") != "builtin"
+        ]
         if _providers:
             logger.info(
                 "Memory provider(s) %s configured but the 'memory' toolset is "
@@ -141,26 +233,37 @@ def inject_memory_provider_tools(agent: Any) -> int:
             )
         return 0
 
-    get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
+    registry_routes = getattr(agent, "_tool_registry_routes", {})
+    if isinstance(registry_routes, dict):
+        existing_tool_names.update(registry_routes)
+    get_schemas = getattr(memory_manager, "get_all_tool_schemas_strict", None) if strict else None
+    if not callable(get_schemas):
+        get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
     if not callable(get_schemas):
         return 0
 
-    if getattr(agent, "valid_tool_names", None) is None:
-        agent.valid_tool_names = set()
-    existing_tool_names = {_tool_name(tool) for tool in tools if isinstance(tool, dict)}
+    valid_tool_names = getattr(agent, "valid_tool_names", None)
+    if valid_tool_names is None:
+        valid_tool_names = set()
+        agent.valid_tool_names = valid_tool_names
+
     added = 0
-    for raw_schema in get_schemas():
-        schema = normalize_tool_schema(raw_schema)
-        if schema is None:
-            logger.warning(
-                "Memory provider returned a tool schema with no resolvable "
-                "name; skipping to avoid poisoning the request (%r)", raw_schema,
-            )
-        elif schema["name"] not in existing_tool_names:
-            tools.append({"type": "function", "function": schema})
-            agent.valid_tool_names.add(schema["name"])
-            existing_tool_names.add(schema["name"])
-            added += 1
+    schemas = effective_memory_provider_tool_schemas(
+        get_schemas(),
+        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+        memory_selected="memory" in existing_tool_names,
+    )
+    for schema in schemas:
+        tool_name = schema["name"]
+        if tool_name in existing_tool_names:
+            continue
+        tools.append({"type": "function", "function": schema})
+        valid_tool_names.add(tool_name)
+        existing_tool_names.add(tool_name)
+        agent._memory_provider_tool_names.add(tool_name)
+        added += 1
+
     return added
 
 
@@ -381,10 +484,21 @@ class MemoryManager:
     def get_provider(self, name: str) -> Optional[MemoryProvider]:
         return next((p for p in self._providers if p.name == name), None)
 
-    def build_system_prompt(self) -> str:
-        """Join every provider's non-empty ``system_prompt_block()`` with blank lines."""
-        blocks = self._each_provider("system_prompt_block() failed", lambda p: p.system_prompt_block(),
-                                      level=logging.WARNING)
+    def build_system_prompt(self, *, available_tool_names: Optional[set[str]] = None) -> str:
+        """Join provider guidance when all its tools are available; retain passive guidance.
+
+        With no filter, schema enumeration is unnecessary and remains fail-soft.
+        Filtered opaque blocks are omitted if even one declared capability is unavailable.
+        """
+        def _block(provider):
+            if available_tool_names is not None:
+                raw_schemas = provider.get_tool_schemas()
+                schemas = [normalize_tool_schema(raw) for raw in raw_schemas]
+                if any(schema is None or schema["name"] not in available_tool_names for schema in schemas):
+                    return ""
+            return provider.system_prompt_block()
+
+        blocks = self._each_provider("system_prompt_block() failed", _block, level=logging.WARNING)
         return "\n\n".join(b for b in blocks if b and b.strip())
 
     # A /skill or /bundle turn embeds the whole skill body in the model-facing message;
@@ -558,7 +672,7 @@ class MemoryManager:
             return isinstance(e, RuntimeError)  # executor already shut down — nothing pending
         return True
 
-    def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
+    def _collect_all_tool_schemas(self, *, strict: bool) -> List[Dict[str, Any]]:
         """Collect deduplicated tool schemas from all providers; reserved core tool names are
         skipped because :meth:`add_provider` refuses to route them."""
         from toolsets import _HERMES_CORE_TOOLS
@@ -578,8 +692,20 @@ class MemoryManager:
                     schemas.append(schema)
                     seen.add(schema["name"])
 
-        self._each_provider("get_tool_schemas() failed", _collect, level=logging.WARNING)
+        if strict:
+            for provider in self._providers:
+                _collect(provider)
+        else:
+            self._each_provider("get_tool_schemas() failed", _collect, level=logging.WARNING)
         return schemas
+
+    def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
+        """Collect provider schemas fail-soft for optional runtime callers."""
+        return self._collect_all_tool_schemas(strict=False)
+
+    def get_all_tool_schemas_strict(self) -> List[Dict[str, Any]]:
+        """Collect all provider schemas or fail without a partial publication."""
+        return self._collect_all_tool_schemas(strict=True)
 
     def get_all_tool_names(self) -> set:
         return set(self._tool_to_provider)

@@ -242,6 +242,61 @@ class TestInsightsEmpty:
         assert "No sessions found" in text
 
 
+class TestFleetInsights:
+    def test_default_store_aggregates_named_profile_usage_without_exposing_sessions(self, tmp_path, monkeypatch):
+        """Fleet totals include each store once even when ids collide."""
+        root = tmp_path / "hermes"
+        worker_home = root / "profiles" / "worker"
+        worker_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        default_db = SessionDB(db_path=root / "state.db")
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            for store, tokens in ((default_db, 100), (worker_db, 250)):
+                store.create_session(session_id="same-id", source="cli", model="test-model")
+                store.update_token_counts("same-id", input_tokens=tokens)
+                store._conn.commit()
+
+            report = InsightsEngine(default_db).generate(days=30)
+            rendered = InsightsEngine(default_db).format_terminal(report)
+        finally:
+            worker_db.close()
+            default_db.close()
+
+        assert report["overview"]["total_sessions"] == 2
+        assert report["overview"]["total_input_tokens"] == 350
+        assert report["profile_totals"] == [
+            {"profile": "default", "sessions": 1, "total_tokens": 100},
+            {"profile": "worker", "sessions": 1, "total_tokens": 250},
+        ]
+        assert report["top_sessions"] == []
+        assert "Profiles" in rendered
+        assert "worker" in rendered
+        assert "same-id" not in rendered
+
+    def test_named_profile_insights_remain_isolated(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes"
+        worker_home = root / "profiles" / "worker"
+        worker_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(worker_home))
+
+        default_db = SessionDB(db_path=root / "state.db")
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            default_db.create_session(session_id="default", source="cli", model="test-model")
+            worker_db.create_session(session_id="worker", source="cli", model="test-model")
+            default_db._conn.commit()
+            worker_db._conn.commit()
+            report = InsightsEngine(worker_db).generate(days=30)
+        finally:
+            worker_db.close()
+            default_db.close()
+
+        assert report["overview"]["total_sessions"] == 1
+        assert "profile_totals" not in report
+
+
 # =========================================================================
 # InsightsEngine — populated DB
 # =========================================================================

@@ -2,11 +2,13 @@
 usage, activity, model/platform breakdowns). ``InsightsEngine(db).generate(days=30)`` → ``format_terminal(report)``."""
 
 import json
+import logging
 import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, format_cost_label, format_duration_compact, has_known_pricing
@@ -14,6 +16,7 @@ from hermes_cli.timefmt import coerce_epoch
 
 _TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 _SKILL_TOOLS = {"skill_view", "skill_manage"}
+logger = logging.getLogger(__name__)
 
 
 def _fmt_est_cost(est_cost: float) -> str:
@@ -169,8 +172,34 @@ class InsightsEngine:
         sql, params = (getattr(self, base + "_WITH_SOURCE"), (cutoff, source)) if source else (getattr(self, base + "_ALL"), (cutoff,))
         return self._conn.execute(sql, params).fetchall()
 
-    def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
+    def generate(self, days: int = 30, source: Optional[str] = None) -> Dict[str, Any]:
         """Generate a complete insights report for the last ``days`` days, optionally filtered by source platform."""
+        report = self._generate_store_report(days, source)
+        if not self._is_default_store():
+            return report
+
+        fleet_reports = [("default", report)]
+        for name, path in self._named_profile_stores():
+            try:
+                from hermes_state import SessionDB
+
+                profile_db = SessionDB(db_path=path, read_only=True)
+                try:
+                    profile_report = InsightsEngine(profile_db)._generate_store_report(days, source)
+                finally:
+                    profile_db.close()
+            except Exception as exc:
+                # A sibling's stale or corrupt store must not make the default
+                # profile's local insights unavailable.
+                logger.debug("Skipping profile insights store %s: %s", path, exc)
+                continue
+            if not profile_report["empty"]:
+                fleet_reports.append((name, profile_report))
+
+        return self._aggregate_fleet_reports(fleet_reports) if len(fleet_reports) > 1 else report
+
+    def _generate_store_report(self, days: int, source: Optional[str] = None) -> Dict[str, Any]:
+        """Build an insights report for this one store only."""
         cutoff = time.time() - (days * 86400)
         # Drain the SessionDB's async accounting queue so counters are exact
         # (self.db may be a raw sqlite3 connection in tests — guard).
@@ -196,7 +225,73 @@ class InsightsEngine:
             "top_sessions": self._compute_top_sessions(sessions),
         }
 
-    def get_usage_breakdown(self, days: int = 30, source: str = None) -> Dict[str, Any]:
+    def _is_default_store(self) -> bool:
+        try:
+            from hermes_constants import get_default_hermes_root
+
+            return Path(self.db.db_path).resolve().parent == get_default_hermes_root().resolve()
+        except (AttributeError, OSError):
+            return False
+
+    @staticmethod
+    def _named_profile_stores() -> List[tuple[str, Path]]:
+        """Existing named-profile stores under the default home, in stable display order."""
+        try:
+            from hermes_cli.profiles import _PROFILE_ID_RE, _get_profiles_root
+
+            root = _get_profiles_root()
+            return [
+                (entry.name, entry / "state.db")
+                for entry in sorted(root.iterdir())
+                if entry.is_dir() and entry.name != "default" and _PROFILE_ID_RE.match(entry.name)
+                and (entry / "state.db").is_file()
+            ]
+        except OSError:
+            return []
+
+    def _aggregate_fleet_reports(self, reports: List[tuple[str, Dict[str, Any]]]) -> Dict[str, Any]:
+        """Combine only aggregate usage from independent profile stores.
+
+        Session ids are local to a store, so fleet insights deliberately omit
+        session-derived detail rather than joining or exposing those rows.
+        """
+        _, default_report = reports[0]
+        overviews = [report["overview"] for _, report in reports]
+        total_sessions = sum(overview["total_sessions"] for overview in overviews)
+        total_tokens = sum(overview["total_tokens"] for overview in overviews)
+        total_messages = sum(overview["total_messages"] for overview in overviews)
+        overview: Dict[str, Any] = {
+            key: sum(item.get(key, 0) for item in overviews)
+            for key in (
+                "total_sessions", "total_messages", "total_tool_calls", "total_input_tokens",
+                "total_output_tokens", "total_cache_read_tokens", "total_cache_write_tokens",
+                "total_tokens", "estimated_cost", "actual_cost", "total_hours", "user_messages",
+                "assistant_messages", "tool_messages", "unknown_cost_sessions", "included_cost_sessions",
+            )
+        }
+        overview["avg_messages_per_session"] = total_messages / total_sessions if total_sessions else 0
+        overview["avg_tokens_per_session"] = total_tokens / total_sessions if total_sessions else 0
+        overview["avg_session_duration"] = overview["total_hours"] * 3600 / total_sessions if total_sessions else 0
+        starts = [item.get("date_range_start") for item in overviews if item.get("date_range_start") is not None]
+        ends = [item.get("date_range_end") for item in overviews if item.get("date_range_end") is not None]
+        overview["date_range_start"] = min(starts) if starts else None
+        overview["date_range_end"] = max(ends) if ends else None
+        overview["models_with_pricing"] = sorted({model for item in overviews for model in item["models_with_pricing"]})
+        overview["models_without_pricing"] = sorted({model for item in overviews for model in item["models_without_pricing"]})
+        return {
+            **default_report,
+            "empty": False,
+            "overview": overview,
+            "profile_totals": [
+                {"profile": name, "sessions": item["overview"]["total_sessions"],
+                 "total_tokens": item["overview"]["total_tokens"]}
+                for name, item in reports
+            ],
+            "models": [], "platforms": [], "tools": [],
+            "skills": self._compute_skill_breakdown([]), "activity": {}, "top_sessions": [],
+        }
+
+    def get_usage_breakdown(self, days: int = 30, source: Optional[str] = None) -> Dict[str, Any]:
         """Analytics-usage payload (tools + skills) without a full generate(); the
         instr()-prefiltered skill query loads only skill_view/skill_manage messages."""
         cutoff = time.time() - (days * 86400)
@@ -205,7 +300,7 @@ class InsightsEngine:
 
     # ------------------------------------------------------------------ SQL
 
-    def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
+    def _get_sessions(self, cutoff: float, source: Optional[str] = None) -> List[Dict]:
         # Coerce the two epoch columns once at load: one corrupt/TEXT cell must degrade to "unknown"
         # for that session, never abort the whole report (#99959).
         rows = [dict(row) for row in self._query("_GET_SESSIONS", cutoff, source)]
@@ -214,7 +309,7 @@ class InsightsEngine:
                 row[col] = coerce_epoch(row.get(col), session_id=row.get("id"), field=col)
         return rows
 
-    def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+    def _get_tool_usage(self, cutoff: float, source: Optional[str] = None) -> List[Dict]:
         """Tool call counts from two sources: ``tool_name`` on 'tool' rows (set
         by the gateway) and ``tool_calls`` JSON on assistant rows (covers CLI,
         where tool_name is not populated). The two views are reconciled PER
@@ -236,7 +331,7 @@ class InsightsEngine:
             tool_counts[key[1]] += max(by_session_tool.get(key, 0), calls_by_session_tool.get(key, 0))
         return [{"tool_name": name, "count": count} for name, count in tool_counts.most_common()]
 
-    def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+    def _get_skill_usage(self, cutoff: float, source: Optional[str] = None) -> List[Dict]:
         """Extract per-skill usage from assistant tool calls."""
         skill_counts: Dict[str, Dict[str, Any]] = {}
         for row in self._query("_GET_SKILL_CALLS", cutoff, source):
@@ -254,11 +349,11 @@ class InsightsEngine:
                     entry["last_used_at"] = timestamp
         return list(skill_counts.values())
 
-    def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:
+    def _get_message_stats(self, cutoff: float, source: Optional[str] = None) -> Dict:
         rows = self._query("_GET_MESSAGE_STATS", cutoff, source)
         return dict(rows[0]) if rows else {"total_messages": 0, "user_messages": 0, "assistant_messages": 0, "tool_messages": 0}
 
-    def _get_model_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+    def _get_model_usage(self, cutoff: float, source: Optional[str] = None) -> List[Dict]:
         """Per-model usage rows; [] when the table is missing (older DB) so the caller falls back to the per-session aggregate."""
         try:
             return [dict(row) for row in self._query("_GET_MODEL_USAGE", cutoff, source)]
@@ -314,7 +409,7 @@ class InsightsEngine:
             "included_cost_sessions": status_counts["included"],
         }
 
-    def _compute_model_breakdown(self, sessions: List[Dict], cutoff: float, source: str = None) -> List[Dict]:
+    def _compute_model_breakdown(self, sessions: List[Dict], cutoff: float, source: Optional[str] = None) -> List[Dict]:
         """Tokens/cost per model from session_model_usage, so a session that
         switched models via ``/model`` splits across every model it used.
         Sessions without per-model rows (pre-table data) fall back to their
@@ -497,6 +592,11 @@ class InsightsEngine:
             f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}",
             f"  Total tokens:      {o['total_tokens']:,}",
         ]
+        if profile_totals := report.get("profile_totals"):
+            lines += [""] + self._section("👥 Profiles") + [
+                f"  {profile['profile']:<20} {profile['sessions']:>8} sessions  {profile['total_tokens']:>14,} tokens"
+                for profile in profile_totals
+            ]
         if o["total_hours"] > 0:
             lines.append(f"  Active time:       ~{format_duration_compact(o['total_hours'] * 3600):<11}  Avg session:     ~{format_duration_compact(o['avg_session_duration'])}")
         lines += [f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}", ""]
@@ -557,6 +657,11 @@ class InsightsEngine:
             f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}",
             f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})",
         ]
+        if profile_totals := report.get("profile_totals"):
+            lines += ["", "**👥 Profiles:**"] + [
+                f"  {profile['profile']} — {profile['sessions']} sessions, {profile['total_tokens']:,} tokens"
+                for profile in profile_totals
+            ]
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{format_duration_compact(o['total_hours'] * 3600)} | **Avg session:** ~{format_duration_compact(o['avg_session_duration'])}")
         lines.append("")

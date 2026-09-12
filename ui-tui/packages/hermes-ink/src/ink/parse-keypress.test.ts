@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { InputEvent } from './events/input-event.js'
 import { INITIAL_STATE, parseMultipleKeypresses } from './parse-keypress.js'
 import { PASTE_END, PASTE_START } from './termio/csi.js'
 
@@ -169,6 +170,60 @@ describe('parseMultipleKeypresses CSI u (Kitty keyboard protocol)', () => {
       meta: false,
       super: false
     })
+  })
+
+  it.each([
+    ['\x1b[13;129u', false, false, false, false],
+    ['\x1b[13;129;1u', false, false, false, false],
+    ['\x1b[13;5:1u', false, true, false, false]
+  ] as const)('accepts lock and event fields in %j', (sequence, shift, ctrl, meta, superKey) => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, sequence)
+
+    expect(keys).toEqual([
+      expect.objectContaining({
+        kind: 'key',
+        name: 'return',
+        shift,
+        ctrl,
+        meta,
+        super: superKey
+      })
+    ])
+  })
+})
+
+describe('parseMultipleKeypresses extended CSI arrow encodings', () => {
+  it.each([
+    ['\x1b[1;129A', 'up', false, false, false, false],
+    ['\x1b[1;129D', 'left', false, false, false, false],
+    ['\x1b[1;2;129D', 'left', true, false, false, false],
+    ['\x1b[129;1D', 'left', false, false, false, false],
+    ['\x1b[1;131C', 'right', false, false, true, false],
+    ['\x1b[1;133B', 'down', false, true, false, false],
+    ['\x1b[1;141A', 'up', false, true, false, true]
+  ] as const)('parses %j as %s with the encoded modifiers', (sequence, name, shift, ctrl, meta, superKey) => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, sequence)
+
+    expect(keys).toEqual([
+      expect.objectContaining({
+        kind: 'key',
+        name,
+        shift,
+        ctrl,
+        meta,
+        super: superKey,
+        sequence,
+        raw: sequence
+      })
+    ])
+
+    const key = keys[0]
+
+    if (key?.kind !== 'key') {
+      throw new Error('expected an arrow key event')
+    }
+
+    expect(new InputEvent(key).input).toBe('')
   })
 })
 

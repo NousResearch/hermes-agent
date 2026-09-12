@@ -653,6 +653,12 @@ def _kill_process_group_posix(proc) -> None:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
         if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
+            # Short-lived native children can exit between the caller's poll
+            # and this lookup. Reap once before deciding this is a cleanup
+            # failure; a completed wrapper with no captured group has nothing
+            # left for this helper to signal.
+            if proc.poll() is not None:
+                return
             raise
     try:  # psutil children snapshot; empty on any failure (must never break the kill)
         import psutil

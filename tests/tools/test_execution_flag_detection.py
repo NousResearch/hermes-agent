@@ -68,7 +68,10 @@ def test_real_binaries_execute_leading_dash_program_payload(
     input_file.write_text("needle\n")
     resolved_args = [arg.format(input=str(input_file)) for arg in args]
     input_text = (
-        "\n".join(str(number) for number in range(10_000, 0, -1)) + "\n"
+        # Still comfortably exceeds GNU sort's 1 KiB buffer and therefore
+        # exercises --compress-program, without spawning hundreds of
+        # compressor children under the full parallel suite.
+        "\n".join(str(number) for number in range(1_000, 0, -1)) + "\n"
         if stdin == "{bulk}"
         else stdin
     )

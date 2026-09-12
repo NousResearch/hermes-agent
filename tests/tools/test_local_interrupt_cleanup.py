@@ -97,6 +97,21 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
+def test_group_cleanup_returns_when_uncached_wrapper_already_exited(monkeypatch):
+    """A short-lived child may disappear before its process group is cached."""
+    poll_calls = []
+    proc = SimpleNamespace(pid=4321, poll=lambda: poll_calls.append(True) or 0)
+
+    def gone(_pid):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(os, "getpgid", gone)
+
+    local_mod._kill_process_group_posix(proc)
+
+    assert poll_calls == [True]
+
+
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""

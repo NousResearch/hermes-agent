@@ -7,6 +7,7 @@ import pytest
 
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
+    _capture_custom_id,
     _clean_text_for_capture,
     _format_connection_summary,
     _format_prefetch_context,
@@ -27,12 +28,14 @@ class FakeClient:
         self.add_calls = []
         self.search_results = []
         self.profile_response = {"static": [], "dynamic": [], "search_results": []}
-        self.ingest_calls = []
+        self.fail_add = False
         self.forgotten_ids = []
         self.forget_by_query_response = {"success": True, "message": "Forgot"}
 
     def add_memory(self, content, metadata=None, *, entity_context="",
                    container_tag=None, custom_id=None):
+        if self.fail_add:
+            raise RuntimeError("boom")
         self.add_calls.append({
             "content": content,
             "metadata": metadata,
@@ -53,9 +56,6 @@ class FakeClient:
 
     def forget_by_query(self, query, *, container_tag=None):
         return self.forget_by_query_response
-
-    def ingest_conversation(self, session_id, messages, metadata=None):
-        self.ingest_calls.append({"session_id": session_id, "messages": messages, "metadata": metadata})
 
 
 @pytest.fixture
@@ -87,6 +87,11 @@ def test_clean_text_for_capture_strips_injected_context():
     assert _clean_text_for_capture(text) == "hello\nworld"
 
 
+def test_clean_text_for_capture_strips_inline_data_uri():
+    text = "look: data:image/png;base64,iVBORw0KGgoAAAANSUhEUg== ok"
+    assert _clean_text_for_capture(text) == "look: [image] ok"
+
+
 def test_format_prefetch_context_deduplicates_overlap():
     result = _format_prefetch_context(
         static_facts=["Jordan prefers short answers"],
@@ -112,33 +117,131 @@ def test_prefetch_includes_profile_on_first_turn(provider):
     assert "Relevant Memories" in result
 
 
-def test_sync_turn_buffers_short_messages(provider):
-    # Trivial filtering is no longer applied at sync time — every non-empty turn
-    # is buffered and only the full session is written at session boundaries.
-    provider.sync_turn("ok", "sure", session_id="session-1")
-    assert provider._session_turns == [{"user": "ok", "assistant": "sure"}]
+def test_capture_custom_id_buckets_by_four_hours():
+    from datetime import datetime, timezone
+    a = _capture_custom_id("session-1", datetime(2026, 9, 12, 3, 59, tzinfo=timezone.utc))
+    b = _capture_custom_id("session-1", datetime(2026, 9, 12, 4, 0, tzinfo=timezone.utc))
+    assert a == "session_1_2026-09-12_b0"
+    assert b == "session_1_2026-09-12_b1"
+    assert _capture_custom_id("", datetime(2026, 9, 12, 23, 0, tzinfo=timezone.utc)) == "hermes_2026-09-12_b5"
+
+
+def test_sync_turn_writes_turn_to_session_document(provider):
+    # Every completed turn is appended to one document per session per 4h window.
+    provider.sync_turn("hello", "hi there", session_id="session-1")
+    assert len(provider._client.add_calls) == 1
+    call = provider._client.add_calls[0]
+    assert call["custom_id"] == _capture_custom_id("session-1")
+    assert call["content"] == "[role: user]\nhello\n[user:end]\n[role: assistant]\nhi there\n[assistant:end]"
+    assert call["metadata"]["type"] == "conversation"
+    assert call["metadata"]["session_id"] == "session-1"
+    assert call["entity_context"]
+    assert provider._pending_turns == []
+
+
+def test_sync_turn_skips_empty_turn(provider):
+    provider.sync_turn("", "<supermemory-context>x</supermemory-context>", session_id="session-1")
     assert provider._client.add_calls == []
 
 
-def test_on_session_end_ingests_clean_messages(provider):
-    messages = [
-        {"role": "system", "content": "skip"},
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi there"},
-    ]
-    provider.on_session_end(messages)
-    assert len(provider._client.ingest_calls) == 1
-    payload = provider._client.ingest_calls[0]
-    assert payload["session_id"] == "session-1"
-    assert payload["messages"] == [
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi there"},
-    ]
-    assert payload["metadata"]["type"] == "full_session"
-    assert payload["metadata"]["session_id"] == "session-1"
-    assert payload["metadata"]["message_count"] == 2
-    # Buffer is cleared after a normal session-end ingest.
-    assert provider._session_turns == []
+def test_failed_turn_write_is_retried_at_session_end(provider):
+    provider._client.fail_add = True
+    provider.sync_turn("hello", "hi there", session_id="session-1")
+    assert provider._client.add_calls == []
+    assert provider._pending_turns == [{"user": "hello", "assistant": "hi there", "session_id": "session-1"}]
+
+    provider._client.fail_add = False
+    provider.on_session_end([])
+    assert len(provider._client.add_calls) == 1
+    call = provider._client.add_calls[0]
+    assert call["custom_id"] == _capture_custom_id("session-1")
+    assert "hello" in call["content"]
+    assert provider._pending_turns == []
+
+
+def test_pending_turns_are_batched_with_next_turn(provider):
+    provider._client.fail_add = True
+    provider.sync_turn("one", "uno", session_id="session-1")
+    provider._client.fail_add = False
+    provider.sync_turn("two", "dos", session_id="session-1")
+    assert len(provider._client.add_calls) == 1
+    assert provider._client.add_calls[0]["content"].index("one") < provider._client.add_calls[0]["content"].index("two")
+    assert provider._pending_turns == []
+
+
+def test_session_switch_flushes_pending_to_old_session(provider):
+    provider._client.fail_add = True
+    provider.sync_turn("hello", "hi", session_id="session-1")
+    provider._client.fail_add = False
+    provider.on_session_switch("session-2", reset=True)
+    assert provider._client.add_calls[0]["custom_id"] == _capture_custom_id("session-1")
+    assert provider._session_id == "session-2"
+    assert provider._pending_turns == []
+
+
+def test_failed_switch_flush_keeps_old_session_turns_for_later_retry(provider):
+    provider._client.fail_add = True
+    provider.sync_turn("old turn", "old reply", session_id="session-1")
+    provider.on_session_switch("session-2", reset=True)  # flush fails: service unavailable at the boundary
+    assert provider._session_id == "session-2"
+    assert provider._pending_turns == [{"user": "old turn", "assistant": "old reply", "session_id": "session-1"}]
+
+    provider._client.fail_add = False
+    provider.sync_turn("new turn", "new reply", session_id="session-2")
+    calls = provider._client.add_calls
+    assert [c["custom_id"] for c in calls] == [_capture_custom_id("session-1"), _capture_custom_id("session-2")]
+    assert calls[0]["metadata"]["session_id"] == "session-1" and "old turn" in calls[0]["content"]
+    assert calls[1]["metadata"]["session_id"] == "session-2" and "new turn" in calls[1]["content"]
+    assert provider._pending_turns == []
+
+
+def test_concurrent_sync_turn_and_session_switch_do_not_duplicate_pending(provider, monkeypatch):
+    # Worker thread: sync_turn(B) with pending [A] snapshots [A, B] and blocks inside add_memory.
+    # Caller thread: on_session_switch must wait for that write, not re-send A from a stale snapshot.
+    provider._client.fail_add = True
+    provider.sync_turn("A", "a", session_id="session-1")
+    provider._client.fail_add = False
+    entered, release = threading.Event(), threading.Event()
+    real_add = provider._client.add_memory
+
+    def slow_add(content, metadata=None, **kwargs):
+        entered.set()
+        assert release.wait(timeout=2)
+        return real_add(content, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(provider._client, "add_memory", slow_add)
+    worker = threading.Thread(target=provider.sync_turn, args=("B", "b"), kwargs={"session_id": "session-1"})
+    worker.start()
+    assert entered.wait(timeout=2)
+    switcher = threading.Thread(target=provider.on_session_switch, args=("session-2",), kwargs={"reset": True})
+    switcher.start()
+    switcher.join(timeout=0.2)
+    assert switcher.is_alive()  # blocked on the capture lock while the worker's write is in flight
+    release.set()
+    worker.join(timeout=2); switcher.join(timeout=2)
+    assert not worker.is_alive() and not switcher.is_alive()
+    assert len(provider._client.add_calls) == 1
+    assert provider._client.add_calls[0]["content"].count("[role: user]") == 2  # A and B, once each
+    assert provider._pending_turns == []
+    assert provider._session_id == "session-2"
+
+
+def test_failed_switch_flush_is_retried_at_shutdown(provider):
+    provider._client.fail_add = True
+    provider.sync_turn("old turn", "old reply", session_id="session-1")
+    provider.on_session_switch("session-2", reset=True)
+    provider._client.fail_add = False
+    provider.shutdown()
+    assert provider._client.add_calls[0]["custom_id"] == _capture_custom_id("session-1")
+    assert provider._pending_turns == []
+
+
+def test_sync_turn_drops_inline_image_payloads(provider):
+    blob = "A" * 4096
+    provider.sync_turn(f"describe this data:image/png;base64,{blob}", "a screenshot", session_id="session-1")
+    call = provider._client.add_calls[0]
+    assert "describe this [image]" in call["content"]
+    assert blob not in json.dumps(call)
 
 
 def test_merge_metadata_stamps_sm_source():
@@ -164,25 +267,30 @@ def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch):
 
     def slow_add_memory(content, metadata=None, *, entity_context="",
                         container_tag=None, custom_id=None):
+        if provider._client.fail_add:
+            raise RuntimeError("boom")
         started.set()
         release.wait(timeout=1)
         provider._client.add_calls.append({
             "content": content,
             "metadata": metadata,
             "entity_context": entity_context,
+            "custom_id": custom_id,
         })
         return {"id": "mem_slow"}
 
     monkeypatch.setattr(provider._client, "add_memory", slow_add_memory)
 
-    # sync_turn now only buffers — no thread is spawned.
+    # A failed turn write stays pending; shutdown retries it.
+    provider._client.fail_add = True
     provider.sync_turn(
         "Please remember this request in long-term memory",
         "Absolutely, I will keep that in long-term memory.",
         session_id="session-1",
     )
+    provider._client.fail_add = False
     assert provider._sync_thread is None
-    assert len(provider._session_turns) == 1
+    assert len(provider._pending_turns) == 1
 
     # on_memory_write still runs on a background thread.
     provider.on_memory_write("add", "memory", "Jordan likes concise docs")
@@ -196,14 +304,10 @@ def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch):
     assert provider._sync_thread is None
     assert provider._write_thread is None
     assert provider._prefetch_thread is None
-    # Explicit memory write went through.
-    assert len(provider._client.add_calls) == 1
-    # Buffered turn was flushed as a partial full-session ingest.
-    assert len(provider._client.ingest_calls) == 1
-    payload = provider._client.ingest_calls[0]
-    assert payload["session_id"] == "session-1"
-    assert payload["metadata"]["partial"] is True
-    assert payload["metadata"]["type"] == "full_session"
+    # Explicit memory write and the retried turn both went through.
+    assert len(provider._client.add_calls) == 2
+    flushed = next(c for c in provider._client.add_calls if c.get("custom_id") == _capture_custom_id("session-1"))
+    assert provider._pending_turns == []
 
 
 def test_store_tool_returns_saved_payload(provider):
@@ -297,7 +401,7 @@ def test_base_url_defaults_to_cloud(monkeypatch, tmp_path):
 
 
 def test_client_passes_custom_base_url_to_sdk(monkeypatch):
-    """SDK operations and raw conversation ingest share one normalized base URL."""
+    """SDK client receives the normalized base URL."""
     import sys
     import types
 
@@ -323,41 +427,6 @@ def test_client_passes_custom_base_url_to_sdk(monkeypatch):
 
     assert client._base_url == "http://localhost:6767"
     assert captured["base_url"] == "http://localhost:6767"
-
-
-@pytest.mark.parametrize(
-    ("base_url", "expected_url"),
-    [
-        ("https://api.supermemory.ai", "https://api.supermemory.ai/v4/conversations"),
-        ("http://localhost:6767", "http://localhost:6767/v4/conversations"),
-    ],
-)
-def test_ingest_conversation_uses_client_base_url(monkeypatch, base_url, expected_url):
-    """Raw conversation ingest follows the same endpoint as SDK operations."""
-    from plugins.memory.supermemory import _SupermemoryClient
-
-    client = _SupermemoryClient.__new__(_SupermemoryClient)
-    client._api_key = "test-key"
-    client._container_tag = "hermes"
-    client._timeout = 1.0
-    client._base_url = base_url
-
-    captured = {}
-
-    class _FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-    def fake_urlopen(req, timeout=None):
-        captured["url"] = req.full_url
-        return _FakeResponse()
-
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    client.ingest_conversation("s1", [{"role": "user", "content": "hello there"}])
-    assert captured["url"] == expected_url
 
 
 # -- Multi-container tests ----------------------------------------------------

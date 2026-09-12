@@ -1,4 +1,4 @@
-"""Supermemory memory plugin (MemoryProvider): profile recall, semantic search, memory tools, turn capture, session ingest."""
+"""Supermemory memory plugin (MemoryProvider): profile recall, semantic search, memory tools, per-turn capture."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import threading
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -25,6 +24,8 @@ _DEFAULT_BASE_URL = "https://api.supermemory.ai"
 _API_KEY_URL = "http://app.supermemory.ai/integrations?connect=hermes"
 # Strips injected <supermemory-context> / <supermemory-containers> blocks before capture.
 _INJECTED_BLOCK_RE = re.compile(r"<supermemory-(context|containers)>[\s\S]*?</supermemory-\1>\s*", re.DOTALL)
+_DATA_URI_RE = re.compile(r"data:[^;,\s]+;base64,[A-Za-z0-9+/=]+")  # pasted inline images are useless as memory text
+_CAPTURE_BUCKET_HOURS = 4  # one capture document per session per 4h window (matches codex/openclaw plugins)
 _DEFAULT_ENTITY_CONTEXT = (
     "User-assistant conversation. Format: [role: user]...[user:end] and [role: assistant]...[assistant:end].\n\n"
     "Only extract things useful in future conversations. Most messages are not worth remembering.\n\n"
@@ -161,7 +162,7 @@ def _format_prefetch_context(static_facts: list, dynamic_facts: list, search_res
 
 
 def _clean_text_for_capture(text: str) -> str:
-    return _INJECTED_BLOCK_RE.sub("", text or "").strip()
+    return _DATA_URI_RE.sub("[image]", _INJECTED_BLOCK_RE.sub("", text or "")).strip()
 
 
 def _memory_fields(item: Any, *keys: str) -> dict:
@@ -231,14 +232,16 @@ class _SupermemoryClient:
         self.forget_memory(memory_id, container_tag=container_tag)
         return {"success": True, "message": f'Forgot: "{(results[0].get("memory") or "")[:100]}"', "id": memory_id}
 
-    def ingest_conversation(self, session_id: str, messages: list[dict], metadata: dict | None = None) -> None:
-        payload: dict = {"conversationId": session_id, "messages": messages, "containerTags": [self._container_tag],
-                         **({"metadata": self._merge_metadata(metadata)} if metadata else {})}
-        req = urllib.request.Request(f"{self._base_url}/v4/conversations", data=json.dumps(payload).encode("utf-8"), method="POST",
-                                     headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json",
-                                              "x-sm-source": "hermes"})
-        with urllib.request.urlopen(req, timeout=self._timeout + 3):
-            return
+
+def _format_turn(user: str, assistant: str) -> str:
+    """Render one turn in the [role: x]...[x:end] layout the entity context describes."""
+    return "\n".join(f"[role: {role}]\n{text}\n[{role}:end]" for role, text in (("user", user), ("assistant", assistant)) if text)
+
+
+def _capture_custom_id(session_id: str, now: Optional[datetime] = None) -> str:
+    """<session>_<YYYY-MM-DD>_b<0..5>: same id within a 4h window, so the API appends turns to one document."""
+    now = now or datetime.now(timezone.utc)
+    return f"{_sanitize_tag(session_id) or 'hermes'}_{now:%Y-%m-%d}_b{now.hour // _CAPTURE_BUCKET_HOURS}"
 
 
 def _build_client(api_key: str, config: dict, container_tag: str) -> _SupermemoryClient:
@@ -312,7 +315,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._client: Optional[_SupermemoryClient] = None
         self._container_tag, self._turn_count, self._write_enabled, self._active = _DEFAULT_CONTAINER_TAG, 0, True, False
         self._prefetch_thread = self._sync_thread = self._write_thread = None  # only _write_thread is ever started
-        self._session_turns: List[Dict[str, str]] = []
+        self._pending_turns: List[Dict[str, str]] = []  # failed writes, each tagged with its session_id; retried on next write/end/switch/shutdown
+        self._capture_lock = threading.Lock()  # sync_turn (worker) vs on_session_switch/shutdown (caller thread) both touch _pending_turns
         self._apply_config(_load_supermemory_config())
         self._base_url, self._allowed_containers = _DEFAULT_BASE_URL, []  # env var is only consulted in initialize()
 
@@ -373,7 +377,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         from hermes_constants import get_hermes_home
         self._hermes_home = kwargs.get("hermes_home") or str(get_hermes_home())
-        self._session_id, self._turn_count, self._session_turns = session_id, 0, []
+        self._session_id, self._turn_count, self._pending_turns = session_id, 0, []
         config = _load_supermemory_config(self._hermes_home)
         self._api_key = get_secret("SUPERMEMORY_API_KEY", "") or ""
         self._container_tag = _resolve_container_tag(config["container_tag"], kwargs.get("agent_identity", "default"))
@@ -408,41 +412,53 @@ class SupermemoryMemoryProvider(MemoryProvider):
                                             profile["search_results"], self._max_recall_results)
         return _quietly(_recall, "Supermemory prefetch failed", default="")
 
+    def _write_turns(self, mode: str, new_turn: Optional[Dict[str, str]] = None) -> None:
+        """Write pending turns (+ ``new_turn``) as one documents.add per session id; custom_id = session + 4h bucket, so the
+        API appends deltas. Failed batches stay pending under their own session id, so a switch never re-homes them.
+        Retries are at-least-once: a write the API accepted but whose response was lost is re-sent and appended again.
+        The lock serializes the snapshot/write/replace sequence across the worker and caller threads."""
+        with self._capture_lock:
+            turns = self._pending_turns + ([new_turn] if new_turn else [])
+            if not turns:
+                return
+            failed: List[Dict[str, str]] = []
+            for sid in dict.fromkeys(t["session_id"] for t in turns):
+                batch = [t for t in turns if t["session_id"] == sid]
+                now = datetime.now(timezone.utc)
+                content = "\n\n".join(_format_turn(t["user"], t["assistant"]) for t in batch)
+                metadata = {"type": "conversation", "session_id": sid, "timestamp": now.isoformat()}  # no sm_capture_mode: Hermes policy
+                try:
+                    self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context,
+                                            custom_id=_capture_custom_id(sid, now))
+                except Exception:
+                    logger.log(logging.WARNING if mode != "turn" else logging.DEBUG, "Supermemory capture failed (%s, session=%s, %d turns pending)",
+                               mode, sid, len(batch), exc_info=True)
+                    failed += batch
+            self._pending_turns = failed
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+        # Host runs this on a worker thread, so the blocking write is fine here.
         if not self._can_write() or not self._auto_capture:
             return
-        turn = {"user": _clean_text_for_capture(user_content), "assistant": _clean_text_for_capture(assistant_content)}
-        if any(turn.values()):  # buffered for the single full-session document written at end/switch/shutdown
-            self._session_turns.append(turn)
+        turn = {"user": _clean_text_for_capture(user_content), "assistant": _clean_text_for_capture(assistant_content),
+                "session_id": session_id or self._session_id}
+        if turn["user"] or turn["assistant"]:
+            self._write_turns("turn", turn)
 
-    def _ingest(self, session_id: str, messages: list[dict], metadata: dict, fail_msg: str, level: int = logging.DEBUG) -> None:
-        metadata = {"type": "full_session", "session_id": session_id, **metadata}
-        _quietly(lambda: self._client.ingest_conversation(session_id, messages, metadata=metadata), fail_msg, level=level)
-
-    def _flush_turns(self, session_id: str, *, partial: bool, fail_msg: str) -> None:
-        turns = self._session_turns  # message_count reports 2 per buffered turn regardless of empty sides
-        messages = [{"role": role, "content": t[role]} for t in turns for role in ("user", "assistant") if t.get(role)]
-        self._ingest(session_id, messages, {"message_count": len(turns) * 2, "partial": partial}, fail_msg)
+    def _flush_pending(self, mode: str) -> None:
+        if self._can_write():
+            self._write_turns(mode)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if not self._can_write() or not self._session_id:
-            return
-        cleaned = [{"role": m.get("role"), "content": content} for m in messages or []
-                   if m.get("role") in {"user", "assistant"} and (content := _clean_text_for_capture(str(m.get("content", ""))))]
-        if not cleaned or (len(cleaned) == 1 and len(cleaned[0]["content"]) < 20):
-            return
-        self._ingest(self._session_id, cleaned, {"message_count": len(cleaned)}, "Supermemory session ingest failed", level=logging.WARNING)
-        self._session_turns = []  # so shutdown() doesn't duplicate on normal exit
+        # Turns were already written as they completed; only retry what failed.
+        self._flush_pending("session_end")
 
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, **kwargs) -> None:
-        """Flush any buffered turns from the old session as one document, then reset for the new session."""
-        old_session_id = self._session_id
+        # Pending turns survive the switch: they carry their own session_id, so a later retry still lands on the old session.
+        self._flush_pending("session_switch")
         if self._can_write():
-            if self._session_turns and old_session_id:
-                self._flush_turns(old_session_id, partial=not reset, fail_msg="Supermemory session-switch ingest failed")
             self._turn_count = 0
-        self._session_id = str(new_session_id or "").strip() or old_session_id
-        self._session_turns = []
+        self._session_id = str(new_session_id or "").strip() or self._session_id
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         if not self._can_write() or action != "add" or not (content or "").strip():
@@ -456,10 +472,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._write_thread.start()
 
     def shutdown(self) -> None:
-        # Emergency fallback (crashes only). Buffer is cleared on normal on_session_end().
-        if self._can_write() and self._session_turns and self._session_id:
-            logger.warning("Supermemory: Saving session via shutdown (session=%s, turns=%d)", self._session_id, len(self._session_turns))
-            self._flush_turns(self._session_id, partial=True, fail_msg="Supermemory shutdown ingest failed")
+        self._flush_pending("shutdown")
         if self._write_thread and self._write_thread.is_alive():
             self._write_thread.join(timeout=5.0)
         self._prefetch_thread = self._sync_thread = self._write_thread = None

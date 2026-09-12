@@ -1,6 +1,6 @@
 # Supermemory Memory Provider
 
-Semantic long-term memory with profile recall, semantic search, explicit memory tools, and full-session conversation ingest (one ingest per session) for richer profiles.
+Semantic long-term memory with profile recall, semantic search, explicit memory tools, and per-turn conversation capture into one document per session per 4-hour window for richer profiles.
 
 ## Requirements
 
@@ -55,7 +55,7 @@ Config file: `$HERMES_HOME/supermemory.json`
 | `capture_mode` | `all` | Skip tiny or trivial turns by default |
 | `search_mode` | `hybrid` | Search mode: `hybrid` (profile + memories), `memories` (memories only), `documents` (documents only) |
 | `entity_context` | built-in default | Extraction guidance passed to Supermemory |
-| `api_timeout` | `5.0` | Timeout for SDK and ingest requests |
+| `api_timeout` | `5.0` | Timeout for SDK requests |
 
 ### Environment Variables
 
@@ -67,7 +67,7 @@ Config file: `$HERMES_HOME/supermemory.json`
 
 Base URL precedence is `supermemory.json` → `SUPERMEMORY_BASE_URL` →
 `https://api.supermemory.ai`. Hermes resolves it once and uses the same endpoint
-for SDK operations, setup/status probes, and full-session conversation ingest.
+for SDK operations and setup/status probes.
 
 ## Tools
 
@@ -93,9 +93,9 @@ Supermemory app, so you can filter, browse, and bulk-manage them per source agen
 When enabled, Hermes can:
 
 - prefetch relevant memory context before each turn
-- buffer the full conversation and ingest it as **one session** at session end (or on `/reset`, branch, compression, or shutdown)
-- ingest the full session to the conversations endpoint for richer profile/graph updates
-- route every SDK, probe, and conversation-ingest request through the configured hosted or self-hosted endpoint
+- write each completed user/assistant turn to **one document per session per 4-hour window** (`customId` = `<session>_<date>_b<0-5>`, so the API appends deltas), like the Codex and OpenClaw plugins
+- retry failed turn writes on the next turn, session end, `/reset`, or shutdown (at-least-once: if the API accepted a write but the response was lost, the same turn is appended again)
+- route every SDK and probe request through the configured hosted or self-hosted endpoint
 - expose explicit tools for search, store, forget, and profile access
 
 The session is written once via the conversations endpoint, which drives Supermemory's entity extraction and profile building while keeping a clean, retrievable full transcript.
@@ -128,7 +128,7 @@ For advanced setups (e.g. OpenClaw-style multi-workspace), you can enable custom
 When enabled:
 - `supermemory-search`, `supermemory-save`, `supermemory-forget`, and `supermemory-profile` accept an optional `container_tag` parameter
 - The tag must be in the whitelist: primary container + `custom_containers`
-- Automatic operations (turn sync, prefetch, memory write mirroring, session ingest) always use the **primary** container only
+- Automatic operations (turn capture, prefetch, memory write mirroring) always use the **primary** container only
 - Custom container instructions are injected into the system prompt
 
 ## Support

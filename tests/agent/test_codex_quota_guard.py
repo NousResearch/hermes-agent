@@ -50,3 +50,28 @@ def test_state_survives_process_style_reload(monkeypatch, tmp_path):
         ),
     )
     assert guard.check_daily_budget() is not None
+
+def test_weekly_reset_restarts_same_day_baseline(monkeypatch, tmp_path):
+    from agent import account_usage, codex_quota_guard as guard
+
+    path = tmp_path / "state.json"
+    path.write_text(
+        '{"day": "' + __import__("datetime").date.today().isoformat() +
+        '", "baseline_weekly_percent": 80.0}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(guard, "_state_path", lambda: path)
+    monkeypatch.setattr(guard, "configured_daily_budget", lambda: 10.0)
+    monkeypatch.setattr(
+        account_usage,
+        "fetch_account_usage",
+        lambda *a, **k: SimpleNamespace(
+            windows=[SimpleNamespace(label="Weekly", used_percent=5.0)]
+        ),
+    )
+
+    assert guard.check_daily_budget() is None
+
+    state = __import__("json").loads(path.read_text(encoding="utf-8"))
+    assert state["baseline_weekly_percent"] == 5.0

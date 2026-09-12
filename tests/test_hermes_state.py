@@ -1776,6 +1776,66 @@ class TestSessionTitleLineage:
         assert [(r["id"], r["title"]) for r in rows] == [("tip", "renamed tip")]
 
 
+class TestCompressionCostLineage:
+    """Verify that compressed conversations correctly sum and project cost across the
+    entire lineage chain, and that usage_totals counts post-compression segments (#105535)."""
+
+    def _make_three_tier_chain(self, db, t0):
+        import json
+        # Root session
+        db.create_session("root", "cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=?, end_reason='compression', "
+            "message_count=10, input_tokens=800, output_tokens=200, estimated_cost_usd=0.05, actual_cost_usd=0.04 WHERE id='root'",
+            (t0, t0 + 100),
+        )
+        # Middle session
+        db.create_session("middle", "cli", parent_session_id="root")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=?, end_reason='compression', "
+            "message_count=5, input_tokens=400, output_tokens=100, estimated_cost_usd=0.03, actual_cost_usd=0.03 WHERE id='middle'",
+            (t0 + 200, t0 + 300),
+        )
+        # Tip session
+        db.create_session("tip", "cli", parent_session_id="middle")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, message_count=3, input_tokens=250, output_tokens=50, "
+            "estimated_cost_usd=0.02, actual_cost_usd=NULL WHERE id='tip'",
+            (t0 + 400,),
+        )
+        # Subagent delegate session (should be excluded by usage_totals)
+        db.create_session("delegate", "cli", parent_session_id="root")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, message_count=2, input_tokens=150, output_tokens=50, "
+            "estimated_cost_usd=0.01, model_config=? WHERE id='delegate'",
+            (t0 + 50, json.dumps({"_delegate_from": "root"})),
+        )
+        db._conn.commit()
+
+    def test_projected_tip_sums_lineage_costs(self, db):
+        import time as _time
+        self._make_three_tier_chain(db, _time.time() - 3600)
+
+        rows = db.list_sessions_rich(limit=50, order_by_last_active=True)
+        # Root is projected onto tip; delegate has parent_session_id and isn't a root, so only the projected chain root shows
+        matching = [r for r in rows if r["_lineage_root_id"] == "root"]
+        assert len(matching) == 1
+        merged = matching[0]
+        assert merged["id"] == "tip"
+        # Total cost is 0.04 (root actual) + 0.03 (middle actual) + 0.02 (tip estimated) = 0.09
+        assert merged["estimated_cost_usd"] == pytest.approx(0.09)
+        assert merged["actual_cost_usd"] is None
+
+    def test_usage_totals_includes_compression_continuations(self, db):
+        import time as _time
+        self._make_three_tier_chain(db, _time.time() - 3600)
+
+        totals = db.usage_totals(min_message_count=1)
+        # Tokens: root(1000) + middle(500) + tip(300) = 1800 (delegate 200 is excluded)
+        assert totals["tokens"] == 1800
+        # Cost: root(0.04) + middle(0.03) + tip(0.02) = 0.09 (delegate 0.01 is excluded)
+        assert totals["cost_usd"] == pytest.approx(0.09)
+
 
 class TestSanitizeTitle:
     """Tests for SessionDB.sanitize_title() validation and cleaning."""

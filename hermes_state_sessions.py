@@ -957,7 +957,8 @@ class SessionSessionsMixin:
     def _project_compression_tips(self, sessions: List[Dict[str, Any]], compact_rows: bool) -> List[Dict[str, Any]]:
         """Replace each compression root's surfaced fields with its live tip's (root ``started_at`` kept
         for stable ordering), one batched query. ``_lineage_ids`` carries every chain id (a tile may
-        hold a MIDDLE segment's id)."""
+        hold a MIDDLE segment's id).  Cost is summed across the whole lineage so the projected row
+        shows total spend, not the root's frozen-at-rotation snapshot (#105535)."""
         chain_by_root: Dict[str, List[str]] = {}  # only roots whose tip differs from themselves
         for s in sessions:
             if s.get("end_reason") == "compression":
@@ -969,6 +970,22 @@ class SessionSessionsMixin:
                 {chain[-1] for chain in chain_by_root.values()}, compact_rows=compact_rows,
             ) if chain_by_root else {}
         )
+        # Batch-query lineage cost sums: one query covering all chain member IDs.
+        lineage_cost: Dict[str, float] = {}
+        if chain_by_root:
+            all_chain_ids: set[str] = set()
+            for chain in chain_by_root.values():
+                all_chain_ids.update(chain)
+            if all_chain_ids:
+                placeholders = ",".join("?" for _ in all_chain_ids)
+                cost_rows = self._read_all(
+                    f"SELECT id, COALESCE(actual_cost_usd, estimated_cost_usd, 0) AS cost"
+                    f" FROM sessions WHERE id IN ({placeholders})",
+                    list(all_chain_ids),
+                )
+                cost_by_id = {r["id"]: float(r["cost"] or 0) for r in cost_rows}
+                for root_id, chain in chain_by_root.items():
+                    lineage_cost[root_id] = sum(cost_by_id.get(cid, 0) for cid in chain)
         projected = []
         for s in sessions:
             chain = chain_by_root.get(s["id"])
@@ -988,10 +1005,17 @@ class SessionSessionsMixin:
                 # between leaves it on the ended root, and exact-title lookups (`hermes peer dm` ->
                 # canonical "Bot Chat") must still see the lineage under its name (#106165).
                 merged["title"] = s.get("title")
+            # Project lineage-summed cost so the sidebar row shows total spend, not the
+            # root's frozen snapshot.  Clear actual_cost_usd so consumers reading
+            # COALESCE(actual, estimated) see the sum.
+            if s["id"] in lineage_cost:
+                merged["estimated_cost_usd"] = lineage_cost[s["id"]]
+                merged["actual_cost_usd"] = None
             merged["_lineage_root_id"] = s["id"]
             merged["_lineage_ids"] = chain
             projected.append(merged)
         return projected
+
 
     def list_recent_sessions_bounded(
         self,

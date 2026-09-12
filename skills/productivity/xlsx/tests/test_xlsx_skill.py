@@ -15,7 +15,9 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.table import Table
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
@@ -332,7 +334,7 @@ def test_restructure_insert_rows_shifts_everything(restructure_book):
     assert data["B8"].value == "=SUM(B2:B6)"
     # absolute ref before insert point unchanged; relative arm shifted
     assert data["C8"].value == "=$B$2*C2"
-    # function names, whole-column refs, string literals untouched
+    # function names, whole-column refs on a row operation, strings untouched
     assert data["D8"].value == "=LOG10(B6)"
     assert data["E8"].value == "=SUM(B:B)"
     assert data["F8"].value == '="row B2: "&B2'
@@ -390,6 +392,50 @@ def test_restructure_insert_cols(restructure_book):
     merged = [str(r) for r in data.merged_cells.ranges]
     assert "F2:F4" in merged                    # merge shifted right
     assert "A7:C7" in merged                    # merge expanded across col B
+
+
+def test_restructure_whole_axis_refs(restructure_book):
+    wb = load_workbook(restructure_book)
+    wb["Summary"]["C1"] = "=SUM(Data!B:B)"
+    wb["Summary"]["C2"] = "=SUM(Data!2:2)"
+    wb.save(restructure_book)
+
+    report = json.loads(run(
+        "xlsx_restructure.py", restructure_book, "--sheet", "Data",
+        "--insert-cols", "B:1").stdout)
+    wb = load_workbook(restructure_book)
+    assert wb["Summary"]["C1"].value == "=SUM(Data!C:C)"
+    assert wb["Summary"]["C2"].value == "=SUM(Data!2:2)"
+    assert any(item["cell"] == "C1" for item in report["formulas"])
+
+    run("xlsx_restructure.py", restructure_book, "--sheet", "Data",
+        "--insert-rows", "2:1")
+    wb = load_workbook(restructure_book)
+    assert wb["Summary"]["C1"].value == "=SUM(Data!C:C)"
+    assert wb["Summary"]["C2"].value == "=SUM(Data!3:3)"
+
+
+def test_restructure_removes_fully_deleted_artifacts(tmp_path):
+    book = tmp_path / "deleted-artifacts.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Name", "Value"])
+    ws.append(["old", 1])
+    ws.row_dimensions[2].height = 44
+    validation = DataValidation(type="list", formula1='"x,y"')
+    validation.add("A2")
+    ws.add_data_validation(validation)
+    ws.add_table(Table(displayName="OnlyTable", ref="A1:B2"))
+    wb.save(book)
+
+    report = json.loads(run(
+        "xlsx_restructure.py", book, "--delete-rows", "1:2").stdout)
+    ws = load_workbook(book).active
+    assert all(dim.height != 44 for dim in ws.row_dimensions.values())
+    assert not ws.data_validations.dataValidation
+    assert "OnlyTable" not in ws.tables
+    assert report["validations"] == [{"from": "A2", "to": None}]
+    assert report["tables"]["OnlyTable"]["to"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -149,6 +149,7 @@ import { UpdatesOverlay } from '../updates-overlay'
 
 import { ContribWiringContext } from './context'
 import {
+  profileScopeForTranscriptSession,
   reconcileActiveTranscript,
   resolveActiveTranscriptSession,
   useBackgroundSync
@@ -440,7 +441,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         return
       }
 
-      const storedProfile = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))?.profile
+      const storedProfile = profileScopeForTranscriptSession(
+        resolveActiveTranscriptSession(storedSessionId, runtimeSessionId)
+      )
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
@@ -489,7 +492,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         activeSessionIdRef,
         busyRef,
         requestSequenceRef: activeTranscriptRequestSequenceRef,
-        resolveSession: resolveActiveTranscriptSession,
+        resolveSession: id => resolveActiveTranscriptSession(id, activeSessionIdRef.current),
         selectedStoredSessionIdRef,
         signatureRef: activeTranscriptSignatureRef,
         updateSessionState

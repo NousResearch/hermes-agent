@@ -7,6 +7,7 @@ import { $changeEventsAvailable, notifySessionsChanged, resetLiveSync } from '@/
 import {
   $activeSessionId,
   $selectedStoredSessionId,
+  _resetSessionOwnerHintsForTests,
   setBusy,
   setCronSessions,
   setMessagingSessions,
@@ -177,6 +178,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   clearAllSessionStates()
   $sessionTiles.set([])
+  _resetSessionOwnerHintsForTests()
   resetTypingActivityTracking()
 })
 
@@ -646,6 +648,33 @@ describe('reconcileActiveTranscript', () => {
 
     expect(getLatestSessionMessages).not.toHaveBeenCalled()
     expect(fixture.updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('keeps the active named-profile owner when a visible default duplicate shares the stored id', async () => {
+    const S = ACTIVE_STORED_ID
+    const namedOwner = { connectionId: 'remote', mode: 'remote' as const, profile: 'omar' }
+
+    $activeSessionId.set(ACTIVE_RUNTIME_ID)
+    $selectedStoredSessionId.set(S)
+    setSessionOwnerHint(S, namedOwner)
+    // Bot Chat lives in a workspace tile (often hidden from $sessions) while a
+    // root-DB duplicate of the same stored id remains visible as `default`.
+    $sessionTiles.set([
+      {
+        storedSessionId: S,
+        runtimeId: ACTIVE_RUNTIME_ID,
+        ownerRoute: namedOwner
+      }
+    ])
+    setSessions([{ id: S, profile: 'default', source: 'desktop', connectionId: 'local' } as never])
+    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('named-profile answer') as never)
+
+    await fixture.refresh()
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(S, expect.objectContaining({ profile: 'omar' }))
+    expect(getLatestSessionMessages).not.toHaveBeenCalledWith(S, 'default')
+    expect(getLatestSessionMessages).not.toHaveBeenCalledWith(S, expect.objectContaining({ profile: 'default' }))
   })
 
   it('uses the presentation profile when a hidden owner has no target profile', async () => {

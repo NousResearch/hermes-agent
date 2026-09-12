@@ -37,9 +37,90 @@ interface ActiveTranscriptSession {
   profile?: string | null
 }
 
-/** Resolve an active transcript from visible rows or its unique hidden owner. */
-export function resolveActiveTranscriptSession(storedSessionId: string): ActiveTranscriptSession | undefined {
-  const visible = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedSessionId))
+function ownerRouteProfile(owner: SessionProfileRoute): string {
+  return (owner.targetProfile ?? owner.profile).trim() || 'default'
+}
+
+function visibleRowMatchesOwner(
+  row: { connection_id?: null | string; profile?: null | string },
+  owner: SessionProfileRoute
+): boolean {
+  const rowProfile = (row.profile ?? '').trim() || 'default'
+
+  if (rowProfile !== ownerRouteProfile(owner)) {
+    return false
+  }
+
+  const rowConnection = (row.connection_id ?? '').trim()
+  const ownerConnection = owner.connectionId.trim()
+
+  if (!rowConnection || !ownerConnection) {
+    return true
+  }
+
+  return rowConnection === ownerConnection
+}
+
+/** Verified owner of the ACTIVE transcript: the tile bound to this stored
+ *  (+ runtime) id, else a unique hint that the same tile corroborates.
+ *  A unique hint alone is not verified — visible rows must still override a
+ *  stale leftover hint. */
+function preferredActiveTranscriptOwner(
+  storedSessionId: string,
+  runtimeSessionId?: null | string
+): SessionProfileRoute | undefined {
+  const runtimeId = runtimeSessionId ?? $activeSessionId.get()
+  const tiles = $sessionTiles.get().filter(tile => tile.storedSessionId === storedSessionId)
+  const activeTile =
+    (runtimeId ? tiles.find(tile => tile.runtimeId === runtimeId) : undefined) ??
+    (tiles.length === 1 ? tiles[0] : undefined)
+
+  if (activeTile?.ownerRoute) {
+    return activeTile.ownerRoute
+  }
+
+  const uniqueHint = getSessionOwnerHint(storedSessionId)
+
+  return uniqueHint && activeTile ? uniqueHint : undefined
+}
+
+/** Profile/connection scope used to read an active transcript from storage. */
+export function profileScopeForTranscriptSession(stored: ActiveTranscriptSession | undefined): ProfileScope {
+  if (!stored) {
+    return undefined
+  }
+
+  if (stored.ownerRoute) {
+    return {
+      connectionId: stored.ownerRoute.connectionId,
+      profile: stored.ownerRoute.targetProfile ?? stored.ownerRoute.profile
+    }
+  }
+
+  return stored.profile
+}
+
+/** Resolve an active transcript from a verified owner, matching visible rows,
+ *  or its unique hidden owner. Visible-first remains when no owner is verified
+ *  so a stale hint cannot rewrite a viewed session row. */
+export function resolveActiveTranscriptSession(
+  storedSessionId: string,
+  runtimeSessionId?: null | string
+): ActiveTranscriptSession | undefined {
+  const visibleRows = ownerLookupSessionRows().filter(session => sessionMatchesStoredId(session, storedSessionId))
+  const verifiedOwner = preferredActiveTranscriptOwner(storedSessionId, runtimeSessionId)
+
+  if (verifiedOwner) {
+    const matchingVisible = visibleRows.find(row => visibleRowMatchesOwner(row, verifiedOwner))
+
+    if (matchingVisible) {
+      return { ownerRoute: verifiedOwner, profile: matchingVisible.profile }
+    }
+
+    return { ownerRoute: verifiedOwner, profile: verifiedOwner.profile }
+  }
+
+  const visible = visibleRows[0]
 
   if (visible) {
     return { profile: visible.profile }
@@ -230,12 +311,7 @@ export async function reconcileActiveTranscript({
   requestSequenceRef.current = requestId
 
   try {
-    const profileScope: ProfileScope = stored.ownerRoute
-      ? {
-          connectionId: stored.ownerRoute.connectionId,
-          profile: stored.ownerRoute.targetProfile ?? stored.ownerRoute.profile
-        }
-      : stored.profile
+    const profileScope: ProfileScope = profileScopeForTranscriptSession(stored)
 
     const latest = await getLatestSessionMessages(storedSessionId, profileScope)
 

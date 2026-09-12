@@ -117,7 +117,8 @@ def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]
     resolved_path = str(config_path or default_path)
     now = time.monotonic()
     if config_path is None:
-        if cached := _fresh_cached_policy(resolved_path, now):
+        cached = _fresh_cached_policy(resolved_path, now)
+        if cached is not None:
             return cached
     config_path = config_path or default_path
     policy = _load_policy_config(config_path)

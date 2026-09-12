@@ -73,31 +73,31 @@ def test_missing_db_claim_never_starts_git_probe(monkeypatch):
     assert probed == []
 
 
-def test_lazy_desktop_row_with_explicit_cwd_is_enriched_on_hydration(monkeypatch, tmp_path):
+def test_first_desktop_submit_enriches_explicit_cwd_git_metadata(monkeypatch, tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     repo = tmp_path / "repo"
     repo.mkdir()
-    session = {
-        "session_key": "desktop-session",
-        "source": "desktop",
-        "cwd": str(repo),
-        "explicit_cwd": True,
-    }
-    sid = "live-desktop-session"
 
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server.git_probe, "branch", lambda _cwd: "feature/session-metadata")
     monkeypatch.setattr(server.git_probe, "common_repo_root", lambda _cwd: str(repo))
-    server._sessions[sid] = session
+
+    response = server.handle_request({
+        "id": "create",
+        "method": "session.create",
+        "params": {"source": "desktop", "cwd": str(repo)},
+    })
+    sid = response["result"]["session_id"]
+    key = response["result"]["stored_session_id"]
     try:
-        assert server._ensure_session_db_row(session) is True
-        assert db.get_session("desktop-session")["git_branch"] is None
+        assert db.get_session(key) is None
 
-        server._hydrate_session_cwd(sid, "desktop-session", db, None)
+        assert server._persist_session_row_for_submit("submit", server._sessions[sid]) is None
 
-        row = db.get_session("desktop-session")
+        row = db.get_session(key)
         assert row["cwd"] == str(repo)
         assert row["git_branch"] == "feature/session-metadata"
         assert row["git_repo_root"] == str(repo)

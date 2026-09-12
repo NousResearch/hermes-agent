@@ -1057,6 +1057,16 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     except Exception:
         agent._tool_snapshot_generation = 0
     import model_tools
+    raw_tool_defs = model_tools.get_tool_definitions(
+        enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+        quiet_mode=agent.quiet_mode, skip_tool_search_assembly=True,
+    )
+    # Execution authority is the full scoped catalog.  ``agent.tools`` below is
+    # only the model-visible presentation and may collapse deferred tools into
+    # the tool-search bridge.
+    agent._executable_tool_names = {
+        tool["function"]["name"] for tool in raw_tool_defs if tool.get("function", {}).get("name")
+    }
     agent.tools = model_tools.get_tool_definitions(
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,

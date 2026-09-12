@@ -1223,6 +1223,12 @@ DEFAULT_CONFIG = {
     # cheaper/faster model. Uses the same runtime provider resolution as CLI/gateway startup, so
     # every configured provider is supported.
     "delegation": {
+        # Worker definitions are local to the active Hermes profile. Model-facing
+        # discovery reads these on demand without rewriting cached tool schemas.
+        "profiles": {},
+        "default_profile": None,
+        "routing_mode": "profile_only",
+        "enabled_models": [],  # explicit provider/model catalog for dynamic routing
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
         # Fallback chain for delegated children (same entry format as the top-level list).

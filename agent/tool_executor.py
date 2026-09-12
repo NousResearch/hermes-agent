@@ -354,11 +354,26 @@ def _tool_search_scoped_names(agent) -> frozenset:
         names = _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
             enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True, skip_tool_search_assembly=True,
         ) or [])
+        exact = getattr(
+            agent, "_worker_effective_tool_names",
+            getattr(agent, "_executable_tool_names", None),
+        )
+        if isinstance(exact, (set, frozenset, list, tuple)):
+            names = frozenset(names).intersection(exact)
     except Exception:
         names = frozenset()
     with contextlib.suppress(Exception):
         agent._tool_search_scope_cache = (cache_key, names)
     return names
+
+
+def _execution_authority_names(agent) -> frozenset:
+    """Full executable catalog for this session, separate from visible schemas."""
+    names = getattr(
+        agent, "_worker_effective_tool_names",
+        getattr(agent, "_executable_tool_names", getattr(agent, "valid_tool_names", ())),
+    )
+    return frozenset(names or ())
 
 
 def _canonical_tool_name(function_name: str) -> str:
@@ -435,6 +450,15 @@ def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _Parse
     scope_block = None
     if parse_error is None:
         name, args, scope_block = _unwrap_tool_search_call(agent, name, args, flatten_probe=flatten_probe)
+        exact = getattr(agent, "_worker_effective_tool_names", None)
+        if scope_block is None and isinstance(exact, (set, frozenset, list, tuple)):
+            try:
+                from tools import tool_search as _ts
+                bridge = _ts.is_bridge_tool(name)
+            except Exception:
+                bridge = False
+            if not bridge and name not in exact:
+                scope_block = f"'{name}' is not permitted by this worker's effective tool policy."
     return _ParsedCall(tool_call, name, args, [], parse_error, scope_block)
 
 
@@ -908,6 +932,11 @@ def _safe_callback(callback, label: str, *args, **kwargs) -> None:
 
 def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -> None:
     """Run user-visible and checkpoint preflight on final tool arguments."""
+    # A durable worker must fence the uncertain-send window before ANY handler or UI
+    # callback can run. This call intentionally raises: swallowing it would permit an
+    # external side effect without a recoverable execution record.
+    from agent.subagent_lifecycle import before_worker_tool
+    before_worker_tool(agent, ref.call_id)
     function_name, function_args, effective_task_id, tool_call_id = ref.name, ref.args, ref.task_id, ref.call_id
     display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
     if _tool_progress_enabled(agent):
@@ -1034,6 +1063,18 @@ def _commit_tool_result(
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None
+
+    # Clear the uncertain-send marker only in the same durable transaction that
+    # stores the resulting conversation. A UI completion callback is too early and
+    # exceptions there are intentionally swallowed.
+    from agent.subagent_lifecycle import checkpoint_worker_tool_result
+    checkpoint_worker_tool_result(
+        agent,
+        messages,
+        tool_call_id=tool_call_id,
+        admitted=False if blocked else None,
+        settled=effect_disposition != "unknown",
+    )
 
     if not blocked:
         # ``tool.completed`` projects AFTER the canonical append + flush so resume can
@@ -1355,11 +1396,11 @@ def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeou
     elif agent._interrupt_requested:
         function_result = f"[Tool execution cancelled — {ref.name} was skipped due to user interrupt]"
         outcome = dict(status="cancelled", error_type="keyboard_interrupt", error_message="Tool execution cancelled by user interrupt")
-        tool_duration, effect_disposition = 0.0, None
+        tool_duration, effect_disposition = 0.0, "unknown"
     else:
         function_result = f"Error executing tool '{ref.name}': thread did not return a result"
         outcome = dict(status="error", error_type="thread_missing_result", error_message=function_result)
-        tool_duration, effect_disposition = 0.0, None
+        tool_duration, effect_disposition = 0.0, "unknown"
     ref.emit_post(agent, function_result, **outcome)
     return function_result, tool_duration, effect_disposition
 
@@ -1541,7 +1582,11 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 session_id=agent.session_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                enabled_tools=list(_execution_authority_names(agent)),
+                worker_max_tool_calls=(
+                    __import__("agent.subagent_lifecycle", fromlist=["worker_tool_calls_remaining"])
+                    .worker_tool_calls_remaining(agent)
+                ),
                 skip_pre_tool_call_hook=True,
                 skip_tool_request_middleware=True,
                 skip_tool_execution_middleware=True,

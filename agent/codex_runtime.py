@@ -599,6 +599,7 @@ class _CodexResponseAssembler:
 
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
+        self.provider_reported_model = None
         self.on_commentary_message, self.on_first_delta = on_commentary_message, on_first_delta
         self.output_items: List[Any] = []
         # output_index / first-observed sequence per output item, in lockstep, so settled pending calls merge
@@ -706,6 +707,9 @@ class _CodexResponseAssembler:
         resp_obj = _event_field(event, "response")
         if resp_obj is not None:
             self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
+            reported_model = _event_field(resp_obj, "model")
+            if isinstance(reported_model, str) and reported_model:
+                self.provider_reported_model = reported_model
             rstatus = _event_field(resp_obj, "status")
             if isinstance(rstatus, str):
                 self.terminal_status = rstatus
@@ -772,6 +776,7 @@ class _CodexResponseAssembler:
         return SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
             id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
+            _provider_reported_model=self.provider_reported_model,
             error=self.terminal_error)
 
 
@@ -929,7 +934,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
-        return active_client.responses.create(**_bypass_sdk_request_transform(stream_kwargs))
+        wire_kwargs = _bypass_sdk_request_transform(stream_kwargs)
+        from agent.subagent_lifecycle import before_worker_provider_attempt
+        before_worker_provider_attempt(agent)
+        from agent.worker_receipts import observe_worker_request
+        observe_worker_request(agent, wire_kwargs)
+        return active_client.responses.create(**wire_kwargs)
 
     def _log_failure(exc: BaseException) -> None:
         request_body_bytes, exception_chain = _codex_request_failure_details(exc)

@@ -2290,6 +2290,12 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
+            worker_max_tool_calls = (
+                __import__("agent.subagent_lifecycle", fromlist=["worker_tool_calls_remaining"])
+                .worker_tool_calls_remaining(agent)
+            )
+            if worker_max_tool_calls is not None:
+                dispatch_kwargs["worker_max_tool_calls"] = worker_max_tool_calls
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
             import model_tools

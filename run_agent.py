@@ -1305,8 +1305,15 @@ class AIAgent(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
-            background=not (getattr(self, "_delegate_depth", 0) > 0), action=function_args.get("action"),
-            subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
+            background=not (getattr(self, "_delegate_depth", 0) > 0),
+            output_schema=function_args.get("output_schema"), action=function_args.get("action"),
+            subagent_id=function_args.get("subagent_id"), message=function_args.get("message"),
+            worker_id=function_args.get("worker_id"), run_id=function_args.get("run_id"),
+            timeout_seconds=function_args.get("timeout_seconds"), profile=function_args.get("profile"),
+            reconciliation_disposition=function_args.get("reconciliation_disposition"),
+            model_profile=function_args.get("model_profile"), provider=function_args.get("provider"),
+            model=function_args.get("model"), reasoning_effort=function_args.get("reasoning_effort"),
+            parent_agent=self,
         )
 
     _invoke_tool = _forward("agent.agent_runtime_helpers", "invoke_tool")

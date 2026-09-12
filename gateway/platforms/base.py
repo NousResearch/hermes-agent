@@ -1847,6 +1847,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._no_message_handler_logged: bool = False
         self._reaction_handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
         # Runner-owned boundary for normalized events: auth/profile state never lives in an adapter.
         self._platform_event_handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]] = None
@@ -3524,7 +3525,18 @@ class BasePlatformAdapter(ABC):
         task so new messages (and interrupts) can arrive while an agent runs."""
         event._gateway_accepted = False
         if not self._message_handler:
+            # No handler = every inbound silently discarded on an adapter that still polls and sends;
+            # say so once per adapter (#102260).
+            if not getattr(self, "_no_message_handler_logged", False):
+                self._no_message_handler_logged = True
+                logger.error(
+                    "[%s] Dropping inbound message: no gateway message handler "
+                    "is installed on this adapter. The adapter is connected and "
+                    "can send, but every inbound message is discarded.",
+                    self.name,
+                )
             return
+
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
         expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()

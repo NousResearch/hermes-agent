@@ -357,6 +357,10 @@ _POLLING_PROGRESS_TIMEOUT = 60.0  # generation unhealthy until getUpdates return
 # #92991) and no other probe can see it. ~3x the worst-case poll window leaves ample margin against false
 # positives while still recovering within a few heartbeat intervals.
 _POLLING_STALL_TIMEOUT = 150.0
+# Ingress dispatch stall (#102260): the transport probes prove getUpdates round-trips complete, not
+# that PTB's dispatcher ever handed the fetched updates to a handler. Two heartbeats (180s) with a
+# backlog and no dispatch progress: diagnostic only, never drives recovery (#71240 owns that).
+_INGRESS_DISPATCH_STALL_HEARTBEATS = 2
 # sendVideo transcodes before answering, outlasting the 20s read timeout; also how long a user waits
 # to hear the attachment failed, so kept modest.
 _MEDIA_SEND_READ_TIMEOUT = 60.0
@@ -478,6 +482,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # began, and when the last successful getUpdates round-trip completed.
         self._polling_generation_started_monotonic: Optional[float] = None
         self._polling_last_progress_monotonic: Optional[float] = None
+        # Ingress accounting (#102260): received (getUpdates wire) vs dispatched (PTB group-99 catch-all).
+        self._updates_received_total: int = 0
+        self._updates_dispatched_total: int = 0
+        self._ingress_dispatched_seen: int = 0
+        self._ingress_stalled_heartbeats: int = 0
         # Live @username: PTB caches getMe() at initialize() and only rewrites it inside get_me(), so a
         # BotFather rename leaves self._bot.username stale; routing reads _current_bot_username().
         self._bot_username_observed: Optional[str] = None
@@ -1598,12 +1607,16 @@ class TelegramAdapter(BasePlatformAdapter):
         # See #92991.
         self._polling_generation_started_monotonic = time.monotonic()
         self._polling_last_progress_monotonic = None
+        # Re-base the backlog per generation. On an in-place updater restart PTB keeps the old
+        # update_queue, so old dispatches can briefly exceed received; the check treats that as no backlog.
+        self._updates_received_total = self._updates_dispatched_total = 0
+        self._ingress_dispatched_seen = self._ingress_stalled_heartbeats = 0
         return self._polling_generation, self._polling_progress_event
 
-    def _record_polling_progress(self, generation: int) -> None:
-        """Record successful getUpdates I/O for the current generation only."""
+    def _record_polling_progress(self, generation: int) -> bool:
+        """Record successful getUpdates I/O for the current generation only; True when accepted."""
         if self._teardown_started or not self._polling_progress_accepting or generation != self._polling_generation:
-            return
+            return False
         if not self._polling_progress_event.is_set():
             # First confirmed round-trip resolves the "health pending" line both reconnect paths end on.
             logger.info("[%s] Telegram polling confirmed healthy: getUpdates progressing (generation %d)", self.name, generation)
@@ -1622,6 +1635,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "connected", platform_state="connected", error_code=None, error_message=None,
             )
         self._send_path_degraded = False
+        return True
 
     def _observe_polling_request_result(self, request, generation, result):
         """Record getUpdates progress from an observed do_request result (purely observational: PTB still
@@ -1635,7 +1649,14 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             return
         if isinstance(envelope, dict) and envelope.get("ok") is True and "result" in envelope:
-            self._record_polling_progress(generation)
+            if self._record_polling_progress(generation):
+                self._record_updates_received(envelope.get("result"))
+
+    def _record_updates_received(self, result) -> None:
+        """Count updates Telegram handed us on the getUpdates wire (#102260). Only reached for the
+        accepted generation, so a late response from a fenced poll cannot inflate the backlog."""
+        if isinstance(result, list) and result:
+            self._updates_received_total += len(result)
 
     def _instrument_polling_request(self, request):
         """Instrument one dedicated PTB getUpdates request with progress tracking.
@@ -2049,6 +2070,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # so a consumer with no successful round-trip past the stall threshold is dead (#92991).
                 # Pure local-state check — no Bot API call needed.
                 await self._check_polling_stall()
+                # Transport health is not dispatch health (#102260). Pure local-state check.
+                self._check_ingress_dispatch_stall()
             except asyncio.CancelledError:
                 return
             except (asyncio.TimeoutError, OSError) as probe_err:
@@ -2130,6 +2153,35 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         logger.warning(log_message, self.name)
         self._polling_error_task = asyncio.get_running_loop().create_task(self._handle_polling_network_error(RuntimeError(reason)))
+
+    def _check_ingress_dispatch_stall(self) -> None:
+        """Report fetched updates PTB's dispatcher is not handing to handlers (#102260).
+
+        ``received`` and ``dispatched`` count the same population (every fetched update reaches the
+        group-99 catch-all: no handler raises ApplicationHandlerStop, no error handler is registered),
+        so a backlog with no dispatch progress across ``_INGRESS_DISPATCH_STALL_HEARTBEATS`` heartbeats
+        is a wedged dispatcher at any traffic rate. Reports once per stall, re-arms on progress.
+        """
+        if self._webhook_mode or self._teardown_started or self.has_fatal_error:
+            return
+        received = getattr(self, "_updates_received_total", 0)
+        dispatched = getattr(self, "_updates_dispatched_total", 0)
+        if received <= dispatched or dispatched != getattr(self, "_ingress_dispatched_seen", 0):
+            self._ingress_dispatched_seen = dispatched
+            self._ingress_stalled_heartbeats = 0
+            return
+        stalled = getattr(self, "_ingress_stalled_heartbeats", 0)
+        if stalled >= _INGRESS_DISPATCH_STALL_HEARTBEATS:
+            return  # already reported this stall
+        self._ingress_stalled_heartbeats = stalled + 1
+        if stalled + 1 < _INGRESS_DISPATCH_STALL_HEARTBEATS:
+            return
+        logger.warning(
+            "[%s] Telegram ingress is healthy but deaf: %d update(s) fetched by getUpdates have not been "
+            "dispatched to any handler across %d heartbeats (%d received, %d dispatched, generation %d). "
+            "Polling is fine; PTB's dispatcher is not draining its queue.",
+            self.name, received - dispatched, _INGRESS_DISPATCH_STALL_HEARTBEATS, received, dispatched,
+            getattr(self, "_polling_generation", 0))
 
     async def _check_polling_stall(self) -> None:
         """Watchdog the last successful getUpdates round-trip: a long-poll can wedge without raising
@@ -2570,6 +2622,9 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _on_platform_update(self, update, context) -> None:
         """Catch-all PTB handler (group 99) firing ``gateway_platform_event`` per inbound update with a
         stable envelope (no raw SDK objects) and an internal auth source. Never raises into PTB."""
+        # Last handler group PTB runs: stamp before any early return so the dispatch counter covers
+        # gateways without the plugin hook (#102260).
+        self._updates_dispatched_total = getattr(self, "_updates_dispatched_total", 0) + 1
         handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]] = getattr(self, "_platform_event_handler", None)
         if handler is None:
             return

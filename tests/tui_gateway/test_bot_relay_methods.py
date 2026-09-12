@@ -269,7 +269,12 @@ SENDER_AUTHOR = {"id": "bot:cloud-1/scout", "name": "scout", "is_bot": True}
     {"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER},
 ], ids=["no identity", "server-internal identity"])
 def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, fake_runs, bound_client, identity):
-    """The Desktop and server-internal callers carry no login identity; their sender fields become the author."""
+    """A caller with no identity, or one holding the ``?internal=`` credential, keeps its sender fields.
+
+    NOT the Desktop: it mints a ws-ticket carrying the signed-in ``{user_id, provider}`` on every
+    gateway that requires sign-in, so it is a login identity — see
+    ``test_a_signed_in_ws_ticket_is_a_login_identity_so_the_desktop_is_one``.
+    """
     from agent.turn_author import TURN_AUTHOR_ENV
 
     calls, _outcomes = fake_runs
@@ -280,18 +285,76 @@ def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, fake_r
     assert [json.loads(c["env"][TURN_AUTHOR_ENV]) for c in calls] == [SENDER_AUTHOR]
 
 
-def test_deliver_refuses_a_sender_from_a_logged_in_client(home, fake_runs, bound_client):
-    """A browser login never relays for another connection, so its from_* fields are refused before any turn runs.
-    Without sender fields the same client still delivers, unattributed."""
+def test_deliver_from_a_logged_in_client_is_attributed_to_its_principal_never_to_the_claimed_sender(
+        home, fake_runs, bound_client):
+    """A logged-in client's sender fields are not trusted — but the dm is neither refused nor left unattributed.
+
+    Refusing the CALL (the original guard) took cross-machine relay offline for every auth-gated gateway,
+    because the Desktop is itself a logged-in client there. Dropping the AUTHOR instead made the turn the
+    human's to the recipient's memory (Honcho routes an unattributed turn into the human session and allows
+    conclusion / profile / mirror writes). So the author is derived from the caller's minted identity:
+    stable, unspoofable, and still a bot — whether or not the client named a sender.
+    """
+    import json
+
     from agent.turn_author import TURN_AUTHOR_ENV
 
     calls, _outcomes = fake_runs
     bound_client.auth_identity = {"user_id": "alice", "provider": "google"}
 
-    for sender in ({"from_profile": "scout"}, {"from_connection": "cloud-1"}, SENDER):
-        err = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", **sender})
-        assert err["error"]["code"] == 4095
-    assert not calls
+    shapes = ({"from_profile": "scout"}, {"from_connection": "cloud-1"}, SENDER, {})
+    for rid, sender in enumerate(shapes):
+        _result(srv._methods["bot_relay.deliver"](rid, {"profile": "ops", "message": "ping", **sender}))
 
-    _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": "ping"}))
-    assert len(calls) == 1 and TURN_AUTHOR_ENV not in calls[0]["env"]
+    assert len(calls) == len(shapes), "every relayed dm from a logged-in client must still run its turn"
+    authors = [json.loads(c["env"][TURN_AUTHOR_ENV]) for c in calls]
+    assert all(a["is_bot"] is True for a in authors), "a relayed dm stays bot-authored for the recipient's memory"
+    assert all(a["id"].startswith("bot:principal:dashboard:") and a["id"].endswith("/relay") for a in authors)
+    assert all(a["name"] == "relayed teammate" for a in authors)
+    assert SENDER_AUTHOR not in authors, "the claimed sender must not become the author"
+    assert len({a["id"] for a in authors}) == 1, "one signed-in principal, one author — with or without sender fields"
+
+    bound_client.auth_identity = {"user_id": "bob", "provider": "google"}
+    _result(srv._methods["bot_relay.deliver"](9, {"profile": "ops", "message": "ping", **SENDER}))
+    assert json.loads(calls[-1]["env"][TURN_AUTHOR_ENV])["id"] != authors[0]["id"], "a different principal is a different author"
+
+
+def test_live_delivery_from_a_logged_in_client_carries_the_principal_author(home, monkeypatch, bound_client):
+    """The live Bot Chat path (``prompt.submit``) gets the principal-derived bot author as a ``DeliveryAuthor``."""
+    from tools.bot_relay import DeliveryAuthor
+
+    submitted = []
+    monkeypatch.setitem(
+        srv._methods, "prompt.submit",
+        lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"}))
+    monkeypatch.setattr(srv, "_profile_home", lambda name: home / "profiles" / name)
+    monkeypatch.setitem(srv._sessions, "live-ops", {
+        "profile_home": str(home / "profiles" / "ops"), "pending_title": "Bot Chat", "history": []})
+    bound_client.auth_identity = {"user_id": "alice", "provider": "google"}
+
+    _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", **SENDER}))
+
+    assert len(submitted) == 1 and submitted[0]["text"] == "ping"
+    author = submitted[0]["_turn_author"]
+    assert isinstance(author, DeliveryAuthor)
+    assert author.author["is_bot"] is True and author.author["id"].startswith("bot:principal:dashboard:")
+    assert author.author != SENDER_AUTHOR
+
+
+def test_a_signed_in_ws_ticket_is_a_login_identity_so_the_desktop_is_one(monkeypatch, tmp_path):
+    """The root cause, pinned: the Desktop's own credential produces a login identity.
+
+    It fetches ``POST /api/auth/ws-ticket``, which mints the ticket from the signed-in session
+    (``hermes_cli/dashboard_auth/routes.py``); consuming it yields that user's identity, which is a
+    login identity. So any relay rule that keys on "is this caller logged in" also catches the
+    Desktop, and cross-connection relay is exactly what the Desktop exists to do.
+    """
+    from hermes_cli.dashboard_auth import ws_tickets
+    from tui_gateway.methods_browser_control import _is_authenticated_identity
+
+    monkeypatch.setattr(ws_tickets, "_TICKET_STORE_PATH", tmp_path / "tickets.json", raising=False)
+    consumed = ws_tickets.consume_ticket(ws_tickets.mint_ticket(user_id="alice", provider="google"))
+
+    assert _is_authenticated_identity({"user_id": consumed["user_id"], "provider": consumed["provider"]})
+    assert not _is_authenticated_identity(
+        {"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER}), "only ?internal= is exempt"

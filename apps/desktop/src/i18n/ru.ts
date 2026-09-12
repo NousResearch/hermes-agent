@@ -3202,6 +3202,7 @@ export const ru = defineLocale({
       noModels: 'Модели не найдены',
       editModels: 'Изменить модели…',
       refreshModels: 'Обновить модели',
+      favorites: 'Избранное',
       fast: 'Быстрая'
     },
     modelOptions: {
@@ -3218,6 +3219,8 @@ export const ru = defineLocale({
       max: 'Максимум',
       ultra: 'Ультра',
       updateFailed: 'Не удалось обновить опцию модели',
+      addFavorite: 'Добавить в избранное',
+      removeFavorite: 'Убрать из избранного',
       fastFailed: 'Не удалось обновить быстрый режим'
     },
     gatewayMenu: {

@@ -1,3 +1,4 @@
+import { Codicon } from '@/components/ui/codicon'
 import {
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -73,6 +74,8 @@ interface ModelEditSubmenuProps {
   fastControl: FastControl
   /** Whether this row's model is the active one. */
   isActive: boolean
+  /** Whether this row's model is starred (pinned to the top of the catalog). */
+  isFavorite: boolean
   /** This row's model id. */
   model: string
   /** Switch to a specific model id (used to swap base ⇄ -fast variant). */
@@ -82,6 +85,9 @@ interface ModelEditSubmenuProps {
    *  controller decides what an edit means. That's what lets the same submenu
    *  drive a live chat session and a detached per-task override. */
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
+  /** Star or unstar this row's model. Reported like any other edit — the
+   *  catalog owns where a star is kept. */
+  onToggleFavorite: () => void
   /** This row's provider slug. */
   provider: string
   /** Whether this model supports reasoning effort. */
@@ -107,8 +113,10 @@ function ModelEditSubmenuBody({
   effort,
   fastControl,
   isActive,
+  isFavorite,
   onSelectModel,
   onSetOptions,
+  onToggleFavorite,
   reasoning
 }: ModelEditSubmenuProps) {
   const { t } = useI18n()
@@ -139,47 +147,66 @@ function ModelEditSubmenuBody({
 
   const hasFast = fastControl.kind !== 'none'
   const fastOn = fastControl.kind === 'none' ? false : fastControl.on
+  const hasOptions = hasFast || reasoning
 
-  return !hasFast && !reasoning ? (
-    <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
-  ) : (
+  return (
     <>
-      <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.options}</DropdownMenuLabel>
-      {showThinkingToggle ? (
-        <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-          {copy.thinking}
-          <Switch
-            checked={thinkingOn}
-            className="ml-auto"
-            onCheckedChange={checked => onSetOptions({ effort: checked ? effortValue || defaultEffort : 'none' })}
-            size="xs"
-          />
-        </DropdownMenuItem>
-      ) : null}
-      {hasFast ? (
-        <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-          {copy.fast}
-          <Switch checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
-        </DropdownMenuItem>
-      ) : null}
-      {reasoning ? (
+      {hasOptions ? (
         <>
-          <DropdownMenuSeparator className="mx-0" />
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
-          <DropdownMenuRadioGroup onValueChange={value => onSetOptions({ effort: value })} value={effortValue}>
-            {REASONING_EFFORTS.map(value => (
-              <DropdownMenuRadioItem
-                className={dropdownMenuRow}
-                key={value}
-                onSelect={event => event.preventDefault()}
-                value={value}
-              >
-                {copy[value]}
-              </DropdownMenuRadioItem>
-            ))}
-          </DropdownMenuRadioGroup>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.options}</DropdownMenuLabel>
+          {showThinkingToggle ? (
+            <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
+              {copy.thinking}
+              <Switch
+                checked={thinkingOn}
+                className="ml-auto"
+                onCheckedChange={checked => onSetOptions({ effort: checked ? effortValue || defaultEffort : 'none' })}
+                size="xs"
+              />
+            </DropdownMenuItem>
+          ) : null}
+          {hasFast ? (
+            <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
+              {copy.fast}
+              <Switch checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
+            </DropdownMenuItem>
+          ) : null}
+          {reasoning ? (
+            <>
+              <DropdownMenuSeparator className="mx-0" />
+              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
+              <DropdownMenuRadioGroup onValueChange={value => onSetOptions({ effort: value })} value={effortValue}>
+                {REASONING_EFFORTS.map(value => (
+                  <DropdownMenuRadioItem
+                    className={dropdownMenuRow}
+                    key={value}
+                    onSelect={event => event.preventDefault()}
+                    value={value}
+                  >
+                    {copy[value]}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </>
+          ) : null}
         </>
-      ) : null}
+      ) : (
+        <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
+      )}
+      {/* Starring sits OUTSIDE the capability gates above: pinning a model to
+          the top of the picker has nothing to do with what it can be asked for,
+          so a model with no reasoning/fast options still offers it. */}
+      <DropdownMenuSeparator className="mx-0" />
+      <DropdownMenuItem
+        className={dropdownMenuRow}
+        onSelect={event => {
+          event.preventDefault()
+          onToggleFavorite()
+        }}
+      >
+        <Codicon name={isFavorite ? 'star-full' : 'star-empty'} size="0.75rem" />
+        {isFavorite ? copy.removeFavorite : copy.addFavorite}
+      </DropdownMenuItem>
     </>
   )
 }

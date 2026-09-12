@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $favoriteModels, setFavoriteModels } from '@/store/model-favorites'
 import {
   $modelVisibilityOpen,
   $visibleModels,
@@ -41,6 +42,7 @@ vi.mock('@/hermes', () => ({
 
 beforeEach(() => {
   $visibleModels.set(null)
+  $favoriteModels.set([])
   $localRuntimeJobs.set([])
   // These suites exercise the local-models rows, which ship behind --local.
   $localModelsEnabled.set(true)
@@ -131,6 +133,58 @@ describe('the catalog owns model curation', () => {
     fireEvent.click(screen.getByText('Edit models…'))
 
     expect($modelVisibilityOpen.get()).toBe(true)
+  })
+})
+
+// Starring is a promise about the LIST: "keep this one where I can always
+// reach it". That promise is what decides where a starred row paints — its own
+// section at the top, and nowhere twice.
+describe('the catalog owns starred models', () => {
+  it('pins a starred model at the top and takes it out of its provider group', async () => {
+    setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]))
+    setFavoriteModels([modelVisibilityKey('google', 'gemini-2.5-flash')])
+
+    renderMenu()
+
+    await screen.findByText('Favorites')
+
+    // Listed once, under Favorites — not also down in Google's group.
+    expect(screen.getAllByText(/Gemini 2\.5 Flash/i)).toHaveLength(1)
+    // The only model that group had was starred, so the group has nothing left.
+    expect(screen.queryByText('Google')).toBeNull()
+  })
+
+  it('still lists the star under its provider while searching', async () => {
+    setFavoriteModels([modelVisibilityKey('google', 'gemini-2.5-flash')])
+
+    renderMenu()
+    await screen.findByText('Favorites')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      // A query means "show me every match": the section folds away and the
+      // match paints in its provider's place. The fold splits the label across
+      // a <mark>, so assert on the whole row rather than the bare name.
+      expect(screen.queryByText('Favorites')).toBeNull()
+      expect(
+        screen.getAllByText((_, element) =>
+          Boolean(
+            element?.classList.contains('truncate') &&
+            (element?.textContent ?? '').toLowerCase().startsWith('gemini 2.5 flash')
+          )
+        )
+      ).toHaveLength(1)
+    })
+  })
+
+  it('keeps a star whose provider is not connected without painting an empty section', async () => {
+    setFavoriteModels([modelVisibilityKey('anthropic', 'claude-sonnet-4.6')])
+
+    renderMenu()
+
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+    expect(screen.queryByText('Favorites')).toBeNull()
   })
 })
 

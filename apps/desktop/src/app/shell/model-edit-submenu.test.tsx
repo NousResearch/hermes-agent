@@ -28,8 +28,10 @@ function renderSubmenu(opts: {
   effort?: string
   fastControl: FastControl
   isActive?: boolean
+  isFavorite?: boolean
   onSelectModel?: (model: string) => void
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
+  onToggleFavorite?: () => void
   reasoning: boolean
 }) {
   return render(
@@ -42,9 +44,11 @@ function renderSubmenu(opts: {
             effort={opts.effort ?? 'medium'}
             fastControl={opts.fastControl}
             isActive={opts.isActive ?? true}
+            isFavorite={opts.isFavorite ?? false}
             model="m1"
             onSelectModel={opts.onSelectModel ?? vi.fn()}
             onSetOptions={opts.onSetOptions}
+            onToggleFavorite={opts.onToggleFavorite ?? vi.fn()}
             provider="p1"
             reasoning={opts.reasoning}
           />
@@ -127,5 +131,29 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     fireEvent.click(screen.getByRole('switch'))
 
     expect(onSelectModel).toHaveBeenCalledWith('m1-fast')
+  })
+
+  it('offers the star even on a model with no reasoning or fast options', () => {
+    const onToggleFavorite = vi.fn()
+    renderSubmenu({ fastControl: { kind: 'none' }, onSetOptions: vi.fn(), onToggleFavorite, reasoning: false })
+
+    // Starring is not a capability: the row still reports it.
+    expect(screen.getByText('No options for this model')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Add to favorites'))
+
+    expect(onToggleFavorite).toHaveBeenCalled()
+  })
+
+  it('names the star action by state, so unstarring is never a blind click', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      isFavorite: true,
+      onSetOptions: vi.fn(),
+      reasoning: false
+    })
+
+    expect(screen.getByText('Remove from favorites')).toBeTruthy()
+    expect(screen.queryByText('Add to favorites')).toBeNull()
   })
 })

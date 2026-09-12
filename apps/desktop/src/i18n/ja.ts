@@ -2904,6 +2904,7 @@ export const ja = defineLocale({
       noModels: 'モデルが見つかりません',
       editModels: 'モデルを編集…',
       refreshModels: 'モデルを更新',
+      favorites: 'お気に入り',
       fast: '高速'
     },
     modelOptions: {
@@ -2920,6 +2921,8 @@ export const ja = defineLocale({
       max: '最大',
       ultra: 'ウルトラ',
       updateFailed: 'モデルオプションの更新に失敗しました',
+      addFavorite: 'お気に入りに追加',
+      removeFavorite: 'お気に入りから削除',
       fastFailed: '高速モードの更新に失敗しました'
     },
     gatewayMenu: {

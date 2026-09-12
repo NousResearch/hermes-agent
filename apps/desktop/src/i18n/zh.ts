@@ -3554,6 +3554,7 @@ export const zh = defineLocale({
       noModels: '未找到模型',
       editModels: '编辑模型…',
       refreshModels: '刷新模型',
+      favorites: '收藏',
       fast: '快速'
     },
     modelOptions: {
@@ -3570,6 +3571,8 @@ export const zh = defineLocale({
       max: '最高',
       ultra: '超高',
       updateFailed: '模型选项更新失败',
+      addFavorite: '添加收藏',
+      removeFavorite: '取消收藏',
       fastFailed: '快速模式更新失败'
     },
     gatewayMenu: {

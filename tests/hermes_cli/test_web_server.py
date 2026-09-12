@@ -3979,6 +3979,102 @@ class TestThemeBootstrapCSS:
         assert "hermes-theme-bootstrap" in head
 
 
+class TestMountSpaAssetPaths:
+    """Regression coverage for dashboard assets behind a path prefix (#90068)."""
+
+    @staticmethod
+    def _client(tmp_path, monkeypatch, *, gated=False):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            "<html><head>"
+            '<link rel="modulepreload" href="./assets/index-t.js">'
+            '<link rel="stylesheet" href="./assets/index-t.css">'
+            '<link rel="icon" href="./assets/favicon.ico">'
+            '<link rel="preload" href="./assets/font-t.woff2">'
+            "</head><body><script type=\"module\" "
+            'src="./assets/index-t.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        (dist / "assets" / "index-t.js").write_text(
+            'import "./ChatPage-t.js";', encoding="utf-8"
+        )
+        (dist / "assets" / "ChatPage-t.js").write_text(
+            "export const page = true;", encoding="utf-8"
+        )
+        (dist / "assets" / "index-t.css").write_text(
+            "body { color: teal; }", encoding="utf-8"
+        )
+        (dist / "assets" / "favicon.ico").write_bytes(b"ico")
+        (dist / "assets" / "font-t.woff2").write_bytes(b"font")
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+        # mount_spa reads the shared auth state while serving (#90068).
+        monkeypatch.setattr(ws.app.state, "auth_required", gated, raising=False)
+        spa_app = FastAPI()
+        ws.mount_spa(spa_app)
+        return TestClient(spa_app), ws
+
+    def test_mount_spa_relative_assets_prefixed(self, tmp_path, monkeypatch):
+        client, ws = self._client(tmp_path, monkeypatch)
+        response = client.get(
+            "/chat", headers={"X-Forwarded-Prefix": "/hugin-agent"}
+        )
+        assert response.status_code == 200
+        assert "/hugin-agent/assets/index-t.js" in response.text
+        assert "/hugin-agent/assets/favicon.ico" in response.text
+        assert "/hugin-agent/assets/font-t.woff2" in response.text
+        assert "./assets/" not in response.text
+        assert f'window.__HERMES_SESSION_TOKEN__="{ws._SESSION_TOKEN}"' in response.text
+
+    def test_mount_spa_relative_assets_root_mount(self, tmp_path, monkeypatch):
+        client, ws = self._client(tmp_path, monkeypatch)
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "/assets/index-t.js" in response.text
+        assert "//assets/" not in response.text
+        assert f'window.__HERMES_SESSION_TOKEN__="{ws._SESSION_TOKEN}"' in response.text
+
+    def test_mount_spa_deep_route_fallback_anchors_assets(self, tmp_path, monkeypatch):
+        client, _ws = self._client(tmp_path, monkeypatch)
+        headers = {"X-Forwarded-Prefix": "/hugin-agent"}
+        response = client.get("/chat/123", headers=headers)
+        assert response.status_code == 200
+        assert "/hugin-agent/assets/index-t.js" in response.text
+        entry = client.get("/assets/index-t.js", headers=headers)
+        sibling = client.get("/assets/ChatPage-t.js", headers=headers)
+        assert entry.status_code == 200
+        assert sibling.status_code == 200
+
+    def test_mount_spa_relative_assets_preserves_auth_gate(self, tmp_path, monkeypatch):
+        client, ws = self._client(tmp_path, monkeypatch, gated=True)
+        response = client.get(
+            "/chat", headers={"X-Forwarded-Prefix": "/hugin-agent"}
+        )
+        assert response.status_code == 200
+        assert "/hugin-agent/assets/index-t.js" in response.text
+        assert "__HERMES_SESSION_TOKEN__" not in response.text
+        assert "__HERMES_AUTH_REQUIRED__=true" in response.text
+
+    def test_mount_spa_keeps_root_absolute_assets_compatible(
+        self, tmp_path, monkeypatch
+    ):
+        client, ws = self._client(tmp_path, monkeypatch)
+        index = tmp_path / "web_dist" / "index.html"
+        index.write_text(
+            '<script src="/assets/index-old.js"></script>', encoding="utf-8"
+        )
+        response = client.get(
+            "/chat", headers={"X-Forwarded-Prefix": "/hugin-agent"}
+        )
+        assert response.status_code == 200
+        assert "/hugin-agent/assets/index-old.js" in response.text
+
+
 
 
 class TestNormaliseThemeExtensions:

@@ -6089,14 +6089,17 @@ def _merge_aux_extra_body(
     extra_body: Optional[dict], projection: _ProfileProjection, reasoning_config: Optional[dict], provider_norm: str,
 ) -> Dict[str, Any]:
     """Caller extra_body + profile body/reasoning + generic reasoning fallback + Nous tags."""
-    merged_extra = dict(extra_body or {})
+    caller = dict(extra_body or {})
+    merged_extra: Dict[str, Any] = {}
     merged_extra.update(projection.body)
     merged_extra.update(projection.reasoning_extra)
     if reasoning_config and isinstance(reasoning_config, dict) and not projection.handles_reasoning:
-        if reasoning_config.get("enabled") is False:
-            merged_extra["reasoning"] = {"enabled": False}
-        else:
-            merged_extra["reasoning"] = {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}
+        if "reasoning" not in caller:
+            if reasoning_config.get("enabled") is False:
+                merged_extra["reasoning"] = {"enabled": False}
+            else:
+                merged_extra["reasoning"] = {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}
+    merged_extra.update(caller)
     # Portal tags + sticky session_id fallback when the profile didn't supply them; session_id
     # keeps aux calls on the main turn's upstream instance (cache warmth) — tags alone are not
     # enough on /v1/messages.

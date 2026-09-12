@@ -1031,6 +1031,68 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     )
 
 
+def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
+    """A relay that keeps SSE open after completion cannot discard the billed response."""
+    import threading
+    import time
+
+    import agent.codex_runtime as codex_runtime
+
+    agent = _build_agent(monkeypatch)
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+    closed = threading.Event()
+
+    class _HeldOpenAfterTerminalStream:
+        def __init__(self):
+            self._events = iter([
+                SimpleNamespace(type="response.output_item.done", item=message_item),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        status="completed", usage=usage, id="resp_held_open",
+                    ),
+                ),
+            ])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                closed.wait(3.0)
+                raise
+
+        def close(self):
+            closed.set()
+
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        return _HeldOpenAfterTerminalStream()
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+    monkeypatch.setattr(codex_runtime, "_CODEX_POST_TERMINAL_DRAIN_TIMEOUT_SECONDS", 0.01)
+
+    started = time.monotonic()
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0
+    assert calls["count"] == 1
+    assert response.status == "completed"
+    assert response.usage is usage
+    assert response.id == "resp_held_open"
+    assert closed.wait(1.0)
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

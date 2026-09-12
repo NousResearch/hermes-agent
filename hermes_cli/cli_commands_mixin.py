@@ -24,9 +24,7 @@ from io import StringIO
 from datetime import datetime
 from urllib.parse import urlparse
 
-from rich import box as rich_box
 from rich.markup import escape as _escape
-from rich.panel import Panel
 
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
 from agent.turn_context import extract_api_content_sidecar
@@ -383,11 +381,11 @@ def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_not
         _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
     except Exception:
         label, _resp_color, _resp_text = "⚕ Hermes", "#CD7F32", "#FFF8DC"
-    rich_console.print(Panel(
+    cli._print_assistant_response(
         _render_final_assistant_content(body, mode=cli.final_response_markdown),
-        title=f"[{_resp_color} bold]{label} {title_suffix}[/]", title_align="left",
-        border_style=_resp_color, style=_resp_text, box=rich_box.HORIZONTALS, padding=(1, 4),
-        width=cli._scrollback_box_width()))
+        label=f"{label} {title_suffix}",
+        resp_color=_resp_color, resp_text=_resp_text, padding=(1, 4),
+    )
 
 
 def _refresh_tui_before_print(cli) -> None:

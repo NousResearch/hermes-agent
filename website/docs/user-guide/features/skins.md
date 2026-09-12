@@ -62,7 +62,7 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `ui_warn` | Warning indicators (caution, approval prompts) | `#ffa726` (orange) |
 | `prompt` | Interactive prompt text color | `#FFF8DC` |
 | `input_rule` | Horizontal rule above the input area | `#CD7F32` |
-| `response_border` | Border around the agent's response box (ANSI escape) | `#FFD700` |
+| `response_border` | Border around the agent's response box (ANSI escape). Unused when `display.response_box` is `plain`. | `#FFD700` |
 | `session_label` | Session label color | `#DAA520` |
 | `session_border` | Session ID dim border color | `#8B8682` |
 | `status_bar_bg` | Background color for the TUI status / usage bar | `#1a1a2e` |
@@ -95,7 +95,7 @@ Text strings used throughout the CLI interface.
 | `agent_name` | Name shown in banner title and status display | `Hermes Agent` |
 | `welcome` | Welcome message shown at CLI startup | `Welcome to Hermes Agent! Type your message or /help for commands.` |
 | `goodbye` | Message shown on exit | `Goodbye! ⚕` |
-| `response_label` | Label on the response box header | ` ⚕ Hermes ` |
+| `response_label` | Label on the response box header (also used as the short label in `display.response_box: plain`) | ` ⚕ Hermes ` |
 | `prompt_symbol` | Symbol before the user input prompt (bare token, renderers add a trailing space) | `❯` |
 | `help_header` | Header text for the `/help` command output | `(^_^)? Available Commands` |
 

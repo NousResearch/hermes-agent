@@ -220,6 +220,52 @@ class CLIStreamMixin:
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
 
+    def _response_box_plain(self) -> bool:
+        """True when ``display.response_box`` is ``plain`` (no TUI borders around the reply)."""
+        return str(getattr(self, "response_box", "boxed")).strip().lower() == "plain"
+
+    def _print_response_box_open(self, label: str, width=None) -> None:
+        """Print the assistant-response header: full-width box rule, or a short label in plain mode."""
+        from cli import _ACCENT, _RST, _cprint
+        # Hold agent status lines until the footer (or end of a plain reply).
+        self._stream_box_live = True
+        if self._response_box_plain():
+            _cprint(f"\n{_ACCENT}{label}{_RST}")
+            return
+        w = self._scrollback_box_width(width)
+        fill = w - 2 - self._status_bar_display_width(label)
+        _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+
+    def _print_response_box_close(self, *, leading_newline: bool = False) -> None:
+        """Print the assistant-response footer (boxed only). Always end the live-box hold."""
+        from cli import _ACCENT, _RST, _cprint
+        if not self._response_box_plain() and getattr(self, "_stream_box_live", False):
+            prefix = "\n" if leading_newline else ""
+            _cprint(f"{prefix}{_ACCENT}╰{'─' * (self._scrollback_box_width() - 2)}╯{_RST}")
+        self._stream_box_live = False
+        self._release_held_status_lines()
+
+    def _print_assistant_response(self, content, *, label, resp_color, resp_text, padding=(1, 0)):
+        """Print a completed assistant reply: Rich Panel when boxed, label + body when plain."""
+        from cli import ChatConsole
+        from rich import box as rich_box
+        from rich.panel import Panel
+        console = ChatConsole()
+        if self._response_box_plain():
+            console.print(f"[{resp_color} bold]{label}[/]")
+            console.print(content, style=resp_text)
+            return
+        console.print(Panel(
+            content,
+            title=f"[{resp_color} bold]{label}[/]",
+            title_align="left",
+            border_style=resp_color,
+            style=resp_text,
+            box=rich_box.HORIZONTALS,
+            padding=padding,
+            width=self._scrollback_box_width(),
+        ))
+
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning tokens into a dim box above the response.
 
@@ -404,7 +450,7 @@ class CLIStreamMixin:
         """Emit filtered text to the streaming display."""
         from agent.markdown_tables import is_table_divider, looks_like_table_row
         from cli import (
-            HermesCLI, _ACCENT, _RST, _STREAM_PARTIAL_PREVIEW_LEN, _cprint, _strip_markdown_syntax, datetime)
+            _STREAM_PARTIAL_PREVIEW_LEN, _strip_markdown_syntax, datetime)
         if not text:
             return
         # Defer content while the reasoning box renders so reasoning always lands BEFORE it.
@@ -435,9 +481,7 @@ class CLIStreamMixin:
                 self._stream_text_ansi = ""
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
-            w = self._scrollback_box_width()
-            fill = w - 2 - HermesCLI._status_bar_display_width(label)
-            _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            self._print_response_box_open(label)
 
         self._stream_buf += text
         while "\n" in self._stream_buf:
@@ -478,7 +522,7 @@ class CLIStreamMixin:
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
         from agent.markdown_tables import is_table_divider, looks_like_table_row
-        from cli import _ACCENT, _RST, _cprint, _strip_markdown_syntax
+        from cli import _strip_markdown_syntax
         # Still inside a "reasoning block" at end-of-stream = false positive (the model
         # mentioned a tag in prose and never closed it): recover the buffer as regular text.
         if getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
@@ -500,11 +544,11 @@ class CLIStreamMixin:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
             self._emit_stream_line(line)
             self._stream_buf = ""
-        if self._stream_box_opened and getattr(self, "_stream_box_live", False):
-            w = self._scrollback_box_width()
-            _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
-        self._stream_box_live = False
-        self._release_held_status_lines()
+        if self._stream_box_opened:
+            self._print_response_box_close()
+        else:
+            self._stream_box_live = False
+            self._release_held_status_lines()
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""

@@ -1995,6 +1995,7 @@ display:
   show_cost: false        # Show estimated $ cost in the CLI status bar
   timestamps: false       # When true, prefixes user and assistant labels with timestamps in the CLI / TUI transcript
   timestamp_format: "%H:%M"  # strftime format for those timestamps (e.g. "%b-%d %H:%M" for month-day)
+  response_box: boxed     # Classic CLI reply framing: boxed (default, TUI borders) | plain (label + colored text, no borders)
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   turn_summary: true      # CLI only: print a one-line post-turn accounting footer after each interactive turn
   spinner_token_flow: true # CLI only: append live cumulative turn tokens to the spinner timer
@@ -2008,6 +2009,19 @@ display:
   cli_rebuild_scrollback_on_redraw: false  # Classic CLI: also wipe terminal scrollback (CSI 3J) on /redraw / Ctrl+L / width-change resize recovery. Enable when a terminal/tmux stack stamps stale prompt chrome into scrollback on maximize/restore.
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
+
+### Response box
+
+`display.response_box` (default `boxed`) controls how the classic CLI frames assistant replies. `boxed` draws the familiar full-width TUI borders (`╭─ ⚕ Hermes ──╮` / `╰────────╯`). `plain` keeps the skinned response text color and a short label, but drops the box-drawing rules.
+
+Use `plain` in multiplexers (herdr, tmux splits, and similar) where the pane width differs from the client's — full-width borders wrap onto extra lines and smear the transcript. User and assistant text are already colored, so the reply stays distinguishable without the frame.
+
+```yaml
+display:
+  response_box: plain   # boxed | plain
+```
+
+The Ink TUI (`hermes --tui`) is unaffected: it does not draw a response box. Reasoning boxes, billing CTAs, and other chrome keep their borders.
 
 ### Per-turn summary and spinner token flow
 

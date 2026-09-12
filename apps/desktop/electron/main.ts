@@ -266,6 +266,7 @@ import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
 import { oauthSessionIsLive, resolveJsonBody, resolveReadinessProbeAuth } from './native-auth-decisions'
+import { registerNativeLocaleIpc } from './native-i18n'
 import {
   nativeRefreshUrl,
   type NativeTokenSet,
@@ -1412,6 +1413,8 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+const nativeWindowCopy = registerNativeLocaleIpc(ipcMain)
+const nativeCopy = (window = mainWindow) => nativeWindowCopy(window?.webContents?.id, app.getLocale())
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 
 const localBackendLifecycle = createLocalBackendLifecycle<ReturnType<typeof spawn>>({
@@ -2470,8 +2473,8 @@ async function waitForUpdateToFinish() {
       rememberLog(`[updates] detached update finished with manual action (branch ${result.branch}): ${result.message}`)
       dialog.showMessageBox({
         type: 'warning',
-        title: 'Hermes update',
-        message: 'The update finished, but needs one more step',
+        title: nativeCopy().update,
+        message: nativeCopy().updateNeedsStep,
         detail: result.message
       })
     } else if (result && result.ok) {
@@ -2479,8 +2482,8 @@ async function waitForUpdateToFinish() {
     } else if (result) {
       rememberLog(`[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}`)
       dialog.showErrorBox(
-        'Hermes update did not finish',
-        `${result.message}\n\nDetails: ${path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log')}`
+        nativeCopy().updateFailed,
+        nativeCopy().updateDetails(result.message, path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log'))
       )
     }
   } catch (err) {
@@ -6253,11 +6256,11 @@ async function saveImageFromUrl(rawUrl) {
   }
 
   const result = await dialog.showSaveDialog(mainWindow, {
-    title: 'Save Image',
+    title: nativeCopy().saveImage,
     defaultPath: downloadsDir ? path.join(downloadsDir, fallbackName) : fallbackName,
     filters: [
-      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
-      { name: 'All Files', extensions: ['*'] }
+      { name: nativeCopy().images, extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
+      { name: nativeCopy().allFiles, extensions: ['*'] }
     ]
   })
 
@@ -6891,7 +6894,7 @@ async function showPluginCompatNoticeOnce() {
   let notice
 
   try {
-    notice = pendingPluginCompatNotice(HERMES_HOME, app.getPath('userData'))
+    notice = pendingPluginCompatNotice(HERMES_HOME, app.getPath('userData'), nativeCopy())
   } catch (err) {
     rememberLog(`[plugins] compat notice check failed: ${err.message}`)
 
@@ -7406,13 +7409,13 @@ function installDownloadHandling() {
 
     try {
       item.setSaveDialogOptions({
-        title: 'Save File',
+        title: nativeCopy().saveFile,
         defaultPath: path.join(app.getPath('downloads'), filename),
         filters:
           extension || /^image\//i.test(item.getMimeType() || '')
             ? [
-                { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
-                { name: 'All Files', extensions: ['*'] }
+                { name: nativeCopy().images, extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
+                { name: nativeCopy().allFiles, extensions: ['*'] }
               ]
             : undefined
       })
@@ -8136,7 +8139,7 @@ async function finalizeGatewayDownload(res, statusCode, headers, ctx: any = {}) 
 
   const result = await dialog.showSaveDialog(mainWindow, {
     defaultPath: filename,
-    title: 'Save File'
+    title: nativeCopy().saveFile
   })
 
   if (result.canceled || !result.filePath) {
@@ -8277,7 +8280,7 @@ async function saveGatewayFileViaDataUrl(
 
   const result = await dialog.showSaveDialog(mainWindow, {
     defaultPath: filename,
-    title: 'Save File'
+    title: nativeCopy().saveFile
   })
 
   if (result.canceled || !result.filePath) {
@@ -16903,7 +16906,7 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
   }
 
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: options?.title || 'Add context',
+    title: options?.title || nativeCopy().addContext,
     defaultPath: resolvedDefaultPath,
     properties: properties as any,
     filters: Array.isArray(options?.filters) ? options.filters : undefined
@@ -16926,7 +16929,7 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
 // elsewhere (the backend, for profile archives); this only picks the path.
 ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
   const result = await dialog.showSaveDialog(mainWindow, {
-    title: options?.title || 'Save',
+    title: options?.title || nativeCopy().save,
     defaultPath: options?.defaultPath ? String(options.defaultPath) : undefined,
     filters: Array.isArray(options?.filters) ? options.filters : undefined
   })
@@ -17438,7 +17441,7 @@ ipcMain.handle('hermes:setting:defaultProjectDir:set', async (_event, dir) => {
 
 ipcMain.handle('hermes:setting:defaultProjectDir:pick', async () => {
   const result = await dialog.showOpenDialog({
-    title: 'Choose default project directory',
+    title: nativeCopy().chooseProject,
     properties: ['openDirectory', 'createDirectory'],
     defaultPath: readDefaultProjectDir() || app.getPath('home')
   })
@@ -18201,8 +18204,13 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
     return false
   }
 
-  const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
   const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+
+  const prompt = quitPromptFor(
+    mergeActiveWork(activeWorkByWebContents.values()),
+    isQuittingForHandoff,
+    nativeCopy(parent)
+  )
 
   if (!prompt || !parent || parent.isDestroyed()) {
     return false
@@ -18213,7 +18221,7 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
 
   void dialog
     .showMessageBox(parent, {
-      buttons: ['Keep Running', 'Quit Anyway'],
+      buttons: [nativeCopy(parent).keepRunning, nativeCopy(parent).quitAnyway],
       cancelId: 0,
       defaultId: 0,
       detail: prompt.detail,

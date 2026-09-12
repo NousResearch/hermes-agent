@@ -24,6 +24,16 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('assistant.tool.statusRecovered')).toBe('已恢复')
   })
 
+  it('uses Swedish through the runtime translator and preserves installation arguments', () => {
+    setRuntimeI18nLocale('sv')
+
+    expect(translateNow('common.save')).toBe('Spara')
+    expect(translateNow('connectors.title')).toBe('Anslut dina appar')
+    expect(translateNow('settings.plugins.installModal.agentTargetLocal', 'work', '/custom/plugins')).toBe(
+      'Installeras i serverdelen för work (/custom/plugins)'
+    )
+  })
+
   it('passes arguments to function translations', () => {
     expect(translateNow('notifications.updateReadyMessage', 2)).toBe('2 new changes available.')
   })

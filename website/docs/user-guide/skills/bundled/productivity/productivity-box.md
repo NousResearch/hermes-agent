@@ -21,7 +21,7 @@ Box manages cloud files, sharing, search, and metadata.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Box`, `Productivity`, `Cloud Storage`, `Collaboration`, `Metadata`, `Content Extraction`, `CLI`, `SDK` |
-| Related skills | [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace) |
+| Related skills | [`google-workspace`](/user-guide/skills/bundled/productivity/productivity-google-workspace) |
 
 ## Reference: full SKILL.md
 

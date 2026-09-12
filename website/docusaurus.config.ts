@@ -24,10 +24,14 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'zh-Hans'],
+    locales: ['en', 'zh-Hans', 'sv'],
     localeConfigs: {
       en: {
         label: 'English',
+      },
+      sv: {
+        label: 'Svenska',
+        htmlLang: 'sv',
       },
       'zh-Hans': {
         label: '简体中文',

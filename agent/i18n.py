@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
+    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar", "sv",
 )
 DEFAULT_LANGUAGE = "en"
 
@@ -27,6 +27,8 @@ DEFAULT_LANGUAGE = "en"
 # Taiwan/HK/Macau tags route to the distinct Traditional catalog. pt-br shares
 # the pt catalog (no separate br one).
 _LANGUAGE_ALIASES: dict[str, str] = {
+    "swedish": "sv", "svenska": "sv", "sv-se": "sv", "sv-fi": "sv",
+    "sv_se": "sv", "sv_fi": "sv",
     "english": "en", "en-us": "en", "en-gb": "en",
     "chinese": "zh", "mandarin": "zh", "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",
     "traditional-chinese": "zh-hant", "traditional_chinese": "zh-hant",

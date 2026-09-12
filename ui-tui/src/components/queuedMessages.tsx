@@ -1,5 +1,6 @@
 import { Box, Text } from '@hermes/ink'
 
+import { useTranslations } from '../i18n/index.js'
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 
@@ -15,6 +16,8 @@ export function getQueueWindow(queueLen: number, queueEditIdx: number | null) {
 }
 
 export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessagesProps) {
+  const copy = useTranslations()
+
   if (!queued.length) {
     return null
   }
@@ -24,9 +27,8 @@ export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessages
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text color={t.color.muted} dimColor>
-        {`queued (${queued.length})${
-          queueEditIdx !== null ? ` · editing ${queueEditIdx + 1} · Ctrl+X delete · Esc cancel` : ''
-        }`}
+        {copy.queue.title(queued.length)}
+        {queueEditIdx !== null ? copy.queue.editing(queueEditIdx + 1) : ''}
       </Text>
 
       {q.showLead && (
@@ -49,7 +51,8 @@ export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessages
 
       {q.showTail && (
         <Text color={t.color.muted} dimColor>
-          {'  '}…and {queued.length - q.end} more
+          {'  '}
+          {copy.queue.more(queued.length - q.end)}
         </Text>
       )}
     </Box>

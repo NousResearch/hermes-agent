@@ -21,7 +21,7 @@ Read RSS, Atom, JSON feeds; discover feeds behind a page.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `RSS`, `Atom`, `Feeds`, `Monitoring`, `Research`, `Blogs`, `Releases` |
-| Related skills | [`reddit-reading`](/docs/user-guide/skills/optional/social-media/social-media-reddit-reading), [`competitor-news-monitor`](/docs/user-guide/skills/bundled/research/research-competitor-news-monitor), [`grounded-citations`](/docs/user-guide/skills/bundled/research/research-grounded-citations), [`youtube-content`](/docs/user-guide/skills/bundled/media/media-youtube-content), [`blogwatcher`](/docs/user-guide/skills/optional/research/research-blogwatcher) |
+| Related skills | [`reddit-reading`](/user-guide/skills/optional/social-media/social-media-reddit-reading), [`competitor-news-monitor`](/user-guide/skills/bundled/research/research-competitor-news-monitor), [`grounded-citations`](/user-guide/skills/bundled/research/research-grounded-citations), [`youtube-content`](/user-guide/skills/bundled/media/media-youtube-content), [`blogwatcher`](/user-guide/skills/optional/research/research-blogwatcher) |
 
 ## Reference: full SKILL.md
 

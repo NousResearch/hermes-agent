@@ -1,3 +1,4 @@
+import fs from 'fs'
 /**
  * One-time Desktop notice for plugins that import pre-decomposition module paths (PR #102117).
  *
@@ -10,9 +11,9 @@
  *
  * Pure module: no Electron imports, so it is unit-testable; main.ts owns the dialog.
  */
-
-import fs from 'fs'
 import path from 'path'
+
+import { nativeMessages, type NativeMessages } from './native-i18n'
 
 export const REPORT_FILE = '.plugin-compat-report.json'
 export const DISMISSED_FILE = 'plugin-compat-dismissed.json'
@@ -100,7 +101,11 @@ export interface PendingNotice {
 }
 
 /** The modal to show this boot, or null (no report, or this exact report already dismissed). */
-export function pendingNotice(hermesHome: string, userData: string): PendingNotice | null {
+export function pendingNotice(
+  hermesHome: string,
+  userData: string,
+  copy: NativeMessages = nativeMessages('en')
+): PendingNotice | null {
   const report = readReport(hermesHome)
 
   if (!report) {
@@ -120,19 +125,13 @@ export function pendingNotice(hermesHome: string, userData: string): PendingNoti
       const hits = report.plugins[n]
       const first = hits[0]
 
-      return `• ${n} — ${hits.length} import${hits.length === 1 ? '' : 's'} (e.g. ${first.old} → ${first.new})`
+      return copy.pluginRow(n, hits.length, first.old, first.new)
     })
     .join('\n')
 
-  const title = report.in_effect ? 'Some plugins were not loaded' : 'Plugins need an update'
-
-  const message = report.in_effect
-    ? `${names.length} plugin${names.length === 1 ? '' : 's'} import${names.length === 1 ? 's' : ''} module paths that were removed on ${report.removal_date} and ${names.length === 1 ? 'was' : 'were'} not loaded.`
-    : `${names.length} plugin${names.length === 1 ? '' : 's'} import${names.length === 1 ? 's' : ''} module paths that stop working on ${report.removal_date}.`
-
-  const detail = report.in_effect
-    ? `${list}\n\nUpdate the plugin(s), or force-load them with plugins.allow_deprecated_imports: true in config.yaml (they will still break once the compatibility layer is removed).\n\nFull list: hermes plugins compat`
-    : `${list}\n\nCheck for plugin updates or notify the author before ${report.removal_date}. After that date these plugins are not loaded.\n\nFull list: hermes plugins compat`
+  const title = report.in_effect ? copy.pluginsInactive : copy.pluginsNeedUpdate
+  const message = copy.pluginMessage(names.length, report.removal_date, report.in_effect)
+  const detail = copy.pluginDetail(list, report.removal_date, report.in_effect)
 
   return { key, title, message, detail }
 }

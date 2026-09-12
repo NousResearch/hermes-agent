@@ -21,7 +21,7 @@ Pay HTTP 402 APIs via Machine Payments Protocol (MPP).
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `Payments`, `MPP`, `HTTP-402`, `Tempo`, `Stripe` |
-| Related skills | [`stripe-link-cli`](/docs/user-guide/skills/optional/payments/payments-stripe-link-cli), [`stripe-projects`](/docs/user-guide/skills/optional/payments/payments-stripe-projects) |
+| Related skills | [`stripe-link-cli`](/user-guide/skills/optional/payments/payments-stripe-link-cli), [`stripe-projects`](/user-guide/skills/optional/payments/payments-stripe-projects) |
 
 ## Reference: full SKILL.md
 

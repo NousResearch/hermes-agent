@@ -75,7 +75,7 @@ After it finishes, reload your shell:
 source ~/.bashrc   # or source ~/.zshrc
 ```
 
-For detailed installation options, prerequisites, and troubleshooting, see the [Installation guide](./installation.md).
+For detailed installation options, prerequisites, and troubleshooting, see the [Installation guide](/getting-started/installation).
 
 ## 2. Choose a Provider
 

@@ -21,7 +21,7 @@ Watch named companies for material news; cited digests.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Competitors`, `News`, `Market-Research`, `Monitoring` |
-| Related skills | [`blogwatcher`](/docs/user-guide/skills/optional/research/research-blogwatcher), [`rss-feeds`](/docs/user-guide/skills/optional/research/research-rss-feeds), [`reddit-reading`](/docs/user-guide/skills/optional/social-media/social-media-reddit-reading) |
+| Related skills | [`blogwatcher`](/user-guide/skills/optional/research/research-blogwatcher), [`rss-feeds`](/user-guide/skills/optional/research/research-rss-feeds), [`reddit-reading`](/user-guide/skills/optional/social-media/social-media-reddit-reading) |
 
 ## Reference: full SKILL.md
 

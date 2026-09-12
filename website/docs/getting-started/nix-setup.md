@@ -7,9 +7,9 @@ description: "Install and deploy Hermes Agent with Nix — from quick `nix run` 
 # Nix & NixOS Setup
 
 :::warning Tier 2 platform
-Nix and NixOS are [Tier 2 platforms](./platform-support.md#tier-2). The flake and NixOS module documented here are maintained on a best-effort basis only. Commits to `main` may break these packages at any point in time.
+Nix and NixOS are [Tier 2 platforms](/getting-started/platform-support#tier-2). The flake and NixOS module documented here are maintained on a best-effort basis only. Commits to `main` may break these packages at any point in time.
 
-For a supported setup, use one of the standard [installation](./installation.md) paths - either Docker or an FHS environment.
+For a supported setup, use one of the standard [installation](/getting-started/installation) paths - either Docker or an FHS environment.
 :::
 
 Hermes Agent ships a Nix flake, a NixOS module, and a Home Manager module.
@@ -57,7 +57,7 @@ hermes setup
 hermes --tui
 ```
 
-After `nix profile install`, `hermes`, `hermes-agent`, and `hermes-acp` are on your PATH. From here, the workflow is identical to the [standard installation](./installation.md) — `hermes setup` walks you through provider selection, `hermes gateway install` sets up a launchd (macOS) or systemd user service, and config lives in `~/.hermes/`.
+After `nix profile install`, `hermes`, `hermes-agent`, and `hermes-acp` are on your PATH. From here, the workflow is identical to the [standard installation](/getting-started/installation) — `hermes setup` walks you through provider selection, `hermes gateway install` sets up a launchd (macOS) or systemd user service, and config lives in `~/.hermes/`.
 
 :::warning Messaging platforms (Discord, Telegram, Slack)
 The default package includes ALL libraries hermes-agent might need. if you want a smaller variant, check the other flake outputs. 

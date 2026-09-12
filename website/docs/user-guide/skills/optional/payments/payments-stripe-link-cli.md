@@ -21,7 +21,7 @@ Agent payments via Stripe Link — cards, SPT, approvals.
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `Payments`, `Stripe`, `Link`, `Checkout`, `MPP` |
-| Related skills | [`mpp-agent`](/docs/user-guide/skills/optional/payments/payments-mpp-agent), [`stripe-projects`](/docs/user-guide/skills/optional/payments/payments-stripe-projects) |
+| Related skills | [`mpp-agent`](/user-guide/skills/optional/payments/payments-mpp-agent), [`stripe-projects`](/user-guide/skills/optional/payments/payments-stripe-projects) |
 
 ## Reference: full SKILL.md
 

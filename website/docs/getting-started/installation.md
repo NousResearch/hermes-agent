@@ -10,7 +10,7 @@ Get Hermes Agent up and running in under two minutes!
 
 :::tip Platform Support
 For the full platform support matrix (which OSes, distribution methods, and
-platform-gated features are supported), see **[Platform Support](./platform-support.md)**.
+platform-gated features are supported), see **[Platform Support](/getting-started/platform-support)**.
 :::
 
 ## Quick Install

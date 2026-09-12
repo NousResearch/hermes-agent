@@ -21,7 +21,7 @@ Create, read, edit .pptx decks with python-pptx.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `pptx`, `powerpoint`, `presentations`, `slides`, `office`, `python-pptx` |
-| Related skills | [`docx`](/docs/user-guide/skills/bundled/productivity/productivity-docx), [`xlsx`](/docs/user-guide/skills/bundled/productivity/productivity-xlsx), [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf) |
+| Related skills | [`docx`](/user-guide/skills/bundled/productivity/productivity-docx), [`xlsx`](/user-guide/skills/bundled/productivity/productivity-xlsx), [`pdf`](/user-guide/skills/bundled/productivity/productivity-pdf) |
 
 ## Reference: full SKILL.md
 

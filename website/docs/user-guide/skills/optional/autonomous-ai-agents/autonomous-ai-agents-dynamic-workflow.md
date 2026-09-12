@@ -21,7 +21,7 @@ Plan-in-code fan-outs, adversarial verification, waves.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `orchestration`, `fan-out`, `subagents`, `delegation`, `verification`, `migration`, `audit`, `research`, `campaign` |
-| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`simplify-code`](/docs/user-guide/skills/bundled/software-development/software-development-simplify-code) |
+| Related skills | [`hermes-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`simplify-code`](/user-guide/skills/bundled/software-development/software-development-simplify-code) |
 
 ## Reference: full SKILL.md
 

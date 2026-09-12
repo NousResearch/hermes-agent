@@ -444,6 +444,8 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
 
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
+    from hermes_cli.commands_i18n import command_description
+
     overrides = _resolve_config_gates()
     lines: list[str] = []
     for cmd in COMMAND_REGISTRY:
@@ -454,7 +456,7 @@ def gateway_help_lines() -> list[str]:
         alias_parts = [f"`/{a}`" for a in cmd.aliases
                        if not (a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name)]
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        lines.append(f"`/{cmd.name}{args}` -- {command_description(cmd)}{alias_note}")
     return lines
 
 

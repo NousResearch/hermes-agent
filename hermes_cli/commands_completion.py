@@ -17,6 +17,7 @@ from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
 from hermes_cli.commands import COMMANDS, SUBCOMMANDS
+from hermes_cli.commands_i18n import cli_command_description
 
 # (config-file signature, personalities) memo for /personality completion.
 _personalities_memo: Optional[
@@ -444,7 +445,7 @@ class SlashCommandCompleter(Completer):
 
         for cmd, desc in COMMANDS.items():
             if self._command_allowed(cmd) and cmd[1:].startswith(word):
-                yield _cmd_completion(cmd[1:], desc)
+                yield _cmd_completion(cmd[1:], cli_command_description(cmd, desc))
         for cmd, info in self._call_provider(self._skill_bundles_provider).items():
             if cmd[1:].startswith(word):
                 skill_count = len(info.get("skills", []))

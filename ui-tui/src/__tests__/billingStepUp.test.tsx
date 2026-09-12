@@ -4,22 +4,32 @@ import { renderSync } from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
+const inputHarness = vi.hoisted(() => ({
+  handler: undefined as undefined | ((input: string, key: Record<string, boolean>) => void)
+}))
+
 // Stub useInput so the overlay doesn't enter raw mode under renderSync.
 vi.mock('@hermes/ink', async importOriginal => {
   const mod = await importOriginal()
 
-  return { ...mod, useInput: () => {} }
+  return {
+    ...mod,
+    useInput: (handler: (input: string, key: Record<string, boolean>) => void) => {
+      inputHarness.handler = handler
+    }
+  }
 })
 
 import type { BillingOverlayState } from '../app/interfaces.js'
 import { BillingOverlay } from '../components/billingOverlay.js'
 import type { BillingStateResponse } from '../gatewayTypes.js'
+import { setTuiLanguage } from '../i18n/index.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const t = DEFAULT_THEME
 
-function render(overlay: BillingOverlayState): string {
+function render(overlay: BillingOverlayState, press?: string): string {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
@@ -47,6 +57,8 @@ function render(overlay: BillingOverlayState): string {
       stdout: stdout as NodeJS.WriteStream
     }
   )
+
+  if (press) {inputHarness.handler?.(press, {})}
 
   instance.unmount()
   instance.cleanup()
@@ -195,5 +207,28 @@ describe('BillingOverlay — auto-reload card divergence', () => {
 
     expect(out).not.toContain('not your card on file')
     expect(out).not.toContain('Use your card on file — manage on portal')
+  })
+})
+
+describe('Swedish billing', () => {
+  it('shows the currency and consent and only charges after the unchanged Y shortcut', () => {
+    setTuiLanguage('sv')
+    ctx.charge.mockClear()
+    const purchase = { ...overlay('confirm'), pendingCharge: { amount: '100', idempotencyKey: 'purchase-fixture' } }
+
+    try {
+      const out = render(purchase)
+      expect(out).toContain('Bekräfta köp')
+      expect(out).toContain('Betala $100 nu')
+      expect(out).toContain('Nous Research')
+      expect(out).toContain('debitera ditt kort')
+      expect(ctx.charge).not.toHaveBeenCalled()
+      render(purchase, 'n')
+      expect(ctx.charge).not.toHaveBeenCalled()
+      render(purchase, 'y')
+      expect(ctx.charge).toHaveBeenCalledExactlyOnceWith('100', 'purchase-fixture')
+    } finally {
+      setTuiLanguage('en')
+    }
   })
 })

@@ -164,3 +164,89 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result.name == "locales"
 
 
+@pytest.mark.parametrize("alias", ["sv", "sv-SE", "sv-FI", "sv_SE", "sv_FI", "svenska", "Swedish", " SV "])
+def test_swedish_alias_renders_catalog(alias):
+    assert i18n.t("gateway.model.switched", lang=alias, model="model/example") == (
+        "Modellen har bytts till `model/example`"
+    )
+
+
+def test_swedish_profile_config_and_environment_precedence(monkeypatch, tmp_path):
+    """Exercise the real config reader without reading or modifying a user's profile."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    (tmp_path / "config.yaml").write_text("display:\n  language: sv_FI\n", encoding="utf-8")
+    i18n.reset_language_cache()
+    try:
+        assert i18n.get_language() == "sv"
+        assert i18n.t("gateway.status.state_no") == "Nej"
+        monkeypatch.setenv("HERMES_LANGUAGE", "en")
+        assert i18n.get_language() == "en"
+        assert i18n.t("gateway.status.state_no") == "No"
+        assert i18n.t("gateway.status.state_no", lang="sv") == "Nej"
+    finally:
+        i18n.reset_language_cache()
+
+
+def test_swedish_bundled_catalog_formats_every_message(monkeypatch, tmp_path):
+    """Packaged locale resolution must preserve all format fields, including in notices."""
+    import shutil
+    from string import Formatter
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    shutil.copy(LOCALES_DIR / "sv.yaml", bundle / "sv.yaml")
+    monkeypatch.setenv("HERMES_BUNDLED_LOCALES", str(bundle))
+    english = _flatten(_load_raw("en"))
+    swedish = _flatten(_load_raw("sv"))
+    i18n.reset_language_cache()
+    try:
+        for key, source in english.items():
+            fields = {field for _, field, _, _ in Formatter().parse(source) if field}
+            values = {field: f"VALUE_{field}_END" for field in fields}
+            rendered = i18n.t(key, lang="sv", **values)
+            assert rendered == swedish[key].format(**values), key
+            assert all(value in rendered for value in values.values()), key
+    finally:
+        i18n.reset_language_cache()
+
+
+@pytest.mark.parametrize(
+    "choice,allow_permanent,allow_session,expected",
+    [
+        ("o", True, True, "once"),
+        ("s", True, True, "session"),
+        ("a", True, True, "always"),
+        ("d", True, True, "deny"),
+        ("o", False, True, "once"),
+        ("s", False, True, "session"),
+        ("o", False, False, "once"),
+        ("d", False, False, "deny"),
+        ("s", False, False, "deny"),
+        ("a", False, False, "deny"),
+        ("", True, True, "deny"),
+        ("unknown", True, True, "deny"),
+    ],
+)
+def test_swedish_approval_menu_preserves_decisions(
+    monkeypatch, capsys, choice, allow_permanent, allow_session, expected
+):
+    from tools.approval_prompt import prompt_dangerous_approval
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "sv")
+    monkeypatch.setattr("builtins.input", lambda prompt: choice)
+    i18n.reset_language_cache()
+    try:
+        result = prompt_dangerous_approval(
+            "example-command", "Exempel", timeout_seconds=2,
+            allow_permanent=allow_permanent, allow_session=allow_session,
+        )
+        assert result == expected
+        output = capsys.readouterr().out
+        assert "FARLIGT KOMMANDO: Exempel" in output
+        assert "[o] tillåt en gång" in output
+        assert "[d] neka" in output
+        assert ("[s] tillåt under sessionen" in output) == allow_session
+        assert ("[a] tillåt alltid" in output) == (allow_permanent and allow_session)
+    finally:
+        i18n.reset_language_cache()

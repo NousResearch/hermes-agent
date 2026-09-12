@@ -21,7 +21,7 @@ Recover blocked/paywalled/WAF'd pages via archive snapshots and reader fallbacks
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Research`, `Archives`, `Wayback`, `Paywall`, `WAF`, `Fallback` |
-| Related skills | [`grounded-citations`](/docs/user-guide/skills/bundled/research/research-grounded-citations) |
+| Related skills | [`grounded-citations`](/user-guide/skills/bundled/research/research-grounded-citations) |
 
 ## Reference: full SKILL.md
 

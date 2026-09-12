@@ -116,6 +116,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     localeRef.current = locale
     setRuntimeI18nLocale(locale)
     applyDocumentLocale(locale)
+    window.hermesDesktop?.setUiLocale?.(locale)
   }, [locale])
 
   useEffect(() => {

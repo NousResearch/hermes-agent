@@ -1581,7 +1581,13 @@ def _persist_live_session_runtime(session: dict | None) -> None:
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
         elif model and hasattr(db, "update_session_model"):
-            db.update_session_model(session_key, model)
+            # Meta-less fallback (duck-typed session stores). It rewrites the
+            # row's request audit, so hand over the provider resolved just
+            # above: the audit pair must name one route, not this model beside
+            # some earlier request's provider.
+            db.update_session_model(
+                session_key, model, provider=model_config.get("provider") or None
+            )
     except Exception:
         logger.debug("failed to persist live session runtime", exc_info=True)
 

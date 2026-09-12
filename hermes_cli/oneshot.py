@@ -28,7 +28,13 @@ _ALL_TOOLSETS = {"all", "*"}
 _USAGE_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
+    # Request-vs-served audit (silent-fallback guard). "model"/"provider"
+    # above are what ANSWERED; these are what was ASKED FOR. A pipeline that
+    # pins a model for reproducibility can assert fallback_activated is false
+    # instead of trusting that a non-empty answer means the right model
+    # produced it.
     "model", "provider", "session_id", "completed",
+    "requested_model", "requested_provider", "fallback_activated",
 )
 
 
@@ -160,6 +166,60 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         pass
 
 
+def _format_route(model: object, provider: object) -> str:
+    """Render a ``model via provider`` label, tolerating missing halves."""
+    model_s = str(model or "").strip()
+    provider_s = str(provider or "").strip()
+    if model_s and provider_s:
+        return f"{model_s} via {provider_s}"
+    return model_s or provider_s or "an unknown model"
+
+
+def _annotate_requested_route(agent, result: dict) -> None:
+    """Copy the request-vs-served audit off the agent into the run result.
+
+    ``run_conversation`` returns a result dict built in a dozen places, none of
+    which know about the request audit, so it is attached here where the agent
+    object is still in scope. Values come from the immutable init snapshot
+    (``origin_requested_*``) — after a fallback swap ``agent.requested_provider``
+    has been reassigned to the fallback and no longer describes the request.
+    """
+    if not isinstance(result, dict):
+        return
+    result["requested_model"] = getattr(agent, "origin_requested_model", "") or ""
+    result["requested_provider"] = (
+        getattr(agent, "origin_requested_provider", "") or ""
+    )
+    result["fallback_activated"] = bool(getattr(agent, "_fallback_activated", False))
+
+
+def _fallback_warning_line(result: dict) -> Optional[str]:
+    """The loud one-shot notice for a request that was not honored.
+
+    This is the fix for the silent-fallback failure mode. One-shot redirects
+    BOTH stdout and stderr to devnull for the whole run and sets
+    ``suppress_status_output``, which short-circuits status output — so the
+    switch notice ``try_activate_fallback`` records never reaches the terminal.
+    The caller asked for model X, was served model Y by another provider, and
+    saw an ordinary successful answer with no indication at all. Rebuild the
+    notice from the run result and write it to the REAL stderr, keeping stdout
+    byte-for-byte machine-readable.
+
+    Returns None when the requested route is the one that answered.
+    """
+    if not isinstance(result, dict) or not result.get("fallback_activated"):
+        return None
+    served = _format_route(result.get("model"), result.get("provider"))
+    requested = _format_route(
+        result.get("requested_model"), result.get("requested_provider")
+    )
+    return (
+        f"hermes -z: ⚠ requested {requested} — SERVED {served} "
+        "(fallback: the requested model/provider could not be reached). "
+        "The answer above was NOT produced by the model you asked for.\n"
+    )
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
@@ -231,6 +291,15 @@ def run_oneshot(
             # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
             # silently past the redirect — the worst failure mode in cron / SSH / subprocess use.
             failure = exc
+
+    # Before anything else reaches the terminal: if the requested model was not
+    # the one that answered, say so. Written to the real stderr (not stdout) so
+    # callers parsing the response are unaffected, and BEFORE the failure branch
+    # so a run that fell back and then died still reports the switch.
+    fallback_warning = _fallback_warning_line(result)
+    if fallback_warning:
+        real_stderr.write(fallback_warning)
+        real_stderr.flush()
 
     if failure is not None:
         # Control-flow exceptions (Ctrl-C / sys.exit inside the agent) re-raise to the parent.
@@ -485,6 +554,12 @@ def _run_agent(
             session_db=session_db,
             session_id=resume_sid,
             credential_pool=runtime.get("credential_pool"),
+            # The model id exactly as the caller typed it, before alias
+            # expansion and provider auto-detection rewrote it — the audit
+            # trail has to name what was asked for, not the resolved form.
+            requested_model=(
+                (model or "").strip() or os.getenv("HERMES_INFERENCE_MODEL", "").strip() or None
+            ),
             fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,
             reasoning_config=reasoning_config,
@@ -499,6 +574,7 @@ def _run_agent(
         agent.tool_gen_callback = None
 
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
+        _annotate_requested_route(agent, result)
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)

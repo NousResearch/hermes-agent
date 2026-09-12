@@ -2204,12 +2204,16 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
+    requested_model: str = None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 
     Non-obvious parameters:
       max_iterations: default unlimited (sys.maxsize); the budget is shared with subagents.
       requested_provider: provider identity before runtime canonicalization.
+      requested_model: model id as the caller asked for it, before alias expansion /
+        provider auto-detection. Defaults to ``model``. Recorded for the
+        request-vs-served audit trail; never used for routing.
       openrouter_min_coding_score: coding-score floor for ``openrouter/pareto-code`` only.
       clarify_callback: ``(question, choices) -> str``; None → the clarify tool errors.
       reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
@@ -2252,6 +2256,22 @@ def init_agent(
         key: value for key, value in (capabilities or {}).items()
         if isinstance(key, str) and isinstance(value, bool)
     }
+    # Immutable audit snapshot of the route the CALLER asked for.
+    #
+    # ``requested_provider`` above cannot serve this purpose: activating a
+    # fallback reassigns it to the fallback provider (try_activate_fallback in
+    # agent/chat_completion_helpers.py) so downstream routing stays coherent
+    # with the model that is actually answering. That reassignment is correct
+    # for routing and fatal for auditing — after it, nothing in the process
+    # still remembers what was requested. These two attributes are written once
+    # here and never touched again, so a silent fallback can always be named:
+    # "you asked for X via Y, you got Z via W".
+    agent.origin_requested_model = (
+        requested_model.strip()
+        if isinstance(requested_model, str) and requested_model.strip()
+        else (model.strip() if isinstance(model, str) and model.strip() else "")
+    )
+    agent.origin_requested_provider = agent.requested_provider or ""
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])

@@ -1329,9 +1329,12 @@ def _apply_agent_section(agent, _agent_cfg):
 
     # Default-on boolean gates: anti-stall guards (notice-only), universal guidance toggles
     # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.
+    # self_help_guidance gates the "You run on Hermes Agent ..." docs-pointer block;
+    # embedded / white-labeled deployments turn it off to strip the runtime's vendor
+    # identity and public docs URL from the prompt without losing the other blocks.
     for _key in (
         "stall_guards", "task_completion_guidance", "parallel_tool_call_guidance",
-        "environment_probe", "bot_mode_protocol",
+        "environment_probe", "bot_mode_protocol", "self_help_guidance",
     ):
         setattr(agent, f"_{_key}", bool(_agent_section.get(_key, True)))
     # Warm the probe (~0.5s of subprocesses) off-thread so the first prompt build finds it cached.

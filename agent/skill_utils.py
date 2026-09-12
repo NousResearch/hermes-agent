@@ -715,11 +715,11 @@ def _expand_skill_config_path(value: str) -> str:
     """
     subprocess_home = get_subprocess_home()
     if subprocess_home:
-        if value == "~":
-            return subprocess_home
-        if value.startswith(("~/", "~\\")):
-            return os.path.join(subprocess_home, value[2:])
-        value = _HOME_VAR_RE.sub(subprocess_home, value)
+        if value == "~" or value.startswith(("~/", "~\\")):
+            value = subprocess_home + value[1:]
+        # Callable replacement: a literal template would parse backslashes in the home path
+        # as regex escapes.
+        value = _HOME_VAR_RE.sub(lambda _m: subprocess_home, value)
     return os.path.expanduser(os.path.expandvars(value))
 
 

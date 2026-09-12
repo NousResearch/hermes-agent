@@ -152,7 +152,8 @@ def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
     control process HOME; other variables keep normal expansion (#12260)."""
     from agent import skill_utils
 
-    hermes_home = tmp_path / "data"
+    # A backslash in the home path must not be read as a regex-replacement escape.
+    hermes_home = tmp_path / "da\\ta"
     subprocess_home = hermes_home / "home"
     subprocess_home.mkdir(parents=True)
     (hermes_home / "config.yaml").write_text("", encoding="utf-8")
@@ -160,6 +161,7 @@ def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(hermes_home))
     monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
     monkeypatch.setenv("PROJECT_ROOT", "/proj")
+    monkeypatch.setenv("LEAF", "leaf")
     getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
 
     resolved = resolve_skill_config_values([
@@ -167,12 +169,14 @@ def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
         {"key": "wiki.braced_home", "default": "${HOME}/notes"},
         {"key": "wiki.tilde", "default": "~/scratch"},
         {"key": "wiki.other_var", "default": "${PROJECT_ROOT}/cache"},
+        {"key": "wiki.tilde_var", "default": "~/$LEAF"},
     ])
 
     assert resolved["wiki.home_var"] == str(subprocess_home / "wiki")
     assert resolved["wiki.braced_home"] == str(subprocess_home / "notes")
     assert resolved["wiki.tilde"] == str(subprocess_home / "scratch")
     assert resolved["wiki.other_var"] == "/proj/cache"
+    assert resolved["wiki.tilde_var"] == str(subprocess_home / "leaf")
 
 
 def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):

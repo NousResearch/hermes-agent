@@ -39,11 +39,16 @@ class DeepSeekProfile(ProviderProfile):
         rc = reasoning_config if isinstance(reasoning_config, dict) else None
         # Always set thinking explicitly (default enabled, matching the API default)
         # to avoid the reasoning_content echo trap on subsequent turns.
-        if rc is not None and rc.get("enabled") is False:
+        # ``{effort: "none"|"false"|"disabled"}`` is also an explicit disable:
+        # UI/session surfaces report Off from the effort field even when
+        # ``enabled`` is missing or still True (#107238).
+        effort = (rc.get("effort") or "").strip().lower() if rc is not None else ""
+        if rc is not None and (
+            rc.get("enabled") is False or effort in {"none", "false", "disabled"}
+        ):
             return {"thinking": {"type": "disabled"}}, {}
         top_level: dict[str, Any] = {}
         # No effort -> omit reasoning_effort so DeepSeek applies its server default.
-        effort = (rc.get("effort") or "").strip().lower() if rc is not None else ""
         if effort and effort != "none":
             clamped = clamp_effort(effort, DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES)
             if clamped in DEEPSEEK_V4_EFFORTS:

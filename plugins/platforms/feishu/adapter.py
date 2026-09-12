@@ -121,6 +121,17 @@ _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+# Feishu also rejects malformed post payloads with the generic code 99992402
+# ("field validation failed") instead of the friendlier content-format message,
+# and the plain-text downgrade never fires (#81169: cron-origin post deliveries
+# failed with this code and no fallback). Matching it lets the downgrade fire
+# either way.
+_POST_FIELD_VALIDATION_RE = re.compile(r"field validation failed|\b99992402\b", re.IGNORECASE)
+
+
+def _post_rejected(text: str) -> bool:
+    """True when an error/response indicates the post payload was rejected."""
+    return bool(_POST_CONTENT_INVALID_RE.search(text) or _POST_FIELD_VALIDATION_RE.search(text))
 # --- Media type sets and upload constants ---
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _AUDIO_EXTENSIONS = {".ogg", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".opus", ".webm"}
@@ -1588,14 +1599,14 @@ class FeishuAdapter(BasePlatformAdapter):
                         chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type != "post" or not _post_rejected(str(exc)):
                         raise
                     logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
                     response = await _send_plain(chunk)
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                    and _post_rejected(str(getattr(response, "msg", "") or ""))
                 ):
                     logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
                     response = await _send_plain(chunk)
@@ -1622,7 +1633,7 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             msg_type, payload = self._build_outbound_payload(content)
             result = await _update(msg_type, payload)
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+            if not result.success and msg_type == "post" and _post_rejected(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 result = await _update(
                     "text", json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
@@ -3789,8 +3800,45 @@ class FeishuAdapter(BasePlatformAdapter):
                 return response
             except Exception as exc:
                 last_error = exc
-                if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
-                    raise
+                if msg_type == "post" and _post_rejected(str(exc)):
+                    # Post payload rejected with field-validation: retry once as
+                    # plain text derived from the same content instead of raising.
+                    try:
+                        parsed = json.loads(payload)
+                        raw_content = parsed.get("zh_cn", {}).get("content", "") or ""
+                        # post payload content is a list of rows of elements;
+                        # join each element's text/md field into plain lines.
+                        if isinstance(raw_content, list):
+                            lines = []
+                            for row in raw_content:
+                                if not isinstance(row, list):
+                                    continue
+                                parts = []
+                                for el in row:
+                                    if isinstance(el, dict):
+                                        parts.append(str(el.get("text", "") or el.get("content", "") or ""))
+                                line = "".join(parts)
+                                if line.strip():
+                                    lines.append(line)
+                            md_text = "\n".join(lines)
+                        else:
+                            md_text = str(raw_content)
+                    except (json.JSONDecodeError, AttributeError):
+                        md_text = ""
+                    logger.warning("[Feishu] Post payload rejected by API; falling back to plain text")
+                    # Single bounded attempt (no retry loop): avoids stacking a
+                    # fresh retry budget on top of this loop's, and avoids
+                    # duplicate delivery if the API accepted but transport failed.
+                    return await self._send_raw_message(
+                        chat_id=chat_id,
+                        msg_type="text",
+                        payload=json.dumps(
+                            {"text": _strip_markdown_to_plain_text(md_text)},
+                            ensure_ascii=False,
+                        ),
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise
                 wait_seconds = 2 ** attempt

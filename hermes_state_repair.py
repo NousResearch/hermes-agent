@@ -12,6 +12,7 @@ import itertools
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -390,11 +391,14 @@ def _persistent_repair_attempts_exhausted(db_path: Path) -> bool:
 
 
 def _persistent_repair_exhausted_error(db_path: Path) -> str:
-    """The stable operator-facing diagnostic for an exhausted repair budget."""
+    """The stable operator-facing diagnostic for an exhausted repair budget. The ``hermes`` commands
+    carry the profile selector: a bare ``hermes`` follows ``active_profile`` (#105887)."""
+    from hermes_constants import profile_cli_selector
+    profile_arg = profile_cli_selector()
     return (f"automatic repair has already failed {_MAX_PERSISTENT_REPAIR_ATTEMPTS} times on this exact file — the "
             f"corruption is beyond the schema/FTS repair strategies (likely b-tree page damage). Manual recovery "
-            f"required: restore a backup, or salvage with `hermes sessions recover --source {db_path} "
-            f"--inspect-only`, then (if it reports recoverable) `hermes sessions recover --source {db_path} "
+            f"required: restore a backup, or salvage with `hermes {profile_arg}sessions recover --source {db_path} "
+            f"--inspect-only`, then (if it reports recoverable) `hermes {profile_arg}sessions recover --source {db_path} "
             f"--output recovered-state.db` (recovery snapshots the damaged file first, then runs the page-level "
             f"`.recover` lane on the copy; do NOT point a raw `sqlite3` shell at the live database). "
             f"Delete {_repair_ledger_path(db_path).name} to force another automatic attempt.")
@@ -684,6 +688,62 @@ def _schema_not_built(exc: BaseException) -> bool:
     return any(m in str(exc).lower() for m in ("no such table", "no such column"))
 
 
+# Hermes-owned FTS5 objects: the virtual tables and their shadow b-trees. Full-matched, so a
+# user-created lookalike (``archive_fts_data``) is not swept into the rebuildable set.
+_FTS_OBJECT_RE = re.compile(
+    r"messages_fts(_trigram|_cjk)?(_data|_idx|_content|_docsize|_config|_segdir|_segments)?"
+)
+_INTEGRITY_TREE_RE = re.compile(r"\bTree (\d+)\b")
+_INTEGRITY_MISSING_INDEX_RE = re.compile(r"missing from index (\S+)")
+
+
+def integrity_damage_is_structural(integrity_lines, master_rows) -> bool:
+    """True when any damaged object named by ``PRAGMA integrity_check`` output lies outside
+    the FTS shadow set: a ``Tree N`` id mapped through ``sqlite_master.rootpage``, an index in
+    ``row N missing from index X``, or the file's own freelist. Unparseable lines are not
+    counted (the FTS wording stays, which is incomplete rather than wrong). #88587: an FTS
+    rebuild cannot repair a canonical b-tree, and the ``.malformed-backup`` it leaves behind
+    is a snapshot of the same damage."""
+    name_by_rootpage = {int(rp): name for rp, _type, name in master_rows if rp}
+    for line in integrity_lines:
+        text = str(line)
+        if text.startswith("Freelist"):
+            return True
+        tree = _INTEGRITY_TREE_RE.search(text)
+        if tree:
+            name = name_by_rootpage.get(int(tree.group(1)), "")
+            if name and not _FTS_OBJECT_RE.fullmatch(name):
+                return True
+        missing = _INTEGRITY_MISSING_INDEX_RE.search(text)
+        if missing and not _FTS_OBJECT_RE.fullmatch(missing.group(1)):
+            return True
+    return False
+
+
+def state_db_has_structural_damage(db_path: Path) -> bool:
+    """Read-only ``integrity_check`` + ``sqlite_master`` rootpage map on a fresh connection;
+    ``integrity_damage_is_structural`` over the result. A check that RAISES instead of
+    reporting (a torn page under the walk) is structural too: no FTS-only fixture does that
+    while ``messages``/``sessions`` read cleanly, and the FTS rebuild ladder cannot help.
+    Cannot-open / locked stays False so the caller keeps the FTS path."""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+    except sqlite3.Error:
+        return False
+    try:
+        master_rows = [tuple(r) for r in conn.execute(
+            "SELECT rootpage, type, name FROM sqlite_master WHERE rootpage > 0").fetchall()]
+        lines = [str(r[0]) for r in conn.execute("PRAGMA integrity_check").fetchall()]
+    except sqlite3.OperationalError:
+        return False
+    except sqlite3.DatabaseError:
+        return True
+    finally:
+        conn.close()
+    return integrity_damage_is_structural(
+        itertools.chain.from_iterable(line.splitlines() for line in lines), master_rows)
+
+
 def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
 
@@ -728,7 +788,11 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                         # image is malformed") while reads of the FTS5 table itself parse fine.
                         return f"fts5 read probe failed on {fts_table}: {exc}"
             # FTS write probe: drive a row through the messages_fts* triggers in a transaction that is always
-            # rolled back.
+            # rolled back. The trigger INSERT alone only buffers the row in FTS5's in-memory segment; the
+            # ``flush`` command writes that segment to ``<fts>_idx``/``_data`` exactly as a committed append
+            # would, so a stale ``_idx`` row at the next segid (IntegrityError "constraint failed", the #100227
+            # class: integrity_check and MATCH both clean, every real append fails) is hit here rather than
+            # by the user's next message.
             probe_session_id = f"_hermes_fts_health_probe_{time.time_ns()}"
             try:
                 conn.execute("BEGIN IMMEDIATE")
@@ -736,16 +800,24 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                              (probe_session_id, "_health_probe", time.time()))
                 conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
                              (probe_session_id, "user", "_fts_health_probe", time.time()))
-                conn.execute("ROLLBACK")
-            except sqlite3.OperationalError as exc:
-                with contextlib.suppress(sqlite3.Error):
-                    conn.execute("ROLLBACK")
+                for fts_table in _FTS_TABLES:
+                    try:
+                        conn.execute(f"INSERT INTO {fts_table}({fts_table}) VALUES('flush')")
+                    except sqlite3.OperationalError as exc:
+                        if not (SessionDB._is_fts5_unavailable_error(exc) or _schema_not_built(exc)):
+                            raise
+            except sqlite3.DatabaseError as exc:
+                # IntegrityError is a DatabaseError sibling of OperationalError, not a child: catching only the
+                # latter let the trigram-segment collision report "healthy".
                 # Missing messages/sessions tables = brand new file mid-init, not corruption. "no such tokenizer":
                 # this process lacks the cjk extension the DB's index needs — capability gap; a tokenizer-less
                 # SessionDB drops the triggers itself.
                 if _schema_not_built(exc) or "no such tokenizer: cjk_unicode61" in str(exc).lower():
                     return None
-                return str(exc)
+                return f"fts5 write probe failed: {exc}"
+            finally:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.execute("ROLLBACK")
             return None
     except sqlite3.DatabaseError as exc:
         return str(exc)

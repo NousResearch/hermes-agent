@@ -2905,6 +2905,46 @@ class TestHandleMaxIterations:
             for item in input_items
         )
 
+    def test_codex_summary_strips_tool_controls_on_every_attempt(self, agent):
+        """Iteration-limit summaries retry once on an empty answer; both attempts share one
+        ``_attempt`` closure, and both must go out without ``tools``, ``tool_choice`` and
+        ``parallel_tool_calls`` — the transport emits the three as one block, and strict
+        Responses backends 400 on ``tool_choice`` without ``tools``.
+        """
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "chatgpt.com"
+        agent.model = "gpt-5.5"
+        agent._cached_system_prompt = "You are helpful."
+        leaked_controls = {"tools", "tool_choice", "parallel_tool_calls"}
+        # Precondition against the real transport: the main-loop request carries all three.
+        assert leaked_controls <= agent._build_api_kwargs([{"role": "user", "content": "do stuff"}]).keys()
+        bodies = []
+
+        def fake_run_codex_stream(kwargs):
+            bodies.append(dict(kwargs))
+            text = "" if len(bodies) == 1 else "Summary"
+            return SimpleNamespace(
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=text)],
+                    )
+                ],
+            )
+
+        with patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream):
+            result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 90)
+
+        assert result == "Summary"
+        assert len(bodies) == 2, f"expected one retry after the empty summary, got {len(bodies)} attempts"
+        for attempt_index, sent in enumerate(bodies):
+            assert not leaked_controls & sent.keys(), f"attempt {attempt_index}: {sorted(leaked_controls & sent.keys())} leaked"
+
     def test_api_sanitizer_matches_responses_call_id_when_id_differs(self, agent):
         messages = [
             {

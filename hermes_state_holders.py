@@ -125,6 +125,59 @@ def canonical_sqlite_path(path: str) -> str:
     return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
 
 
+def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
+    """Return whether argv proves the process belongs to a DIFFERENT instance.
+
+    ``state.db`` lives at the HERMES_HOME root, so an absolute-path token
+    containing a ``/.hermes`` segment (or naming a ``state.db``/WAL/SHM under
+    some other parent) identifies that token's own Hermes home.  When at least
+    one such token exists AND no token references this instance's state.db,
+    its sidecars, or its home directory, the process provably works on a
+    different generation and must not be counted as an uninspectable holder
+    of ours (issue #92401: a second gateway under /home/demo/.hermes deferred
+    this instance's stale-FTS rebuild forever despite lsof proving zero open
+    handles).  Ambiguous argv without absolute-path tokens returns False and
+    keeps the fail-closed suspicion.
+    """
+    db_path_str = os.path.abspath(os.fspath(db_path))
+    this_home = os.path.dirname(db_path_str)
+    ours = {
+        os.path.normcase(candidate)
+        for candidate in (
+            db_path_str,
+            db_path_str + "-wal",
+            db_path_str + "-shm",
+            this_home,
+        )
+    }
+    other_home_seen = False
+    for token in argv:
+        if not isinstance(token, str):
+            continue
+        if token.startswith("/"):
+            path_token = token
+        elif token.startswith("-") and "=" in token:
+            # ``--db=/abs/path``-style options carry a path value; anchor on
+            # the text after '=' so normpath does not prepend the option.
+            value = token.split("=", 1)[1]
+            path_token = value if value.startswith("/") else None
+        else:
+            path_token = None
+        if path_token is not None:
+            normalized = os.path.normcase(os.path.normpath(path_token))
+            if normalized in ours or normalized.startswith(this_home + os.sep):
+                return False
+            if "/.hermes" in normalized or normalized.endswith("/.hermes"):
+                other_home_seen = True
+            elif os.path.basename(normalized) in (
+                "state.db",
+                "state.db-wal",
+                "state.db-shm",
+            ):
+                other_home_seen = True
+    return other_home_seen
+
+
 def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     """Return foreign holders of the DB or one of its WAL sidecars.
 
@@ -171,7 +224,11 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                     fds = os.listdir(fd_dir)
                 except OSError:
                     argv = _read_proc_argv(pid)
-                    if argv is not None and _looks_like_hermes(argv):
+                    if (
+                        argv is not None
+                        and _looks_like_hermes(argv)
+                        and not _argv_scoped_to_other_home(argv, db_path)
+                    ):
                         cmdline = " ".join(argv)
                         holders.append((pid, f"uninspectable holder: {cmdline[:80]}"))
                     continue
@@ -183,7 +240,11 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                         if exc.errno in (errno.ENOENT, errno.ESRCH):
                             continue
                         argv = _read_proc_argv(pid)
-                        if argv is not None and _looks_like_hermes(argv):
+                        if (
+                            argv is not None
+                            and _looks_like_hermes(argv)
+                            and not _argv_scoped_to_other_home(argv, db_path)
+                        ):
                             holders.append(
                                 (
                                     pid,
@@ -203,7 +264,11 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                             )
                         else:
                             argv = _read_proc_argv(pid)
-                            if argv is not None and _looks_like_hermes(argv):
+                            if (
+                                argv is not None
+                                and _looks_like_hermes(argv)
+                                and not _argv_scoped_to_other_home(argv, db_path)
+                            ):
                                 holders.append(
                                     (
                                         pid,

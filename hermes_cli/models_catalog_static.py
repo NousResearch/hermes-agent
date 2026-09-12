@@ -35,7 +35,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "openai/gpt-5.6-terra", "openai/gpt-5.6-terra-pro", "openai/gpt-5.6-luna", "openai/gpt-5.6-luna-pro",
         "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini", "google/gemini-3.1-pro-preview",
         "google/gemini-3.8-flash", "google/gemini-3.7-flash", "x-ai/grok-4.6", "deepseek/deepseek-v4-pro",
-        "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4-flash-0731",
+        "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-flash-0731",
         "qwen/qwen3.8-max-0902", "qwen/qwen3.8-flash", "moonshotai/kimi-k3", "minimax/minimax-m3", "z-ai/glm-5.3",
         "z-ai/glm-5.3-flash", "z-ai/glm-5.2", "xiaomi/mimo-v2.5-pro", "tencent/hy4-preview", "tencent/hy3",
         "stepfun/step-3.7-flash", "nvidia/nemotron-3-super-120b-a12b", "meta/muse-spark-1.2",
@@ -200,11 +200,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "minimax-oauth": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
     "minimax-cn": list(_MINIMAX_MODELS),
     "anthropic": [
-        "claude-fable-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+        "claude-fable-5.1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5",
+        "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
         "claude-sonnet-4-6", "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929",
         "claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-haiku-4-5-20251001",
     ],
-    "deepseek": ["deepseek-v4-pro", "deepseek-v4-flash"],
+    "deepseek": ["deepseek-v4-pro", "deepseek-flash"],
     "xiaomi": ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "mimo-v2-flash"],
     "tencent-tokenhub": list(_TENCENT_MODELS),
     "tencent-tokenplan": list(_TENCENT_MODELS),
@@ -240,15 +241,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.2-contributor-free",
         "muse-spark-1.3-contributor-free",
     ],
-    # Synced against opencode.ai/docs/go + live GET /zen/go/v1/models. "ox-alpha-free" is the
-    # Go-subscription twin of Zen's keyless Ox Alpha (NOT keyless — the Go relay requires a Go key).
+    # Synced against opencode.ai/docs/go + live GET /zen/go/v1/models. Known-delisted models are
+    # REMOVED (the live-first merge would otherwise keep offering a model that 401s): "ox-alpha-free"
+    # — the Go-subscription twin of Zen's keyless Ox Alpha — was delisted 2026-09-09.
     "opencode-go": [
         "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "gpt-5.6-luna", "grok-4.5", "glm-5.3",
         "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro",
         "mimo-v2-omni", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "deepseek-v4-pro",
         "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
         "qwen3.5-plus", "hy3", "hy3-preview", "muse-spark-1.2-contributor", "muse-spark-1.3-contributor",
-        "ox-alpha-free",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4",
@@ -503,14 +504,6 @@ _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 _AGGREGATOR_PROVIDERS = frozenset({"nous", "openrouter", "ai-gateway", "copilot", "kilocode"})
-
-
-# OpenRouter request-time routing variants (docs: guides/routing/model-variants): per-request
-# modifiers valid on ANY model id (":nitro" throughput sort + priority tier, ":floor" price sort +
-# flex tier, ":exacto" quality-first provider sort, ":online" web plugin). Never separate catalog
-# entries — /models lists only the base id. NOT here: ":free", ":batch", ":thinking", ":extended"
-# — those ARE distinct SKUs that appear in /models when they exist, so absence is authoritative.
-_OPENROUTER_VARIANT_SUFFIXES = frozenset({"nitro", "floor", "exacto", "online"})
 
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models; tried only as a last

@@ -40,8 +40,9 @@ import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
 
-import { resolveShowEarlierAction, useTranscriptWindow } from './transcript-window'
+import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
+import { useStickyPromptClip } from './use-sticky-prompt-clip'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -956,6 +957,43 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
   }, [anchorBeforePrepend, expandWindow, hiddenCount, olderAvailable, paneBudget])
 
+  // Scroll/wheel at the top edge pages older turns through the same showEarlier
+  // path as the button. Wheel is required because browsers emit no `scroll`
+  // once scrollTop is already 0 — exactly where the reader who wants more is.
+  useEffect(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      return
+    }
+
+    const tryShowEarlier = (wheelDeltaY?: number) => {
+      if (
+        shouldAutoShowEarlier({
+          action: resolveShowEarlierAction(hiddenCount, olderAvailable),
+          isAtBottom,
+          loadSettled: loadSettledRef.current,
+          restorePending: restoreFromBottomRef.current != null,
+          scrollTop: el.scrollTop,
+          wheelDeltaY
+        })
+      ) {
+        showEarlier()
+      }
+    }
+
+    const onScroll = () => tryShowEarlier()
+    const onWheel = (event: WheelEvent) => tryShowEarlier(event.deltaY)
+
+    el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('wheel', onWheel, { passive: true })
+
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('wheel', onWheel)
+    }
+  }, [hiddenCount, isAtBottom, olderAvailable, scrollRef, showEarlier])
+
   useLayoutEffect(() => {
     const el = scrollRef.current
     const restoreFromBottom = restoreFromBottomRef.current
@@ -993,6 +1031,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   )
 
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey })
+  useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows })
 
   return (
     <div

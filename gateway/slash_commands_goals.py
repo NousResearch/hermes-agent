@@ -156,24 +156,70 @@ class GatewayGoalCommandsMixin:
             "elapsed. Lives while the gateway runs — use `hermes cron` for durable schedules."
         )
 
-    def _idle_cached_agent_or_error(self, event: MessageEvent, verb: str):
+    async def _idle_cached_agent_or_error(self, event: MessageEvent, verb: str, *, hydrate: bool = False):
         """``(session_key, cached_agent, None)`` for /refine and /review, or ``(_, _, error_text)``:
-        both need a cached agent from a completed turn and refuse while a run is in flight."""
+        both need an agent from a completed turn and refuse while a run is in flight.
+
+        ``hydrate=True`` (/review only) rebuilds a throwaway agent from the persisted transcript
+        when the RAM agent cache has nothing resident for the session — the cache is a
+        resource-pressure cache (idle TTL, LRU eviction), not the record of what conversation
+        exists, so a cache miss alone must not read as "empty conversation" (#106509)."""
         quick_key = self._session_key_for_source(event.source) if event.source else None
         if not quick_key:
             return None, None, f"{verb.capitalize()} unavailable (no session)."
         if quick_key in self._running_agents:
             return quick_key, None, f"Agent is running — wait for the turn to finish, then /{verb}."
         agent = self._cached_agent_for(quick_key)
+        if agent is None and hydrate:
+            agent = await self._hydrate_persisted_review_agent(event)
         if agent is None:
             return quick_key, None, f"Nothing to {verb} yet — send a message first."
         return quick_key, agent, None
+
+    async def _hydrate_persisted_review_agent(self, event: MessageEvent):
+        """Rebuild a throwaway AIAgent from the persisted transcript for /review's cache-miss
+        fallback. Mirrors ``_build_manual_compression_agent`` (also a throwaway agent built from a
+        persisted session, not the live cache): resolve the session's runtime credentials, then
+        construct a memory/context-free agent seeded with the stored history. Returns None (caller
+        falls back to "nothing to review yet") when there is truly no persisted conversation or
+        credentials cannot be resolved."""
+        source = event.source
+        session_store = getattr(self, "async_session_store", None)
+        if source is None or session_store is None:
+            return None
+        try:
+            session_entry = await session_store.get_or_create_session(source, touch_activity=False)
+            history = await session_store.load_transcript(session_entry.session_id)
+        except Exception:
+            logger.debug("review: persisted-session hydration failed", exc_info=True)
+            return None
+        if not history:
+            return None
+        session_key = self._session_key_for_source(source)
+        model, runtime_kwargs = self._resolve_session_agent_runtime(source=source, session_key=session_key)
+        if not runtime_kwargs.get("api_key"):
+            return None
+        from gateway.run import _platform_config_key
+        platform_key = _platform_config_key(source.platform) if source.platform else None
+        if platform_key is not None:
+            runtime_kwargs["platform"] = platform_key
+        runtime_kwargs["gateway_session_key"] = session_key
+        from run_agent import AIAgent
+        agent = AIAgent(
+            **runtime_kwargs, model=model, max_iterations=1, quiet_mode=True,
+            skip_memory=True, skip_context_files=True, session_id=session_entry.session_id,
+            session_db=getattr(self._session_db, "_db", self._session_db),
+        )
+        agent._session_messages = history
+        agent._print_fn = lambda *a, **kw: None
+        agent._end_session_on_close = False  # this is a read-only peek, not the live session
+        return agent
 
     async def _handle_refine_command(self, event: MessageEvent) -> str:
         """Handle /refine — run the memory/skill review fork on demand, in a daemon thread against a
         snapshot of the cached AIAgent's conversation (live session and prompt cache untouched)."""
         args = (event.get_command_args() or "").strip()
-        _quick_key, agent, error = self._idle_cached_agent_or_error(event, "refine")
+        _quick_key, agent, error = await self._idle_cached_agent_or_error(event, "refine")
         if error:
             return error
         snapshot = list(getattr(agent, "_session_messages", None) or [])
@@ -193,11 +239,22 @@ class GatewayGoalCommandsMixin:
         )
 
     async def _handle_review_command(self, event: MessageEvent) -> str:
+        """Profile-scoping wrapper around /review: the cache-miss fallback resolves runtime
+        credentials (like /compress), which on a multiplexed gateway requires the fail-closed
+        per-profile secret scope that slash dispatch does not install on its own — unscoped, it
+        would raise ``UnscopedSecretError``."""
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return await self._handle_review_command_inner(event)
+        from gateway.run import _profile_runtime_scope
+        with _profile_runtime_scope(self._resolve_profile_home_for_source(event.source)):
+            return await self._handle_review_command_inner(event)
+
+    async def _handle_review_command_inner(self, event: MessageEvent) -> str:
         """Handle /review — spawn an independent reviewer subagent. The approval session-key
         contextvar is only bound during agent turns, so bind it explicitly here or the completion
         event carries no gateway route and never re-enters this chat."""
         args = (event.get_command_args() or "").strip()
-        quick_key, agent, error = self._idle_cached_agent_or_error(event, "review")
+        quick_key, agent, error = await self._idle_cached_agent_or_error(event, "review", hydrate=True)
         if error:
             return error
         snapshot = list(getattr(agent, "_session_messages", None) or [])

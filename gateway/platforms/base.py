@@ -1834,6 +1834,11 @@ class BasePlatformAdapter(ABC):
     # answer, and an acknowledgement would silently abandon the task (#57056). Read generically via
     # ``getattr(adapter, "interactive_resume", True)`` — no per-platform branching at the call site.
     interactive_resume: bool = True
+    # Port-binding adapter that answers ``/p/<profile>/...`` for every served profile on the default
+    # listener under ``gateway.multiplex_profiles``. Declared per adapter (not in a central list) so
+    # ``hermes gateway migrate`` can tell "URL changes" from "this profile would be skipped" as new
+    # HTTP-inbound adapters gain the prefix.
+    serves_profile_prefix: bool = False
     # Back-reference to the running ``GatewayRunner`` (set by gateway/run.py); ``build_source``
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]

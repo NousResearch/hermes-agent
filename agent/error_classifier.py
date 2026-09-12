@@ -29,7 +29,7 @@ class FailoverReason(enum.Enum):
     auth_permanent = "auth_permanent"    # Auth failed after refresh — abort
     billing = "billing"                  # 402 or confirmed credit exhaustion — rotate immediately
     rate_limit = "rate_limit"            # 429 or quota-based throttling — backoff then rotate
-    upstream_rate_limit = "upstream_rate_limit"  # Aggregator's upstream model 429 — fallback model, key is healthy
+    upstream_rate_limit = "upstream_rate_limit"  # Model-scoped upstream 429 — fallback model, key is healthy
     overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
     server_error = "server_error"        # 500/502 — internal server error, retry
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
@@ -565,6 +565,10 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
 def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     """Highest-priority provider-specific shapes that a status code would misroute."""
     msg, status = c.msg, c.status_code
+    # NIM's worker-local admission counter is shared capacity, not key credit.
+    # A generic 429 carries no such scope evidence and keeps the normal policy.
+    if status in {None, 429} and "worker local total request limit reached" in msg:
+        return _v(_R.overloaded, should_fallback=True)
     welcome = _nous_welcome_tier(c)
     if welcome is not None:
         return welcome
@@ -725,6 +729,18 @@ def _status_404(c: _Ctx) -> Verdict:
 
 
 def _status_429(c: _Ctx) -> Verdict:
+    if c.provider_slug in {"gemini", "google"} or c.error_type == "GeminiAPIError":
+        from agent.gemini_quota import gemini_quota_context, gemini_retry_after_seconds
+
+        quota = gemini_quota_context(c.body)
+        if quota:
+            retry_after = gemini_retry_after_seconds(c.body, c.headers)
+            if retry_after is not None:
+                quota["retry_after"] = retry_after
+            return _v(
+                _R.upstream_rate_limit, retryable=not quota["quota_zero"],
+                should_fallback=True, error_context=quota,
+            )
     # Z.AI/Zhipu reuse 429 for server-wide overload: back off on the same
     # key instead of burning the pool (#14038).
     if any(p in c.msg for p in _OVERLOADED_PATTERNS):

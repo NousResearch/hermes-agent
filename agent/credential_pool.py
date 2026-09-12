@@ -374,7 +374,7 @@ _RETRY_DELAY_PATTERNS: Tuple[Tuple[re.Pattern, Callable[[re.Match], float]], ...
         lambda m: float(m.group(1)) / 1000.0 if m.group(2).lower() == "ms" else float(m.group(1)),
     ),
     (
-        re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE),
+        re.compile(r"retry\s+(?:(?:after|in)\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE),
         lambda m: float(m.group(1)),
     ),
     # "Resets in 4hr 5min" format used by OpenCode Go weekly usage limits

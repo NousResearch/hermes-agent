@@ -490,6 +490,9 @@ def recover_after_classification(
             _vlines(agent, "🔐 Nous paid access verified — refreshed runtime credentials and retrying request...")
             return True, False
 
+    from agent.fallback_cooldown import _record_model_quota_retry_deadline
+
+    _record_model_quota_retry_deadline(agent, classified)
     recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
         status_code=status_code, has_retried_429=_retry.has_retried_429,
         classified_reason=classified.reason, error_context=error_context,
@@ -1019,9 +1022,11 @@ _ZAI_POLICY_NOTES = {
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
     is_zai_coding_overload: bool, base_url: Any, model: Any,
+    error_context: Optional[Dict[str, Any]] = None,
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for
-    rate limits and any other retryable error (capped at 600s: Anthropic Tier 1 buckets
+    rate limits and any other retryable error (generic headers capped at 600s; a
+    normalized adapter minimum is never shortened). Anthropic Tier 1 buckets
     reset in ~171s, so a 120s cap re-tripped the limit); otherwise jittered backoff,
     replaced by the adaptive policy for 429s / Z.AI overloads. Normal retries are
     buffered; long Z.AI Coding waits surface immediately."""
@@ -1054,6 +1059,21 @@ def compute_error_backoff(
             # past, which the parser clamps to 0.0) carries no usable wait —
             # treat it as absent so we never hot-loop the provider.
             _retry_after = None
+    # Native adapters and the shared classifier normalize structured provider hints.
+    # Neither minimum may be shortened by the generic header/body cap. The classifier
+    # path is load-bearing for OpenAI-SDK-compatible Gemini routes, whose exception has
+    # no adapter-specific ``retry_after`` attribute even when RetryInfo is present.
+    for _normalized_retry_after in (
+        getattr(api_error, "retry_after", None),
+        (error_context or {}).get("retry_after"),
+    ):
+        _normalized_retry_after = parse_retry_after_seconds(_normalized_retry_after)
+        if (
+            _normalized_retry_after is not None
+            and math.isfinite(_normalized_retry_after)
+            and _normalized_retry_after > 0
+        ):
+            _retry_after = max(_retry_after or 0.0, _normalized_retry_after)
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload
@@ -1440,6 +1460,14 @@ def route_classified_error(
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)
     )
+    # A short model-local quota window gets the bounded normal retry budget first.
+    # Zero allowance is deliberately excluded: RetryInfo does not make that route usable.
+    _quota = classified.error_context
+    if (
+        _quota.get("quota_scope") == "model" and not _quota.get("quota_zero")
+        and 0 < (_quota.get("retry_after") or 0) <= 60 and retry_count < max_retries
+    ):
+        _should_fallback = False
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.

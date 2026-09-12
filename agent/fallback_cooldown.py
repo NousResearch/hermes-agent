@@ -10,7 +10,18 @@ logger = logging.getLogger(__name__)
 _RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit})
 
 
-def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> int | None:
+def _record_model_quota_retry_deadline(agent, classified) -> None:
+    """Carry only this failed route's minimum into fallback; never a global pool status."""
+    agent._model_quota_retry_deadline = None
+    quota = classified.error_context
+    delay = quota.get("retry_after")
+    if quota.get("quota_scope") == "model" and not quota.get("quota_zero") and delay is not None and delay > 0:
+        agent._model_quota_retry_deadline = (
+            agent.provider, agent.model, time.monotonic() + delay,
+        )
+
+
+def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> float | None:
     """Arm the primary's exponential cooldown (60s → 2m → ... → 4h cap) on CONSECUTIVE rate-limits;
     restore_primary_runtime resets the counter. Only when leaving the primary: chain-switching from
     an active fallback means the primary was not the 429 source, so its cooldown is left alone.
@@ -21,6 +32,24 @@ def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> int | No
     primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
     if getattr(agent, "_fallback_activated", False) and not (primary_provider and current_provider == primary_provider):
         return None
+    if (
+        getattr(agent, "_fallback_activated", False) and reason == FailoverReason.upstream_rate_limit
+        and getattr(agent, "model", None) != (agent._primary_runtime or {}).get("model")
+    ):
+        # Model-scoped failure of a same-provider fallback says nothing about the
+        # primary's bucket. Account-wide rate/billing failures retain their policy.
+        return None
+    deadline = getattr(agent, "_model_quota_retry_deadline", None)
+    if (
+        deadline is not None and reason == FailoverReason.upstream_rate_limit
+        and deadline[:2] == (agent.provider, agent.model)
+        and agent.model == (agent._primary_runtime or {}).get("model")
+    ):
+        agent._rate_limited_until = deadline[2]
+        agent._rate_limit_backoff_count = 0
+        remaining = max(0.0, deadline[2] - time.monotonic())
+        logger.info("Model quota retry deadline: cooldown %.3f s for %s", remaining, agent.model)
+        return remaining
     backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
     agent._rate_limit_backoff_count = backoff_count + 1
     backoff_seconds = min(60 * (2 ** backoff_count), 14400)

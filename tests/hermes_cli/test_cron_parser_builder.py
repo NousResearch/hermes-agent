@@ -48,3 +48,27 @@ def test_cron_accept_hooks_flag_on_run_and_tick():
     assert ns.accept_hooks is True
     ns2 = parser.parse_args(["cron", "tick", "--accept-hooks"])
     assert ns2.accept_hooks is True
+
+def test_cron_create_prompt_flag_binds_after_interleaved_options():
+    """A prompt that follows other options must bind via --prompt.
+
+    argparse cannot hand a trailing value to a ``nargs="?"`` positional once
+    optionals are interleaved before it, so ``create 30m --name x hello world``
+    leaves ``hello world`` unconsumed ("unrecognized arguments"). The flag form
+    is the supported spelling when prompt text follows other options.
+    """
+    parser = _build()
+    ns = parser.parse_args(
+        ["cron", "create", "30m", "--name", "nightly", "--prompt", "hello world"]
+    )
+    assert ns.schedule == "30m"
+    assert ns.prompt_flag == "hello world"
+    assert ns.prompt is None
+
+
+def test_cron_create_positional_prompt_still_binds_when_it_leads():
+    # Regression guard for the documented, working positional form.
+    parser = _build()
+    ns = parser.parse_args(["cron", "create", "30m", "hello world"])
+    assert ns.prompt == "hello world"
+    assert ns.prompt_flag is None

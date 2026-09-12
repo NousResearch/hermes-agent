@@ -577,8 +577,12 @@ def _print_job_details(job_data: Dict[str, Any]) -> None:
 def cron_create(args):
     # The gateway-lifecycle guard lives in cron.jobs.create_job (every creation path); a block
     # surfaces as result["error"].
+    # The flag form exists because argparse cannot bind a trailing value to the
+    # nargs="?" positional once optionals precede it; the positional wins when both
+    # are supplied so existing invocations keep their meaning.
+    prompt = getattr(args, "prompt", None) or getattr(args, "prompt_flag", None)
     result = _cron_api(
-        action="create", schedule=args.schedule, prompt=args.prompt,
+        action="create", schedule=args.schedule, prompt=prompt,
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         no_agent=getattr(args, "no_agent", False) or None,

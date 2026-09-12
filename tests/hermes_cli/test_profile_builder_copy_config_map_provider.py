@@ -77,7 +77,9 @@ def test_write_profile_model_copies_config_map_provider_entry(tmp_path, monkeypa
     # providers map from the dashboard session's config (HERMES_HOME=dashboard_home)
     # and re-scopes to the target profile only for the write.
     with _hermes_home_scope(dashboard_home):
-        profiles_mod._write_profile_model(target_profile, provider_name, model)
+        profiles_mod._write_profile_model(
+            target_profile, provider_name, model, validate_in=dashboard_home
+        )
 
     # Read the written target config (scope to the target profile).
     from hermes_cli.config import read_user_config_raw
@@ -129,7 +131,9 @@ def test_write_profile_model_resolves_durable_custom_slug(tmp_path, monkeypatch)
     target_profile = tmp_path / "profiles" / "procure_helper"
     target_profile.mkdir(parents=True)
     with _hermes_home_scope(dashboard_home):
-        profiles_mod._write_profile_model(target_profile, "custom:scnet", "GLM-5.3-Flash")
+        profiles_mod._write_profile_model(
+            target_profile, "custom:scnet", "GLM-5.3-Flash", validate_in=dashboard_home
+        )
 
     written = read_user_config_raw(target_profile / "config.yaml")
     assert "scnet" in written["providers"]
@@ -168,7 +172,9 @@ def test_write_profile_model_does_not_copy_inline_provider_secrets(tmp_path):
     target_profile = tmp_path / "profiles" / "procure_helper"
     target_profile.mkdir(parents=True)
     with _hermes_home_scope(dashboard_home):
-        profiles_mod._write_profile_model(target_profile, "scnet", "GLM-5.3-Flash")
+        profiles_mod._write_profile_model(
+            target_profile, "scnet", "GLM-5.3-Flash", validate_in=dashboard_home
+        )
 
     entry = read_user_config_raw(target_profile / "config.yaml")["providers"]["scnet"]
     assert "apiKey" not in entry
@@ -179,6 +185,48 @@ def test_write_profile_model_does_not_copy_inline_provider_secrets(tmp_path):
     assert entry["base_url"] == "https://api.scnet.cn/api/llm/v1"
     assert entry["key_env"] == "HERMES_CUSTOM_SCNET_API_KEY"
     assert entry["api_mode"] == "openai_chat"
+
+
+@pytest.mark.parametrize("field", ["api", "url", "base_url", "baseUrl"])
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://user:password@gateway.example/v1",
+        "https://user@gateway.example/v1",
+        "https://:password@gateway.example/v1",
+    ],
+)
+def test_write_profile_model_rejects_provider_url_credentials_before_target_write(
+    tmp_path, field, endpoint
+):
+    """URL userinfo is an inline credential and must not cross the profile boundary."""
+    from hermes_cli.config import save_config
+    from hermes_cli.web_routers import profiles as profiles_mod
+    from hermes_cli.web_server_profiles import _hermes_home_scope
+
+    dashboard_home = tmp_path / "dashboard"
+    dashboard_home.mkdir()
+    with _hermes_home_scope(dashboard_home):
+        save_config({
+            "providers": {
+                "scnet": {
+                    "name": "scnet",
+                    field: endpoint,
+                    "model": "GLM-5.3-Flash",
+                    "key_env": "HERMES_CUSTOM_SCNET_API_KEY",
+                },
+            },
+        })
+
+    target_profile = tmp_path / "profiles" / "procure_helper"
+    target_profile.mkdir(parents=True)
+    with _hermes_home_scope(dashboard_home):
+        with pytest.raises(ValueError, match="embedded credentials"):
+            profiles_mod._write_profile_model(
+                target_profile, "scnet", "GLM-5.3-Flash", validate_in=dashboard_home
+            )
+
+    assert not (target_profile / "config.yaml").exists()
 
 
 def test_write_profile_model_preserves_existing_target_provider_entry(tmp_path):
@@ -200,7 +248,9 @@ def test_write_profile_model_preserves_existing_target_provider_entry(tmp_path):
         save_config({"providers": {"scnet": {
             "name": "scnet", "base_url": "https://target.example/v1", "key_env": "TARGET_KEY"}}})
     with _hermes_home_scope(dashboard_home):
-        profiles_mod._write_profile_model(target_profile, "scnet", "GLM-5.3-Flash")
+        profiles_mod._write_profile_model(
+            target_profile, "scnet", "GLM-5.3-Flash", validate_in=dashboard_home
+        )
 
     entry = read_user_config_raw(target_profile / "config.yaml")["providers"]["scnet"]
     assert entry["base_url"] == "https://target.example/v1"
@@ -219,7 +269,11 @@ def test_write_profile_model_keeps_builtin_provider_path(tmp_path):
     target_profile.mkdir(parents=True)
     with _hermes_home_scope(dashboard_home):
         profiles_mod._write_profile_model(
-            target_profile, "openrouter", "anthropic/claude-sonnet-4.6")
+            target_profile,
+            "openrouter",
+            "anthropic/claude-sonnet-4.6",
+            validate_in=dashboard_home,
+        )
 
     written = read_user_config_raw(target_profile / "config.yaml")
     assert written["model"]["provider"] == "openrouter"
@@ -230,11 +284,24 @@ def test_source_config_read_failure_does_not_write_dangling_model(tmp_path, monk
     """A source read failure must fail the assignment before target config is changed."""
     from hermes_cli import config as config_mod
     from hermes_cli.web_routers import profiles as profiles_mod
+    from hermes_cli.web_server_profiles import _hermes_home_scope
 
+    dashboard_home = tmp_path / "dashboard"
+    dashboard_home.mkdir()
+    with _hermes_home_scope(dashboard_home):
+        _write_dashboard_config(
+            dashboard_home,
+            provider_name="scnet",
+            base_url="https://api.scnet.cn/api/llm/v1",
+            model="GLM-5.3-Flash",
+            key_env="HERMES_CUSTOM_SCNET_API_KEY",
+        )
     target_profile = tmp_path / "profiles" / "procure_helper"
     target_profile.mkdir(parents=True)
     monkeypatch.setattr(config_mod, "read_raw_config", lambda: (_ for _ in ()).throw(OSError("unreadable")))
 
     with pytest.raises(OSError, match="unreadable"):
-        profiles_mod._write_profile_model(target_profile, "scnet", "GLM-5.3-Flash")
+        profiles_mod._write_profile_model(
+            target_profile, "scnet", "GLM-5.3-Flash", validate_in=dashboard_home
+        )
     assert not (target_profile / "config.yaml").exists()

@@ -2481,7 +2481,27 @@ class _ToolCallAccumulator:
 
         self._active_slot_by_idx.setdefault(raw_idx, raw_idx)
         if delta_id and raw_idx in self._last_id_at_idx and delta_id != self._last_id_at_idx[raw_idx]:
-            self._active_slot_by_idx[raw_idx] = max(self.acc, default=-1) + 1
+            # ID changed at a reused raw index — ambiguous. It could be:
+            #   1. A new parallel tool call (Ollama)     → redirect to fresh slot
+            #   2. Argument fragmentation (LM-Studio)    → keep accumulating
+            #   3. Redundant name on every chunk (MiniMax) → keep accumulating
+            #
+            # Per the OpenAI streaming spec, a delta without a function.name
+            # cannot be the start of a new tool call — always accumulate.
+            #
+            # For deltas that DO carry a name, only create a new slot if the
+            # name differs from the current slot's name. A matching name means
+            # the provider is redundantly resending the name on every chunk,
+            # which is still the same tool call, not a new one.
+            tc_function = getattr(tc_delta, "function", None)
+            has_name = tc_function is not None and getattr(tc_function, "name", None)
+            if has_name:
+                cur_slot = self._active_slot_by_idx[raw_idx]
+                cur_name = (
+                    (self.acc.get(cur_slot, {}).get("function", {}) or {}).get("name", "") or ""
+                )
+                if cur_name != tc_function.name:
+                    self._active_slot_by_idx[raw_idx] = max(self.acc, default=-1) + 1
         if delta_id:
             self._last_id_at_idx[raw_idx] = delta_id
         idx = self._active_slot_by_idx[raw_idx]

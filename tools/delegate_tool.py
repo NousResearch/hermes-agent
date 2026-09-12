@@ -473,6 +473,13 @@ def delegate_task(
     if err:
         return tool_error(err)
 
+    # Children use independent DB handles, so their parent must be committed before construction.
+    # Turn-start creation is best-effort and may have failed while the parent continued running.
+    if getattr(parent_agent, "_session_db", None) is not None:
+        parent_agent._ensure_db_session()
+        if not parent_agent._session_db_created:
+            return tool_error("Cannot delegate until the parent session is persisted. Retry the delegation.")
+
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
     # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.

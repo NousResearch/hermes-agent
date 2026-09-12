@@ -121,6 +121,50 @@ _TRUNCATED_SUMMARY_NOTE = (
     "may be incomplete. Verify before relying on it, or re-dispatch "
     "the unfinished part.]")
 
+# Per-summary char ceiling inside the injected batch-complete message. The runner-side
+# budget (delegate_tool_results._apply_summary_budget) trims to min(24k static, dynamic
+# headroom), but the ASYNC path has no live parent agent, so a 20-27k-char summary sails
+# straight into the parent's context window. Cap the injected text here: head-limited
+# summary + pointer to the full summary spilled to disk (the live transcript's assistant
+# lines are capped at 600 chars, so it is NOT a full-fidelity copy). 0 disables.
+_BATCH_SUMMARY_CAP = 2000
+
+
+def _spill_full_summary(summary: str) -> "str | None":
+    """Best-effort spill of a full per-task summary to ``cache/delegation`` (agent-visible
+    path), reusing the runner-side spiller so naming/mount semantics stay identical.
+    ``None`` on any failure — the trimmed head is still injected."""
+    try:
+        from tools.delegate_tool_results import _spill_summary_to_file
+        from tools.credential_files import to_agent_visible_cache_path
+        path = _spill_summary_to_file(-1, summary)
+        return to_agent_visible_cache_path(path) if path else None
+    except Exception:
+        return None
+
+
+def _trim_batch_summary(summary: str, entry: dict, *, cap: int = _BATCH_SUMMARY_CAP) -> str:
+    """Head-limit one per-task summary for the batch-complete message.
+
+    Keeps the opening (where BLUF conclusions live) snapped to a line boundary; keeps the
+    last line when the cut would otherwise swallow a trailing outcome line. Guarantees the
+    full text is on disk first: the runner-side spill path when one exists, else spills it
+    here, and points the footer at the file (plus the live transcript) for the omitted part.
+    """
+    if cap <= 0 or len(summary) <= cap:
+        return summary
+    head = summary[:cap]
+    nl = head.rfind("\n")
+    if nl > cap * 0.5:
+        head = head[:nl]
+    last_line = summary.rsplit("\n", 1)[-1] if "\n" in summary else ""
+    tail = f"\n{last_line}" if last_line and last_line not in head else ""
+    full_path = entry.get("summary_full_path") or _spill_full_summary(summary)
+    pointer = (f"full summary: {full_path}; also "
+               if full_path else "")
+    return (f"{head}\n[TRUNCATED — {len(summary) - len(head):,} more chars; "
+            f"{pointer}see the live transcript below]" + tail)
+
 
 def _is_truncated(entry: dict) -> bool:
     return bool(entry.get("truncated") or entry.get("exit_reason") == "max_iterations")
@@ -203,11 +247,11 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         if r_status in _DONE and r_summary:
             if r_truncated:
                 lines.append(_TRUNCATED_SUMMARY_NOTE)
-            lines.append(r_summary)
+            lines.append(_trim_batch_summary(r_summary, r))
         elif r_summary:
             if r_error:
                 lines.append(f"({r_status}: {r_error})")
-            lines += ["Partial output:", r_summary]
+            lines += ["Partial output:", _trim_batch_summary(r_summary, r)]
         else:
             lines.append(f"(no summary — status={r_status}" + (f": {r_error}" if r_error else "") + ")")
         if r.get("live_transcript"):
@@ -261,7 +305,7 @@ def _format_async_delegation(evt: dict) -> str:
     if status in _DONE and summary:
         if truncated:
             lines.append(_TRUNCATED_SUMMARY_NOTE)
-        lines.append(summary)
+        lines.append(_trim_batch_summary(summary, evt))
     else:
         if status == "interrupted":
             lines.append("The subagent was interrupted before completing" + (f": {error}" if error else "."))
@@ -269,7 +313,7 @@ def _format_async_delegation(evt: dict) -> str:
             lines.append(
                 f"The subagent did not complete successfully (status={status})." + (f"\n{error}" if error else ""))
         if summary:
-            lines += ["Partial output:", summary]
+            lines += ["Partial output:", _trim_batch_summary(summary, evt)]
     return "\n".join(lines)
 
 

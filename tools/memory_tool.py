@@ -41,7 +41,7 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)
-    ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
+    ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content, _previews)
 
 
 def load_on_disk_store() -> "MemoryStore":
@@ -120,7 +120,7 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
             "error": (f"'{action}' needs old_text -- a short unique substring of the entry "
                       f"to {action}. None was provided. Reissue the {action} with old_text "
                       f"set to part of one of the current_entries below."),
-            "current_entries": store._entries_for(target), "usage": store._usage(target)}, ensure_ascii=False)
+            "current_entries": _previews(store._entries_for(target)), "usage": store._usage(target)}, ensure_ascii=False)
     if action == "replace" and not content:
         return tool_error("content is required for 'replace' action.", success=False)
     return None
@@ -264,21 +264,28 @@ MEMORY_SCHEMA = {
     "description": (
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
-        "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
-        "{action, content?, old_text?}). The batch applies atomically and the char limit is "
-        "checked only on the FINAL result — so a single call can remove/replace stale entries "
-        "to free room AND add new ones, even when an add alone would overflow. The response "
-        "reports current/limit chars and confirms completion; one batch call finishes the "
-        "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
-        "single lone change.\n\n"
+        "HOW: make ALL your changes in ONE call via an 'operations' array. The batch applies "
+        "atomically and the char limit is checked only on the FINAL result — so a single call "
+        "can remove/replace stale entries to free room AND add new ones, even when an add alone "
+        "would overflow. The response reports current/limit chars and confirms completion; one "
+        "batch call finishes the update, so don't repeat it. Use the bare action/content/old_text "
+        "fields only for a single lone change.\n\n"
+        "OPERATIONS FORMAT — each item MUST be an object with an explicit 'action' field:\n"
+        "[{\"action\": \"add\", \"content\": \"new entry text\"},\n"
+        " {\"action\": \"replace\", \"old_text\": \"unique substring of existing entry\", \"content\": \"replacement text\"},\n"
+        " {\"action\": \"remove\", \"old_text\": \"unique substring of existing entry\"}]\n"
+        "Every item needs 'action'. For replace/remove, 'old_text' is a short unique substring of "
+        "the EXISTING entry (use the text shown in current_entries or your memory block, not text "
+        "you are adding). Missing 'action' is the most common batch failure.\n\n"
+        "IF FULL: an add is rejected with the current entries shown (previews). Reissue as ONE batch "
+        "that removes or shortens enough stale entries and adds the new one together; the error tells "
+        "you how many chars over you are.\n\n"
         "WHEN: only for facts that apply to EVERY session regardless of task: who the user "
         "is, stable environment facts, standing conventions with no task home. Anything "
         "learned while doing a task (procedures, pitfalls, and the user's preferences and "
         "corrections for that kind of work) belongs in the task's skill via skill_manage, "
         "where it loads only when relevant; memory is injected into every turn and must "
         "stay small.\n\n"
-        "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
-        "removes or shortens enough stale entries and adds the new one together.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
         "notes (environment, conventions, tool quirks, lessons).\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
@@ -315,7 +322,11 @@ MEMORY_SCHEMA = {
                 "description": (
                     "Batch shape: a list of operations applied atomically in one call "
                     "against the final char budget. Preferred when making multiple changes "
-                    "or consolidating to make room. Each item is {action, content?, old_text?}."
+                    "or consolidating to make room. Each item MUST have 'action' "
+                    "(add|replace|remove); replace/remove also need 'old_text' (unique "
+                    "substring of the EXISTING entry). Example: "
+                    "[{\"action\":\"remove\",\"old_text\":\"stale entry substring\"},"
+                    "{\"action\":\"add\",\"content\":\"new durable fact\"}]"
                 ),
                 "items": {
                     "type": "object",

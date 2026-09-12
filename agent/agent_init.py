@@ -1872,6 +1872,8 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         if hasattr(_cc, _attr):
             setattr(_cc, _attr, _value)
     agent.compression_checkpoint_required = cs.checkpoint_required
+    from agent.conversation_compression import _warn_checkpoint_required_without_capable_provider
+    _warn_checkpoint_required_without_capable_provider(agent)
     agent.codex_app_server_auto_compaction = cs.codex_app_server_auto
     agent.codex_responses_native_compaction = cs.codex_responses_native
     agent.codex_responses_compact_threshold = cs.codex_responses_compact_threshold

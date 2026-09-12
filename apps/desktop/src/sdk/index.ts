@@ -66,6 +66,7 @@ import {
   newSessionInAgent,
   newSessionInProfile,
   normalizeProfileKey,
+  prewarmGatewayAgent,
   prewarmProfileBackend,
   refreshProfiles,
   selectProfile,
@@ -817,7 +818,7 @@ export const host = {
    *  `undefined` is accepted alongside `null` because a roster row's
    *  `connectionId` is optional; both mean "no explicit source". */
   warmAgent: (connectionId: null | string | undefined, profile: string): void => {
-    void openGatewayForAgent(connectionId ?? null, (profile ?? '').trim() || 'default').catch(() => undefined)
+    prewarmGatewayAgent(connectionId, (profile ?? '').trim() || 'default')
   },
 
   /** Activate an agent's gateway (dialing it if needed) so subsequent

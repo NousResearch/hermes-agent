@@ -64,6 +64,31 @@ describe('a selector recomputes for every store it was given', () => {
     expect(screen.getByTestId('even').textContent).toBe('true')
   })
 
+  it('caches a structurally unchanged array projection', () => {
+    const source = atom({ names: ['Hermes'] })
+    const renders = vi.fn()
+
+    function Probe() {
+      const names = useStoresSelector([source], () => [...source.get().names])
+      renders()
+
+      return <span data-testid="names">{names.join(',')}</span>
+    }
+
+    render(<Probe />)
+    const baseline = renders.mock.calls.length
+
+    act(() => source.set({ names: ['Hermes'] }))
+
+    expect(renders.mock.calls.length).toBe(baseline)
+    expect(screen.getByTestId('names').textContent).toBe('Hermes')
+
+    act(() => source.set({ names: ['Hermes', 'Operations'] }))
+
+    expect(renders.mock.calls.length).toBeGreaterThan(baseline)
+    expect(screen.getByTestId('names').textContent).toBe('Hermes,Operations')
+  })
+
   it('keeps its subscriptions across renders that pass a fresh array literal', () => {
     const source = atom(0)
     const listen = vi.spyOn(source, 'listen')

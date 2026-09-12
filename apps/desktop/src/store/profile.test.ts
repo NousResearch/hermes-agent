@@ -8,6 +8,7 @@ import type { ProfileInfo } from '@/types/hermes'
 // the REST query client must not run for real in a unit test.
 const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const ensureGatewayForAgent = vi.fn(async () => undefined)
+const openGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const openLocalSecondaryCount = vi.fn(() => 0)
 const $gateway = atom<unknown>({ id: 'live-socket', connectionState: 'open' })
@@ -17,6 +18,7 @@ vi.mock('@/store/gateway', () => ({
   $gateway,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  openGatewayForAgent,
   openGatewayForProfile,
   openLocalSecondaryCount
 }))
@@ -39,6 +41,7 @@ const {
   $profiles,
   ensureGatewayProfile,
   invalidateProfileListFetches,
+  prewarmGatewayAgent,
   prewarmProfileBackend,
   refreshProfiles
 } = await import('./profile')
@@ -70,6 +73,7 @@ const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnectio
 beforeEach(() => {
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
+  openGatewayForAgent.mockClear()
   openGatewayForProfile.mockClear()
   openLocalSecondaryCount.mockReturnValue(0)
   $poolLimits.set({ idleMs: 600_000, maxBackends: 3 })
@@ -239,6 +243,28 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
     prewarmProfileBackend('warm-reserved-c')
 
     expect(openGatewayForProfile).toHaveBeenCalledTimes(3)
+  })
+
+  it('shares the hover reservation across profile and source-qualified bot hints', () => {
+    // Source-scoped Bot Mode rows call warmAgent rather than warmProfile. They
+    // must not bypass the same two-slot background limit used by the rail.
+    prewarmProfileBackend('warm-shared-profile')
+    prewarmGatewayAgent('local', 'warm-shared-agent')
+    prewarmGatewayAgent('local', 'warm-shared-overflow')
+
+    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-shared-profile')
+    expect(openGatewayForAgent).toHaveBeenCalledWith('local', 'warm-shared-agent')
+    expect(openGatewayForAgent).not.toHaveBeenCalledWith('local', 'warm-shared-overflow')
+  })
+
+  it('does not apply a local pool limit to a remote bot hint', () => {
+    // A remote/cloud socket is not a child of Electron's local backend pool.
+    // Saturating that pool must not make an unrelated remote Bot Chat cold.
+    openLocalSecondaryCount.mockReturnValue(3)
+
+    prewarmGatewayAgent('remote-hostinger', 'warm-remote-agent')
+
+    expect(openGatewayForAgent).toHaveBeenCalledWith('remote-hostinger', 'warm-remote-agent')
   })
 
   it('follows the live pool-limit atom, not a hard-coded cap', () => {

@@ -452,7 +452,7 @@ const prewarmedAt = new Map<string, number>()
 // repeatedly and queue every profile before the first spawn settles. Keep
 // tentative reservations in the renderer so speculative hover work never
 // floods the main-process coordinator.
-const prewarmingProfiles = new Set<string>()
+const prewarmingTargets = new Set<string>()
 
 function backgroundPrewarmCapacity(maxBackends: number): number {
   // The coordinator reserves one slot for a real user action whenever the
@@ -461,42 +461,65 @@ function backgroundPrewarmCapacity(maxBackends: number): number {
   return maxBackends >= 2 ? maxBackends - 1 : maxBackends
 }
 
-export function prewarmProfileBackend(name: string, connectionId: null | string = null): void {
-  const key = normalizeProfileKey(name)
-  const connection = (connectionId ?? '').trim() || null
-  const scope = registryBackendScopeKey(connection, key)
-
-  if (
-    key === normalizeProfileKey($activeGatewayProfile.get()) &&
-    (!connection || connection === activeGatewayConnectionId())
-  ) {
-    return
-  }
-
+function prewarmTarget(key: string, open: () => Promise<void>, reserveLocalPool: boolean): void {
   const now = Date.now()
 
   if (now - (prewarmedAt.get(scope) ?? 0) < PREWARM_MIN_INTERVAL_MS) {
     return
   }
 
-  // Prewarm/cap harmony (#91545): the pool caps spawned backends at the
-  // configured max, and a spawn over the cap LRU-evicts the warmest idle
-  // backend. A hover sweep across the rail therefore evicted backends for
-  // profiles the user was about to click — prewarming caused the exact churn
-  // it exists to prevent. Skip speculative spawns once every pool slot is
-  // occupied by an open socket; the real click still spawns on demand, it
-  // just doesn't get a head start.
-  const capacity = backgroundPrewarmCapacity($poolLimits.get().maxBackends)
+  if (reserveLocalPool) {
+    // Prewarm/cap harmony (#91545): the local pool caps spawned backends at
+    // the configured max, and a spawn over the cap LRU-evicts the warmest idle
+    // backend. A hover sweep across the rail therefore evicted backends for
+    // profiles the user was about to click — prewarming caused the exact churn
+    // it exists to prevent. Remote and cloud sockets do not consume this pool.
+    const capacity = backgroundPrewarmCapacity($poolLimits.get().maxBackends)
 
-  if (openLocalSecondaryCount() + prewarmingProfiles.size + 1 > capacity) {
-    return
+    if (openLocalSecondaryCount() + prewarmingTargets.size + 1 > capacity) {
+      return
+    }
   }
 
   prewarmedAt.set(key, now)
-  prewarmingProfiles.add(key)
-  void openGatewayForProfile(key)
+
+  if (reserveLocalPool) {
+    prewarmingTargets.add(key)
+  }
+
+  void open()
     .catch(() => undefined)
-    .finally(() => prewarmingProfiles.delete(key))
+    .finally(() => {
+      if (reserveLocalPool) {
+        prewarmingTargets.delete(key)
+      }
+    })
+}
+
+export function prewarmProfileBackend(name: string): void {
+  const profile = normalizeProfileKey(name)
+
+  if (profile === normalizeProfileKey($activeGatewayProfile.get())) {
+    return
+  }
+
+  prewarmTarget(`profile:${profile}`, () => openGatewayForProfile(profile), true)
+}
+
+/**
+ * The source-qualified counterpart of `prewarmProfileBackend`. Bot roster
+ * rows use this path when their owner is known as `(connectionId, profile)`.
+ * Local rows share the same reservation set and foreground headroom as local
+ * profile hovers. Remote and cloud rows only share the throttle: their socket
+ * does not consume a local backend slot, so the local pool guard must not
+ * delay their next click.
+ */
+export function prewarmGatewayAgent(connectionId: null | string | undefined, profile: string): void {
+  const source = String(connectionId ?? '').trim() || 'local'
+  const target = normalizeProfileKey(profile)
+  const isLocal = connectionId == null || source === 'local'
+
+  prewarmTarget(`agent:${source}:${target}`, () => openGatewayForAgent(connectionId ?? null, target), isLocal)
 }
 
 let gatewaySwitch: Promise<void> | null = null

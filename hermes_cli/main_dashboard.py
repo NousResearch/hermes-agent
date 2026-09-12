@@ -237,12 +237,45 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
         return None
 
 
-def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
+def _cwd_for_pid(pid: int) -> str | None:
+    """Working directory of *pid*: ``/proc/<pid>/cwd`` readlink (Linux), ``lsof -d cwd``
+    (macOS), None when unavailable. A respawned argv can be relative (recorded from a process
+    started inside the install root), so the replay needs the directory it ran in.
+
+    See #109287.
+    """
+    if sys.platform == "win32":
+        return None
+    try:
+        cwd_link = f"/proc/{pid}/cwd"
+        if os.path.exists(cwd_link):
+            return os.readlink(cwd_link) or None
+        result = _run_probe(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], timeout=10)
+        if result.returncode == 0:
+            for line in (result.stdout or "").splitlines():
+                if line.startswith("n") and line[1:].strip():
+                    return line[1:].strip()
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    return None
+
+
+def _respawn_argv_needs_anchor(command: list[str]) -> bool:
+    """True for a respawn argv whose first element resolves against the working directory."""
+    return bool(command) and "/" in command[0] and not os.path.isabs(command[0])
+
+
+def _respawn_dashboard_processes(
+    commands: list[list[str]], cwd_by_command: "dict[int, str | None] | None" = None
+) -> list[list[str]]:
     """Respawn manually-started dashboards after ``hermes update``, detached, logging to
     ``logs/dashboard-restart.log``; returns the argvs that failed to spawn. Callers pre-filter via
     ``_filter_dashboard_respawn_candidates`` (no Desktop ``--port 0`` backends, capped per profile).
+    A relative ``argv[0]`` recorded from a process started inside the install root is anchored to
+    the recorded cwd via *cwd_by_command* (identity-keyed); without an anchor the doomed spawn is
+    refused up front and reported as failed instead of ENOENT-ing against the updater's cwd.
 
-    See #78821.
+    See #78821, #109287.
     """
     from hermes_constants import get_hermes_home
     respawned: list[list[str]] = []
@@ -253,14 +286,23 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
 
     for command in commands:
         try:
+            # The cwd anchor is keyed by identity of the captured argv, so read it before
+            # the --no-open append creates a new list.
+            cwd = (cwd_by_command or {}).get(id(command))
             # Keep restarted dashboards headless; reopening a browser after a
             # background update is noisy and fails in SSH/headless sessions.
             if "dashboard" in command and "--no-open" not in command:
                 command = [*command, "--no-open"]
+            if cwd is None and _respawn_argv_needs_anchor(command):
+                # A relative argv without a recorded launch cwd cannot be replayed from an
+                # arbitrary updater cwd; attempt nothing and report it unrecovered (#109287).
+                failed.append((command, "relative argv with no recorded launch cwd"))
+                continue
+            popen_kwargs: dict = {} if cwd is None else {"cwd": cwd}
             with open(log_path, "ab") as log_f:
                 subprocess.Popen(
                     command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
-                    start_new_session=True, close_fds=True)
+                    start_new_session=True, close_fds=True, **popen_kwargs)
             respawned.append(command)
         except (OSError, ValueError) as exc:
             failed.append((command, str(exc)))

@@ -1644,6 +1644,32 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
     return _linked_ids(conn, "child_id", "parent_id", task_id)
 
 
+def eligible_delivery_children(
+    conn: sqlite3.Connection, parent_id: str, exclude_assignee: Optional[str],
+) -> list[str]:
+    """Children a goal-judge transport failure may release the parent over.
+
+    The goal judge cannot be asked whether the parent's goal was met (infra
+    down), so completion would otherwise wedge a goal_mode worker forever
+    (#100954: judge errors are indistinguishable from "not done yet"). The
+    fallback is: hand the decision to a pre-created downstream card instead of
+    the broken judge. A child qualifies only when it is (a) linked to the
+    completing parent, (b) still live — not done/archived — and (c) owned by a
+    *different* profile than the parent's assignee, so the worker cannot
+    rubber-stamp itself; the released child re-runs verification.
+    """
+    candidates = child_ids(conn, parent_id)
+    if not candidates:
+        return []
+    placeholders = ",".join("?" for _ in candidates)
+    rows = conn.execute(
+        f"SELECT id, assignee FROM tasks WHERE id IN ({placeholders}) "
+        "AND status NOT IN ('done', 'archived') AND assignee IS NOT NULL AND assignee != ''",
+        tuple(candidates),
+    ).fetchall()
+    return [r["id"] for r in rows if not (exclude_assignee and r["assignee"] == exclude_assignee)]
+
+
 def task_graph_contexts(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, dict]:
     """Bulk-load compact direct graph state for graph-aware diagnostics."""
     ordered_ids = list(dict.fromkeys(str(task_id) for task_id in task_ids if task_id))

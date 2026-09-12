@@ -361,7 +361,14 @@ _GOAL_GATE_MESSAGES = {
         "continue": (
             "Goal completion rejected by judge: {reason}. To proceed, either: (1) provide "
             "explicit acceptance evidence in your summary matching the task's criteria, or (2) "
-            "create continuation tasks with parents=[{tid}] and keep this task alive.")},
+            "create continuation tasks with parents=[{tid}] and keep this task alive."),
+        "transport_failed": (
+            "Goal judge is unreachable (transport failure — {reason}), so completion cannot be "
+            "verified. When an eligible downstream child (linked via parents, still open, "
+            "assigned to a different profile) exists, completion is allowed and the child "
+            "carries verification forward; the release is stamped in the task's metadata "
+            "(goal_delivery_fallback) for audit. Without such a child, retry later or record "
+            "the block with kanban_block.")},
     "kanban_request_review": {
         "blocked": (
             "Goal review handoff rejected: judge ruled the goal unachievable — {reason}. "
@@ -371,15 +378,32 @@ _GOAL_GATE_MESSAGES = {
             "matching the card before requesting review.")}}
 
 
-def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
+class _GoalDeliveryFallback(Exception):
+    """A goal-judge *transport* failure on ``kanban_complete`` where eligible
+    downstream children exist: the caller may complete with the
+    ``goal_delivery_fallback`` audit stamp instead of treating infra failure
+    as a content rejection (#100954). Carries the stamp payload."""
+
+    def __init__(self, children: list[str], reason: str):
+        self.children = list(children)
+        self.reason = reason
+        super().__init__(
+            _GOAL_GATE_MESSAGES["kanban_complete"]["transport_failed"].format(
+                reason=reason, tid=""))
+
+
+def _goal_gate(tool_name: str, task, tid: str, evidence: str, conn: Any) -> None:
     """Goal-mode pre-handoff judge gate: a worker must not complete / request
     review before acceptance criteria are met. ``blocked`` gets its own
     guidance; any other non-``done`` verdict gets the ``continue`` guidance.
-    A broken judge fails open (logged) so it cannot permanently wedge work."""
+    A broken judge fails open (logged) so it cannot permanently wedge work.
+    On a judge *transport* failure the ``kanban_complete`` handoff may go to
+    pre-created downstream children (raises :class:`_GoalDeliveryFallback`);
+    every other handoff stays fail-closed."""
     if not task or not task.goal_mode or not _goal_judge_available():
         return
     try:
-        verdict, reason, _, _, _ = judge_goal(
+        verdict, reason, _, _, transport_failed = judge_goal(
             goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip())
     except Exception as judge_exc:
         logger.warning(
@@ -387,6 +411,15 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
         return
     if verdict == "done":
         return
+    if transport_failed and tool_name == "kanban_complete":
+        # Infra, not content (#100954). Fail-closed unless the terminal decision
+        # can be handed to live downstream children owned by another profile.
+        from hermes_cli import kanban_db as kb
+        children = kb.eligible_delivery_children(conn, tid, task.assignee)
+        if children:
+            raise _GoalDeliveryFallback(children, reason)
+        raise _Reject(_GOAL_GATE_MESSAGES["kanban_complete"]["transport_failed"].format(
+            reason=reason, tid=tid))
     key = "blocked" if verdict == "blocked" else "continue"
     raise _Reject(_GOAL_GATE_MESSAGES[tool_name][key].format(reason=reason, tid=tid))
 
@@ -561,7 +594,38 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
-        _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        try:
+            _goal_gate("kanban_complete", task, tid, (summary or result or "").strip(), conn)
+        except _GoalDeliveryFallback as fallback:
+            # Judge transport failure (#100954) with live downstream children: complete
+            # HERE, in the caller's connection context, with the audit stamp merged into
+            # the handoff metadata. The stamp key is system-owned: it overwrites any
+            # caller-supplied value so the audit trail cannot be forged from the model.
+            # complete_task keeps every other invariant: PR acceptance (exact-head CI),
+            # CAS (expected_run_id), artifact preservation, phantom-card checks — a
+            # failure there leaves the card in-flight exactly as on the judged path.
+            merged = dict(metadata) if isinstance(metadata, dict) else {}
+            merged["goal_delivery_fallback"] = {
+                "trigger": "goal_judge_transport_failed",
+                "judge_error": fallback.reason,
+                "released_children": fallback.children,
+            }
+            ok = kb.complete_task(
+                conn, tid, result=result, summary=summary, metadata=merged,
+                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+            if not ok:
+                task = kb.get_task(conn, tid)
+                raise _Reject(
+                    (task.last_failure_error if task else None) or
+                    f"could not complete {tid} via the goal-judge delivery fallback "
+                    f"(unknown id, stale run, PR acceptance failure, or already terminal)")
+            run = kb.latest_run(conn, tid)
+            children_note = ", ".join(fallback.children)
+            return _ok(
+                task_id=tid, run_id=run.id if run else None,
+                goal_delivery_fallback=(
+                    f"goal judge unreachable ({fallback.reason}); verification handed to "
+                    f"downstream child card(s): {children_note}"))
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
@@ -649,7 +713,7 @@ def _handle_request_review(args: dict, **kw) -> str:
                f"reviewer profile {reviewer!r} is not installed. "
                f"Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
-        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
+        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary, conn)
         ok, fail_reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
             expected_run_id=_worker_run_id(tid), with_reason=True)

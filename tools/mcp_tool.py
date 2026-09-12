@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 from tools.mcp_tool_common import _DEFAULT_TOOL_TIMEOUT, mcp_field
 from tools.mcp_tool_config import _get_mcp_stderr_log, _npx_cached_bin
+from tools.mcp_tool_config import _interpolate_env_vars, _load_mcp_config  # compat shims (moved to mcp_tool_config)
+from tools.mcp_tool_config import _strip_unresolved_placeholders, _unresolved_env_refs
 from tools.mcp_tool_sampling import ElicitationHandler, SamplingHandler
 from tools.mcp_tool_transport import MCPServerTransportMixin
 from tools.mcp_tool_server_run import MCPServerRunMixin

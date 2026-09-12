@@ -1357,6 +1357,14 @@ export const zhHant = defineLocale({
   },
 
   skills: {
+    plugins: {
+      kanbanToolsHint:
+        'Desktop 開關控制看板介面。Agent 開關為此設定檔的 CLI 和 Desktop 聊天啟用 Kanban 工具，不會啟動排程器。',
+      kanbanToolsUnavailable: '此後端的工具設定尚未提供 Kanban。請更新所選後端上的 Hermes，再於此啟用代理工具。',
+      kanbanToolsUpdateBackend: '更新後端',
+      kanbanToolsSaved: (profile: string) =>
+        `已為 ${profile} 儲存 Kanban 工具設定。建立新聊天後生效；現有聊天保持不變。`
+    },
     tabSkills: '技能',
     tabToolsets: '工具集',
     tabMcp: 'MCP',

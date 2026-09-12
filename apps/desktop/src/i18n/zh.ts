@@ -1805,6 +1805,12 @@ export const zh = defineLocale({
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
     tabPlugins: '插件',
     plugins: {
+      kanbanToolsHint:
+        'Desktop 开关控制看板界面。Agent 开关为此配置的 CLI 和 Desktop 聊天启用 Kanban 工具，不会启动调度器。',
+      kanbanToolsUnavailable: '此后端的工具配置器尚未提供 Kanban。请更新所选后端上的 Hermes，然后在此启用智能体工具。',
+      kanbanToolsUpdateBackend: '更新后端',
+      kanbanToolsSaved: (profile: string) => `已为 ${profile} 保存 Kanban 工具设置。新建聊天后生效；现有聊天保持不变。`,
+
       agentTitle: 'Agent 插件',
       agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
       pageBlurb: '每个插件一行。插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',

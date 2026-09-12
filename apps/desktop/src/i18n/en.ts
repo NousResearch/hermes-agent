@@ -1633,6 +1633,14 @@ export const en: Translations = {
     skillArchivedMessage: 'Restorable via hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {
+      kanbanToolsHint:
+        'The Desktop switch shows the board. The Agent switch grants Kanban tools to this profile’s CLI and Desktop chats; it does not start the dispatcher.',
+      kanbanToolsUnavailable:
+        'This backend does not expose Kanban in the tool configurator. Update Hermes on the selected backend to enable agent tools here.',
+      kanbanToolsUpdateBackend: 'Update backend',
+      kanbanToolsSaved: (profile: string) =>
+        `Kanban tools saved for ${profile}. Open a new chat to apply; existing chats are unchanged.`,
+
       agentTitle: 'Agent plugins',
       agentBlurb:
         'Extend the agent for the selected profile — tools, hooks, providers. Take effect after a gateway restart.',

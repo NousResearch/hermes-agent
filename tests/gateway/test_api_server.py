@@ -974,6 +974,11 @@ class TestCapabilitiesEndpoint:
                 "retention_seconds": 86400,
             }
             assert data["features"]["model_options"] is True
+            assert data["features"]["delegation_delivery"] == {
+                "supported": True,
+                "modes": ["background", "join"],
+                "default": "background",
+            }
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}

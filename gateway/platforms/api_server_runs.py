@@ -320,6 +320,7 @@ class _RunLaunch:
     session_id: str
     gateway_session_key: Optional[str]
     declared_selected: bool
+    delegation_delivery: str
     user_message: str
     conversation_history: List[Dict[str, str]]
     # #98619: only continuation paths that reload session history may grant wake authority —
@@ -408,6 +409,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             {"body": body, "gateway_session_key": gateway_session_key or ""},
             sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         ).encode()).hexdigest()
+    delegation_delivery = body.get("delegation_delivery", "background")
+    if not isinstance(delegation_delivery, str) or delegation_delivery not in {"background", "join"}:
+        return _json_error(
+            _openai_error, "delegation_delivery must be 'background' or 'join'",
+            code="invalid_delegation_delivery", status=400)
     raw_input = body.get("input")
     if not raw_input:
         return _json_error(_openai_error, "Missing 'input' field", status=400)
@@ -489,8 +495,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         self._run_idempotency_ids.add(run_id)
     launch = _RunLaunch(
-        self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
-        conversation_history, session_history_delivery,
+        self, run_id, q, session_id, gateway_session_key, _declared_selected,
+        delegation_delivery, user_message, conversation_history, session_history_delivery,
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
@@ -545,7 +551,8 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 # so it stays default-denied until a merge contract exists for that chain;
                 # likewise a caller-supplied conversation_history is authoritative for the
                 # turn and never reads the delivery row, so it is denied the same way.
-                session_history_delivery="1" if run.session_history_delivery else "")
+                session_history_delivery="1" if run.session_history_delivery else "",
+                delegation_delivery=run.delegation_delivery)
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
             if run.agent_kwargs["room_dispatch"] is not None:

@@ -72,7 +72,9 @@ _STATIC_FEATURE_FLAGS = {
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
-    "session_key_header": "X-Hermes-Session-Key"}
+    "session_key_header": "X-Hermes-Session-Key",
+    "delegation_delivery": {
+        "supported": True, "modes": ["background", "join"], "default": "background"}}
 # /v1/capabilities "endpoints" table: name -> (method, path).
 _CAPABILITY_ENDPOINTS = (
     ("health", ("GET", "/health")), ("health_detailed", ("GET", "/health/detailed")),
@@ -3583,7 +3585,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _bind_api_server_session(
         *, chat_id: str = "", session_key: str = "", session_id: str = "", profile: str = "",
         browser_control_principal: str = "", browser_control_transport_family: str = "",
-        session_history_delivery: str = "") -> list:
+        session_history_delivery: str = "", delegation_delivery: str = "background") -> list:
         """Bind an API turn with push disabled and history delivery default-denied.
 
         Only routes whose continuation reads SessionDB may pass "1". An omitted
@@ -3597,7 +3599,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
             profile=profile, browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
-            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
+            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery,
+            delegation_delivery=delegation_delivery)
 
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[Dict[str, Any]], requested_runtime: Optional[Dict[str, Any]],

@@ -1,8 +1,15 @@
 # macOS bundle updates
 
-The packaged macOS app uses `electron-updater`. The bundled and Light stamps
-name that owner. Development and bootstrap installs keep checkout updates.
-Windows App Installer and Store ownership are unchanged.
+Tagged macOS bundles use `electron-updater`. The bundled and Light stamps
+name that owner. Stable and canary are separate application identities; each
+updates within its baked channel. Development and bootstrap installs keep
+checkout updates.
+
+One-off builds carry `source: commit-build` and have no updater. Their package
+identity includes the short commit SHA, so different commit builds can coexist.
+Checks and apply requests explain that the developer must provide a new build.
+This applies to the desktop and its bundled CLI, not to an unrelated remote
+backend the desktop connects to.
 
 ## Feed contract
 

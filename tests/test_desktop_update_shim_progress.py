@@ -150,6 +150,7 @@ def _run_handoff(tmp_path, exits: dict[int, int]) -> list[dict]:
         "HERMES_TEST_CALLS": str(calls),
         "HERMES_TEST_EXITS": str(tmp_path / "exits"),
     }
+    env.pop("HERMES_HOME", None)  # Exercise the legacy install-parent fallback.
     # The hand-off daemonizes and the launcher exits immediately; the result
     # file is the orchestrator's own completion signal.
     subprocess.run(

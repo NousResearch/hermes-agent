@@ -51,14 +51,14 @@ test('resolveInstallKind reads the stamp: distribution nix wins, payload kind me
   assert.equal(resolveInstallKind(), 'standard')
 })
 
-test('only standard installs may remove code; managed kinds get data-only', () => {
+test('only standard installs allow desktop uninstall; managed kinds have no safe mode', (): void => {
   assert.equal(installKindAllowsCodeRemoval('standard'), true)
   assert.equal(installKindAllowsCodeRemoval('nix'), false)
   assert.equal(installKindAllowsCodeRemoval('bundled'), false)
 
   assert.deepEqual(allowedUninstallModes('standard'), ['gui', 'lite', 'full'])
-  assert.deepEqual(allowedUninstallModes('nix'), ['data'])
-  assert.deepEqual(allowedUninstallModes('bundled'), ['data'])
+  assert.deepEqual(allowedUninstallModes('nix'), [])
+  assert.deepEqual(allowedUninstallModes('bundled'), [])
 })
 
 test('nativeRemovalInstructions names the steward per kind and OS', () => {
@@ -161,7 +161,7 @@ test('shouldRemoveAppBundle requires packaged AND a resolved path', () => {
 
 // --- buildPosixCleanupScript ---
 
-test('buildPosixCleanupScript waits for the PID, runs the uninstall module, removes bundle', () => {
+test('buildPosixCleanupScript waits for the PID, runs the uninstall module, removes bundle', (): void => {
   const script = buildPosixCleanupScript({
     desktopPid: 4321,
     pythonExe: '/home/x/.hermes/hermes-agent/venv/bin/python',
@@ -172,7 +172,7 @@ test('buildPosixCleanupScript waits for the PID, runs the uninstall module, remo
     hermesHome: '/home/x/.hermes'
   })
 
-  assert.match(script, /^#!\/bin\/bash/)
+  assert.match(script, /^#!\/usr\/bin\/env bash\n/)
   assert.match(script, /pid=4321/)
   assert.match(script, /kill -0 "\$pid"/)
   // bounded wait (~30s), not unbounded

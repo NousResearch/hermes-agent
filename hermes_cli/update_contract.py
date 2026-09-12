@@ -14,6 +14,17 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+COMMIT_BUILD_UPDATE_MESSAGE = (
+    "This build doesn't get updates. Ask the developer who gave it to you for a new build."
+)
+
+
+def is_commit_build(project_root: Path) -> bool:
+    from hermes_cli.steward import read_install_stamp
+
+    return read_install_stamp(project_root).get("source") == "commit-build"
+
+
 
 @dataclass(frozen=True)
 class UpdateRefusal:
@@ -42,6 +53,9 @@ def evaluate_update_admission(project_root: Path) -> Optional[UpdateRefusal]:
     ``None`` means the install is eligible for in-place update (git checkout or unknown-but-
     mutable). Never raises; on any internal error it falls back to the heuristic layer only.
     """
+    if is_commit_build(project_root):
+        return UpdateRefusal("commit-build", COMMIT_BUILD_UPDATE_MESSAGE, "")
+
     # Layer 1: baked provenance marker — authoritative when present.
     try:
         from hermes_cli.image_provenance import read_image_provenance
@@ -143,7 +157,9 @@ def record_refusal_receipt(refusal: UpdateRefusal) -> None:
         from hermes_cli.update_receipt import begin_update_receipt, finalize_update_receipt, record_step
 
         begin_update_receipt()
-        record_step("admission", False, f"not updatable in place ({refusal.code}); use: {refusal.update_command}")
+        detail = f"not updatable in place ({refusal.code})"
+        detail += f"; use: {refusal.update_command}" if refusal.update_command else f"; {refusal.message}"
+        record_step("admission", False, detail)
         finalize_update_receipt("refused", stop_reason=refusal.code)
     except Exception as exc:
         logger.debug("Could not record refusal receipt: %s", exc)

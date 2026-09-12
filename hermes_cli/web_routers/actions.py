@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from hermes_cli import __version__
 from hermes_cli.config import format_docker_update_message, recommended_update_command_for_method
+from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
 from hermes_cli.web_routers._common import http_failure
@@ -200,6 +201,9 @@ def _update_refused(error: str, message: str, update_command: str) -> Dict[str, 
 @router.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
+    if is_commit_build(_server_path("PROJECT_ROOT")):
+        return _update_refused("commit-build", COMMIT_BUILD_UPDATE_MESSAGE, "")
+
     if _dashboard_local_update_managed_externally():
         message = _MANAGED_EXTERNALLY_MESSAGE + " The built-in local updater is disabled here."
         return _update_refused("dashboard_update_managed_externally", message, "managed outside dashboard")
@@ -247,6 +251,16 @@ async def check_hermes_update(force: bool = False):
     non-applyable methods) and, for git installs that are behind, commits
     [{sha, summary, author, at}] (additive; existing consumers ignore it).
     """
+    if is_commit_build(_server_path("PROJECT_ROOT")):
+        from hermes_cli.steward import read_install_stamp
+
+        stamp = read_install_stamp(_server_path("PROJECT_ROOT"))
+        return {
+            "install_method": "desktop-app", "current_version": stamp.get("displayVersion") or __version__,
+            "behind": None, "update_available": False, "can_apply": False,
+            "update_command": "", "message": COMMIT_BUILD_UPDATE_MESSAGE,
+        }
+
     if _dashboard_local_update_managed_externally():
         return {
             "install_method": "managed-runtime", "current_version": __version__, "behind": None,

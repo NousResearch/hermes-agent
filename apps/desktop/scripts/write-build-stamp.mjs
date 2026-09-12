@@ -6,8 +6,9 @@
  * Provenance comes from CI, local git, or an explicit unknown-source stamp.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "fs"
-import { resolve, join, relative } from "path"
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs"
+import { resolve, join, relative, posix } from "path"
+import productIdentity from "../product-identity.cjs"
 import { execFileSync } from "child_process"
 
 import { isMain } from "./utils.mjs"
@@ -104,6 +105,42 @@ export function isFallbackCommit(commit) {
   return typeof commit === "string" && /^0{7,40}$/.test(commit)
 }
 
+/** Qualify desktop CLI files before the immutable runtime paths are baked.
+ * Canonical command keys remain stable for backend consumers; public aliases
+ * come from the declared filenames, never those internal keys.
+ */
+export function stageDesktopLaunchers(root, identity = productIdentity) {
+  const file = join(root, 'manifest.json')
+  const manifest = JSON.parse(readFileSync(file, 'utf8'))
+  const windows = manifest.target.startsWith('win32')
+  const commands = {}
+  const launchers = []
+  for (const [name, source] of Object.entries(manifest.runtime.commands)) {
+    const alias = name.replace(/^hermes(?=-|$)/, identity.cliName)
+    const destination = posix.join(posix.dirname(source), `${alias}${windows ? '.exe' : ''}`)
+    if (source !== destination && existsSync(join(root, source))) {
+      renameSync(join(root, source), join(root, destination))
+    }
+    if (!existsSync(join(root, destination))) throw new Error(`Missing desktop launcher: ${destination}`)
+    commands[name] = destination
+    launchers.push(alias)
+  }
+  manifest.runtime.commands = commands
+  manifest.launchers = launchers
+  writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n')
+  return manifest
+}
+
+/** Electron and the embedded CLI must see the same immutable provenance. */
+export function writeDesktopStamp(outDir, built) {
+  const json = JSON.stringify(built, null, 2) + "\n"
+  mkdirSync(outDir, { recursive: true })
+  if (built.payload === 'bundled') {
+    writeFileSync(join(outDir, 'agent-payload', built.runtime.repoDir, 'install-stamp.json'), json, 'utf8')
+  }
+  writeFileSync(join(outDir, 'install-stamp.json'), json, 'utf8')
+}
+
 function main() {
   const stamp = resolveStamp()
   if (!stamp || !stamp.commit) {
@@ -141,11 +178,10 @@ function main() {
 
   const bundled = ['bundled', 'store'].includes(process.env.HERMES_DESKTOP_VARIANT)
   const payload = bundled
-    ? JSON.parse(readFileSync(join(OUT_DIR, 'agent-payload', 'manifest.json'), 'utf8'))
+    ? stageDesktopLaunchers(join(OUT_DIR, 'agent-payload'))
     : null
   const built = buildStampPayload(stamp, process.env, process.platform, payload)
-  mkdirSync(OUT_DIR, { recursive: true })
-  writeFileSync(OUT_FILE, JSON.stringify(built, null, 2) + "\n", "utf8")
+  writeDesktopStamp(OUT_DIR, built)
   console.log(
     "[write-build-stamp] wrote " +
       relative(REPO_ROOT, OUT_FILE) +
@@ -169,6 +205,7 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
   if (commitBuild && env.HERMES_PAYLOAD_TAG) {
     throw new Error('Commit builds cannot also set a release tag')
   }
+  const version = env.HERMES_PAYLOAD_VERSION || (env.HERMES_PAYLOAD_TAG || '').replace(/^v/, '') || null
   const base = {
     schemaVersion: STAMP_SCHEMA_VERSION,
     commit: stamp.commit,
@@ -177,8 +214,8 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
     dirty: stamp.dirty,
     source: commitBuild ? 'commit-build' : stamp.source,
     commitDate: stamp.commitDate ?? null,
-    baseVersion: stamp.baseVersion ?? null,
-    displayVersion: stamp.displayVersion ?? null,
+    baseVersion: stamp.baseVersion ?? version?.split('-')[0] ?? null,
+    displayVersion: stamp.displayVersion ?? version,
     distance: stamp.distance ?? null
   }
 

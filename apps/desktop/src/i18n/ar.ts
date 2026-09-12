@@ -173,6 +173,7 @@ export const ar = defineLocale({
     }
   },
   notifications: {
+    sharedProfileWarning: 'تستخدم نسخة أخرى من Hermes هذا الملف الشخصي. تتشارك النسختان إعداداته وبياناته، لذا قد تتعارض التغييرات. يمكنك المتابعة أو إغلاق النسخة الأخرى قبل إجراء تغييرات.',
     region: 'الإشعارات',
     hide: 'إخفاء',
     show: 'إظهار',
@@ -2406,6 +2407,7 @@ export const ar = defineLocale({
     }
   },
   updates: {
+    channels: { stable: 'مستقر', canary: 'تجريبي' },
     bundleSwapPending: 'أعد التشغيل لإكمال التحديث',
     bundleSwapPendingDesc: 'تم تثبيت التطبيق المحدَّث بالفعل — يكفي إعادة تشغيل Hermes لتحميله. لن تتأثر المحادثات أو الإعدادات.',
     bundleSwapPendingAction: 'إعادة تشغيل Hermes',

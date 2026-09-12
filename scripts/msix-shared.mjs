@@ -249,14 +249,12 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
         || version.split('.').some(part => Number(part) > 65535)) {
       throw new Error('Commit builds require HERMES_PAYLOAD_VERSION=X.Y.Z with 16-bit fields')
     }
-    const packageVersion = identity.store
-      ? storePackageVersionAt(gitTagCommitTime(repoRoot, commit))
-      : `${version}.0`
-    return { identity, version: packageVersion, fileVersion: version, name: identity.appNamePascal }
+    if (identity.store) throw new Error('Store packaging requires a stable release tag')
+    return { identity, version: `${version}.0`, fileVersion: version, name: identity.artifactNamePascal }
   }
   if (identity.store) {
     return { identity, version: storePackageVersion(String(tag), repoRoot),
-      fileVersion: String(tag).slice(1), name: identity.appNamePascal }
+      fileVersion: String(tag).slice(1), name: identity.artifactNamePascal }
   }
   const canary = CANARY_TAG_RE.exec(String(tag))
   if (canary) {
@@ -268,7 +266,7 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
       identity,
       version: `${canary[1]}.${canaryBuildMinutes(String(tag), repoRoot)}`,
       fileVersion: String(tag).slice(1),
-      name: identity.appNamePascal,
+      name: identity.artifactNamePascal,
     }
   }
   if (tag && !STABLE_TAG_RE.test(tag)) throw new Error(`Invalid release tag: ${tag}`)
@@ -278,6 +276,6 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
     identity,
     version: `${version}.0`,
     fileVersion: version,
-    name: identity.appNamePascal,
+    name: identity.artifactNamePascal,
   }
 }

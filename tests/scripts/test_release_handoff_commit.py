@@ -301,7 +301,7 @@ def test_real_cli_stage_and_summary_run_as_subprocesses(tmp_path):
         assert render.returncode == 0, render.stdout + render.stderr
         text = summary.read_text(encoding="utf-8")
         # The staged leg is receipt+object bound -> exactly one ✅ row with
-        # a link; every other leg renders an explicit ❌.
+        # a link; other enabled legs are Not built, and Linux is Disabled.
         built = [line for line in text.splitlines() if "✅ Built" in line]
         assert len(built) == 1, text
         assert "HermesBundled-0.28.0-win-x64.msix" in built[0]
@@ -309,7 +309,8 @@ def test_real_cli_stage_and_summary_run_as_subprocesses(tmp_path):
         assert f"/releases/commit/{COMMIT}/" in url
         with urlopen(url, timeout=5) as response:
             assert response.read() == b"cli-bytes"
-        assert "Windows universal Store bundle (MSIXBUNDLE)" in text
+        assert "Windows universal bundle (MSIXBUNDLE)" in text
+        assert "Store" not in text
         assert "Linux x64" in text and "Linux ARM64" in text
         assert all(key.startswith(f"releases/commit/{COMMIT}/") for key in server.store)
 

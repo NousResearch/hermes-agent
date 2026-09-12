@@ -4517,6 +4517,15 @@ def main(
         _run_legacy_gateway()
         return
 
+    if not (list_tools or list_toolsets):
+        from hermes_cli.process_identity import register_self
+        from hermes_cli.shared_profile_warning import shared_profile_warning
+
+        register_self("cli")
+        warning = shared_profile_warning()
+        if warning:
+            print(f"Warning: {warning}", file=sys.stderr)
+
     _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
     query = query or q
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,

@@ -339,7 +339,7 @@ def _reinstall_python_deps_after_zip() -> None:
 
 
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
-                   target_sha: str | None = None) -> bool:
+                   target_sha: str | None = None, target_repository: str | None = None) -> bool:
     """Update via ZIP archive; used on Windows when git file I/O is broken (antivirus / NTFS filter
     drivers causing 'Invalid argument'). Returns ``False`` when a Desktop rebuild ran and failed.
 
@@ -376,7 +376,11 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
     if target_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", target_sha):
         raise ValueError("ZIP update requires an exact full commit SHA")
     ref = target_sha if target_sha is not None else f"refs/heads/{branch}"
-    _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/{ref}.zip")
+    repository = target_repository or "NousResearch/hermes-agent"
+    if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+            or any(part in (".", "..") for part in repository.split("/"))):
+        raise ValueError("ZIP update requires a GitHub owner/repository")
+    _download_and_swap_zip(branch, f"https://github.com/{repository}/archive/{ref}.zip")
     _sweep_bytecode_after_update(branch)
     print("→ Updating Python dependencies...")
     _reinstall_python_deps_after_zip()

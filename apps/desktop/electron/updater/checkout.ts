@@ -17,6 +17,7 @@ import {
 import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers, stopSafeVenvBlockers } from '../venv-blocker-scan'
 
 import { checkCheckoutUpdates, type CheckoutCheckDeps } from './checkout-check'
+import { sourceUpdateEnvironment } from './checkout-source'
 
 import type { UpdaterApplyResultWire, UpdaterMechanism, UpdaterStatusWire, UpdaterStrategy } from './index'
 
@@ -84,9 +85,23 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
   return { mechanism, check, apply }
 
   async function applyBody(opts: { stopSafeBlockers?: boolean } = {}): Promise<UpdaterApplyResultWire> {
-  const updater = deps.resolveUpdaterBinary()
+    const status: UpdaterStatusWire = await checkCheckoutUpdates(deps, { force: true })
 
-    if (!updater && !deps.isWindows) {
+    if (status.reason === 'source-probe-unavailable') {
+      return { ok: true, manual: true, command: 'hermes update --help', message: status.message, hermesRoot: status.hermesRoot }
+    }
+
+    if (!status.supported || status.error) {
+      return { ok: false, error: status.error ?? status.reason, message: status.message }
+    }
+
+    const branch: string = status.branch ?? deps.defaultUpdateBranch
+    const targetArgs: string[] = status.channel ? ['--channel', status.channel] : ['--branch', branch]
+    const targetLabel: string = status.channel ?? branch
+    const manualCommand: string = status.channel ? `hermes update --channel ${status.channel}` : buildManualUpdateCommand(branch)
+    const updater: string | null = deps.resolveUpdaterBinary()
+
+    if (!deps.isWindows && (!updater || status.channel)) {
       // macOS/Linux: hand off to the repo-owned posix script — same shape as
       // Windows (quit → detached orchestrator → `hermes update` → relaunch),
       // minus the venv-lock gauntlet POSIX doesn't need. The old in-app
@@ -96,10 +111,10 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       // script owns swap/relaunch, and the app is DEAD during the update so
       // there is nothing to reap around. Checkouts that predate the script
       // get the manual `hermes update` card once; their next update pulls it.
-      return await applyPosixHandoff(opts)
+      return await applyPosixHandoff(targetArgs, targetLabel, manualCommand)
     }
 
-    if (!updater) {
+    if (!updater || status.channel) {
       // No staged updater binary — this is a CLI-installed user (they ran
       // `hermes desktop`, never the Tauri installer that self-copies
       // hermes-setup.exe into HERMES_HOME). On Windows the repo hand-off
@@ -110,25 +125,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       const updateRoot = deps.resolveUpdateRoot()
 
       if (!resolveUpdateScriptHandoff(updateRoot)) {
-        // They DO have a working `hermes` on PATH / in the venv, so the
-        // correct path is the one-liner in their native medium. We show the
-        // EXACT command, branch-pinned to the checkout they're on — bare
-        // `hermes update` defaults to main and would silently switch a
-        // bb/gui (or any non-main) install off-branch. Mirror the GUI
-        // button's contract: append --branch <current> for non-main
-        // checkouts, keep it bare for main so the card stays clean.
-        let command = 'hermes update'
-
-        try {
-          const head = await deps.runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-          const current = (head.stdout || '').trim()
-
-          if (head.code === 0 && current && current !== 'HEAD') {
-            command = buildManualUpdateCommand(await deps.resolveHealedBranch(updateRoot, current))
-          }
-        } catch {
-          // Best-effort: fall back to bare `hermes update` if branch detection fails.
-        }
+        const command: string = manualCommand
 
         deps.rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for CLI install at ${updateRoot}`)
         deps.emitUpdateProgress({ stage: 'manual', message: command, percent: null })
@@ -161,9 +158,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     deps.repairMacUpdaterHelper(updater)
 
     const updateRoot = deps.resolveUpdateRoot()
-    const { branch: configuredBranch } = deps.readDesktopUpdateConfig()
-    const branch = await deps.resolveHealedBranch(updateRoot, configuredBranch || deps.defaultUpdateBranch)
-    const updaterArgs = ['--update', '--branch', branch]
+    const updaterArgs: string[] = ['--update', ...targetArgs]
     const targetApp = deps.isMac ? deps.runningAppBundle() : null
 
     if (targetApp) {
@@ -308,8 +303,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, [
         '-InstallRoot',
         updateRoot,
-        '-Branch',
-        branch,
+        ...(status.channel ? ['-Channel', status.channel] : ['-Branch', branch]),
         '-DesktopPid',
         String(process.pid),
         '-RelaunchExe',
@@ -319,8 +313,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: deps.hermesHome,
         env: {
-          ...process.env,
-          HERMES_HOME: deps.hermesHome,
+          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
           HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
           PATH: deps.pathWithVenvBin(venvBin)
         },
@@ -340,14 +333,13 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       }
 
       deps.rememberLog(
-        `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (branch ${branch}); exiting desktop to release venv shim`
+        `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (${targetLabel}); exiting desktop to release venv shim`
       )
     } else {
       child = spawnUpdaterProcess(updater, updaterArgs, {
         cwd: deps.hermesHome,
         env: {
-          ...process.env,
-          HERMES_HOME: deps.hermesHome,
+          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
           PATH: deps.pathWithVenvBin(venvBin)
         },
         detached: true,
@@ -423,14 +415,14 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     return { ok: true, handedOff: true, updater }
   }
 
-  async function applyPosixHandoff(opts: any): Promise<UpdaterApplyResultWire> {
+  async function applyPosixHandoff(targetArgs: string[], targetLabel: string, manualCommand: string): Promise<UpdaterApplyResultWire> {
   const updateRoot = deps.resolveUpdateRoot()
   const handoff = resolvePosixScriptHandoff(updateRoot)
 
   if (!handoff) {
-    deps.emitUpdateProgress({ stage: 'manual', message: 'hermes update', percent: null })
+    deps.emitUpdateProgress({ stage: 'manual', message: manualCommand, percent: null })
 
-    return { ok: true, manual: true, command: 'hermes update', hermesRoot: updateRoot }
+    return { ok: true, manual: true, command: manualCommand, hermesRoot: updateRoot }
   }
 
   const handoffConflict = updateHandoffConflict(deps.hermesHome)
@@ -447,22 +439,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
   // ── Pre-flight state.db integrity guard (#68474) ──
   deps.preflightStateDb(deps.hermesHome, deps.rememberLog)
 
-  // Branch-pin so a non-main checkout doesn't get switched to main (and
-  // self-heal to main when the pinned branch no longer exists on origin).
-  let branch = 'main'
-
-  try {
-    const head = await deps.runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-    const current = (head.stdout || '').trim()
-
-    if (head.code === 0 && current && current !== 'HEAD') {
-      branch = await deps.resolveHealedBranch(updateRoot, current)
-    }
-  } catch {
-    // best effort
-  }
-
-  const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
+  const args: string[] = [...handoff.args, '--install-root', updateRoot, ...targetArgs, '--desktop-pid', String(process.pid)]
   const updateStartedAt = Math.floor(Date.now() / 1000)
 
   // Relaunch target: the running .app bundle on mac (script swaps the
@@ -494,8 +471,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
   const child = spawnUpdaterProcess(handoff.command, args, {
     cwd: deps.hermesHome,
     env: {
-      ...process.env,
-      HERMES_HOME: deps.hermesHome,
+      ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
       HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
       PATH: deps.pathWithVenvBin(path.join(updateRoot, 'venv', 'bin'))
     },
@@ -510,7 +486,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     writeUpdateMarker(deps.hermesHome, child.pid, { startedAt: updateStartedAt })
   }
 
-  deps.rememberLog(`[updates] launched posix hand-off: ${handoff.scriptPath} (branch ${branch}); quitting to hand off`)
+  deps.rememberLog(`[updates] launched posix hand-off: ${handoff.scriptPath} (${targetLabel}); quitting to hand off`)
   deps.emitUpdateProgress({
     stage: 'restart',
     message:

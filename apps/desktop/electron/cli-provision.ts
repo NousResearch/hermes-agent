@@ -20,7 +20,9 @@ export function provisionCliLinks(
 
   let linked = 0
 
-  for (const [name, source] of Object.entries(commands)) {
+  for (const source of Object.values(commands)) {
+    // The map keys are backend entrypoint identities, not public shell names.
+    const name: string = path.basename(source)
     const target = path.join(binDir, name)
 
     try {

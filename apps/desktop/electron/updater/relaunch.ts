@@ -1,9 +1,12 @@
+// Electron userData isolates installations that share HERMES_HOME.
 // The marker survives a package swap and records the version that started it.
 // The separate waiter owns automatic relaunch. Cancelling an update stops
 // that waiter and removes its marker, including when startup stays manual.
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+
+import type { App } from 'electron'
 
 import type { RelaunchWaiterHandle } from './relaunch-waiter'
 
@@ -17,8 +20,8 @@ export interface PendingRelaunchMarker {
 
 const MARKER_FILENAME = 'pending-update-relaunch.json'
 
-function markerPath(hermesHome: string): string {
-  return path.join(hermesHome, MARKER_FILENAME)
+function markerPath(app: Pick<App, 'getPath'>): string {
+  return path.join(app.getPath('userData'), MARKER_FILENAME)
 }
 
 /** Pure: the filename constant, for tests. */
@@ -29,13 +32,13 @@ export const PENDING_RELAUNCH_FILENAME = MARKER_FILENAME
  * to write never blocks the update; relaunch just stays manual.
  */
 export function writePendingRelaunch(
-  hermesHome: string,
+  app: Pick<App, 'getPath'>,
   fromVersion: string,
-  writeFile: (file: string, contents: string) => void = (f, c) => fs.writeFileSync(f, c)
+  writeFile: (file: string, contents: string) => void = (f: string, c: string): void => fs.writeFileSync(f, c)
 ): boolean {
   try {
     const marker: PendingRelaunchMarker = { schemaVersion: 1, fromVersion, startedAt: Date.now() }
-    writeFile(markerPath(hermesHome), JSON.stringify(marker))
+    writeFile(markerPath(app), JSON.stringify(marker))
 
     return true
   } catch {
@@ -55,20 +58,24 @@ export interface RelaunchRegistration {
 
 /** Marker failure permits an update, but failed waiter cleanup must abort it. */
 export async function registerUpdateRelaunch(
-  hermesHome: string,
+  app: Pick<App, 'getPath'>,
   fromVersion: string,
   deps: UpdateRelaunchDeps,
-  writeFile: (file: string, contents: string) => void = (f, c) => fs.writeFileSync(f, c)
+  writeFile: (file: string, contents: string) => void = (f: string, c: string): void => fs.writeFileSync(f, c)
 ): Promise<RelaunchRegistration> {
-  const ownsMarker = writePendingRelaunch(hermesHome, fromVersion, writeFile)
+  const ownsMarker: boolean = writePendingRelaunch(app, fromVersion, writeFile)
 
   const removeMarker = (): void => {
-    if (!ownsMarker) { return }
+    if (!ownsMarker) {
+      return
+    }
 
     try {
-      fs.unlinkSync(markerPath(hermesHome))
+      fs.unlinkSync(markerPath(app))
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error }
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error
+      }
     }
   }
 
@@ -106,7 +113,9 @@ export async function registerUpdateRelaunch(
           errors.push(error)
         }
 
-        if (errors.length) { throw new AggregateError(errors, 'Relaunch cancellation failed') }
+        if (errors.length) {
+          throw new AggregateError(errors, 'Relaunch cancellation failed')
+        }
       })()
 
       return cancellation
@@ -134,7 +143,7 @@ export interface RelaunchFsDeps {
  * (cancelled/failed OS install), so the marker is deleted and no toast fires.
  */
 export function consumePendingRelaunch(
-  hermesHome: string,
+  app: Pick<App, 'getPath'>,
   currentVersion: string,
   deps: RelaunchFsDeps = {}
 ): ConsumedRelaunch {
@@ -142,7 +151,7 @@ export function consumePendingRelaunch(
   const readFileSync = deps.readFileSync ?? ((file: string) => fs.readFileSync(file, 'utf8'))
   const unlinkSync = deps.unlinkSync ?? ((file: string) => fs.unlinkSync(file))
 
-  const file = markerPath(hermesHome)
+  const file: string = markerPath(app)
 
   if (!existsSync(file)) {
     return { wasUpdateRelaunch: false }

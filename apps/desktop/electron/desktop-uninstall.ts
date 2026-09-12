@@ -6,9 +6,8 @@
  * resolve the running app bundle/exe so a detached cleanup script can remove
  * it after the app quits, and build that cleanup script for each OS.
  *
- * Kept standalone (no ` import 'electron'`) so it can be unit-tested with
- * `node --test` — same pattern as connection-config.ts / backend-probes.ts.
- * main.ts requires these and wires them into the electron-coupled IPC layer.
+ * Kept electron-free so Vitest can exercise the registered IPC handlers.
+ * main.ts supplies the local install stamp and process callbacks.
  *
  * The three modes mirror the CLI's options exactly:
  *   - 'gui'  → remove ONLY the Chat GUI, keep the agent + all user data.
@@ -28,31 +27,103 @@
 
 import path from 'node:path'
 
-import type { ArtifactKind } from './install-stamp'
+import type { InstallStamp } from './install-stamp'
 
-const UNINSTALL_MODES = ['gui', 'lite', 'full', 'data']
+export interface UninstallSummaryDetails {
+  hermes_home: string
+  agent_installed: boolean
+  gui_installed: boolean
+  source_built_artifacts: string[]
+  packaged_app_paths: string[]
+  userdata_dir: string
+  userdata_exists: boolean
+  platform: string
+  running_app_path?: string | null
+  probe?: string
+}
 
-// How this desktop app got onto the machine, read from the install stamp
-// (install-stamp.json) that every packager writes:
+export interface DesktopUninstallSummary extends UninstallSummaryDetails {
+  code_removal_allowed: boolean
+}
+
+export interface DesktopUninstallResult {
+  ok: boolean
+  mode?: string
+  willRemoveAppBundle?: boolean
+  scriptPath?: string
+  error?: string
+  message?: string
+}
+
+export interface DesktopUninstallIpcDeps {
+  ipcMain: {
+    handle: (channel: string, handler: (event: unknown, payload?: unknown) => Promise<unknown>) => void
+  }
+  stamp: Readonly<Partial<Pick<InstallStamp, 'distribution' | 'source' | 'payload' | 'updateMechanism'>>> | null
+  fallbackSummary: () => UninstallSummaryDetails
+  probeSummary: () => Promise<UninstallSummaryDetails>
+  runUninstall: (mode: string) => Promise<DesktopUninstallResult>
+}
+
+export function registerDesktopUninstallIpc({
+  ipcMain,
+  stamp,
+  fallbackSummary,
+  probeSummary,
+  runUninstall
+}: DesktopUninstallIpcDeps): void {
+  const kind: InstallKind = resolveInstallKind(stamp ?? {})
+  const codeRemovalAllowed: boolean = installKindAllowsCodeRemoval(kind)
+
+  ipcMain.handle('hermes:uninstall:summary', async (): Promise<DesktopUninstallSummary> => {
+    const summary: UninstallSummaryDetails = codeRemovalAllowed ? await probeSummary() : fallbackSummary()
+
+    // The local artifact owns this decision, not the Python summary.
+    return { ...summary, code_removal_allowed: codeRemovalAllowed }
+  })
+  ipcMain.handle(
+    'hermes:uninstall:run',
+    async (_event: unknown, payload?: unknown): Promise<DesktopUninstallResult> => {
+      // Every cleanup mode can remove the bundle, including a hidden data request.
+      if (!codeRemovalAllowed) {
+        return {
+          ok: false,
+          error: 'externally-managed',
+          message: 'This desktop install must be removed through its installer or package manager.'
+        }
+      }
+
+      const mode: unknown = payload && typeof payload === 'object' && 'mode' in payload ? payload.mode : payload
+      const requestedMode: string = String(mode || '')
+
+      if (!allowedUninstallModes(kind).includes(requestedMode)) {
+        return { ok: false, error: 'invalid-mode', message: `Unknown uninstall mode: ${requestedMode}` }
+      }
+
+      return runUninstall(requestedMode)
+    }
+  )
+}
+
+const UNINSTALL_MODES: string[] = ['gui', 'lite', 'full', 'data']
+
+// The baked install stamp determines who owns removal:
 //   'nix'      — a Nix build (stamp distribution 'nix'). The store is
 //                immutable and the install is owned by Nix tooling, so the
 //                app must not remove any code, its own bundle included.
-//   'bundled'  — an embedded artifact (agent payload in resources; the
-//                stamp has payload:true). There is no agent venv under
-//                HERMES_HOME, and the OS owns app removal (Apps & Features
-//                / Trash / delete the AppImage).
+//   'bundled'  — a bundled or light artifact. The OS owns app removal.
+//   'external' — another package manager owns updates and removal.
 //   'standard' — everything else: the git-clone install the desktop
 //                installer bootstraps, or a `hermes desktop` source build.
 //                The classic script flow (venv python + rm the bundle) works.
 //
-// Only 'standard' installs may remove code. 'nix' and 'bundled' installs
-// may only remove user data (mode 'data') — the app itself is removed the
-// native way, per nativeRemovalInstructions().
-const INSTALL_KINDS = ['nix', 'bundled', 'standard']
+// Only 'standard' installs may use the desktop cleanup script.
+const INSTALL_KINDS = ['nix', 'bundled', 'external', 'standard'] as const
+type InstallKind = (typeof INSTALL_KINDS)[number]
 
 /**
  * Classify the install from the stamp. Pure so it can be unit-tested:
- * callers pass the stamp fields (`distribution`, `source`, `payload`).
+ * callers pass the baked stamp, never the connected backend's install facts.
  * `distribution` is authoritative; `source` is the schema-1 fallback.
  * The 'bundled' and 'light' artifact kinds both classify as the managed
  * 'bundled' flow — neither has agent code the app may remove, and the OS
@@ -61,8 +132,9 @@ const INSTALL_KINDS = ['nix', 'bundled', 'standard']
 function resolveInstallKind({
   distribution,
   source,
-  payload = 'bootstrap'
-}: { distribution?: string | null; source?: string | null; payload?: ArtifactKind } = {}) {
+  payload = 'bootstrap',
+  updateMechanism
+}: NonNullable<DesktopUninstallIpcDeps['stamp']> = {}): InstallKind {
   if (distribution === 'nix' || source === 'nix') {
     return 'nix'
   }
@@ -71,23 +143,24 @@ function resolveInstallKind({
     return 'bundled'
   }
 
+  if (updateMechanism === 'external') {
+    return 'external'
+  }
+
   return 'standard'
 }
 
 /** True when this install kind lets the app remove code (agent / bundle). */
-function installKindAllowsCodeRemoval(kind) {
+function installKindAllowsCodeRemoval(kind: InstallKind): boolean {
   return kind === 'standard'
 }
 
 /**
- * The modes the uninstall UI may offer for an install kind. Every kind can
- * remove user data. Only 'standard' may also remove code — there the 'full'
- * mode already covers data, so 'data' alone is not offered. Managed installs
- * (nix, bundled) get exactly one destructive action — remove user data —
- * with app removal handed to the steward via nativeRemovalInstructions().
+ * Desktop cleanup always removes the bundle. No mode is safe for an install
+ * owned by another installer, including the CLI's data-only mode.
  */
-function allowedUninstallModes(kind) {
-  return installKindAllowsCodeRemoval(kind) ? ['gui', 'lite', 'full'] : ['data']
+function allowedUninstallModes(kind: InstallKind): string[] {
+  return installKindAllowsCodeRemoval(kind) ? ['gui', 'lite', 'full'] : []
 }
 
 /**

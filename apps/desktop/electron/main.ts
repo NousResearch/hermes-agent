@@ -35,6 +35,7 @@ import { classifyActiveRuntime } from './active-runtime-state'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
+import { appVersionInfo, type AppVersionInfo, assertSourceUpdateChannel, packagedReleaseChannel } from './app-version'
 import { runAppInstallerChecker } from './appinstaller-checker'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate, waitForBackendExit as waitForBackendExitImpl } from './backend-child'
 import {
@@ -169,11 +170,14 @@ import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remot
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
+  type DesktopUninstallResult,
   modeRemovesAgent,
   modeRemovesUserData,
+  registerDesktopUninstallIpc,
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
-  uninstallArgsForMode
+  uninstallArgsForMode,
+  type UninstallSummaryDetails
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
@@ -187,7 +191,7 @@ import {
   tuiResumeArgs
 } from './external-terminal'
 import { type FaviconIo, resolveFavicon } from './favicon'
-import { isCanaryTag, resolveFeatureFlags } from './feature-flags'
+import { resolveFeatureFlags } from './feature-flags'
 import {
   installFindShortcut,
   installFoundInPageForwarder,
@@ -321,7 +325,7 @@ import {
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
-import { PRODUCT_IDENTITY } from './product-identity'
+import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -421,9 +425,10 @@ import { AppInstallerStrategy } from './updater/app-installer'
 import {
   createCheckoutStrategy
 } from './updater/checkout'
+import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
 import { createMacStrategy } from './updater/mac-client'
-import { consumePendingRelaunch, registerUpdateRelaunch } from './updater/relaunch'
+import { type ConsumedRelaunch, consumePendingRelaunch, registerUpdateRelaunch, type RelaunchRegistration } from './updater/relaunch'
 import { startRelaunchWaiter } from './updater/relaunch-waiter'
 import { createStoreStrategy } from './updater/store-client'
 import { isHermesOwnedVenvDaemon } from './venv-holder-select'
@@ -479,6 +484,7 @@ import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './work
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
 
+const IDENTITY_APP_NAME: string | null = applyDesktopIdentity(app)
 const USER_DATA_OVERRIDE: string | undefined = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
 if (USER_DATA_OVERRIDE || process.env.HERMES_DATA_DIR_SUFFIX) {
@@ -821,7 +827,7 @@ const BOOT_FAKE_STEP_MS = (() => {
   return Math.max(120, raw)
 })()
 
-const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
+const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
@@ -1234,7 +1240,7 @@ app.setName(APP_NAME)
 // need this, so gate it on Windows. (Fixes: desktop approval/turn notifications
 // never firing on Windows.)
 if (IS_WINDOWS) {
-  app.setAppUserModelId('com.nousresearch.hermes')
+  app.setAppUserModelId(IDENTITY_APP_NAME ? PRODUCT_IDENTITY.appId : 'com.nousresearch.hermes')
 }
 
 // The gateway version is unknown until the backend connects.
@@ -2847,14 +2853,14 @@ function recentHermesLog() {
 
 // ─── Self-update (git-pull against the running backend's hermes root) ──────
 
-function readDesktopUpdateConfig() {
+function readDesktopUpdateConfig(): { branch: string; branchExplicit: boolean } {
   try {
-    const parsed = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CONFIG_PATH, 'utf8'))
-    const branch = typeof parsed?.branch === 'string' ? parsed.branch.trim() : ''
+    const parsed: { branch?: unknown } | null = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CONFIG_PATH, 'utf8'))
+    const branch: string = typeof parsed?.branch === 'string' ? parsed.branch.trim() : ''
 
-    return { branch: branch || DEFAULT_UPDATE_BRANCH }
+    return { branch: branch || DEFAULT_UPDATE_BRANCH, branchExplicit: branch.length > 0 }
   } catch {
-    return { branch: DEFAULT_UPDATE_BRANCH }
+    return { branch: DEFAULT_UPDATE_BRANCH, branchExplicit: false }
   }
 }
 
@@ -3069,7 +3075,8 @@ let packagedUpdateStrategy: UpdaterStrategy | undefined
 function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
   const mechanism = resolveUpdaterMechanism({
     platform: process.platform,
-    updateMechanism: INSTALL_STAMP?.updateMechanism
+    updateMechanism: INSTALL_STAMP?.updateMechanism,
+    source: INSTALL_STAMP?.source
   })
 
   if (mechanism === 'windows-handoff' || mechanism === 'posix-handoff') { return null }
@@ -3115,8 +3122,8 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
       emitUpdateProgress,
       appVersion: app.getVersion(),
       quit: () => app.quit(),
-      registerPendingRelaunch: fromVersion =>
-        registerUpdateRelaunch(HERMES_HOME, fromVersion, {
+      registerPendingRelaunch: (fromVersion: string): Promise<RelaunchRegistration> =>
+        registerUpdateRelaunch(app, fromVersion, {
           // The relaunch mechanism: a detached waiter, external to the dying
           // process. It snapshots the OLD package, signals the handshake,
           // waits for this process to exit and for the OS to swap the
@@ -3157,7 +3164,7 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
       restore: restoreBundledBackend,
       emitProgress: emitUpdateProgress,
       quit: () => app.quit(),
-      registerPendingRelaunch: fromVersion => registerUpdateRelaunch(HERMES_HOME, fromVersion, {
+      registerPendingRelaunch: (fromVersion: string): Promise<RelaunchRegistration> => registerUpdateRelaunch(app, fromVersion, {
         relaunch: () => startRelaunchWaiter({
           processId: process.pid,
           processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
@@ -3171,7 +3178,7 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
     return packagedUpdateStrategy
   }
 
-  return new ExternalStrategy()
+  return new ExternalStrategy(INSTALL_STAMP)
 }
 
 /**
@@ -3191,6 +3198,12 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
     directoryExists,
     readCanonicalInstallStamp,
     readDesktopUpdateConfig,
+    readSourceUpdate: (updateRoot: string): Promise<SourceUpdate | null> => readSourceUpdate({
+      python: findPythonForRoot(updateRoot),
+      git: resolveGitBinary(),
+      updateRoot,
+      hermesHome: HERMES_HOME
+    }),
     resolveUpdateRoot,
     resolveUpdaterBinary,
     resolveHealedBranch,
@@ -3254,7 +3267,7 @@ function readUpdatesFeedBaseFromConfig(): string {
 
 /** The updater channel from the baked install stamp ('canary' vs 'stable'). */
 function resolveUpdaterChannelFromStamp(): 'stable' | 'canary' {
-  return isCanaryTag(INSTALL_STAMP?.tag) ? 'canary' : 'stable'
+  return packagedReleaseChannel(INSTALL_STAMP) ?? 'stable'
 }
 
 /** True when this artifact is the light (remote-only) variant. */
@@ -17169,8 +17182,9 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 
-ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
-  const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
+ipcMain.handle('hermes:updates:branch:set', async (_event: Electron.IpcMainInvokeEvent, name: unknown): Promise<{ branch: string }> => {
+  assertSourceUpdateChannel(INSTALL_STAMP)
+  const branch: string = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
   writeDesktopUpdateConfig({ branch })
 
   return { branch }
@@ -17197,13 +17211,16 @@ async function detectRendererSkew() {
 // just before showing it, so an in-place `hermes update` is reflected without
 // an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
 // other platforms don't use this menu item.
-function showAboutPanelFresh() {
+function showAboutPanelFresh(): void {
   void Promise.all([detectRendererSkew(), resolveHermesVersion()]).then(([skew, version]) => {
+    const info: AppVersionInfo = appVersionInfo(INSTALL_STAMP, version, app.getVersion())
+    // The product name already identifies canary and commit builds.
+    const display: string = info.appVersion
     app.setAboutPanelOptions({
       applicationName: APP_NAME,
       applicationVersion: skew.outOfSync
-        ? `${version} — app build out of date, update the desktop app`
-        : version,
+        ? `${display} — app build out of date, update the desktop app`
+        : display,
       copyright: 'Copyright © 2026 Nous Research'
     })
     app.showAboutPanel()
@@ -17214,7 +17231,7 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
   const [skew, version] = await Promise.all([detectRendererSkew(), resolveHermesVersion(scope)])
 
   return {
-    ...resolveHermesVersionInfo(version),
+    ...appVersionInfo(INSTALL_STAMP, version, app.getVersion()),
     electronVersion: process.versions.electron,
     nodeVersion: process.versions.node,
     platform: process.platform,
@@ -17278,30 +17295,6 @@ function readLatestSyncReceipt(): Record<string, unknown> | null {
 
 ipcMain.handle('hermes:sync-status', () => readLatestSyncReceipt())
 
-/** Runtime version comes from the gateway; build provenance stays with the app stamp. */
-function resolveHermesVersionInfo(version: string) {
-  // The baked build-time constant is typed more narrowly than a full stamp
-  // loaded from disk; cast to the full shape so every provenance field is
-  // readable on either source.
-  const stamp = INSTALL_STAMP as InstallStamp | null
-
-  if (stamp) {
-    return {
-      appVersion: version,
-      baseVersion: stamp.baseVersion ?? undefined,
-      distance: stamp.distance ?? undefined,
-      commit: stamp.commit,
-      branch: stamp.branch,
-      source: stamp.source ?? undefined,
-      distribution: stamp.distribution ?? undefined,
-      updateMechanism: stamp.updateMechanism,
-      dirty: stamp.dirty
-    }
-  }
-
-  return { appVersion: version, baseVersion: app.getVersion() }
-}
-
 // Python's Path.resolve() equivalent for install-id derivation: realpath when
 // the path exists, plain resolve otherwise. Must stay byte-compatible with
 // boot_bootstrap._install_key or the CLI and the app would compute two
@@ -17364,24 +17357,17 @@ function resolveHermesRuntime() {
 // registry / service / node-symlink cleanup all lives in one place
 // (hermes_cli/uninstall.py + hermes_cli/gui_uninstall.py).
 //
-// getUninstallSummary() shells out to `--gui-summary` (a fast, no-side-effect
-// JSON probe) so the UI can gate options on what's actually installed — and
-// detect a missing agent (a future "lite client" that ships without the
-// bundled agent), hiding the agent/full options when there's nothing to remove.
+// The IPC boundary applies the baked install policy before either callback.
+// Only self-managed installs use the Python summary or the cleanup script.
 
-function uninstallVenvPython() {
+function uninstallVenvPython(): string {
   return getVenvPython(VENV_ROOT)
 }
 
-async function getUninstallSummary() {
-  const py = uninstallVenvPython()
-  const agentRoot = ACTIVE_HERMES_ROOT
-
-  // Fast JS-side fallback used when the agent venv is gone (lite client) or the
-  // probe fails — the renderer still needs *something* to render options from.
-  const fallback = () => ({
+function fallbackUninstallSummary(): UninstallSummaryDetails {
+  return {
     hermes_home: HERMES_HOME,
-    agent_installed: isHermesSourceRoot(agentRoot) && fileExists(py),
+    agent_installed: isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(uninstallVenvPython()),
     gui_installed: true,
     source_built_artifacts: [],
     packaged_app_paths: [],
@@ -17389,17 +17375,22 @@ async function getUninstallSummary() {
     userdata_exists: true,
     platform: process.platform,
     probe: 'fallback'
-  })
+  }
+}
+
+async function probeUninstallSummary(): Promise<UninstallSummaryDetails> {
+  const py: string = uninstallVenvPython()
+  const agentRoot: string = ACTIVE_HERMES_ROOT
 
   if (!fileExists(py)) {
-    return fallback()
+    return fallbackUninstallSummary()
   }
 
-  return new Promise(resolve => {
-    let stdout = ''
-    let settled = false
+  return new Promise<UninstallSummaryDetails>((resolve: (value: UninstallSummaryDetails) => void): void => {
+    let stdout: string = ''
+    let settled: boolean = false
 
-    const done = value => {
+    const done: (value: UninstallSummaryDetails) => void = (value: UninstallSummaryDetails): void => {
       if (settled) {
         return
       }
@@ -17409,7 +17400,7 @@ async function getUninstallSummary() {
     }
 
     try {
-      const child = spawn(
+      const child: ChildProcess = spawn(
         py,
         ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary'],
         hiddenWindowsChildOptions({
@@ -17419,36 +17410,36 @@ async function getUninstallSummary() {
         })
       )
 
-      child.stdout.on('data', chunk => {
+      child.stdout.on('data', (chunk: Buffer): void => {
         stdout += chunk.toString()
       })
-      child.on('error', () => done(fallback()))
-      child.on('exit', code => {
+      child.on('error', (): void => done(fallbackUninstallSummary()))
+      child.on('exit', (code: number | null): void => {
         if (code !== 0) {
-          return done(fallback())
+          return done(fallbackUninstallSummary())
         }
 
         try {
-          const line = stdout.trim().split('\n').filter(Boolean).pop() || '{}'
-          const parsed = JSON.parse(line)
+          const line: string = stdout.trim().split('\n').filter(Boolean).pop() || '{}'
+          const parsed: UninstallSummaryDetails = JSON.parse(line)
           // The app bundle the renderer would be removing on *this* machine,
           // resolved from the running exe (the Python probe only knows the
           // standard locations, not where THIS build actually runs from).
           parsed.running_app_path = resolveRemovableAppPath(process.execPath, process.platform, process.env)
           done(parsed)
         } catch {
-          done(fallback())
+          done(fallbackUninstallSummary())
         }
       })
-      setTimeout(() => done(fallback()), 8000)
+      setTimeout((): void => done(fallbackUninstallSummary()), 8000)
     } catch {
-      done(fallback())
+      done(fallbackUninstallSummary())
     }
   })
 }
 
-async function runDesktopUninstall(mode) {
-  let uninstallArgs
+async function runDesktopUninstall(mode: string): Promise<DesktopUninstallResult> {
+  let uninstallArgs: string[]
 
   try {
     uninstallArgs = uninstallArgsForMode(mode)
@@ -17562,11 +17553,12 @@ async function runDesktopUninstall(mode) {
   return { ok: true, mode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
 }
 
-ipcMain.handle('hermes:uninstall:summary', async () => getUninstallSummary())
-ipcMain.handle('hermes:uninstall:run', async (_event, payload) => {
-  const mode = payload && typeof payload === 'object' ? payload.mode : payload
-
-  return runDesktopUninstall(String(mode || ''))
+registerDesktopUninstallIpc({
+  ipcMain,
+  stamp: INSTALL_STAMP,
+  fallbackSummary: fallbackUninstallSummary,
+  probeSummary: probeUninstallSummary,
+  runUninstall: runDesktopUninstall
 })
 
 // Download a VS Code Marketplace extension and return the raw color-theme JSON
@@ -17746,7 +17738,7 @@ app.whenReady().then(() => {
   // an OS package swap, consume it here — the renderer toasts "Hermes
   // updated to vX.Y.Z" once its bridge is up. Same-version markers (update
   // never landed) are deleted silently.
-  const relaunchInfo = consumePendingRelaunch(HERMES_HOME, app.getVersion())
+  const relaunchInfo: ConsumedRelaunch = consumePendingRelaunch(app, app.getVersion())
 
   if (relaunchInfo.wasUpdateRelaunch) {
     rememberLog(`[updates] post-update relaunch detected (from ${relaunchInfo.fromVersion})`)

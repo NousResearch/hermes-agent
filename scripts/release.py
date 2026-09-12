@@ -2249,8 +2249,7 @@ def remote_github_repo(remote: str) -> str | None:
     return match.group(1) if match else None
 
 
-# Cap the major at three digits — the same rule as _parse_release_tag in
-# hermes_cli/update_cmd.py and _SEMVER_TAG_RE in scripts/write_install_stamp.py.
+# Cap the major at three digits, as in scripts/write_install_stamp.py.
 # The legacy CalVer tags (v2026.7.20) must never match as SemVer.
 _SEMVER_TAG_RE = re.compile(r"v(?:0|[1-9]\d{0,2})\.\d+\.\d+$")
 _LEGACY_CALVER_TAG_RE = re.compile(r"v20\d{2}\.\d+\.\d+(?:\.\d+)?$")

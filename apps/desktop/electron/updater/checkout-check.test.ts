@@ -43,6 +43,7 @@ function fixture(): CheckoutCheckDeps {
 
       throw new Error(`Unexpected git operation: ${key}`)
     }),
+    readSourceUpdate: async (): Promise<{ channel: 'main' }> => ({ channel: 'main' }),
     fetchGitHubApi: vi.fn(async (url: string): Promise<unknown> =>
       url.includes('/commits/') ? 'b'.repeat(40) : { ahead_by: 3, commits: [] }
     ),
@@ -60,6 +61,56 @@ it('uses API checks and a disk cache while a forced check bypasses the cache', a
   expect(deps.fetchGitHubApi).toHaveBeenCalledTimes(2)
   await checkCheckoutUpdates(deps, { force: true })
   expect(deps.fetchGitHubApi).toHaveBeenCalledTimes(4)
+})
+
+it('follows the current branch unless config explicitly overrides it, including cached checks', async (): Promise<void> => {
+  const deps: CheckoutCheckDeps = fixture()
+  const localGit: CheckoutCheckDeps['runGit'] = deps.runGit
+  let currentBranch: string = 'feature/foo'
+  let configuredBranch: string = 'main'
+  let branchExplicit: boolean = false
+  deps.readDesktopUpdateConfig = (): { branch: string; branchExplicit: boolean } => ({
+    branch: configuredBranch,
+    branchExplicit
+  })
+  deps.runGit = async (
+    args: string[],
+    options?: { cwd?: string }
+  ): Promise<{ code: number; stdout: string; stderr: string }> =>
+    args.join(' ') === 'rev-parse --abbrev-ref HEAD'
+      ? { code: 0, stdout: currentBranch, stderr: '' }
+      : localGit(args, options)
+
+  for (const scenario of [
+    { current: 'feature/foo', configured: 'main', explicit: false, target: 'feature/foo' },
+    { current: 'feature/foo', configured: 'main', explicit: true, target: 'main' },
+    { current: 'feature/foo', configured: 'release/next', explicit: true, target: 'release/next' },
+    { current: 'feature/foo', configured: 'main', explicit: false, target: 'feature/foo' },
+    { current: 'feature/bar', configured: 'main', explicit: false, target: 'feature/bar' },
+    { current: 'HEAD', configured: 'main', explicit: false, target: 'main' },
+    { current: '', configured: 'main', explicit: false, target: 'main' }
+  ]) {
+    currentBranch = scenario.current
+    configuredBranch = scenario.configured
+    branchExplicit = scenario.explicit
+    vi.mocked(deps.fetchGitHubApi).mockClear()
+    expect(await checkCheckoutUpdates(deps)).toMatchObject({
+      branch: scenario.target,
+      currentBranch,
+      targetSha: 'b'.repeat(40)
+    })
+
+    if (currentBranch) {
+      expect(deps.fetchGitHubApi).toHaveBeenCalledWith(
+        expect.stringContaining(`/commits/${encodeURIComponent(scenario.target)}`),
+        'application/vnd.github.sha'
+      )
+    }
+
+    vi.mocked(deps.fetchGitHubApi).mockClear()
+    expect(await checkCheckoutUpdates(deps)).toMatchObject({ branch: scenario.target, currentBranch })
+    expect(deps.fetchGitHubApi).not.toHaveBeenCalled()
+  }
 })
 
 it('does not report locally ahead commits as an update', async (): Promise<void> => {

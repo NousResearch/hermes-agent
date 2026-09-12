@@ -15,7 +15,7 @@ from scripts.bundles import desktop
 from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _git, _seed_repo
 
 
-@pytest.mark.parametrize("variant", ["bundled", "store", "light"])
+@pytest.mark.parametrize("variant", ["bundled", "light"])
 def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, monkeypatch, variant):
     _, repo = _seed_repo(tmp_path)
     sha = _git("rev-parse", "HEAD", cwd=repo)
@@ -77,6 +77,14 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
             desktop.build(repo, tag, variant, [], commit_build=commit)
         assert len(calls) == before
 
+
+
+@pytest.mark.parametrize("tag,commit", [(None, "a" * 40), ("v1.2.3-canary.20260911120000", None)])
+def test_store_build_rejects_nonstable_before_reading_or_preparing_repo(tmp_path, tag, commit):
+    absent = tmp_path / "must-not-be-created"
+    with pytest.raises(ValueError, match="Store.*stable"):
+        desktop.build(absent, tag, "store", [], commit_build=commit)
+    assert not absent.exists()
 
 
 def test_termux_commit_args_reach_prerequisite_checks_without_mutation(tmp_path):

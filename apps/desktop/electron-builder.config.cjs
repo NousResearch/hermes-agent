@@ -22,6 +22,8 @@ const {
   displayName,
   appId,
   appNamePascal,
+  artifactNamePascal,
+  windowsExecutableName,
   channel,
   msixAppIdWithOrg
 } = require('./product-identity.cjs')
@@ -78,7 +80,7 @@ module.exports = {
   // A store build is archived, never served to a feed — prefix its artifact
   // so it can't collide with the out-of-store MSIX of the same tag/arch, and
   // the release pipeline can keep the two apart.
-  artifactName: `${store ? 'Store-' : ''}${appNamePascal}-\${version}-\${os}-\${arch}.\${ext}`,
+  artifactName: `${store ? 'Store-' : ''}${artifactNamePascal}-\${version}-\${os}-\${arch}.\${ext}`,
   icon: 'assets/icon',
   // The electron-updater feed. CI builds set CLOUDFLARE_R2_PUBLIC_URL (the R2
   // public bucket / custom domain) and publish there — the feed yml, blockmaps
@@ -87,7 +89,7 @@ module.exports = {
   // var (local, or a fork without the R2 vars) keep the github provider, which
   // is exactly today's behavior. The store build has no feed at all (the Store
   // owns its distribution and updates).
-  publish: store
+  publish: !channel
     ? null
     : [
         process.env.CLOUDFLARE_R2_PUBLIC_URL
@@ -96,6 +98,9 @@ module.exports = {
       ],
   extraMetadata: {
     name: appNamePascal,
+    // Electron bootstrap reads package.productName before main.ts. Keep the
+    // shipped stable default, but isolate nonstable userData from first access.
+    ...(appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
     desktopName: appId
   },
   directories: {
@@ -126,7 +131,7 @@ module.exports = {
     // The afterSign hook owns notarization, including keychain-profile builds.
     notarize: false,
     // The packaged client reads this generated app-update.yml by default.
-    publish: publicUrl && !store
+    publish: publicUrl && channel
       ? [{ provider: 'generic', url: `${publicUrl}/${macFeed.directory}/`, channel: macFeed.channel }]
       : null,
     category: 'public.app-category.developer-tools',
@@ -186,6 +191,7 @@ module.exports = {
     ]
   },
   win: {
+    executableName: windowsExecutableName,
     legalTrademarks: displayName,
     target: ['msix'],
     ...windowsSigning()
@@ -220,7 +226,8 @@ module.exports = {
     // build time (see the comment on the hook) — never at config require
     // time, so typecheck/test imports don't touch the filesystem.
     customExtensionsPath: 'build/msix-extensions.xml',
-    customManifestPath: store ? 'build/store-msix-manifest.xml' : 'assets/msix-manifest.xml',
+    customManifestPath: store ? 'build/store-msix-manifest.xml'
+      : appNamePascal !== artifactNamePascal ? 'build/msix-manifest.xml' : 'assets/msix-manifest.xml',
     // Hermes state is deliberately shared with unpackaged CLI/gateway
     // processes. Pair the manifest's disabled virtualization properties with
     // the restricted capability that permits unvirtualized AppData/HKCU writes.

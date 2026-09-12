@@ -5,6 +5,8 @@ import type { InstallStamp } from '../install-stamp'
 import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from '../update-api-check'
 import { classifyUpdateRoot } from '../update-root-policy'
 
+import { SOURCE_PROBE_RECOVERY, type SourceUpdate } from './checkout-source'
+
 import type { UpdaterStatusWire } from './index'
 
 export interface CheckoutCheckDeps {
@@ -12,7 +14,8 @@ export interface CheckoutCheckDeps {
   updateCheckCachePath: string
   isGitCheckout: (root: string) => boolean
   readCanonicalInstallStamp: () => { updateMechanism?: InstallStamp['updateMechanism'] } | null
-  readDesktopUpdateConfig: () => { branch: string }
+  readDesktopUpdateConfig: () => { branch: string; branchExplicit?: boolean }
+  readSourceUpdate: (root: string) => Promise<SourceUpdate | null>
   resolveUpdateRoot: () => string
   resolveHealedBranch: (root: string, branch: string) => Promise<string>
   getOriginUrl: (root: string) => Promise<string>
@@ -105,8 +108,9 @@ export async function checkCheckoutUpdates(
   deps: CheckoutCheckDeps,
   { force = false }: { force?: boolean } = {}
 ): Promise<UpdaterStatusWire> {
-  const updateRoot = deps.resolveUpdateRoot()
-  let { branch } = deps.readDesktopUpdateConfig()
+  const updateRoot: string = deps.resolveUpdateRoot()
+  const config: ReturnType<CheckoutCheckDeps['readDesktopUpdateConfig']> = deps.readDesktopUpdateConfig()
+  let branch: string = config.branch
 
   const policy = classifyUpdateRoot({
     isGitTree: deps.isGitCheckout(updateRoot),
@@ -132,6 +136,32 @@ export async function checkCheckoutUpdates(
     git(['rev-parse', '--abbrev-ref', 'HEAD']),
     deps.getOriginUrl(updateRoot)
   ])
+
+  if (config.branchExplicit === false && currentBranch && currentBranch !== 'HEAD') {
+    branch = currentBranch
+  }
+
+  const selection: SourceUpdate | null = await deps.readSourceUpdate(updateRoot)
+
+  if (selection === null) {
+    return { supported: false, reason: 'source-probe-unavailable', message: SOURCE_PROBE_RECOVERY, hermesRoot: updateRoot }
+  }
+
+  if (selection.channel !== 'main') {
+    return {
+      supported: true,
+      ...selection,
+      channel: selection.channel,
+      currentSha,
+      currentBranch,
+      dirty: dirty.length > 0,
+      hermesRoot: updateRoot,
+      fetchedAt: Date.now(),
+      updateAvailable: !selection.error && selection.targetSha !== currentSha,
+      behind: selection.targetSha === currentSha ? 0 : null,
+      commits: []
+    }
+  }
 
   const cached = readCache(deps.updateCheckCachePath)
   const now = Date.now()

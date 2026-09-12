@@ -73,6 +73,43 @@ handoff. It no longer selects packages by a GitHub workflow run. Explicit
 non-publishing desktop builds retain no downloadable job artifacts. Unrelated
 CI diagnostics and tested Docker image handoffs keep their existing storage.
 
+## Canary and one-off desktop identities
+
+`release.py --canary` builds the separate canary application. Its package
+identity and CLI command (`hermes-canary`) differ from stable; the existing
+canary feed updates that application only. One-off builds use
+`release.py --build-commit REV --remote REMOTE` (add `--publish` to dispatch).
+Their application identity and CLI command (`hermes-<7-character-sha>`) include
+the pinned commit. Two different commit builds do not replace each other.
+
+Branding is selected from those build inputs, not from runtime settings:
+canary uses yellow/dark-yellow icons; one-off builds use red icons bearing
+the short SHA. All desktop icon formats derive from the same artwork.
+
+One-off stamps use `source: commit-build`. No app update feed or App Installer
+subscription is published for them, and both the GUI and bundled CLI refuse
+update requests. They direct the recipient to ask the developer for a new
+build. Source checkout channels are separate: `hermes update --set-channel`
+remains available there and selects the published release's source commit.
+
+`--build-commit` prints its deterministic downloads-page URL before dispatch,
+including in dry runs:
+`https://hermes-assets.nousresearch.com/releases/commit/<full-sha>/index.html`.
+`CLOUDFLARE_R2_PUBLIC_URL` overrides the public origin. After admission, the
+commit summary runs even when a build or assembly job fails; it lists only
+receipt-backed existing downloads and marks missing binaries as not built.
+Missing binaries link to the workflow run under **View build run**, not to
+nonexistent downloads. Disabled platforms have no download or failure link.
+Page publication still requires working R2 access.
+
+Tagged builds also publish a per-tag diagnostic page at
+`releases/tag/<tag>/index.html` after build or feed failures, including when no
+artifacts were uploaded. An incomplete build does not advance the channel page
+or pass the release-success gate.
+
+Store submission retains its fixed official stable identity. Nonstable
+packages must not be submitted under that identity.
+
 ## Signed-package baseline
 
 The last successful stable release records

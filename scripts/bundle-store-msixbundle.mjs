@@ -27,22 +27,14 @@ import { ensureWindowsBundleTools } from '../apps/desktop/scripts/windows-bundle
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 const { values } = parseArgs({ options: {
-  tag: { type: 'string' }, commit: { type: 'string' }, version: { type: 'string' },
+  tag: { type: 'string' },
   'output-file': { type: 'string' },
 } })
 const tag = values.tag || process.env.HERMES_PAYLOAD_TAG
-const commitBuild = values.commit
-if (commitBuild) {
-  if (tag) throw new Error('Commit builds cannot select a release tag')
-  process.env.HERMES_BUILD_COMMIT = commitBuild
-  process.env.HERMES_PAYLOAD_VERSION = values.version || ''
-} else if (values.version !== undefined) {
-  throw new Error('--version requires --commit')
+if (!/^v\d+\.\d+\.\d+$/.test(tag || '') || process.env.HERMES_BUILD_COMMIT) {
+  throw new Error('Store packaging requires a stable release tag')
 }
-if (!tag && !commitBuild) {
-  console.error('[bundle-store] --tag or --commit is required')
-  process.exit(1)
-}
+process.env.HERMES_PAYLOAD_TAG = tag
 if (process.platform !== 'win32') {
   console.error('[bundle-store] this job must run on a Windows runner (makeappx)')
   process.exit(1)

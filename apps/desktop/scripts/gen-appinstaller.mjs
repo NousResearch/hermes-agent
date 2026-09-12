@@ -47,8 +47,8 @@ if (isCli) {
   }
 
   const { identity, version, name } = appIdentity(desktop, process.env.HERMES_PAYLOAD_TAG)
-  if (identity.store) {
-    console.error('[gen-appinstaller] a store build has no App Installer feed (the Store owns distribution)')
+  if (!identity.channel) {
+    console.error('[gen-appinstaller] Store and commit builds have no App Installer feed')
     process.exit(1)
   }
 

@@ -193,6 +193,7 @@ export const zh: Translations = {
   },
 
   notifications: {
+    sharedProfileWarning: '另一个 Hermes 安装实例正在使用此配置。两个实例共享此配置的设置和数据，因此更改可能发生冲突。你可以继续使用，也可以在更改前关闭另一个实例。',
     region: '通知',
     hide: '隐藏',
     show: '显示',
@@ -3399,6 +3400,7 @@ export const zh: Translations = {
   },
 
   updates: {
+    channels: { stable: '稳定版', canary: '预览版' },
     bundleSwapPending: '重启以完成更新',
     bundleSwapPendingDesc: '更新后的应用已安装完成，只需重启 Hermes 即可加载新版本。聊天记录和设置不会受到影响。',
     bundleSwapPendingAction: '重启 Hermes',

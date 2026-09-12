@@ -40,10 +40,7 @@ def _leg_for(basename: str) -> str:
 _ALL_BASENAMES = [
     "HermesBundled-0.28.0-win-x64.msix",
     "HermesBundled-0.28.0-win-arm64.msix",
-    "Store-HermesBundled-0.28.0-win-x64.msix",
-    "Store-HermesBundled-0.28.0-win-arm64.msix",
     "HermesBundled-0.28.0-win.msixbundle",
-    "Store-HermesBundled-0.28.0.0-win.msixbundle",
     "HermesBundled-0.28.0-mac-arm64.dmg",
     "HermesBundled-0.28.0-mac-x64.dmg",
     "HermesBundled-0.28.0-mac-arm64.zip",
@@ -80,13 +77,13 @@ def test_every_expected_binary_gets_a_row_built_or_not():
         assert row["state"] == "built", row
     summary = rbt.render_commit_summary(_all_built_names(), BASE, COMMIT, receipts)
     assert summary.count("✅ Built") == len(rbt._COMMIT_EXPECTED)
-    # zip/Termux/Store rows exist in the COMMIT summary (the release-body
+    # zip/Termux rows exist in the COMMIT summary (the release-body
     # table hides zips on purpose; the commit summary shows every binary).
     assert any("ZIP" in row["label"] for row in rows)
     assert any("Termux" in row["label"] for row in rows)
-    assert any("Store MSIX" in row["label"] for row in rows)
+    assert not any("Store" in row["label"] for row in rows)
     assert any("MSIXBUNDLE" in row["label"] for row in rows)
-    # The universal Store MSIXBUNDLE is commit-native now and links correctly.
+    # The universal sideload bundle links correctly.
     bundle = next(row for row in rows if "MSIXBUNDLE" in row["label"])
     assert bundle["key"].endswith(".msixbundle")
 
@@ -196,13 +193,12 @@ def test_failed_legs_from_release_needs_seam():
     assert rbt.failed_legs_from_release_needs("not json") == []
 
 
-def test_summary_uses_exact_nested_keys_and_lists_both_universal_bundles():
+def test_summary_uses_exact_nested_keys_and_lists_the_sideload_bundle():
     from scripts.releases import handoff
 
     paths = {
         "windows-universal": [
             "HermesBundled-0.28.0.0-win.msixbundle",
-            "Store-HermesBundled-0.28.0.0-win.msixbundle",
         ],
         "termux": ["deb/pool build/hermes-agent_0.28.0_aarch64.deb"],
     }
@@ -221,8 +217,38 @@ def test_summary_uses_exact_nested_keys_and_lists_both_universal_bundles():
         assert f"]({BASE}/downloads/{quote(key, safe='/')})" in summary
     built = [line for line in summary.splitlines() if "✅ Built" in line]
     assert len(built) == len(names)
-    assert any("Store" in line and "MSIXBUNDLE" in line for line in built)
+    assert not any("Store" in line for line in built)
     assert "Linux x64" in summary and "Linux ARM64" in summary
+
+
+@pytest.mark.parametrize("has_download", [True, False])
+def test_incomplete_commit_rows_link_run_not_missing_downloads(has_download):
+    run_url = "https://github.example/o/r/actions/runs/12345"
+    receipts = _receipts_all_built() if has_download else {}
+    names = _names("HermesBundled-0.28.0-win-x64.msix") if has_download else []
+    # The uploaded x64 binary stays downloadable even when that job fails
+    # after staging, or a sibling fails before staging its own artifact.
+    failed = ["build-win32", "build-darwin", "publish-win32-updater", "termux-deb"]
+    summary = rbt.render_commit_summary(names, BASE, COMMIT, receipts, failed, run_url=run_url)
+    page = rbt.render_commit_page(COMMIT, names, BASE, receipts, failed, run_url=run_url)
+    markdown_rows = [line for line in summary.splitlines() if line.startswith("| ")][1:]
+    html_rows = re.findall(r"<tr><td>(.*?)</tr>", page)
+    assert len(markdown_rows) == len(html_rows) == len(rbt._COMMIT_EXPECTED) + len(rbt._COMMIT_DISABLED)
+    for md, html_row in zip(markdown_rows, html_rows):
+        if "Linux" in md:
+            assert "Disabled" in md and "Disabled" in html_row
+            assert "](" not in md and "href=" not in html_row
+        elif has_download and "Windows x64" in md:
+            url = f"{BASE}/{names[0]}"
+            assert "✅ Built" in md and "✅ Built" in html_row
+            assert f"]({url})" in md and f'href="{url}"' in html_row
+            assert run_url not in md and run_url not in html_row
+        else:
+            assert "❌ Not built" in md and "❌ Not built" in html_row
+            assert f"[View build run]({run_url})" in md
+            assert f'<a href="{run_url}">View build run</a>' in html_row
+            assert BASE not in md and BASE not in html_row
+    assert summary.count("✅ Built") == page.count("✅ Built") == int(has_download)
 
 
 def test_commit_page_matches_the_summary_rows():
@@ -237,7 +263,8 @@ def test_commit_page_matches_the_summary_rows():
     for url in links:
         assert f'href="{url}"' in page
     assert page.count("✅ Built") == summary.count("✅ Built") == len(rbt._COMMIT_EXPECTED)
-    assert page.count("❌ Not built") == summary.count("❌ Not built") == len(rbt._COMMIT_DISABLED)
+    assert page.count("Disabled") == summary.count("Disabled") == len(rbt._COMMIT_DISABLED)
+    assert "❌ Not built" not in page and "❌ Not built" not in summary
     assert rbt.recorded_build(page) == COMMIT
 
 

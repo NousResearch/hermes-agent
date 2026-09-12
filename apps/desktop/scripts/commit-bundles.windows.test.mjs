@@ -29,6 +29,20 @@ function fixture(kit) {
   fs.writeFileSync(path.join(desktop, 'package.json'), JSON.stringify({ name: 'fixture', version: '0.21.1' }))
   fs.writeFileSync(path.join(desktop, 'electron-builder.config.cjs'), `module.exports=${JSON.stringify({ directories: { buildResources: kit }, toolsets: { winCodeSign: { url: 'file://' + kit } } })}\n`)
   fs.symlinkSync(path.join(repo, 'node_modules'), path.join(root, 'node_modules'), 'junction')
+  // Assembly does not depend on production artwork or the icon build step.
+  const iconsScript = path.join(root, 'fixture-icons.ps1')
+  fs.writeFileSync(iconsScript, String.raw`
+param([string]$Dir)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+New-Item -ItemType Directory -Force $Dir | Out-Null
+foreach ($asset in @(@('StoreLogo.png',50), @('Square150x150Logo.png',150), @('Square44x44Logo.png',44))) {
+  $image = New-Object System.Drawing.Bitmap([int]$asset[1], [int]$asset[1])
+  try { $image.Save((Join-Path $Dir $asset[0]), [System.Drawing.Imaging.ImageFormat]::Png) }
+  finally { $image.Dispose() }
+}
+`)
+  run('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', iconsScript, '-Dir', path.join(root, 'icons')], root)
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     !/^(AZURE_|CLOUDFLARE_|HERMES_|GITHUB_|GH_|NODE_OPTIONS$)/i.test(key)))
   Object.assign(env, { HERMES_PAYLOAD_TAG: '', CI: '', GIT_CONFIG_GLOBAL: path.join(root, 'git-config'),
@@ -55,7 +69,7 @@ function makePackage(makeappx, root, release, metadata, variant, arch, env) {
   fs.mkdirSync(content)
   fs.mkdirSync(path.join(content, 'assets'))
   for (const name of ['StoreLogo.png', 'Square150x150Logo.png', 'Square44x44Logo.png']) {
-    fs.copyFileSync(path.join(repo, 'apps/desktop/assets/appx', name), path.join(content, 'assets', name))
+    fs.copyFileSync(path.join(root, 'icons', name), path.join(content, 'assets', name))
   }
   const name = metadata.identity.store ? metadata.identity.storeMsix.identityName : metadata.identity.msixAppIdWithOrg
   const publisher = metadata.identity.store ? metadata.identity.storeMsix.publisher : 'CN=Fixture'
@@ -74,74 +88,64 @@ function makePackage(makeappx, root, release, metadata, variant, arch, env) {
   return file
 }
 
-test.runIf(process.platform === 'win32')('commit assembly preserves per-arch packages and produces two isolated SDK bundles', { timeout: 180_000 }, async () => {
+test.runIf(process.platform === 'win32')('commit assembly preserves per-arch packages and rejects Store bundles', { timeout: 180_000 }, async () => {
   const tools = await ensureWindowsBundleTools()
   const { root, env, commit, release } = fixture(path.dirname(path.dirname(tools.makeappx)))
   try {
-    const metadata = Object.fromEntries(['bundled', 'store'].map(variant => [variant, identity(root, env, variant)]))
+    const info = identity(root, env, 'bundled')
+    assert.throws(() => identity(root, env, 'store'), /Store.*stable/)
     const inputs = {}
-    for (const variant of ['bundled', 'store']) {
-      for (const arch of ['x64', 'arm64']) {
-        const file = makePackage(tools.makeappx, root, release, metadata[variant], variant, arch, env)
-        inputs[file] = sha256(file)
-      }
+    for (const arch of ['x64', 'arm64']) {
+      const file = makePackage(tools.makeappx, root, release, info, 'bundled', arch, env)
+      inputs[file] = sha256(file)
     }
-    const scripts = { bundled: 'stage-msixbundle.mjs', store: 'bundle-store-msixbundle.mjs' }
-    for (const variant of ['bundled', 'store']) {
-      const args = ['--commit', commit, '--version', '0.21.1']
-      if (variant === 'bundled') args.push('--variant', variant, '--no-upload')
-      const outputFile = path.join(root, 'store-output')
-      if (variant === 'store') args.push('--output-file', outputFile)
-      const result = spawnSync(process.execPath, [path.join(root, 'scripts', scripts[variant]), ...args], { cwd: root, env, encoding: 'utf8', timeout: 60_000 })
-      assert.equal(result.status, 0, result.stdout + result.stderr)
-      const info = metadata[variant]
-      const bundle = path.join(release, `${variant === 'store' ? 'Store-' : ''}${info.name}-${info.version}-win.msixbundle`)
-      assert.ok(fs.statSync(bundle).size > 0)
-      if (variant === 'store') assert.equal(fs.readFileSync(outputFile, 'utf8').trim(), bundle)
-      const expanded = path.join(root, `expanded-${variant}`)
-      run(tools.makeappx, ['unbundle', '/o', '/p', bundle, '/d', expanded], root, env)
-      const xml = fs.readFileSync(path.join(expanded, 'AppxMetadata/AppxBundleManifest.xml'), 'utf8')
-      const identityTag = /<Identity\b[^>]*>/.exec(xml)[0]
-      assert.ok(identityTag.includes(`Version="${info.version}"`), xml)
-      const bundledNames = [...xml.matchAll(/FileName="([^"]+\.msix)"/g)].map(match => match[1]).sort()
-      const expected = Object.keys(inputs).filter(file => path.basename(file).startsWith('Store-') === (variant === 'store')).map(file => path.basename(file)).sort()
-      assert.deepEqual(bundledNames, expected)
-      for (const name of expected) assert.equal(sha256(path.join(expanded, name)), inputs[path.join(release, name)])
-      const digest = sha256(bundle)
-      const modified = fs.statSync(bundle).mtimeMs
-      const invalid = [
-        [...args, '--candidate'], [...args, '--tag', 'v0.21.1'], [...args, '--unknown'],
-        ['--commit', commit.slice(0, 8), '--version', '0.21.1', ...(variant === 'bundled' ? ['--no-upload'] : [])],
-        ['--commit', commit, '--version', '1.65536.0', ...(variant === 'bundled' ? ['--no-upload'] : [])],
-      ]
-      if (variant === 'bundled') invalid.push(args.filter(value => value !== '--no-upload'))
-      for (const badArgs of invalid) {
-        const rejected = spawnSync(process.execPath, [path.join(root, 'scripts', scripts[variant]), ...badArgs], { cwd: root, env, encoding: 'utf8', timeout: 30_000 })
-        assert.notEqual(rejected.status, 0, `${scripts[variant]} accepted ${badArgs.join(' ')}\n${rejected.stdout}${rejected.stderr}`)
-        assert.equal(sha256(bundle), digest)
-        assert.equal(fs.statSync(bundle).mtimeMs, modified)
-      }
-      const missing = path.join(release, expected[0])
-      fs.renameSync(missing, `${missing}.held`)
-      try {
-        const refused = spawnSync(process.execPath, [path.join(root, 'scripts', scripts[variant]), ...args], { cwd: root, env, encoding: 'utf8', timeout: 30_000 })
-        assert.notEqual(refused.status, 0)
-        assert.match(refused.stdout + refused.stderr, /need both per-arch/)
-        assert.equal(sha256(bundle), digest)
-        assert.equal(fs.statSync(bundle).mtimeMs, modified)
-      } finally {
-        fs.renameSync(`${missing}.held`, missing)
-      }
-      if (variant === 'store') {
-        run('git', ['tag', 'v0.21.1'], root, env)
-        const tagEnv = { ...env, HERMES_BUILD_COMMIT: '', HERMES_PAYLOAD_VERSION: '', HERMES_PAYLOAD_TAG: 'v0.21.1' }
-        const tagged = spawnSync(process.execPath, [path.join(root, 'scripts', scripts.store), '--tag', 'v0.21.1', '--output-file', outputFile], { cwd: root, env: tagEnv, encoding: 'utf8', timeout: 60_000 })
-        assert.equal(tagged.status, 0, tagged.stdout + tagged.stderr)
-        assert.equal(fs.readFileSync(outputFile, 'utf8').trim(), bundle)
-      }
+    const script = path.join(root, 'scripts/stage-msixbundle.mjs')
+    const args = ['--commit', commit, '--version', '0.21.1', '--variant', 'bundled', '--no-upload']
+    const result = spawnSync(process.execPath, [script, ...args], { cwd: root, env, encoding: 'utf8', timeout: 60_000 })
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    const bundle = path.join(release, `${info.name}-${info.version}-win.msixbundle`)
+    assert.ok(fs.statSync(bundle).size > 0)
+    const expanded = path.join(root, 'expanded')
+    run(tools.makeappx, ['unbundle', '/o', '/p', bundle, '/d', expanded], root, env)
+    const xml = fs.readFileSync(path.join(expanded, 'AppxMetadata/AppxBundleManifest.xml'), 'utf8')
+    const identityTag = /<Identity\b[^>]*>/.exec(xml)[0]
+    assert.ok(identityTag.includes(`Version="${info.version}"`), xml)
+    const bundledNames = [...xml.matchAll(/FileName="([^"]+\.msix)"/g)].map(match => match[1]).sort()
+    const expected = Object.keys(inputs).map(file => path.basename(file)).sort()
+    assert.deepEqual(bundledNames, expected)
+    for (const name of expected) assert.equal(sha256(path.join(expanded, name)), inputs[path.join(release, name)])
+    const digest = sha256(bundle)
+    const modified = fs.statSync(bundle).mtimeMs
+    const invalid = [
+      [...args, '--candidate'], [...args, '--tag', 'v0.21.1'], [...args, '--unknown'],
+      ['--commit', commit.slice(0, 8), '--version', '0.21.1', '--no-upload'],
+      ['--commit', commit, '--version', '1.65536.0', '--no-upload'],
+      args.filter(value => value !== '--no-upload'),
+    ]
+    for (const badArgs of invalid) {
+      const rejected = spawnSync(process.execPath, [script, ...badArgs], { cwd: root, env, encoding: 'utf8', timeout: 30_000 })
+      assert.notEqual(rejected.status, 0, `accepted ${badArgs.join(' ')}\n${rejected.stdout}${rejected.stderr}`)
+      assert.equal(sha256(bundle), digest)
+      assert.equal(fs.statSync(bundle).mtimeMs, modified)
+    }
+    const before = fs.readdirSync(release).sort()
+    const store = spawnSync(process.execPath, [path.join(root, 'scripts/bundle-store-msixbundle.mjs'), '--commit', commit], { cwd: root, env, encoding: 'utf8' })
+    assert.notEqual(store.status, 0)
+    assert.match(store.stderr, /Unknown option.*commit/)
+    assert.deepEqual(fs.readdirSync(release).sort(), before)
+    const missing = path.join(release, expected[0])
+    fs.renameSync(missing, `${missing}.held`)
+    try {
+      const refused = spawnSync(process.execPath, [script, ...args], { cwd: root, env, encoding: 'utf8', timeout: 30_000 })
+      assert.notEqual(refused.status, 0)
+      assert.match(refused.stdout + refused.stderr, /need both per-arch/)
+      assert.equal(sha256(bundle), digest)
+      assert.equal(fs.statSync(bundle).mtimeMs, modified)
+    } finally {
+      fs.renameSync(`${missing}.held`, missing)
     }
     assert.equal(fs.readdirSync(release).some(name => name.endsWith('.appinstaller')), false)
-    for (const [file, digest] of Object.entries(inputs)) assert.equal(sha256(file), digest)
+    for (const [file, inputDigest] of Object.entries(inputs)) assert.equal(sha256(file), inputDigest)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

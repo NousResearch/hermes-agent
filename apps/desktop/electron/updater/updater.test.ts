@@ -7,7 +7,7 @@ import { buildStampPayload } from '../../scripts/write-build-stamp.mjs'
 
 import { appInstallerCheckToStatus, parseCheckOutput } from './app-installer'
 import { buildManualUpdateCommand } from './checkout'
-import { consumePendingRelaunch, PENDING_RELAUNCH_FILENAME, registerUpdateRelaunch, writePendingRelaunch } from './relaunch'
+import { type ConsumedRelaunch, consumePendingRelaunch, PENDING_RELAUNCH_FILENAME, registerUpdateRelaunch, type RelaunchRegistration, writePendingRelaunch } from './relaunch'
 
 import { resolveUpdaterMechanism } from './index'
 
@@ -123,10 +123,10 @@ describe('pending relaunch marker', () => {
 
   it('write then consume on a different version = update relaunch', () => {
     const files: Record<string, string> = {}
-    expect(writePendingRelaunch('/home', '0.18.2', (f, c) => { files[f] = c as string })).toBe(true)
+    expect(writePendingRelaunch({ getPath: (): string => '/home' }, '0.18.2', (f: string, c: string): void => { files[f] = c })).toBe(true)
     expect(JSON.parse(Object.values(files)[0]).fromVersion).toBe('0.18.2')
 
-    const r = consumePendingRelaunch('/home', '0.18.3', fakeFs(files))
+    const r: ConsumedRelaunch = consumePendingRelaunch({ getPath: (): string => '/home' }, '0.18.3', fakeFs(files))
     expect(r.wasUpdateRelaunch).toBe(true)
     expect(r.fromVersion).toBe('0.18.2')
     // one-shot: consumed
@@ -135,25 +135,25 @@ describe('pending relaunch marker', () => {
 
   it('same version = update never landed; marker consumed silently', () => {
     const files: Record<string, string> = {}
-    writePendingRelaunch('/home', '0.18.2', (f, c) => { files[f] = c as string })
+    writePendingRelaunch({ getPath: (): string => '/home' }, '0.18.2', (f: string, c: string): void => { files[f] = c })
 
-    const r = consumePendingRelaunch('/home', '0.18.2', fakeFs(files))
+    const r: ConsumedRelaunch = consumePendingRelaunch({ getPath: (): string => '/home' }, '0.18.2', fakeFs(files))
     expect(r.wasUpdateRelaunch).toBe(false)
     expect(Object.keys(files)).toHaveLength(0)
   })
 
   it('no marker = normal launch', () => {
-    expect(consumePendingRelaunch('/home', '0.18.3', fakeFs({})).wasUpdateRelaunch).toBe(false)
+    expect(consumePendingRelaunch({ getPath: (): string => '/home' }, '0.18.3', fakeFs({})).wasUpdateRelaunch).toBe(false)
   })
 
   it('corrupt marker is consumed and treated as unknown', () => {
     const files: Record<string, string> = {}
-    writePendingRelaunch('/home', '0.18.2', (f, c) => { files[f] = c as string })
+    writePendingRelaunch({ getPath: (): string => '/home' }, '0.18.2', (f: string, c: string): void => { files[f] = c })
 
     // corrupt the contents under the same key
     for (const k of Object.keys(files)) {files[k] = 'not json'}
 
-    const r = consumePendingRelaunch('/home', '0.18.3', fakeFs(files))
+    const r: ConsumedRelaunch = consumePendingRelaunch({ getPath: (): string => '/home' }, '0.18.3', fakeFs(files))
     expect(r.wasUpdateRelaunch).toBe(false)
     expect(Object.keys(files)).toHaveLength(0)
   })
@@ -164,13 +164,13 @@ describe('registerUpdateRelaunch — the mechanism, not just the marker', () => 
     const files: Record<string, string> = {}
     let started = 0
 
-    const ok = await registerUpdateRelaunch(
-      '/home',
+    const ok: RelaunchRegistration = await registerUpdateRelaunch(
+      { getPath: (): string => '/home' },
       '0.18.2',
       { relaunch: () => { started += 1;
 
  return { cancel: async () => {} } } },
-      (f, c) => { files[f] = c as string }
+      (f: string, c: string): void => { files[f] = c }
     )
 
     expect(ok.automatic).toBe(true)
@@ -181,11 +181,11 @@ describe('registerUpdateRelaunch — the mechanism, not just the marker', () => 
   it('retains the marker when a safely failed waiter requires manual relaunch', async () => {
     const files: Record<string, string> = {}
 
-    const ok = await registerUpdateRelaunch(
-      '/home',
+    const ok: RelaunchRegistration = await registerUpdateRelaunch(
+      { getPath: (): string => '/home' },
       '0.18.2',
       { relaunch: async () => undefined },
-      (f, c) => { files[f] = c as string }
+      (f: string, c: string): void => { files[f] = c }
     )
 
     expect(ok.automatic).toBe(false)

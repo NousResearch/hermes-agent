@@ -121,6 +121,7 @@ class LedgerEntry:
     host: str = ""
     port: Optional[int] = None
     profile: str = ""
+    hermes_home: str = ""
 
 
 def _ledger_path() -> Path:
@@ -145,7 +146,7 @@ def _read_ledger(path: Path) -> Optional[list[dict]]:
         text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return []
-    except OSError:
+    except (OSError, UnicodeError):
         return None
     if not text.strip():
         return []
@@ -174,14 +175,18 @@ def _same_incarnation(proc, create_time: Optional[float]) -> bool:
     return create_time is None or abs(float(proc.create_time()) - float(create_time)) < 2.0
 
 
-def _pid_alive_matches(pid: int, create_time: Optional[float]) -> Optional[bool]:
+def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool = False) -> Optional[bool]:
     """True/False when provable; ``None`` when psutil can't say."""
     try:
         import psutil
     except Exception:
         return None
     try:
-        return _same_incarnation(psutil.Process(int(pid)), create_time)
+        proc = psutil.Process(int(pid))
+        if strict:
+            return (create_time is not None and proc.create_time() == create_time
+                    and proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
+        return _same_incarnation(proc, create_time)
     except psutil.NoSuchProcess:
         return False
     except Exception:
@@ -195,9 +200,12 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
     pruned on every write. ``detail`` may carry ``host``/``port``/``profile`` so the update
     pipeline can relaunch a manually-started serve with its real bind address.
     """
+    from hermes_constants import hermes_home_key
+
     tag = parse_spawn_tag(os.environ.get(SPAWN_ENV_VAR))
     spawner_pid, spawner_create = (tag.spawner_pid, tag.spawner_create) if tag else _desktop_spawner_identity()
     entry = _new_entry(os.getpid(), _process_create_time(), purpose, project_root, spawner_pid, spawner_create)
+    entry.hermes_home = hermes_home_key()
     if detail:
         try:
             entry.host = str(detail.get("host") or "")
@@ -299,8 +307,13 @@ def register_child(pid: int, purpose: str, *, project_root: Optional[Path] = Non
     return _append_entry(entry)
 
 
-def ledger_entries(*, project_root: Optional[Path] = None) -> list[dict]:
-    """Live-verified ledger entries for THIS install (a corrupt ledger is quarantined, read as empty).
+def ledger_entries(
+    *, project_root: Optional[Path] = None, all_installs: bool = False, verified_only: bool = False,
+) -> list[dict]:
+    """Ledger entries for this install, or all installs when explicitly requested.
+
+    ``verified_only`` requires an exact live PID/create-time pair. The default preserves
+    unknown processes for reapers, which must not mistake missing proof for a dead process.
 
     Entries whose ``(pid, create_time)`` no longer matches a live process are excluded (PID reuse reads as
     dead, thanks to the create-time pair). A corrupt ledger is quarantined and read as empty — identical
@@ -314,9 +327,10 @@ def ledger_entries(*, project_root: Optional[Path] = None) -> list[dict]:
         return []
     return [
         e for e in entries
-        if e.get("install") == want_install
+        if (all_installs or e.get("install") == want_install)
         and isinstance(e.get("pid"), int)
-        and _pid_alive_matches(e["pid"], e.get("create_time")) is not False
+        and (_pid_alive_matches(e["pid"], e.get("create_time"), strict=True) is True
+             if verified_only else _pid_alive_matches(e["pid"], e.get("create_time")) is not False)
     ]
 
 

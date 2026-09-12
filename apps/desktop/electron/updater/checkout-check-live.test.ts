@@ -58,7 +58,8 @@ it('checks a real linked worktree through HTTP and reuses the disk cache until f
 
         return { code: 0, stdout: git(args, options?.cwd), stderr: '' }
       },
-      fetchGitHubApi: async (url: string, accept?: string): Promise<unknown> => {
+      readSourceUpdate: async (): Promise<{ channel: 'main' }> => ({ channel: 'main' }),
+    fetchGitHubApi: async (url: string, accept?: string): Promise<unknown> => {
         const parsed = new URL(url)
         expect(parsed.hostname).toBe('api.github.com')
 

@@ -25,6 +25,12 @@ Sources of truth — two axes, composed per target:
   squircle on Apple's 824x824 (r=185.4) grid — centered in 1024 with 100px
   margins — so the icon matches the size of Apple-template neighbors.
 
+Desktop build identity comes from HERMES_PAYLOAD_TAG / HERMES_BUILD_COMMIT:
+Canary uses yellow/dark-yellow backgrounds. Commit builds use red/dark-red
+and a seven-character SHA badge. The girl and tile geometry do not change.
+Only apps/desktop outputs use this identity. Website, bootstrap, dashboard,
+and the shared master SVGs retain the default brand.
+
 The girl is nested via its art bbox as viewBox, so it always lands centered in
 the box (824 safe zone for squircles / height-fitted for the marks) without
 distortion. The girl art corners sit ~185px from the squircle arc centers vs
@@ -84,6 +90,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 import re
 import sys
 from pathlib import Path
@@ -188,8 +195,10 @@ TARGETS: list[tuple[str, str, object]] = [
 class IconArt:
     """One generation's rendering inputs and caches; never writes to source."""
 
-    def __init__(self, source: Path):
+    def __init__(self, source: Path, *, colors: tuple[str, str] | None = None, commit: str = ""):
         assets = source / "assets"
+        self.colors = colors
+        self.commit = commit
         self.girls = {color: assets / f"nous-girl-{color}.svg" for color in ("black", "white")}
         self.backgrounds = assets / "backgrounds"
         self.paths: dict[str, str] = {}
@@ -241,6 +250,9 @@ def girl_layer(art: IconArt, girl: str, box: tuple[float, float, float, float]) 
 def background_inner(art: IconArt, name: str) -> tuple[str, int, int]:
     """Inner content + (width, height) of a background SVG asset."""
     text = (art.backgrounds / name).read_text(encoding="utf-8")
+    if art.colors:
+        text = text.replace('fill="#ffffff"', f'fill="{art.colors[0]}"')
+        text = text.replace(f'fill="{DARK_HEX}"', f'fill="{art.colors[1]}"')
     m = re.search(r'<svg\b[^>]*viewBox="0 0 (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)"[^>]*>', text)
     assert m, f"cannot parse viewBox of {name}"
     w, h = float(m.group(1)), float(m.group(2))
@@ -249,15 +261,55 @@ def background_inner(art: IconArt, name: str) -> tuple[str, int, int]:
     return inner, int(w), int(h)
 
 
+# Five-by-seven lowercase hexadecimal glyphs, one five-bit row at a time.
+# Vector cells keep release builds deterministic without any installed fonts.
+HEX_GLYPHS = {
+    "0": (14, 17, 19, 21, 25, 17, 14),
+    "1": (4, 12, 4, 4, 4, 4, 14),
+    "2": (14, 17, 1, 2, 4, 8, 31),
+    "3": (30, 1, 1, 14, 1, 1, 30),
+    "4": (2, 6, 10, 18, 31, 2, 2),
+    "5": (31, 16, 16, 30, 1, 1, 30),
+    "6": (14, 16, 16, 30, 17, 17, 14),
+    "7": (31, 1, 2, 4, 8, 8, 8),
+    "8": (14, 17, 17, 14, 17, 17, 14),
+    "9": (14, 17, 17, 15, 1, 1, 14),
+    "a": (0, 0, 14, 1, 15, 17, 15),
+    "b": (16, 16, 30, 17, 17, 17, 30),
+    "c": (0, 0, 14, 16, 16, 17, 14),
+    "d": (1, 1, 15, 17, 17, 17, 15),
+    "e": (0, 0, 14, 17, 31, 16, 14),
+    "f": (6, 9, 8, 28, 8, 8, 8),
+}
+
+
+def commit_layer(commit: str, bg: str) -> str:
+    cells = []
+    for index, char in enumerate(commit[:7]):
+        for row, bits in enumerate(HEX_GLYPHS[char]):
+            for col in range(5):
+                if bits & (1 << (4 - col)):
+                    x, y = 184 + (index * 6 + col) * 16, 48 + row * 16
+                    cells.append(f"M{x} {y}h16v16h-16z")
+    # The badge follows the tile's mac HIG inset, never the outer canvas.
+    transform = f' transform="translate(100 100) scale({824 / 1024})"' if "-mac-" in bg else ""
+    return (
+        f'<g{transform}><rect x="160" y="28" width="704" height="152" rx="24" fill="#29090c"/>'
+        f'<path fill="#ffffff" d="{"".join(cells)}"/></g>'
+    )
+
+
 def compose_svg(art: IconArt, girl: str, bg: str) -> str:
     """Full svg text: background + girl layer, in the background's native
     coordinate space (resvg scales to whatever output size is requested, so
     the composition is size-agnostic — no manual box scaling)."""
     inner, w, h = background_inner(art, bg)
+    badge = f"  {commit_layer(art.commit, bg)}\n" if art.commit else ""
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}">\n'
         f"  {inner.strip()}\n"
         f"  {girl_layer(art, girl, GIRL_BOXES[bg])}\n"
+        f"{badge}"
         "</svg>\n"
     )
 
@@ -374,16 +426,34 @@ def target_bytes(art: IconArt, kind: str, arg: object) -> bytes:
     return buf.getvalue()
 
 
+def build_art(source: Path) -> tuple[IconArt, IconArt]:
+    """Only desktop outputs carry build identity. Shared branding stays stable."""
+    art = IconArt(source)
+    tag = os.environ.get("HERMES_PAYLOAD_TAG", "")
+    commit = os.environ.get("HERMES_BUILD_COMMIT", "")
+    if commit:
+        if tag:
+            raise ValueError("Commit builds cannot also select HERMES_PAYLOAD_TAG")
+        if not re.fullmatch(r"[a-f0-9]{40}", commit):
+            raise ValueError("HERMES_BUILD_COMMIT requires an exact full 40-character SHA")
+        return art, IconArt(source, colors=("#e34850", "#4a1117"), commit=commit)
+    # Match the desktop/feed identity, including historical date-only tags.
+    if re.search(r"-canary\.20\d{6}(?:\d{6})?$", tag):
+        return art, IconArt(source, colors=("#f5cc32", "#443808"))
+    return art, art
+
+
 def cmd_write(source: Path, out: Path) -> int:
     """Return failure when any target cannot be generated or verified."""
-    art = IconArt(source)
+    art, desktop_art = build_art(source)
     written = 0
     failures = 0
     for rel, kind, arg in TARGETS:
         path = out / rel
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(target_bytes(art, kind, arg))
+            selected = desktop_art if rel.startswith("apps/desktop/") else art
+            path.write_bytes(target_bytes(selected, kind, arg))
             written += 1
         except Exception as exc:  # noqa: BLE001 - report all, then fail
             failures += 1
@@ -422,13 +492,14 @@ def cmd_check(source: Path, out: Path) -> int:
     """Structural verification: regenerate every target in memory and assert
     the invariants that actually matter (there are no committed bytes to
     byte-compare — outputs are generated on demand)."""
-    art = IconArt(source)
+    art, desktop_art = build_art(source)
     problems: list[str] = []
 
     # every target must generate without error
     for rel, kind, arg in TARGETS:
         try:
-            target_bytes(art, kind, arg)
+            selected = desktop_art if rel.startswith("apps/desktop/") else art
+            target_bytes(selected, kind, arg)
         except Exception as exc:  # noqa: BLE001
             problems.append(f"{rel}: REGENERATE FAILED ({exc})")
 

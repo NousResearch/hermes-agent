@@ -17,6 +17,11 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.request import urlopen
+
+import pytest
+
+from tests.scripts.test_release_r2 import r2_server  # noqa: F401
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "render-builds-table.py"
 _SPEC = importlib.util.spec_from_file_location("render_builds_table", _SCRIPT)
@@ -171,6 +176,26 @@ class TestBucketPage:
         assert BASE_URL + "/releases/tag/v0.28.0/HermesBundled-0.28.0-linux-x64.AppImage" in page
         assert "linux-arm64" not in page
 
+    @pytest.mark.parametrize("has_download", [True, False])
+    def test_failed_tag_rows_link_diagnostics_not_downloads(self, has_download):
+        run_url = "https://github.example/o/r/actions/runs/12345"
+        names = [ASSETS[2]] if has_download else []
+        assets = rbt.parse_assets(names)
+        failed = ["build-win32 (failure)", "build-darwin (failure)", "termux-deb (failure)"]
+        block = rbt.render_tables(assets, BASE_URL, failed, run_url=run_url)
+        page = rbt.render_page("v0.28.0", assets, BASE_URL, failed, run_url=run_url)
+        for job in failed:
+            md = next(line for line in block.splitlines() if line.startswith(f"| {job} |"))
+            html_row = next(row for row in re.findall(r"<tr><td>(.*?)</tr>", page) if job in row)
+            assert f"[View build run]({run_url})" in md
+            assert f'<a href="{run_url}">View build run</a>' in html_row
+            assert BASE_URL not in md and BASE_URL not in html_row
+        downloads = [url for url in re.findall(r"href=\"([^\"]+)\"", page) if url.startswith(BASE_URL)]
+        assert downloads == [f"{BASE_URL}/{name}" for name in names]
+        assert ("No downloadable artifacts" in page) is (not has_download)
+        for url in downloads:
+            assert f"]({url})" in block
+
     def test_page_names_the_build_it_describes(self):
         page = rbt.render_page("v0.28.0", rbt.parse_assets(ASSETS), BASE_URL)
         assert rbt.recorded_build(page) == "v0.28.0"
@@ -221,6 +246,10 @@ class TestTagRunPublishesThePage:
         raise AssertionError(argv)
 
     def test_page_upload_key_and_bytes(self, monkeypatch, capsys, tmp_path):
+        monkeypatch.setenv("RELEASE_NEEDS", json.dumps({
+            "validate": {"result": "success"}, "build-win32": {"result": "success"},
+            "publish-win32-updater": {"result": "success"},
+        }))
         uploads: list[tuple[str, str, bool]] = []
         monkeypatch.setattr(rbt.r2, "list_objects", lambda prefix="": {"keys": self.KEYS})
         monkeypatch.setattr(rbt, "existing_page", lambda key: None)
@@ -231,8 +260,10 @@ class TestTagRunPublishesThePage:
             "render-builds-table.py", "--tag", self.TAG, "--repo", "o/r", "--r2-base-url", BASE_URL,
         ])
         assert rbt.main() == 0
-        assert len(uploads) == 1
-        key, page, key_is_full = uploads[0]
+        assert len(uploads) == 2
+        assert uploads[0][0] == f"releases/tag/{self.TAG}/index.html"
+        key, page, key_is_full = uploads[1]
+        assert uploads[0][1] == page
         # Canary tag → the canary channel page, as a full key (not a tag name).
         assert key == "releases/canary/index.html" and key_is_full
         assert rbt.recorded_build(page) == self.TAG
@@ -244,7 +275,7 @@ class TestTagRunPublishesThePage:
         assert "v0.27.0" not in page and ".msixbundle" not in page
         assert f"✓ Page {BASE_URL}/releases/canary/index.html" in capsys.readouterr().out
 
-    def test_dry_run_and_stale_tags_write_nothing(self, monkeypatch, tmp_path):
+    def test_stale_tags_keep_their_own_page_and_dry_runs_write_nothing(self, monkeypatch, tmp_path):
         uploads: list[str] = []
         monkeypatch.setattr(rbt.r2, "list_objects", lambda prefix="": {"keys": self.KEYS})
         monkeypatch.setattr(rbt.r2, "put", lambda **kwargs: uploads.append(kwargs["key"]))
@@ -254,7 +285,9 @@ class TestTagRunPublishesThePage:
         monkeypatch.setattr(sys, "argv", [
             "render-builds-table.py", "--tag", self.TAG, "--repo", "o/r", "--r2-base-url", BASE_URL,
         ])
-        assert rbt.main() == 0                      # stale tag: page untouched
+        assert rbt.main() == 0                      # stale tag: channel untouched
+        assert uploads == [f"releases/tag/{self.TAG}/index.html"]
+        uploads.clear()
         monkeypatch.setattr(rbt, "existing_page", lambda key: None)
         monkeypatch.setattr(sys, "argv", [
             "render-builds-table.py", "--tag", self.TAG, "--repo", "o/r",
@@ -262,3 +295,45 @@ class TestTagRunPublishesThePage:
         ])
         assert rbt.main() == 0                      # dry run: nothing published
         assert uploads == []
+
+    @pytest.mark.parametrize("asset_present", [False, True])
+    @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped"])
+    def test_incomplete_tag_is_readable_without_replacing_last_good_channel(
+        self, monkeypatch, r2_server, asset_present, result,
+    ):
+        base = f"http://127.0.0.1:{r2_server.server_port}/hermes-releases"
+        channel_key = "releases/canary/index.html"
+        previous = rbt.render_page("v0.27.0-canary.20260817101010", {}, base).encode()
+        r2_server.store[channel_key] = (previous, "text/html")
+        if asset_present:
+            r2_server.store[self.KEYS[0]] = (b"transport fixture", "application/octet-stream")
+        edits = []
+
+        def gh(argv, **kwargs):
+            if argv[:3] == ["gh", "release", "edit"]:
+                edits.append(kwargs["input"])
+            return self._gh(argv, **kwargs)
+
+        monkeypatch.setattr(rbt.subprocess, "run", gh)
+        monkeypatch.setenv("RELEASE_NEEDS", json.dumps({
+            "validate": {"result": "success"},
+            "build-win32": {"result": "success"},
+            "publish-win32-updater": {"result": result},
+        }))
+        monkeypatch.setattr(sys, "argv", [
+            "render-builds-table.py", "--tag", self.TAG, "--r2-base-url", base,
+        ])
+        assert rbt.main() == 0
+        tag_key = f"releases/tag/{self.TAG}/index.html"
+        assert tag_key in r2_server.store
+        with urlopen(f"{base}/{tag_key}", timeout=5) as response:
+            page = response.read().decode()
+        assert rbt.recorded_build(page) == self.TAG
+        assert "Build incomplete" in page and "Build incomplete" in edits[0]
+        assert f"publish-win32-updater ({result})" in page
+        assert f"publish-win32-updater ({result})" in edits[0]
+        links = re.findall(r'href="([^"]+)"', page)
+        assert links == ([f"{base}/{self.KEYS[0]}"] if asset_present else [])
+        assert r2_server.store[channel_key][0] == previous
+        if not asset_present:
+            assert "No downloadable artifacts" in page

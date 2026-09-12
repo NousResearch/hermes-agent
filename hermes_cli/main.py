@@ -2288,6 +2288,7 @@ def _update_preflight_handled(args) -> bool:
         _cmd_update_check(
             branch=branch,
             branch_explicit=bool(getattr(args, "branch", None)),
+            **({"channel": args.channel} if getattr(args, "channel", None) else {}),
         )
         return True
     return False

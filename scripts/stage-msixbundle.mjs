@@ -58,6 +58,7 @@ if (!commitBuild && (values.version !== undefined || noUpload)) {
 // identity, so the env var MUST match the variant or the msix lookup
 // fails. Set it before anything requires the identity.
 process.env.HERMES_DESKTOP_VARIANT = variant
+if (tag) process.env.HERMES_PAYLOAD_TAG = tag
 
 if (commitBuild) {
   if (!/^[a-f0-9]{40}$/.test(commitBuild)) {

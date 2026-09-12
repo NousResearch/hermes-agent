@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { test, type TestContext } from 'vitest'
 
 import { provisionCliLinks } from './cli-provision'
 
@@ -63,6 +63,41 @@ test('repairs owned dangling CLI links without changing foreign or live entries'
     provisionCliLinks({ hermes: source }, binDir, message => messages.push(message))
     assert.equal(fs.readlinkSync(target), source)
     assert.equal(messages.filter(message => message.includes('linked 1')).length, 2)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('qualified CLI paths expose their filenames, not shared canonical command keys', (context: TestContext): void => {
+  const { root, binDir, source }: ReturnType<typeof fixture> = fixture()
+
+  try {
+    const plain: string = path.join(binDir, 'hermes')
+    fs.writeFileSync(plain, 'stable command')
+
+    try {
+      fs.symlinkSync(source, path.join(binDir, 'probe'))
+      fs.unlinkSync(path.join(binDir, 'probe'))
+    } catch (error) {
+      if (process.platform === 'win32' && (error as NodeJS.ErrnoException).code === 'EPERM') {
+        context.skip('Windows symlinks require Developer Mode or elevation')
+      }
+
+      throw error
+    }
+
+    for (const name of ['hermes-canary', 'hermes-abcdef1', 'hermes-1234567']) {
+      const cli: string = path.join(path.dirname(source), name)
+      const acp: string = `${cli}-acp`
+      fs.writeFileSync(cli, name)
+      fs.writeFileSync(acp, `${name}-acp`)
+      provisionCliLinks({ hermes: cli, 'hermes-acp': acp }, binDir, (): void => {})
+      assert.equal(fs.readlinkSync(path.join(binDir, name)), cli)
+      assert.equal(fs.readlinkSync(path.join(binDir, `${name}-acp`)), acp)
+    }
+
+    assert.equal(fs.readFileSync(plain, 'utf8'), 'stable command')
+    assert.equal(fs.existsSync(path.join(binDir, 'hermes-acp')), false)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

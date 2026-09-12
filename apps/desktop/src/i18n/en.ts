@@ -197,6 +197,7 @@ export const en: Translations = {
   },
 
   notifications: {
+    sharedProfileWarning: 'Another Hermes installation is using this profile. Both installations share its settings and data, so changes can conflict. You can continue, or close the other installation before making changes.',
     region: 'Notifications',
     hide: 'Hide',
     show: 'Show',
@@ -3254,6 +3255,7 @@ export const en: Translations = {
   },
 
   updates: {
+    channels: { stable: 'Stable', canary: 'Canary' },
     bundleSwapPending: 'Restart to finish the update',
     bundleSwapPendingDesc: 'The updated app is already installed — Hermes only needs to restart to load it. Chats and settings are untouched.',
     bundleSwapPendingAction: 'Restart Hermes',

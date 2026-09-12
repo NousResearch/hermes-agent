@@ -45,11 +45,11 @@ const config = require(path.join(desktop, "electron-builder.config.cjs"))
 const pkg = require(path.join(desktop, "package.json"))
 
 const options = config.msix
-// The payload CLI launcher (hermes.exe, the minted distlib launcher) is the
-// MSIX entry point; the alias and AppExtension fragments in the config
-// reference the same path. The launcher is self-relative and sets the
-// payload's own PYTHONPATH.
-const executable = `app\\resources\\agent-payload\\bin\\hermes.exe`
+// The main application launches Electron. CLI aliases have separate payload
+// entrypoints; use the same AppInfo derivation as MsixTarget and signing hooks.
+const { AppInfo } = require('../../../node_modules/app-builder-lib/dist/appInfo.js')
+const appInfo = new AppInfo({ config, metadata: { ...pkg, ...config.extraMetadata } }, null, config.win)
+const executable = `app\\${appInfo.productFilename}.exe`
 const displayName = options.displayName || config.productName
 // appInfo.name honours extraMetadata.name the way packager merging does.
 const appInfoName = config.extraMetadata?.name || pkg.name

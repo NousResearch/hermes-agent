@@ -439,6 +439,10 @@ async def get_status(profile: Optional[str] = None):
         if install_id:
             status["install_id"] = install_id
 
+        # Advisory only. Expose no paths or process identities on this public probe.
+        from hermes_cli.shared_profile_warning import shared_profile_warning
+        status["shared_profile_warning"] = bool(await run_in_threadpool(shared_profile_warning))
+
         components = await _component_health(gateway)
         status["components"] = components
         status["overall"] = ("ok" if all(item.get("status") == "ok" for item in components.values())

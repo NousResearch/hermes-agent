@@ -19,7 +19,7 @@ function fixture() {
   const app = path.join(root, 'apps', 'desktop')
   fs.mkdirSync(path.join(app, 'assets'), { recursive: true })
   fs.copyFileSync(path.join(desktop, 'assets/msix-manifest.xml'), path.join(app, 'assets/msix-manifest.xml'))
-  fs.writeFileSync(path.join(app, 'product-identity.cjs'), "module.exports={store:true,appNamePascal:'HermesBundled'}\n")
+  fs.writeFileSync(path.join(app, 'product-identity.cjs'), "module.exports={store:true,artifactNamePascal:'HermesBundled'}\n")
   fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: 'hermes', version: '0.27.1' }))
   const env = { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
     GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid',
@@ -68,38 +68,17 @@ test('Store calendar ordering survives minute, hour, day and year boundaries and
   expect(() => storePackageVersion('v0.27.1-canary.20260231000000', '.')).toThrow('Invalid canary')
 })
 
-test('commit builds use the commit time for Store identity without changing the app version', () => {
+test('commit builds cannot stage a Store manifest', () => {
   const { root, app } = fixture()
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
-  const timestamp = Number(execFileSync('git', ['log', '-1', '--format=%ct', commit], { cwd: root, encoding: 'utf8' }).trim())
   vi.stubEnv('HERMES_PAYLOAD_TAG', '')
   vi.stubEnv('HERMES_BUILD_COMMIT', commit)
   vi.stubEnv('HERMES_PAYLOAD_VERSION', '0.21.1')
-  vi.useFakeTimers()
   try {
-    vi.setSystemTime(new Date('2030-01-01T00:00:00Z'))
-    const identity = appIdentity(app)
-    const xml = fs.readFileSync(stageStoreManifest(app, ''), 'utf8')
-    expect(identity.version).toBe(storePackageVersionAt(timestamp))
-    expect(/<Identity\b[^>]*Version="([^"]+)"/.exec(xml)[1]).toBe(identity.version)
-    expect(identity.fileVersion).toBe('0.21.1')
-    vi.setSystemTime(new Date('2031-01-01T00:00:00Z'))
-    expect(appIdentity(app).version).toBe(identity.version)
-    const prior = fs.readFileSync(path.join(app, 'build/store-msix-manifest.xml'))
-    for (const bad of ['short', 'a'.repeat(40)]) {
-      vi.stubEnv('HERMES_BUILD_COMMIT', bad)
-      expect(() => stageStoreManifest(app, '')).toThrow()
-      expect(fs.readFileSync(path.join(app, 'build/store-msix-manifest.xml'))).toEqual(prior)
-    }
-    vi.stubEnv('HERMES_BUILD_COMMIT', commit)
-    for (const version of ['01.2.3', '1.65536.0', '1.2.3-canary.123', '']) {
-      vi.stubEnv('HERMES_PAYLOAD_VERSION', version)
-      expect(() => appIdentity(app)).toThrow()
-    }
-    vi.stubEnv('HERMES_PAYLOAD_VERSION', '0.21.1')
-    expect(() => appIdentity(app, 'v0.21.1')).toThrow()
+    expect(() => appIdentity(app)).toThrow('Store packaging requires a stable release tag')
+    expect(() => stageStoreManifest(app, '')).toThrow('Store packaging requires a stable release tag')
+    expect(fs.existsSync(path.join(app, 'build/store-msix-manifest.xml'))).toBe(false)
   } finally {
-    vi.useRealTimers()
     vi.unstubAllEnvs()
   }
 })

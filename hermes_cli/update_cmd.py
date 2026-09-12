@@ -641,148 +641,25 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
         proc.stdout.close()
 
 
-_RELEASE_TAG_RE = re.compile(r"^v(0|[1-9]\d{0,2})\.(\d+)\.(\d+)$")
-def _parse_release_tag(tag: str):
-    """Parse ``vX.Y.Z`` into a sortable (X, Y, Z) tuple, or return None.
-
-    Tags with a pre-release or build suffix (``v1.2.3-rc1``) return None.
-    Tags that do not have the shape of a final release also return None.
-    The stable channel only moves between final releases.
-    """
-    m = _RELEASE_TAG_RE.match(tag.strip())
-    if not m:
-        return None
-    return tuple(int(g) for g in m.groups())
-def _latest_release_tag_from_ls_remote(output: str):
-    """Select the newest final-release tag from ``git ls-remote --tags`` output.
-
-    Returns ``(tag, sha)`` or ``(None, None)``. Peeled entries (``^{}``) have
-    priority over the tag-object SHA. Thus annotated tags and lightweight tags
-    both give the commit SHA.
-    """
-    best = None          # (version_tuple, tag)
-    shas = {}            # tag -> commit sha (peeled wins)
-    for line in output.splitlines():
-        parts = line.split("\t")
-        if len(parts) != 2:
-            continue
-        sha, ref = parts
-        if not ref.startswith("refs/tags/"):
-            continue
-        name = ref[len("refs/tags/"):]
-        peeled = name.endswith("^{}")
-        if peeled:
-            name = name[:-3]
-        version = _parse_release_tag(name)
-        if version is None:
-            continue
-        if peeled or name not in shas:
-            shas[name] = sha.strip()
-        if best is None or version > best[0]:
-            best = (version, name)
-    if best is None:
-        return None, None
-    tag = best[1]
-    return tag, shas.get(tag)
-def _resolve_latest_release_tag(git_cmd, cwd):
-    """Ask origin for the newest final release tag. Returns (tag, sha) or (None, None)."""
-    try:
-        result = subprocess.run(
-            git_cmd + ["ls-remote", "--tags", "origin", "v*"],
-            cwd=cwd,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=60,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        logger.warning("Could not list release tags from origin: %s", exc)
-        return None, None
-    if result.returncode != 0:
-        logger.warning(
-            "git ls-remote --tags failed: %s",
-            (result.stderr or "").strip().splitlines()[:1],
-        )
-        return None, None
-    return _latest_release_tag_from_ls_remote(result.stdout)
-def _stable_channel_active(args) -> bool:
-    """Return True when this update must track tagged releases, not a branch.
-
-    ``args`` is the update argparse namespace, or None when the caller has no
-    flags to honor. An explicit ``--branch`` always wins (the user names the
-    exact update target; a tag silently overriding it would resurrect the bug
-    class --branch prevents). An explicit ``--channel`` is the transient
-    per-invocation override (``--set-channel`` is the persistent one). In all
-    other cases the effective channel comes from the per-install record
-    (see hermes_cli.update_channel.resolve_update_channel).
-    """
-    if getattr(args, "branch", None):
-        return False
-    transient = getattr(args, "channel", None)
+def _source_update_channel(args=None, *, channel=None, branch_explicit=False) -> str:
+    """Explicit branches win; otherwise transient channel, then this install's record."""
+    if branch_explicit or getattr(args, "branch", None):
+        return "main"
+    transient = channel or getattr(args, "channel", None)
     if transient:
-        from hermes_cli.update_channel import CHANNEL_STABLE
+        return transient
+    from hermes_cli.config import load_config
+    from hermes_cli.update_channel import resolve_update_channel
 
-        # canary on a source tree normalizes to main (not stable).
-        return transient == CHANNEL_STABLE
+    config = None
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.update_channel import CHANNEL_STABLE, resolve_update_channel
-
-        config = None
-        try:
-            config = load_config()
-        except Exception as exc:
-            logger.debug("Could not load config for channel resolution: %s", exc)
-        return resolve_update_channel(config, _m().PROJECT_ROOT) == CHANNEL_STABLE
+        config = load_config()
     except Exception as exc:
-        logger.warning("Channel resolution failed; defaulting to main: %s", exc)
-        return False
+        logger.debug("Could not load config for channel resolution: %s", exc)
+    return resolve_update_channel(config, _m().PROJECT_ROOT)
 
 
-def _github_latest_release():
-    """Resolve the official release tag and commit without local Git state."""
-    import json
-    import urllib.error
-    import urllib.request
-    from urllib.parse import quote
-
-    def _get_json(url):
-        req = urllib.request.Request(
-            url, headers={"Accept": "application/vnd.github+json",
-                          "User-Agent": "hermes-update"}
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-
-    base = "https://api.github.com/repos/NousResearch/hermes-agent"
-    try:
-        data = _get_json(f"{base}/releases/latest")
-        tag = data.get("tag_name") if isinstance(data, dict) else None
-        if isinstance(tag, str) and _parse_release_tag(tag) is not None:
-            commit = _get_json(f"{base}/commits/{quote(tag, safe='')}")
-            sha = commit.get("sha") if isinstance(commit, dict) else None
-            return tag, sha if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) else None
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        logger.debug("GitHub /releases/latest unavailable: %s", exc)
-    try:
-        tags = _get_json(f"{base}/tags?per_page=100")
-        best = None
-        for entry in tags if isinstance(tags, list) else []:
-            name = entry.get("name") if isinstance(entry, dict) else None
-            version = _parse_release_tag(name) if isinstance(name, str) else None
-            if version is not None and (best is None or version > best[0]):
-                commit = entry.get("commit")
-                sha = commit.get("sha") if isinstance(commit, dict) else None
-                best = (version, name, sha)
-        if best:
-            sha = best[2]
-            return best[1], sha if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) else None
-        return None, None
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        logger.debug("GitHub /tags unavailable: %s", exc)
-        return None, None
-
-
-def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, channel=None):
     """Implement ``hermes update --check``: fetch and report without installing.
 
     ``branch`` selects which branch the check compares against. Default is
@@ -832,39 +709,23 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
 
-    # Stable channel: if the caller did not ask for a branch, the question is
-    # "is there a newer tagged release?". The question is not "are there new
-    # commits on main?". Compare against the newest release tag and return.
-    if not branch_explicit:
-        if _stable_channel_active(None):
-            print("→ Update channel: stable (tagged releases)")
-            tag, tag_sha = _resolve_latest_release_tag(git_cmd, _m().PROJECT_ROOT)
-            if tag is None:
-                print("✗ No release tags found on origin. A check of the stable channel is not possible.")
-                print("  Switch channels with: hermes update --set-channel main")
-                sys.exit(1)
-            head_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
-            # Newer releases possibly do not exist locally yet. "At the tag"
-            # is a SHA comparison. The merge-base check tells us whether HEAD
-            # contains the tag (HEAD is ahead of the release or at the release).
-            at_or_past_tag = False
-            if head_sha and tag_sha:
-                if head_sha == tag_sha:
-                    at_or_past_tag = True
-                else:
-                    contained = subprocess.run(
-                        git_cmd + ["merge-base", "--is-ancestor", tag_sha, "HEAD"],
-                        cwd=_m().PROJECT_ROOT,
-                        capture_output=True,
-                        text=True, encoding="utf-8", errors="replace",
-                    )
-                    at_or_past_tag = contained.returncode == 0
-            if at_or_past_tag:
-                print(f"✓ Up to date with the latest release ({tag}).")
-            else:
-                print(f"→ New release available: {tag}")
-                print("  Run `hermes update` to install it.")
-            return
+    from hermes_cli.update_channel import CHANNEL_STABLE
+
+    selected_channel = _source_update_channel(channel=channel, branch_explicit=branch_explicit)
+    if selected_channel in (CHANNEL_STABLE, "canary"):
+        from hermes_cli.source_releases import resolve_source_release
+
+        print(f"→ Update channel: {selected_channel} (published releases)")
+        tag, tag_sha = resolve_source_release(selected_channel, git_cmd, _m().PROJECT_ROOT)
+        if tag is None:
+            print(f"✗ Could not resolve the {selected_channel} release commit.")
+            sys.exit(1)
+        if _capture_head_sha(git_cmd, _m().PROJECT_ROOT) == tag_sha:
+            print(f"✓ Up to date with the latest release ({tag}).")
+        else:
+            print(f"→ Selected release available: {tag}")
+            print("  Run `hermes update` to install it.")
+        return
 
     # Fetch only the branch we compare against; prefer upstream as the canonical
     # reference. A bare `git fetch <remote>` pulls every ref, and this repo has
@@ -1222,7 +1083,13 @@ def _pull_updates(
         # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
         # SECOND network fetch; identical in effect given the fresh tracking ref.
         merge_ref = target_ref if target_ref is not None else f"origin/{branch}"
-        if _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
+        if merge_ref != f"origin/{branch}":
+            # Keep detached local commits reachable, too. Named branches are
+            # untouched by checkout --detach; an autostash protects dirty files.
+            if pre_pull_sha and not _git_run(git_cmd, ["branch", "--show-current"]).stdout.strip():
+                _git_run(git_cmd, ["update-ref", f"refs/hermes/pre-release/{pre_pull_sha}", pre_pull_sha], check=True)
+            _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
+        elif _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
             _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
         _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha)
         update_succeeded = True
@@ -1310,22 +1177,21 @@ def _prepare_checkout_for_update(
     date, -1 when tips differ but the shallow count is unrecoverable."""
     if target_ref is None:
         target_ref = f"origin/{branch}"
-    stable_tag = target_ref != f"origin/{branch}"
-    if stable_tag:
-        # Stable channel: the checkout does NOT switch branches — the current branch
-        # pointer fast-forwards (or merges) to the release tag, so the parked-branch
-        # machinery is main-channel only.
+    release_tag = target_ref != f"origin/{branch}"
+    if release_tag:
+        # A release lands detached at its exact commit, never merges into or
+        # rewrites the user's branch. Branch-policy machinery is main-only.
         parked_branch_switched, in_place_update, switch_block_reason = False, True, None
     else:
         parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
             git_cmd, branch, current_branch, switch_branch=switch_branch,
             _windows_gateway_resume=_windows_gateway_resume)
 
-    if not stable_tag and not in_place_update and current_branch == "HEAD" != branch:
+    if not release_tag and not in_place_update and current_branch == "HEAD" != branch:
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
     auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
     if (
-        not stable_tag and not in_place_update and current_branch != branch
+        not release_tag and not in_place_update and current_branch != branch
         and _git_run(git_cmd, ["checkout", branch]).returncode != 0):
         track_result = _git_run(git_cmd, ["checkout", "-B", branch, f"origin/{branch}"])
         if track_result.returncode != 0:
@@ -1342,6 +1208,14 @@ def _prepare_checkout_for_update(
         auto_stash_ref is not None
         and not assume_yes
         and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())))
+
+    if release_tag:
+        # An ancestor release still needs applying when switching channels.
+        head_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+        return _CheckoutPlan(
+            auto_stash_ref=auto_stash_ref, commit_count=0 if head_sha == target_ref else -1,
+            in_place_update=True, parked_branch_switched=False,
+            prompt_for_restore=prompt_for_restore, switch_block_reason=None, upstream_checked=True)
 
     # On shallow checkouts `rev-list --count` can report the entire remote ancestry. The
     # zero/nonzero gate is still sound; treat the shallow NUMBER as unknown and recover it
@@ -1366,7 +1240,7 @@ def _prepare_checkout_for_update(
     # "Already up to date!" and verified nothing). Non-fork checkouts have no upstream question: origin IS
     # the official repo, so "Already up to date!" is fully verified there.
     upstream_checked = True
-    if commit_count == 0 and is_fork and branch == "main" and not stable_tag:
+    if commit_count == 0 and is_fork and branch == "main" and not release_tag:
         pre_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         upstream_checked = _m()._sync_with_upstream_if_needed(
             git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn)
@@ -1563,7 +1437,7 @@ def _current_branch_name(git_cmd, *, check: bool = False) -> str:
 
 def _handle_update_called_process_error(
     e, args, gateway_mode: bool, had_desktop_app_before_update: bool,
-    *, target_sha: str | None = None) -> None:
+    *, target_sha: str | None = None, target_repository: str | None = None) -> None:
     """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
     stage = _format_update_failure_stage(e)
     if _should_zip_fallback_on_update_error(e):
@@ -1572,7 +1446,8 @@ def _handle_update_called_process_error(
         print()
         desktop_build_ok = _update_via_zip(
             args, had_desktop_app_before_update=had_desktop_app_before_update,
-            target_sha=target_sha)
+            target_sha=target_sha,
+            **({"target_repository": target_repository} if target_repository else {}))
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
     else:
@@ -1737,25 +1612,38 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     branch = _m()._resolve_update_branch(args)
     target_ref = f"origin/{branch}"
-    stable_tag, stable_sha = None, None
-    if _stable_channel_active(args):
-        print("→ Update channel: stable (tagged releases)")
-        stable_tag, stable_sha = (
-            _github_latest_release() if use_zip_update
-            else _resolve_latest_release_tag(git_cmd, _m().PROJECT_ROOT))
-        if stable_tag is None or not re.fullmatch(r"[0-9a-f]{40}", stable_sha or ""):
-            print("✗ Could not resolve the stable release commit. No update was applied.")
+    release_tag, release_sha = None, None
+    target_repository = None
+    from hermes_cli.update_channel import CHANNEL_STABLE
+
+    selected_channel = _source_update_channel(args)
+    if selected_channel in (CHANNEL_STABLE, "canary"):
+        from hermes_cli.source_releases import resolve_source_release, source_repository
+
+        print(f"→ Update channel: {selected_channel} (published releases)")
+        try:
+            target_repository = source_repository(None if use_zip_update else git_cmd, _m().PROJECT_ROOT)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"✗ Could not identify the release repository: {exc}")
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(1)
+        release_tag, release_sha = resolve_source_release(
+            selected_channel, None if use_zip_update else git_cmd, _m().PROJECT_ROOT,
+            repository=target_repository)
+        if release_tag is None or not re.fullmatch(r"[0-9a-f]{40}", release_sha or ""):
+            print(f"✗ Could not resolve the {selected_channel} release commit. No update was applied.")
             print("  Retry, or switch channels with: hermes update --set-channel main")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
-        print(f"→ Latest release: {stable_tag}")
-        target_ref = stable_sha
+        print(f"→ Latest release: {release_tag}")
+        target_ref = release_sha
 
     if use_zip_update:
         try:
             desktop_build_ok = _update_via_zip(
                 args, had_desktop_app_before_update=had_desktop_app_before_update,
-                target_sha=stable_sha)
+                target_sha=release_sha,
+                **({"target_repository": target_repository} if target_repository else {}))
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         if gateway_mode:
@@ -1784,12 +1672,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
-        if stable_tag:
+        if release_tag:
             fetch_result = _git_run(git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True)
             if fetch_result.returncode != 0:
                 # Older servers require a named ref. Do not change local tags.
                 fetch_result = _git_run(
-                    git_cmd, ["fetch", "--no-tags", "origin", f"refs/tags/{stable_tag}"], network=True)
+                    git_cmd, ["fetch", "--no-tags", "origin", f"refs/tags/{release_tag}"], network=True)
                 if fetch_result.returncode == 0:
                     fetched = _git_run(git_cmd, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"])
                     if fetched.returncode != 0 or fetched.stdout.strip() != target_ref:
@@ -1820,7 +1708,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _windows_gateway_resume=_windows_gateway_resume)
             return
 
-        if commit_count > 0:
+        if release_tag:
+            print(f"→ Switching to release {release_tag} ({release_sha[:10]})")
+        elif commit_count > 0:
             print(f"→ Found {commit_count} new commit(s)")
         else:
             # Shallow, exact count unrecoverable — but the tips differ, so there IS an update.
@@ -1833,14 +1723,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
             keep_stash=opts.keep_stash, target_ref=target_ref)
         _apply_pulled_update(
             git_cmd, branch, pre_pull_sha, _plan, opts, gateway_mode=gateway_mode,
-            is_fork=is_fork and not stable_tag, desktop_dir=desktop_dir,
+            is_fork=is_fork and not release_tag, desktop_dir=desktop_dir,
             had_desktop_app_before_update=had_desktop_app_before_update,
             pre_update_snapshot_id=pre_update_snapshot_id, _pre_update_plan=_pre_update_plan,
             _windows_gateway_resume=_windows_gateway_resume)
     except subprocess.CalledProcessError as e:
         try:
             _handle_update_called_process_error(
-                e, args, gateway_mode, had_desktop_app_before_update, target_sha=stable_sha)
+                e, args, gateway_mode, had_desktop_app_before_update, target_sha=release_sha,
+                target_repository=target_repository)
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
 

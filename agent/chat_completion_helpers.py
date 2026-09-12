@@ -2074,6 +2074,8 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
 def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
     def _attempt(retry_count: int) -> str:
         codex_kwargs = agent._build_api_kwargs(api_messages)
+        # The transport emits these three as one block (transports/codex.py build_kwargs);
+        # strict Responses backends 400 on tool_choice/parallel_tool_calls without tools.
         codex_kwargs.pop("tools", None)
         codex_kwargs.pop("tool_choice", None)
         codex_kwargs.pop("parallel_tool_calls", None)

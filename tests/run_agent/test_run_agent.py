@@ -2905,54 +2905,11 @@ class TestHandleMaxIterations:
             for item in input_items
         )
 
-    def test_codex_summary_strips_tool_controls_when_tools_removed(self, agent):
-        agent.api_mode = "codex_responses"
-        agent.provider = "openai-codex"
-        agent.base_url = "https://chatgpt.com/backend-api/codex"
-        agent._base_url_lower = agent.base_url.lower()
-        agent._base_url_hostname = "chatgpt.com"
-        agent.model = "gpt-5.5"
-        agent._cached_system_prompt = "You are helpful."
-        captured = {}
-
-        monkey_kwargs = {
-            "model": "gpt-5.5",
-            "input": [{"role": "user", "content": "do stuff"}],
-            "tools": [{"type": "function", "name": "web_search"}],
-            "tool_choice": "auto",
-            "parallel_tool_calls": True,
-        }
-
-        def fake_run_codex_stream(kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(
-                status="completed",
-                output=[
-                    SimpleNamespace(
-                        type="message",
-                        status="completed",
-                        content=[SimpleNamespace(type="output_text", text="Summary")],
-                    )
-                ],
-            )
-
-        with (
-            patch.object(agent, "_build_api_kwargs", return_value=monkey_kwargs.copy()),
-            patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream),
-        ):
-            result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 90)
-
-        assert result == "Summary"
-        assert "tools" not in captured
-        assert "tool_choice" not in captured
-        assert "parallel_tool_calls" not in captured
-
-    def test_codex_summary_retry_also_strips_tool_controls(self, agent):
-        """The retry attempt must be as toolless as the first one.
-
-        Iteration-limit summaries retry once when the first summary comes back empty; both
-        attempts build their body through the same codex path, so both must drop the tool-control
-        block the transport emits alongside ``tools`` (agent/transports/codex.py).
+    def test_codex_summary_strips_tool_controls_on_every_attempt(self, agent):
+        """Iteration-limit summaries retry once on an empty answer; both attempts share one
+        ``_attempt`` closure, and both must go out without ``tools``, ``tool_choice`` and
+        ``parallel_tool_calls`` — the transport emits the three as one block, and strict
+        Responses backends 400 on ``tool_choice`` without ``tools``.
         """
         agent.api_mode = "codex_responses"
         agent.provider = "openai-codex"
@@ -2961,19 +2918,13 @@ class TestHandleMaxIterations:
         agent._base_url_hostname = "chatgpt.com"
         agent.model = "gpt-5.5"
         agent._cached_system_prompt = "You are helpful."
-
+        leaked_controls = {"tools", "tool_choice", "parallel_tool_calls"}
+        # Precondition against the real transport: the main-loop request carries all three.
+        assert leaked_controls <= agent._build_api_kwargs([{"role": "user", "content": "do stuff"}]).keys()
         bodies = []
-        tool_laden = {
-            "model": "gpt-5.5",
-            "input": [{"role": "user", "content": "do stuff"}],
-            "tools": [{"type": "function", "name": "web_search"}],
-            "tool_choice": "auto",
-            "parallel_tool_calls": True,
-        }
 
         def fake_run_codex_stream(kwargs):
             bodies.append(dict(kwargs))
-            # First attempt returns an empty summary so the caller takes the retry path.
             text = "" if len(bodies) == 1 else "Summary"
             return SimpleNamespace(
                 status="completed",
@@ -2986,18 +2937,13 @@ class TestHandleMaxIterations:
                 ],
             )
 
-        with (
-            patch.object(agent, "_build_api_kwargs", return_value=tool_laden.copy()),
-            patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream),
-        ):
+        with patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream):
             result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 90)
 
         assert result == "Summary"
         assert len(bodies) == 2, f"expected one retry after the empty summary, got {len(bodies)} attempts"
         for attempt_index, sent in enumerate(bodies):
-            assert "tools" not in sent, f"attempt {attempt_index}: tools leaked into the summary call"
-            assert "tool_choice" not in sent, f"attempt {attempt_index}: tool_choice leaked"
-            assert "parallel_tool_calls" not in sent, f"attempt {attempt_index}: parallel_tool_calls leaked"
+            assert not leaked_controls & sent.keys(), f"attempt {attempt_index}: {sorted(leaked_controls & sent.keys())} leaked"
 
     def test_api_sanitizer_matches_responses_call_id_when_id_differs(self, agent):
         messages = [

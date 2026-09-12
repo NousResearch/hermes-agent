@@ -297,5 +297,161 @@ def test_apply_never_overrides_token_var(monkeypatch, tmp_path):
     assert calls["n"] == 0
 
 
+# ---------------------------------------------------------------------------
+# _describe_secret_purpose
+# ---------------------------------------------------------------------------
 
+
+def test_describe_secret_purpose_ollama():
+    """Ollama references should return the AI inference description."""
+    result = op._describe_secret_purpose("op://Private/Ollama/api_key")
+    assert "AI inference" in result
+    assert "agent cannot think" in result
+
+
+def test_describe_secret_purpose_discord():
+    """Discord bot token references should return the Discord description."""
+    result = op._describe_secret_purpose("op://Private/Discord/bot_token")
+    assert "Discord" in result
+    assert "receive and respond" in result
+
+
+def test_describe_secret_purpose_nextcloud():
+    """Nextcloud app password references should return the Nextcloud description."""
+    result = op._describe_secret_purpose("op://Private/Nextcloud/app_password")
+    assert "Nextcloud" in result
+    assert "files, calendars" in result
+
+
+def test_describe_secret_purpose_stripe():
+    """Stripe references should return the payment processing description."""
+    result = op._describe_secret_purpose("op://Private/Stripe/secret_key")
+    assert "payment processing" in result
+
+
+def test_describe_secret_purpose_forge():
+    """Forge/Forgejo references should return the code repository description."""
+    result = op._describe_secret_purpose("op://Private/Forgejo/token")
+    assert "code repository" in result
+
+
+def test_describe_secret_purpose_fallback():
+    """Unknown references should return the generic fallback description."""
+    result = op._describe_secret_purpose("op://Private/Random/secret")
+    assert "needed for the agent" in result
+
+
+def test_describe_secret_purpose_case_insensitive():
+    """Purpose matching should be case-insensitive."""
+    result = op._describe_secret_purpose("op://Private/OLLAMA/key")
+    assert "AI inference" in result
+
+
+# ---------------------------------------------------------------------------
+# _notify_secret_access
+# ---------------------------------------------------------------------------
+
+
+def test_notify_secret_access_calls_subprocess(monkeypatch):
+    """_notify_secret_access should call notify-send with the right args."""
+    op._NOTIFIED_REFS.clear()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return mock.Mock(returncode=0)
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+
+    op._notify_secret_access("op://Private/OpenAI/api_key")
+
+    assert len(calls) == 1
+    assert calls[0][0] == "notify-send"
+    assert "--icon=1password" in calls[0]
+    # The item name is title-cased: "OpenAI" → "Openai"
+    assert any("Openai" in arg for arg in calls[0])
+
+
+def test_notify_secret_access_deduplicates(monkeypatch):
+    """Same reference should only notify once."""
+    op._NOTIFIED_REFS.clear()
+    call_count = [0]
+
+    def fake_run(cmd, **kwargs):
+        call_count[0] += 1
+        return mock.Mock(returncode=0)
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+
+    op._notify_secret_access("op://Private/OpenAI/api_key")
+    op._notify_secret_access("op://Private/OpenAI/api_key")
+    op._notify_secret_access("op://Private/OpenAI/api_key")
+
+    assert call_count[0] == 1, "Should only notify once per reference"
+
+
+def test_notify_secret_access_different_refs_notify_separately(monkeypatch):
+    """Different references should each trigger a notification."""
+    op._NOTIFIED_REFS.clear()
+    call_count = [0]
+
+    def fake_run(cmd, **kwargs):
+        call_count[0] += 1
+        return mock.Mock(returncode=0)
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+
+    op._notify_secret_access("op://Private/OpenAI/api_key")
+    op._notify_secret_access("op://Private/Discord/bot_token")
+
+    assert call_count[0] == 2, "Different refs should each notify"
+
+
+def test_notify_secret_access_tolerates_failure(monkeypatch):
+    """A failing notify-send should not raise."""
+    op._NOTIFIED_REFS.clear()
+
+    def fake_run(cmd, **kwargs):
+        raise Exception("notify-send not found")
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+
+    # Should not raise
+    op._notify_secret_access("op://Private/OpenAI/api_key")
+
+
+def test_notify_secret_access_includes_profile(monkeypatch):
+    """Profile name should appear in the notification title."""
+    op._NOTIFIED_REFS.clear()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return mock.Mock(returncode=0)
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+
+    op._notify_secret_access("op://Private/OpenAI/api_key", profile="work")
+
+    assert len(calls) == 1
+    title = calls[0][4] if len(calls[0]) > 4 else ""
+    assert "work" in title or "work" in " ".join(calls[0])
+
+
+def test_notify_secret_access_includes_reason(monkeypatch):
+    """Reason should appear in the notification title."""
+    op._NOTIFIED_REFS.clear()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return mock.Mock(returncode=0)
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+
+    op._notify_secret_access("op://Private/OpenAI/api_key", reason="loading config")
+
+    assert len(calls) == 1
+    title = calls[0][4] if len(calls[0]) > 4 else ""
+    assert "loading config" in title or "loading config" in " ".join(calls[0])
 

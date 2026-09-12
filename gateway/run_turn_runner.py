@@ -234,7 +234,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
-        agent._gateway_turn_context_notes = "\n\n".join(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
+        from gateway.session_surface import surface_turn_note
+        agent._gateway_turn_context_notes = "\n\n".join(
+            note for note in (*runner._consume_pending_turn_sidecar_notes(ctx.session_key), surface_turn_note(agent)) if note)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.

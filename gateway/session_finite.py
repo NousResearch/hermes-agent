@@ -32,5 +32,7 @@ def admit_finite(params):
 
 async def execute_finite_admission(authority, ref, row):
     from gateway.session_ingress import execute_admission
-    with finite_turn_scope(row['payload'].get('finite', False)):
+    from gateway.session_surface import surface_turn_scope
+    with finite_turn_scope(row['payload'].get('finite', False)), \
+            surface_turn_scope(row['payload'].get('surface_v1')):
         return await execute_admission(authority, ref, row)

@@ -39,6 +39,9 @@ class AuthorityConnection:
         rid = request.get('id')
         method = request.get('method')
         params = request.get('params') or {}
+        if method == 'session.detach' and not isinstance(params, dict):
+            return {'jsonrpc': '2.0', 'id': rid, 'error': {
+                'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         handlers = {'session.create': self.create, 'ping': self.ping, 'runtime.describe': self.describe,
                     'commands.catalog': self.command_catalog, 'complete.slash': self.slash_completions,
@@ -53,7 +56,8 @@ class AuthorityConnection:
                     'worker.register': self.worker_register, 'worker.adopt': self.worker_adopt,
                     'worker.persist': self.worker_persist,
                     'setup.status': self.setup_status, 'setup.runtime_check': self.setup_runtime_check,
-                    'session.resume': self.resume, 'prompt.submit': self.submit,
+                    'session.resume': self.resume, 'session.detach': self.detach,
+                    'prompt.submit': self.submit,
                     'prompt.receipt': self.receipt, 'prompt.cancel': self.cancel,
                     'prompt.resolve_unknown': self.resolve_unknown,
                     'session.interrupt': self.interrupt, 'session.events.since': self.events_since,
@@ -255,6 +259,24 @@ class AuthorityConnection:
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
                 'prompts': list(snapshot.prompts), 'info': info}
+
+    async def detach(self, ref, params):
+        if set(params) != {'session_id', 'subscription_id'}:
+            raise RuntimeStoreError('invalid_params')
+        session_id = params['session_id']
+        subscription_id = params['subscription_id']
+        if (not isinstance(session_id, str) or not session_id
+                or not isinstance(subscription_id, str) or not subscription_id):
+            raise RuntimeStoreError('invalid_params')
+        result = {'session_id': session_id, 'subscription_id': subscription_id,
+                  'detached': False}
+        if self.subscriptions.get(session_id) != subscription_id:
+            return result
+        await self.authority.detach(self.actor, subscription_id)
+        if self.subscriptions.get(session_id) == subscription_id:
+            del self.subscriptions[session_id]
+        result['detached'] = True
+        return result
 
     async def events_since(self, ref, params):
         self.authority.authorize(self.actor, ref, 'session:read')

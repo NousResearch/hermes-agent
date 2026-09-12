@@ -195,6 +195,120 @@ _CLEAR_STATUS: Dict[str, Any] = {
 _MARK_OK: Dict[str, Any] = {**_CLEAR_STATUS, "last_status": STATUS_OK}
 
 
+# Which payload keys carry token material for a singleton-seeded provider, and
+# which timestamp decides whether that material is fresh.
+#
+# ``_seed_from_singletons`` re-reads the singleton on every ``load_pool()`` and
+# hands it to ``_upsert_entry``.  A *different* pair is not automatically a
+# *newer* pair: another process can leave an older, already-consumed pair
+# behind, or a write-back can lose a race.  Adopting it would replay a consumed
+# single-use refresh token (``refresh_token_reused`` 4xx / portal revocation)
+# and persist the regression to disk — the same defect the
+# ``_sync_*_entry_from_auth_store`` readers guard against, arriving through the
+# seeding door.
+#
+# Keyed by ``(provider, source)``, not by provider: one provider can seed from
+# several singletons with different authority.  Anthropic seeds both
+# ``hermes_pkce`` (pool-owned: its row persists its own token pair, so the row
+# is a legitimate freshness witness) and ``claude_code`` (borrowed: absent from
+# ``credential_persistence._PERSISTABLE_PROVIDER_SOURCES``, so
+# ``sanitize_borrowed_credential_payload`` strips its tokens before the row
+# reaches auth.json).  Gating a borrowed source would refuse the singleton's
+# material for a row that holds none of its own, stranding it on a cold start —
+# the singleton is its sole authority, so adopting is correct.  ``manual:*``
+# rows are independent credentials with their own refresh-token lifecycle and
+# are never keys here.
+#
+# Declared per group, not per source, because one singleton can carry more than
+# one clock: Nous stamps its OAuth pair with ``obtained_at`` and its inference
+# agent key independently with ``agent_key_obtained_at``, so an older pair must
+# not block a legitimately newer key.  Routing/label/metadata keys are
+# deliberately absent — they are not token material and keep updating.
+#
+# A source added here inherits the gate at the choke point; no new call-site
+# comparison is needed.  It must ALSO have a producer that stamps its timestamp
+# key on every write, or the gate is inert: both sides parse to ``None`` and the
+# payload is returned untouched.  ``anthropic``/``hermes_pkce`` needed
+# ``_write_hermes_oauth_credentials`` to start stamping ``lastRefresh`` before
+# it could be declared here at all.
+_SINGLETON_FRESHNESS_GROUPS: Dict[Tuple[str, str], Tuple[Tuple[str, frozenset], ...]] = {
+    ("openai-codex", "device_code"): (
+        ("last_refresh", frozenset({"access_token", "refresh_token", "last_refresh"})),
+    ),
+    ("xai-oauth", "device_code"): (
+        ("last_refresh", frozenset({"access_token", "refresh_token", "last_refresh"})),
+    ),
+    ("nous", "device_code"): (
+        ("obtained_at", frozenset({
+            "access_token", "refresh_token", "expires_at",
+            "obtained_at", "expires_in",
+        })),
+        ("agent_key_obtained_at", frozenset({
+            "agent_key", "agent_key_expires_at", "agent_key_id",
+            "agent_key_expires_in", "agent_key_reused", "agent_key_obtained_at",
+        })),
+    ),
+    ("anthropic", "hermes_pkce"): (
+        ("last_refresh", frozenset({
+            "access_token", "refresh_token", "expires_at_ms", "last_refresh",
+        })),
+    ),
+}
+
+
+def _drop_stale_singleton_token_material(
+    existing: "PooledCredential",
+    provider: str,
+    source: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Strip token material that is older than what the entry already holds.
+
+    Freshness is compared as instants via ``_parse_absolute_timestamp`` (not ISO
+    string order), per group.  Missing or unparseable timestamps on either side
+    keep the pre-existing adopt behavior for that group, so rotation recovery
+    from an untimestamped store still works — which is also the migration
+    window: singletons already on disk carry no stamp until a refresh rewrites
+    them.
+
+    Returns ``payload`` unchanged (same object) when nothing is stale, so the
+    common path costs one dict lookup.
+    """
+    groups = _SINGLETON_FRESHNESS_GROUPS.get((provider, source))
+    if not groups:
+        return payload
+
+    stale_keys: Set[str] = set()
+    pair_stale = False
+    for stamp_key, gated_keys in groups:
+        entry_at = _parse_absolute_timestamp(getattr(existing, stamp_key, None))
+        store_at = _parse_absolute_timestamp(payload.get(stamp_key))
+        if entry_at is None or store_at is None or store_at >= entry_at:
+            continue
+        stale_keys |= gated_keys
+        if "access_token" in gated_keys:
+            pair_stale = True
+
+    # ``_set_nous_agent_key_from_invoke_jwt`` mirrors the access token onto
+    # ``agent_key``, which is what ``runtime_api_key`` actually serves.  If the
+    # incoming key IS the refused access token, refuse it with the pair —
+    # otherwise the stale pair launders itself in through ``agent_key``.
+    incoming_key = payload.get("agent_key")
+    if pair_stale and incoming_key and incoming_key == payload.get("access_token"):
+        for stamp_key, gated_keys in groups:
+            if "agent_key" in gated_keys:
+                stale_keys |= gated_keys
+
+    if not stale_keys:
+        return payload
+    logger.debug(
+        "Pool entry %s: refusing stale singleton token material from auth.json (%s)",
+        existing.id,
+        ", ".join(sorted(stale_keys)),
+    )
+    return {k: v for k, v in payload.items() if k not in stale_keys}
+
+
 def _normalize_pool_auth_type(provider: str, token: Any, auth_type: Any) -> str:
     """Infer pool auth metadata for token formats with one unambiguous meaning."""
     if provider == "anthropic" and isinstance(token, str) and token.startswith("sk-ant-oat"):
@@ -1495,7 +1609,7 @@ class CredentialPool(CredentialPoolAdminMixin):
 
     def _commit_anthropic_rotation(
         self, entry: PooledCredential, refreshed: Dict[str, Any]
-    ) -> None:
+    ) -> Optional[str]:
         """Write a rotated Anthropic pair to its authoritative singleton, or fail closed.
 
         claude_code -> ~/.claude/.credentials.json (so the fallback resolver
@@ -1517,7 +1631,7 @@ class CredentialPool(CredentialPoolAdminMixin):
             if entry.source == "claude_code":
                 ac._write_claude_code_credentials(*args)
             else:
-                ac._write_hermes_oauth_credentials(*args, target=_singleton_target_for_entry(self, entry))
+                return ac._write_hermes_oauth_credentials(*args, target=_singleton_target_for_entry(self, entry))
         except Exception as wexc:
             # Authoritative commit failed: do not mark, persist or return the
             # rotation as successful, and bypass the re-POST recovery path —
@@ -1553,7 +1667,9 @@ class CredentialPool(CredentialPoolAdminMixin):
             refresh_token=refreshed["refresh_token"],
             expires_at_ms=refreshed["expires_at_ms"],
         )
-        self._commit_anthropic_rotation(entry, refreshed)
+        committed_at = self._commit_anthropic_rotation(entry, refreshed)
+        if committed_at is not None:
+            updated = replace(updated, last_refresh=committed_at)
         return updated
 
     def _post_tokens_refresh(self, entry: PooledCredential) -> PooledCredential:
@@ -2195,6 +2311,11 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
         return True
 
     existing = entries[existing_idx]
+    # Choke point for singleton freshness: an older auth.json pair must not
+    # displace (or persist over) the fresher one this entry already holds.
+    # Done before ``token_changed`` so a refused pair can't look like a
+    # rotation and clear the entry's exhaustion state.
+    payload = _drop_stale_singleton_token_material(existing, provider, source, payload)
     field_updates: Dict[str, Any] = {}
     extra_updates: Dict[str, Any] = {}
     _field_names = {f.name for f in fields(existing)}
@@ -2329,6 +2450,7 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
         return
 
     from agent.anthropic_credentials import (
+        HERMES_OAUTH_LAST_REFRESH_KEY,
         read_claude_code_credentials,
         read_hermes_oauth_credentials,
     )
@@ -2343,6 +2465,7 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
                 "access_token": creds.get("accessToken", ""),
                 "refresh_token": creds.get("refreshToken"),
                 "expires_at_ms": creds.get("expiresAt"),
+                "last_refresh": creds.get(HERMES_OAUTH_LAST_REFRESH_KEY),
                 "label": label_from_token(creds.get("accessToken", ""), source_name),
             })
 

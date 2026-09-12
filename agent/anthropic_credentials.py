@@ -23,6 +23,7 @@ import subprocess
 import threading
 import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -571,15 +572,23 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
     return data if data is not None and data.get("accessToken") else None
 
 
+# Refresh instant, not access-token expiry: independently minted pairs may have
+# equal or inverted expiresAt values. Match the singleton's camelCase convention.
+HERMES_OAUTH_LAST_REFRESH_KEY = "lastRefresh"
+
+
 def _write_hermes_oauth_credentials(
     access_token: str, refresh_token: Optional[str], expires_at_ms: Optional[int], *, target: Optional[Path] = None
-) -> None:
+) -> str:
     """Commit refreshed hermes_pkce tokens to ~/.hermes/.anthropic_oauth.json (``CredentialPersistError`` on failure).
     ``target`` lets a named profile commit a grant it BORROWED from the global root back to the ROOT singleton
     instead of forking a copy under its own HERMES_HOME; without this write-through the next ``load_pool()``
     re-seeds the stale (consumed) pair from the file over the rotated pool entry."""
+    last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     _commit_private_json(
         target if target is not None else _get_hermes_oauth_file(),
-        {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms},
+        {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms,
+         HERMES_OAUTH_LAST_REFRESH_KEY: last_refresh},
         "Hermes OAuth credentials",
     )
+    return last_refresh

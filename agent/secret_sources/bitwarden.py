@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from agent.secret_sources._cache import (
     CachedFetch as _CachedFetch, SecretCache, atomic_write_json, entry_from_payload,
@@ -34,7 +34,7 @@ from agent.secret_sources._cache import (
 )
 from agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
-    is_valid_env_name as _is_valid_env_name, get_source_environment, run_cli, source_child_env,
+    is_valid_env_name as _is_valid_env_name, get_source_environment, run_cli, build_minimal_provider_env, redact_provider_output,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,8 +83,18 @@ _BWS_ERROR_RULES = (
 )
 
 
-def _classify_bws_error(message: str) -> ErrorKind:
-    return classify_cli_error(message, _BWS_ERROR_RULES)
+class _BwsFetchError(RuntimeError):
+    """A displayed fetch error with taxonomy bound before decoration."""
+
+    def __init__(self, message: str, error_kind: ErrorKind) -> None:
+        super().__init__(message)
+        self.error_kind = error_kind
+
+
+def _classify_bws_error(message: str | RuntimeError) -> ErrorKind:
+    if isinstance(message, _BwsFetchError):
+        return message.error_kind
+    return classify_cli_error(str(message), _BWS_ERROR_RULES)
 
 
 # --- Binary discovery + lazy install ----------------------------------------
@@ -356,7 +366,7 @@ def fetch_bitwarden_secrets(
         # one project all stops on a network blip). With the encrypted cache on it
         # is the ONLY fallback (at-rest payload must never be plaintext); else the
         # plain DiskCache is read with ttl=inf, but only when the real TTL > 0.
-        if use_cache and _classify_bws_error(str(exc)) in (ErrorKind.NETWORK, ErrorKind.TIMEOUT):
+        if use_cache and _classify_bws_error(exc) in (ErrorKind.NETWORK, ErrorKind.TIMEOUT):
             stale = label = None
             if encrypted_cache_enabled:
                 stale = _read_encrypted(encrypted_cache_max_stale_seconds)
@@ -383,10 +393,10 @@ def fetch_bitwarden_secrets(
     return secrets, warnings
 
 
-def _summarize_bws_stderr(raw: str) -> str:
+def _summarize_bws_stderr(raw: str, *, secret_values: Iterable[str] = ()) -> str:
     """Reduce a bws (color-eyre) error dump to its numbered cause lines joined with
     ``; `` (dropping ``Location:``/``Backtrace`` on); raw text if unrecognized."""
-    text = raw.replace("\x1b", "").strip()
+    text = redact_provider_output(raw, secret_values).strip()
     causes: List[str] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -399,20 +409,21 @@ def _summarize_bws_stderr(raw: str) -> str:
 
 def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str = "") -> Tuple[Dict[str, str], List[str]]:
     cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
-    # The bws child intentionally receives the access token; a profile-local
-    # fetch must not inherit sibling credentials (source_child_env).
-    env = source_child_env()
-    env["BWS_ACCESS_TOKEN"] = access_token
-    env.setdefault("NO_COLOR", "1")
-    if server_url:  # empty keeps whatever BWS_SERVER_URL the shell already had
-        env["BWS_SERVER_URL"] = server_url
+    extra_env = {"BWS_ACCESS_TOKEN": access_token}
+    if server_url:
+        extra_env["BWS_SERVER_URL"] = server_url
+    env = build_minimal_provider_env(
+        get_source_environment(), allow_env=("BWS_SERVER_URL",), extra_env=extra_env,
+    )
 
     proc = run_cli(cmd, env=env, timeout=_BWS_RUN_TIMEOUT, label="bws",
                    timeout_message=f"bws timed out after {_BWS_RUN_TIMEOUT}s fetching secrets")
 
     if proc.returncode != 0:
-        err = _summarize_bws_stderr(proc.stderr or proc.stdout or "")
-        raise RuntimeError(f"bws exited {proc.returncode}: {err[:200]}")
+        raw_error = proc.stderr or proc.stdout or ""
+        error_kind = _classify_bws_error(_summarize_bws_stderr(raw_error))
+        err = _summarize_bws_stderr(raw_error, secret_values=(access_token,))
+        raise _BwsFetchError(f"bws exited {proc.returncode}: {err[:200]}", error_kind)
 
     raw = proc.stdout.strip()
     if not raw:
@@ -433,7 +444,8 @@ def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str
         if _is_valid_env_name(key):
             secrets[key] = value
         else:
-            warnings.append(f"Skipping secret {key!r}: not a valid env-var name")
+            safe_key = redact_provider_output(key, (access_token,))
+            warnings.append(f"Skipping secret {safe_key!r}: not a valid env-var name")
     return secrets, warnings
 
 
@@ -504,7 +516,7 @@ class BitwardenSource(SecretSource):
                 encrypted_cache_max_stale_seconds=coerce_float(encrypted_cfg.get("max_stale_seconds", 0), 0.0),
             )
         except RuntimeError as exc:
-            result.fail(str(exc), _classify_bws_error(str(exc)))
+            result.fail(str(exc), _classify_bws_error(exc))
             if result.error_kind == ErrorKind.AUTH_FAILED:  # say what the raw OAuth reject means first
                 result.error = ("Bitwarden rejected the machine-account access token "
                                 f"({access_token_env}) — it was likely revoked, expired, "

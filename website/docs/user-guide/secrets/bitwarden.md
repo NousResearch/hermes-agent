@@ -49,6 +49,19 @@ It will:
 Non-interactive setup is also supported via flags:
 
 ```bash
+# Inject BWS_ACCESS_TOKEN from your secret provider or CI secret store.
+hermes secrets bitwarden setup \
+  --server-url https://vault.bitwarden.eu \
+  --project-id <project-uuid>
+```
+
+Use the configured `BWS_ACCESS_TOKEN` environment variable for automation so
+the token is not placed in the child process argv. The `--access-token` flag
+remains a compatibility fallback for wrappers that cannot inject the
+environment variable; Hermes warns that a value passed this way can appear in
+process listings, shell history, or CI logs:
+
+```bash
 hermes secrets bitwarden setup \
   --access-token "$BWS_ACCESS_TOKEN" \
   --server-url https://vault.bitwarden.eu \
@@ -88,8 +101,17 @@ Fix it without re-running the whole wizard:
 
 ```bash
 hermes secrets bitwarden token                     # masked prompt
-hermes secrets bitwarden token --access-token 0.…  # non-interactive
+# Inject BWS_ACCESS_TOKEN through your secret provider, then:
+hermes secrets bitwarden token                     # non-interactive
 ```
+
+If `access_token_env` is customized in `config.yaml`, inject that configured
+environment-variable name instead; the non-interactive rotation path reads
+the provider-injected value before loading the persisted `.env` value.
+
+Passing `--access-token` is still supported as a compatibility fallback, but
+the value can appear in process listings, shell history, or CI logs and Hermes
+will warn when it is used.
 
 The command probes Bitwarden with the new token **before** writing anything — a rejected token leaves your current `.env` untouched. On success it stores the token, clears the fetch caches, and warns if the configured project is not visible to the new machine account.
 

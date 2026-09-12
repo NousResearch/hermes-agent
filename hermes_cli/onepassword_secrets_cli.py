@@ -17,6 +17,8 @@ from rich.console import Console
 from rich.panel import Panel
 
 from agent.secret_sources import onepassword as op_src
+from agent.secret_sources.base import redact_provider_output
+from hermes_cli.secret_prompt import cli_secret_arg_warning, get_pre_dotenv_rotation_input
 from hermes_cli._secrets_common import (
     arg,
     cfg_str,
@@ -28,7 +30,7 @@ from hermes_cli._secrets_common import (
     register_subcommands,
     require_enabled,
     rotate_token,
-    secret_cli_env,
+    token_env_name,
     section_cfg,
     yn,
 )
@@ -46,7 +48,11 @@ def _op_cfg() -> dict:
 
 
 def _op_cfg_for_write(cfg: dict) -> dict:
-    return cfg.setdefault("secrets", {}).setdefault("onepassword", {})
+    if not isinstance(cfg.get("secrets"), dict):
+        cfg["secrets"] = {}
+    if not isinstance(cfg["secrets"].get("onepassword"), dict):
+        cfg["secrets"]["onepassword"] = {}
+    return cfg["secrets"]["onepassword"]
 
 
 def _references(op_cfg: dict) -> dict:
@@ -61,12 +67,12 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
         ("setup", "Verify the op CLI, set account / token env var, and enable", cmd_setup, (
             arg("--account", "1Password account shorthand or sign-in address (op --account)"),
             arg("--token-env", f"Env var holding a service-account token (default {_DEFAULT_TOKEN_ENV})"),
-            arg("--token", "Service-account token to store in .env non-interactively"),
+            arg("--token", "Service-account token to store in .env non-interactively; warning: visible in process listings and shell history"),
             arg("--binary-path", "Absolute path to the op binary (skips PATH lookup)"),
         )),
         ("status", "Show config + op binary + references", cmd_status, ()),
         ("token", "Rotate the service-account token: validate and store it in .env", cmd_token, (
-            arg("--token", "Provide the new token non-interactively (default: masked prompt)"),
+            arg("--token", "Provide the new token non-interactively (default: masked prompt); warning: visible in process listings and shell history"),
             flag("--no-verify", "Store without probing 1Password first (not recommended)"),
         )),
         ("set", "Map an env var to an op:// reference", cmd_set, (
@@ -97,10 +103,15 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     cfg = load_config()
     op_cfg = _op_cfg_for_write(cfg)
+    token_env = token_env_name(args.token_env or op_cfg.get("service_account_token_env"), _DEFAULT_TOKEN_ENV)
+    if args.token:
+        console.print(f"[yellow]⚠ {cli_secret_arg_warning('--token', token_env)}[/yellow]")
 
     console.print()
     console.print("[bold]Step 1[/bold]  Locate the op CLI")
-    binary_path = (args.binary_path or op_cfg.get("binary_path", "") or "").strip()
+    configured_binary = op_cfg.get("binary_path")
+    binary_path = args.binary_path or (configured_binary if isinstance(configured_binary, str) else "")
+    binary_path = binary_path.strip()
     binary = op_src.find_op(binary_path)
     if binary is None:
         console.print(
@@ -120,7 +131,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     console.print()
     console.print("[bold]Step 2[/bold]  Authentication")
-    token_env = (args.token_env or op_cfg.get("service_account_token_env") or _DEFAULT_TOKEN_ENV).strip()
     op_cfg["service_account_token_env"] = token_env
 
     token = (args.token or "").strip()
@@ -128,6 +138,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
         save_env_value(token_env, token)
         os.environ[token_env] = token
         console.print(f"  [green]✓[/green] service-account token stored in {get_env_path()} as {token_env}")
+    elif pre_dotenv_token := get_pre_dotenv_rotation_input(token_env).strip():
+        save_env_value(token_env, pre_dotenv_token)
+        os.environ[token_env] = pre_dotenv_token
+        console.print(f"  [green]✓[/green] service-account token from {token_env} stored in {get_env_path()}")
     elif os.environ.get(token_env):
         console.print(f"  [green]✓[/green] using service-account token from {token_env}")
     else:
@@ -165,7 +179,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     enabled = bool(op_cfg.get("enabled"))
     account = cfg_str(op_cfg, "account")
-    token_env = op_cfg.get("service_account_token_env", _DEFAULT_TOKEN_ENV)
+    token_env = token_env_name(op_cfg.get("service_account_token_env"), _DEFAULT_TOKEN_ENV)
     binary_path = cfg_str(op_cfg, "binary_path")
     references = _references(op_cfg)
     token_set = bool(os.environ.get(token_env))
@@ -250,7 +264,7 @@ def cmd_token(args: argparse.Namespace) -> int:
     only then persist to .env, so a bad paste never bricks the working token."""
     console = Console()
     op_cfg = _op_cfg()
-    token_env = op_cfg.get("service_account_token_env", _DEFAULT_TOKEN_ENV)
+    token_env = token_env_name(op_cfg.get("service_account_token_env"), _DEFAULT_TOKEN_ENV)
     account = cfg_str(op_cfg, "account")
     binary_path = cfg_str(op_cfg, "binary_path")
 
@@ -302,7 +316,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         return 0
 
     account = cfg_str(op_cfg, "account")
-    token_env = op_cfg.get("service_account_token_env", _DEFAULT_TOKEN_ENV)
+    token_env = token_env_name(op_cfg.get("service_account_token_env"), _DEFAULT_TOKEN_ENV)
     binary_path = cfg_str(op_cfg, "binary_path")
 
     # --apply uses the startup code path so the skip/override/token-guard policy lives in one place.
@@ -380,9 +394,7 @@ def _op_whoami(binary: Path, account: str, *, token_value: str = "") -> Optional
     cmd = [str(binary), "whoami"]
     if account:
         cmd += ["--account", account]
-    env = secret_cli_env()
-    if token_value:
-        env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
+    env = op_src._op_child_env(token_value)
     try:
         res = subprocess.run(
             cmd, env=env, capture_output=True, text=True,
@@ -392,7 +404,8 @@ def _op_whoami(binary: Path, account: str, *, token_value: str = "") -> Optional
         return None
     if res.returncode != 0:
         return None
-    return (res.stdout or "").strip().replace("\n", " ")[:120] or "authenticated"
+    out = redact_provider_output(res.stdout or "", op_src._op_auth_values(env))
+    return out.strip().replace("\n", " ")[:120] or "authenticated"
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

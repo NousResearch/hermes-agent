@@ -164,6 +164,7 @@ interface GatewayRegistryState {
   primaryProfile: string
   activeKey: string
   activationEpoch: number
+  primaryConnectionGeneration: number
   secondaries: Map<string, Secondary>
   /** Scopes that opened in this renderer generation, even if later pruned. */
   openedSecondaryScopes?: Set<string>
@@ -185,6 +186,7 @@ function createRegistryState(): GatewayRegistryState {
     primaryProfile: 'default',
     activeKey: 'default',
     activationEpoch: 0,
+    primaryConnectionGeneration: 0,
     secondaries: new Map<string, Secondary>(),
     openedSecondaryScopes: new Set<string>(),
     turnLeases: new Map<string, () => void>(),
@@ -215,7 +217,8 @@ function gatewayState(): GatewayRegistryState {
     const store = globalThis as unknown as { [STATE_KEY]?: GatewayRegistryState }
     store[STATE_KEY] ??= createRegistryState()
 
-    // Existing dev-HMR containers predate whole-turn leases.
+    // Existing dev-HMR containers predate whole-turn leases and connection generations.
+    store[STATE_KEY].primaryConnectionGeneration ??= 0
     store[STATE_KEY].turnLeases ??= new Map()
     store[STATE_KEY].turnLeaseReleaseTimers ??= new Map()
 
@@ -301,6 +304,7 @@ export function setPrimaryGatewayConnectionId(connectionId: null | string | unde
     return
   }
 
+  g.primaryConnectionGeneration += 1
   g.primaryConnectionId = (connectionId ?? '').trim() || null
 
   if (g.activeKey === g.primaryProfile) {
@@ -1474,14 +1478,65 @@ export async function openGatewayForAgent(
   }
 }
 
+interface AgentActivationRequest {
+  activationEpoch: number
+  primaryConnectionGeneration: number
+  primaryGateway: HermesGateway | null
+  primaryProfile: string
+}
+
+function beginAgentActivationRequest(): AgentActivationRequest {
+  return {
+    activationEpoch: beginGatewayActivation(),
+    primaryConnectionGeneration: g.primaryConnectionGeneration,
+    primaryGateway: g.primaryGateway,
+    primaryProfile: g.primaryProfile
+  }
+}
+
+function isCurrentAgentActivation(request: AgentActivationRequest): boolean {
+  return request.activationEpoch === gatewayActivationEpoch()
+}
+
+async function activatePrimaryForAgent(
+  connectionId: null | string,
+  request: AgentActivationRequest,
+  {
+    activationBarrier,
+    requireOpen = false,
+    signal
+  }: { activationBarrier?: Promise<unknown>; requireOpen?: boolean; signal?: AbortSignal }
+): Promise<boolean> {
+  if (activationBarrier) {
+    await activationBarrier
+  }
+
+  if (
+    signal?.aborted ||
+    !isCurrentAgentActivation(request) ||
+    g.primaryConnectionGeneration !== request.primaryConnectionGeneration ||
+    normKey(connectionId) !== g.primaryConnectionId ||
+    request.primaryGateway !== g.primaryGateway ||
+    request.primaryProfile !== g.primaryProfile ||
+    (requireOpen && !isOpen(request.primaryGateway))
+  ) {
+    return false
+  }
+
+  return applyActive(request.primaryProfile, request.activationEpoch)
+}
+
 export async function ensureGatewayForAgent(
   connectionId: null | string,
   profile: string,
-  { signal }: { signal?: AbortSignal } = {}
+  {
+    activationBarrier,
+    signal
+  }: { activationBarrier?: Promise<unknown>; signal?: AbortSignal } = {}
 ): Promise<boolean> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
-  if (scope === normKey(profile) || isPrimaryRegistryRoute(connectionId, profile)) {
+  if (scope === normKey(profile)) {
     if (signal?.aborted) {
       return false
     }
@@ -1491,15 +1546,36 @@ export async function ensureGatewayForAgent(
     return !signal?.aborted
   }
 
-  if (await isAttachedSharedRemote(connectionId, profile, 'foreground')) {
-    return Boolean(isOpen(g.primaryGateway) && !signal?.aborted)
+  if (signal?.aborted) {
+    return false
   }
 
-  if (!window.hermesDesktop?.getConnectionFor) {
+  const primaryRoute = isPrimaryRegistryRoute(connectionId, profile)
+
+  if (!primaryRoute && !window.hermesDesktop?.getConnectionFor) {
     throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
   }
 
-  const activationEpoch = beginGatewayActivation()
+  const request = beginAgentActivationRequest()
+
+  if (primaryRoute) {
+    return activatePrimaryForAgent(connectionId, request, { activationBarrier, signal })
+  }
+
+  const attachedSharedRemote = await isAttachedSharedRemote(connectionId, profile, 'foreground')
+
+  if (signal?.aborted || !isCurrentAgentActivation(request)) {
+    return false
+  }
+
+  if (attachedSharedRemote) {
+    // A named profile on the registered remote primary shares that primary
+    // socket. This is an activation path, not a background request: move the
+    // foreground gateway back to primary when the current route is a local or
+    // other-source secondary. Merely reporting "open" leaves $gateway on the
+    // old source while the wrapper publishes the shared-remote metadata.
+    return activatePrimaryForAgent(connectionId, request, { activationBarrier, requireOpen: true, signal })
+  }
 
   let entry = g.secondaries.get(scope)
 
@@ -1529,9 +1605,13 @@ export async function ensureGatewayForAgent(
   // The activation is settling either way — release the prune lease.
   entry.activationLeaseUntil = 0
 
+  if (activationBarrier) {
+    await activationBarrier
+  }
+
   // A timed-out owner may leave the dial running, but it no longer has the
   // right to move the foreground route when that work eventually settles.
-  if (signal?.aborted) {
+  if (signal?.aborted || !isCurrentAgentActivation(request)) {
     return false
   }
 
@@ -1547,7 +1627,7 @@ export async function ensureGatewayForAgent(
     g.secondaries.get(scope) === entry &&
     Boolean(entry.connection) &&
     isOpen(entry.gateway) &&
-    applyActive(scope, activationEpoch)
+    applyActive(scope, request.activationEpoch)
 
   if (activated && entry.connection) {
     publishActiveConnection(entry.connection)

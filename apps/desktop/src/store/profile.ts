@@ -767,12 +767,16 @@ export async function ensureGatewayAgent(
     }
 
     // Descriptor resolves concurrently with the dial, same as the profile
-    // path, so no await sits between the activation and the publication.
+    // path. A cancellable attached-primary activation waits on the same
+    // promise before changing active state, so cancellation cannot strand a
+    // gateway-only publication ahead of this frame.
+    const descriptorPromise = resolveConnectionForAgent(connection, target)
+
     const activation = signal
-      ? ensureGatewayForAgent(connection, target, { signal })
+      ? ensureGatewayForAgent(connection, target, { activationBarrier: descriptorPromise, signal })
       : ensureGatewayForAgent(connection, target)
 
-    const [descriptor, activated] = await Promise.all([resolveConnectionForAgent(connection, target), activation])
+    const [descriptor, activated] = await Promise.all([descriptorPromise, activation])
 
     if (signal?.aborted) {
       return

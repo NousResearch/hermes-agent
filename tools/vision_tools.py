@@ -13,9 +13,10 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import logging
 import os
+import shutil
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional
+from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional
 from urllib.parse import urlparse
 import httpx
 
@@ -920,6 +921,116 @@ def _detect_video_mime_type(video_path: Path) -> Optional[str]:
     """Video MIME type from extension, or None if unsupported."""
     return _VIDEO_MIME_TYPES.get(video_path.suffix.lower())
 
+def _is_local_vision_endpoint(cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """True when the resolved ``auxiliary.vision`` endpoint is a local server.
+
+    Local OpenAI-compatible VLMs (Ollama, mlx-vlm server, llama.cpp server,
+    LM Studio, vLLM on localhost) cannot ingest a whole-video base64 payload
+    the way cloud providers can: their processors are built around images or
+    codec-sampled frames.  When the vision endpoint is local, ``video_analyze``
+    should extract frames and send them as ordered images instead.
+    """
+    if cfg is None:
+        try:
+            from hermes_cli.config import cfg_get, load_config
+            cfg = load_config()
+        except Exception:
+            return False
+    try:
+        aux = cfg.get("auxiliary") or {}
+        vision = aux.get("vision") or {}
+        base_url = str(vision.get("base_url") or "").strip().lower()
+        if not base_url:
+            return False
+        host = base_url.split("://")[-1].split("/")[0].split(":")[0]
+        return host in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "::")
+    except Exception:
+        return False
+
+
+def _video_to_frame_data_urls(
+    video_path: Path,
+    num_frames: int = 16,
+    max_side: int = 448,
+) -> Optional[List[str]]:
+    """Extract evenly-spaced frames from a video as base64 JPEG data URLs.
+
+    Returns None when frame extraction is impossible (no ffmpeg, undecodable
+    video), so callers can fall back to the whole-video base64 path.
+    """
+    import io
+    import subprocess
+
+    if not shutil.which("ffmpeg"):
+        return None
+    import json as _json
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=nb_frames,duration",
+             "-of", "json", str(video_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        info = _json.loads(probe.stdout or "{}")
+        stream = (info.get("streams") or [{}])[0]
+        total = int(stream.get("nb_frames") or 0)
+        duration = float(stream.get("duration") or 0.0)
+        if total <= 0 and duration > 0:
+            total = max(1, int(duration * 24))  # fallback estimate
+        if total <= 0:
+            total = 240  # last-resort assumption for ffmpeg re-extraction
+    except Exception:
+        total, duration = 240, 10.0
+
+    step = max(1.0, total / max(num_frames, 1))
+    timestamps = [round(i * step / 24.0, 3) for i in range(min(num_frames, total))]
+
+    out_dir = Path(get_hermes_dir("cache/video", "temp_video_frames"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"frame_{uuid.uuid4().hex[:8]}"
+
+    urls: List[str] = []
+    for idx, ts in enumerate(timestamps):
+        out_path = out_dir / f"{prefix}_{idx:03d}.jpg"
+        try:
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-ss", str(ts), "-i", str(video_path),
+                 "-frames:v", "1", "-vf", f"scale='min({max_side},iw)':-2",
+                 "-q:v", "2", "-y", str(out_path)],
+                capture_output=True, timeout=30, check=True,
+            )
+        except Exception:
+            continue
+        if not out_path.exists():
+            continue
+        try:
+            urls.append(_image_to_base64_data_url(out_path, "image/jpeg"))
+        finally:
+            try:
+                out_path.unlink()
+            except Exception:
+                pass
+
+    # Clean up any stragglers from this prefix.
+    try:
+        for leftover in out_dir.glob(f"{prefix}_*.jpg"):
+            leftover.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    return urls if urls else None
+
+
+def _terminal_backend_is_local() -> bool:
+    backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
+    return backend in ("", "local")
+
+
+def _is_path_like_video_source(value: str) -> bool:
+    lowered = (value or "").strip().lower()
+    if not lowered:
+        return False
+    return not lowered.startswith(("http://", "https://", "data:"))
 
 def _unsupported_video_format(suffix: str) -> str:
     return f"Unsupported video format: '{suffix}'. Supported: {', '.join(sorted(_VIDEO_MIME_TYPES.keys()))}"
@@ -990,15 +1101,42 @@ async def video_analyze_tool(
             raise ValueError(_unsupported_video_format(temp_video_path.suffix))
         if video_size_bytes > _VIDEO_SIZE_WARN_BYTES:
             logger.warning("Video is %.1f MB — may be slow or rejected", video_size_mb)
-        video_data_url = _video_to_base64_data_url(temp_video_path, mime_type=detected_mime)
-        if len(video_data_url) > _MAX_VIDEO_BASE64_BYTES:
-            raise ValueError(
-                f"Video too large for API: base64 payload is {len(video_data_url) / (1024 * 1024):.1f} MB "
-                f"(limit {_MAX_VIDEO_BASE64_BYTES / (1024 * 1024):.0f} MB). "
-                f"Compress or trim the video and retry.")
+        # Local OpenAI-compatible VLM endpoints (Ollama, mlx-vlm server,
+        # llama.cpp server, LM Studio) cannot ingest a whole-video base64
+        # payload — their processors are image/codec-based.  When the
+        # configured vision endpoint is local, extract evenly-spaced frames
+        # and send them as ordered images instead (same contract the CLI
+        # ``mlx_vlm generate --video`` fallback uses).
+        vision_messages = None
+        if _is_local_vision_endpoint():
+            logger.info("Local vision endpoint detected — extracting video frames")
+            frame_urls = _video_to_frame_data_urls(temp_video_path)
+            if frame_urls:
+                frame_content: List[Dict[str, Any]] = [
+                    {"type": "image_url", "image_url": {"url": u}}
+                    for u in frame_urls
+                ]
+                frame_content.append({
+                    "type": "text",
+                    "text": (
+                        "Here is a video as a sequence of frames in "
+                        "chronological order.\n"
+                    ) + prompt,
+                })
+                vision_messages = [{"role": "user", "content": frame_content}]
+                debug_call_data["local_frames"] = len(frame_urls)
+                logger.info("Extracted %d video frames for local VLM", len(frame_urls))
+
+        if vision_messages is None:
+            video_data_url = _video_to_base64_data_url(temp_video_path, mime_type=detected_mime)
+            if len(video_data_url) > _MAX_VIDEO_BASE64_BYTES:
+                raise ValueError(
+                    f"Video too large for API: base64 payload is {len(video_data_url) / (1024 * 1024):.1f} MB "
+                    f"(limit {_MAX_VIDEO_BASE64_BYTES / (1024 * 1024):.0f} MB). "
+                    f"Compress or trim the video and retry.")
+            vision_messages = _media_messages(prompt, "video_url", video_data_url)
         debug_call_data["video_size_bytes"] = video_size_bytes
-        messages = _media_messages(prompt, "video_url", video_data_url)
-        call_kwargs = _aux_call_kwargs(messages, model, 180.0, min_timeout=180.0)
+        call_kwargs = _aux_call_kwargs(vision_messages, model, 180.0, min_timeout=180.0)
         analysis = await _call_vision_llm(call_kwargs, "Empty video response, retrying once")
         return analysis, None
     return await _run_analysis("video", video_url, user_prompt, model, stage)

@@ -48,7 +48,8 @@ from hermes_cli import _startup_fast  # noqa: E402
 from hermes_cli import _early_recovery as _early_recovery_mod
 
 try:
-    _early_recovery_mod.recover_if_needed()
+    if not ("backup" in sys.argv[1:] and "--dry-run" in sys.argv[1:]):
+        _early_recovery_mod.recover_if_needed()
 except Exception:
     pass
 
@@ -557,6 +558,10 @@ def _apply_profile_override() -> None:
 
 
 _apply_profile_override()
+
+# A selection-only backup must not trigger logging, secret fetching, install
+# recovery or the normal main() cleanup paths.
+_startup_fast.try_backup_dry_run(sys.argv[1:])
 
 # Windows launcher self-heal — the ``hermes`` command is a COPY of the venv
 # console script staged into the managed bin dir (outside the checkout, since
@@ -2138,7 +2143,11 @@ def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
     from hermes_cli import backup
 
-    (backup.run_quick_backup if getattr(args, "quick", False) else backup.run_backup)(args)
+    if (getattr(args, "quick", False) and not getattr(args, "dry_run", False)
+            and not getattr(args, "report", None)):
+        backup.run_quick_backup(args)
+    elif backup.run_backup(args) is False:
+        raise SystemExit(1)
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:

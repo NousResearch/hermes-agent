@@ -198,3 +198,33 @@ def try_fast_version(argv: list[str] | None = None) -> bool:
         return False
     print_fast_version_info()
     return True
+
+
+def try_backup_dry_run(argv: list[str]) -> bool:
+    """Dispatch the real backup parser before mutable CLI startup.
+
+    Profile selection has already run. Parsing only this subcommand avoids plugin
+    discovery, environment secret fetching, logging and install self-repair.
+    """
+    if "backup" not in argv or "--dry-run" not in argv:
+        return False
+    import contextlib
+    import io
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.subcommands.backup import build_backup_parser
+
+    parser, subparsers, _ = build_top_level_parser()
+    build_backup_parser(subparsers, cmd_backup=lambda args: None)
+    # Other commands can legitimately contain these words as argument values.
+    with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        try:
+            args, unknown = parser.parse_known_args(argv)
+        except SystemExit:
+            return False
+    if args.command != "backup" or not getattr(args, "dry_run", False):
+        return False
+    if unknown:
+        parser.error("unrecognized arguments: " + " ".join(unknown))
+    from hermes_cli.backup import run_backup
+
+    raise SystemExit(0 if run_backup(args) else 1)

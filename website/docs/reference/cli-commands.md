@@ -971,21 +971,49 @@ Create a zip archive of your Hermes configuration, skills, sessions, and data. T
 | `-o`, `--output <path>` | Output path for the zip file (default: `~/hermes-backup-<timestamp>.zip`). |
 | `-q`, `--quick` | Quick snapshot: only critical state files (config.yaml, state.db, .env, auth, cron jobs). Much faster than a full backup. |
 | `-l`, `--label <name>` | Label for the snapshot (only used with `--quick`). |
+| `--dry-run` | Preview the full-backup selection without writing an archive or changing Hermes state. Cannot be combined with `--quick`. |
+| `--report <path>` | Write the complete machine-readable JSON audit for a full backup or dry run. The parent directory must already exist. Cannot be combined with `--quick`. |
 | `-k`, `--keep <N>` | After a full backup, delete older `hermes-backup-*.zip` files in the output directory beyond the newest N (default 3; `0` keeps everything). Custom-named zips are never touched. |
 
 The backup uses SQLite's `backup()` API for safe copying, so it works correctly even when Hermes is running (WAL-mode safe).
+
+Files with timestamps older than 1980 are included; ZIP timestamps are clamped to 1980-01-01. Their source timestamps are not changed.
 
 **What's excluded from the zip:**
 
 - `*.db-wal`, `*.db-shm`, `*.db-journal` — SQLite's WAL / shared-memory / journal sidecars. The `*.db` file already got a consistent snapshot via `sqlite3.backup()`; shipping the live sidecars alongside it would let a restore see a half-committed state.
 - `checkpoints/` — per-session trajectory caches. Hash-keyed and regenerated per session; wouldn't port cleanly to another install anyway.
 - The `hermes-agent` code itself (this is a user-data backup, not a repo snapshot).
+- Symbolic links (files, directories, and dangling links) — never dereferenced into an archive. Both the interactive summary and automatic pre-update/pre-migration logs identify skipped links. A symlink used for the Hermes home itself is traversed, so relocating the entire home works; linked subtrees inside it remain excluded.
+- Sockets, FIFOs, and device nodes — runtime objects, never opened as backup data.
+- Dependency/cache directories and managed runtime downloads (`models/`, `runtimes/`, `node/` at the home/profile root). A skill's own nested `models/` directory remains user data.
+
+**Exit codes.** `0` means a complete archive, an empty selection, or a dry run without traversal errors; `1` means an incomplete archive/audit, an unusable Hermes home/output path, or a report-write failure; `2` means backup-lock contention or an unsupported `--quick` combination. Policy exclusions such as symlinks and caches do not cause failure. On per-file archive errors, the salvage zip is kept and the summary names missing files. Scheduled backups must treat any nonzero status as failure.
+
+### Read-only previews and complete reports
+
+`--dry-run` uses the same traversal as a real full backup, including provider-declared external files allowed by the existing home-directory boundary. It does not acquire a backup lock, create output directories/ZIPs, snapshot SQLite, initialize Hermes configuration, or start/stop services. Only the explicitly requested `--report` destination is written. The preview uses metadata: an included file is selected, **not proof that it can be read or that its database can be snapshotted**. Files may also change between preview and backup; ordinary filesystem access-time updates depend on mount settings.
+
+The report is JSON with `schema_version: 1`, `mode: "dry_run"` or `"backup"`, an absolute `root`, and an `entries` array. Each entry has:
+
+- `path`: the relative archive path using `/` separators; empty when no archive path applies (for example a provider path outside the user's home).
+- `source`: absolute filesystem path.
+- `action`: `included`, `excluded`, or `error`.
+- `reason`: selection/exclusion reason or the full failure description.
+- `size`: byte size when available; `target`: the stored link target for symlinks.
+
+Excluded subtree roots are recorded without enumerating their cache/dependency descendants. Every encountered symlink is recorded, including dangling links and links whose names also match an exclusion. **Reports never cap failures at the console's 10-item preview.** A real-backup report records actual write outcomes, not merely planned inclusion.
+
+Reports can reveal sensitive paths and link targets, though they contain no file contents. They are written atomically with owner-only permissions (`0600` on POSIX), including when replacing an older report. A report destination must not be a symlink or the archive destination. Keep reports private alongside the backups they describe.
 
 ### Examples
 
 ```bash
 hermes backup                           # Full backup to ~/hermes-backup-*.zip
 hermes backup -o /tmp/hermes.zip        # Full backup to specific path
+hermes backup --dry-run --report /tmp/hermes-audit.json
+hermes backup --dry-run -o /mnt/backups/hermes.zip --report /tmp/hermes-audit.json
+hermes backup -o /mnt/backups/hermes.zip --report /tmp/hermes-backup-result.json
 hermes backup --quick                   # Quick state-only snapshot
 hermes backup --quick --label "pre-upgrade"  # Quick snapshot with label
 ```

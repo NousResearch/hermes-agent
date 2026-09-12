@@ -185,12 +185,22 @@ def _is_within(path: Path, root: Path) -> bool:
 
 
 def _collect_memory_provider_external_paths() -> List[Path]:
-    """Existing paths the active memory provider declares via ``backup_paths()``; ``[]`` on any
-    provider failure (backup must never fail because of a flaky plugin)."""
+    """Paths declared by the active provider; discovery never initializes Hermes state."""
     try:
-        from plugins.memory import _get_active_memory_provider, load_memory_provider
-        active = _get_active_memory_provider()
-        provider = load_memory_provider(active) if active else None
+        from utils import fast_safe_load
+        from hermes_cli.managed_scope import apply_managed_overlay
+
+        # load_config() initializes/chmods HERMES_HOME. Discovery must also be
+        # read-only when the configured provider has never been started.
+        config_path = get_hermes_home() / "config.yaml"
+        config = fast_safe_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+        config = apply_managed_overlay(config if isinstance(config, dict) else {})
+        memory = config.get("memory", {})
+        active = memory.get("provider") if isinstance(memory, dict) else None
+        if not active:
+            return []
+        from plugins.memory import load_memory_provider
+        provider = load_memory_provider(active, register_skills=False)
     except Exception:
         return []
     if provider is None:
@@ -200,35 +210,16 @@ def _collect_memory_provider_external_paths() -> List[Path]:
     except Exception as exc:
         logger.warning("backup_paths() failed for memory provider %r: %s", active, exc)
         return []
-    out: Dict[Path, Path] = {}  # resolved -> first declared spelling
+    out: Dict[Path, Path] = {}
     for raw in declared:
         try:
-            p = Path(raw).expanduser()
+            p = Path(raw).expanduser().absolute()
         except Exception:
             continue
-        if not p.exists():
-            continue
-        try:
-            resolved = p.resolve()
-        except (OSError, ValueError):
-            continue
-        out.setdefault(resolved, p)
+        out.setdefault(p, p)
     return list(out.values())
 
 
-def _iter_external_files(base: Path) -> List[Path]:
-    """Regular files under *base* (a file or a directory), skipping symlinks, caches, and pyc."""
-    if base.is_file() and not base.is_symlink():
-        return [base]
-    if not base.is_dir():
-        return []
-    files: List[Path] = []
-    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-        dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
-        files.extend(fp for fp in (Path(dirpath) / f for f in filenames)
-                     if not (fp.is_symlink() or fp.name in _EXCLUDED_NAMES
-                             or fp.name.endswith(_EXCLUDED_SUFFIXES)))
-    return files
 
 
 def _should_exclude(rel_path: Path) -> bool:
@@ -243,34 +234,53 @@ def _should_exclude(rel_path: Path) -> bool:
     return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
 
 
-def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
-    """Yield ``(abs_path, rel_path)`` for every file a full backup should hold.
+def _iter_backup_entries(
+    base: Path, archive_root: Path, out_path: Path, report_path: Optional[Path] = None,
+    *, external: bool = False):
+    """One metadata-only traversal for previews, archives and automatic backups.
 
-    The one owner of the walk policy (directory pruning so os.walk never descends a multi-GB
-    excluded tree, the root-only ``hermes-agent`` carve-out, root runtime trees, per-file rules),
-    shared by ``hermes backup`` and the pre-update / pre-migration path so they can never drift.
+    Pruned subtree roots are records; their descendants are never enumerated.
+    Only the Hermes home itself may be a symlink (a relocated home).
     """
-    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
-        rel_dir = Path(dirpath).relative_to(hermes_root)
-        is_root = rel_dir == Path(".")
-        kept = [
-            d for d in dirnames
-            if (d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root))
-            and not _in_excluded_root_dir(rel_dir / d)]
-        if skipped_dirs is not None:
-            skipped_dirs.update(str(rel_dir / d) for d in set(dirnames) - set(kept))
-        dirnames[:] = kept
-        for fname in filenames:
-            rel = rel_dir / fname
-            fpath = hermes_root / rel
-            # zipfile.write() follows file symlinks, so skip links before any archive write can
-            # copy data from outside HERMES_HOME; never archive the output zip into itself.
-            if _should_exclude(rel) or fpath.is_symlink():
+    stack = [base]
+    while stack:
+        source = stack.pop()
+        rel = source.relative_to(archive_root)
+        arcname = (_EXTERNAL_PREFIX if external else "") + rel.as_posix()
+        entry = {"path": arcname, "source": str(source), "action": "excluded", "reason": ""}
+        try:
+            st = source.stat() if source == base and not external else source.lstat()
+            if stat.S_ISLNK(st.st_mode):
+                entry.update(reason="symlink", target=os.readlink(source))
+                yield entry
                 continue
-            with suppress(OSError, ValueError):
-                if fpath.resolve() == out_path.resolve():
+            if source == out_path:
+                entry["reason"] = "output_archive"
+            elif source == report_path:
+                entry["reason"] = "audit_report"
+            elif stat.S_ISDIR(st.st_mode):
+                policy_rel = source.relative_to(base) if external else rel
+                excluded = source != base and (
+                    (source.name in _EXCLUDED_DIRS
+                     and (external or source.name != "hermes-agent" or len(rel.parts) == 1))
+                    or (not external and _in_excluded_root_dir(policy_rel)))
+                if excluded:
+                    entry["reason"] = "excluded_directory"
+                else:
+                    # Keep scandir open only while collecting this directory.
+                    with os.scandir(source) as children:
+                        stack.extend(source / child.name for child in children)
                     continue
-            yield fpath, rel
+            elif (_should_exclude(rel) if not external else (
+                    source.name in _EXCLUDED_NAMES or source.name.endswith(_EXCLUDED_SUFFIXES))):
+                entry["reason"] = "excluded_file"
+            elif not stat.S_ISREG(st.st_mode):
+                entry["reason"] = "non_regular_file"
+            else:
+                entry.update(action="included", reason="selected", size=st.st_size)
+        except OSError as exc:
+            entry.update(action="error", reason=str(exc))
+        yield entry
 
 
 # --- SQLite safe copy ---
@@ -534,29 +544,34 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
 
 def _write_zip_entries(
-    zf: zipfile.ZipFile, files_to_add: List[Tuple[Path, Path]], out_path: Path,
-    *, on_db_failure, on_error, on_progress, track_bytes: bool) -> int:
-    """Add every ``(abs_path, rel_path)`` to *zf*, WAL-safe for ``*.db``; return bytes archived.
-
-    ``on_db_failure(rel_path)`` runs when a SQLite snapshot fails (may raise to abort);
-    ``on_error(rel_path, exc)`` records a read failure; ``on_progress(i)`` fires every 500 files;
-    ``track_bytes`` stats plain files for the size total.
-    """
+    zf: zipfile.ZipFile, entries: list[dict], out_path: Path,
+    *, on_progress, track_bytes: bool, on_db_failure=None, on_error=None) -> int:
+    """Archive selected entries and record their actual outcomes in place."""
     total_bytes = 0
-    for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
+    for i, entry in enumerate(entries, 1):
+        abs_path, rel_path = Path(entry["source"]), Path(entry["path"])
         try:
+            # A file replaced since the scan must not leak a link target or
+            # block forever on a newly created FIFO.
+            if not stat.S_ISREG(abs_path.lstat().st_mode):
+                raise OSError("source is no longer a regular file")
             if abs_path.suffix == ".db":
                 size = _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path)
                 if size is None:
-                    on_db_failure(rel_path)
+                    entry.update(action="error", reason="SQLite safe copy failed")
+                    if on_db_failure is not None:
+                        on_db_failure(rel_path)
                     continue
-                total_bytes += size
             else:
-                zf.write(abs_path, arcname=str(rel_path))
-                if track_bytes:
-                    total_bytes += abs_path.stat().st_size
-        except (PermissionError, OSError, ValueError) as exc:
-            on_error(rel_path, exc)
+                zf.write(abs_path, arcname=entry["path"])
+                size = zf.getinfo(entry["path"]).file_size
+            entry.update(reason="archived", size=size)
+            if track_bytes:
+                total_bytes += size
+        except (OSError, ValueError) as exc:
+            entry.update(action="error", reason=str(exc))
+            if on_error is not None:
+                on_error(rel_path, exc)
             continue
         if i % 500 == 0:
             on_progress(i)
@@ -578,8 +593,7 @@ _RUN_BACKUP_PREFIX = "hermes-backup-"
 
 
 def _resolve_backup_output_path(output: Optional[str]) -> Path:
-    """Turn ``--output`` (file, directory, or None) into a ``.zip`` path whose parent exists;
-    an unwritable path exits with a one-line error, not a traceback."""
+    """Resolve the archive destination without creating output directories."""
     out_path = None
     default_name = f"{_RUN_BACKUP_PREFIX}{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
     try:
@@ -591,113 +605,172 @@ def _resolve_backup_output_path(output: Optional[str]) -> Path:
             out_path = Path.home() / default_name
         if out_path.suffix.lower() != ".zip":
             out_path = out_path.with_suffix(out_path.suffix + ".zip")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        # Directory creation belongs only to the archive-writing phase.
     except OSError as exc:
         print(f"Error: cannot write backup to {output or out_path}: {exc}")
         raise SystemExit(1) from exc
     return out_path
 
 
-def _collect_external_entries() -> tuple[list[tuple[Path, str]], list[str]]:
-    """``([(abs_path, arcname)], [skipped])`` for the memory provider's external state, arc-named
-    ``_external/<home-relative>``; paths outside home are skipped (security + portability)."""
+def _collect_external_entries(out_path: Path, report_path: Optional[Path]) -> list[dict]:
+    """Audit only provider-declared paths inside the user's home."""
     home_dir = Path.home().resolve()
-    external_to_add: list[tuple[Path, str]] = []
-    skipped_external: list[str] = []
+    entries = {}
     for base in _collect_memory_provider_external_paths():
+        entry = {"path": "", "source": str(base), "action": "excluded", "reason": ""}
+        if base.is_relative_to(home_dir):
+            entry["path"] = _EXTERNAL_PREFIX + base.relative_to(home_dir).as_posix()
         try:
-            base.resolve().relative_to(home_dir)
-        except (ValueError, OSError):
-            skipped_external.append(str(base))
-            continue
-        for fpath in _iter_external_files(base):
-            with suppress(ValueError, OSError):
-                rel_to_home = fpath.resolve().relative_to(home_dir)
-                external_to_add.append((fpath, _EXTERNAL_PREFIX + rel_to_home.as_posix()))
-    return external_to_add, skipped_external
+            if base.is_symlink():
+                entry.update(reason="symlink", target=os.readlink(base))
+            elif not base.resolve().is_relative_to(home_dir):
+                entry["reason"] = "outside_home"
+            else:
+                base = base.resolve()
+                for item in _iter_backup_entries(base, home_dir, out_path, report_path, external=True):
+                    entries[item["source"]] = item
+                continue
+        except OSError as exc:
+            entry.update(action="error", reason=str(exc))
+        entries[str(base)] = entry
+    return list(entries.values())
 
 
-def run_backup(args) -> None:
-    """Create a zip backup of the Hermes home directory."""
-    hermes_root = get_default_hermes_root()
-
-    if not hermes_root.is_dir():
-        print(f"Error: Hermes home directory not found at {hermes_root}")
-        sys.exit(1)
-
+def run_backup(args) -> bool:
+    """Return False on incomplete backup/audit; policy exclusions are not errors."""
+    if getattr(args, "quick", False) and (
+            getattr(args, "dry_run", False) or getattr(args, "report", None)):
+        print("Error: --quick cannot be combined with --dry-run or --report.")
+        raise SystemExit(2)
+    hermes_root = get_default_hermes_root().resolve()
+    out_path = _resolve_backup_output_path(getattr(args, "output", None))
+    report_arg = getattr(args, "report", None)
+    report_path = Path(report_arg).expanduser().absolute() if report_arg else None
+    if report_path is not None:
+        if report_path.is_symlink() or report_path.resolve() == out_path:
+            print("Error: --report must not be a symlink or the archive destination.")
+            raise SystemExit(1)
+        report_path = report_path.resolve()
+    dry_run = bool(getattr(args, "dry_run", False))
+    report = {"schema_version": 1, "mode": "dry_run" if dry_run else "backup",
+              "root": str(hermes_root), "entries": []}
     try:
+        if not hermes_root.is_dir():
+            raise FileNotFoundError(f"Hermes home directory not found at {hermes_root}")
+        if dry_run:
+            return _run_full_backup(hermes_root, out_path, report_path, report)
         with _backup_operation_lock(hermes_root):
-            _run_backup_locked(args, hermes_root)
+            complete = _run_full_backup(hermes_root, out_path, report_path, report)
+            # Retain main's --keep pruning for default-named full backups (#81317).
+            keep = getattr(args, "keep", 0)  # 0 / absent: never prune (non-CLI callers)
+            if keep and out_path.is_file() and out_path.name.startswith(_RUN_BACKUP_PREFIX):
+                pruned = _prune_prefixed_zips(out_path.parent, _RUN_BACKUP_PREFIX, keep, "backup")
+                if pruned:
+                    print(f"  Pruned {pruned} older {_RUN_BACKUP_PREFIX}*.zip (keeping {keep}).")
+            return complete
     except BackupInProgressError as exc:
         print(f"Error: {exc}")
         raise SystemExit(2) from exc
+    except OSError as exc:
+        report["entries"].append({"path": "", "source": str(hermes_root),
+                                  "action": "error", "reason": str(exc)})
+        print(f"Error: cannot write backup to {out_path}: {exc}")
+        raise SystemExit(1) from exc
+    finally:
+        if report_path is not None:
+            _write_backup_report(report_path, report)
 
 
-def _run_backup_locked(args, hermes_root: Path) -> None:
-    """Write a full backup while the cross-process backup slot is held."""
-    out_path = _resolve_backup_output_path(args.output)
+def _write_backup_report(path: Path, report: dict) -> None:
+    """Atomically publish the explicitly requested audit, owner-readable only."""
+    tmp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", delete=False) as handle:
+            tmp_name = handle.name
+            if os.name == "posix":
+                os.fchmod(handle.fileno(), 0o600)
+            json.dump(report, handle, indent=2, ensure_ascii=True)
+            handle.write("\n")
+        os.replace(tmp_name, path)
+    except OSError as exc:
+        print(f"Error: cannot write backup report to {path}: {exc}")
+        raise SystemExit(1) from exc
+    finally:
+        if tmp_name is not None:
+            Path(tmp_name).unlink(missing_ok=True)
+
+
+def _run_full_backup(hermes_root: Path, out_path: Path, report_path: Optional[Path], report: dict) -> bool:
+    """Use the same selection and audit records in dry-run and archive modes."""
+    dry_run = report["mode"] == "dry_run"
     scan_started = time.monotonic()
-    logger.info("backup phase=scan status=started")
-    print(f"Scanning {display_hermes_home()} ...")
-    skipped_dirs: set = set()
-    files_to_add: list[tuple[Path, Path]] = list(_iter_backup_files(hermes_root, out_path, skipped_dirs))
-    external_to_add, skipped_external = _collect_external_entries()
-    if not files_to_add and not external_to_add:
-        logger.info("backup phase=scan status=empty duration_ms=%.1f", (time.monotonic() - scan_started) * 1000)
-        print("No files to back up.")
-        return
+    print(f"Scanning {hermes_root} ...")
+    entries = report["entries"]
+    entries.extend(_iter_backup_entries(hermes_root, hermes_root, out_path, report_path))
+    entries.extend(_collect_external_entries(out_path, report_path))
+    selected = [entry for entry in entries if entry["action"] == "included"]
+    file_count = len(selected)
+    if not dry_run:
+        logger.info("backup phase=scan status=complete duration_ms=%.1f files=%d",
+                    (time.monotonic() - scan_started) * 1000, file_count)
+    if dry_run:
+        total_bytes = sum(entry["size"] for entry in selected)
+        print(f"Dry run: no archive created.\n  Files:       {file_count}\n"
+              f"  Total size:  {_format_size(total_bytes)}")
+        print("  Metadata only: file readability and SQLite consistency are not verified.")
+    elif selected:
+        # Parent directories are created only inside the archive-writing phase.
+        logger.info("backup phase=archive status=started files=%d", file_count)
+        print(f"Backing up {file_count} files ...")
+        t0 = time.monotonic()
 
-    file_count = len(files_to_add) + len(external_to_add)
-    logger.info("backup phase=scan status=complete duration_ms=%.1f files=%d",
-                (time.monotonic() - scan_started) * 1000, file_count)
-    logger.info("backup phase=archive status=started files=%d", file_count)
-    print(f"Backing up {file_count} files ...")
-    errors = []
-    t0 = time.monotonic()
+        def _progress(i: int) -> None:
+            print(f"  {i}/{file_count} files ...")
+            logger.info("backup phase=archive status=progress completed=%d total=%d", i, file_count)
 
-    def _progress(i: int) -> None:
-        print(f"  {i}/{file_count} files ...")
-        logger.info("backup phase=archive status=progress completed=%d total=%d", i, file_count)
-
-    with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
-            archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        total_bytes = _write_zip_entries(
-            zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
-            on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
-            on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"))
-        # External memory-provider state never includes ``.db`` files in practice, so a
-        # straight zf.write is fine.
-        for abs_path, arcname in external_to_add:
-            try:
-                zf.write(abs_path, arcname=arcname)
-                total_bytes += abs_path.stat().st_size
-            except (PermissionError, OSError, ValueError) as exc:
-                errors.append(f"{arcname}: {exc}")
-    elapsed = time.monotonic() - t0
-    zip_size = out_path.stat().st_size
-    logger.info("backup phase=archive status=complete duration_ms=%.1f files=%d errors=%d bytes=%d",
-                elapsed * 1000, file_count, len(errors), zip_size)
-    print(f"\nBackup {'incomplete' if errors else 'complete'}: {out_path}\n"
-          f"  Files:       {file_count}\n"
-          f"  Original:    {_format_size(total_bytes)}\n"
-          f"  Compressed:  {_format_size(zip_size)}\n"
-          f"  Time:        {elapsed:.1f}s")
-    if external_to_add:
-        print(f"\n  Included {len(external_to_add)} memory-provider file(s) stored outside {display_hermes_home()}.")
-    if skipped_external:
-        print(f"\n  Skipped {len(skipped_external)} memory-provider path(s) outside your home directory "
-              "(not portable):\n" + "\n".join(f"    {p}" for p in sorted(skipped_external)[:10]))
-    if skipped_dirs:
-        print("\n  Excluded directories:\n" + "\n".join(f"    {d}/" for d in sorted(skipped_dirs)))
-    if errors:
-        _print_capped(f"\n  Warnings ({len(errors)} files skipped):", errors, "  ")
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
+                    archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6, strict_timestamps=False) as zf:
+                total_bytes = _write_zip_entries(
+                    zf, selected, out_path, on_progress=_progress, track_bytes=True)
+        except OSError:
+            # The atomic writer discarded this run; none of its members are published.
+            for entry in selected:
+                if entry["action"] != "error":
+                    entry.update(action="error", reason="archive_not_written")
+            raise
+        errors = [entry for entry in entries if entry["action"] == "error"]
+        elapsed = time.monotonic() - t0
+        zip_size = out_path.stat().st_size
+        logger.info("backup phase=archive status=complete duration_ms=%.1f files=%d errors=%d bytes=%d",
+                    elapsed * 1000, file_count, len(errors), zip_size)
+        print(f"\nBackup {'incomplete' if errors else 'complete'}: {out_path}\n"
+              f"  Files:       {file_count - sum(e['action'] == 'error' for e in selected)}\n"
+              f"  Original:    {_format_size(total_bytes)}\n"
+              f"  Compressed:  {_format_size(zip_size)}\n"
+              f"  Time:        {elapsed:.1f}s")
+        if not errors:
+            print(f"\nRestore with: hermes import {out_path.name}")
     else:
-        print(f"\nRestore with: hermes import {out_path.name}")
-    keep = getattr(args, "keep", 0)  # 0 / absent: never prune (non-CLI callers)
-    if keep and out_path.name.startswith(_RUN_BACKUP_PREFIX):
-        pruned = _prune_prefixed_zips(out_path.parent, _RUN_BACKUP_PREFIX, keep, "backup")
-        if pruned:
-            print(f"  Pruned {pruned} older {_RUN_BACKUP_PREFIX}*.zip (keeping {keep}).")
+        print("No files to back up.")
+    skipped_dirs = sorted(e["path"] for e in entries if e["reason"] == "excluded_directory")
+    if skipped_dirs:
+        print("\n  Excluded directories:\n" + "\n".join(f"    {d}/" for d in skipped_dirs))
+    skipped_symlinks = sorted(e["path"] or e["source"] for e in entries if e["reason"] == "symlink")
+    if skipped_symlinks:
+        _print_capped(f"\n  Symlinks skipped (not archived): {len(skipped_symlinks)}",
+                      skipped_symlinks, "    ")
+    skipped_external = [e["source"] for e in entries if e["reason"] == "outside_home"]
+    if skipped_external:
+        _print_capped("\n  Memory-provider paths outside your home directory (not portable):",
+                      skipped_external, "    ")
+    errors = [f"{e['path'] or e['source']}: {e['reason']}" for e in entries if e["action"] == "error"]
+    if errors:
+        header = "Audit incomplete" if dry_run else "Backup incomplete; salvage archive kept if written"
+        _print_capped(f"\n  {header} ({len(errors)} errors):", errors, "  ")
+    return not errors
 
 
 # --- Import ---
@@ -1553,14 +1626,25 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
         return None
 
 
+
 def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional[Path]:
     scan_started = time.monotonic()
     logger.info("automatic backup phase=scan status=started")
-    try:
-        files_to_add = list(_iter_backup_files(hermes_root, out_path))
-    except OSError as exc:
-        logger.warning("Full-zip backup: walk failed: %s", exc)
+    hermes_root = hermes_root.resolve()
+    entries = list(_iter_backup_entries(hermes_root, hermes_root, out_path.resolve()))
+    skipped_symlinks = [e["path"] for e in entries if e["reason"] == "symlink"]
+    scan_errors = [e for e in entries if e["action"] == "error"]
+    if scan_errors:
+        for entry in scan_errors:
+            logger.warning("Full-zip backup: %s: %s", entry["path"], entry["reason"])
         return None
+    files_to_add = [e for e in entries if e["action"] == "included"]
+    if skipped_symlinks:
+        preview = ", ".join(sorted(skipped_symlinks)[:10])
+        if len(skipped_symlinks) > 10:
+            preview += f", ... and {len(skipped_symlinks) - 10} more"
+        logger.warning("Full-zip backup: %d symlink(s) skipped (not archived): %s",
+                       len(skipped_symlinks), preview)
     if not files_to_add:
         return None
     logger.info("automatic backup phase=scan status=complete duration_ms=%.1f files=%d",
@@ -1573,7 +1657,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     archive_started = time.monotonic()
     try:
         with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
-                archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6, strict_timestamps=False) as zf:
             _write_zip_entries(
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
                 on_error=lambda rel, exc: logger.debug("Skipping %s in zip backup: %s", rel, exc),
@@ -1582,6 +1666,9 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     except (OSError, _SQLiteSnapshotError) as exc:
         # The hidden partial is already gone; ``out_path`` may be a previous valid backup: keep it.
         logger.warning("Full-zip backup: zip write failed: %s", exc)
+        return None
+    if any(entry["action"] == "error" for entry in files_to_add):
+        logger.warning("Full-zip backup incomplete; salvage archive kept at %s", out_path)
         return None
     logger.info("automatic backup phase=archive status=complete duration_ms=%.1f files=%d bytes=%d",
                 (time.monotonic() - archive_started) * 1000, len(files_to_add),

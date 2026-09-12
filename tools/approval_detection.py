@@ -446,7 +446,7 @@ def _normalize_command_for_detection(command: str) -> str:
 
 
 # Shell metacharacters, quotes, and whitespace that terminate a path token.
-_PATH_TOKEN_STOP = r"""\s'"`;|&<>()*?[]"""
+_PATH_TOKEN_STOP = r"""\s'"`;|&<>()*?\[\]"""
 _PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
 
 

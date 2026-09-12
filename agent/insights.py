@@ -5,7 +5,7 @@ import json
 import sqlite3
 import time
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -26,17 +26,25 @@ def _fmt_est_cost(est_cost: float) -> str:
 
 
 def _estimate_cost(session_or_model: Dict[str, Any] | str, input_tokens: int = 0, output_tokens: int = 0, *, cache_read_tokens: int = 0,
-                   cache_write_tokens: int = 0, provider: Optional[str] = None, base_url: Optional[str] = None) -> tuple[float, str]:
+                   cache_write_tokens: int = 0, provider: Optional[str] = None, base_url: Optional[str] = None,
+                   billing_time: Optional[datetime] = None) -> tuple[float, str]:
     """Estimate the USD cost for a session row or a model/token tuple."""
     if isinstance(session_or_model, dict):
         s = session_or_model
         model = s.get("model") or ""
         usage = CanonicalUsage(**{k: s.get(k) or 0 for k in _TOKEN_KEYS})
         provider, base_url = s.get("billing_provider"), s.get("billing_base_url")
+        # Historical re-estimation must price by when the session actually
+        # ran, not when the report is generated — DeepSeek's rates depend
+        # on the request time (#85388 review).
+        if billing_time is None and s.get("started_at") is not None:
+            billing_time = datetime.fromtimestamp(s["started_at"], tz=timezone.utc)
     else:
         model = session_or_model or ""
         usage = CanonicalUsage(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
-    result = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)
+    result = estimate_usage_cost(
+        model, usage, provider=provider, base_url=base_url, billing_time=billing_time
+    )
     return float(result.amount_usd or 0.0), result.status
 
 
@@ -144,7 +152,7 @@ class InsightsEngine:
         " u.api_call_count, u.input_tokens, u.output_tokens,"
         " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
         " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
-        " u.cost_source, u.billing_mode"
+        " u.cost_source, u.billing_mode, s.started_at"
         " FROM session_model_usage u"
         " JOIN sessions s ON s.id = u.session_id"
         " WHERE s.started_at >= ?",
@@ -324,7 +332,7 @@ class InsightsEngine:
                                           "api_calls": 0, "tool_calls": 0, "cost": 0.0, "actual_cost": 0.0})
 
         def _accumulate(model, provider, base_url, session_id, counts: Dict[str, int], *,
-                        stored_cost=None, actual_cost=None, cost_status=None):
+                        stored_cost=None, actual_cost=None, cost_status=None, started_at=None):
             model = model or "unknown"
             d: Dict[str, Any] = model_data[_short_model(model)]
             d["sessions"].add(session_id)
@@ -334,7 +342,9 @@ class InsightsEngine:
             d["api_calls"] += counts["api_call_count"]
             if stored_cost is None:
                 estimate, status = _estimate_cost(model, counts["input_tokens"], counts["output_tokens"], cache_read_tokens=counts["cache_read_tokens"],
-                                                  cache_write_tokens=counts["cache_write_tokens"], provider=provider or None, base_url=base_url)
+                                                  cache_write_tokens=counts["cache_write_tokens"], provider=provider or None, base_url=base_url,
+                                                  billing_time=(datetime.fromtimestamp(started_at, tz=timezone.utc)
+                                                                if started_at is not None else None))
             else:
                 estimate, status = float(stored_cost or 0.0), cost_status or "unknown"
             d["cost"] += estimate
@@ -351,7 +361,8 @@ class InsightsEngine:
             totals["actual_cost_usd"] += r["actual_cost_usd"] or 0.0
             _accumulate(r["model"], r["billing_provider"], r.get("billing_base_url"), r["session_id"], counts,
                         stored_cost=r["estimated_cost_usd"] if r.get("cost_status") or r.get("cost_source") else None,
-                        actual_cost=r["actual_cost_usd"], cost_status=r.get("cost_status"))
+                        actual_cost=r["actual_cost_usd"], cost_status=r.get("cost_status"),
+                        started_at=r.get("started_at"))
         # Reconcile against the aggregate row: covers legacy sessions,
         # interrupted migrations, and absolute cumulative updates without
         # double-counting already-attributed route deltas.
@@ -363,7 +374,8 @@ class InsightsEngine:
             residual_actual = max(0.0, float(s.get("actual_cost_usd") or 0.0) - totals["actual_cost_usd"])
             if any(residual.values()) or residual_cost or residual_actual:
                 _accumulate(s.get("model"), s.get("billing_provider"), s.get("billing_base_url"), s["id"], residual,
-                            stored_cost=residual_cost, actual_cost=residual_actual, cost_status=s.get("cost_status"))
+                            stored_cost=residual_cost, actual_cost=residual_actual, cost_status=s.get("cost_status"),
+                            started_at=s.get("started_at"))
         for s in sessions:
             if s.get("tool_call_count"):
                 model_data[_short_model(s.get("model"))]["tool_calls"] += s["tool_call_count"]

@@ -413,6 +413,30 @@ class TestBridgeDispatch:
         assert err is not None
         assert "bridge tool" in err.lower()
 
+    def test_resolve_underlying_call_recursion_error_is_actionable(self):
+        """Regression (#5149 follow-up): a bridge self-invocation must return an error
+        message that tells the model to call the tool directly instead of retrying the
+        same malformed tool_call wrapper — the root cause of the outline MCP failures was
+        the model repeating the wrapped call after an opaque rejection."""
+        from tools.tool_search import resolve_underlying_call, TOOL_SEARCH_NAME
+        name, args, err = resolve_underlying_call({
+            "name": TOOL_SEARCH_NAME,
+            "arguments": {"queries": ["x"]},
+        })
+        assert name is None
+        assert err is not None
+        assert "call it directly" in err.lower()
+
+    def test_resolve_underlying_call_recursion_is_logged_for_diagnosis(self, caplog):
+        """Regression (#5149 follow-up): self-invocation rejections must be logged with the
+        raw args so a future failure is diagnosable instead of leaving no trace (the original
+        incident had no persisted raw payload to confirm the malformed call's exact shape)."""
+        import logging
+        from tools.tool_search import resolve_underlying_call, TOOL_CALL_NAME
+        with caplog.at_level(logging.DEBUG, logger="tools.tool_search"):
+            resolve_underlying_call({"name": TOOL_CALL_NAME, "arguments": {"name": "tool_call"}})
+        assert any("self-invocation" in rec.message for rec in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # End-to-end via the real handle_function_call (smoke test).

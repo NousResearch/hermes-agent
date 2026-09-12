@@ -119,16 +119,32 @@ def _launcher_pid() -> Optional[int]:
 
 
 def _display_in_use(num: int) -> bool:
-    return Path(f"/tmp/.X{num}-lock").exists() or Path(f"/tmp/.X11-unix/X{num}").exists()
+    """A live X server owns ``:num``: its lock file names a running pid. A lock left by a crashed
+    server (dead pid) does not count, so the number can be reclaimed."""
+    lock = Path(f"/tmp/.X{num}-lock")
+    try:
+        pid = int(lock.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    return _pid_alive(pid)
+
+
+_ALLOC_LOCK = Path("/tmp/.hermes-bot-desktop-alloc.lock")  # host-wide: profiles allocate from one band
 
 
 def _allocate_display() -> int:
-    recorded = _read(state_dir() / "display")
-    if recorded and recorded.isdigit():
-        return int(recorded)
-    for num in range(_DISPLAY_MIN, _DISPLAY_MAX + 1):
-        if not _display_in_use(num):
-            return num
+    """Pick this profile's display number under a host-wide lock. The recorded number is only reused
+    when no OTHER server holds it now: after profile A stops, B may have taken A's old number, and
+    A's launcher must never unlink B's socket and lock."""
+    import fcntl
+    with open(_ALLOC_LOCK, "a+", encoding="utf-8") as fh:  # windows-footgun: ok — Linux-only runtime
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        recorded = _read(state_dir() / "display")
+        if recorded and recorded.isdigit() and not _display_in_use(int(recorded)):
+            return int(recorded)
+        for num in range(_DISPLAY_MIN, _DISPLAY_MAX + 1):
+            if not _display_in_use(num):
+                return num
     raise RuntimeError("no free X display number in the Bot Desktop band")
 
 
@@ -141,11 +157,13 @@ def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     if published:
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+        from tools.bot_desktop.browser import env_for_agent
+        env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
     return env
 
 
 def ensure_started_for_tool() -> None:
-    """Tool-boundary hook (``computer_use`` dispatch): with ``bot_desktop.auto_start`` (default on) a Linux
+    """Tool-boundary hook (``computer_use`` dispatch): with ``bot_desktop.auto_start`` (opt-in, default off) a Linux
     host that has NO display and the packages installed gets its screen started on first use, so a headless
     gateway works the first time instead of answering "no DISPLAY is set". Failure is not an error here;
     the tool's own "no display" diagnosis is the right message then."""
@@ -164,7 +182,7 @@ def _should_auto_start(env: Dict[str, str]) -> bool:
         return False
     from hermes_cli.config import load_config_readonly
     cfg = load_config_readonly().get("bot_desktop") or {}
-    return bool(cfg.get("auto_start", True))
+    return bool(cfg.get("auto_start", False))
 
 
 def published_env() -> Dict[str, str]:
@@ -250,6 +268,10 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
         "HERMES_BD_CONFIG_HOME": str(sd / "xdg"),
         "HERMES_BD_GEOMETRY": geometry(),
     })
+    from tools.bot_desktop.browser import dock_launch
+    if (browser := dock_launch()) is not None:
+        # first-run / default-browser dialogs would sit between the human and the bot's tabs
+        child_env["HERMES_BD_BROWSER_EXEC"] = f"{browser[0]} --user-data-dir={browser[1]} --no-first-run --no-default-browser-check"
     log = open(sd / "launcher.log", "ab")  # noqa: SIM115 — handed to the child, closed by it
     proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
         ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,

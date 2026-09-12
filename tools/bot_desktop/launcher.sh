@@ -40,8 +40,14 @@ mkdir -p "$XDG_CONFIG_HOME/xfce4/xfconf/xfce-perchannel-xml" "$XDG_CONFIG_HOME/a
 export DISPLAY=":$HERMES_BD_DISPLAY_NUM"
 export XAUTHORITY="$HERMES_BD_XAUTH"
 
-# Stale lock files from a crashed server block restart.
-rm -f "$HERMES_BD_SOCKET" "/tmp/.X${HERMES_BD_DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${HERMES_BD_DISPLAY_NUM}"
+# Stale lock files from a crashed server block restart; a lock whose pid is alive belongs to a
+# running server (another profile may have taken this number) and is never touched — Xvnc then
+# fails to start on it and runtime.py reports that instead of us disrupting the other desktop.
+rm -f "$HERMES_BD_SOCKET"
+xlock="/tmp/.X${HERMES_BD_DISPLAY_NUM}-lock"
+if [[ -e "$xlock" ]] && ! kill -0 "$(tr -d ' ' < "$xlock" 2>/dev/null)" 2>/dev/null; then
+  rm -f "$xlock" "/tmp/.X11-unix/X${HERMES_BD_DISPLAY_NUM}"
+fi
 : > "$XAUTHORITY"; chmod 600 "$XAUTHORITY"
 xauth -q -f "$XAUTHORITY" add "$DISPLAY" MIT-MAGIC-COOKIE-1 "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 
@@ -134,9 +140,9 @@ if [[ ! -e "$X/xfce4-panel.xml" ]]; then
     dock_ids+=("$n")
   }
   add_launcher "Terminal" utilities-terminal "xfce4-terminal"
-  for b in google-chrome chromium chromium-browser firefox; do
-    command -v "$b" >/dev/null 2>&1 && { add_launcher "Browser" internet-web-browser "$b"; break; }
-  done
+  # The bot's browser: runtime.py resolves the executable agent-browser drives plus the profile's
+  # persistent user-data-dir, so a human taking over lands in the bot's own cookie jar.
+  [[ -n "${HERMES_BD_BROWSER_EXEC:-}" ]] && add_launcher "Browser" internet-web-browser "$HERMES_BD_BROWSER_EXEC"
   add_launcher "Files" system-file-manager "thunar"
   add_launcher "Text Editor" accessories-text-editor "mousepad"
   dock_plugins=""; dock_items=""

@@ -62,7 +62,8 @@ async def display_ws(ws: WebSocket) -> None:
     from pathlib import Path
 
     sock = Path(info["hermes_home"]) / "bot-desktop" / "rfb.sock"
-    profile_key = hermes_home_key(info["hermes_home"])
+    profile_home = str(info["hermes_home"])
+    profile_key = hermes_home_key(profile_home)
     viewer_id = str(info.get("viewer_id") or info.get("user_id") or "viewer")
     if not sock.exists():
         await ws.close(code=_CLOSE_DESKTOP_GONE, reason="Bot Desktop is not running")
@@ -77,7 +78,7 @@ async def display_ws(ws: WebSocket) -> None:
     await ws.accept()
     loop = asyncio.get_running_loop()
     evicted = asyncio.Event()
-    held = {"ever": _lease.viewer_may_send_input(viewer_id, profile_key=profile_key)}
+    held = {"ever": _lease.viewer_may_send_input(viewer_id, profile_key=profile_home)}
 
     def _on_lease(key: str, lease) -> None:
         # A viewer that held control during this connection and lost it to ANOTHER human is kicked so
@@ -91,7 +92,7 @@ async def display_ws(ws: WebSocket) -> None:
             loop.call_soon_threadsafe(evicted.set)
     unsubscribe = _lease.on_change(_on_lease)
 
-    rfb_filter = RfbClientFilter(lambda: _lease.viewer_may_send_input(viewer_id, profile_key=profile_key))
+    rfb_filter = RfbClientFilter(lambda: _lease.viewer_may_send_input(viewer_id, profile_key=profile_home))
 
     async def rfb_to_ws() -> None:
         while True:
@@ -136,8 +137,8 @@ async def display_ws(ws: WebSocket) -> None:
         unsubscribe()
         writer.close()
         # Closing the viewer window hands control back; a stale holder never pins the agent out.
-        if _lease.viewer_may_send_input(viewer_id, profile_key=profile_key):
-            _lease.release(viewer_id, profile_key=profile_key)
+        if _lease.viewer_may_send_input(viewer_id, profile_key=profile_home):
+            _lease.release(viewer_id, profile_key=profile_home)
         try:
             await ws.close()
         except Exception:  # already closed by the peer or by an eviction

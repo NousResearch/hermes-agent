@@ -56,9 +56,10 @@ Every bot's computer is one click away in three places of Hermes Desktop:
   its conversations too.
 
 1. Open the Screen with any of the entries above.
-   The first time, click **Start screen** (or leave `bot_desktop.auto_start` on,
-   the default: the screen starts on the bot's first `computer_use` call when the
-   host has no display). A headed browser opens on the screen once it is running.
+   The first time, click **Start screen**. Set `bot_desktop.auto_start: true` if
+   you want a headless host to start the screen by itself on the bot's first
+   `computer_use` call (off by default: installing TigerVNC never yields a screen
+   nobody asked for). A headed browser opens on the screen once it is running.
 2. The pane streams the bot's desktop. The chip in the header says who is in
    control: **Bot is in control** by default.
 3. Click **Take over**. The border turns red, your keyboard and mouse now drive
@@ -71,18 +72,22 @@ refused with `human_has_control`; the bot never sees what you type.
 
 The bot can ask for you: when it recognises a login or verification step it
 calls `computer_use` with `action: "request_handoff"` and a reason, the pane
-shows **Bot needs you**, and the bot blocks in `action: "wait_for_human"` until
-you hand back. Your Telegram/Discord chat with the bot gets the same request.
+shows **Bot needs you**, the bot tells you in its reply what it needs (so the
+ask reaches you in whatever chat you are on), and it blocks in
+`action: "wait_for_human"` until you hand back.
 
 Two viewers on one screen: the most recent **Take over** wins; the previous
 controller drops back to watching.
 
 ## Browser sessions that survive the handoff
 
-The bot's headed Chromium (`browser.headed: true` or a real-profile session)
-opens on the bot's screen and keeps one persistent profile per bot. What you
-sign in to during a takeover is what the bot uses afterwards, and in every later
-session for that bot, until the site itself expires the login.
+While the screen runs, the bot's browser tool and the dock's **Browser** icon are
+the same browser: the Chromium agent-browser drives, with one persistent
+user-data-dir per bot (`<HERMES_HOME>/bot-desktop/browser-profile`; set
+`AGENT_BROWSER_PROFILE` to pin your own). Click Browser during a takeover and you
+are in the bot's own windows and cookie jar; what you sign in to is what the bot
+uses afterwards and in every later session, until the site expires the login.
+Set `browser.headed: true` so the bot's own browsing is visible on the screen too.
 
 ## CLI
 

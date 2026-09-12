@@ -65,3 +65,38 @@ def test_computer_use_refuses_every_action_while_a_human_holds_the_screen(monkey
     lease.release("human")
     done = json.loads(tool.handle_computer_use({"action": "wait_for_human", "seconds": 1}))
     assert done["ok"] and done["state"]["holder"] == lease.AGENT
+
+
+def test_lease_authority_is_shared_across_processes(tmp_path):
+    """The gateway that streams the screen and the process running the agent are different processes;
+    a human takeover in one must refuse actions in the other."""
+    import os
+    import subprocess
+    import sys
+
+    lease.acquire("desktop-viewer")
+    probe = ("import sys; sys.path.insert(0, %r)\n"
+             "from tools.bot_desktop import lease\n"
+             "try:\n    lease.assert_agent_may_act(); print('AGENT')\n"
+             "except lease.HumanHasControl:\n    print('HUMAN')\n"
+             "lease.release('desktop-viewer')\n") % os.getcwd()
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8", timeout=30,
+                         stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": os.environ["HERMES_HOME"]})
+    assert out.stdout.strip() == "HUMAN", out.stderr
+    assert lease.get().holder == lease.AGENT, "the other process's release is visible here"
+
+
+def test_takeover_during_an_admitted_action_discards_its_result(monkeypatch):
+    """Approval / backend start-up can take seconds; a human who takes over meanwhile must not have
+    their keystrokes captured by an action admitted before they did."""
+    from tools.computer_use import tool
+
+    monkeypatch.setattr(tool, "_get_backend", lambda session_id="": object())
+
+    def _dispatch_then_takeover(backend, action, args):
+        lease.acquire("human")  # flips while the driver call is in flight
+        return json.dumps({"ok": True, "action": action, "png_b64": "SECRET"})
+
+    monkeypatch.setattr(tool, "_dispatch", _dispatch_then_takeover)
+    res = json.loads(tool.handle_computer_use({"action": "capture"}))
+    assert res["code"] == "human_has_control" and "SECRET" not in json.dumps(res)

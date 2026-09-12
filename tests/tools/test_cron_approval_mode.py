@@ -4,7 +4,6 @@ import pytest
 
 import tools.approval as approval_module
 from tools import approval_context
-from tools import approval_context
 from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 from tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command
 from tools.approval_context import _get_cron_approval_mode
@@ -244,8 +243,8 @@ class TestCronDenyModeAllGuards:
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
-        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "deny")
 
         tokens = set_session_vars(cron_session="1")
         try:
@@ -262,8 +261,8 @@ class TestCronDenyModeAllGuards:
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
-        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "approve")
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "approve")
 
         tokens = set_session_vars(cron_session="1")
         try:

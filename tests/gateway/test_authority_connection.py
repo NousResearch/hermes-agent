@@ -1,4 +1,5 @@
 """Connection membership against the real authority and temporary SQLite."""
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -70,4 +71,134 @@ async def test_close_after_a_subscribed_session_was_deleted_releases_every_membe
         assert not viewer.subscriptions
         assert viewer.actor.transport_id not in authority.events
     finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_detach_releases_only_the_paired_subscription_without_stopping_execution(tmp_path):
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    running = None
+    viewer = observer = None
+    try:
+        for sid in ('a', 'b'):
+            db.create_session(sid, source='test')
+        epoch = begin_runtime_epoch(db, instance_id='test')
+        authority = SessionAuthority(SimpleNamespace(), profile_id='test',
+                                     instance_id='test', db=db, epoch=epoch)
+        for sid in ('a', 'b'):
+            authority.sessions[sid] = LiveSession(None, sid + '-route')
+        running = asyncio.create_task(asyncio.Event().wait())
+        authority.sessions['a'].task = running
+        viewer = AuthorityConnection(authority, object(), {
+            'user_id': 'human', 'capabilities': ['session:read']})
+        observer = AuthorityConnection(authority, object(), {
+            'user_id': 'peer', 'capabilities': ['session:read']})
+
+        a = (await viewer.dispatch({'id': 1, 'method': 'session.resume',
+                                    'params': {'session_id': 'a'}}))['result']
+        peer_a = (await observer.dispatch({'id': 1, 'method': 'session.resume',
+                                           'params': {'session_id': 'a'}}))['result']
+        b = (await viewer.dispatch({'id': 2, 'method': 'session.resume',
+                                    'params': {'session_id': 'b'}}))['result']
+        request = {'id': 3, 'method': 'session.detach', 'params': {
+            'session_id': 'a', 'subscription_id': a['subscription_id']}}
+
+        detached = await viewer.dispatch(request)
+
+        assert detached['result'] == {
+            'session_id': 'a', 'subscription_id': a['subscription_id'], 'detached': True}
+        assert authority.sessions['a'].task is running and not running.done()
+        assert list(authority.sessions['a'].subscribers) == [peer_a['subscription_id']]
+        assert list(authority.sessions['b'].subscribers) == [b['subscription_id']]
+        assert viewer.subscriptions == {'b': b['subscription_id']}
+
+        duplicate = await viewer.dispatch(request)
+        stale_pair = await viewer.dispatch({'id': 4, 'method': 'session.detach', 'params': {
+            'session_id': 'b', 'subscription_id': a['subscription_id']}})
+        caller_mismatch = await viewer.dispatch({'id': 5, 'method': 'session.detach', 'params': {
+            'session_id': 'a', 'subscription_id': peer_a['subscription_id']}})
+        assert duplicate['result'] == {
+            'session_id': 'a', 'subscription_id': a['subscription_id'], 'detached': False}
+        assert stale_pair['result'] == {
+            'session_id': 'b', 'subscription_id': a['subscription_id'], 'detached': False}
+        assert caller_mismatch['result'] == {
+            'session_id': 'a', 'subscription_id': peer_a['subscription_id'], 'detached': False}
+        assert list(authority.sessions['a'].subscribers) == [peer_a['subscription_id']]
+        assert list(authority.sessions['b'].subscribers) == [b['subscription_id']]
+    finally:
+        if viewer is not None:
+            await viewer.close()
+        if observer is not None:
+            await observer.close()
+        if running is not None:
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_detach_rejects_malformed_params_through_dispatcher(tmp_path):
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    viewer = None
+    try:
+        db.create_session('s', source='test')
+        epoch = begin_runtime_epoch(db, instance_id='test')
+        authority = SessionAuthority(SimpleNamespace(), profile_id='test',
+                                     instance_id='test', db=db, epoch=epoch)
+        authority.sessions['s'] = LiveSession(None, 'route')
+        viewer = AuthorityConnection(authority, object(), {'user_id': 'human'})
+
+        malformed = [
+            ['unexpected'],
+            'unexpected',
+            1,
+            {},
+            {'session_id': 's'},
+            {'session_id': '', 'subscription_id': 'token'},
+            {'session_id': 's', 'subscription_id': ''},
+            {'session_id': 1, 'subscription_id': 'token'},
+            {'session_id': 's', 'subscription_id': 1},
+            {'session_id': 's', 'subscription_id': 'token', 'extra': True},
+        ]
+        for index, params in enumerate(malformed):
+            reply = await viewer.dispatch({
+                'id': index, 'method': 'session.detach', 'params': params})
+            assert reply['error']['data']['reason'] == 'invalid_params', reply
+    finally:
+        if viewer is not None:
+            await viewer.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_same_session_token_cannot_detach_newer_subscription(tmp_path):
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    viewer = None
+    try:
+        db.create_session('s', source='test')
+        epoch = begin_runtime_epoch(db, instance_id='test')
+        authority = SessionAuthority(SimpleNamespace(), profile_id='test',
+                                     instance_id='test', db=db, epoch=epoch)
+        authority.sessions['s'] = LiveSession(None, 'route')
+        viewer = AuthorityConnection(authority, object(), {'user_id': 'human'})
+
+        first = (await viewer.dispatch({'id': 1, 'method': 'session.resume',
+                                        'params': {'session_id': 's'}}))['result']
+        # Model an already-retired attachment before the same connection resumes S.
+        await authority.detach(viewer.actor, first['subscription_id'])
+        second = (await viewer.dispatch({'id': 2, 'method': 'session.resume',
+                                         'params': {'session_id': 's'}}))['result']
+        assert second['subscription_id'] != first['subscription_id']
+
+        stale = await viewer.dispatch({'id': 3, 'method': 'session.detach', 'params': {
+            'session_id': 's', 'subscription_id': first['subscription_id']}})
+        duplicate_stale = await viewer.dispatch({'id': 4, 'method': 'session.detach', 'params': {
+            'session_id': 's', 'subscription_id': first['subscription_id']}})
+        assert stale['result']['detached'] is False
+        assert duplicate_stale['result']['detached'] is False
+        assert viewer.subscriptions == {'s': second['subscription_id']}
+        assert list(authority.sessions['s'].subscribers) == [second['subscription_id']]
+    finally:
+        if viewer is not None:
+            await viewer.close()
         db.close()

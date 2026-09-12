@@ -141,6 +141,26 @@ class TestStaleInflightSelfHeal:
         assert latest2["status"] == "completed"
         assert latest2["id"] != latest1["id"], "two distinct executions"
 
+    def test_live_durable_fire_claim_outlives_local_future(self, cron_env, monkeypatch):
+        """A heartbeated external worker must not be reaped by the local age sweep."""
+        S, _E, env = self._setup(cron_env, monkeypatch)
+        import cron.jobs as J
+
+        job_id = env["job_id"]
+        claimed = J.claim_job_for_fire(job_id, force=True, return_job=True)
+        assert isinstance(claimed, dict)
+        owner = claimed["fire_claim"]["by"]
+
+        S._running_job_ids.clear()
+        S._running_since.clear()
+        S._running_futures.clear()
+        S._running_job_ids.add(job_id)
+        S._running_since[job_id] = time.time() - 6 * 60 * 60
+
+        assert S.sweep_stale_inflight([J.get_job(job_id)]) == []
+        assert job_id in S.get_running_job_ids()
+        assert J.live_fire_claim_owner(job_id) == owner
+
     def test_guard_stats_reported(self, cron_env, monkeypatch):
         """The guard must surface a countable forced-release signal."""
         S, E, env = self._setup(cron_env, monkeypatch)

@@ -203,14 +203,18 @@ def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
 
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Resolve provider/model/credentials for the review fork. Default (auto / unset / same as
-    parent): the parent's live runtime with ``routed=False`` (codex_app_server -> codex_responses
-    downgrade applied). When ``auxiliary.background_review.{provider,model}`` names a different
-    concrete model, resolve that runtime and set ``routed=True``."""
-    parent_runtime = agent._current_main_runtime()
-    parent_api_mode = parent_runtime.get("api_mode") or None
+    parent): the parent's PRIMARY runtime (from ``_primary_runtime`` snapshot) with ``routed=False``
+    (codex_app_server -> codex_responses downgrade applied). This ensures the review fork runs on
+    the primary model, even when the parent turn has failed over to a fallback provider. When
+    ``auxiliary.background_review.{provider,model}`` names a different concrete model, resolve that
+    runtime and set ``routed=True``."""
+    primary_runtime = getattr(agent, "_primary_runtime", None) or agent._current_main_runtime()
+    parent_api_mode = primary_runtime.get("api_mode") or None
     parent = {
-        "provider": agent.provider, "model": agent.model,
-        "api_key": parent_runtime.get("api_key") or None, "base_url": parent_runtime.get("base_url") or None,
+        "provider": primary_runtime.get("provider") or agent.provider,
+        "model": primary_runtime.get("model") or agent.model,
+        "api_key": primary_runtime.get("api_key") or None,
+        "base_url": primary_runtime.get("base_url") or None,
         "api_mode": "codex_responses" if parent_api_mode == "codex_app_server" else parent_api_mode,
         "credential_pool": getattr(agent, "_credential_pool", None),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),

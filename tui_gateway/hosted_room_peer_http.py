@@ -41,7 +41,9 @@ _RECEIPT_SCOPE_FIELDS = (
 _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
 _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
-_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event")
+_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event",
+                    "session_id", "pending_controls", "execution_generation", "admission_id",
+                    "artifacts", "room_artifact_scope")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -200,6 +202,14 @@ def digest_reauthorization_error(
 
 def _run_path(record: Mapping[str, Any], *suffix: str) -> str:
     return "/".join(("/v1/runs", urllib.parse.quote(str(record["run_id"]), safe=""), *suffix))
+
+
+def peer_result_digest(status):
+    """Immutable terminal projection, excluding changing transport metadata."""
+    keys = ("run_id", "session_id", "status", "admission_id", "execution_generation",
+            "output", "artifacts", "room_artifact_scope")
+    return hashlib.sha256(json.dumps({k: status.get(k) for k in keys},
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 class PeerRunsHTTPClient:
@@ -502,7 +512,12 @@ class PeerRunsHTTPClient:
             "execution_generation": receipt["execution_generation"],
             "status": "settled" if state == "completed" else "failed",
             "message_id": f"peer-run:{status.get('run_id')}",
-            "content": status.get("output") or status.get("error") or ""}]
+            "content": status.get("output") or status.get("error") or "",
+            **({"artifacts": status["artifacts"], "artifact_scope": status.get("room_artifact_scope"),
+                "peer_run_id": status["run_id"], "peer_admission_id": status.get("admission_id"),
+                "peer_execution_generation": status.get("execution_generation"),
+                "peer_result_digest": peer_result_digest(status)}
+               if state == "completed" and status.get("artifacts") else {})}]
 
     def status(
         self, *, room_id: str, profile: str, session_id: str, grant: str) -> Mapping[str, Any]:

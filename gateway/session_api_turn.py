@@ -37,7 +37,7 @@ def check_api_turn(authority, ref, payload):
         raise RuntimeStoreError('runtime_draining')
     if 'api_turn_v1' in payload:
         data = payload['api_turn_v1']
-        if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope'}
+        if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope', 'output_consent'}
                 or not {'history', 'settings'} <= set(data)
                 or (data['history'] is not None and not isinstance(data['history'], list))
                 or ('run_owner_scope' in data and not _valid_owner_scope(data['run_owner_scope']))):
@@ -116,6 +116,12 @@ def admit_api_turn(adapter, **kwargs):
         # This opaque namespace is persisted in the same row/transaction as
         # admission. It is never a bearer credential or execution input.
         payload['api_turn_v1']['run_owner_scope'] = run_owner_scope
+    evidence = kwargs.get('_room_output_consent')
+    if evidence is not None:
+        from gateway.hosted_room_peer import HostedMemberDispatch
+        from gateway.session_peer_output import consent_record
+        payload['api_turn_v1']['output_consent'] = consent_record(evidence, adapter, authority,
+            HostedMemberDispatch.from_mapping(settings['room_dispatch']), run_owner_scope)
     if isinstance(kwargs['user_message'], list):
         from gateway.session_api_media import commit_api_images
         payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
@@ -162,6 +168,14 @@ def owns_api_run(adapter, run_id, owner_scope):
 def recover_api_turns(adapter):
     """Recover committed work only after the real API adapter is published."""
     from gateway.session_authorities import all_authorities
+    from gateway.session_peer_output import initialize_peer_output
+    from gateway.session_peer_target import root_target
+    try:
+        root_target(adapter)
+    except RuntimeStoreError:
+        pass  # Named/unsupported targets do not acquire output authority.
+    else:
+        initialize_peer_output(adapter)
     for authority in all_authorities(adapter.gateway_runner):
         _recover_api_turns(adapter, authority)
 

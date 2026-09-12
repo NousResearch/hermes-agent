@@ -397,6 +397,7 @@ def _validate_member_message(kind: str, payload: Payload, actor: Payload, room: 
             raise DiscussionValidationError("recipient_member_ids must be unique")
         payload["recipient_member_ids"] = recipients
     _validate_turn_coordinates(payload, room)
+    _message_manifest(payload.get("attachments", []))
     if not isinstance(text := payload.get("text"), str) or not text.strip() or is_pass_text(text):
         raise DiscussionValidationError("message.member text must be a non-pass string")
     member = _member_by_id(room, payload.get("member_id"))
@@ -553,7 +554,9 @@ def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
     seen_through_seq: int) -> str:
-    delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
+    delta = [event for event in messages if watermark < event.seq <= seen_through_seq
+             and not (event.kind == "message.member" and event.payload.get("member_id") == member.member_id)
+             ][-MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
         f'[Discussion: "{room.name}"] You are @{member.handle}, one participant '
@@ -564,6 +567,7 @@ def _build_prompt(
         "- Reply with one conversational message only when you have something new worth adding.",
         '- If you have nothing new to add, reply with exactly "(pass)".',
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
+        "- To hand off a local file, call share_group_file; never paste a local path into chat.",
         "- Never reveal content from private conversations. Your reply is published verbatim."]
     fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))
     available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)
@@ -602,6 +606,7 @@ def _make_task_plan(
         room_id=room.room_id, task_id=f"dtask:{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:48]}",
         thread_id=str(discussion_event.payload["thread_id"]), turn_id=turn_id)
     payload = {
+        "recipient_member_ids": [candidate.member_id for candidate in room.members],
         "target_member_id": member.member_id, "target_profile": member.profile, "prompt": prompt,
         "source_event_seq": discussion_event.seq}
     if attachments:
@@ -767,6 +772,9 @@ def reconstruct_task_plan(
         if m.profile == profile and (target_member_id is None or m.member_id == target_member_id)), None)
     if member is None or _member_digest(member) != match.group("member"):
         raise DiscussionReconstructionError("task target member does not match turn_id")
+    frozen_recipient_ids = payload.get("recipient_member_ids")
+    if frozen_recipient_ids is not None and member.member_id not in frozen_recipient_ids:
+        raise DiscussionReconstructionError("task target is missing from recipient roster")
     if not isinstance(prompt := payload.get("prompt"), str) or not prompt.strip():
         raise DiscussionReconstructionError("task prompt is missing")
     if len(prompt.encode("utf-8")) > driver.MAX_PROMPT_BYTES:
@@ -795,6 +803,13 @@ def reconstruct_task_plan(
         room=room, discussion_event=discussion, member=member, member_index=int(match.group("position")),
         round_index=int(match.group("round")), seen_through_seq=int(match.group("seen")), prompt=prompt,
         input_context=input_context, attachments=attachments)
+    reconstructed_payload = dict(reconstructed.payload)
+    if frozen_recipient_ids is None:
+        reconstructed_payload.pop("recipient_member_ids", None)
+    else:
+        reconstructed_payload["recipient_member_ids"] = list(frozen_recipient_ids)
+    from dataclasses import replace
+    reconstructed = replace(reconstructed, payload=reconstructed_payload)
     if reconstructed.identity != identity or dict(reconstructed.payload) != dict(payload):
         raise DiscussionReconstructionError("driver task failed deterministic reconstruction")
     return reconstructed
@@ -824,11 +839,19 @@ def _settled_effects(
     text = _truncate_utf8_text(
         _terminal_text(result, field="text", fallback=""), max_bytes=MAX_MEMBER_TEXT_BYTES,
         suffix=_TRUNCATED_REPLY_NOTICE)
-    if is_pass_text(text):
+    attachments = (
+        _message_manifest(result.get("attachments", []))
+        if isinstance(result, Mapping) else []
+    )
+    if attachments and (not text or is_pass_text(text)):
+        text = "Shared " + ", ".join(attachment["name"] for attachment in attachments) + "."
+    if is_pass_text(text) and not attachments:
         return {"message_event_id": None, "passed": True}, []
     return {"message_event_id": message_event_id, "passed": False}, [EventPlan(
         event_id=message_event_id, kind="message.member", actor=_member_actor(task.member),
-        payload={**_turn_coordinates(task), "text": text}, authority_gateway_id=room.gateway_id,
+        payload={**_turn_coordinates(task), "text": text,
+                 **({"attachments": attachments, "recipient_member_ids": list(task.payload["recipient_member_ids"])}
+                    if attachments else {})}, authority_gateway_id=room.gateway_id,
         authority_epoch=room.authority_epoch)]
 
 

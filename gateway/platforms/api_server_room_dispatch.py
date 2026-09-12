@@ -72,6 +72,11 @@ async def _normalize_room_dispatch(
     """Validate and normalize a scoped RoomLink dispatch request."""
     _openai_error, room_token = _api_server._openai_error, self._room_grant_token(request)
     if not room_token:
+        if isinstance(body, dict) and any(
+                key in {"hosted_room_dispatch", "output_consent", "room_artifact_publication", "api_turn_v1"}
+                or key.startswith("_room_") for key in body):
+            return body, _json_error(_openai_error, "Room fields require HermesRoom authorization.",
+                                     code="invalid_room_dispatch", status=400)
         return body, None
     if not isinstance(body, dict) or set(body) - {"input", "hosted_room_dispatch"}:
         return body, _json_error(
@@ -100,6 +105,11 @@ async def _normalize_room_dispatch(
         expected_key = f"room:{dispatch.task_id}:{dispatch.execution_generation}"
         if request.headers.get("Idempotency-Key", "").strip() != expected_key:
             raise ValueError("room dispatch idempotency key is invalid")
+        from gateway.platforms.api_server_room_grants import _canonical_room_peer
+        if _canonical_room_peer(self, active_profile):
+            from gateway.session_peer_output import capture_output_consent
+            request._hermes_peer_output = capture_output_consent(
+                self, room_token, dispatch, policy.as_mapping())
         session_id = await self._ensure_hosted_member_session(dispatch)
         return {
             "input": dispatch.prompt,

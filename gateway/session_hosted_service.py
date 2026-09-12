@@ -6,13 +6,14 @@ from pathlib import Path
 from gateway.session_contract import Principal
 from gateway.session_authorities import active_authority, all_authorities, owner_scope
 from gateway.session_hosted_controls import HostedControls
+from gateway.session_hosted_output_publication import CanonicalHostedOutputPublisher
 from hermes_state_runtime import RuntimeStoreError, _epoch
 from tui_gateway.hosted_room_service import HostedRoomService
 
 _OWNER = 'gateway.hosted.owner.v1:'
 
 
-class CanonicalHostedRoomService(HostedControls, HostedRoomService):
+class CanonicalHostedRoomService(CanonicalHostedOutputPublisher, HostedControls, HostedRoomService):
     def __init__(self, authority, loop):
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}

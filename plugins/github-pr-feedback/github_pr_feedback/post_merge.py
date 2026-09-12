@@ -10,6 +10,7 @@ import re
 import shlex
 import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -178,22 +179,25 @@ class GitDeploymentRepository:
         self._run(root, "fetch", "--prune", "origin", merge.base_branch)
         remote_ref = f"refs/remotes/origin/{merge.base_branch}"
         deployed_sha = self._run(root, "rev-parse", remote_ref).strip().lower()
-        ancestor = subprocess.run(
-            (
-                "git",
-                "-C",
-                str(root),
-                "merge-base",
-                "--is-ancestor",
-                merge.merge_commit_oid,
-                deployed_sha,
-            ),
-            check=False,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            ancestor = subprocess.run(
+                (
+                    "git",
+                    "-C",
+                    str(root),
+                    "merge-base",
+                    "--is-ancestor",
+                    merge.merge_commit_oid,
+                    deployed_sha,
+                ),
+                check=False,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise DeploymentError("deployment_git_unavailable") from error
         if ancestor.returncode != 0:
             raise DeploymentError("merged_commit_not_on_remote_base")
         self._run(root, "merge", "--ff-only", remote_ref)
@@ -280,9 +284,12 @@ class PostMergeExecutor:
             # Packaging can take a long time. Re-census immediately before
             # termination so an exited process cannot leave a stale PID (or a
             # reused PID) as the deployment target.
+            terminated = []
             for process in self._processes.census():
                 if process.executable.resolve() == identity.executable_path.resolve():
                     self._processes.terminate(process.pid)
+                    terminated.append(process)
+            _wait_for_processes_to_exit(self._processes, terminated)
             relaunch = self._commands.run(
                 self._policy.relaunch_argv + (str(bundle),),
                 cwd=self._policy.deployment_path,
@@ -365,6 +372,26 @@ def _require_package_provenance(
         raise DeploymentError("package_provenance_missing")
     if source_sha.casefold() != expected_sha.casefold():
         raise DeploymentError("package_provenance_mismatch")
+
+
+def _wait_for_processes_to_exit(
+    processes: list[ProcessRecord], controller: ProcessController, *, timeout: float = 30.0
+) -> None:
+    if not processes:
+        return
+    expected = {(process.pid, process.executable.resolve()) for process in processes}
+    deadline = time.monotonic() + timeout
+    while True:
+        live = {
+            (process.pid, process.executable.resolve())
+            for process in controller.census()
+        }
+        if not expected & live:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise DeploymentError("verified_application_quit_timeout")
+        time.sleep(min(0.1, remaining))
 
 
 def _require_runtime_absent(

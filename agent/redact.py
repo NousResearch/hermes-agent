@@ -128,7 +128,7 @@ _INLINE_SECRET_ASSIGN_RE = re.compile(
     r"(^|[{[(,;:]\s*|[\"'])"
     r"(token|secret|password|passwd|credential|auth|api[_-]?key)"
     r"(\s*=\s*)(?!<redacted(?:-[^>]+)?>)"
-    r"((?:'[^']*'|\"[^\"]*\"|os\.(?:getenv|environ)\([^)]*\)|process\.env(?:\.[A-Za-z_]\w*|\[[^]]+\])|\$ENV\{[^}]+\}|[^\s,;&\"']+))",
+    r"((?:'[^']*'|\"[^\"]*\"|os\.(?:getenv|environ)\([^)]*\)|process\.env(?:\.[A-Za-z_]\w*|\[[^]]+\])|\$ENV\{[^}]+\}|[^\s,;&\"')\]}]+))",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -212,7 +212,7 @@ _KEY_KEYWORD_RE = re.compile(
 # are gated on value shape (_looks_like_opaque_credential).
 _STRONG_KEY_KEYWORD_RE = re.compile(
     r"(?:api|auth|access|refresh|session|id|bearer)[ _.\\-]?(?:key|token)"
-    r"|key[ _.\\-]?material|secret|passwd|password|pass|pw|credential|bearer",
+    r"|key[ _.\\-]?material|secret|passwd|password|pass|pw|credential|bearer|auth",
     re.IGNORECASE,
 )
 
@@ -272,6 +272,8 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     # Same programmatic-env-lookup exception as _redact_env above (issue #2852): api_key: os.getenv('X') is
     # a code snippet, not a leaked secret value.
     if _ENV_LOOKUP_VALUE_RE.match(value):
+        return False
+    if key.casefold() == "auth" and value.casefold() == "none":
         return False
     if check_keyword and not _key_has_secret_keyword(key):
         return False

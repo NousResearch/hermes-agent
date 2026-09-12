@@ -2209,6 +2209,7 @@ def _retry_status_for_run(
 
 # Run outcome -> lifecycle status a goal loop should report for a handed-off run.
 _RUN_OUTCOME_TERMINAL_STATUS = {
+    "paused": "paused",
     "completed": "done",
     "review_requested": "review",
     "changes_requested": "changes_requested",

@@ -211,6 +211,16 @@ def finish_text_response(
     ):
         messages.pop()
 
+    from agent.kanban_stop import kanban_shutdown_drain_requested, pause_current_kanban_run
+    if kanban_shutdown_drain_requested() and pause_current_kanban_run():
+        append_message(messages, final_msg)
+        try:
+            agent._flush_messages_to_session_db(messages, conversation_history)
+        except Exception:
+            logger.warning("shutdown-pause turn flush failed", exc_info=True)
+        _turn_exit_reason = "kanban_shutdown_paused"
+        return _verdict("break")
+
     _sg = apply_stop_gates(
         agent, final_msg, final_response=final_response, messages=messages,
         conversation_history=conversation_history,

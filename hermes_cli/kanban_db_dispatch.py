@@ -2320,6 +2320,9 @@ def run_daemon(
     if stop_event is None:
         stop_event = threading.Event()
 
+    from hermes_cli.kanban_shutdown import prepare_shutdown_drain_marker, request_shutdown_drain
+    prepare_shutdown_drain_marker()
+
     def _handle(_signum, _frame):
         stop_event.set()
 
@@ -2352,6 +2355,11 @@ def run_daemon(
             import traceback
             traceback.print_exc()
         stop_event.wait(timeout=interval)
+
+    try:
+        request_shutdown_drain(reason="kanban dispatcher shutdown")
+    except Exception:
+        _kb._log.warning("kanban shutdown drain marker could not be written", exc_info=True)
 
 
 # Late-bound origin namespace (see module docstring); imported LAST so this

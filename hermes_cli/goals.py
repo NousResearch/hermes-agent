@@ -1575,6 +1575,7 @@ KANBAN_GOAL_FINALIZE_TEMPLATE = (
 # Worker-driven terminal task statuses → loop outcome. The card's own acceptance criteria are the
 # goal; the worker already has the full task body, so these outcomes stop the loop cleanly.
 _KANBAN_TERMINAL_STATUSES = {
+    "paused": ("paused", "dispatcher shutdown", "task {task_id} paused after {turns} turn(s)"),
     "done": ("completed_by_worker", "worker completed the task", "task {task_id} completed by worker after {turns} turn(s)"),
     "blocked": ("blocked_by_worker", "worker blocked the task", "task {task_id} blocked by worker after {turns} turn(s)"),
     # kanban_request_review is a legitimate terminator: implementation done, awaiting a reviewer.

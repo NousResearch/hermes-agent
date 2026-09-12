@@ -230,6 +230,40 @@ class GatewayKanbanWatchersMixin:
                            "on config control alone.", _lock_path)
         return _load_config, _kb, kanban_cfg
 
+    def _prepare_kanban_shutdown_drain(self) -> None:
+        """Allocate the marker inherited by workers from this dispatcher."""
+        try:
+            from hermes_cli import kanban_shutdown as _kb
+
+            self._kanban_shutdown_drain_marker = _kb.prepare_shutdown_drain_marker()
+        except Exception:
+            logger.debug("kanban shutdown marker preparation failed", exc_info=True)
+
+
+    def _request_kanban_shutdown_drain(self, *, reason: str) -> None:
+        """Tell this dispatcher's workers to yield at their next turn end."""
+        try:
+            from hermes_cli import kanban_shutdown as _kb
+
+            marker = getattr(self, "_kanban_shutdown_drain_marker", None)
+            if marker is not None:
+                os.environ["HERMES_KANBAN_DRAIN_MARKER"] = str(marker)
+            payload = _kb.request_shutdown_drain(reason=reason)
+            logger.info(
+                "kanban shutdown drain requested: workers will pause at their "
+                "next turn boundary (marker=%s)",
+                payload.get("marker"),
+            )
+        except Exception:
+            # Shutdown must continue to the existing reclaim/termination
+            # fallback if the cooperative marker cannot be written.
+            logger.warning(
+                "kanban shutdown drain marker could not be written; "
+                "worker reclaim remains the fallback",
+                exc_info=True,
+            )
+
+
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
@@ -243,6 +277,7 @@ class GatewayKanbanWatchersMixin:
         if boot is None:
             return
         _load_config, _kb, kanban_cfg = boot
+        self._prepare_kanban_shutdown_drain()
         settings = _resolve_dispatcher_settings(kanban_cfg, _kb)
         interval = settings.interval
 

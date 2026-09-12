@@ -5,7 +5,9 @@
 non-vision models). :func:`decide_image_input_mode` picks once per turn from
 ``agent.image_input_mode`` (``auto`` | ``native`` | ``text``): in ``auto`` an
 explicit ``auxiliary.vision`` backend forces ``text`` even for vision-capable
-main models (``native`` is the absolute override); else ``supports_vision``
+main models (``native`` is the absolute override) — EXCEPT when the model's
+vision capability is explicitly declared in config (``supports_vision: true``
+on the model entry), which always routes native; else ``supports_vision``
 (config override or catalog) decides. ``vision_analyze`` stays a tool regardless.
 """
 
@@ -254,7 +256,9 @@ def _coerce_mode(raw: Any) -> str:
 def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     """True when the user configured a specific ``auxiliary.vision`` backend — the
     de-facto image route in ``auto`` mode even when the main model has native vision.
-    ``auto``/empty provider with no model and no base_url is not explicit."""
+    Exception: a per-model ``supports_vision: true`` declaration in config beats
+    this rule (see :func:`decide_image_input_mode`). ``auto``/empty provider with
+    no model and no base_url is not explicit."""
     vision = _dict_or_empty(_dict_or_empty(_dict_or_empty(cfg).get("auxiliary")).get("vision"))
     return bool(vision) and not (
         _clean_str(vision.get("provider")).lower() in {"", "auto"}
@@ -360,11 +364,63 @@ def decide_image_input_mode(
     requested_provider: str = "",
 ) -> str:
     """Return ``"native"`` or ``"text"`` for the given turn (``cfg`` None behaves as
-    auto; ``requested_provider`` is the identity before runtime canonicalization)."""
+    auto; ``requested_provider`` is the identity before runtime canonicalization).
+
+    Precedence in ``auto`` mode (highest first):
+
+    1. ``agent.image_input_mode`` ``native``/``text`` — explicit mode override.
+    2. ``agent.vision_capability_first: true`` — capability-first preference:
+       ANY model with resolvable vision capability attaches natively and a
+       configured ``auxiliary.vision`` backend falls back to its documented
+       role (text-only mains). The WebUI Settings toggle writes this key.
+    3. A per-model ``supports_vision: true`` **declared in config** (``model.``,
+       ``providers.<p>.models.<m>``, or legacy ``custom_providers[].models.<m>``)
+       — the user explicitly told Hermes this model takes images; #97339's
+       aux-de-facto rule applies to catalog/discovered capability, not to a
+       direct user declaration that contradicts it.
+    4. An explicitly configured ``auxiliary.vision`` backend — de-facto image
+       route per #97339 for everything not covered by (2)/(3).
+    5. Capability lookup (managed runtime → models.dev → Ollama probe).
+    """
     mode_cfg = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
     if mode_cfg != "auto":
         return mode_cfg
+    agent_cfg = _dict_or_empty(_dict_or_empty(cfg).get("agent"))
+    capability_first = agent_cfg.get("vision_capability_first") is True
+    if capability_first:
+        # Keep the three-argument call contract for callers/tests that replace the lookup hook.
+        extra = {"requested_provider": requested_provider} if requested_provider else {}
+        verdict = _lookup_supports_vision(provider, model, cfg, **extra)
+        if verdict is True:
+            logger.info(
+                "Image routing: native — vision_capability_first is on and model %s "
+                "advertises vision (auxiliary.vision stays available for text-only models)",
+                model,
+            )
+            return "native"
+        if verdict is False:
+            logger.info("Image routing: text — model %s does not advertise vision", model)
+            return "text"
+        # verdict None (unknown capability): fall through to the aux check below
+        # so a configured auxiliary.vision backend still decides for unknown
+        # models (the declaration check is already covered — it is step one of
+        # _lookup_supports_vision, so None implies no declaration exists).
+    if (
+        _supports_vision_override(cfg, provider, model, requested_provider=requested_provider) is True
+    ):  # user-declared capability beats the #97339 aux-de-facto rule
+        logger.info(
+            "Image routing: native — model %s has an explicit supports_vision "
+            "declaration in config (overrides auxiliary.vision de-facto routing)",
+            model,
+        )
+        return "native"
     if _explicit_aux_vision_override(cfg):  # auto: an explicit auxiliary.vision backend wins
+        logger.info(
+            "Image routing: text — auxiliary.vision backend is configured; model %s "
+            "demoted from native (de-facto route per #97339; set a per-model "
+            "supports_vision declaration or image_input_mode: native to override)",
+            model,
+        )
         return "text"
     # Keep the three-argument call contract for callers/tests that replace the lookup hook.
     extra = {"requested_provider": requested_provider} if requested_provider else {}

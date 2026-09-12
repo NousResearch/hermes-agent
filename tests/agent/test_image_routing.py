@@ -88,6 +88,83 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 
+    def test_declared_capability_beats_aux_backend_custom_provider(self):
+        """A per-model ``supports_vision: true`` declared in config is a direct
+        user statement that this model takes images — it beats the #97339
+        aux-de-facto rule. Regression shape: a custom provider serving a
+        non-catalog vision model with supports_vision set (per
+        providers.md, 'single knob') silently demoted to vision_analyze the
+        moment auxiliary.vision was configured (#104743-class)."""
+        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}},
+               "custom_providers": [{"name": "vllm-cw3e6e",
+                                     "models": {"GLM-5.3-Flash-512K": {"supports_vision": True}}}]}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True) as lk:
+            assert decide_image_input_mode(
+                "custom:vllm-cw3e6e", "GLM-5.3-Flash-512K", cfg,
+                requested_provider="custom:vllm-cw3e6e",
+            ) == "native"
+        lk.assert_not_called()  # declaration resolves without any probe/network
+
+    def test_declared_capability_beats_aux_backend_top_level_model(self):
+        """``model.supports_vision: true`` (top-level form) gets the same
+        precedence as the per-provider form."""
+        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}},
+               "model": {"supports_vision": True}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("custom:gw", "some-model", cfg) == "native"
+
+    def test_aux_backend_still_wins_without_declaration(self):
+        """#97339 preserved: with NO explicit per-model declaration, a
+        configured auxiliary.vision backend stays the de-facto route even
+        when probes (models.dev) report the model vision-capable."""
+        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
+
+    def test_declared_false_does_not_beat_aux_backend(self):
+        """``supports_vision: false`` in config must not enable native
+        routing (declaration says text-only); aux backend still wins."""
+        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}},
+               "custom_providers": [{"name": "gw", "models": {"m1": {"supports_vision": False}}}]}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("custom:gw", "m1", cfg,
+                                           requested_provider="custom:gw") == "text"
+
+    def test_vision_capability_first_native_for_advertised_models(self):
+        """``agent.vision_capability_first: true`` (the WebUI Settings
+        toggle) makes ANY model that advertises vision attach natively —
+        a configured auxiliary.vision backend falls back to its documented
+        role for text-only mains instead of capturing every image."""
+        cfg = {"agent": {"vision_capability_first": True},
+               "auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("openrouter", "zai-org/glm-5.3", cfg) == "native"
+
+    def test_vision_capability_first_text_only_model_still_text(self):
+        """Capability-first helps vision-capable models only; a model that
+        reports no vision still routes through the aux description."""
+        cfg = {"agent": {"vision_capability_first": True},
+               "auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            assert decide_image_input_mode("openrouter", "text-only-model", cfg) == "text"
+
+    def test_vision_capability_first_unknown_model_falls_to_aux(self):
+        """Unknown capability under capability-first must not guess native:
+        a configured aux backend keeps deciding (fail-closed), matching the
+        no-toggle default for unknown models."""
+        cfg = {"agent": {"vision_capability_first": True},
+               "auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert decide_image_input_mode("openrouter", "brand-new-slug", cfg) == "text"
+
+    def test_vision_capability_first_off_keeps_aux_defacto(self):
+        """Default (key absent/false) is untouched #97339: aux wins for a
+        catalog-vision model."""
+        for value in (False, None):
+            cfg = {"agent": {"vision_capability_first": value} if value is not None else {},
+                   "auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+            with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+                assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
 
     def test_none_config_is_auto(self):
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):

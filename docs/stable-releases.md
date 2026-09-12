@@ -98,7 +98,14 @@ including in dry runs:
 `CLOUDFLARE_R2_PUBLIC_URL` overrides the public origin. After admission, the
 commit summary runs even when a build or assembly job fails; it lists only
 receipt-backed existing downloads and marks missing binaries as not built.
+Missing binaries link to the workflow run under **View build run**, not to
+nonexistent downloads. Disabled platforms have no download or failure link.
 Page publication still requires working R2 access.
+
+Tagged builds also publish a per-tag diagnostic page at
+`releases/tag/<tag>/index.html` after build or feed failures, including when no
+artifacts were uploaded. An incomplete build does not advance the channel page
+or pass the release-success gate.
 
 Store submission retains its fixed official stable identity. Nonstable
 packages must not be submitted under that identity.

@@ -869,6 +869,48 @@ class TestDuplicateDrivePrefixGuard:
             f"relative write did not land in the temp cwd: {result!r}"
         )
 
+    @pytest.mark.parametrize(
+        "mangled",
+        [
+            r"C:\Foo\C:\Foo",      # verbatim: the pollution shape actually observed
+            r"C:/Foo/C:/Foo",      # verbatim, forward slashes
+            r"c:\bar\c:\bar\x",    # verbatim, lowercase
+            r"C:\Foo\c:\Foo",      # mixed case — the same directory on Windows
+            r"C:\Foo\C:/Foo",      # mixed separator — the same directory on Windows
+        ],
+    )
+    def test_duplicate_drive_prefix_forms_are_refused(self, mangled):
+        """Every spelling of the duplicated prefix is refused, not just the verbatim one.
+
+        Drive letters are case-insensitive on Windows and ``/`` and ``\\`` are
+        interchangeable, so a guard that only matches a literal ``<letter>:<sep>``
+        backreference lets ``C:\\Foo\\c:\\Foo`` and ``C:\\Foo\\C:/Foo`` through to
+        exactly the unintended directory it exists to refuse.
+        """
+        from tools.file_tools_write_guards import _DUPLICATED_DRIVE_PREFIX_RE
+
+        assert _DUPLICATED_DRIVE_PREFIX_RE.search(mangled), (
+            f"duplicated drive prefix was not detected: {mangled!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "clean",
+        [
+            r"C:\Users\Admin\foo.py",
+            r"C:\Foo\bar.py",
+            "test-relative.py",
+            r"\\server\share\x.py",
+            "/opt/Foo/bin/x",
+        ],
+    )
+    def test_legitimate_paths_are_not_refused(self, clean):
+        """Fail-closed must not mean fail-often: no repeated drive prefix, no match."""
+        from tools.file_tools_write_guards import _DUPLICATED_DRIVE_PREFIX_RE
+
+        assert not _DUPLICATED_DRIVE_PREFIX_RE.search(clean), (
+            f"legitimate path was incorrectly flagged: {clean!r}"
+        )
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

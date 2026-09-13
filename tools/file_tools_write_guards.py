@@ -22,7 +22,13 @@ from tools.file_tools_paths import _expand_tilde, _resolve_path_for_task
 # in the shared path guard rather than in ``write_file_tool`` alone so that ``patch_tool`` (which
 # reaches the same guard through ``_write_precheck_error``) cannot be used as a bypass for the same
 # malformed path.
-_DUPLICATED_DRIVE_PREFIX_RE = re.compile(r"^([A-Za-z]:[\\/]).*\1")
+#
+# The drive letter is matched case-insensitively and either separator is accepted, because on
+# Windows ``C:\Foo``, ``c:\Foo`` and ``C:/Foo`` are the same directory. A literal backreference to a
+# captured ``<letter>:<separator>`` only caught the verbatim duplicate, so mixed forms such as
+# ``C:\Foo\c:\Foo`` or ``C:\Foo\C:/Foo`` slipped through the fail-closed check even though they
+# resolve into exactly the unintended directory this guard exists to refuse.
+_DUPLICATED_DRIVE_PREFIX_RE = re.compile(r"^([A-Za-z]):[\\/].*?\1:[\\/]", re.IGNORECASE)
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
 # sensitive subtrees only; a blanket "/private/var/" refuses every temp-file

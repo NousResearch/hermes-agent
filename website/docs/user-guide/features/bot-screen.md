@@ -33,6 +33,28 @@ epoch regardless of the window). And the viewer's single-use, 30-second
 negotiate WebSocket subprotocols, so a header is not an option — which means a
 reverse proxy's access log may record an already-spent ticket.
 
+One control path is wider than the rest of this list: the dock's Browser icon
+runs Chromium with `--remote-debugging-port=0` so that, when you **take over**
+(above) and click the dock's Browser icon yourself, the agent can still attach
+to that same human-started instance afterwards instead of losing the session.
+Unlike the RFB
+socket — a `0600` Unix socket, reachable only by this OS user — Chromium's
+DevTools endpoint on Linux and macOS is always **loopback TCP with no
+authentication**: any process on the host that can read the ephemeral port
+number (the `DevToolsActivePort` file in the browser profile is
+world-readable) can open a plain HTTP/WebSocket connection and get full
+`Runtime.evaluate` access to whatever the browser profile is signed into —
+this was confirmed by attaching to a live instance and executing arbitrary
+JavaScript from an unrelated process with no credentials exchanged. Chromium
+has no supported flag to bind this endpoint to a same-user Unix socket or
+otherwise scope it by OS user or process identity on desktop platforms (that
+peer-credential path exists only in Chromium's Android build); closing this
+gap needs a broker-owned debugging connection in front of Chromium, which is
+tracked as follow-up work rather than shipped here. Until then, the dock
+browser's debug port is reachable by **any local process on the host**, not
+only the gateway's OS user — treat it as outside the same-user boundary the
+rest of this list describes.
+
 ## Requirements
 
 - The gateway host runs Linux. macOS and Windows hosts already have a real

@@ -61,10 +61,30 @@ def build_kanban_stop_nudge(
         return None
 
     tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
+    try:
+        from hermes_cli import kanban_db, kanban_db_connect
+
+        with kanban_db_connect.connect_closing() as conn:
+            task = kanban_db.get_task(conn, tid)
+    except Exception:
+        return None
+    if task is None or task.current_run_id is None or task.status != "running":
+        return None
+
+    run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    if run_id:
+        try:
+            parsed_run_id = int(run_id)
+        except ValueError:
+            pass
+        else:
+            if parsed_run_id != task.current_run_id:
+                return None
+
     return (
         "[System: You are a Hermes kanban worker. A plain-text reply is NOT a "
         "terminal state for the board.\n\n"
-        f"Task `{tid}` is still `running`. Ending now without a board tool "
+        f"Task `{tid}` is still `{task.status}`. Ending now without a board tool "
         "causes a protocol violation (clean exit with no "
         "`kanban_complete` / `kanban_block`).\n\n"
         "Do this immediately in your next response — do not narrate intent:\n"

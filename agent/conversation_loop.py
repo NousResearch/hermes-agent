@@ -432,6 +432,31 @@ def _maybe_grow_local_window(agent: Any, compressor: Any,
         return None
 
 
+def _note_managed_inference_result(agent: Any, ok: bool) -> None:
+    """Feed the wedged-child watchdog (issue #104050) one inference outcome.
+
+    Managed endpoint only (same guard shape as window growth: llamacpp alias or
+    custom-at-our-endpoint, this process's supervisor). Success resets the
+    model's consecutive-failure streak; failures accumulate toward the probe
+    threshold. Never breaks a turn."""
+    provider = (getattr(agent, "provider", "") or "").strip().lower()
+    base_url = getattr(agent, "base_url", "") or ""
+    if provider not in ("llamacpp", "llama.cpp", "llama-cpp", "custom") or not (
+        "127.0.0.1" in base_url or "localhost" in base_url
+    ):
+        return
+    try:
+        from hermes_cli.local_runtime.bootstrap import get_supervisor
+        from hermes_cli.local_runtime.growth import is_managed_endpoint
+
+        sup = get_supervisor()
+        if sup is None or not is_managed_endpoint(base_url):
+            return
+        sup.note_inference_result(getattr(agent, "model", "") or "", ok)
+    except Exception as exc:  # noqa: BLE001 — watchdog must never break a turn
+        logger.debug("child-watchdog note failed: %s", exc)
+
+
 def _ra():
     """Lazy ``run_agent`` reference so patches on ``run_agent.*`` reach this code path."""
     import run_agent

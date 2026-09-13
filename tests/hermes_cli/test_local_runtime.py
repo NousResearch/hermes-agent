@@ -811,3 +811,223 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
         "hermes_cli.local_runtime.binaries.ensure_runtime_installed", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped
+
+
+# ── wedged-child watchdog (issue #104050) ───────────────────────
+
+_WEDGE_MODELS = {"data": [{"id": "m", "status": {"value": "loaded"}}]}
+
+
+class _FakeWedgedSup:
+    """Duck-typed supervisor: scripted probe health + unload stickiness."""
+
+    def __init__(self, probe_ok=True, unload_clears=True):
+        self.probe_ok = probe_ok
+        self.unload_clears = unload_clears
+        self.status = "loaded"
+        self.unloaded = []
+        self.stops = 0
+        self.starts = 0
+        self.primary_model = None
+
+    def models(self):
+        return {"m": self.status}
+
+    def touch_generate(self, model_id, timeout_s=300):
+        assert model_id == "m"
+        return self.probe_ok
+
+    def unload_model(self, model_id):
+        self.unloaded.append(model_id)
+        if self.unload_clears:
+            self.status = "unloaded"
+
+    def stop(self):
+        self.stops += 1
+
+    def start(self):
+        self.starts += 1
+
+
+def _note(sup_or_wd, model_id, times, ok=False):
+    note = getattr(sup_or_wd, "note_inference_result", None)
+    for _ in range(times):
+        if note is not None:
+            note(model_id, ok)
+        else:
+            sup_or_wd.note_result(model_id, ok=ok)
+
+
+def test_watchdog_threshold_and_success_reset():
+    """3 consecutive failures (== default retry budget: one fully-failed turn)
+    trip the probe; any success resets the streak."""
+    from hermes_cli.local_runtime.child_watchdog import ChildWatchdog
+
+    wd = ChildWatchdog(cooldown_s=0)
+    _note(wd, "m", 2)
+    assert wd.due_models(now=1000.0) == []
+    wd.note_result("m", ok=True)
+    assert wd.consecutive_failures("m") == 0
+    _note(wd, "m", 3)
+    assert wd.due_models(now=1000.0) == ["m"]
+
+
+def test_watchdog_flag_off_is_noop():
+    from hermes_cli.local_runtime.child_watchdog import ChildWatchdog
+
+    wd = ChildWatchdog(enabled=False, cooldown_s=0)
+    _note(wd, "m", 10)
+    assert wd.consecutive_failures("m") == 0
+    assert wd.due_models(now=1000.0) == []
+    assert wd.maybe_heal(_FakeWedgedSup(probe_ok=False)) == []
+
+
+def test_watchdog_healthy_probe_heals_nothing(stub_server, tmp_path):
+    """Streak tripped but the child still computes: no unload, streak reset —
+    transient blips cost at most one probe generation."""
+    port, handler = stub_server
+    handler.models = dict(_WEDGE_MODELS)
+    handler.chat_answer = "Paris"
+    sup = _make_supervisor(tmp_path, port)
+    _note(sup, "m", 3)
+    assert sup.check_wedged_children() == []
+    assert getattr(handler, "unloaded", []) == []
+    # Streak reset by the healthy probe: not immediately due again.
+    assert sup._child_watchdog.due_models() == []
+
+
+def test_watchdog_unloads_probed_dead_child():
+    """Probe fails → POST /models/unload recorded; router drops the child, so
+    no bounce. Returns the healed id."""
+    from hermes_cli.local_runtime.child_watchdog import ChildWatchdog
+
+    sup = _FakeWedgedSup(probe_ok=False, unload_clears=True)
+    wd = ChildWatchdog(cooldown_s=0)
+    _note(wd, "m", 3)
+    assert wd.maybe_heal(sup) == ["m"]
+    assert sup.unloaded == ["m"]
+    assert (sup.stops, sup.starts) == (0, 0)
+
+
+def test_watchdog_bounces_router_when_unload_sticks():
+    """Router leaves a probed-dead child resident after unload → bounce the
+    router we own (SIGTERM→SIGKILL reaps SIGTERM-ignoring children)."""
+    from hermes_cli.local_runtime.child_watchdog import ChildWatchdog
+
+    sup = _FakeWedgedSup(probe_ok=False, unload_clears=False)
+    wd = ChildWatchdog(cooldown_s=0)
+    _note(wd, "m", 3)
+    assert wd.maybe_heal(sup) == ["m"]
+    assert sup.unloaded == ["m"]
+    assert (sup.stops, sup.starts) == (1, 1)
+
+
+def test_watchdog_cooldown_bounds_repeat_heals():
+    """A persistently broken model heals at most once per cooldown window."""
+    from hermes_cli.local_runtime.child_watchdog import ChildWatchdog
+
+    sup = _FakeWedgedSup(probe_ok=False, unload_clears=True)
+    wd = ChildWatchdog(cooldown_s=1800)
+    _note(wd, "m", 3)
+    assert wd.maybe_heal(sup, now=1000.0) == ["m"]
+    _note(wd, "m", 3)
+    assert wd.maybe_heal(sup, now=1100.0) == []  # inside cooldown: silent
+    assert sup.unloaded == ["m"]
+    _note(wd, "m", 3)
+    assert wd.maybe_heal(sup, now=3000.0) == ["m"]  # window expired: heal again
+
+
+def test_watchdog_resolves_alias_to_resident_model():
+    """Agent model names are stems/aliases of router ids (same rule as window
+    growth); an unresolvable id drops its streak without healing."""
+    from hermes_cli.local_runtime.child_watchdog import ChildWatchdog
+
+    class _AliasSup(_FakeWedgedSup):
+        def models(self):
+            return {"qwen3-27b.gguf": self.status}
+
+        def touch_generate(self, model_id, timeout_s=300):
+            assert model_id == "qwen3-27b.gguf"
+            return self.probe_ok
+
+    wd = ChildWatchdog(cooldown_s=0)
+    _note(wd, "qwen3-27b", 3)
+    assert wd.maybe_heal(_AliasSup(probe_ok=False)) == ["qwen3-27b"]
+
+    wd2 = ChildWatchdog(cooldown_s=0)
+    _note(wd2, "long-gone-model", 3)
+    assert wd2.maybe_heal(_FakeWedgedSup(probe_ok=False)) == []
+
+
+def test_watchdog_never_raises():
+    """Every healing path swallows: probe/unload/status/bounce blowing up
+    still returns normally (maintenance-loop contract)."""
+    from hermes_cli.local_runtime.child_watchdog import ChildWatchdog
+
+    class _BoomSup:
+        primary_model = None
+
+        def models(self):
+            raise RuntimeError("router gone")
+
+        def touch_generate(self, *a, **k):
+            raise AssertionError("must not be reached")
+
+    wd = ChildWatchdog(cooldown_s=0)
+    _note(wd, "m", 3)
+    assert wd.maybe_heal(_BoomSup()) == []
+
+    class _BoomHealSup(_FakeWedgedSup):
+        def unload_model(self, model_id):
+            raise RuntimeError("unload refused")
+
+        def stop(self):
+            raise RuntimeError("stop refused")
+
+    sup2 = _BoomHealSup(probe_ok=False)
+    assert wd.maybe_heal(sup2) == []  # cooldown stamped; no raise, no heal
+
+
+def test_supervisor_flag_off_disables_watchdog(tmp_path):
+    """child_watchdog=False: hooks record nothing, checks heal nothing."""
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(
+        install_dir=tmp_path, models_dir=tmp_path, port=9999, child_watchdog=False)
+    _note(sup, "m", 10)
+    assert sup._child_watchdog.consecutive_failures("m") == 0
+    assert sup.check_wedged_children() == []
+
+
+def test_bounce_retires_straggler_watcher(tmp_path, monkeypatch):
+    """Regression (bounce frontier): stop()+start() on one supervisor resets
+    ``_stopping``, so the previous watcher generation must exit WITHOUT
+    spawning — the new generation already owns the router. Deterministic: a
+    fake clock bumps the epoch mid-backoff."""
+    from types import SimpleNamespace
+
+    from hermes_cli.local_runtime import supervisor as sup_mod
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(
+        install_dir=tmp_path, models_dir=tmp_path, port=9999)
+    sup.proc = SimpleNamespace(poll=lambda: 1, pid=1)  # type: ignore[assignment] — crashed router
+    spawns = []
+    monkeypatch.setattr(sup, "_spawn", lambda: spawns.append(1))
+    monkeypatch.setattr(sup, "_reap_orphaned_children", lambda: None)
+    monkeypatch.setattr(sup, "_wait_health", lambda timeout_s: None)
+    monkeypatch.setattr(sup_mod, "_RESTART_BACKOFF_S", (0,))
+
+    class _Clock:
+        @staticmethod
+        def sleep(s):
+            # A bounce lands mid-backoff: generation 1 takes over.
+            sup._epoch += 1
+
+    monkeypatch.setattr(sup_mod, "time", _Clock)
+    sup._watch(0)  # generation-0 watcher, retired mid-backoff
+    assert spawns == []
+
+    # And a watcher waking AFTER the bounce retires at the loop top.
+    sup._watch(0)
+    assert spawns == []

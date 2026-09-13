@@ -1,10 +1,14 @@
 """Supervision of one llama-server in router mode.
 
 The router process is ours (restart with backoff on crash); router children are its problem — child
-failures surface via GET /models exit_code, never auto-retried here. Learned on real hardware:
-health-200 is NOT readiness — every readiness claim requires a touch generation (temp-0, expected
-token, generous budget, reasoning_content scanned); always dial 127.0.0.1 — resolving localhost adds
-~2s per request on Windows via IPv6 fallback.
+failures surface via GET /models exit_code, never auto-retried here. The one exception is a
+WEDGED child (issue #104050: health-200, model still "loaded", every completion a 500, SIGTERM
+ignored): the router never reports it, so after consecutive inference failures plus a failed live
+probe the watchdog asks the ROUTER to unload the model — child lifecycle stays the router's job —
+and only bounces the router we own when the router leaves a probed-dead child resident. Learned
+on real hardware: health-200 is NOT readiness — every readiness claim requires a touch generation
+(temp-0, expected token, generous budget, reasoning_content scanned); always dial 127.0.0.1 —
+resolving localhost adds ~2s per request on Windows via IPv6 fallback.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import urllib.request
 from pathlib import Path
 
 from hermes_cli.local_runtime.binaries import server_binary, runtimes_root
+from hermes_cli.local_runtime.child_watchdog import ChildWatchdog
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +108,8 @@ class LlamaServerSupervisor:
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
-                 preset_path: Path | None = None):
+                 preset_path: Path | None = None,
+                 child_watchdog: bool = True):
         self.install_dir = Path(install_dir)
         self.models_dir = Path(models_dir)
         self.models_max = models_max
@@ -117,8 +123,12 @@ class LlamaServerSupervisor:
         self._restarts = 0
         self._stopping = False
         self._watchdog: threading.Thread | None = None
+        self._epoch = 0  # bumped on every start(): a straggler watcher from a
+        # previous generation (stop()+start() bounce, issue #104050) must exit
+        # instead of double-spawning beside the new router.
         self._log_handle = None
         self._idle_since: dict[str, float] = {}
+        self._child_watchdog = ChildWatchdog(enabled=child_watchdog)
 
     # ── endpoints ────────────────────────────────────────────
 
@@ -190,7 +200,9 @@ class LlamaServerSupervisor:
         self._spawn()
         self._wait_health(timeout_s)
         self._write_state()
-        self._watchdog = threading.Thread(target=self._watch, daemon=True, name="llamacpp-supervisor")
+        self._epoch += 1
+        self._watchdog = threading.Thread(target=self._watch, args=(self._epoch,),
+                                           daemon=True, name="llamacpp-supervisor")
         self._watchdog.start()
 
     def _write_state(self) -> None:
@@ -212,9 +224,18 @@ class LlamaServerSupervisor:
             time.sleep(1)
         raise TimeoutError(f"llama-server not healthy after {timeout_s}s (log: {self.log_path})")
 
-    def _watch(self) -> None:
-        """Restart the router (not its children) on crash, with backoff."""
+    def _watch(self, epoch: int) -> None:
+        """Restart the router (not its children) on crash, with backoff.
+
+        ``epoch`` retires stragglers: a bounce (stop()+start() on this same
+        object) resets ``_stopping`` to False, so without the generation check
+        the previous watcher would survive and double-spawn beside the new
+        router. A retired watcher exits WITHOUT spawning — the new generation
+        already owns the router.
+        """
         while not self._stopping:
+            if epoch != self._epoch:
+                return
             proc = self.proc
             if proc is None:
                 return
@@ -227,6 +248,8 @@ class LlamaServerSupervisor:
             backoff = _RESTART_BACKOFF_S[min(self._restarts, len(_RESTART_BACKOFF_S) - 1)]
             logger.warning("llama-server exited rc=%s; restart #%s in %ss", rc, self._restarts + 1, backoff)
             time.sleep(backoff)
+            if epoch != self._epoch or self._stopping:
+                return
             self._restarts += 1
             try:
                 self._reap_orphaned_children()
@@ -339,6 +362,27 @@ class LlamaServerSupervisor:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("idle unload of %s failed: %s", model_id, exc)
         return unloaded
+
+    def note_inference_result(self, model_id: str, ok: bool) -> None:
+        """Feed the wedged-child watchdog one inference outcome (issue #104050).
+
+        Called from the agent turn loop for managed-endpoint completions only;
+        a success resets the model's consecutive-failure streak. Never raises.
+        """
+        try:
+            self._child_watchdog.note_result(model_id, ok=ok)
+        except Exception:  # noqa: BLE001 — watchdog must never break a turn
+            logger.debug("child-watchdog note failed", exc_info=True)
+
+    def check_wedged_children(self) -> "list[str]":
+        """Probe + heal models whose consecutive server-error streak tripped the
+        watchdog (driven by the maintenance loop beside the idle sweep).
+        Returns healed model ids. Never raises."""
+        try:
+            return self._child_watchdog.maybe_heal(self)
+        except Exception:  # noqa: BLE001 — belt and braces; maybe_heal already guards
+            logger.debug("child-watchdog check failed", exc_info=True)
+            return []
 
     def touch_generate(self, model_id: str, timeout_s: int = 300) -> bool:
         """The readiness proof. Generous budget + reasoning_content scan — small token budgets

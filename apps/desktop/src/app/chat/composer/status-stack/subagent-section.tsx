@@ -77,7 +77,7 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
         <div className="max-h-[25vh] overflow-y-auto overscroll-contain">{live.map(row)}</div>
         {detail && (
           <div
-            className="max-h-[25vh] overflow-y-auto overscroll-contain px-3 py-2"
+            className="max-h-[45vh] overflow-y-auto overscroll-contain px-3 py-2"
             data-slot="composer-subagent-detail"
           >
             <SubagentControls

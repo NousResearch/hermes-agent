@@ -1930,6 +1930,7 @@ export const zh = defineLocale({
   },
   agents: {
     extendedTranscript: '扩展记录',
+    imagePreviewsTruncated: '部分图片预览已省略。',
     transcriptTruncated: '显示最新 16 KiB',
     transcriptUnavailable: '实时记录不可用',
 

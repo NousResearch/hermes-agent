@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { type DesktopFileOrigin, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { isInlineMediaSrc } from '@/lib/media'
 import {
   getSessionOwnerHint,
@@ -79,13 +79,11 @@ function scheduleRead(run: () => Promise<string>, signal: AbortSignal): Promise<
 export interface ToolImageContext {
   sessionId: string | null
   runtimeId: string | null
+  origin?: DesktopFileOrigin
+  revision?: number
 }
 
-export async function readToolImage(source: string, { sessionId, runtimeId }: ToolImageContext): Promise<string> {
-  if (isInlineMediaSrc(source)) {
-    return source
-  }
-
+function toolImageOrigin({ sessionId, runtimeId }: ToolImageContext): DesktopFileOrigin {
   if (!sessionId) {
     throw new Error('Image source session is unavailable')
   }
@@ -120,11 +118,19 @@ export async function readToolImage(source: string, { sessionId, runtimeId }: To
     throw new Error('Image source session is unavailable')
   }
 
-  const dataUrl = await readDesktopFileDataUrl(source, {
+  return {
     sessionId,
     connectionId: typeof owner === 'string' ? undefined : owner.connectionId,
     profile: typeof owner === 'string' ? owner : owner.targetProfile || owner.profile
-  })
+  }
+}
+
+export async function readToolImage(source: string, context: ToolImageContext): Promise<string> {
+  if (isInlineMediaSrc(source)) {
+    return source
+  }
+
+  const dataUrl = await readDesktopFileDataUrl(source, context.origin ?? toolImageOrigin(context))
 
   if (!dataUrl.startsWith('data:image/')) {
     throw new Error('Not an image')
@@ -142,8 +148,12 @@ export interface ToolImageState {
 export function useToolImagePage(sources: string[], active: boolean, context: ToolImageContext) {
   const cache = useRef(new Map<string, ToolImageState>())
   const reads = useRef(new Map<string, AbortController>())
-  const [images, setImages] = useState(() => new Map<string, ToolImageState>())
-  const { sessionId, runtimeId } = context
+  const { sessionId, runtimeId, revision = 0 } = context
+  const cacheRevision = useRef({ value: revision })
+  const [snapshot, setSnapshot] = useState(() => ({ revision, images: new Map<string, ToolImageState>() }))
+  const originSession = context.origin?.sessionId
+  const originConnection = context.origin?.connectionId
+  const originProfile = context.origin?.profile
 
   const load = useCallback(
     (source: string) => {
@@ -157,8 +167,18 @@ export function useToolImagePage(sources: string[], active: boolean, context: To
       const signal = controller.signal
       reads.current.set(source, controller)
       cache.current.set(source, { status: 'loading' })
-      setImages(new Map(cache.current))
-      const read = () => readToolImage(source, { sessionId, runtimeId })
+      setSnapshot({ revision, images: new Map(cache.current) })
+
+      const read = () =>
+        readToolImage(source, {
+          sessionId,
+          runtimeId,
+          origin:
+            originSession && originProfile
+              ? { sessionId: originSession, connectionId: originConnection, profile: originProfile }
+              : undefined
+        })
+
       const promise = isInlineMediaSrc(source) ? read() : scheduleRead(read, signal)
       void promise
         .then(
@@ -168,7 +188,7 @@ export function useToolImagePage(sources: string[], active: boolean, context: To
             }
 
             cache.current.set(source, { status: 'ready', src })
-            setImages(new Map(cache.current))
+            setSnapshot({ revision, images: new Map(cache.current) })
           },
           () => {
             if (signal.aborted) {
@@ -176,7 +196,7 @@ export function useToolImagePage(sources: string[], active: boolean, context: To
             }
 
             cache.current.set(source, { status: 'error' })
-            setImages(new Map(cache.current))
+            setSnapshot({ revision, images: new Map(cache.current) })
           }
         )
         .finally(() => {
@@ -185,11 +205,16 @@ export function useToolImagePage(sources: string[], active: boolean, context: To
           }
         })
     },
-    [runtimeId, sessionId]
+    [runtimeId, sessionId, originSession, originConnection, originProfile, revision]
   )
 
   useEffect(() => {
     const inFlight = reads.current
+
+    if (cacheRevision.current.value !== revision) {
+      cache.current.clear()
+      cacheRevision.current.value = revision
+    }
 
     for (const [source, state] of cache.current) {
       if (!sources.includes(source) || state.status !== 'ready') {
@@ -197,7 +222,7 @@ export function useToolImagePage(sources: string[], active: boolean, context: To
       }
     }
 
-    setImages(new Map(cache.current))
+    setSnapshot({ revision, images: new Map(cache.current) })
 
     if (active) {
       sources.forEach(load)
@@ -210,7 +235,7 @@ export function useToolImagePage(sources: string[], active: boolean, context: To
 
       inFlight.clear()
     }
-  }, [active, load, sources])
+  }, [active, load, sources, revision])
 
   const retry = useCallback(
     (source: string) => {
@@ -221,10 +246,13 @@ export function useToolImagePage(sources: string[], active: boolean, context: To
     [active, load, sources]
   )
 
-  const fail = useCallback((source: string) => {
-    cache.current.set(source, { status: 'error' })
-    setImages(new Map(cache.current))
-  }, [])
+  const fail = useCallback(
+    (source: string) => {
+      cache.current.set(source, { status: 'error' })
+      setSnapshot({ revision, images: new Map(cache.current) })
+    },
+    [revision]
+  )
 
-  return { images, retry, fail }
+  return { images: snapshot.revision === revision ? snapshot.images : new Map<string, ToolImageState>(), retry, fail }
 }

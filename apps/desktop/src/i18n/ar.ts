@@ -1145,6 +1145,7 @@ export const ar = defineLocale({
   },
   agents: {
     extendedTranscript: 'سجل موسّع',
+    imagePreviewsTruncated: 'تم حذف بعض معاينات الصور.',
     transcriptTruncated: 'عرض أحدث 16 KiB',
     transcriptUnavailable: 'السجل المباشر غير متاح',
 

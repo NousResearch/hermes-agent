@@ -35,12 +35,13 @@ export function ToolImagePreviews({ active, sources, toolCallId }: ToolImagePrev
   )
 }
 
-function ToolImageGallery({
+export function ToolImageGallery({
   active,
   sources,
   toolCallId,
-  context
-}: ToolImagePreviewsProps & { context: ToolImageContext }) {
+  context,
+  compact = false
+}: ToolImagePreviewsProps & { context: ToolImageContext; compact?: boolean }) {
   const { t } = useI18n()
   const [selection, setSelection] = useState(sources[0])
   const [lightboxOpen, setLightboxOpen] = useState(false)
@@ -134,7 +135,7 @@ function ToolImageGallery({
             >
               <img
                 alt={label}
-                className="max-h-80 w-auto max-w-full rounded-md object-contain"
+                className={`${compact ? 'max-h-[min(16vh,8rem)]' : 'max-h-80'} w-auto max-w-full rounded-md object-contain`}
                 decoding="async"
                 onError={() => fail(source)}
                 src={src}
@@ -193,7 +194,7 @@ function ToolImageGallery({
                 <button
                   aria-label={`${t.desktop.openImage} ${itemIndex + 1}/${sources.length}`}
                   aria-pressed={index === itemIndex}
-                  className="relative grid h-16 min-w-0 flex-1 cursor-pointer place-items-center overflow-hidden rounded-md border border-border bg-muted/30 focus-visible:outline-2 focus-visible:outline-ring aria-pressed:border-primary aria-pressed:ring-1 aria-pressed:ring-primary"
+                  className={`${compact ? 'h-12 max-w-14' : 'h-16'} relative grid min-w-0 flex-1 cursor-pointer place-items-center overflow-hidden rounded-md border border-border bg-muted/30 focus-visible:outline-2 focus-visible:outline-ring aria-pressed:border-primary aria-pressed:ring-1 aria-pressed:ring-primary`}
                   key={item}
                   onClick={() => select(itemIndex)}
                   type="button"

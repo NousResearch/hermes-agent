@@ -1654,6 +1654,7 @@ export const ru = defineLocale({
   },
   agents: {
     extendedTranscript: 'Подробный журнал',
+    imagePreviewsTruncated: 'Некоторые миниатюры изображений пропущены.',
     transcriptTruncated: 'Последние 16 КиБ',
     transcriptUnavailable: 'Текущий журнал недоступен',
 

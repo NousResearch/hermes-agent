@@ -1489,6 +1489,7 @@ export const ja = defineLocale({
   },
   agents: {
     extendedTranscript: '詳細な実行ログ',
+    imagePreviewsTruncated: '一部の画像プレビューは省略されました。',
     transcriptTruncated: '最新の 16 KiB を表示',
     transcriptUnavailable: 'ライブログは利用できません',
 

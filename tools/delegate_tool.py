@@ -398,6 +398,8 @@ def _build_children(
         if _writer is not None:
             child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), _writer)
             child._live_transcript_path = str(_writer.path)
+            _writer.bind_child(child)
+            child._live_transcript_writer = _writer
         if live_deleg_id:
             setattr(child, "_delegation_id", live_deleg_id)
             _ident_ref = getattr(child, "_progress_identity_ref", None)

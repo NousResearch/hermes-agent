@@ -107,6 +107,10 @@ Explore and preview the working directory without leaving the app — useful for
 
 When connected to a remote gateway, opening a file artifact downloads it through that gateway, using the artifact’s originating profile and session. Relative paths resolve against the session’s saved working directory; home-relative paths use the gateway’s home, never the Desktop machine’s home. Windows-style relative paths are recognized alongside forward-slash paths, and file URIs retain drive and network-share information for the gateway to interpret. Missing sessions or working directories produce an error rather than selecting a different local file.
 
+**Subagent images:** Expand the subagent status group and select a running child to see its recent image previews alongside its live log. The same gallery, zoom, download and side-preview controls are available there. You can steer the child without closing a pinned image. A new image event refreshes an overwritten file even when its path has not changed; text-only updates do not reload images.
+
+This requires both the updated Desktop and backend. Older backends continue to show the text log. Previews are bounded to recent references and can disappear when the child leaves the live registry; pin an image to keep its already-loaded pixels open. Unsupported or oversized images are omitted with a notice rather than guessed from arbitrary log text. See the [subagent image contract](../developer-guide/desktop-subagent-images.md) for supported sources and limits.
+
 The **Artifacts** view collects what your sessions generate — **images, files, and links** — into one searchable, browsable gallery. Open it from the sidebar, the command palette (**Artifacts — Browse generated outputs**), or a `nav.artifacts` shortcut you bind yourself. It indexes recent session outputs automatically; every artifact shows which session produced it with a jump back to that chat, and images and files open in a preview with download / open-in-browser / copy actions.
 
 ### Windows, tabs & panes

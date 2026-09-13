@@ -1431,6 +1431,7 @@ export const zhHant = defineLocale({
   },
   agents: {
     extendedTranscript: '完整記錄尾端',
+    imagePreviewsTruncated: '部分圖片預覽已省略。',
     transcriptTruncated: '顯示最新 16 KiB',
     transcriptUnavailable: '即時記錄無法使用',
 

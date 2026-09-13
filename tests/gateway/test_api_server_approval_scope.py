@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -241,6 +242,41 @@ async def test_runs_persistent_choice_applies_only_inside_that_run(monkeypatch, 
     _clear_run_approval(run_id)
     with approval_module._lock:
         approval_module._permanent_approved.discard("execute_code")
+
+
+@pytest.mark.asyncio
+async def test_revoked_run_notifier_cannot_restore_waiting_status():
+    """A late approval callback cannot resurrect a run after resolver teardown."""
+    from gateway.platforms.api_server_runs import _make_approval_notify
+
+    class _StatusOwner:
+        def __init__(self):
+            self.statuses = {}
+
+        def _set_run_status(self, run_id, status, **fields):
+            self.statuses[run_id] = {"status": status, **fields}
+
+        @staticmethod
+        def _approval_event_choices(**_kwargs):
+            return ["once", "session", "always", "deny"]
+
+    owner = _StatusOwner()
+    run_id = "run_revoked_notifier"
+    resolver = approval_context.create_approval_resolver(run_id)
+    assert resolver.activate() is True
+    run = SimpleNamespace(
+        run_id=run_id,
+        queue=asyncio.Queue(),
+        approval_resolver=resolver,
+    )
+    notify = _make_approval_notify(owner, run, _api_server=owner)
+
+    resolver.revoke()
+    notify({"pattern_key": "execute_code", "description": "late approval"})
+    await asyncio.sleep(0)
+
+    assert owner.statuses == {}
+    assert run.queue.empty()
 
 
 @pytest.mark.asyncio

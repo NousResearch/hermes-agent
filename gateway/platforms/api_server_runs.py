@@ -567,9 +567,14 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 _api_server._publish_turn_process_ownership(agent, effective_task_id)
                 # Passed only when set: a human turn keeps today's call shape.
                 author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
-                r = agent.run_conversation(
-                    user_message=run.user_message, conversation_history=run.conversation_history,
-                    task_id=effective_task_id, **author_kwargs)
+                # Close the cancellation gap between capability activation and agent startup. Guards
+                # also re-check the capability, so a revoke after this read still fails closed.
+                if run.approval_resolver.is_active():
+                    r = agent.run_conversation(
+                        user_message=run.user_message, conversation_history=run.conversation_history,
+                        task_id=effective_task_id, **author_kwargs)
+                else:
+                    r = {"final_response": "", "messages": [], "interrupted": True}
             else:
                 # A cancellation can win between admission and executor startup. Do not run an
                 # agent after the owning approval capability has been permanently revoked.
@@ -596,21 +601,32 @@ def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Di
     run_id, q, loop = run.run_id, run.queue, asyncio.get_running_loop()
 
     def _approval_notify(approval_data: Dict[str, Any]) -> None:
-        event = dict(approval_data or {})
-        # Clients must never receive the raw flagged command: redact before it hits the stream.
-        # Redact credentials from the command before it enters the SSE/API event stream — same egress bug as
-        # #48456, second transport: API/desktop clients would otherwise receive the raw command Tirith
-        # flagged. Reuse the gateway seam.
-        if "command" in event:
-            from gateway.run import _redact_approval_command
-            event["command"] = _redact_approval_command(event.get("command"))
-        event.update(_run_event(run_id, "approval.request", choices=_api_server._approval_event_choices(
-            smart_denied=bool(event.get("smart_denied")),
-            allow_session=event.get("allow_session") is not False,
-            allow_permanent=event.get("allow_permanent") is not False)))
-        self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
-        with suppress(Exception):
-            loop.call_soon_threadsafe(q.put_nowait, event)
+        def _publish() -> None:
+            event = dict(approval_data or {})
+            # Clients must never receive the raw flagged command: redact before it hits the stream.
+            # Redact credentials from the command before it enters the SSE/API event stream — same egress bug as
+            # #48456, second transport: API/desktop clients would otherwise receive the raw command Tirith
+            # flagged. Reuse the gateway seam.
+            if "command" in event:
+                from gateway.run import _redact_approval_command
+                event["command"] = _redact_approval_command(event.get("command"))
+            event.update(_run_event(run_id, "approval.request", choices=_api_server._approval_event_choices(
+                smart_denied=bool(event.get("smart_denied")),
+                allow_session=event.get("allow_session") is not False,
+                allow_permanent=event.get("allow_permanent") is not False)))
+            self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
+            with suppress(Exception):
+                loop.call_soon_threadsafe(q.put_nowait, event)
+
+        resolver = getattr(run, "approval_resolver", None)
+        if resolver is None:
+            _publish()
+            return
+        # Teardown revokes the capability under the same lifecycle lock. Holding that lock across
+        # status publication makes a stale callback a no-op instead of resurrecting a stopped run.
+        with resolver.active_scope() as active:
+            if active:
+                _publish()
 
     return _approval_notify
 

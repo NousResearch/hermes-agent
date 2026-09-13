@@ -9,6 +9,7 @@ import contextvars
 import logging
 import os
 import threading
+from contextlib import contextmanager
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
 
@@ -48,6 +49,12 @@ class ApprovalResolverCapability:
         """Return whether the owning run still has a live inbound resolver."""
         with self._lock:
             return self._active
+
+    @contextmanager
+    def active_scope(self):
+        """Hold the lifecycle lock while publishing one resolver-owned event."""
+        with self._lock:
+            yield self._active
 
 
 # Per-thread/per-task gateway session identity: gateway runs agent turns concurrently in executor threads, so a

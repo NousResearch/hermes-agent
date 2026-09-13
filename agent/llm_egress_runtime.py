@@ -211,9 +211,6 @@ def egress_enforcement_enabled() -> bool:
             return posture.strip().lower() not in {"0", "false", "off", "disabled", "disable", "monitor"}
     except Exception:
         pass
-    raw = os.environ.get("HERMES_LLM_EGRESS_ENFORCEMENT", "").strip().lower()
-    if raw:
-        return raw not in {"0", "false", "off", "disabled", "disable", "monitor"}
     try:
         from hermes_cli.config import load_config_readonly
 

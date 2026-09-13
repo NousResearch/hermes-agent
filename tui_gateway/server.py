@@ -558,9 +558,11 @@ def _conversation_worktree_policy_for_session(policy, session_cwd: str | None):
     selected_common_path = Path(selected_common).resolve()
     suffix = hashlib.sha256(str(selected_common_path).encode()).hexdigest()[:12]
     namespace = f"{selected_common_path.name}-{suffix}"
-    try:
-        policy.worktree_root.resolve().relative_to(configured_path)
-    except ValueError:
+    configured_root = policy.worktree_root.resolve()
+    if not (
+        configured_root.is_relative_to(configured_path)
+        or configured_root.is_relative_to(selected_common_path)
+    ):
         worktree_root = policy.worktree_root / namespace
     else:
         # A conventional ``<repo>/.worktrees`` root is valid for its own
@@ -575,7 +577,7 @@ def _conversation_worktree_policy_for_session(policy, session_cwd: str | None):
         source_path,
         worktree_root,
     )
-    return replace(policy, source_worktree=source_path, worktree_root=worktree_root)
+    return replace(policy, source_worktree=selected_common_path, worktree_root=worktree_root)
 
 
 def _conversation_worktree_manager(*, profile_home=None, db=None, session_cwd=None):

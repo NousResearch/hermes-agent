@@ -2646,7 +2646,7 @@ def test_operator_config_can_temporarily_disable_egress_enforcement(
     assert calls
 
     monkeypatch.setenv("HERMES_LLM_EGRESS_ENFORCEMENT", "enabled")
-    assert runtime.egress_enforcement_enabled() is True
+    assert runtime.egress_enforcement_enabled() is False
     assert runtime.provider_uses_egress_firewall("nous") is True
 
 

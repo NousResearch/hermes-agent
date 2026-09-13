@@ -66,10 +66,36 @@ DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
+# Shorter window for PR URLs that cannot be attributed to this card's own
+# structured run handoffs (``task_runs.summary``/``metadata``, ``tasks.result``).
+# A URL that only lives in comment prose — QA reports, audits, operator notes
+# citing an external PR as an artifact link — is not proof that THIS card's
+# work is done: re-spawning risks no duplicate PR (nobody on this card claims
+# to have opened one), so the dedup window is short and the card re-dispatches
+# once it elapses. An attributed URL (the delivering worker itself declared the
+# PR in its handoff) keeps the full window: that is the duplicate-work case the
+# guard exists for.
+_RESPAWN_GUARD_PR_UNATTRIBUTED_WINDOW = 3600  # 1 hour
+
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+
+
+def _pr_urls_in(text: str) -> list[str]:
+    """Normalized GitHub PR URLs contained in ``text``.
+
+    Trailing sentence punctuation (``.../pull/123,`` / ``.../pull/123.``) is
+    stripped and the result lowercased so URLs match across a comment and a
+    run handoff regardless of how each was formatted.
+    """
+    if not text:
+        return []
+    return [
+        m.rstrip(".,;:!?)]}'\"").lower()
+        for m in _RESPAWN_GUARD_PR_URL_RE.findall(text)
+    ]
 
 
 @dataclass
@@ -1135,9 +1161,12 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
-    dead claim locks are NOT a guard reason — the reclaim passes own those.
+    (PR URL in a recent comment; re-spawning risks a duplicate PR — a URL also
+    declared in the card's own structured run handoffs holds for the full
+    window, a comment-prose-only URL only for the short unattributed window).
+    The review lane skips the last two: they are the *inputs* to a review
+    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
+    passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1203,16 +1232,63 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. GitHub PR URL in a recent comment. Two-tier window:
+    #    - ATTRIBUTED URL (also declared in this card's structured run
+    #      handoffs — task_runs.summary/metadata or tasks.result): the worker
+    #      that delivered on this card opened that PR, so re-spawning risks a
+    #      duplicate PR → full window.
+    #    - UNATTRIBUTED URL (comment prose only — QA/audit/operator reports
+    #      citing an external PR as an artifact or evidence link): this says
+    #      nothing about whether THIS card's work is done, and every such
+    #      report would otherwise renew a full-day hold (stranded-card bug:
+    #      a delivery report about an external PR whose checks keep failing
+    #      pinned a ready card for the whole window). Short window instead,
+    #      so the card re-dispatches once the duplicate-storm risk passes.
+    attributed = _attributed_pr_urls(conn, task_id)
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    unattributed_cutoff = now - _RESPAWN_GUARD_PR_UNATTRIBUTED_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+        urls = _pr_urls_in(c["body"])
+        if not urls:
+            continue
+        if attributed.intersection(urls):
+            return "active_pr"
+        if int(c["created_at"] or 0) >= unattributed_cutoff:
             return "active_pr"
 
     return None
+
+
+def _attributed_pr_urls(conn: sqlite3.Connection, task_id: str) -> set[str]:
+    """Normalized PR URLs declared in the card's own structured handoffs.
+
+    A URL in ``task_runs.summary``/``metadata`` or ``tasks.result`` was written
+    by the delivering worker (or an approving human completing the card) — the
+    strongest local signal that the PR belongs to this card's work, without
+    any external API call.
+    """
+    texts: list[str] = []
+    row = conn.execute(
+        "SELECT result FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is not None and row["result"]:
+        texts.append(row["result"])
+    for r in conn.execute(
+        "SELECT summary, metadata FROM task_runs WHERE task_id = ?",
+        (task_id,),
+    ).fetchall():
+        if r["summary"]:
+            texts.append(r["summary"])
+        if r["metadata"]:
+            texts.append(r["metadata"])
+    out: set[str] = set()
+    for t in texts:
+        out.update(_pr_urls_in(t))
+    return out
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:

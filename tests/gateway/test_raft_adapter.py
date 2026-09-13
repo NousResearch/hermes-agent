@@ -39,7 +39,6 @@ from plugins.platforms.raft.adapter import (
     interactive_setup,
     register,
 )
-from gateway.session import build_session_key
 
 RAFT_CHANNEL_SCHEMA = "raft-channel-wake.v1"
 FUTURE_RAFT_CHANNEL_SCHEMA = "raft-channel-wake.v2"
@@ -136,16 +135,11 @@ class TestRaftWakeHttp:
             source=source,
             message_id="wake-observed",
         )
-        session_key = build_session_key(
-            source,
-            group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
-            profile=adapter._session_key_profile(source),
-        )
+        session_key = adapter._event_session_key(event)
         adapter._active_sessions[session_key] = asyncio.Event()
         order = []
 
-        def observer(observed, observed_key):
+        def observer(observed, observed_key, _authorization_facts):
             order.append(("observer", observed, observed_key))
 
         adapter.set_ingress_observer(observer)
@@ -153,7 +147,52 @@ class TestRaftWakeHttp:
         order.append(("queued", adapter._pending_messages[session_key], session_key))
 
         assert [step for step, _, _ in order] == ["observer", "queued"]
-        assert all(observed is event and key == session_key for _, observed, key in order)
+        assert order[0][1].message_id == event.message_id
+        assert order[0][2] == session_key
+        assert order[1][1] is event
+        assert order[1][2] == session_key
+
+    @pytest.mark.asyncio
+    async def test_idle_path_delegates_to_base_and_observes_exactly_once(self):
+        adapter = _make_adapter()
+        adapter.set_message_handler(AsyncMock(return_value=None))
+        source = adapter.build_source(
+            chat_id="default", chat_type="dm", user_id="raft-bridge"
+        )
+        event = MessageEvent(text="idle", source=source, message_id="idle-1")
+        expected_key = adapter._event_session_key(event)
+        seen = []
+        adapter.set_ingress_observer(
+            lambda snapshot, key, _auth: seen.append((snapshot.message_id, key))
+        )
+
+        await adapter.handle_message(event)
+        await asyncio.sleep(0)
+
+        assert seen == [("idle-1", expected_key)]
+        adapter._message_handler.assert_awaited_once_with(event)
+
+    @pytest.mark.asyncio
+    async def test_internal_path_delegates_to_base_and_observes_exactly_once(self):
+        adapter = _make_adapter()
+        adapter.set_message_handler(AsyncMock(return_value=None))
+        source = adapter.build_source(
+            chat_id="default", chat_type="dm", user_id="raft-bridge"
+        )
+        event = MessageEvent(
+            text="internal", source=source, message_id="internal-1", internal=True
+        )
+        expected_key = adapter._event_session_key(event)
+        seen = []
+        adapter.set_ingress_observer(
+            lambda snapshot, key, _auth: seen.append((snapshot.internal, key))
+        )
+
+        await adapter.handle_message(event)
+        await asyncio.sleep(0)
+
+        assert seen == [(True, expected_key)]
+        adapter._message_handler.assert_awaited_once_with(event)
 
 
 class TestRaftActivityHttp:

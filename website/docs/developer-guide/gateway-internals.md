@@ -78,22 +78,40 @@ The runner installs this boundary on every primary, reconnect, and multiplex-pro
 adapter path and publishes the observer-only `gateway_ingress_observed` plugin hook:
 
 ```python
-def observe(event, gateway, session_key, **kwargs):
-    receipt_store.record(event, session_key)
+def observe(snapshot, session_key, authorized, **kwargs):
+    if authorized is True:
+        receipt_store.record(snapshot, session_key)
 
 def register(ctx):
     ctx.register_hook("gateway_ingress_observed", observe)
 ```
 
 The callback runs once per `handle_message()` invocation, after plaintext-command
-coercion, Telegram topic recovery, and session-key derivation. Its return value is
-always ignored, and an exception is logged and treated as fail-open, so a return value
-cannot block, rewrite, authorize, or otherwise steer routing. Sync and async callbacks
-are supported; callbacks are on the ingress path and should stay bounded. The event is
-borrowed read-only: mutating it is unsupported and consumers that need ownership must
-copy the data they retain.
+coercion, Telegram topic recovery, and session-key derivation. It receives a detached,
+frozen, scalar-only `IngressEventSnapshot`; the nested source is frozen too. Message and
+reply bodies, raw SDK objects, metadata, local media paths, the live `MessageEvent`, and
+the `GatewayRunner` are not exposed. `media_types` is a tuple and `media_count` is a
+scalar. A process-local `observation_id` covers transports without a stable message or
+update ID.
 
-That sync/async support applies to direct `set_ingress_observer()` callers. The
+Core also supplies `authorized`: `True` or `False` from the canonical
+`_is_user_authorized_for_source()` authorization peek, or `None` for internal events,
+malformed snapshots, non-boolean predicates, and authorization errors. The peek reads
+allowlists and pairing approvals and checks `BotLoopGuard.blocked()`; it does not create
+pairing codes, send messages, call bot-loop `admit()`, or mutate the live event/session.
+Multiplex auth is evaluated against the transport-owning profile on a private rebuilt
+source; an already-marked rejected profile route yields `False`. Persistence consumers
+must require `authorized is True`.
+
+Return values are always ignored, and failures are logged by exception class only and
+treated as fail-open, so a callback cannot block, rewrite, authorize, or otherwise steer
+routing. Direct adapter observers may be synchronous or asynchronous and should stay
+bounded.
+
+`set_ingress_observer()` is an internal adapter-to-runner seam. Its separate frozen
+auth fact exists only to reproduce canonical authorization (including SimpleX's
+display-name alias) and the runner never forwards that fact to plugins. Sync/async
+support applies to those internal direct callers. The
 runner's `gateway_ingress_observed` plugin surface is intentionally synchronous:
 plugins must register a fast regular function, and `async def` callbacks are rejected
 at registration so no coroutine can leak or block adapter routing unexpectedly.

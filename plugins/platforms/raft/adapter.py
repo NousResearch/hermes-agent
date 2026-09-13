@@ -39,7 +39,6 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult, merge_pending_message_event
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import build_session_key
 from gateway.platforms._shared import coerce_port, profile_scoped as _profile_scoped
 
 logger = logging.getLogger(__name__)
@@ -491,10 +490,8 @@ class RaftAdapter(BasePlatformAdapter):
             return
         if not self._message_handler and not callable(getattr(self, "_ingress_observer", None)):
             return
-        session_key = build_session_key(
-            event.source, group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(event.source))
+        # Keep this bypass path byte-identical to BasePlatformAdapter routing.
+        session_key = self._event_session_key(event)
         if session_key in self._active_sessions:
             # This custom queue path bypasses BasePlatformAdapter.handle_message(),
             # so it must cross the same observer boundary explicitly.

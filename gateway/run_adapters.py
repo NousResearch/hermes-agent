@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 import asyncio
 import contextlib
+import dataclasses
 import inspect
 from contextlib import suppress
 import functools
@@ -21,7 +22,8 @@ from agent.async_utils import consume_detached_task_result
 from contextvars import Context
 from datetime import datetime, timedelta, timezone
 from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, Platform, platform_binds_port as _platform_binds_port
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, _IngressAuthorizationFacts
+from gateway.platforms.event import IngressEventSnapshot, IngressSourceSnapshot
 from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
@@ -1047,7 +1049,7 @@ class GatewayAdapterLifecycleMixin:
         adapter.set_platform_event_handler(platform_event_handler or self._primary_platform_event_handler())
         _set_ingress_observer = getattr(adapter, "set_ingress_observer", None)
         if callable(_set_ingress_observer):
-            _set_ingress_observer(ingress_observer or self._primary_ingress_observer())
+            _set_ingress_observer(ingress_observer or self._primary_ingress_observer(adapter))
         adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
 
     def _configure_profile_adapter(
@@ -1071,7 +1073,7 @@ class GatewayAdapterLifecycleMixin:
             busy_session_handler=self._make_profile_busy_session_handler(profile_name),
             authorization_check=self._make_adapter_auth_check(platform, profile_name=profile_name),
             platform_event_handler=self._make_profile_platform_event_handler(profile_name),
-            ingress_observer=self._make_profile_ingress_observer(profile_name),
+            ingress_observer=self._make_profile_ingress_observer(profile_name, adapter),
             busy_text_mode=(
                 text_modes.get(profile_name, self._busy_text_mode)
                 if isinstance(text_modes, dict)
@@ -1394,74 +1396,195 @@ class GatewayAdapterLifecycleMixin:
             if self._multiplex_on() else self._handle_active_session_busy_message
         )
 
-    def _handle_gateway_ingress_observed(self, event, session_key: str) -> None:
-        """Synchronously publish one adapter-level MessageEvent observer hook."""
-        with _log_suppressed(
-            logging.DEBUG, "gateway_ingress_observed hook dispatch failed", exc_info=True
-        ):
-            from hermes_cli.lifecycle import has_hook, invoke_hook
+    @staticmethod
+    def _detached_ingress_source(
+        snapshot: IngressSourceSnapshot,
+        authorization_facts: _IngressAuthorizationFacts,
+        adapter: Optional[BasePlatformAdapter] = None,
+    ) -> SessionSource:
+        """Rebuild auth input without exposing or mutating the live adapter source."""
+        source = SessionSource(
+            platform=Platform(snapshot.platform),
+            chat_id=snapshot.chat_id,
+            chat_type=snapshot.chat_type,
+            user_id=snapshot.user_id,
+            user_name=authorization_facts.user_name,
+            user_id_alt=snapshot.user_id_alt,
+            chat_id_alt=snapshot.chat_id_alt,
+            thread_id=snapshot.thread_id,
+            scope_id=snapshot.scope_id,
+            parent_chat_id=snapshot.parent_chat_id,
+            message_id=snapshot.message_id,
+            profile=snapshot.profile,
+            is_bot=snapshot.is_bot,
+            role_authorized=snapshot.role_authorized,
+            delivered_via_upstream_relay=snapshot.delivered_via_upstream_relay,
+            profile_route_rejected=snapshot.profile_route_rejected,
+        )
+        if adapter is not None:
+            source._transport_adapter_ref = _weakref.ref(adapter)
+        return source
 
-            if has_hook("gateway_ingress_observed"):
-                results = invoke_hook(
-                    "gateway_ingress_observed",
-                    event=event,
-                    gateway=self,
-                    session_key=session_key,
+    def _ingress_authorization_verdict(
+        self,
+        snapshot: IngressEventSnapshot,
+        *,
+        authorization_facts: Optional[_IngressAuthorizationFacts] = None,
+        adapter: Optional[BasePlatformAdapter] = None,
+        authorization_home: Optional[Path] = None,
+    ) -> Optional[bool]:
+        """Return the canonical, non-admitting user-auth verdict for an ingress snapshot.
+
+        ``_is_user_authorized_for_source`` reads allowlists/pairing approvals and only
+        *peeks* at the bot-loop guard. Pairing offers and bot-loop admission happen in
+        later, separate methods. Internal events have no user-auth verdict. Any malformed
+        snapshot or auth failure is represented as ``None`` so persistence consumers can
+        fail closed while message routing continues unchanged.
+        """
+        if snapshot.internal:
+            return None
+        if snapshot.source.profile_route_rejected:
+            return False
+        try:
+            source = self._detached_ingress_source(
+                snapshot.source,
+                authorization_facts or _IngressAuthorizationFacts(user_name=None),
+                adapter,
+            )
+            if authorization_home is not None:
+                # Private state exists only on this detached copy; the live event/source
+                # remains byte-for-byte untouched by observation.
+                source._authorization_profile_home = authorization_home
+            verdict = self._is_user_authorized_for_source(source)
+            return verdict if isinstance(verdict, bool) else None
+        except Exception as exc:
+            logger.debug(
+                "gateway_ingress_observed authorization unavailable (%s)",
+                type(exc).__name__,
+            )
+            return None
+
+    def _handle_gateway_ingress_observed(
+        self,
+        snapshot: IngressEventSnapshot,
+        session_key: str,
+        authorized: Optional[bool],
+    ) -> None:
+        """Synchronously publish one immutable adapter-ingress observer hook."""
+        try:
+            from hermes_cli.lifecycle import invoke_hook
+
+            results = invoke_hook(
+                "gateway_ingress_observed",
+                snapshot=snapshot,
+                session_key=session_key,
+                authorized=authorized,
+            )
+            # Compatibility managers may return a bare coroutine from a
+            # sync callback. Never leak it or schedule plugin work after
+            # this synchronous observer boundary.
+            for result in results:
+                if not inspect.isawaitable(result):
+                    continue
+                cancel = getattr(result, "cancel", None)
+                close = getattr(result, "close", None)
+                if callable(cancel):
+                    cancel()
+                elif callable(close):
+                    close()
+                logger.warning(
+                    "gateway_ingress_observed ignored awaitable result (%s)",
+                    type(result).__name__,
                 )
-                # Compatibility managers may return a bare coroutine from a
-                # sync callback. Never leak it or schedule plugin work after
-                # this synchronous observer boundary.
-                for result in results:
-                    if not inspect.isawaitable(result):
-                        continue
-                    cancel = getattr(result, "cancel", None)
-                    close = getattr(result, "close", None)
-                    if callable(cancel):
-                        cancel()
-                    elif callable(close):
-                        close()
-                    logger.warning(
-                        "gateway_ingress_observed ignored awaitable result (%s)",
-                        type(result).__name__,
-                    )
+        except Exception as exc:
+            # Snapshot content is body-free, but plugin exceptions can still carry
+            # arbitrary private text. Never log exception text or a traceback here.
+            logger.debug(
+                "gateway_ingress_observed hook dispatch failed (%s)",
+                type(exc).__name__,
+            )
 
-    def _make_profile_ingress_observer(self, profile_name: str):
+    @staticmethod
+    def _gateway_ingress_observer_present() -> bool:
+        """Fail closed before authorization work when nobody consumes the hook."""
+        try:
+            from hermes_cli.lifecycle import has_hook
+
+            return bool(has_hook("gateway_ingress_observed"))
+        except Exception as exc:
+            logger.debug(
+                "gateway_ingress_observed availability check failed (%s)",
+                type(exc).__name__,
+            )
+            return False
+
+    def _make_profile_ingress_observer(
+        self, profile_name: str, adapter: BasePlatformAdapter
+    ):
         """Bind adapter ingress observation to one multiplex profile."""
         from gateway.run import _profile_runtime_scope
 
         profile_home = self._profile_home_or_none(profile_name)
 
-        def _observer(event, session_key):
-            self._stamp_event_profile(event, profile_name)
+        def _observer(snapshot, session_key, authorization_facts):
+            if not self._gateway_ingress_observer_present():
+                return
+            if snapshot.source.profile is None:
+                snapshot = dataclasses.replace(
+                    snapshot,
+                    source=dataclasses.replace(snapshot.source, profile=profile_name),
+                )
             with self._scope_or_null(_profile_runtime_scope, profile_home):
-                self._handle_gateway_ingress_observed(event, session_key)
+                authorized = self._ingress_authorization_verdict(
+                    snapshot,
+                    authorization_facts=authorization_facts,
+                    adapter=adapter,
+                    authorization_home=profile_home,
+                )
+                self._handle_gateway_ingress_observed(snapshot, session_key, authorized)
 
         return _observer
 
-    def _make_default_profile_ingress_observer(self):
-        """Scope primary-adapter observation to the routed profile when known."""
+    def _make_default_profile_ingress_observer(self, adapter: BasePlatformAdapter):
+        """Scope primary-adapter observation to its transport authorization profile."""
         from gateway.run import _profile_runtime_scope, get_hermes_home
 
         default_home = Path(get_hermes_home())
 
-        def _observer(event, session_key):
-            source = event.source
-            source._authorization_profile_home = default_home
-            try:
-                profile_home = self._resolve_profile_home_for_source(source)
-            except Exception:
-                profile_home = default_home
-            with _profile_runtime_scope(profile_home):
-                self._handle_gateway_ingress_observed(event, session_key)
+        def _observer(snapshot, session_key, authorization_facts):
+            if not self._gateway_ingress_observer_present():
+                return
+            with _profile_runtime_scope(default_home):
+                authorized = self._ingress_authorization_verdict(
+                    snapshot,
+                    authorization_facts=authorization_facts,
+                    adapter=adapter,
+                    authorization_home=default_home,
+                )
+                self._handle_gateway_ingress_observed(snapshot, session_key, authorized)
 
         return _observer
 
-    def _primary_ingress_observer(self):
+    def _make_primary_ingress_observer(self, adapter: BasePlatformAdapter):
+        """Observe a non-multiplexed primary adapter under its active profile."""
+        def _observer(snapshot, session_key, authorization_facts):
+            if not self._gateway_ingress_observer_present():
+                return
+            authorized = self._ingress_authorization_verdict(
+                snapshot,
+                authorization_facts=authorization_facts,
+                adapter=adapter,
+            )
+            self._handle_gateway_ingress_observed(snapshot, session_key, authorized)
+
+        return _observer
+
+    def _primary_ingress_observer(self, adapter: BasePlatformAdapter):
         """Return the correctly scoped ingress observer for a primary adapter."""
         return (
-            self._make_default_profile_ingress_observer()
+            self._make_default_profile_ingress_observer(adapter)
             if self._multiplex_on()
-            else self._handle_gateway_ingress_observed
+            else self._make_primary_ingress_observer(adapter)
         )
 
     def _multiplex_on(self) -> bool:

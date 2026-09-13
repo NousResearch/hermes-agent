@@ -438,7 +438,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import (
+    IngressEventSnapshot,
+    IngressSourceSnapshot,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+)
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -1736,9 +1742,66 @@ _RETRYABLE_ERROR_PATTERNS = (
 
 # Handler result: str (reply), ``EphemeralReply`` (auto-delete) or None (already delivered).
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+
+
+@dataclass(frozen=True, slots=True)
+class _IngressAuthorizationFacts:
+    """Runner-private scalar auth input, never forwarded to plugin hooks."""
+
+    user_name: Optional[str]
+
+
 # Observer result is deliberately unconstrained and ignored. Implementations may be
-# synchronous or asynchronous, but cannot influence adapter routing through a return.
-IngressObserver = Callable[[MessageEvent, str], Any]
+# synchronous or asynchronous. This is an internal runner extension seam; the
+# private auth facts are consumed by the runner and never forwarded to plugins.
+IngressObserver = Callable[[IngressEventSnapshot, str, _IngressAuthorizationFacts], Any]
+
+
+def _ingress_snapshot(event: MessageEvent) -> IngressEventSnapshot:
+    """Detach the scalar-only observer view from a live normalized event."""
+    def _optional_text(value) -> Optional[str]:
+        return None if value is None else str(value)
+
+    source = event.source
+    platform = getattr(getattr(source, "platform", None), "value", None)
+    timestamp = getattr(event, "timestamp", None)
+    message_type = getattr(getattr(event, "message_type", None), "value", None)
+    return IngressEventSnapshot(
+        observation_id=uuid.uuid4().hex,
+        source=IngressSourceSnapshot(
+            platform=str(platform or ""),
+            chat_id=str(getattr(source, "chat_id", "") or ""),
+            chat_type=str(getattr(source, "chat_type", "") or ""),
+            user_id=_optional_text(getattr(source, "user_id", None)),
+            user_id_alt=_optional_text(getattr(source, "user_id_alt", None)),
+            chat_id_alt=_optional_text(getattr(source, "chat_id_alt", None)),
+            thread_id=_optional_text(getattr(source, "thread_id", None)),
+            scope_id=_optional_text(getattr(source, "scope_id", None)),
+            parent_chat_id=_optional_text(getattr(source, "parent_chat_id", None)),
+            message_id=_optional_text(getattr(source, "message_id", None)),
+            profile=_optional_text(getattr(source, "profile", None)),
+            is_bot=getattr(source, "is_bot", False) is True,
+            role_authorized=getattr(source, "role_authorized", False) is True,
+            delivered_via_upstream_relay=(
+                getattr(source, "delivered_via_upstream_relay", False) is True
+            ),
+            profile_route_rejected=(
+                getattr(source, "profile_route_rejected", False) is True
+            ),
+        ),
+        message_type=str(message_type or ""),
+        message_id=_optional_text(getattr(event, "message_id", None)),
+        platform_update_id=(
+            getattr(event, "platform_update_id", None)
+            if isinstance(getattr(event, "platform_update_id", None), int)
+            else None
+        ),
+        media_count=len(getattr(event, "media_urls", None) or ()),
+        media_types=tuple(str(value) for value in (getattr(event, "media_types", None) or ())),
+        internal=getattr(event, "internal", False) is True,
+        allow_gateway_control=getattr(event, "allow_gateway_control", False) is True,
+        timestamp_iso=(timestamp.isoformat() if hasattr(timestamp, "isoformat") else ""),
+    )
 
 
 def resolve_channel_prompt(config_extra: dict, channel_id: str, parent_id: str | None = None) -> str | None:
@@ -1850,7 +1913,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
-        # Optional read-only observation seam for every normalized MessageEvent.
+        # Optional immutable observation seam for every normalized MessageEvent.
         # It fires before idle/busy routing; return values never affect admission.
         self._ingress_observer: Optional[IngressObserver] = None
         self._reaction_handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
@@ -2208,15 +2271,18 @@ class BasePlatformAdapter(ABC):
         self._message_handler = handler
 
     def set_ingress_observer(self, observer: Optional[IngressObserver]) -> None:
-        """Install a read-only normalized-message observer.
+        """Install an immutable normalized-message observer.
 
+        This is an internal adapter-to-runner extension seam, not a plugin API.
         The observer is called exactly once per :meth:`handle_message` invocation,
         after command/topic normalization and session-key derivation but before any
         idle/busy routing or drop.  It therefore sees internal events and events that
         later fail runner authorization.  This is an observation boundary, not an
-        authorization or middleware boundary: return values are ignored, mutation of
-        ``event`` is unsupported, and failures are logged without changing message
-        flow.  ``None`` clears the observer.
+        authorization or middleware boundary: the callback receives a detached,
+        frozen, body-free snapshot rather than the live event. A separate frozen
+        core-private auth fact is for runner use and is never forwarded to plugins.
+        Return values are ignored, and failures are logged without changing message
+        flow. ``None`` clears the observer.
         """
         self._ingress_observer = observer
 
@@ -2226,7 +2292,17 @@ class BasePlatformAdapter(ABC):
         if not callable(observer):
             return
         try:
-            result = observer(event, session_key)
+            result = observer(
+                _ingress_snapshot(event),
+                session_key,
+                _IngressAuthorizationFacts(
+                    user_name=(
+                        None
+                        if getattr(event.source, "user_name", None) is None
+                        else str(event.source.user_name)
+                    )
+                ),
+            )
             if inspect.isawaitable(result):
                 await result
         except Exception as exc:

@@ -168,6 +168,28 @@ def test_start_server_loopback_sets_auth_required_false(monkeypatch):
     assert web_server.app.state.auth_required is False
 
 
+def test_configure_auth_gate_loads_private_status_policy(monkeypatch):
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    clear_providers()
+    register_provider(StubAuthProvider())
+    monkeypatch.setattr(
+        web_server,
+        "load_config",
+        lambda: {"dashboard": {"require_auth_for_status": True}},
+    )
+    monkeypatch.setattr(web_server, "_dashboard_public_hosts", lambda: frozenset())
+    _restore_app_state_after_test(monkeypatch, "status_auth_required")
+    web_server.app.state.status_auth_required = None
+
+    try:
+        web_server._configure_auth_gate("100.64.0.1", False, None, None)
+        assert web_server.app.state.status_auth_required is True
+    finally:
+        clear_providers()
+
+
 def test_start_server_insecure_public_no_longer_bypasses_gate(monkeypatch):
     """``--insecure`` (allow_public=True) on a public host: gate now ENGAGES.
 
@@ -227,7 +249,7 @@ def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeyp
     try:
         web_server.app.state.auth_required = None
         web_server.start_server(
-            host="0.0.0.0", port=9119,
+            host="0.0.0.0", port=0,
             open_browser=False, allow_public=False,
         )
         assert web_server.app.state.auth_required is True
@@ -257,7 +279,7 @@ def test_start_server_passes_bounded_trusted_proxy_networks(monkeypatch, caplog)
     try:
         with caplog.at_level(logging.INFO, logger=web_server._log.name):
             web_server.start_server(
-                host="0.0.0.0", port=9119,
+                host="0.0.0.0", port=0,
                 open_browser=False, allow_public=False,
             )
         assert captured["kwargs"]["forwarded_allow_ips"] == [

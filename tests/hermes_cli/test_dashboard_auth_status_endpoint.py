@@ -28,15 +28,18 @@ def gated_client():
     prev_host = getattr(web_server.app.state, "bound_host", None)
     prev_port = getattr(web_server.app.state, "bound_port", None)
     prev_required = getattr(web_server.app.state, "auth_required", None)
+    prev_status_auth = getattr(web_server.app.state, "status_auth_required", None)
     web_server.app.state.bound_host = "fly-app.fly.dev"
     web_server.app.state.bound_port = 443
     web_server.app.state.auth_required = True
+    web_server.app.state.status_auth_required = False
     client = TestClient(web_server.app, base_url="https://fly-app.fly.dev")
     yield client
     clear_providers()
     web_server.app.state.bound_host = prev_host
     web_server.app.state.bound_port = prev_port
     web_server.app.state.auth_required = prev_required
+    web_server.app.state.status_auth_required = prev_status_auth
 
 
 @pytest.fixture
@@ -65,6 +68,14 @@ def test_status_reports_auth_required_in_gated_mode(gated_client):
     body = r.json()
     assert body["auth_required"] is True
     assert body["auth_providers"] == ["stub"]
+
+
+def test_status_requires_session_when_hardening_is_enabled(gated_client):
+    web_server.app.state.status_auth_required = True
+
+    response = gated_client.get("/api/status")
+
+    assert response.status_code == 401
 
 
 

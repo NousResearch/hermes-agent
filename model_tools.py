@@ -664,6 +664,88 @@ def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Opti
     return "ok", None, None
 
 
+def _record_goal_runtime_mutation_receipts(
+    function_name: str, function_args: Dict[str, Any], result: Any, ids: _CallIds,
+) -> None:
+    """Persist trusted WRITTEN receipts for successful runtime mutations.
+
+    Evidence is derived before observer/transform hooks from the registry's
+    canonical capability metadata and the raw tool result.  Result targets are
+    authoritative when ``files_modified`` is present; malformed result targets
+    fail closed instead of falling back to model-supplied arguments.
+    """
+    try:
+        if not ids.session_id:
+            return
+
+        try:
+            entry = registry.get_entry(function_name)
+        except Exception:
+            return
+        capabilities = getattr(entry, "capabilities", None) if entry is not None else None
+        if not isinstance(capabilities, (tuple, list)) or "mutate" not in capabilities:
+            return
+
+        if _tool_result_observer_fields(function_name, result)[0] != "ok":
+            return
+        try:
+            parsed_result = json.loads(result) if isinstance(result, str) else result
+        except Exception:
+            return
+        if not isinstance(parsed_result, dict):
+            return
+
+        from hermes_cli.goals import GoalManager
+
+        manager = GoalManager(ids.session_id)
+        state = manager.state
+        landing = state.contract.landing if state is not None and state.contract is not None else None
+        if state is None or state.status not in {"active", "paused"} or landing is None or not landing.targets:
+            return
+
+        runtime_id = next((
+            value for value in (ids.tool_call_id, ids.task_id, ids.api_request_id, ids.turn_id)
+            if isinstance(value, str) and value.strip()
+        ), None)
+        if runtime_id is None:
+            return
+
+        if "files_modified" in parsed_result:
+            raw_targets = parsed_result["files_modified"]
+        else:
+            fallback_values = [function_args[key] for key in ("path", "file_path") if key in function_args]
+            if not fallback_values:
+                return
+            raw_targets = fallback_values
+
+        candidates = raw_targets if isinstance(raw_targets, list) else [raw_targets]
+        if not candidates or any(not isinstance(target, str) or not target.strip() for target in candidates):
+            return
+
+        declared_targets = set(landing.targets)
+        unique_targets: List[str] = []
+        for target in candidates:
+            if target in declared_targets and target not in unique_targets:
+                unique_targets.append(target)
+
+        for target in unique_targets:
+            try:
+                manager.issue_change_receipt(
+                    target=target,
+                    scope="file",
+                    source_reference=f"tool:{function_name}:{runtime_id}",
+                    state="WRITTEN",
+                    mutation=True,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to record Goal runtime mutation receipt for %s target %r: %s",
+                    function_name, target, exc,
+                )
+    except Exception as exc:
+        logger.warning("Failed to inspect Goal runtime mutation receipt for %s: %s", function_name, exc)
+
+
 def _emit_post_tool_call_hook(
     *, function_name: str, function_args: Dict[str, Any], result: Any,
     task_id: Optional[str] = None, session_id: Optional[str] = None, tool_call_id: Optional[str] = None,
@@ -1058,6 +1140,7 @@ def handle_function_call(
         result = _execute_tool(function_name, function_args, original_args, ids, user_task=user_task,
                                enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware)
         duration_ms = _elapsed_ms(start)
+        _record_goal_runtime_mutation_receipts(function_name, function_args, result, ids)
         _emit(result, duration_ms=duration_ms)
         return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)
 

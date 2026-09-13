@@ -1378,11 +1378,18 @@ This is the per-task counterpart of the global `agent.reasoning_effort`: run com
 
 ```yaml
 auxiliary:
+  review:
+    reasoning_effort: "medium" # /review only; independent of delegation workers
   compression:
     reasoning_effort: "low"    # summaries don't need deep thinking
   vision:
     reasoning_effort: "none"   # disable thinking for image description
 ```
+
+For `/review`, resolution is `auxiliary.review.reasoning_effort`, then
+`delegation.reasoning_effort`, then the parent agent's reasoning level. This
+allows a reviewer to use a different effort from ordinary delegated workers.
+An empty or invalid review value falls through to the next setting.
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 

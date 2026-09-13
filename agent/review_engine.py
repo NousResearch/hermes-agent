@@ -136,17 +136,18 @@ def build_review_task(snapshot: List[Dict[str, str]], user_prompt: str = "", loa
     return goal, "\n".join(lines)
 
 
-def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
-    """``auxiliary.review`` as a delegation-credentials dict, or None when unconfigured (provider auto/empty
-    and no model/base_url) so the reviewer inherits the parent's credentials."""
+def _load_review_config() -> Dict[str, Any]:
+    """Return one snapshot of ``auxiliary.review`` or an empty mapping."""
     try:
         from hermes_cli.config import load_config_readonly
         review = (load_config_readonly().get("auxiliary") or {}).get("review") or {}
     except Exception:
-        return None
-    if not isinstance(review, dict):
-        return None
+        return {}
+    return review if isinstance(review, dict) else {}
 
+
+def _review_credentials_cfg(review: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Build delegation credentials while keeping reasoning independent of routing."""
     cfg = {k: str(review.get(k) or "").strip() for k in ("provider", "model", "base_url", "api_key", "api_mode")}
     if cfg["provider"].lower() == "auto":
         cfg["provider"] = ""
@@ -165,10 +166,15 @@ def start_review(parent_agent, messages: List[Dict[str, Any]], user_prompt: str 
     if not snapshot:
         raise ValueError("Nothing to review yet — the conversation is empty.")
     goal, context = build_review_task(snapshot, user_prompt, collect_parent_loaded_skills(parent_agent, messages))
-    credentials_cfg = _load_review_credentials_cfg()
+    review_cfg = _load_review_config()
+    credentials_cfg = _review_credentials_cfg(review_cfg)
 
     from tools.delegate_tool import delegate_task
-    raw = delegate_task(goal=goal, context=context, background=True, parent_agent=parent_agent, credentials_cfg=credentials_cfg)
+    raw = delegate_task(
+        goal=goal, context=context, background=True, parent_agent=parent_agent,
+        credentials_cfg=credentials_cfg,
+        override_reasoning_effort=review_cfg.get("reasoning_effort"),
+    )
     try:
         result = json.loads(raw)
     except Exception:

@@ -1780,6 +1780,11 @@ def _reresolve_fallback_reasoning_config(agent) -> None:
     """Per-model override > global reasoning_effort (YAML False = disabled); a config load
     failure keeps the current reasoning_config rather than killing the swap."""
     try:
+        delegated_reasoning = getattr(agent, "_delegation_reasoning_override", None)
+        if isinstance(delegated_reasoning, dict):
+            agent.reasoning_config = dict(delegated_reasoning)
+            logger.info("Fallback %s: explicit delegated reasoning_config preserved: %s", agent.model, agent.reasoning_config)
+            return
         # Re-resolve reasoning_config for the new fallback model (Closes #21256). Wrapped in try/except
         # because a config load failure must not kill the swap.
         from hermes_cli.config import load_config

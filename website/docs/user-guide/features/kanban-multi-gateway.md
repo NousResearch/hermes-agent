@@ -50,3 +50,42 @@ Or set the env var: `HERMES_KANBAN_DISPATCH_IN_GATEWAY=false`
 Non-dispatch gateways still deliver messages for their own platform adapters
 (Telegram, Discord, etc.). They do not dispatch tasks, and they skip boards
 that have no subscriptions owned by their profiles.
+
+## Shared boards between installs (assignee namespaces)
+
+Two Hermes installs on one host (different OS users, different `~/.hermes`) can
+each see the same board by symlinking the board directory into both
+`<root>/kanban/boards/` roots. A profile's identity there is the PAIR
+`<namespace>:<profile>`; the namespace names the install whose dispatcher should
+run the card.
+
+```yaml
+# ~/.hermes/config.yaml — this install's namespace
+kanban:
+  namespace: em          # ours; the other install uses its own token, e.g. yummi
+```
+
+```json
+// the shared board's board.json — the namespace a BARE assignee means here
+{ "slug": "shared-project", "namespace": "yummi" }
+```
+
+Resolution (`kanban_db_dispatch.resolve_assignee`), applied in the dispatcher
+immediately before the profile-exists check:
+
+- `ns:profile` — canonical, and an explicit override: claimed only when `ns` is
+  one of this install's namespace tokens; the spawned profile is `profile`.
+- bare name on a board that declares a namespace — resolves to
+  `<board namespace>:profile`, so it is claimed by that install only.
+- bare name on a board with no declared namespace — unchanged behaviour
+  (partition by profile name), EXCEPT an install-relative name (`default`), which
+  is ambiguous by construction and therefore refused.
+- the `default` board never needs a declaration: its DB is
+  `<this install root>/kanban.db` by construction, so no other install can reach
+  it.
+
+Every refusal is visible: a `kanban dispatch: task … NOT claimed` warning each
+tick plus one durable `dispatch_skipped` event per (task, assignee, reason) with
+the remedy, and a `skipped_namespace` line in `hermes kanban dispatch` output —
+never a silent bucket. Tokens are parsed case-insensitively (`Yummi:default` ==
+`yummi:default`).

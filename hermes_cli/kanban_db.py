@@ -220,7 +220,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "skipped_namespace",
 )
 
 
@@ -655,6 +655,16 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "default_workdir": None,
         # Project scope: new tasks inherit it (deterministic worktree + branch).
         "project_id": None,
+        # Assignee NAMESPACE for this board: the install whose profiles a bare
+        # assignee on this board refers to (e.g. ``"elise"`` on a board shared
+        # with that install). ``None`` (the default) means the board declares no
+        # namespace: bare unique profile names keep partitioning by name exactly
+        # as today, while an install-relative bare name (``default``) is refused
+        # with a VISIBLE record instead of being raced by whichever dispatcher
+        # ticks first. The ``default`` board itself needs no declaration — its DB
+        # is ``<this install root>/kanban.db`` by construction. See
+        # ``kanban_db_dispatch.resolve_assignee``.
+        "namespace": None,
         "created_at": None,
         "archived": False,
     }
@@ -677,10 +687,11 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    namespace: Optional[str] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
-    set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    set on first write. ``project_id``/``default_workdir``/``namespace``:
+    ``None`` = unchanged, ``""`` = clear (``project_id`` is not validated here)."""
     _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
     meta = read_board_metadata(slug)
@@ -698,6 +709,11 @@ def write_board_metadata(
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None
+    if namespace is not None:
+        # Assignee namespace for bare names on this board; "" clears it (back to
+        # "undeclared" -> install-relative bare names are refused, visibly).
+        cleaned = str(namespace).strip()
+        meta["namespace"] = cleaned or None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -712,13 +728,13 @@ def write_board_metadata(
 def create_board(
     slug: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, default_workdir: Optional[str] = None,
-    project_id: Optional[str] = None,
+    project_id: Optional[str] = None, namespace: Optional[str] = None,
 ) -> dict:
     """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata)."""
     normed = _require_slug(slug)
     meta = write_board_metadata(
         normed, name=name, description=description, icon=icon, color=color,
-        default_workdir=default_workdir, project_id=project_id,
+        default_workdir=default_workdir, project_id=project_id, namespace=namespace,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -2207,10 +2223,16 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
-    *, event_extra: Optional[dict] = None,
+    *, event_extra: Optional[dict] = None, profile: Optional[str] = None,
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
-    when the CAS lost. Caller holds the txn."""
+    when the CAS lost. Caller holds the txn.
+
+    ``profile`` overrides the run's recorded profile: an assignee may carry a
+    namespace (``yummi:default``) or be claimed by an explicit ``ama:<profile>``
+    override, and the run row must name the profile that actually ran — not the
+    routing string. Defaults to the raw assignee for every pre-existing caller.
+    """
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -2239,7 +2261,9 @@ def _claim_and_open_run(
         ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
         """,
         (
-            task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
+            task_id,
+            profile or (trow["assignee"] if trow else None),
+            trow["current_step_key"] if trow else None,
             lock, expires, trow["max_runtime_seconds"] if trow else None, now,
         ),
     )
@@ -2254,12 +2278,13 @@ def _claim_and_open_run(
 
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, profile: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
+    already claimed (or is not in ``ready`` status). ``profile`` is recorded on
+    the run row instead of the raw assignee (see :func:`_claim_and_open_run`).
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -2279,7 +2304,7 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now, profile=profile)
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2289,11 +2314,11 @@ def claim_task(
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, profile: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
-    separately from the implementer."""
+    separately from the implementer. ``profile`` as in :func:`claim_task`."""
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -2310,7 +2335,8 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now,
+            event_extra={"source_status": "review"}, profile=profile,
         )
         if run_id is None:
             return None

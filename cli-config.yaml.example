@@ -345,6 +345,12 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Namespace for THIS install: the token bare assignees on a shared board
+  # resolve against, and the prefix that places work explicitly across installs
+  # (`em:sysadmin`). Set the same convention on every install sharing a board;
+  # matched case-insensitively. Defaults to the OS user running the install when
+  # unset. Never derived from a profile's display_name (cosmetic, user-editable).
+  # namespace: em
 
 # =============================================================================
 # Terminal Tool Configuration

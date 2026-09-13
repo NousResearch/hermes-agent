@@ -15160,6 +15160,165 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
     assert "state.db unavailable: locking protocol" in resp["error"]["message"]
 
 
+def test_session_list_can_exclude_cron(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    for session_id, source in (
+        ("cli-1", "cli"),
+        ("tui-1", "tui"),
+        ("chat-1", "telegram"),
+        ("cron-1", " CRON "),
+        ("kanban-1", " Kanban "),
+        ("tool-1", " Tool "),
+    ):
+        db.create_session(session_id=session_id, source=source)
+        db.append_message(session_id, role="user", content=session_id)
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        without_cron = server.handle_request(
+            {
+                "id": "without-cron",
+                "method": "session.list",
+                "params": {"include_cron": False},
+            }
+        )
+        assert {row["id"] for row in without_cron["result"]["sessions"]} == {
+            "cli-1",
+            "tui-1",
+            "chat-1",
+        }
+
+        with_cron = server.handle_request(
+            {
+                "id": "with-cron",
+                "method": "session.list",
+                "params": {"include_cron": True},
+            }
+        )
+        assert {row["id"] for row in with_cron["result"]["sessions"]} == {
+            "chat-1",
+            "cli-1",
+            "cron-1",
+            "tui-1",
+        }
+    finally:
+        db.close()
+
+
+def test_session_list_excludes_cron_before_limit(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="older-interactive", source="tui")
+    db.append_message("older-interactive", role="user", content="interactive")
+    for index in range(201):
+        session_id = f"newer-cron-{index:03d}"
+        db.create_session(session_id=session_id, source="cron")
+        db.append_message(session_id, role="user", content=session_id)
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        with_cron = server.handle_request(
+            {
+                "id": "with-cron",
+                "method": "session.list",
+                "params": {"include_cron": True, "limit": 200},
+            }
+        )
+        assert len(with_cron["result"]["sessions"]) == 200
+        assert "older-interactive" not in {
+            row["id"] for row in with_cron["result"]["sessions"]
+        }
+
+        without_cron = server.handle_request(
+            {
+                "id": "without-cron",
+                "method": "session.list",
+                "params": {"include_cron": False, "limit": 200},
+            }
+        )
+        assert [row["id"] for row in without_cron["result"]["sessions"]] == [
+            "older-interactive"
+        ]
+    finally:
+        db.close()
+
+
+def test_session_list_without_include_cron_preserves_existing_policy(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, **kwargs):
+            assert kwargs["exclude_sources"] == ["kanban", "tool"]
+            return [
+                {"id": "human-1", "source": "tui", "title": "Human"},
+                {"id": "cron-1", "source": "cron", "title": "Cron"},
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    response = server.handle_request(
+        {"id": "legacy", "method": "session.list", "params": {}}
+    )
+
+    assert [row["id"] for row in response["result"]["sessions"]] == [
+        "human-1",
+        "cron-1",
+    ]
+
+
+def test_session_list_title_lookup_honors_include_cron(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="cron-titled", source=" CRON ")
+    db.append_message("cron-titled", role="user", content="scheduled brief")
+    db.set_session_title("cron-titled", "Scheduled Brief")
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        without_cron = server.handle_request(
+            {
+                "id": "title-without-cron",
+                "method": "session.list",
+                "params": {"title": "Scheduled Brief", "include_cron": False},
+            }
+        )
+        assert without_cron["result"]["sessions"] == []
+
+        for params in (
+            {"title": "Scheduled Brief", "include_cron": True},
+            {"title": "Scheduled Brief"},
+        ):
+            response = server.handle_request(
+                {"id": "title-with-cron", "method": "session.list", "params": params}
+            )
+            assert [row["id"] for row in response["result"]["sessions"]] == [
+                "cron-titled"
+            ]
+    finally:
+        db.close()
+
+
+def test_session_list_rejects_non_boolean_include_cron(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, **kwargs):
+            raise AssertionError("invalid include_cron must fail before querying")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    response = server.handle_request(
+        {
+            "id": "invalid-include-cron",
+            "method": "session.list",
+            "params": {"include_cron": "false"},
+        }
+    )
+
+    assert response["error"]["code"] == 4006
+    assert response["error"]["message"] == "include_cron must be a boolean"
+
+
 # --------------------------------------------------------------------------
 # session.delete — TUI resume picker `d` key
 # --------------------------------------------------------------------------

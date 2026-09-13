@@ -127,14 +127,22 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
 _LISTING_DENY_SOURCES = frozenset({"kanban", "tool"})
 
 
-def _denied_source(row: dict) -> bool:
-    return (row.get("source") or "").strip().lower() in _LISTING_DENY_SOURCES
+def _denied_source(row: dict, deny: frozenset = _LISTING_DENY_SOURCES) -> bool:
+    return (row.get("source") or "").strip().lower() in deny
 
 
-def _listing_rows(db, limit: int, **kwargs) -> list:
-    """Human-facing ``list_sessions_rich`` rows (most recent first), deny-list applied."""
+def _listing_rows(db, limit: int, exclude_sources: list | None = None, **kwargs) -> list:
+    """Human-facing ``list_sessions_rich`` rows (most recent first), deny-list applied.
+
+    ``exclude_sources`` pushes the source filter into SQL so it lands before the
+    LIMIT window (a page of newer excluded rows must not crowd older interactive
+    rows out); the Python re-check keeps the deny contract for stores that
+    ignore the kwarg."""
+    deny = _LISTING_DENY_SOURCES.union(s.strip().lower() for s in exclude_sources or ())
+    if exclude_sources:
+        kwargs["exclude_sources"] = exclude_sources
     rows = db.list_sessions_rich(source=None, limit=limit, order_by_last_active=True, compact_rows=True, **kwargs)
-    return [row for row in rows if not _denied_source(row)]
+    return [row for row in rows if not _denied_source(row, deny)]
 
 
 def _snapshot_sessions(rid):
@@ -389,7 +397,7 @@ def _(rid, params: dict) -> dict:
                  "profile_name": _response_profile_name(profile)}})
 
 
-def _session_list_by_title(rid, db, title_lookup: str) -> dict:
+def _session_list_by_title(rid, db, title_lookup: str, deny: frozenset = _LISTING_DENY_SOURCES) -> dict:
     """EXACT-title lookup (title as identity), window-free on purpose (a busy profile's windowed listing can
     push the row out). Hidden rows resolve (canonical chats are born hidden); archived / deny-listed do not;
     lineages resolve to the live tip (``resolved_id``)."""
@@ -406,7 +414,7 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
             # still hide. Re-fetch by ID: title has no DB-level UNIQUE, so a title re-query could grab a
             # different (still-archived) duplicate row.
             row = db.get_session(row["id"])
-    if not row or row.get("archived") or _denied_source(row):
+    if not row or row.get("archived") or _denied_source(row, deny):
         return _ok(rid, {"sessions": []})
     tip = row["id"]
     with contextlib.suppress(Exception):
@@ -420,12 +428,21 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
 @_with_db(5006, session_scoped=False)
 def _(rid, params: dict, db) -> dict:
     try:
+        # ``include_cron`` (default True — callers omitting it keep the legacy listing): the TUI resume
+        # picker opts out of cron history without allow-listing a fixed set of platform names that goes
+        # stale whenever a new platform is added or a user names their own source. The noisy internal
+        # sources (``tool`` sub-agent runs and ``kanban`` dispatcher workers) stay hidden in every state.
+        include_cron = params.get("include_cron", True)
+        if not isinstance(include_cron, bool):
+            return _err(rid, 4006, "include_cron must be a boolean")
+        exclude_sources = ["kanban", "tool"] + ([] if include_cron else ["cron"])
         if title_lookup := _str_param(params, "title"):
-            return _session_list_by_title(rid, db, title_lookup)
+            return _session_list_by_title(rid, db, title_lookup, deny=frozenset(exclude_sources))
         limit = int(params.get("limit", 200) or 200)
-        # Over-fetch: per-source filtering + tip merging must not leave us short. ``include_hidden`` is for
-        # surfaces that OWN hidden sessions (Bots pane, pickers).
-        rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"))[:limit]
+        # Over-fetch: tip merging must not leave us short (source exclusion is SQL-side, before the
+        # window). ``include_hidden`` is for surfaces that OWN hidden sessions (Bots pane, pickers).
+        rows = _listing_rows(db, max(limit * 2, 200), exclude_sources=exclude_sources,
+                             include_hidden=_flag(params, "include_hidden"))[:limit]
         return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows]})
     except Exception as e:
         return _err(rid, 5006, str(e))

@@ -1,4 +1,4 @@
-import { Box, Text, useInput, useStdout } from '@hermes/ink'
+import { Box, type InputEvent, Text, useInput, useStdout } from '@hermes/ink'
 import type { SessionListItem, SessionListResponse } from '@hermes/shared/gateway-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
@@ -48,6 +48,8 @@ export const activeSessionCountLabel = (count: number) => `${count} live ${count
 
 export const sessionsCountLabel = (liveCount: number, resumableCount: number) =>
   `${liveCount} live · ${resumableCount} resumable`
+
+export const sessionListRequestParams = (includeCron: boolean) => ({ include_cron: includeCron, limit: 200 })
 
 export type SessionRowKind = 'history' | 'live' | 'new'
 
@@ -304,6 +306,7 @@ export function ActiveSessionSwitcher({
   const [draftModel, setDraftModel] = useState('')
   const [pickingModel, setPickingModel] = useState(false)
   const [closingId, setClosingId] = useState('')
+  const [includeCron, setIncludeCron] = useState(false)
   // When non-null, the user pressed `d` on this (history) session and we await
   // a second `d` to confirm deletion. Tracked by session id (not row index) so
   // the 1.5s live-status poll re-indexing rows can't redirect the delete to a
@@ -321,6 +324,12 @@ export function ActiveSessionSwitcher({
   // than keeping a now-stale flat index.
   const itemsRef = useRef<SessionActiveItem[]>([])
   const historyDisplayRef = useRef<SessionListItem[]>([])
+  // Generation stamp for full-history loads. Toggling the cron filter (or
+  // Ctrl+R) recreates `load` while an older request may still be in flight;
+  // if that older opposite-filter response resolved last it would overwrite
+  // rawHistoryRef/history/err against the checkbox. A response only applies
+  // while its generation is still the newest full-history request.
+  const historyLoadGenRef = useRef(0)
   const { stdout } = useStdout()
   // Optional maxWidth lets grid layouts hand the switcher its cell budget.
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
@@ -341,6 +350,11 @@ export function ActiveSessionSwitcher({
     // `includeHistory` re-queries the resumable DB list (skipped on the 1.5s
     // poll, which only needs fresh live-session status).
     async (quiet = false, includeHistory = true) => {
+      // Full-history loads supersede older ones; the quiet 1.5s poll only
+      // reads the stamp so it can't invalidate an in-flight full load but is
+      // itself dropped when a full load starts mid-poll.
+      const gen = includeHistory ? ++historyLoadGenRef.current : historyLoadGenRef.current
+
       if (!quiet) {
         setLoading(true)
       }
@@ -353,10 +367,19 @@ export function ActiveSessionSwitcher({
           gw.request<SessionActiveListResponse>('session.active_list', {
             current_session_id: currentSessionId
           }),
-          includeHistory ? gw.request<SessionListResponse>('session.list', { limit: 200 }) : Promise.resolve(null)
+          includeHistory
+            ? gw.request<SessionListResponse>('session.list', sessionListRequestParams(includeCron))
+            : Promise.resolve(null)
         ])
 
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
+
+        if (gen !== historyLoadGenRef.current) {
+          // Superseded while in flight: drop every state write so this stale
+          // response can't overwrite the newer request's history/err/loading.
+          // Still hand callers the live snapshot (closeSelected's fallback).
+          return r?.sessions ?? []
+        }
 
         if (!r) {
           setErr('invalid response: session.active_list')
@@ -427,13 +450,15 @@ export function ActiveSessionSwitcher({
 
         return next
       } catch (e: unknown) {
-        setErr(rpcErrorMessage(e))
-        setLoading(false)
+        if (gen === historyLoadGenRef.current) {
+          setErr(rpcErrorMessage(e))
+          setLoading(false)
+        }
 
         return []
       }
     },
-    [currentSessionId, gw]
+    [currentSessionId, gw, includeCron]
   )
 
   useEffect(() => {
@@ -562,7 +587,7 @@ export function ActiveSessionSwitcher({
   const newSelected = selectedKind === 'new'
   const draftHasText = Boolean(draft.trim())
 
-  useInput((ch, key) => {
+  useInput((ch, key, event: InputEvent) => {
     if (pickingModel || deleting) {
       return
     }
@@ -594,6 +619,15 @@ export function ActiveSessionSwitcher({
 
     if (isCtrl('r')) {
       void load()
+
+      return
+    }
+
+    if (key.meta && lower === 'c') {
+      // Consume the event: when "+ new" is selected the draft TextInput's
+      // useInput listener runs after this one and would insert a literal 'c'.
+      event.stopImmediatePropagation()
+      setIncludeCron(value => !value)
 
       return
     }
@@ -692,6 +726,24 @@ export function ActiveSessionSwitcher({
         Sessions
       </Text>
       <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
+
+      <Box flexDirection="row">
+        <Text color={t.color.muted}>Filters: </Text>
+        <Box
+          onClick={(event: { stopImmediatePropagation?: () => void }) => {
+            event.stopImmediatePropagation?.()
+            setIncludeCron(value => !value)
+          }}
+        >
+          <Text color={includeCron ? t.color.label : t.color.muted}>
+            {includeCron ? '[x]' : '[ ]'} Include cron sessions
+          </Text>
+        </Box>
+        <Text color={t.color.muted} dimColor>
+          {' (Alt+C)'}
+        </Text>
+      </Box>
+      <Text color={t.color.muted}>Resume:</Text>
 
       {err && <Text color={t.color.label}>error: {err}</Text>}
 

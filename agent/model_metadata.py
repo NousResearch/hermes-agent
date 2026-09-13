@@ -1238,6 +1238,11 @@ def is_output_cap_error(error_msg: str) -> bool:
     output-cap 400 misclassified as context overflow death-loops the compressor (same max_tokens, same
     rejection). Signal: talks about max_tokens as a cap/range/limit and NOT about an oversized input."""
     error_lower = error_msg.lower()
+    if (
+        re.search(r'available_tokens\s*(?:=|:)\s*0(?:\D|$)', error_lower)
+        and re.search(r'(?:estimated_input|input)\s*(?:=|:)\s*\d+', error_lower)
+    ):
+        return False
     # An error that ALSO describes an oversized INPUT is a genuine overflow — compression can fix it.
     return (
         any(p in error_lower for p in ("max_tokens", "max_output_tokens", "max_completion_tokens"))

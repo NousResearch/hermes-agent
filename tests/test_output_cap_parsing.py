@@ -98,6 +98,15 @@ class TestParseMaximumOutputTokensCap:
         assert parse_available_output_tokens_from_error(msg) is None
         assert is_output_cap_error(msg) is False
 
+    def test_dispatcher_live_input_field_is_input_overflow(self):
+        msg = (
+            "Request context preflight failed: input=69112, "
+            "requested_output=None, max_tokens=None, available_tokens=0, "
+            "context_limit=65536, model=Qwen3.8-27B-8bit."
+        )
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False
+
 
 class TestIsOutputCapError:
     """`is_output_cap_error` is the broader yes/no gate that keeps an

@@ -67,6 +67,9 @@ BEDROCK_OPENAI_RESPONSES_MODEL_IDS: Tuple[str, ...] = (
     "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
 )
 _BEDROCK_OPENAI_HOST_RE = re.compile(r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE)
+# Bedrock-hosted frontier OpenAI models (gpt-5.x / gpt-6, any regional prefix) 400 on temperature/topP
+# in Converse ("This model doesn't support the temperature field"); gpt-oss still accepts them.
+_BEDROCK_OPENAI_NO_SAMPLING_RE = re.compile(r"^(?:[a-z]+\.)?openai\.gpt-(?:5|6)", re.IGNORECASE)
 _MIN_BOTO3_VERSION = (1, 34, 59)
 
 
@@ -897,7 +900,7 @@ def build_converse_kwargs(
     if system_prompt:
         kwargs["system"] = system_prompt + [dict(_CACHE_POINT)] if "system" in cache_at else system_prompt
     from agent.anthropic_adapter import _forbids_sampling_params
-    if not _forbids_sampling_params(model):
+    if not _forbids_sampling_params(model) and not _BEDROCK_OPENAI_NO_SAMPLING_RE.match(model or ""):
         inference_config.update({k: v for k, v in (("temperature", temperature), ("topP", top_p)) if v is not None})
     if stop_sequences:
         inference_config["stopSequences"] = stop_sequences

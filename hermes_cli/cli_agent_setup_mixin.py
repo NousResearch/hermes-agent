@@ -182,9 +182,13 @@ class CLIAgentSetupMixin:
         _primary_exc = None
         runtime = None
         try:
+            # target_model: Bedrock picks the wire per model (Claude -> anthropic_messages,
+            # everything else -> bedrock_converse). Without it the config default's wire is
+            # re-applied every turn and a /model switch to a non-Claude Bedrock model gets
+            # Anthropic-shaped tools -> 400 "Invalid 'tools': missing field `type`".
             runtime = resolve_runtime_provider(
                 requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
-                explicit_base_url=self._explicit_base_url)
+                explicit_base_url=self._explicit_base_url, target_model=self.model or None)
         except Exception as exc:
             _primary_exc = exc
         if _primary_exc is not None:

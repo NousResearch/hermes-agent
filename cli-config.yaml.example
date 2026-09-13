@@ -1972,10 +1972,13 @@ updates:
   # Disable passive CLI/banner update checks with `hermes config set updates.check false`.
   # Explicit `hermes update --check` and `hermes update` remain available.
   check: true
-  # Create a full HERMES_HOME zip before every `hermes update`.
-  # Backups land in ~/.hermes/backups/ and can be restored with `hermes import`.
-  # Off by default because large homes can add minutes to every update.
-  pre_update_backup: false
+  # Pre-update safety net: "quick" snapshots critical state files (pairing
+  # data, cron jobs, config, auth) into state-snapshots/ before every
+  # `hermes update`; "full" additionally zips all of HERMES_HOME into
+  # ~/.hermes/backups/ (restorable with `hermes import`, can add minutes on
+  # large homes); "off" disables both. Legacy booleans are honored
+  # (true -> full, false -> off).
+  pre_update_backup: quick
 
   # Number of pre-update backup zips to retain.
   backup_keep: 5

@@ -2,6 +2,10 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+from gateway.kanban_notifications import ACTIONABLE_TEXT_LIMIT
+
 
 from gateway.config import Platform
 from gateway.kanban_watchers_common import (
@@ -82,6 +86,43 @@ def _unseen_terminal_events(tid):
         return events
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("kind", ["blocked", "block_loop_detected"])
+@pytest.mark.parametrize("length", [0, 160, 161, 999, 1000, 1001, 10000])
+def test_actionable_reason_preserved_and_bounded(tmp_path, monkeypatch, kind, length):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "reasons.db"))
+    kb.init_db()
+    reason = ("OPEN " + "x" * (length - 10) + "REPLY") if length else ""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="approval", assignee="default")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1",
+                          notifier_profile="default")
+        if kind == "blocked":
+            kb.block_task(conn, tid, reason=reason, kind="needs_input")
+        else:
+            kb._append_event(conn, tid, kind, {"reason": reason, "recurrences": 2})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "default"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    if not reason:
+        assert not text.endswith(": ")
+    else:
+        rendered = text.rsplit(": ", 1)[1]
+        if len(reason) <= ACTIONABLE_TEXT_LIMIT:
+            assert rendered == reason
+        else:
+            assert len(rendered) == ACTIONABLE_TEXT_LIMIT
+            assert rendered.startswith("OPEN ")
+            assert "[middle truncated]" in rendered
+            assert rendered.endswith("REPLY")
 
 
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):

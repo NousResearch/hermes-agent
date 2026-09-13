@@ -31,7 +31,8 @@ from typing import Callable, Dict, Optional, Any, List, Tuple, cast
 
 from agent.async_utils import safe_schedule_threadsafe
 from agent.conversation_compression import (
-    COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
+    COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_REFUSED_WOULD_GROW_WARNING,
+    COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
@@ -83,6 +84,11 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
     r"|preflight\s+compression"
     r"|pre[- ]api\s+compression"
+    # Anti-growth refusal warning (_emit_warning from the commit-site guard): a NO-OP diagnostic — nothing
+    # dropped, no user action needed — whose distinctive wording comes from the SAME constant the emit site
+    # formats, so a reword cannot drift past this filter. Manual /compress reports the refusal with its own
+    # headline instead and stays visible.
+    rf"|{re.escape(COMPRESSION_REFUSED_WOULD_GROW_WARNING)}"
     # Retry chatter via _emit_status; ", retrying"/"— compressing" anchors exclude manual /compress feedback.
     r"|context\s+too\s+large\s+\(~[\d,]+\s+tokens\)\s+[—-]+\s+compressing"
     r"|compressed\s+\d[\d,]*\s+(?:→|->)\s+\d[\d,]*\s+messages,\s+retrying"

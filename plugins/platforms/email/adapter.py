@@ -85,8 +85,8 @@ _HERMES_EMAIL_HTML_TEMPLATE = """\
 # Inline CSS per-element for email client compat (Gmail strips <style> tags).
 # Note: Python-Markdown generates <pre><code>...</code></pre> for fenced code.
 # The <pre> styling provides the dark background; <code> inside inherits it.
-# We use a two-pass approach: first style all <code> (inline code gets light bg),
-# then override <code> inside <pre> blocks to be transparent.
+# Those blocks are extracted before style injection and restored with their own
+# styling (see _PRE_CODE_STYLED), so no duplicate style= attributes result.
 _HERMES_EMAIL_STYLES = [
     ("h1", 'style="font-size:24px;font-weight:700;color:#1a202c;margin:24px 0 12px;border-bottom:2px solid #667eea;padding-bottom:8px;"'),
     ("h2", 'style="font-size:20px;font-weight:700;color:#2d3748;margin:24px 0 10px;border-bottom:1px solid #e2e8f0;padding-bottom:6px;"'),
@@ -223,13 +223,52 @@ def _sanitize_email_html(html_str: str) -> str:
         sanitizer.feed(html_str or "")
         sanitizer.close()
         return sanitizer.get_html()
-    except Exception:
+    except Exception as e:
+        # Fall back to escaped text, but never silently: a sanitizer failure
+        # means the recipient sees raw markup, which deserves a traceback.
+        logger.warning("[Email] HTML sanitization failed, sending escaped text: %s", e, exc_info=True)
         return html.escape(html_str or "")
 
 
+# Fenced code blocks and inline code spans — their content is an example, not
+# markup, so it must not influence HTML detection.
+_FENCED_CODE_RE = re.compile(r"^[ \t]*(?:```|~~~).*?^[ \t]*(?:```|~~~)[ \t]*$", re.DOTALL | re.MULTILINE)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+_HTML_DOCUMENT_RE = re.compile(r"<!DOCTYPE\s+html|<html[\s>]", re.IGNORECASE)
+
+# Block-level tags that only occur in a real HTML body. Paired with a matching
+# end tag, so a lone mention cannot flip the body onto the HTML path.
+_HTML_BLOCK_TAGS = (
+    "div", "table", "p", "ul", "ol", "blockquote", "pre",
+    "section", "article", "main", "header", "footer",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+)
+
+
 def _is_html(text: str) -> bool:
-    """Detect if text already contains HTML markup."""
-    return bool(re.search(r"<(?:p|div|h[1-6]|table|ul|ol|blockquote|pre|br)\b", text, re.I))
+    """Detect whether the body is already HTML markup rather than Markdown.
+
+    A bare substring match is not enough: Markdown bodies routinely mention
+    tags in prose or inside code spans/fences (e.g. "use ``<pre><code>`` for
+    code blocks"), and those must still be rendered as Markdown. Treat the
+    body as HTML only when it carries real block structure:
+
+    * an HTML document declaration (``<!DOCTYPE html>`` / ``<html>``), or
+    * a block-level tag at the start of a line that is also closed by its
+      matching end tag.
+
+    Tags inside inline code spans and fenced code blocks are ignored.
+    """
+    if not text:
+        return False
+    probe = _INLINE_CODE_RE.sub("", _FENCED_CODE_RE.sub("", text))
+    if _HTML_DOCUMENT_RE.search(probe):
+        return True
+    return any(
+        re.search(rf"^[ \t]*<{tag}\b", probe, re.IGNORECASE | re.MULTILINE)
+        and re.search(rf"</{tag}\s*>", probe, re.IGNORECASE)
+        for tag in _HTML_BLOCK_TAGS
+    )
 
 
 _HTML_START_RE = re.compile(
@@ -282,23 +321,23 @@ def _markdown_to_html_email(body: str) -> str:
         sanitized = _sanitize_email_html(body)
         return _HERMES_EMAIL_HTML_TEMPLATE.replace("{body}", sanitized)
     import markdown as _md_mod
-    html = _md_mod.markdown(body, extensions=["tables", "fenced_code", "nl2br"])
+    html_body = _md_mod.markdown(body, extensions=["tables", "fenced_code", "nl2br"])
     # Protect <pre><code> blocks from style injection (replace with placeholders)
     pre_code_blocks = []
     def _save_block(m):
         pre_code_blocks.append(m.group(1))
         return _PRE_CODE_PLACEHOLDER.format(len(pre_code_blocks) - 1)
-    html = _PRE_CODE_BLOCK_RE.sub(_save_block, html)
+    html_body = _PRE_CODE_BLOCK_RE.sub(_save_block, html_body)
     # Inject inline styles per element (Gmail strips <style> blocks)
     for tag, style in _HERMES_EMAIL_STYLES:
-        html = re.sub(rf"<{tag}(\s|>)", rf"<{tag} {style}\1", html)
+        html_body = re.sub(rf"<{tag}(\s|>)", rf"<{tag} {style}\1", html_body)
     # Restore <pre><code> blocks with proper styling (no duplicate style=)
     for i, content in enumerate(pre_code_blocks):
-        html = html.replace(_PRE_CODE_PLACEHOLDER.format(i), _PRE_CODE_STYLED.format(content))
+        html_body = html_body.replace(_PRE_CODE_PLACEHOLDER.format(i), _PRE_CODE_STYLED.format(content))
     # Sanitize to enforce allowlist policy (event handlers, unsafe URLs, script/style)
-    html = _sanitize_email_html(html)
+    html_body = _sanitize_email_html(html_body)
     # Use .replace() instead of .format() — body may contain { } braces
-    return _HERMES_EMAIL_HTML_TEMPLATE.replace("{body}", html)
+    return _HERMES_EMAIL_HTML_TEMPLATE.replace("{body}", html_body)
 
 
 def _esecret_int(name: str, default: int) -> int:

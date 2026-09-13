@@ -109,3 +109,75 @@ export function parseCompare(payload: unknown): { behind: number; commits: Compa
 
   return { behind: ahead, commits }
 }
+
+/** A git command runner — main.ts injects its runGit; tests inject a fake. */
+export type GitRunner = (args: string[], options?: { cwd?: string }) => Promise<{
+  code: number
+  stdout: string
+  stderr: string
+}>
+
+/**
+ * Answer "how far behind is HEAD?" from the LOCAL object database when the
+ * compare endpoint can't — its 404 on a local-only HEAD (a patched checkout's
+ * merge/rebase commits exist nowhere upstream) or a rate limit. Mirrors the
+ * ls-remote path's ancestry guard and the backend's banner._tips_behind: a
+ * tip reachable from HEAD is a local commit AHEAD, not an update; anything
+ * else counts HEAD..tip. Returns null when the tip isn't in the local
+ * database (a truly stale checkout) so callers keep the honest
+ * "update available, count unknown" state instead of a fabricated number.
+ */
+export async function resolveBehindLocally(
+  runGit: GitRunner,
+  cwd: string,
+  currentSha: string,
+  targetSha: string
+): Promise<number | null> {
+  const known = await runGit(['cat-file', '-e', `${targetSha}^{commit}`], { cwd })
+
+  if (known.code !== 0) {
+    return null
+  }
+
+  if ((await runGit(['merge-base', '--is-ancestor', targetSha, currentSha], { cwd })).code === 0) {
+    return 0
+  }
+
+  const count = await runGit(['rev-list', '--count', `${currentSha}..${targetSha}`], { cwd })
+  const parsed = Number.parseInt(count.stdout.trim(), 10)
+
+  return count.code === 0 && Number.isInteger(parsed) && parsed >= 0 ? parsed : null
+}
+
+/**
+ * Newest-first commit list for resolveBehindLocally's count, in the same
+ * CompareCommit shape as parseCompare so the overlay's "what's changed" list
+ * renders the local answer too.
+ */
+export async function listLocalCommits(
+  runGit: GitRunner,
+  cwd: string,
+  currentSha: string,
+  targetSha: string
+): Promise<CompareCommit[]> {
+  const log = await runGit(
+    ['log', '--reverse', '--date=iso-strict', '--pretty=%H%x1f%an%x1f%ad%x1f%s', `${currentSha}..${targetSha}`],
+    { cwd }
+  )
+
+  if (log.code !== 0) {
+    return []
+  }
+
+  return log.stdout
+    .split('\n')
+    .map(line => line.split('\x1f'))
+    .filter(parts => parts.length === 4 && parts[0])
+    .map(([sha, author, date, summary]) => ({
+      sha,
+      author,
+      summary,
+      at: Number.isFinite(Date.parse(date)) ? Date.parse(date) : 0
+    }))
+    .reverse()
+}

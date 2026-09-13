@@ -395,7 +395,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
+import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, listLocalCommits, parseCompare, resolveBehindLocally } from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -3240,7 +3240,7 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
   const slug = githubRepoSlug(originUrl)
 
   const status = slug
-    ? await checkUpdatesViaApi({ slug, branch, currentSha })
+    ? await checkUpdatesViaApi({ slug, branch, currentSha, updateRoot, git })
     : await checkUpdatesViaLsRemote({ updateRoot, branch, currentSha })
 
   const result = {
@@ -3282,7 +3282,7 @@ function writeUpdateCheckCache(entry) {
 // then the compare endpoint only when the tips differ — it yields the exact
 // behind count plus the commit list the overlay renders, replacing both
 // `rev-list --count` and `git log HEAD..origin/<branch>`.
-async function checkUpdatesViaApi({ slug, branch, currentSha }) {
+async function checkUpdatesViaApi({ slug, branch, currentSha, updateRoot, git }) {
   let targetSha
 
   try {
@@ -3301,15 +3301,40 @@ async function checkUpdatesViaApi({ slug, branch, currentSha }) {
 
   // Compare failure (rate-limited, local-only HEAD 404) keeps the honest
   // "update available, count unknown" — never a fabricated number.
+  let compareError = null
   const compared = await fetchGitHubApi(compareApiUrl(slug, currentSha, targetSha))
     .then(parseCompare)
-    .catch(() => null)
+    .catch(error => {
+      compareError = error
+
+      return null
+    })
 
   // ahead_by === 0 with differing tips: the remote tip is reachable from our
   // HEAD — a local commit sitting AHEAD, not behind. Flagging that as an update
   // nudges the user into wiping their work.
   if (compared?.behind === 0) {
     return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+  }
+
+  // A local-only HEAD (a patched checkout's merge/rebase commits exist nowhere
+  // upstream) makes the compare endpoint 404 FOREVER — the fallback below then
+  // holds a permanent "update available" no update can ever clear, since every
+  // update re-creates the local-only HEAD. When the already-fetched tip is in
+  // the local object database, answer from the local graph instead — the same
+  // ancestry guard the ls-remote path already applies and the backend's
+  // banner._tips_behind uses. Only a tip we can't see at all stays "unknown".
+  if (compared === null && compareError && updateRoot) {
+    const local = await resolveBehindLocally(git, updateRoot, currentSha, targetSha)
+
+    if (local !== null) {
+      return {
+        behind: local,
+        updateAvailable: local > 0,
+        targetSha,
+        commits: local > 0 ? await listLocalCommits(git, updateRoot, currentSha, targetSha) : []
+      }
+    }
   }
 
   return {

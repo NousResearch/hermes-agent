@@ -160,6 +160,93 @@ class TestGatewayQuickCommands:
         assert "timed out" in result.lower()
 
     @pytest.mark.asyncio
+    async def test_timeout_kills_the_command_process_tree(self, tmp_path):
+        """A timed-out exec quick command must not keep running under the gateway, nor its children."""
+        import asyncio
+        import contextlib
+        import sys
+        import time
+        import psutil
+        from gateway.run import GatewayRunner
+
+        pid_file = tmp_path / "pids"
+        script = tmp_path / "tree.py"
+        script.write_text(
+            "import os, subprocess, sys, time\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            f"with open({str(pid_file)!r}, 'w', encoding='utf-8') as f:\n"
+            "    f.write(f'{os.getpid()}\\n{child.pid}\\n')\n"
+            "time.sleep(120)\n",
+            encoding="utf-8",
+        )
+
+        def _pids():
+            try:
+                return [int(p) for p in pid_file.read_text(encoding="utf-8").split()]
+            except (OSError, ValueError):
+                return []
+
+        real_wait_for = asyncio.wait_for
+
+        async def _expire_once_tree_is_up(aw, timeout):
+            # Behave like wait_for() hitting its 30 s cap, without waiting 30 s: cancel the inner
+            # communicate() and raise TimeoutError once the command's process tree exists.
+            if getattr(aw, "__qualname__", "") != "Process.communicate":
+                return await real_wait_for(aw, timeout)
+            task = asyncio.ensure_future(aw)
+            deadline = time.monotonic() + 15
+            while len(_pids()) < 2 and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            raise asyncio.TimeoutError
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"hang": {"type": "exec", "command": f'"{sys.executable}" "{script}"'}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        with patch("asyncio.wait_for", _expire_once_tree_is_up):
+            result = await runner._handle_message(self._make_event("hang"))
+
+        assert "timed out" in result.lower()
+        pids = _pids()
+        assert len(pids) == 2, "the quick command never started its process tree"
+
+        def _running(pid):
+            # Read-only probe: waiting on the direct child here would steal asyncio's reap.
+            try:
+                return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+            except psutil.NoSuchProcess:
+                return False
+
+        alive = pids
+        deadline = time.monotonic() + 5
+        while alive and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+            alive = [pid for pid in alive if _running(pid)]
+        for pid in alive:  # never leak the sleepers into the rest of the run, even on failure
+            with contextlib.suppress(psutil.NoSuchProcess):
+                psutil.Process(pid).kill()
+        assert not alive, f"timed-out quick command left processes running: {alive}"
+
+    @pytest.mark.asyncio
+    async def test_completed_command_is_not_killed(self):
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"limits": {"type": "exec", "command": "echo ok"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        with patch("agent.deadline.kill_process_tree") as kill_tree:
+            result = await runner._handle_message(self._make_event("limits"))
+        assert result == "ok"
+        kill_tree.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_gateway_config_object_supports_quick_commands(self):
         from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner

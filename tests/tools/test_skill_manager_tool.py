@@ -1,6 +1,7 @@
 """Tests for tools/skill_manager_tool.py — skill creation, editing, and deletion."""
 
 import json
+import sys
 from contextlib import contextmanager
 from contextvars import copy_context
 from pathlib import Path
@@ -660,11 +661,11 @@ class TestSecurityScanGate:
         """Default config (flag off) short-circuits before running scan_skill."""
         from tools.skill_manager_tool import _security_scan_skill
 
-        with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=False), \
+        with patch("hermes_cli.config.load_config", return_value={"skills": {"guard_agent_created": False}}), \
              patch("tools.skill_manager_tool.scan_skill") as mock_scan:
             result = _security_scan_skill(tmp_path)
 
-        assert result is None
+        assert result.error is None and "disabled" in result.unscanned_reason
         mock_scan.assert_not_called()  # scan never ran
 
     def test_scan_blocks_dangerous_when_flag_on(self, tmp_path):
@@ -684,28 +685,29 @@ class TestSecurityScanGate:
             findings=[finding],
             summary="dangerous",
         )
-        with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
+        with patch("hermes_cli.config.load_config", return_value={"skills": {"guard_agent_created": True}}), \
              patch("tools.skill_manager_tool.scan_skill", return_value=fake_result):
             result = _security_scan_skill(tmp_path)
 
-        assert result is not None
-        assert "Security scan blocked" in result
+        assert "Security scan blocked" in result.error
 
-    def test_guard_flag_handles_config_error(self):
-        """If load_config raises, _guard_agent_created_enabled defaults to False (fail-safe off)."""
-        from tools.skill_manager_tool import _guard_agent_created_enabled
+    def test_guard_flag_handles_config_error(self, tmp_path):
+        """An unreadable setting leaves the write unblocked with an accurate explanation."""
+        from tools.skill_manager_tool import _security_scan_skill
 
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
-            assert _guard_agent_created_enabled() is False
+            result = _security_scan_skill(tmp_path)
+            assert result.error is None and "could not be read" in result.unscanned_reason
 
-    def test_guard_flag_quoted_false_stays_disabled(self):
+    def test_guard_flag_quoted_false_stays_disabled(self, tmp_path):
         """Quoted 'false' from YAML edits must not enable the guard."""
-        from tools.skill_manager_tool import _guard_agent_created_enabled
+        from tools.skill_manager_tool import _security_scan_skill
 
         for quoted in ("false", "False", "0", "no", "off"):
             with patch("hermes_cli.config.load_config",
                        return_value={"skills": {"guard_agent_created": quoted}}):
-                assert _guard_agent_created_enabled() is False, \
+                result = _security_scan_skill(tmp_path)
+                assert result.error is None and "disabled" in result.unscanned_reason, \
                     f"guard_agent_created={quoted!r} must coerce to False"
 
 
@@ -1191,3 +1193,132 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+@pytest.mark.parametrize("action, layout, guard, note", [
+    ("write_file", "scripts/run.py", "off", True),
+    ("patch", "scripts/run.py", "off", True),
+    ("patch", "root_alias", "off", True),
+    ("edit", "root_alias", "off", True),
+    ("write_file", "supporting_alias", "off", True),
+    ("write_file", "scripts/run.py", "quoted_false", True),
+    ("write_file", "scripts/run.py", "config_error", True),
+    ("write_file", "scripts/run.py", "scanner_error", True),
+    ("write_file", "scripts/run.py", "ignored", True),
+    ("write_file", "scripts/run.py", "unreadable", True),
+    ("write_file", "scripts/run.custom", "on", True),
+    ("write_file", "scripts/run.py", "on", False),
+    ("patch", "scripts/run.py", "on", False),
+    ("write_file", "supporting_alias", "on", False),
+    ("write_file", "references/notes.md", "off", False),
+    ("patch", "SKILL.md", "off", False),
+    ("write_file", "scripts/run.py", "block_new", False),
+    ("write_file", "scripts/run.py", "block_existing", False),
+    ("patch", "scripts/run.py", "block_existing", False),
+])
+def test_skill_write_reports_actual_script_scan_coverage(tmp_path, monkeypatch, action, layout, guard, note):
+    if sys.platform == "win32" and layout in {"root_alias", "supporting_alias"}:
+        pytest.skip("Symlinks require elevated privileges on Windows")
+    from tools.registry import registry
+    from tools import skill_manager_tool as manager
+
+    skill = tmp_path / "test-skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+    target = skill / layout
+    label = layout
+    original = "print('old')\n"
+    if layout == "root_alias":
+        target = skill / "scripts" / "source.md"
+        target.parent.mkdir()
+        target.write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+        (skill / "SKILL.md").unlink()
+        (skill / "SKILL.md").symlink_to(target)
+        original = VALID_SKILL_CONTENT
+        label = None
+    elif layout == "supporting_alias":
+        target = skill / "scripts" / "run.py"
+        target.parent.mkdir()
+        target.write_text(original, encoding="utf-8")
+        link = skill / "references" / "run.py"
+        link.parent.mkdir()
+        link.symlink_to(target)
+        label = "references/run.py"
+    elif layout == "SKILL.md":
+        original = VALID_SKILL_CONTENT
+        label = None
+    elif action == "patch" or guard == "block_existing":
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(original, encoding="utf-8")
+    existed = target.exists()
+    before = target.read_bytes() if existed else None
+    enabled = guard not in {"off", "quoted_false"}
+    config = {"skills": {"guard_agent_created": "false" if guard == "quoted_false" else enabled}}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    if guard == "config_error":
+        def config_error():
+            raise OSError("unreadable config")
+        monkeypatch.setattr("hermes_cli.config.load_config", config_error)
+    if guard == "scanner_error":
+        def scanner_error(*args, **kwargs):
+            raise OSError("scanner failed")
+        monkeypatch.setattr(manager, "scan_skill", scanner_error)
+    elif guard == "ignored":
+        (skill / ".skillignore").write_text("scripts/\n", encoding="utf-8")
+    elif guard == "unreadable":
+        read_text = Path.read_text
+        def unreadable(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError("scan read denied")
+            return read_text(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", unreadable)
+    replacement = "cat /etc/passwd\n" if guard.startswith("block_") else "print('new')\n"
+    args = {"action": action, "name": "test-skill"}
+    if action == "write_file":
+        args.update(file_path=label, file_content=replacement)
+    elif action == "edit":
+        replacement = VALID_SKILL_CONTENT_2
+        args["content"] = replacement
+    else:
+        old = "Do the thing." if label is None else original
+        args.update(file_path=label, old_string=old, new_string=replacement)
+    with _skill_dir(tmp_path):
+        raw = registry.dispatch("skill_manage", args)
+        result = json.loads(raw) if isinstance(raw, str) else raw
+    if guard.startswith("block_"):
+        assert result["success"] is False and "Security scan blocked" in result["error"]
+        assert (target.read_bytes() if target.exists() else None) == before
+        assert "security_note" not in result
+    else:
+        assert result["success"] is True, result
+        assert replacement.encode() in target.read_bytes()
+        assert bool(result.get("security_note")) is note
+        if note:
+            assert "not content-scanned" in result["security_note"]
+            assert result["security_note"] in result["message"]
+            if guard in {"off", "quoted_false"}:
+                assert "hermes config set skills.guard_agent_created true" in result["security_note"]
+            elif guard == "config_error":
+                assert "could not be read" in result["security_note"]
+            else:
+                assert "is disabled" not in result["security_note"]
+
+
+@pytest.mark.parametrize("selection, enabled", [("one", False), ("all", False), ("one", True)])
+def test_approved_skill_script_write_keeps_scan_note(tmp_path, monkeypatch, selection, enabled):
+    from tools import write_approval as wa
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"skills": {"guard_agent_created": enabled}})
+    skill = tmp_path / "test-skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+    rec = wa.stage_write(wa.SKILLS, {"action": "write_file", "name": "test-skill",
+        "file_path": "scripts/run.py", "file_content": "print('approved')\n"}, summary="script", origin="foreground")
+    with _skill_dir(tmp_path):
+        output = handle_pending_subcommand(wa.SKILLS, ["approve", "all" if selection == "all" else rec["id"]])
+    assert "Approved 1 skills write(s)." in output
+    assert "approved" in (skill / "scripts" / "run.py").read_text(encoding="utf-8")
+    assert not wa.list_pending(wa.SKILLS)
+    assert ("not content-scanned" in output) is not enabled

@@ -107,8 +107,16 @@ _XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
 _BILLING_ERROR_CODES = frozenset({
     "insufficient_quota", "billing_not_active", "payment_required", "insufficient_credits",
     "no_usable_credits", "balance_depleted", "model_not_supported_on_free_tier",
-    "member_spend_cap_exceeded", _XAI_SPENDING_LIMIT_ERROR_CODE,
+    "member_spend_cap_exceeded", "credits_required", _XAI_SPENDING_LIMIT_ERROR_CODE,
 })
+
+# Anthropic plan-entitlement exhaustion: asking a subscription for a model the plan is not
+# entitled to returns 429 with a ``rate_limit_error`` envelope whose ``details.error_code``
+# is ``credits_required`` ("Usage credits are required for this model."). The envelope type
+# trips _RATE_LIMIT_PATTERNS, so _status_429 must check these BEFORE the rate-limit
+# disambiguation — otherwise the verdict stays retryable and the session re-hits the same
+# account until the retry budget dies (port of can1357/oh-my-pi#11333).
+_CREDITS_REQUIRED_SIGNALS = ("credits_required", "usage credits are required")
 
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
 # contains an overflow phrase; rate limit is matched first so throttle wins.
@@ -734,6 +742,11 @@ def _status_429(c: _Ctx) -> Verdict:
         upstream = _extract_upstream_provider_name(c.body)
         ctx = {"upstream_provider": upstream} if upstream else {}
         return _v(_R.upstream_rate_limit, should_fallback=True, error_context=ctx)
+    # Anthropic ``credits_required`` (plan not entitled to the model) arrives inside a
+    # ``rate_limit_error`` envelope, so it must win before the explicit-rate-limit check:
+    # rotate to a sibling account instead of retrying the same one (#11333 upstream).
+    if any(p in c.msg for p in _CREDITS_REQUIRED_SIGNALS):
+        return _V_BILLING
     # Quota walls as 429 (Anthropic ``usage_limit_reached``, "quota", billing
     # phrases) are billing ONLY when the body is not itself a rate-limit phrase
     # ("Rate limit exceeded" contains "limit exceeded") and carries no reset/

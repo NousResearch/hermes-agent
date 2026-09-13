@@ -295,6 +295,29 @@ class TestClassifyApiError:
         assert result.should_rotate_credential is True
         assert result.should_fallback is True
 
+    def test_anthropic_429_credits_required_is_billing(self):
+        """Plan-entitlement exhaustion inside a rate_limit_error envelope must rotate,
+        not retry (port of can1357/oh-my-pi#11333)."""
+        e = MockAPIError(
+            "Error code: 429 - rate_limit_error: Usage credits are required for this model.",
+            status_code=429,
+            body={
+                "type": "error",
+                "error": {
+                    "type": "rate_limit_error",
+                    "message": "Usage credits are required for this model.",
+                    "details": {"error_code": "credits_required", "model": "claude-fable-5"},
+                },
+            },
+        )
+
+        result = classify_api_error(e, provider="anthropic", model="claude-fable-5")
+
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
     def test_anthropic_429_usage_limit_without_reset_is_billing(self):
         e = MockAPIError(
             "usage limit reached",

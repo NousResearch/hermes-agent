@@ -1457,7 +1457,7 @@ class TestBedrockSdkTimeout:
         assert cfg is not None
         assert cfg.read_timeout == 321.0
         assert cfg.connect_timeout == 10
-        assert cfg.retries["max_attempts"] == 1
+        assert cfg.retries["total_max_attempts"] == 1
         assert client is not None
         reset_client_cache()
 

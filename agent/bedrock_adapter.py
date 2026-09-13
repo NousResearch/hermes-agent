@@ -79,7 +79,10 @@ def _bedrock_botocore_config(read_timeout: float):
     return Config(
         read_timeout=float(read_timeout),
         connect_timeout=10,
-        retries={"max_attempts": 1, "mode": "standard"},
+        # total_max_attempts includes the original call; 1 = no SDK retries.
+        # botocore's max_attempts is retry-count (1 → two tries) and would
+        # double-bill a long Terra/Fable invoke. Hermes' outer loop retries.
+        retries={"total_max_attempts": 1, "mode": "standard"},
     )
 
 

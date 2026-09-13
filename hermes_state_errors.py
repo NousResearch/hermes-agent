@@ -195,9 +195,10 @@ class StateDbCorruptError(sqlite3.DatabaseError):
     Stopping the writes is what prevents that; skipping the explicit checkpoint is the second line of
     defence. SQLite still runs its own last-connection checkpoint inside ``close()`` (and deletes the
     ``-wal`` sidecar) unless ``SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`` is set — Python exposes it via
-    ``Connection.setconfig()`` on 3.12+, so quarantine disables the close-time checkpoint there and the WAL
-    survives on disk for forensics; on 3.11 the internal checkpoint is unavoidable (post-quarantine it can
-    only carry pre-corruption committed frames, since no further writes are accepted). See #90837.
+    ``Connection.setconfig()`` on 3.12+, so writers disable the close-time checkpoint at open and
+    quarantine keeps it on; the WAL survives on disk for forensics. On 3.11 the internal checkpoint
+    cannot be switched off, so a writer that still sees foreign holders is retired unclosed instead
+    of calling ``sqlite3_close``. See #90837.
     """
 
 

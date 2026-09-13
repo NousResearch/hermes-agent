@@ -344,6 +344,27 @@ def _close_time_checkpoint_configurable() -> bool:
             and hasattr(sqlite3.Connection, "setconfig"))
 
 
+def _apply_no_ckpt_on_close(conn: Optional[sqlite3.Connection]) -> bool:
+    """Best-effort ``SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE``. True if the switch is on.
+
+    Python 3.12+ exposes this via ``Connection.setconfig``. Hermes' production 3.11
+    runtime links SQLite 3.53 with the C API, but ``sqlite3_db_config`` is a local
+    symbol in the interpreter and cannot be called through ctypes — callers must
+    not ``sqlite3_close`` a writer while another process still holds the WAL.
+    """
+    if conn is None:
+        return False
+    flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+    setconfig = getattr(conn, "setconfig", None)
+    if flag is None or setconfig is None:
+        return False
+    try:
+        setconfig(flag, True)
+    except Exception:
+        return False
+    return True
+
+
 def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path]":
     """Append pending messages to HERMES_HOME/sessions/<id>.jsonl (state.db was replaced under a
     live process). Returns the path, or None if nothing to write."""
@@ -506,6 +527,7 @@ class SessionDB(
         self._retired_capture_lock = threading.Lock()
         self._retire_connection: Optional[Callable[[Any], None]] = None
         self._connection_pinned = False  # one unmatched C reference taken at most once per handle
+        self._no_ckpt_on_close = False  # True after SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE armed on this conn
         self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
         self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
         self._fts_enabled = self._fts_stale = self._trigram_available = False
@@ -671,6 +693,11 @@ class SessionDB(
             apply_database_pragmas(conn, db_label="state.db")
             conn.execute("PRAGMA foreign_keys=ON")
             self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
+            # Disable last-connection checkpoint on this writer (3.12+). Without it,
+            # a sibling CLI ``sqlite3_close`` can unlink ``-wal``/``-shm`` while the
+            # gateway still holds those inodes (DeletedWalGenerationError / Telegram
+            # "No reply"). No-op on 3.11; close() then pins instead of closing.
+            self._no_ckpt_on_close = _apply_no_ckpt_on_close(conn)
         except BaseException:
             self._close_connection_quietly(conn)
             raise
@@ -1197,27 +1224,26 @@ class SessionDB(
         <3.12 has no setconfig, so a lost-generation handle is retired unclosed
         instead (see close()): closing its last descriptor could both run that
         checkpoint and discard committed data present only in an unlinked WAL."""
-        flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
         conn = self._conn
+        if _apply_no_ckpt_on_close(conn):
+            self._no_ckpt_on_close = True
+            return True
+        # Same predicate as _close_time_checkpoint_configurable() plus the per-instance
+        # getattr: __init__ binds no retirement capability when either half is missing,
+        # and close() must agree with that decision or the lost handle would neither
+        # setconfig nor pin.
+        flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
         setconfig = getattr(conn, "setconfig", None)
         if flag is None or setconfig is None:
-            # Same predicate as _close_time_checkpoint_configurable() plus the per-instance
-            # getattr: __init__ binds no retirement capability when either half is missing,
-            # and close() must agree with that decision or the lost handle would neither
-            # setconfig nor pin.
             return False
-        try:
-            setconfig(flag, True)
-        except Exception:
-            # No retention capability is bound on this runtime, so close() will let SQLite run the
-            # checkpoint over the newer generation: say so where an operator can see it.
-            logger.error(
-                "Could not disable SQLite's close-time checkpoint on the quarantined handle for %s; "
-                "closing it may checkpoint retired frames over the newer generation.",
-                self.db_path, exc_info=True,
-            )
-            return False
-        return True
+        # setconfig exists but the apply above failed: close() would checkpoint
+        # retired frames over the newer generation.
+        logger.error(
+            "Could not disable SQLite's close-time checkpoint on the quarantined handle for %s; "
+            "closing it may checkpoint retired frames over the newer generation.",
+            self.db_path,
+        )
+        return False
 
     def _pin_connection(self, conn) -> None:
         """Retain the exact quarantined connection past GC and interpreter teardown (once per handle).
@@ -1386,6 +1412,24 @@ class SessionDB(
                         self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     except Exception as exc:
                         logger.debug("WAL checkpoint (PASSIVE) at close failed: %s", exc)
+                # Python <3.12 cannot switch off SQLite's close-time checkpoint. A sibling
+                # writer's sqlite3_close can unlink -wal/-shm while a live gateway still
+                # holds those inodes (DeletedWalGenerationError on the next Telegram write).
+                if (
+                    not retire_without_close
+                    and not self.read_only
+                    and not generation_lost
+                    and not self._no_ckpt_on_close
+                    and self._retire_connection is not None
+                    and self._foreign_state_db_holders()
+                ):
+                    logger.warning(
+                        "Retaining the writer connection for %s unclosed: other processes still "
+                        "hold this database and this runtime cannot switch off SQLite's "
+                        "close-time checkpoint.",
+                        self.db_path,
+                    )
+                    retire_without_close = True
                 if retire_without_close:
                     self._pin_connection(self._conn)
                     self._conn = None

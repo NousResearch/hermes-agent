@@ -43,9 +43,12 @@ one that no longer opened at all. Skipping the explicit checkpoint is the
 second line of defence; on Python 3.12+ the quarantine also disables
 SQLite's own last-connection checkpoint (`SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`),
 so the `-wal` sidecar survives `close()` for forensics. On Python 3.11 that
-switch is unavailable and SQLite may still checkpoint once on close, so copy
+switch is unavailable via `Connection.setconfig`, so a writer `close()` that
+still sees foreign holders (the live gateway) retains the connection unclosed
+instead of running SQLite's last-connection checkpoint. Copy
 `state.db`, `state.db-wal` and `state.db-shm` together before restarting
-anything.
+anything. Analytics CLIs such as `hermes insights` attach read-only and never
+take a writer on the live store.
 
 The gateway and the agent flush path treat the quarantine like a replaced
 file: pending transcripts go to `sessions/<id>.jsonl` and the gateway

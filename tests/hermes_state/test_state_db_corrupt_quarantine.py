@@ -113,7 +113,9 @@ class TestQuarantinedHandleStopsTouchingTheFile:
         Skipping the explicit PRAGMA is not enough: sqlite3.Connection.close()
         runs an internal PASSIVE checkpoint and unlinks -wal/-shm unless
         SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE is set (Connection.setconfig,
-        Python 3.12+). On 3.11 the switch is unavailable — skip there.
+        Python 3.12+). Writers now arm that switch at open so a sibling CLI
+        close cannot unlink WAL under a live gateway. On 3.11 the switch is
+        unavailable — skip there.
         """
         flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
         db = SessionDB(db_path=tmp_path / "state.db")
@@ -122,12 +124,12 @@ class TestQuarantinedHandleStopsTouchingTheFile:
             pytest.skip("SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE needs Python 3.12+")
         real_conn = db._conn
         db.create_session(session_id="s1", source="cli", model="test")
-        assert real_conn.getconfig(flag) is False
+        assert real_conn.getconfig(flag) is True
         db._conn = _MalformedConn(real_conn)
         with pytest.raises(StateDbCorruptError):
             db.create_session(session_id="s2", source="cli", model="test")
         db._conn = real_conn
-        # _halt_db_corrupt armed the no-checkpoint-on-close switch.
+        # Writer open already armed the switch; halt must keep it on.
         assert real_conn.getconfig(flag) is True
         db.close()
 

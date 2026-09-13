@@ -774,7 +774,7 @@ class CLIInfoMixin:
         try:
             from hermes_state import SessionDB
             from agent.insights import InsightsEngine
-            db = SessionDB()
+            db = SessionDB(read_only=True)
             try:
                 engine = InsightsEngine(db)
                 print(engine.format_terminal(engine.generate(days=days, source=source)))

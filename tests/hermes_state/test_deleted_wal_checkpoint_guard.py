@@ -11,15 +11,16 @@ converts the contained split-brain into page corruption in the main DB — exact
 incident's close-time damage.
 """
 
-import sys
+import sqlite3
 from pathlib import Path
-from unittest.mock import ANY, patch
+from unittest.mock import patch
 
 import pytest
 
-import hermes_state
 import hermes_state_wal
-from hermes_state import DeletedWalGenerationError, SessionDB
+from hermes_state import (
+    DeletedWalGenerationError, SessionDB, _close_time_checkpoint_configurable,
+)
 
 
 @pytest.fixture
@@ -125,3 +126,38 @@ def test_halt_disables_close_time_checkpoint(tmp_path, force_wal):
             "halt did not call setconfig(SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)"
         )
     db.close()
+
+
+def test_writer_open_disables_close_time_checkpoint(tmp_path, force_wal):
+    """On 3.12+ every writer must arm NO_CKPT_ON_CLOSE at open, not only at halt."""
+    flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+    db = _make_db(tmp_path / "state.db", "s", "before")
+    try:
+        if flag is None or not hasattr(db._conn, "setconfig"):
+            pytest.skip("Python 3.12+ SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE not available")
+        assert db._conn.getconfig(flag) is True
+    finally:
+        db.close()
+
+
+def test_writer_close_pins_when_foreign_holders_exist(tmp_path, force_wal, monkeypatch):
+    """Python <3.12 must not sqlite3_close a writer while a sibling still holds the DB."""
+    if _close_time_checkpoint_configurable():
+        pytest.skip("Python 3.12+ disables close-time checkpoint; sqlite3_close is safe")
+    db = _make_db(tmp_path / "state.db", "s", "held")
+    monkeypatch.setattr(db, "_foreign_state_db_holders", lambda: [(4242, "gateway-writer")])
+    with patch.object(SessionDB, "_close_connection_quietly") as quiet_close:
+        db.close()
+    quiet_close.assert_not_called()
+    assert db._conn is None
+    assert db._connection_pinned is True
+
+
+def test_writer_close_without_holders_still_closes(tmp_path, force_wal, monkeypatch):
+    """A sole writer must still close for real so tests and one-shots release the file."""
+    db = _make_db(tmp_path / "state.db", "s", "solo")
+    monkeypatch.setattr(db, "_foreign_state_db_holders", lambda: [])
+    with patch.object(SessionDB, "_close_connection_quietly") as quiet_close:
+        db.close()
+    quiet_close.assert_called_once()
+    assert db._connection_pinned is False

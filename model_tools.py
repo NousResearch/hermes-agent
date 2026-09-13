@@ -18,7 +18,10 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
+from tools.registry import (
+    CHECK_FN_CACHE_BYPASS, TOOL_CAPABILITIES, check_fn_cache_scope,
+    discover_builtin_tools, registry, tool_error,
+)
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
@@ -747,10 +750,120 @@ def _apply_request_middleware(
         return function_args, dict(function_args), trace
 
 
+_GOAL_TARGET_ARG_KEYS = frozenset({
+    "path", "file_path", "target", "url", "urls", "image_url", "workdir", "host",
+})
+_IRREVERSIBLE_TOOL_CAPABILITIES = frozenset({
+    "delete", "external_write", "money", "secrets", "account",
+    "environment", "install", "unknown",
+})
+
+
+def _extract_goal_constraint_targets(value: Any) -> List[str]:
+    """Return targets named by canonical argument keys, preserving literals.
+
+    Matching is deliberately literal and case-sensitive: the runtime does not
+    resolve paths, hosts, or URLs while deciding whether a tool may execute.
+    Dicts are traversed recursively so structured calls use the same extractor;
+    target values themselves must be a string or a list/tuple of strings.
+    """
+    targets: List[str] = []
+
+    def _walk(item: Any) -> None:
+        if not isinstance(item, dict):
+            return
+        for key, child in item.items():
+            if key in _GOAL_TARGET_ARG_KEYS:
+                values = child if isinstance(child, (list, tuple)) else [child]
+                if not values:
+                    raise ValueError(f"target argument {key!r} is empty")
+                for target in values:
+                    if not isinstance(target, str) or not target:
+                        raise ValueError(f"target argument {key!r} must contain non-empty strings")
+                    targets.append(target)
+            elif isinstance(child, dict):
+                _walk(child)
+            elif isinstance(child, (list, tuple)):
+                for nested in child:
+                    _walk(nested)
+
+    _walk(value)
+    return targets
+
+
+def _enforce_goal_tool_constraints(
+    function_name: str, function_args: Dict[str, Any], ids: _CallIds,
+) -> Optional[Tuple[Any, str, Optional[str]]]:
+    """Deterministically enforce the active Goal's typed tool constraints.
+
+    This guard consumes registry-issued capability metadata and persisted Goal
+    state.  It never executes a probe or interprets Assistant prose.  Unknown
+    metadata fails closed whenever typed constraints are active.
+    """
+    if not ids.session_id:
+        return None
+
+    from hermes_cli.goals import GoalManager
+
+    manager = GoalManager(ids.session_id)
+    state = manager.state
+    if state is None or state.status != "active":
+        return None
+    constraints = state.contract.tool_constraints if state.contract else None
+    if constraints is None or constraints.is_empty():
+        return None
+
+    try:
+        entry = registry.get_entry(function_name)
+    except Exception:
+        entry = None
+    raw_capabilities = getattr(entry, "capabilities", None) if entry is not None else None
+    if not isinstance(raw_capabilities, (tuple, list)) or not raw_capabilities:
+        capabilities = ("unknown",)
+    elif any(
+        not isinstance(capability, str) or capability not in TOOL_CAPABILITIES
+        for capability in raw_capabilities
+    ):
+        capabilities = ("unknown",)
+    else:
+        capabilities = tuple(raw_capabilities)
+
+    violation: Optional[str] = None
+    if "unknown" in capabilities:
+        violation = "tool capability metadata is unknown"
+    elif constraints.allowed_tools is not None and function_name not in constraints.allowed_tools:
+        violation = "tool is not present in allowed_tools"
+    else:
+        denied = sorted(set(capabilities).intersection(constraints.denied_capabilities))
+        if denied:
+            violation = "denied capability: " + ", ".join(denied)
+
+    if violation is None and constraints.target_prefixes is not None:
+        try:
+            targets = _extract_goal_constraint_targets(function_args)
+        except (TypeError, ValueError):
+            targets = []
+        if not targets:
+            violation = "target_prefixes is active but no trustworthy target was supplied"
+        elif any(
+            not any(target.startswith(prefix) for prefix in constraints.target_prefixes)
+            for target in targets
+        ):
+            violation = "one or more targets are outside target_prefixes"
+
+    if violation is None:
+        return None
+
+    reason = f"Goal tool constraint blocked {function_name}: {violation}"
+    if set(capabilities).intersection(_IRREVERSIBLE_TOOL_CAPABILITIES):
+        manager.block_tool_constraint(reason)
+    return tool_error(reason), "goal_constraint_block", reason
+
+
 def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip_pre_tool_call_hook: bool,
                          ids: _CallIds, middleware_trace: List[Dict[str, Any]],
                          ) -> Tuple[Dict[str, Any], Optional[Tuple[Any, str, Optional[str]]]]:
-    """Plugin pre_tool_call hook, then ACP edit approval.
+    """Plugin pre_tool_call hook, Goal constraints, then ACP edit approval.
 
     ``(args, None)`` to proceed (args possibly plugin-modified), or
     ``(args, (result, error_type, error_message))`` when blocked.
@@ -770,6 +883,10 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
             logger.debug("pre_tool_call hook error: %s", _hook_err)
         if block_message is not None:
             return function_args, (tool_error(block_message), "plugin_block", block_message)
+
+    goal_block = _enforce_goal_tool_constraints(function_name, function_args, ids)
+    if goal_block is not None:
+        return function_args, goal_block
 
     # ACP/Zed edit approval before any file mutation. The requester is bound
     # via ContextVar only for ACP sessions, so CLI/gateway paths are unaffected.

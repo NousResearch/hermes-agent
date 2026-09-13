@@ -1528,6 +1528,24 @@ class GoalManager:
         self._state.clear_wait()   # a wait barrier is meaningless once paused
         return self._save()
 
+    def block_tool_constraint(self, reason: str) -> Optional[GoalState]:
+        """Persist an irreversible runtime tool-constraint violation.
+
+        The existing lifecycle represents terminal blockers as a paused Goal,
+        while ``last_verdict == "blocked"`` records why automatic continuation
+        must stop.  Keeping this transition here gives every dispatch surface
+        the same durable state update without creating a parallel policy store.
+        """
+        if not self._state:
+            return None
+        reason = (reason or "Goal tool constraint blocked execution").strip()
+        self._state.status = "paused"
+        self._state.last_verdict = "blocked"
+        self._state.last_reason = reason
+        self._state.paused_reason = reason
+        self._state.clear_wait()
+        return self._save()
+
     def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
         if not self._state:
             return None

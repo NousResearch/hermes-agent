@@ -731,8 +731,6 @@ class WeixinAdapter(BasePlatformAdapter):
         # trigger a separate agent run. 3s / 5s (after a ~2048-char split chunk) suit iLink's cadence.
         self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 3.0)
         self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 5.0)
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         persisted = load_weixin_account(hermes_home, self._account_id) if self._account_id and not self._token else None
         if persisted:
             self._token = str(persisted.get("token") or "").strip()
@@ -944,21 +942,6 @@ class WeixinAdapter(BasePlatformAdapter):
         return build_session_key(
             event.source, group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False), profile=event.source.profile)
-
-    async def _flush_text_batch(self, key: str) -> None:
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            split = (getattr(pending, "_last_chunk_len", 0) if pending else 0) >= self._SPLIT_THRESHOLD
-            await asyncio.sleep(self._text_batch_split_delay_seconds if split else self._text_batch_delay_seconds)
-            if self._pending_text_batch_tasks.get(key) is not current_task:
-                return
-            event = self._pending_text_batches.pop(key, None)
-            if event:
-                await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
 
     async def _collect_media(self, item: Dict[str, Any], media_paths: List[str], media_types: List[str]) -> None:
         spec = _INBOUND_MEDIA.get(item.get("type"))

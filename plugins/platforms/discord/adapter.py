@@ -1034,8 +1034,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
@@ -5867,36 +5865,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         else:
             await self.handle_message(event)
         return True
-
-    # ------------------------------------------------------------------
-    # Text message aggregation (handles Discord client-side splits)
-    # ------------------------------------------------------------------
-
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch; longer delay when the chunk is
-        near Discord's 2000-char split point (continuation almost certain)."""
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            if last_len >= self._SPLIT_THRESHOLD:
-                delay = self._text_batch_split_delay_seconds
-            else:
-                delay = self._text_batch_delay_seconds
-            await asyncio.sleep(delay)
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            logger.info("[Discord] Flushing text batch %s (%d chars)", key, len(event.text or ""))
-            # Shield the dispatch: _enqueue_text_event cancels the prior flush task on each new chunk;
-            # without the shield CancelledError would abort the in-flight agent turn.
-            await asyncio.shield(self.handle_message(event))
-        except asyncio.CancelledError:
-            # Cancel landed before the pop; shielded handle_message unaffected.
-            pass
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
 
 
 # ---------------------------------------------------------------------------

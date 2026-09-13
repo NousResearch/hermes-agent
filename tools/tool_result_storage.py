@@ -162,7 +162,10 @@ def _content_for_persistence(content: str, tool_name: str) -> str:
     MCP handlers return a JSON string so structured metadata remains available
     inline.  Persisting that string verbatim turns newlines in a large text
     result into escapes on one giant line.  Only unwrap registered MCP tools;
-    JSON returned by every other tool remains opaque.
+    JSON returned by every other tool remains opaque.  Spill files and their
+    previews intentionally contain the extracted model-facing text rather than
+    the original MCP envelope, even when that text is itself serialized JSON.
+    MCP payloads without a recognized text shape remain verbatim.
     """
     if not tool_name.startswith(_MCP_TOOL_NAME_PREFIX):
         return content

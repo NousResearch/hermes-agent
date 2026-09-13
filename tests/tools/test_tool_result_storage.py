@@ -420,6 +420,20 @@ class TestSpillover:
         spill_file = get_spillover_dir() / "tc_json_envelope.txt"
         assert spill_file.read_text(encoding="utf-8") == content
 
+    def test_unrecognized_mcp_json_remains_verbatim(self):
+        content = json.dumps({"other": "opaque value\n" * 3_000})
+
+        maybe_persist_tool_result(
+            content=content,
+            tool_name="mcp__archive__opaque",
+            tool_use_id="tc_mcp_opaque",
+            env=None,
+            threshold=30_000,
+        )
+
+        spill_file = get_spillover_dir() / "tc_mcp_opaque.txt"
+        assert spill_file.read_text(encoding="utf-8") == content
+
     def test_local_env_persists_to_spillover_not_sandbox(self):
         """LocalEnvironment routes host-side: no env.execute() shell-out."""
         from tools.environments.local import LocalEnvironment

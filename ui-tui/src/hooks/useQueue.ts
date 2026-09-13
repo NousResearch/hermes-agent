@@ -1,14 +1,18 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 
+import type { ComposerToken } from '../app/interfaces.js'
 import { $uiState, getUiState } from '../app/uiStore.js'
+import { draftImagesIn, expandTokens } from '../domain/attachments.js'
 
 export interface QueueItem {
+  draftImages?: Extract<ComposerToken, { kind: 'image' }>[]
   display: string
   text: string
 }
 
-export const queueItem = (text: string, display = text): QueueItem => ({ display, text })
+export const queueItem = (text: string, display = text, draftImages?: QueueItem['draftImages']): QueueItem =>
+  ({ display, text, ...(draftImages?.length ? { draftImages: [...draftImages] } : {}) })
 
 export function prependQueueItem(queue: QueueItem[], item: QueueItem): void {
   queue.unshift(item)
@@ -25,10 +29,10 @@ export function takeQueueItem(queue: QueueItem[], index: number, editedDisplay?:
     return item
   }
 
-  return {
-    display: editedDisplay,
-    text: editedDisplay.includes(item.display) ? editedDisplay.replace(item.display, item.text) : editedDisplay
-  }
+  const images = draftImagesIn(item.draftImages ?? [], editedDisplay)
+  const text = editedDisplay.includes(item.display) ? editedDisplay.replace(item.display, item.text) : editedDisplay
+
+  return queueItem(images.length ? expandTokens(images)(text) : text, editedDisplay, images)
 }
 
 // Mutates `arr` in place; returned reference is the same input array, kept
@@ -121,8 +125,8 @@ export function useQueue() {
   )
 
   const enqueue = useCallback(
-    (text: string, display = text) => {
-      queueRef.current.push(queueItem(text, display))
+    (text: string, display = text, draftImages?: QueueItem['draftImages']) => {
+      queueRef.current.push(queueItem(text, display, draftImages))
       syncQueue()
     },
     [queueRef, syncQueue]
@@ -137,7 +141,7 @@ export function useQueue() {
   )
 
   const dequeue = useCallback(() => {
-    const head = queueRef.current.shift()?.text
+    const head = queueRef.current.shift()
     syncQueue()
 
     return head

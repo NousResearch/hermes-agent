@@ -29,23 +29,40 @@ import type {
 } from './interfaces.js'
 import { $isBlocked } from './overlayStore.js'
 import { getUiState } from './uiStore.js'
+import { useDraftAttachments } from './useDraftAttachments.js'
 
 const TOKEN_MAX_COUNT = 32
 const TOKEN_MAX_TOTAL_BYTES = 4 * 1024 * 1024
+const MAX_NATIVE_IMAGES = 32
+const NATIVE_IMAGE_LIMIT_MESSAGE = `A draft can contain at most ${MAX_NATIVE_IMAGES} native images`
 
 const trimTokens = (tokens: ComposerToken[]): ComposerToken[] => {
   let total = 0
+  let pasteCount = 0
+  let pastesFull = false
   const out: ComposerToken[] = []
 
   for (let i = tokens.length - 1; i >= 0; i--) {
     const token = tokens[i]!
+
+    // Admission bounds images separately. Evicting metadata here would leave
+    // an acknowledged image label in the draft without its payload.
+    if (token.kind === 'image') {
+      out.unshift(token)
+
+      continue
+    }
+
     const size = token.text?.length ?? 0
 
-    if (out.length >= TOKEN_MAX_COUNT || total + size > TOKEN_MAX_TOTAL_BYTES) {
-      break
+    if (pastesFull || pasteCount >= TOKEN_MAX_COUNT || total + size > TOKEN_MAX_TOTAL_BYTES) {
+      pastesFull = true
+
+      continue
     }
 
     total += size
+    pasteCount += 1
     out.unshift(token)
   }
 
@@ -114,8 +131,20 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   // of truth for "what is in the composer right now".
   const inputRef = useRef('')
   const tokensRef = useRef<ComposerToken[]>([])
+  const pendingNativeImages = useRef(0)
 
-  const setInput = useCallback<StateSetter<string>>(next => {
+  // Reserve before RPCs: they queue images on the gateway before replying, so
+  // rejecting at token insertion would leave an invisible image on the next turn.
+  const reserveNativeImage = useCallback(() => {
+    const admitted = tokensRef.current.filter(token => token.kind === 'image' && token.source !== 'draft').length
+
+    if (admitted + pendingNativeImages.current >= MAX_NATIVE_IMAGES) {return null}
+    pendingNativeImages.current += 1
+
+    return () => { pendingNativeImages.current -= 1 }
+  }, [])
+
+  const editInput = useCallback<StateSetter<string>>(next => {
     inputRef.current = typeof next === 'function' ? next(inputRef.current) : next
     setInputState(inputRef.current)
   }, [])
@@ -124,6 +153,16 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     tokensRef.current = typeof next === 'function' ? next(tokensRef.current) : next
     setTokens(tokensRef.current)
   }, [])
+
+  const draft = useDraftAttachments(gw, tokensRef, setComposerTokens)
+
+  const setInput = useCallback<StateSetter<string>>(next => {
+    draft.invalidate()
+    const current = draft.input.current?.snapshot().value ?? inputRef.current
+    const value = typeof next === 'function' ? next(current) : next
+    draft.input.current?.replace(value)
+    editInput(value)
+  }, [draft.input, draft.invalidate, editInput])
 
   const isBlocked = useStore($isBlocked)
   const { querier } = useStdin() as { querier: Parameters<typeof readOsc52Clipboard>[0] }
@@ -168,7 +207,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       }
 
       for (const token of gone) {
-        if (token.kind === 'image') {
+        if (token.kind === 'image' && token.source !== 'draft') {
           void gw.request('image.detach', { path: token.path, session_id: getUiState().sid }).catch(() => {})
         }
       }
@@ -184,18 +223,24 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
    * of `~/shot.png look at this` keeps the caption).
    */
   const attachImageToken = useCallback(
-    (attached: ImageAttachResponse & { path?: string }, value: string, cursor: number): ComposerPasteResult => {
-      const index = nextImageIndex(tokensRef.current)
+    (attached: ImageAttachResponse & { path?: string }, append = false): null => {
+      const nativeInput = draft.input.current
+      const value = nativeInput?.snapshot().value ?? inputRef.current
+      const index = nextImageIndex(tokensRef.current, value)
       const label = imageToken(index)
+      const remainder = attached.remainder?.trim() ?? ''
+      const text = remainder ? `${label} ${remainder}` : label
+
+      // Commit against live input, not the pre-RPC snapshot. Returning null
+      // prevents TextInput's async raw-text fallback from replacing this label.
+      if (append || !nativeInput) {setInput(insertAtCursor(value, value.length, text).value)}
+      else {nativeInput.insert(text)}
 
       setComposerTokens(prev => trimTokens([...prev, { index, kind: 'image', label, path: attached.path ?? '' }]))
 
-      const withToken = insertAtCursor(value, cursor, label)
-      const remainder = attached.remainder?.trim() ?? ''
-
-      return remainder ? insertAtCursor(withToken.value, withToken.cursor, remainder) : withToken
+      return null
     },
-    [setComposerTokens]
+    [draft.input, setComposerTokens, setInput]
   )
 
   /**
@@ -206,28 +251,40 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
    * there was nothing there. An explicit `/paste` reports the miss.
    */
   const pasteClipboardImage = useCallback(
-    async (value: string, cursor: number, quiet: boolean): Promise<ComposerPasteResult | null> => {
+    async (quiet: boolean, append = false): Promise<null> => {
       const sid = getUiState().sid
 
       if (!sid) {
         return null
       }
 
-      const r = await gw
-        .request<ClipboardPasteResponse & { path?: string }>('clipboard.paste', { session_id: sid })
-        .catch(() => null)
+      const release = reserveNativeImage()
 
-      if (r?.attached) {
-        return attachImageToken(r, value, cursor)
+      if (!release) {
+        sys(NATIVE_IMAGE_LIMIT_MESSAGE)
+
+        return null
       }
 
-      if (!quiet) {
-        sys(r?.message || 'No image found in clipboard')
-      }
+      try {
+        const r = await gw
+          .request<ClipboardPasteResponse & { path?: string }>('clipboard.paste', { session_id: sid })
+          .catch(() => null)
 
-      return null
+        if (r?.attached) {
+          return attachImageToken(r, append)
+        }
+
+        if (!quiet) {
+          sys(r?.message || 'No image found in clipboard')
+        }
+
+        return null
+      } finally {
+        release()
+      }
     },
-    [attachImageToken, gw, sys]
+    [attachImageToken, gw, reserveNativeImage, sys]
   )
 
   const handleResolvedPaste = useCallback(
@@ -235,40 +292,53 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       const cleanedText = stripTrailingPasteNewlines(text)
 
       if (!cleanedText || !/[^\n]/.test(cleanedText)) {
-        return bracketed ? pasteClipboardImage(value, cursor, true) : null
+        return bracketed ? pasteClipboardImage(true) : null
       }
 
       const sid = getUiState().sid
 
       if (sid && looksLikeDroppedPath(cleanedText)) {
-        try {
-          const attached = await gw.request<ImageAttachResponse>('image.attach', {
-            path: cleanedText,
-            session_id: sid
-          })
+        const release = reserveNativeImage()
 
-          if (attached?.name) {
-            // Drop an `[[ Image N ]]` token where the path was typed. The old
-            // path printed a notice above the status bar and left the composer
-            // untouched, so the only trace of the attachment lived outside the
-            // input the user was editing.
-            return attachImageToken(attached, value, cursor)
+        try {
+          if (release) {
+            try {
+              const attached = await gw.request<ImageAttachResponse>('image.attach', {
+                path: cleanedText,
+                session_id: sid
+              })
+
+              if (attached?.name) {return attachImageToken(attached)}
+            } catch {
+              // Fall back to generic file-drop detection below.
+            }
           }
-        } catch {
-          // Fall back to generic file-drop detection below.
-        }
 
-        try {
           const dropped = await gw.request<InputDetectDropResponse>('input.detect_drop', {
             session_id: sid,
-            text: cleanedText
+            text: cleanedText,
+            // A full image budget must not block generic files or allow the
+            // fallback detector to queue a hidden image.
+            ...(release ? {} : { attach_image: false })
           })
+
+          if (dropped?.matched && dropped.is_image) {
+            if (!release) {
+              sys(NATIVE_IMAGE_LIMIT_MESSAGE)
+
+              return null
+            }
+
+            return attachImageToken(dropped)
+          }
 
           if (dropped?.matched && dropped.text) {
             return insertAtCursor(value, cursor, dropped.text)
           }
         } catch {
           // Fall through to normal text paste behavior.
+        } finally {
+          release?.()
         }
       }
 
@@ -305,7 +375,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
       return inserted
     },
-    [attachImageToken, gw, pasteClipboardImage, setComposerTokens]
+    [attachImageToken, gw, pasteClipboardImage, reserveNativeImage, setComposerTokens, sys]
   )
 
   const handleTextPaste = useCallback(
@@ -335,7 +405,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
           }
 
           // No text on the clipboard — an image paste looks exactly like this.
-          return pasteClipboardImage(value, cursor, false)
+          return pasteClipboardImage(false)
         })
       }
 
@@ -348,33 +418,28 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
    * `/paste` and `/image` attach without a cursor of their own — the token
    * lands at the end of whatever is currently typed.
    */
-  const appendAttachment = useCallback(
-    (attach: (value: string, cursor: number) => Promise<ComposerPasteResult | null>) => {
-      const current = inputRef.current
-
-      void attach(current, current.length).then(next => {
-        if (next) {
-          setInput(next.value)
-        }
-      })
-    },
-    [setInput]
-  )
-
   const attachClipboardImage = useCallback(
-    () => appendAttachment((value, cursor) => pasteClipboardImage(value, cursor, false)),
-    [appendAttachment, pasteClipboardImage]
+    () => { void pasteClipboardImage(false, true) },
+    [pasteClipboardImage]
   )
 
   const attachImagePath = useCallback(
-    (path: string) =>
-      appendAttachment(async (value, cursor) => {
-        const sid = getUiState().sid
+    async (path: string) => {
+      const sid = getUiState().sid
 
-        if (!sid || !path.trim()) {
-          return null
-        }
+      if (!sid || !path.trim()) {
+        return null
+      }
 
+      const release = reserveNativeImage()
+
+      if (!release) {
+        sys(NATIVE_IMAGE_LIMIT_MESSAGE)
+
+        return null
+      }
+
+      try {
         const attached = await gw
           .request<ImageAttachResponse & { path?: string }>('image.attach', { path, session_id: sid })
           .catch((e: Error) => {
@@ -383,9 +448,12 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
             return null
           })
 
-        return attached?.name ? attachImageToken(attached, value, cursor) : null
-      }),
-    [appendAttachment, attachImageToken, gw, sys]
+        return attached?.name ? attachImageToken(attached, true) : null
+      } finally {
+        release()
+      }
+    },
+    [attachImageToken, gw, reserveNativeImage, sys]
   )
 
   const openEditor = useCallback(async () => {
@@ -428,6 +496,9 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       dequeue,
       enqueue,
       handleTextPaste,
+      editInput,
+      setNativeInput: draft.setNativeInput,
+      invalidateDraft: draft.invalidate,
       openEditor,
       prependQueue: prependQ,
       pushHistory,
@@ -442,6 +513,9 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       syncTokens
     }),
     [
+      draft.setNativeInput,
+      draft.invalidate,
+      editInput,
       attachClipboardImage,
       attachImagePath,
       clearIn,

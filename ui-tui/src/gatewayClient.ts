@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 import { delimiter, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
+import type { DraftAttachRequest, DraftIdentity, DraftResult } from '@hermes/shared'
 import { WebSocket as UndiciWebSocket } from 'undici'
 
 import type { GatewayEvent } from './gatewayTypes.js'
@@ -148,6 +149,11 @@ export class GatewayClient extends EventEmitter {
   private ws: WebSocket | null = null
   private wsConnectPromise: Promise<void> | null = null
   private sidecarWs: WebSocket | null = null
+  private draftState: { session_id: string; draft_id: string; available: boolean } | null = null
+  private draftBinding: Pick<DraftIdentity, 'pty_instance' | 'connection_generation'> | null = null
+  private draftRequests = new Map<string, DraftAttachRequest>()
+  private controllerGeneration = 0
+  private sidecarReconnectTimer: ReturnType<typeof setTimeout> | null = null
   private attachUrl: null | string = null
   private sidecarUrl: null | string = null
   private reqId = 0
@@ -206,13 +212,25 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
+  private invalidateDraft(): void {
+    const hadAuthority = this.draftBinding !== null
+    this.draftBinding = null
+    this.draftRequests.clear()
+
+    if (hadAuthority) {this.emit('draft.disconnected')}
+  }
+
   private closeSidecarSocket() {
+    if (this.sidecarReconnectTimer) {clearTimeout(this.sidecarReconnectTimer)}
+    this.sidecarReconnectTimer = null
+    const ws = this.sidecarWs
+    this.sidecarWs = null
+    this.invalidateDraft()
+
     try {
-      this.sidecarWs?.close()
+      ws?.close()
     } catch {
       // best effort
-    } finally {
-      this.sidecarWs = null
     }
   }
 
@@ -339,6 +357,8 @@ export class GatewayClient extends EventEmitter {
     // never fire `rejectPending`, leaving callers hanging on promises
     // attached to a discarded child / socket.
     this.rejectPending(new Error('gateway restarting'))
+
+    if (this.drainGeneration > 0) {this.draftState = null}
     this.ready = false
     this.subscribed = false
     // Invalidate any pending deferred drain() flush from a prior transport so
@@ -411,12 +431,26 @@ export class GatewayClient extends EventEmitter {
     }
 
     try {
-      const ws = new WebSocketCtor(this.sidecarUrl)
+      const url = new URL(this.sidecarUrl)
+      url.searchParams.set('controller_generation', String(++this.controllerGeneration))
+      const ws = new WebSocketCtor(url.toString())
 
       this.sidecarWs = ws
-      ws.addEventListener('close', () => {
-        if (this.sidecarWs === ws) {
-          this.sidecarWs = null
+      ws.addEventListener('message', ev => {
+        if (this.sidecarWs === ws) {this.handleDraftFrame(ev.data)}
+      })
+      ws.addEventListener('close', ev => {
+        if (this.sidecarWs !== ws) {return}
+        this.sidecarWs = null
+        this.invalidateDraft()
+
+        // Revocation and PTY death are final, not an invitation to reclaim.
+        if (!this.disposed && ev.code !== 4409 && ev.code !== 4410) {
+          this.sidecarReconnectTimer = setTimeout(() => {
+            this.sidecarReconnectTimer = null
+            this.connectSidecarMirror()
+          }, RECONNECT_BASE_MS)
+          this.sidecarReconnectTimer.unref?.()
         }
       })
       ws.addEventListener('error', () => {
@@ -439,6 +473,65 @@ export class GatewayClient extends EventEmitter {
       ws.send(rawFrame)
     } catch {
       // best effort
+    }
+  }
+
+  publishDraftState(state: { session_id: string; draft_id: string; available: boolean }): void {
+    this.draftState = { ...state }
+
+    if (this.draftBinding) {
+      this.mirrorEventToSidecar(JSON.stringify({ type: 'draft.state', ...state, ...this.draftBinding }))
+    }
+  }
+
+  publishDraftResult(result: DraftResult): void {
+    const request = this.draftRequests.get(result.request_id)
+
+    if (!request || !this.sameDraft(result.identity, request.expected)) {return}
+    this.draftRequests.delete(result.request_id)
+    this.mirrorEventToSidecar(JSON.stringify(result))
+  }
+
+  private sameDraft(a: DraftIdentity, b: DraftIdentity): boolean {
+    return a.pty_instance === b.pty_instance && a.connection_generation === b.connection_generation &&
+      a.session_id === b.session_id && a.draft_id === b.draft_id
+  }
+
+  private handleDraftFrame(raw: unknown): void {
+    let frame: Record<string, any>
+
+    try {
+      frame = JSON.parse(asWireText(raw) ?? '')
+    } catch {
+      return
+    }
+
+    if (!frame || typeof frame !== 'object' || Array.isArray(frame)) {return}
+
+    if (frame.type === 'draft.refresh' && typeof frame.pty_instance === 'string' &&
+        Number.isSafeInteger(frame.connection_generation) && frame.connection_generation >= 0) {
+      if (this.draftBinding?.pty_instance === frame.pty_instance &&
+          frame.connection_generation < this.draftBinding.connection_generation) {return}
+
+      if (this.draftBinding && (this.draftBinding.pty_instance !== frame.pty_instance ||
+          this.draftBinding.connection_generation !== frame.connection_generation)) {this.invalidateDraft()}
+
+      this.draftBinding = { pty_instance: frame.pty_instance, connection_generation: frame.connection_generation }
+      const cached = this.draftState
+      this.emit('draft.refresh')
+
+      if (cached && this.draftState === cached) {this.publishDraftState(cached)}
+    } else if (frame.type === 'draft.disconnected') {
+      this.invalidateDraft()
+    } else if (frame.type === 'draft.attach' && this.draftBinding && this.draftState?.available &&
+               typeof frame.request_id === 'string' && typeof frame.path === 'string' && frame.expected &&
+               this.sameDraft(frame.expected, { ...this.draftBinding, ...this.draftState })) {
+      const request: DraftAttachRequest = {
+        type: 'draft.attach', request_id: frame.request_id, path: frame.path, expected: frame.expected
+      }
+
+      this.draftRequests.set(request.request_id, request)
+      this.emit('draft.request', request)
     }
   }
 
@@ -483,6 +576,10 @@ export class GatewayClient extends EventEmitter {
     // Tell the gateway child where the Hermes source root is so its import
     // guard can force it ahead of any same-named package in the launch cwd.
     env.HERMES_PYTHON_SRC_ROOT = root
+    // Node owns both draft control and telemetry. Never give its private
+    // capability to the Python publisher or duplicate events in stdio mode.
+    delete env.HERMES_TUI_SIDECAR_URL
+    this.connectSidecarMirror()
     this.startReadyTimer(python, cwd)
     this.proc = spawn(python, ['-m', 'tui_gateway.entry'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
     this.lifecycle(`[lifecycle] spawned gateway child ${describeChild(this.proc)} python=${python} cwd=${cwd}`)
@@ -490,7 +587,10 @@ export class GatewayClient extends EventEmitter {
     this.stdoutRl = createInterface({ input: this.proc.stdout! })
     this.stdoutRl.on('line', raw => {
       try {
-        this.dispatch(JSON.parse(raw))
+        const frame = JSON.parse(raw)
+
+        if (frame.method === 'event') {this.mirrorEventToSidecar(raw)}
+        this.dispatch(frame)
       } catch {
         const preview = raw.trim().slice(0, MAX_LOG_PREVIEW) || '(empty line)'
 
@@ -584,6 +684,7 @@ export class GatewayClient extends EventEmitter {
               resolve()
             }
 
+            if (this.ws !== ws) {return}
             this.lastActivityAt = Date.now()
             this.clearReconnect()
             this.connectSidecarMirror()
@@ -623,7 +724,9 @@ export class GatewayClient extends EventEmitter {
       connectPromise.catch(() => {})
       this.wsConnectPromise = connectPromise
 
-      ws.addEventListener('message', ev => this.handleWebSocketFrame(ev.data))
+      ws.addEventListener('message', ev => {
+        if (this.ws === ws) {this.handleWebSocketFrame(ev.data)}
+      })
       ws.addEventListener('close', ev => {
         // Skip close events from sockets that have already been
         // replaced — start() / closeGatewaySocket() can swap `this.ws`

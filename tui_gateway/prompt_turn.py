@@ -81,10 +81,18 @@ def _plan_goal_compression_recovery(
 
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
-    queued_prompt_generation: int | None) -> tuple[list[str], Any] | None:
+    queued_prompt_generation: int | None,
+    draft_image_paths: list[str] | None = None) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
+    try:
+        draft_images = _validate_draft_image_paths(session, draft_image_paths or [])
+    except (ValueError, OSError) as exc:
+        with session["history_lock"]:
+            session["running"] = False
+        _emit("error", sid, {"message": str(exc)})
+        return None
     # When the session already holds its lease this is a cheap dict check. See #94778.
     if (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
         logger.info(
@@ -104,6 +112,7 @@ def _admit_prompt_turn(
         images = list(session.get("attached_images", []) if image_paths is None else image_paths)
         if image_paths is None:
             session["attached_images"] = []
+        images.extend(p for p in draft_images if p not in images)
         inflight = session.get("inflight_turn")
         # A retained failed turn (see _fail_inflight_turn) is a stale leftover
         # by the time a new turn starts — replace it, never append onto it.
@@ -489,8 +498,11 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
             api_key=getattr(agent, "api_key", "") or "",
             provider=getattr(agent, "provider", "") or "",
             config_context_length=getattr(agent, "_config_context_length", None))
+        with session["history_lock"]:
+            allowed_paths = set(session.get("file_attachment_paths", ()))
         ctx = preprocess_context_references(
-            prompt, cwd=cwd, allowed_root=cwd, context_length=ctx_len)
+            prompt, cwd=cwd, allowed_root=cwd, context_length=ctx_len,
+            allowed_paths=allowed_paths)
         if ctx.blocked:
             _emit(
                 "error", sid, {"message": "\n".join(ctx.warnings) or "Context injection refused."})
@@ -791,10 +803,13 @@ def _reopen_routed_session_row(db, sid: str, session: dict) -> None:
 def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
+    draft_image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None) -> bool:
-    admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
+    admitted = _admit_prompt_turn(
+        sid, session, text, image_paths, queued_prompt_generation,
+        **({"draft_image_paths": draft_image_paths} if draft_image_paths else {}))
     if admitted is None:
         return False
     images, agent = admitted
@@ -836,7 +851,7 @@ def _run_prompt_submit(
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata, turn_author)
+                display_metadata, turn_author=turn_author)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)

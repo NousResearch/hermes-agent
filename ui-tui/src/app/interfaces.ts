@@ -1,7 +1,7 @@
 import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
-import type { PasteEvent } from '../components/textInput.js'
+import type { NativeInputHandle, PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
   BillingCardInfo,
@@ -377,13 +377,16 @@ export interface ComposerPasteResult {
 export type MaybePromise<T> = Promise<T> | T
 
 export interface ComposerActions {
+  invalidateDraft: () => void
+  editInput: StateSetter<string>
+  setNativeInput: (handle: NativeInputHandle | null) => void
   /** Pull an image off the system clipboard in as a token. */
   attachClipboardImage: () => void
   /** Attach an image by path in as a token. */
   attachImagePath: (path: string) => void
   clearIn: () => void
-  dequeue: () => string | undefined
-  enqueue: (text: string, display?: string) => void
+  dequeue: () => QueueItem | undefined
+  enqueue: (text: string, display?: string, draftImages?: QueueItem['draftImages']) => void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
   prependQueue: (item: QueueItem) => void
@@ -437,7 +440,7 @@ export interface InputHandlerActions {
   answerClarify: (answer: string) => void
   appendMessage: (msg: Msg) => void
   die: () => void
-  dispatchSubmission: (full: string) => void
+  dispatchSubmission: (text: string | QueueItem) => void
   guardBusySessionSwitch: (what?: string) => boolean
   newSession: (msg?: string, title?: string) => void
   sys: (text: string) => void
@@ -517,6 +520,8 @@ export interface GatewayEventHandlerContext {
   }
 }
 
+export type SlashHandler = (cmd: string, draftImages?: QueueItem['draftImages']) => boolean
+
 export interface SlashHandlerContext {
   composer: {
     attachClipboardImage: () => void
@@ -551,7 +556,7 @@ export interface SlashHandlerContext {
   transcript: {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
-    send: (text: string, showUserMessage?: boolean, displayText?: string) => void
+    send: (text: string, showUserMessage?: boolean, displayText?: string, expandOverride?: (value: string) => string, opts?: { draftImages?: QueueItem['draftImages'] }) => void
     setHistoryItems: StateSetter<Msg[]>
     sys: (text: string) => void
     trimLastExchange: (items: Msg[]) => Msg[]
@@ -585,6 +590,7 @@ export interface AppLayoutComposerProps {
   compIdx: number
   completions: CompletionItem[]
   empty: boolean
+  setNativeInput: ComposerActions['setNativeInput']
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   input: string
   inputBuf: string[]
@@ -657,5 +663,5 @@ export interface AppOverlaysProps {
  * path, used to detach the image when its token is deleted.
  */
 export type ComposerToken =
-  | { index: number; kind: 'image'; label: string; path: string; text?: undefined }
+  | { index: number; kind: 'image'; label: string; path: string; source?: 'draft'; text?: undefined }
   | { index?: undefined; kind: 'paste'; label: string; path?: string; text: string }

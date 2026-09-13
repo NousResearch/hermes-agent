@@ -471,7 +471,8 @@ def _persist_session_row_for_submit(rid, session):
     return error
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author=None):
+def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback,
+                           draft_image_paths=None, *, turn_author=None):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -501,7 +502,8 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author,
+        **({"draft_image_paths": draft_image_paths} if draft_image_paths else {}))
 
 
 _TRUNCATION_PARAMS = (
@@ -566,6 +568,10 @@ def _(rid, params: dict) -> dict:
     if raw_author is not None and not isinstance(raw_author, DeliveryAuthor):
         return _err(rid, 4124, "turn author is stamped by the gateway, never by a client")
     turn_author = raw_author.author if raw_author is not None else None
+    try:
+        draft_image_paths = _validate_draft_image_paths(session, params.get("draft_image_paths", []))
+    except (ValueError, OSError) as exc:
+        return _err(rid, 4017, str(exc))
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
@@ -615,7 +621,9 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")),
+            turn_author=turn_author,
+            **({"draft_image_paths": draft_image_paths} if draft_image_paths else {}))
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -631,7 +639,8 @@ def _(rid, params: dict) -> dict:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind)
+            rid, sid, session, text, display_kind=display_kind,
+            **({"draft_image_paths": draft_image_paths} if draft_image_paths else {}))
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
@@ -654,7 +663,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, hosted_terminal_callback,
+            draft_image_paths=draft_image_paths, turn_author=turn_author),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
@@ -861,8 +871,8 @@ def _(rid, params: dict) -> dict:
 
 @method("file.attach")
 def _(rid, params: dict) -> dict:
-    """Stage a non-image file into the session workspace; returns a workspace-relative
-    ``@file:`` ref.  ``data_url`` carries the bytes when ``path`` isn't gateway-visible."""
+    """Stage a generic file and grant its exact reference to this session, never a turn.
+    ``data_url`` carries remote bytes; validated images additionally return draft metadata."""
     session, err = _sess_building(params, rid)
     if err:
         return err
@@ -874,10 +884,13 @@ def _(rid, params: dict) -> dict:
         stored_path, uploaded = _stage_session_file_attachment(
             session, raw_path=raw, data_url=data_url, name=name)
         ref_path = _attachment_ref_path(session, stored_path)
+        image = _file_attachment_image(stored_path)
+        with session["history_lock"]:
+            session.setdefault("file_attachment_paths", set()).add(str(stored_path))
         return _ok(rid, {
             "attached": True, "name": stored_path.name, "path": str(stored_path),
             "ref_path": ref_path, "ref_text": f"@file:{_format_ref_value(ref_path)}",
-            "uploaded": uploaded})
+            "uploaded": uploaded, **({"image": image} if image else {})})
     except Exception as e:
         return _err(rid, 5028, str(e))
 
@@ -909,10 +922,12 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"matched": False})
         drop_path, remainder = dropped["path"], dropped["remainder"]
         if dropped["is_image"]:
-            session.setdefault("attached_images", []).append(str(drop_path))
+            # Capacity-limited clients can classify without queuing a hidden image.
+            if params.get("attach_image") is not False:
+                session.setdefault("attached_images", []).append(str(drop_path))
             return _ok(rid, {
                 "matched": True, "is_image": True, "path": str(drop_path),
-                "count": len(session["attached_images"]),
+                "count": len(session.get("attached_images", [])), "remainder": remainder,
                 "text": remainder or f"[User attached image: {drop_path.name}]",
                 **_image_meta(drop_path)})
         text = f"[User attached file: {drop_path}]" + (f"\n{remainder}" if remainder else "")

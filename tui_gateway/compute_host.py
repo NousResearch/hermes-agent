@@ -234,7 +234,8 @@ class ComputeHost:
             with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
             server._run_prompt_submit(
-                request_id, sid, session, text, display_kind=frame.get("display_kind") or None)
+                request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
+                **({"draft_image_paths": frame["draft_image_paths"]} if frame.get("draft_image_paths") else {}))
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():
@@ -289,6 +290,7 @@ class ComputeHost:
                     session[key] = str(frame[key])
         else:
             session = self._build_server_session(server, frame, sid)
+        session["file_attachment_paths"] = set(frame.get("file_attachment_paths") or ())
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])
         return session

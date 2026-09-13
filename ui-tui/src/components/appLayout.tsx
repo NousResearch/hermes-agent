@@ -429,6 +429,7 @@ const ComposerPane = memo(function ComposerPane({
                   cursorSnapshotRef={cursorSnapshotRef}
                   mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}
+                  onHandle={composer.setNativeInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
                   placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}

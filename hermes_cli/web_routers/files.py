@@ -321,10 +321,9 @@ def _decode_chat_image_upload(payload: ChatImageUpload) -> tuple[bytes, str, str
 async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = None):
     """Persist a browser clipboard image where the embedded TUI can read it.
 
-    Browser clipboard bytes aren't visible to the server-side clipboard, so the
-    /chat page uploads them here and drives the TUI's ``/image <path>`` with
-    the returned gateway-visible path under ``HERMES_HOME/images/`` (the same
-    dir ``clipboard.paste`` / ``image.attach`` use).
+    Compatibility endpoint for image-only clients. New dashboard drafts use the
+    generic multipart adapter and native file.attach handoff instead. The returned
+    gateway-visible path is under ``HERMES_HOME/images/`` (also used by image.attach).
     """
     def _run():
         data, mime_type, ext = _decode_chat_image_upload(payload)
@@ -540,6 +539,34 @@ async def stream_upload_to_path(
             tmp_path.unlink(missing_ok=True)
         await file.close()
     return total
+
+
+@router.post("/api/chat/file-upload")
+async def upload_chat_file(file: UploadFile = File(...), profile: Optional[str] = None):
+    """Stage generic browser bytes without touching the native draft or submitting it."""
+    from hermes_cli.web_server_profiles import _config_profile_scope
+
+    staging = None
+    complete = False
+    try:
+        # Config-only scope is task-local: never hold the skills lock across upload awaits.
+        with _config_profile_scope(profile) as scoped_home:
+            root = Path(scoped_home or get_hermes_home()) / "attachments"
+            with _io_errors("Attachment directory is not writable", "Could not stage attachment"):
+                root.mkdir(parents=True, exist_ok=True)
+                staging = Path(tempfile.mkdtemp(prefix="dashboard-", dir=root))
+            name = _sanitize_chat_image_filename((file.filename or "attachment").replace("\\", "/"))
+            target = staging / name
+            size = await stream_upload_to_path(
+                file, target, too_large="File is too large",
+                not_writable="Attachment is not writable", write_failed="Could not write attachment")
+        complete = True
+        return {"path": str(target), "name": name, "bytes": size,
+                "mime_type": mimetypes.guess_type(name)[0] or "application/octet-stream"}
+    finally:
+        if not complete and staging is not None:
+            shutil.rmtree(staging)
+        await file.close()
 
 
 @router.post("/api/files/upload-stream")

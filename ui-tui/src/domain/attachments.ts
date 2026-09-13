@@ -13,11 +13,24 @@ import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
  *   - Position in the text is meaningful: the model sees the payload where the
  *     token sat, not stapled to the front of the turn.
  */
+export const draftImagesIn = (tokens: ComposerToken[], value: string) =>
+  tokens.filter((t): t is Extract<ComposerToken, { kind: 'image' }> =>
+    t.kind === 'image' && t.source === 'draft' && value.includes(t.label))
+
 export const imageToken = (index: number) => `[[ Image ${index} ]]`
 
 /** Highest image token index handed out so far, so a new one never collides. */
-export const nextImageIndex = (tokens: ComposerToken[]) =>
-  tokens.reduce((max, t) => (t.kind === 'image' ? Math.max(max, t.index) : max), 0) + 1
+export const nextImageIndex = (tokens: ComposerToken[], value = '') => {
+  let max = tokens.reduce((max, t) => (t.kind === 'image' ? Math.max(max, t.index) : max), 0)
+
+  for (const match of value.matchAll(/\[\[ Image (\d+) \]\]/g)) {
+    const index = Number(match[1])
+
+    if (Number.isSafeInteger(index)) {max = Math.max(max, index)}
+  }
+
+  return max + 1
+}
 
 /** Tokens whose label is no longer anywhere in the composer text. */
 export const droppedTokens = (tokens: ComposerToken[], value: string) => {

@@ -30,6 +30,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router";
 
+import { ChatFileUploads } from "@/components/ChatFileUploads";
+import { ChatToolbarButton } from "@/components/ChatToolbarButton";
+import { useChatFileUploads } from "@/hooks/useChatFileUploads";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -73,10 +76,9 @@ import {
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
 import {
-  imageFilesFromTransfer,
-  transferMayContainImage,
-  uploadChatImage,
-} from "@/lib/chatImagePaste";
+  filesFromTransfer,
+  transferMayContainFiles,
+} from "@/lib/chatFileTransfer";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
@@ -373,6 +375,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     [resumeParam, scopedProfile],
   );
   const titleScope = `${channel}\0${reconnectNonce}`;
+  const fileUploads = useChatFileUploads({
+    profile: scopedProfile,
+    scope: titleScope,
+    active: isActive,
+  });
+  const { select: selectFiles, bind: bindUploadSocket, receive: receiveDraftControl } = fileUploads;
   const sessionTitle =
     sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
   const handleSessionTitleChange = useCallback(
@@ -584,15 +592,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     //      ever stops listening (e.g. overlays / pickers) or if the user
     //      has selected with the mouse outside of Ink's selection model.
     //
-    //   3. **Ctrl/Cmd+Shift+V.**  Prefers clipboard.read() for images
-    //      (upload → `/image`), else readText() into term.paste().
-    //      preventDefault here suppresses the DOM paste event, so image
-    //      handling must live in this key path — not only the host
-    //      listener below.
-    //
-    //   4. **DOM paste / drop on the host.**  Bare Ctrl+V and context-menu
-    //      paste fire a ClipboardEvent; drag-drop lands files. Image
-    //      payloads upload to HERMES_HOME/images then drive `/image`.
+    //   3. **Native paste / drop.** The browser event supplies image bytes;
+    //      image uploads get receipts outside the TUI, ordinary text goes to
+    //      xterm. Do not cancel paste keydown or request clipboard permission.
     //
     // OSC 52 reads (terminal asking to read the clipboard) are not
     // supported — that would let any content the TUI renders exfiltrate
@@ -625,68 +627,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const isMac =
       typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
 
-    // ── Image paste / drop ───────────────────────────────────────────────
-    // The Chat tab is an xterm mirror of a TUI inside the gateway. Server-side
-    // clipboard.paste / xclip never see the browser clipboard, so image paste
-    // must upload browser bytes to HERMES_HOME/images, then drive `/image`
-    // over the PTY (same burst-then-Return timing as handleCopyLast).
-    let imageUploadDisposed = false;
-    const pasteDelay = () =>
-      new Promise<void>((resolve) => window.setTimeout(resolve, 40));
-    const reportImageUploadError = (err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn("[dashboard chat] image upload failed:", message);
-      setBanner(`Image upload failed: ${message}`);
-    };
-    const driveImageAttach = async (paths: string[]) => {
-      for (const path of paths) {
-        if (imageUploadDisposed) return;
-        const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          setBanner(
-            "Image uploaded, but chat is not connected — try again.",
-          );
-          return;
-        }
-        ws.send(`/image ${path}`);
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
-        const s = wsRef.current;
-        if (!s || s.readyState !== WebSocket.OPEN) return;
-        s.send("\r");
-        await pasteDelay();
-      }
-      term.focus();
-    };
-    const uploadAndAttachImages = (files: File[]) => {
-      if (!files.length) return;
-      void (async () => {
-        const paths: string[] = [];
-        for (const file of files) {
-          const uploaded = await uploadChatImage(file, scopedProfile);
-          if (imageUploadDisposed) return;
-          paths.push(uploaded.path);
-        }
-        await driveImageAttach(paths);
-      })().catch(reportImageUploadError);
-    };
+    // Browser bytes have one owner: the native paste/drop event (or picker).
+    // Uploads never inject slash commands or Return into the user's draft.
     const handleBrowserPaste = (ev: ClipboardEvent) => {
-      const files = imageFilesFromTransfer(ev.clipboardData);
-      if (!files.length) return;
+      const files = filesFromTransfer(ev.clipboardData);
+      if (!files.length && !transferMayContainFiles(ev.clipboardData)) return;
       ev.preventDefault();
       ev.stopPropagation();
-      uploadAndAttachImages(files);
+      selectFiles(files);
     };
     const handleBrowserDragOver = (ev: DragEvent) => {
-      if (!transferMayContainImage(ev.dataTransfer)) return;
+      if (!transferMayContainFiles(ev.dataTransfer)) return;
       ev.preventDefault();
       if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
     };
     const handleBrowserDrop = (ev: DragEvent) => {
-      const files = imageFilesFromTransfer(ev.dataTransfer);
-      if (!files.length) return;
+      const files = filesFromTransfer(ev.dataTransfer);
+      if (!files.length && !transferMayContainFiles(ev.dataTransfer)) return;
       ev.preventDefault();
       ev.stopPropagation();
-      uploadAndAttachImages(files);
+      selectFiles(files);
     };
     host.addEventListener("paste", handleBrowserPaste, { capture: true });
     host.addEventListener("dragover", handleBrowserDragOver, { capture: true });
@@ -700,11 +660,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // as SIGINT.
       // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey;
-      // Paste on BARE Ctrl+V too (not only Ctrl+Shift+V). Bare Ctrl+V otherwise
-      // falls through to the TUI, whose server-side clipboard read can't see the
-      // browser/OS clipboard → "No image found in clipboard". Routing Ctrl+V
-      // through the same navigator.clipboard path below makes it paste
-      // image-or-text correctly, like Ctrl+Shift+V.
       const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey;
 
       const terminalSelection = term.getSelection();
@@ -756,42 +711,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {
-        // preventDefault suppresses the DOM paste event, so image paste must
-        // be handled here via clipboard.read() — readText() alone misses
-        // image-only clipboards (the Discord / #24860 failure mode).
-        ev.preventDefault();
-        void (async () => {
-          try {
-            const read = navigator.clipboard?.read;
-            if (typeof read === "function") {
-              const items = await read.call(navigator.clipboard);
-              const files: File[] = [];
-              for (const item of items) {
-                const type = item.types.find((t) => t.startsWith("image/"));
-                if (!type) continue;
-                const blob = await item.getType(type);
-                const ext = type.split("/")[1]?.split("+")[0] || "png";
-                files.push(
-                  new File([blob], `clipboard.${ext}`, { type }),
-                );
-              }
-              if (files.length) {
-                uploadAndAttachImages(files);
-                return;
-              }
-            }
-          } catch {
-            /* fall through to text paste */
-          }
-          try {
-            const text = await navigator.clipboard.readText();
-            if (text) term.paste(text);
-          } catch (err) {
-            const message =
-              err instanceof Error ? err.message : String(err);
-            console.warn("[dashboard clipboard] paste failed:", message);
-          }
-        })();
+        // Keep the browser default: its paste event carries image bytes without
+        // clipboard-read permission. Returning false only stops xterm from
+        // forwarding Ctrl+V to the remote clipboard handler.
         return false;
       }
 
@@ -1206,6 +1128,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
+      bindUploadSocket(ws);
       // W2 (NS-591): a mobile socket can wedge in CONNECTING after a radio
       // handoff and never fire onclose, so neither the resume predicate nor
       // scheduleReconnect can recover it. Force-close if it hasn't opened
@@ -1293,7 +1216,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
 
     ws.onmessage = (ev) => {
+      if (unmounting || wsRef.current !== ws) return;
       if (typeof ev.data === "string") {
+        if (receiveDraftControl(ws, ev.data)) return;
         // The active-session fallback (no `?resume=` on the URL) tells us
         // via a one-off JSON control frame that a replay is starting (#93518,
         // see `pty_ws` in web_server.py). Real PTY output always arrives as
@@ -1334,6 +1259,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
 
     ws.onclose = (ev) => {
+      if (unmounting || wsRef.current !== ws) return;
+      bindUploadSocket(null);
       // Drain buffered sanitizer state. A buffered partial escape is dropped
       // (writing an unterminated CSI would wedge xterm's parser); a buffered
       // newline run is emitted collapsed.
@@ -1453,7 +1380,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // them before the blocked-input check so scrolling a disconnected
         // terminal doesn't trip the "reconnecting" notice.
         if (SGR_MOUSE_RE.test(data)) {
-          return;
+          return false;
         }
 
         if (
@@ -1466,7 +1393,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               `\r\n\x1b[33m[${PTY_RECONNECT_INPUT_MESSAGE}]\x1b[0m\r\n`,
             );
           }
-          return;
+          return false;
         }
 
         const normalized = normalizePtyMobileInput(
@@ -1479,6 +1406,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           mobileReplacementInputUntilRef.current = 0;
         }
         ws.send(normalized.data);
+        return true;
       };
       // The deferred composition fallback is already committed text, so it
       // must not consume the mobile replacement window intended for xterm's
@@ -1509,7 +1437,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     return () => {
       unmounting = true;
-      imageUploadDisposed = true;
       syncMetricsRef.current = null;
       clearEraseSuppressionTimer();
       clearResumeLoadingTimers();
@@ -1542,6 +1469,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // effect's top level so it can't reach into that scope — close via
       // the ref instead. ``?.`` covers the race where unmount fires before
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
+      bindUploadSocket(null);
       wsRef.current?.close();
       wsRef.current = null;
       host.removeEventListener("keydown", _imeCompositionGuard, true);
@@ -1563,6 +1491,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     clearReconnectTimer,
     resumeParam,
     scopedProfile,
+    selectFiles,
+    bindUploadSocket,
+    receiveDraftControl,
     reconnectNonce,
   ]);
 
@@ -1903,30 +1834,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           )}
 
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
-            className={cn(
-              "absolute z-10",
-              "normal-case tracking-normal font-normal",
-              "rounded border border-current/30",
-              "bg-black/20",
-              "opacity-70 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
-            )}
-            style={{ color: terminalFg }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
-              </span>
-            </span>
-          </Button>
+          <ChatFileUploads
+            {...fileUploads}
+            terminalForeground={terminalFg}
+            copyAction={
+              <ChatToolbarButton
+                terminalForeground={terminalFg}
+                icon={Copy}
+                onClick={handleCopyLast}
+                title="Copy last assistant response as raw markdown"
+                aria-label="Copy last assistant response"
+              >
+                {copyState === "copied" ? "Copied" : "Copy"}
+              </ChatToolbarButton>
+            }
+          />
 
           {chatPanelCollapsed && (
             <Button

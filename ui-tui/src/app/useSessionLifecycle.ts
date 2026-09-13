@@ -185,6 +185,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const startNewSession = useCallback(
     async (msg?: string, title?: string, keepCurrent = false) => {
+      composerActions.invalidateDraft()
       const setup = await rpc<SetupStatusResponse>('setup.status', {})
 
       if (setup?.provider_configured === false) {
@@ -286,6 +287,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const activateLiveSession = useCallback(
     (id: string) => {
+      composerActions.invalidateDraft()
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'switching session…' })
 
@@ -328,6 +330,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const resumeById = useCallback(
     (id: string) => {
+      composerActions.invalidateDraft()
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 

@@ -390,6 +390,8 @@ export interface InputDetectDropResponse {
   is_image?: boolean
   matched?: boolean
   name?: string
+  path?: string
+  remainder?: string
   text?: string
   token_estimate?: number
   width?: number

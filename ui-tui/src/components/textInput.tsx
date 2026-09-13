@@ -1,6 +1,6 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
-import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { type MutableRefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
@@ -174,6 +174,12 @@ function snapPos(s: string, p: number) {
   }
 
   return last
+}
+
+export interface NativeInputHandle {
+  snapshot: () => TextInsertResult
+  insert: (text: string) => boolean
+  replace: (value: string) => void
 }
 
 export interface TextInsertResult {
@@ -780,6 +786,7 @@ export function TextInput({
   onChange,
   onPaste,
   onSubmit,
+  onHandle,
   mask,
   mouseApiRef,
   cursorSnapshotRef,
@@ -1163,6 +1170,48 @@ export function TextInput({
       }
     }
   }
+
+  useLayoutEffect(() => {
+    if (!onHandle || !focus) {return}
+    onHandle({
+      snapshot: () => ({ value: vRef.current, cursor: curRef.current }),
+      replace: value => {
+        // The owner already reconciles programmatic replacements. Emitting an
+        // edit here detaches legacy images before submit and exits history recall.
+        // Discard deferred echoes; they belong to the draft being replaced.
+        if (parentChangeTimer.current) {clearTimeout(parentChangeTimer.current)}
+
+        if (keyBurstTimer.current) {clearTimeout(keyBurstTimer.current)}
+        parentChangeTimer.current = null
+        keyBurstTimer.current = null
+        pendingParentValue.current = null
+        cancelLocalRender()
+        editVersionRef.current += 1
+        self.current = true
+        vRef.current = value
+        curRef.current = value.length
+        selRef.current = null
+        lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
+        undo.current = []
+        redo.current = []
+        setCur(value.length)
+        setSel(null)
+      },
+      insert: text => {
+        flushParentChange()
+        const value = vRef.current
+        const cursor = curRef.current
+        const lead = cursor > 0 && !/\s/.test(value[cursor - 1] ?? '') ? ' ' : ''
+        const tail = cursor < value.length && !/\s/.test(value[cursor] ?? '') && !/\s$/.test(text) ? ' ' : ''
+        const inserted = lead + text + tail
+        commit(value.slice(0, cursor) + inserted + value.slice(cursor), cursor + inserted.length)
+
+        return true
+      }
+    })
+
+    return () => onHandle(null)
+  }, [onHandle, focus])
 
   const swap = (from: typeof undo, to: typeof redo) => {
     const entry = from.current.pop()
@@ -1811,6 +1860,7 @@ interface TextInputProps {
   onPaste?: (
     e: PasteEvent
   ) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
+  onHandle?: (handle: NativeInputHandle | null) => void
   onSubmit?: (v: string) => void
   placeholder?: string
   /** Hex color for placeholder text (theme muted); SGR dim when omitted. */

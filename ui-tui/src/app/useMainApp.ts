@@ -52,7 +52,7 @@ import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
-import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
+import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -60,9 +60,10 @@ import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
+import { useComposerInput } from './useComposerInput.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
-import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
+import { useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
@@ -228,7 +229,7 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const slashFlightRef = useRef(0)
-  const slashRef = useRef<(cmd: string) => boolean>(() => false)
+  const slashRef = useRef<SlashHandler>(() => false)
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
@@ -1233,28 +1234,7 @@ export function useMainApp(gw: GatewayClient) {
     ]
   )
 
-  /**
-   * Every keystroke lands here, so this is where attached payloads are
-   * reconciled against the tokens still in the text — deleting an
-   * `[[ Image N ]]` is how the user unattaches it.
-   */
-  const updateInput = useCallback<StateSetter<string>>(
-    next => {
-      composerActions.setInput(prev => {
-        const value = typeof next === 'function' ? next(prev) : next
-
-        composerActions.syncTokens(value)
-
-        if (shouldDetachEditedHistoryInput(composerState.historyIdx, composerRefs.historyRef.current, value)) {
-          composerRefs.historyDraftRef.current = value
-          composerActions.setHistoryIdx(null)
-        }
-
-        return value
-      })
-    },
-    [composerActions, composerRefs, composerState.historyIdx]
-  )
+  const updateInput = useComposerInput(composerActions, composerRefs, composerState.historyIdx)
 
   const appComposer = useMemo(
     () => ({
@@ -1263,6 +1243,7 @@ export function useMainApp(gw: GatewayClient) {
       completions: composerState.completions,
       empty,
       handleTextPaste: composerActions.handleTextPaste,
+      setNativeInput: composerActions.setNativeInput,
       input: composerState.input,
       inputBuf: composerState.inputBuf,
       pagerPageSize,

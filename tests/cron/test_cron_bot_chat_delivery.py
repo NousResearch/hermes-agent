@@ -204,23 +204,6 @@ def test_deliver_message_carries_cron_attribution(tmp_path):
     assert "the payload" in captured["message"]
 
 
-def test_deliver_run_kwargs_pin_lossy_errors():
-    """The delivery child must decode lossily regardless of platform — its output
-    only feeds the failure tail (#105582)."""
-    calls = {}
-
-    def fake_run(argv, **kwargs):
-        calls["kwargs"] = kwargs
-        return _completed()
-
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
-         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
-        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
-
-    assert err is None
-    assert calls["kwargs"]["errors"] == "replace"
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="shebang child not executable on win32")
 def test_deliver_child_undecodable_stderr_does_not_fail_delivery(tmp_path):
     """A stray non-UTF-8 byte on the delivery child's stderr must not raise

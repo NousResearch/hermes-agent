@@ -220,6 +220,8 @@ class PluginDispatchMixin:
                     results.append(ret)
             except (Exception, SystemExit) as exc:
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
+                if fail_closed:
+                    results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
         return results
 
     def _report_hook_failure(

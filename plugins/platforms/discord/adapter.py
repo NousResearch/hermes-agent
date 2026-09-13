@@ -4991,12 +4991,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Build the board-local registry from explicit operator declarations."""
         raw = settings.get("capabilities")
         from gateway.capability_registry import CapabilityRegistry, CapabilitySignature
+        from gateway.configured_board import configured_board_db_path
         from gateway.specialist_routing import SPECIALIST_PROFILES
+
+        db_path = configured_board_db_path(settings["board"])
 
         if not isinstance(raw, dict) or not raw:
             # Specialist routing is enabled only by explicit configuration;
             # without declarations it remains fail-closed and cannot hand off.
-            return CapabilityRegistry(board=settings["board"], configured_profiles={})
+            return CapabilityRegistry(db_path=db_path, board=settings["board"], configured_profiles={})
 
         declarations = {}
         try:
@@ -5010,7 +5013,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     # Any malformed declaration invalidates the whole registry;
                     # returning None would be interpreted as "no registry" and
                     # let arbitrary specialist profiles through.
-                    return CapabilityRegistry(board=settings["board"], configured_profiles={})
+                    return CapabilityRegistry(db_path=db_path, board=settings["board"], configured_profiles={})
                 declarations[profile] = CapabilitySignature(
                     domain=value["domain"],
                     actions=tokens(value["actions"]),
@@ -5018,13 +5021,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     requested_permissions=tokens(value["requested_permissions"]),
                 )
             registry = CapabilityRegistry(
-                board=settings["board"], configured_profiles=declarations,
+                db_path=db_path, board=settings["board"], configured_profiles=declarations,
             )
-            for profile in declarations:
-                registry.register_configured_profile(profile)
+            # Loading request scope must not activate or revive a profile.
+            # Activation is an explicit registry operation, separate from ingress.
             return registry
         except (KeyError, TypeError, ValueError):
-            return CapabilityRegistry(board=settings["board"], configured_profiles={})
+            return CapabilityRegistry(db_path=db_path, board=settings["board"], configured_profiles={})
 
     def toolsets_for_source(self, source) -> Optional[List[str]]:
         """Return source-scoped toolsets; voice fast-lane turns are tool-free."""
@@ -5088,7 +5091,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return await classify_specialist_request(
             event.text, _classifier, threshold=settings["confidence_threshold"],
             timeout=settings["timeout_seconds"],
-            registry=self._specialist_capability_registry(settings),
         )
 
     async def _maybe_route_specialist_event(self, event: MessageEvent) -> bool:
@@ -5120,6 +5122,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             from gateway.specialist_handoff import HandoffSource, create_specialist_handoff
 
             platform = getattr(event.source.platform, "value", event.source.platform)
+            registry = self._specialist_capability_registry(settings)
+            signature = registry.configured_signature(decision.profile or "")
+            if signature is None:
+                logger.warning(
+                    "[Discord] specialist routing profile is not configured: %s",
+                    decision.profile,
+                )
+                return False
             source = HandoffSource(
                 platform=str(platform), chat_id=str(event.source.chat_id),
                 chat_type=str(event.source.chat_type or "group"),
@@ -5134,6 +5144,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 create_specialist_handoff, decision=decision, source=source,
                 request=event.text, router_model=settings["model"] or "configured_auxiliary",
                 board=settings["board"],
+                signature=signature,
+                registry=registry,
             )
         except Exception:
             logger.warning("[Discord] specialist routing handoff failed", exc_info=True)

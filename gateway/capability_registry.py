@@ -20,6 +20,53 @@ from typing import Literal
 _MAX_EXPIRY_TIMESTAMP = 253402300799
 _PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9._-]{0,95}$")
 _REASON_CODE_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+
+_FIXED_BASELINE_SCOPES: dict[str, tuple[str, frozenset[str], str]] = {
+    "task-orchestrator": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "burndown-patch-steward": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "acceptance-gate-verifier": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "paper-safety-guardian": (
+        "financial-analysis", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "financial-analysis:read",
+    ),
+    "market-data-authority-auditor": (
+        "market-data", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "market-data:read",
+    ),
+    "route-execution-boundary-auditor": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "dependency-tooling-health-sentinel": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "copilot-learning-steward": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "mission-control-ux-auditor": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "research-scout": (
+        "research", frozenset({"audit", "read", "research", "review"}), "research:read"
+    ),
+    "performance-sentinel": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS capability_profiles (
@@ -190,6 +237,36 @@ class CapabilityRegistry:
         if not isinstance(profile_id, str) or not _PROFILE_ID_RE.fullmatch(profile_id):
             raise ValueError("profile_id must be a bounded canonical identifier")
         return profile_id
+
+    def register_fixed_baseline(
+        self,
+        *,
+        profile_id: str,
+        signature: CapabilitySignature,
+        expires_at: datetime | int | float | None = None,
+    ) -> int:
+        """Register one closed baseline declaration for compatibility with the router."""
+        self._validate_profile_id(profile_id)
+        fixed_scope = _FIXED_BASELINE_SCOPES.get(profile_id)
+        if fixed_scope is None:
+            raise ValueError("profile_id is not a fixed baseline specialist")
+        if not isinstance(signature, CapabilitySignature):
+            raise TypeError("signature must be a CapabilitySignature")
+        domain, allowed_actions, permission = fixed_scope
+        if (
+            signature.domain != domain
+            or signature.evidence_class != "diagnostic-only"
+            or not signature.actions
+            or not set(signature.actions) <= allowed_actions
+            or not signature.requested_permissions
+            or not set(signature.requested_permissions) <= {permission}
+        ):
+            raise ValueError("fixed baseline profile scope does not match its closed declaration")
+        configured = self._configured_profiles.get(profile_id)
+        if configured is not None and configured != signature:
+            raise ValueError("fixed baseline profile scope conflicts with configured declaration")
+        self._configured_profiles[profile_id] = signature
+        return self.register_configured_profile(profile_id, expires_at=expires_at)
 
     @contextmanager
     def _connection(self) -> Iterator[object]:
@@ -384,19 +461,48 @@ class CapabilityRegistry:
             return False
         return _unexpired(row["expires_at"], now=int(time.time()))
 
-    def resolve(self, signature: CapabilitySignature) -> RegistryResolution:
+    def has_configured_profile(self, profile_id: str) -> bool:
+        """Return whether the caller supplied a declaration for this profile."""
+        try:
+            self._validate_profile_id(profile_id)
+        except ValueError:
+            return False
+        return profile_id in self._configured_profiles
+
+    def configured_signature(self, profile_id: str) -> CapabilitySignature | None:
+        """Return the current operator declaration for one profile, if present."""
+        try:
+            self._validate_profile_id(profile_id)
+        except ValueError:
+            return None
+        return self._configured_profiles.get(profile_id)
+
+    def ensure_schema(self) -> None:
+        """Create the append-only registry tables before a shared transaction."""
+        with self._connection():
+            pass
+
+    def resolve(
+        self,
+        signature: CapabilitySignature,
+        *,
+        profile_id: str | None = None,
+        connection: object | None = None,
+    ) -> RegistryResolution:
         """Resolve exactly one active, unexpired, non-expanding local profile."""
         if not isinstance(signature, CapabilitySignature):
             raise TypeError("signature must be a CapabilitySignature")
-        try:
-            with self._connection() as conn:
-                rows = conn.execute(
+        if profile_id is not None:
+            self._validate_profile_id(profile_id)
+        def _read_rows(conn: object):
+            return conn.execute(
                     """
                     SELECT profile_id, signature_hash, permissions_hash, domain,
                            actions_json, evidence_class, requested_permissions_json, expires_at
                     FROM capability_profiles AS profiles
                     WHERE status = 'active' AND signature_hash = ?
                       AND permissions_hash = ? AND evidence_class = ?
+                      AND (? IS NULL OR profile_id = ?)
                       AND NOT EXISTS (
                           SELECT 1 FROM specialist_profile_revocations AS revocations
                           WHERE revocations.capability_profile_id = profiles.id
@@ -410,8 +516,20 @@ class CapabilityRegistry:
                         signature.signature_hash,
                         signature.permissions_hash,
                         signature.evidence_class,
+                        profile_id,
+                        profile_id,
                     ),
-                ).fetchall()
+            ).fetchall()
+
+        try:
+            if connection is not None:
+                # Handoff callers already hold the authoritative Kanban write
+                # transaction. Opening a second connection here would wait on
+                # that transaction's RESERVED lock and eventually time out.
+                rows = _read_rows(connection)
+            else:
+                with self._connection() as conn:
+                    rows = _read_rows(conn)
         except Exception as exc:
             return RegistryResolution(
                 status="unavailable",

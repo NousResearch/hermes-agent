@@ -894,6 +894,92 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns introduced after v1 to legacy DBs (called via ``init_db``)."""
+    # Candidate ledgers were briefly prototyped with raw scope/evidence
+    # columns. Replace that shape before any caller can write to it: the
+    # candidate contract stores only opaque hashes and bounded lifecycle data.
+    # The table is intentionally checked here rather than relying on
+    # ``CREATE TABLE IF NOT EXISTS`` because SQLite does not reconcile an
+    # existing table's columns with the canonical schema.
+    canonical_candidate_columns = {
+        "id", "request_id", "request_hash", "signature_hash", "permissions_hash",
+        "source_key_hash", "policy_digest", "evidence_ref_hashes_json",
+        "generation_id", "requested_profile_id", "lifecycle_status", "reason_code",
+        "cooldown_until", "created_at",
+    }
+    if _table_exists(conn, "candidate_profile_requests"):
+        existing_columns = _column_names(conn, "candidate_profile_requests")
+        previous_canonical_columns = canonical_candidate_columns - {"requested_profile_id"}
+        legacy_columns = previous_canonical_columns - {"generation_id"}
+        if existing_columns == previous_canonical_columns:
+            conn.execute(
+                "ALTER TABLE candidate_profile_requests ADD COLUMN requested_profile_id TEXT"
+            )
+        elif existing_columns == legacy_columns:
+            # ``connect()`` has already run SCHEMA_SQL, which installs the
+            # append-only trigger on an existing legacy table. Backfilling
+            # this additive column is the one intentional UPDATE during the
+            # migration, so temporarily remove only that trigger and restore
+            # it before any later migration step can fail.
+            conn.execute("DROP TRIGGER IF EXISTS candidate_profile_requests_no_update")
+            try:
+                conn.execute(
+                    "ALTER TABLE candidate_profile_requests ADD COLUMN requested_profile_id TEXT"
+                )
+                conn.execute(
+                    "ALTER TABLE candidate_profile_requests ADD COLUMN generation_id TEXT"
+                )
+                conn.execute(
+                    "UPDATE candidate_profile_requests SET generation_id = request_id "
+                    "WHERE generation_id IS NULL"
+                )
+            finally:
+                conn.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS candidate_profile_requests_no_update
+                    BEFORE UPDATE ON candidate_profile_requests BEGIN
+                        SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
+                    END
+                    """
+                )
+        elif existing_columns != canonical_candidate_columns:
+            conn.execute("DROP TABLE candidate_profile_requests")
+        else:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_candidate_profile_requests_hash_state "
+                "ON candidate_profile_requests(request_hash, lifecycle_status, created_at)"
+            )
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS candidate_profile_requests (
+            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id               TEXT NOT NULL UNIQUE,
+            request_hash             TEXT NOT NULL,
+            signature_hash           TEXT NOT NULL,
+            permissions_hash         TEXT NOT NULL,
+            source_key_hash          TEXT NOT NULL,
+            policy_digest            TEXT NOT NULL,
+            evidence_ref_hashes_json TEXT NOT NULL,
+            generation_id            TEXT,
+            requested_profile_id     TEXT,
+            lifecycle_status         TEXT NOT NULL,
+            reason_code              TEXT NOT NULL,
+            cooldown_until           INTEGER,
+            created_at               INTEGER NOT NULL
+        );
+        CREATE TRIGGER IF NOT EXISTS candidate_profile_requests_no_update
+        BEFORE UPDATE ON candidate_profile_requests BEGIN
+            SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS candidate_profile_requests_no_delete
+        BEFORE DELETE ON candidate_profile_requests BEGIN
+            SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
+        END;
+        CREATE INDEX IF NOT EXISTS idx_candidate_profile_requests_hash_state
+            ON candidate_profile_requests(request_hash, lifecycle_status, created_at);
+
+        """
+    )
+
     cols = _column_names(conn, "tasks")
     for name, ddl in _EARLY_TASK_COLUMNS:
         if name not in cols:

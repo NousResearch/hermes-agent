@@ -89,7 +89,7 @@ Everything except the dashboard's embedded terminal pane runs natively on Window
 | Feature | Native Windows | WSL2 |
 |---|---|---|
 | CLI (`hermes chat`, `hermes setup`, `hermes gateway`, …) | ✓ | ✓ |
-| Interactive TUI (`hermes --tui`) | ✓ | ✓ |
+| Interactive TUI (`hermes --tui`) | ✓ (inline by default; see below) | ✓ |
 | Messaging gateway (Telegram, Discord, Slack, WhatsApp, 15+ platforms) | ✓ | ✓ |
 | Cron scheduler | ✓ | ✓ |
 | Browser tool (Chromium via Node) | ✓ | ✓ |
@@ -100,6 +100,8 @@ Everything except the dashboard's embedded terminal pane runs natively on Window
 | Auto-start at login | ✓ (schtasks) | ✓ (systemd) |
 
 The dashboard's `/chat` tab embeds a real terminal via a POSIX PTY (`ptyprocess`). Native Windows has no equivalent primitive; Python's `pywinpty` / Windows ConPTY would work but is a separate implementation — treat as future work. **The rest of the dashboard works natively** — only that one tab shows a "use WSL2 for this" banner.
+
+**TUI on Windows Terminal / ConPTY:** DEC mouse sequences never reach `hermes --tui`, so the AlternateScreen + mouse-tracking default would swallow the wheel and native text selection. Native Windows ConPTY therefore defaults to inline mode (primary buffer), matching Termux. Wheel scroll and copy/select then use Windows Terminal's own behavior. Restore AlternateScreen with `HERMES_TUI_INLINE=0`. Git Bash/MSYS mintty outside Windows Terminal is unchanged.
 
 ## How Hermes runs shell commands on Windows
 

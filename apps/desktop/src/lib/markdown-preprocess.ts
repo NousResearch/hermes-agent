@@ -288,6 +288,25 @@ function isLikelyNumericInlineMath(body: string, followingCharacter: string): bo
   return true
 }
 
+/**
+ * True when `$` at `cursor` opens a currency amount: followed (after optional
+ * spaces/tabs) by a digit. Covers `$5`, `US$ 5M`, `R$ 15.4M`; a math opener is
+ * virtually never followed by whitespace then a digit.
+ */
+function isCurrencyDollarAt(text: string, cursor: number): boolean {
+  for (let i = cursor + 1; i < text.length && i <= cursor + 4; i += 1) {
+    const ch = text[i]
+
+    if (ch === ' ' || ch === '\t') {
+      continue
+    }
+
+    return /\d/u.test(ch)
+  }
+
+  return false
+}
+
 function opensCompleteInlineMath(text: string, openingIndex: number): boolean {
   const closingIndex = findClosingSingleDollar(text, openingIndex)
 
@@ -316,7 +335,7 @@ function escapeCurrencyDollarsPreservingMath(text: string): string {
   for (let cursor = 0; cursor < text.length; cursor += 1) {
     if (
       text[cursor] !== '$' ||
-      !/\d/u.test(text[cursor + 1] || '') ||
+      !isCurrencyDollarAt(text, cursor) ||
       text[cursor - 1] === '$' ||
       isEscapedAt(text, cursor)
     ) {
@@ -325,10 +344,22 @@ function escapeCurrencyDollarsPreservingMath(text: string): string {
 
     const closingIndex = findClosingSingleDollar(text, cursor)
 
+    // After the closing `$`, a digit (even after whitespace) means another
+    // price opener follows (`$ 1.99 and $ 2.99`) and the span is prose. For any
+    // other following char keep the RAW char: `$4$ and $10` must stay math
+    // because the closer is followed by a space, not a digit.
+    let afterClosing = closingIndex + 1
+
+    while (afterClosing < text.length && (text[afterClosing] === ' ' || text[afterClosing] === '\t')) {
+      afterClosing += 1
+    }
+
+    const nextEffective = /\d/u.test(text[afterClosing] || '') ? text[afterClosing] : text[closingIndex + 1] || ''
+
     if (
       closingIndex !== -1 &&
       !opensCompleteInlineMath(text, closingIndex) &&
-      isLikelyNumericInlineMath(text.slice(cursor + 1, closingIndex), text[closingIndex + 1] || '')
+      isLikelyNumericInlineMath(text.slice(cursor + 1, closingIndex), nextEffective)
     ) {
       cursor = closingIndex
 

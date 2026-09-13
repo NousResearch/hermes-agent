@@ -31,6 +31,8 @@ import {
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
+import { $botSessionsOpen, isBotSessionsOpen, toggleBotSessions } from './bot-sessions'
+import { BotSessionsPanel } from './bot-sessions-panel'
 import {
   $botChatFocused,
   $focusedBotOwner,
@@ -106,6 +108,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const botChatFocused = useValue($botChatFocused)
   const activeGroup = useValue($groupChatWorkspace)
   const allMeta = useValue($botMeta)
+  const sessionsOpen = isBotSessionsOpen(bot, useValue($botSessionsOpen))
   const meta = botRosterMeta(bot, allMeta)
   const hidden = isBotHidden(bot, allMeta)
   const pinned = isBotPinned(bot, allMeta)
@@ -305,143 +308,151 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
     </RowButton>
   )
 
+  // The session browser renders as a sibling BELOW the row (not inside the
+  // menu trigger) so a click in the list is never a click on the bot row.
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          onSelect={() => {
-            void ensureBotMetadata(bot)
-              .then(current => {
-                const pinned = Boolean(current.pinned)
-                void saveBotMeta(bot, {
-                  pinned: !pinned
-                })
-                host.notify({
-                  kind: 'info',
-                  message: `${displayName(bot, current)} ${pinned ? 'unpinned' : 'pinned to top'}`
-                })
-              })
-              .catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
-          }}
-        >
-          {pinned ? 'Unpin' : 'Pin to top'}
-        </ContextMenuItem>
-        <ContextMenuItem
-          onSelect={() => {
-            void ensureBotMetadata(bot)
-              .then(current => {
-                const hidden = Boolean(current.hidden)
-                void saveBotMeta(bot, {
-                  hidden: !hidden
-                })
-
-                if (!hidden) {
-                  fallbackSelectionAfterHide(botSelectionKey(bot))
-                }
-
-                host.notify({
-                  kind: 'info',
-                  message: hidden
-                    ? `${displayName(bot, current)} is back in the roster`
-                    : `${displayName(bot, current)} hidden — use the eye button in the Bots header to see hidden bots`
-                })
-              })
-              .catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
-          }}
-        >
-          {hidden ? 'Unhide' : 'Hide'}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          onSelect={() =>
-            void ensureBotMetadata(bot)
-              .then(() => onEdit(bot))
-              .catch(error => host.notifyError?.(error, 'Could not load bot'))
-          }
-        >
-          {b.bot.editMenu}
-        </ContextMenuItem>
-        <ContextMenuItem
-          onSelect={() =>
-            void ensureBotMetadata(bot)
-              .then(() => onGroup(bot))
-              .catch(error => host.notifyError?.(error, 'Could not load bot groups'))
-          }
-        >
-          {groups.length ? `Groups: ${groups.join(', ')}…` : 'Manage groups…'}
-        </ContextMenuItem>
-        <ContextMenuItem
-          onSelect={() => {
-            host.notify({
-              kind: 'info',
-              message: `Duplicating ${displayName(bot, meta)}…`
-            })
-            duplicateBot(bot, $lastRoster.get())
-              .then(name => {
-                queryClient.invalidateQueries({
-                  queryKey: ROSTER_KEY
-                })
-                host.notify({
-                  kind: 'success',
-                  message: `Created ${name} — full copy of ${bot.name}`
-                })
-              })
-              .catch(err => host.notifyError(err, b.bot.duplicateFailed))
-          }}
-        >
-          {b.bot.duplicate}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          onSelect={() => {
-            saveSelectedRosterBot(bot)
-            setBotsWorkspaceOwner(botWorkspaceOwnerKey(bot), bot)
-            newBotChat(bot)
-          }}
-        >
-          {b.bot.newChatWith}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        {/* Filing. Membership is one field on the bot's meta (`sectionId`), so
-            this is a one-field write and no list anywhere has to be kept in
-            sync with it. */}
-        <ContextMenuSub>
-          <ContextMenuSubTrigger>{b.sections.moveTo}</ContextMenuSubTrigger>
-          <ContextMenuSubContent>
-            {sections.map(section => (
-              <ContextMenuItem
-                disabled={section.id === currentSectionId}
-                key={section.id}
-                onSelect={() => void moveBotsToSection([bot], section.id)}
-              >
-                <Codicon className="mr-1.5" name="folder" />
-                {section.name}
-              </ContextMenuItem>
-            ))}
-            {sections.length ? <ContextMenuSeparator /> : null}
-            <ContextMenuItem onSelect={() => onNewSection(bot)}>
-              <Codicon className="mr-1.5" name="new-folder" />
-              {b.sections.newSectionEllipsis}
-            </ContextMenuItem>
-            {currentSectionId ? (
-              <ContextMenuItem onSelect={() => void moveBotsToSection([bot], null)}>
-                <Codicon className="mr-1.5" name="inbox" />
-                {b.sections.removeFromSection}
-              </ContextMenuItem>
-            ) : null}
-          </ContextMenuSubContent>
-        </ContextMenuSub>
-        {isDefaultBot(bot) ? null : <ContextMenuSeparator />}
-        {isDefaultBot(bot) ? null : (
-          <ContextMenuItem onSelect={() => onDelete(bot)} variant="destructive">
-            {t.common.delete}
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
+          <ContextMenuItem onSelect={() => toggleBotSessions(bot)}>
+            {sessionsOpen ? b.sessions.hideMenu : b.sessions.showMenu}
           </ContextMenuItem>
-        )}
-      </ContextMenuContent>
-    </ContextMenu>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            onSelect={() => {
+              void ensureBotMetadata(bot)
+                .then(current => {
+                  const pinned = Boolean(current.pinned)
+                  void saveBotMeta(bot, {
+                    pinned: !pinned
+                  })
+                  host.notify({
+                    kind: 'info',
+                    message: `${displayName(bot, current)} ${pinned ? 'unpinned' : 'pinned to top'}`
+                  })
+                })
+                .catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
+            }}
+          >
+            {pinned ? 'Unpin' : 'Pin to top'}
+          </ContextMenuItem>
+          <ContextMenuItem
+            onSelect={() => {
+              void ensureBotMetadata(bot)
+                .then(current => {
+                  const hidden = Boolean(current.hidden)
+                  void saveBotMeta(bot, {
+                    hidden: !hidden
+                  })
+
+                  if (!hidden) {
+                    fallbackSelectionAfterHide(botSelectionKey(bot))
+                  }
+
+                  host.notify({
+                    kind: 'info',
+                    message: hidden
+                      ? `${displayName(bot, current)} is back in the roster`
+                      : `${displayName(bot, current)} hidden — use the eye button in the Bots header to see hidden bots`
+                  })
+                })
+                .catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
+            }}
+          >
+            {hidden ? 'Unhide' : 'Hide'}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            onSelect={() =>
+              void ensureBotMetadata(bot)
+                .then(() => onEdit(bot))
+                .catch(error => host.notifyError?.(error, 'Could not load bot'))
+            }
+          >
+            {b.bot.editMenu}
+          </ContextMenuItem>
+          <ContextMenuItem
+            onSelect={() =>
+              void ensureBotMetadata(bot)
+                .then(() => onGroup(bot))
+                .catch(error => host.notifyError?.(error, 'Could not load bot groups'))
+            }
+          >
+            {groups.length ? `Groups: ${groups.join(', ')}…` : 'Manage groups…'}
+          </ContextMenuItem>
+          <ContextMenuItem
+            onSelect={() => {
+              host.notify({
+                kind: 'info',
+                message: `Duplicating ${displayName(bot, meta)}…`
+              })
+              duplicateBot(bot, $lastRoster.get())
+                .then(name => {
+                  queryClient.invalidateQueries({
+                    queryKey: ROSTER_KEY
+                  })
+                  host.notify({
+                    kind: 'success',
+                    message: `Created ${name} — full copy of ${bot.name}`
+                  })
+                })
+                .catch(err => host.notifyError(err, b.bot.duplicateFailed))
+            }}
+          >
+            {b.bot.duplicate}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            onSelect={() => {
+              saveSelectedRosterBot(bot)
+              setBotsWorkspaceOwner(botWorkspaceOwnerKey(bot), bot)
+              newBotChat(bot)
+            }}
+          >
+            {b.bot.newChatWith}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          {/* Filing. Membership is one field on the bot's meta (`sectionId`), so
+              this is a one-field write and no list anywhere has to be kept in
+              sync with it. */}
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>{b.sections.moveTo}</ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              {sections.map(section => (
+                <ContextMenuItem
+                  disabled={section.id === currentSectionId}
+                  key={section.id}
+                  onSelect={() => void moveBotsToSection([bot], section.id)}
+                >
+                  <Codicon className="mr-1.5" name="folder" />
+                  {section.name}
+                </ContextMenuItem>
+              ))}
+              {sections.length ? <ContextMenuSeparator /> : null}
+              <ContextMenuItem onSelect={() => onNewSection(bot)}>
+                <Codicon className="mr-1.5" name="new-folder" />
+                {b.sections.newSectionEllipsis}
+              </ContextMenuItem>
+              {currentSectionId ? (
+                <ContextMenuItem onSelect={() => void moveBotsToSection([bot], null)}>
+                  <Codicon className="mr-1.5" name="inbox" />
+                  {b.sections.removeFromSection}
+                </ContextMenuItem>
+              ) : null}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+          {isDefaultBot(bot) ? null : <ContextMenuSeparator />}
+          {isDefaultBot(bot) ? null : (
+            <ContextMenuItem onSelect={() => onDelete(bot)} variant="destructive">
+              {t.common.delete}
+            </ContextMenuItem>
+          )}
+        </ContextMenuContent>
+      </ContextMenu>
+      <BotSessionsPanel bot={bot} />
+    </>
   )
 }
 

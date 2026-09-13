@@ -726,9 +726,17 @@ def _blocked_event(conn, task_id: str):
     return _event(kb.list_events(conn, task_id), "blocked")
 
 
-def test_no_verdict_review_interruptions_never_consume_recurrence(conn) -> None:
-    """Two interrupted review executions separated by unblocks stay
-    recurrence-exempt and never trip the loop breaker."""
+def test_no_verdict_interruption_contract(conn) -> None:
+    """The whole kernel contract for an explicit no-verdict interruption.
+
+    Exempt half: two interruptions separated by unblocks stay recurrence-exempt,
+    never trip the loop breaker, take precedence over kind routing, and resume to
+    ``review``. Rejection half: an implementation-lane run or an unsupported
+    value is refused with no task, run, event, or counter change. Control half:
+    an ordinary review-lane block is still the BLOCKED/Escalate verdict and is
+    still recurrence-accounted.
+    """
+    # --- exempt half: two interruptions separated by unblocks ---------------
     task_id, review = _claimed_review(conn, "Interrupted review execution")
     baseline = kb.get_task(conn, task_id)
 
@@ -760,49 +768,46 @@ def test_no_verdict_review_interruptions_never_consume_recurrence(conn) -> None:
         ]
 
         assert kb.unblock_task(conn, task_id)
-        resumed = kb.get_task(conn, task_id)
-        assert resumed.status == "review"
-
+        assert kb.get_task(conn, task_id).status == "review"
         review = kb.claim_review_task(conn, task_id)
         assert review is not None
 
-
-def test_no_verdict_takes_precedence_over_dependency_routing(conn) -> None:
-    """The explicit disposition wins over kind routing: a dependency-kind
-    no-verdict interruption still lands in ``blocked`` and keeps the kind as
-    audit context instead of parking the card in ``todo``."""
-    task_id, review = _claimed_review(conn, "Interrupted dependency review")
-
+    # --- precedence over kind routing: dependency kind still lands blocked ---
+    dependency_id, dependency_review = _claimed_review(
+        conn, "Interrupted dependency review"
+    )
     assert kb.block_task(
         conn,
-        task_id,
+        dependency_id,
         reason="no verdict: parent contract was retired mid-review",
         kind="dependency",
-        expected_run_id=review.current_run_id,
+        expected_run_id=dependency_review.current_run_id,
         review_disposition="none",
     )
+    assert kb.get_task(conn, dependency_id).status == "blocked"
+    dependency_event = _blocked_event(conn, dependency_id)
+    assert dependency_event.payload is not None
+    assert dependency_event.payload["kind"] == "dependency"
+    assert dependency_event.payload["recurrence_exempt"] is True
+    assert not [
+        e for e in kb.list_events(conn, dependency_id) if e.kind == "dependency_wait"
+    ]
 
-    interrupted = kb.get_task(conn, task_id)
-    assert interrupted.status == "blocked"
-    event = _blocked_event(conn, task_id)
-    assert event.payload is not None
-    assert event.payload["kind"] == "dependency"
-    assert event.payload["recurrence_exempt"] is True
-    assert event.payload["verdict"] == "none"
-    events = kb.list_events(conn, task_id)
-    assert not [e for e in events if e.kind == "dependency_wait"]
-
-
-def test_no_verdict_rejections_leave_no_mutation(conn) -> None:
-    """Neither an implementation-lane run nor an unsupported value may record a
-    no-verdict interruption: the kernel boundary refuses both with no task,
-    run, event, or counter change."""
-    implementation_id = kb.create_task(conn, title="Implementation run", assignee="builder")
+    # --- rejection half: no task, run, event, or counter change -------------
+    implementation_id = kb.create_task(
+        conn, title="Implementation run", assignee="builder"
+    )
     implementation = kb.claim_task(conn, implementation_id, claimer="builder:1")
     assert implementation is not None
-    review_id, review = _claimed_review(conn, "Unsupported disposition")
-    before_impl_events = kb.list_events(conn, implementation_id)
-    before_review_events = kb.list_events(conn, review_id)
+    refused_id, refused_review = _claimed_review(conn, "Unsupported disposition")
+    before = {
+        task: (
+            kb.get_task(conn, task),
+            kb.list_events(conn, task),
+            kb.list_runs(conn, task),
+        )
+        for task in (implementation_id, refused_id)
+    }
 
     assert kb.block_task(
         conn,
@@ -814,60 +819,59 @@ def test_no_verdict_rejections_leave_no_mutation(conn) -> None:
     with pytest.raises(ValueError):
         kb.block_task(
             conn,
-            review_id,
+            refused_id,
             reason="no verdict: caller typo",
             kind="capability",
-            expected_run_id=review.current_run_id,
+            expected_run_id=refused_review.current_run_id,
             review_disposition="escalate",
         )
 
-    impl_after = kb.get_task(conn, implementation_id)
-    assert (impl_after.status, impl_after.current_run_id) == (
-        "running", implementation.current_run_id,
-    )
-    assert (impl_after.block_kind, impl_after.block_recurrences) == (None, 0)
-    assert kb.list_events(conn, implementation_id) == before_impl_events
-    review_after = kb.get_task(conn, review_id)
-    assert (review_after.status, review_after.current_run_id) == (
-        "running", review.current_run_id,
-    )
-    assert (review_after.block_kind, review_after.block_recurrences) == (None, 0)
-    assert kb.list_events(conn, review_id) == before_review_events
+    for refused_task, (task_before, events_before, runs_before) in before.items():
+        after = kb.get_task(conn, refused_task)
+        assert (
+            after.status,
+            after.current_run_id,
+            after.block_kind,
+            after.block_recurrences,
+        ) == (
+            task_before.status,
+            task_before.current_run_id,
+            task_before.block_kind,
+            task_before.block_recurrences,
+        )
+        assert kb.list_events(conn, refused_task) == events_before
+        assert kb.list_runs(conn, refused_task) == runs_before
 
-
-def test_ordinary_review_block_keeps_recurrence_and_loop_breaker(conn) -> None:
-    """Control: an ordinary review-lane block is still the BLOCKED/Escalate
-    verdict — not relabelled as no-verdict, and still recurrence-accounted."""
-    task_id, review = _claimed_review(conn, "Ordinary review escalation")
-
+    # --- control half: an ordinary review block is not exempt ---------------
+    control_id, control_review = _claimed_review(conn, "Ordinary review escalation")
     assert kb.block_task(
         conn,
-        task_id,
+        control_id,
         reason="escalation: maintainer decision required",
         kind="capability",
-        expected_run_id=review.current_run_id,
+        expected_run_id=control_review.current_run_id,
     )
-    first = _blocked_event(conn, task_id)
+    first = _blocked_event(conn, control_id)
     assert first.payload is not None
     assert first.payload["source_status"] == "review"
     assert first.payload["recurrences"] == 1
     assert "recurrence_exempt" not in first.payload
     assert "verdict" not in first.payload
-    assert kb.get_task(conn, task_id).status == "blocked"
+    assert kb.get_task(conn, control_id).status == "blocked"
 
-    assert kb.unblock_task(conn, task_id)
-    assert kb.get_task(conn, task_id).status == "review"
-    second_review = kb.claim_review_task(conn, task_id)
+    assert kb.unblock_task(conn, control_id)
+    assert kb.get_task(conn, control_id).status == "review"
+    second_review = kb.claim_review_task(conn, control_id)
     assert second_review is not None
 
     assert kb.block_task(
         conn,
-        task_id,
+        control_id,
         reason="escalation: maintainer decision required",
         kind="capability",
         expected_run_id=second_review.current_run_id,
     )
-    loop = _event(kb.list_events(conn, task_id), "block_loop_detected")
+    loop = _event(kb.list_events(conn, control_id), "block_loop_detected")
     assert loop.payload is not None
     assert loop.payload["recurrences"] == kb.BLOCK_RECURRENCE_LIMIT
-    assert kb.get_task(conn, task_id).status == "triage"
+    assert kb.get_task(conn, control_id).status == "triage"

@@ -42,6 +42,12 @@ export interface DisplayStatus {
   lease: DisplayLease
 }
 
+export interface DisplayThumbnail {
+  data_url: string | null
+  /** Set while a human holds the screen: the frame is withheld, not missing. */
+  suppressed?: 'human_has_control' | null
+}
+
 export interface DisplayObserveResult extends DisplayStatus {
   ticket: string
   path: string

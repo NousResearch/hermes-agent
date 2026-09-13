@@ -33,6 +33,21 @@ _CLOSE_NOT_ALLOWED = 4403
 _CLOSE_PROTOCOL = 1003
 
 
+def _should_evict(held: dict, lease, viewer_id: str) -> bool:
+    """A viewer that held control during this connection and lost it to ANOTHER human is kicked so its
+    UI repaints; a plain hand-back to the agent, pure watchers and the new holder stay connected. The
+    hand-back also forgets that this viewer ever held: after it, they are a plain watcher again and a
+    later takeover by someone else must not evict them. ``held`` is the per-connection memory."""
+    from tools.bot_desktop import lease as _lease
+    if lease.holder != _lease.HUMAN:
+        held["ever"] = False
+        return False
+    if lease.viewer_id == viewer_id:
+        held["ever"] = True
+        return False
+    return bool(held["ever"])
+
+
 def _consume_display_ticket(ws: WebSocket) -> Optional[dict]:
     from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
     ticket = ws.query_params.get("display_ticket", "")
@@ -86,14 +101,9 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     held = {"ever": _lease.viewer_may_send_input(viewer_id, profile_key=profile_home)}
 
     def _on_lease(key: str, lease) -> None:
-        # A viewer that held control during this connection and lost it to ANOTHER human is kicked so
-        # its UI repaints; a plain hand-back to the agent, pure watchers and the new holder stay connected.
         if key != profile_key:
             return
-        mine = lease.holder == _lease.HUMAN and lease.viewer_id == viewer_id
-        if mine:
-            held["ever"] = True
-        elif held["ever"] and lease.holder == _lease.HUMAN:
+        if _should_evict(held, lease, viewer_id):
             loop.call_soon_threadsafe(evicted.set)
     unsubscribe = _lease.on_change(_on_lease)
 

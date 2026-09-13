@@ -79,6 +79,7 @@ import {
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
+import { KANBAN_LAYOUT } from './layout'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
@@ -419,17 +420,14 @@ function Column({
       <button
         {...dragHandlers}
         aria-label={k.expand(label)}
-        className={cn(
-          'flex h-full w-8 shrink-0 flex-col items-center gap-1.5 rounded-lg p-2 transition-colors hover:bg-(--ui-bg-quinary)',
-          wash
-        )}
+        className={cn(KANBAN_LAYOUT.collapsedLane, wash)}
         onClick={onToggle}
         type="button"
       >
         <span className="grid h-5 shrink-0 place-items-center">
           <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
         </span>
-        <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary) [writing-mode:vertical-rl]">
+        <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary) md:[writing-mode:vertical-rl]">
           {label}
         </span>
         {column.tasks.length > 0 && (
@@ -440,10 +438,7 @@ function Column({
   }
 
   return (
-    <div
-      {...dragHandlers}
-      className={cn('group/col flex h-full w-64 shrink-0 flex-col rounded-lg p-2 transition-colors', wash)}
-    >
+    <div {...dragHandlers} className={cn(KANBAN_LAYOUT.lane, wash)}>
       <header className="mb-1.5 flex h-5 items-center gap-1.5 px-1">
         <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
         <Tip label={columnHelp(k, column.name)}>
@@ -454,7 +449,7 @@ function Column({
         <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
         <button
           aria-label={k.collapse(label)}
-          className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/col:opacity-100"
+          className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-100 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 md:opacity-0 md:group-hover/col:opacity-100"
           onClick={onToggle}
           type="button"
         >
@@ -1321,30 +1316,40 @@ export function KanbanBoardPage() {
   }
 
   return (
-    <div className="relative flex h-full flex-col overflow-hidden bg-(--ui-surface-background)">
+    <div className={KANBAN_LAYOUT.page}>
       {/* Page-owned titlebar chrome: exists exactly while this page is mounted. */}
       <Contribute area={TITLEBAR_AREAS.center} id="kanban:board-switcher">
         <BoardSwitcher />
       </Contribute>
 
-      <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
-        <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
-        <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
-          {total}
-        </span>
-        {board && (
-          <FilterMenu
-            archived={archived}
-            assignee={assignee}
-            board={board}
-            onArchived={setArchived}
-            onAssignee={setAssignee}
-            onTenant={setTenant}
-            tenant={tenant}
+      <header className={KANBAN_LAYOUT.toolbar}>
+        <div className={KANBAN_LAYOUT.toolbarSummary}>
+          <h1 className="truncate text-sm font-semibold text-foreground">{k.title}</h1>
+          <span className="shrink-0 rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
+            {total}
+          </span>
+        </div>
+        <div className={KANBAN_LAYOUT.toolbarFilters}>
+          {board && (
+            <FilterMenu
+              archived={archived}
+              assignee={assignee}
+              board={board}
+              onArchived={setArchived}
+              onAssignee={setAssignee}
+              onTenant={setTenant}
+              tenant={tenant}
+            />
+          )}
+          <SearchField
+            aria-label={k.filterCards}
+            containerClassName={KANBAN_LAYOUT.toolbarSearch}
+            onChange={setSearch}
+            placeholder={k.filterCards}
+            value={search}
           />
-        )}
-        <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
-        <div className="ml-auto flex items-center gap-1">
+        </div>
+        <div className={KANBAN_LAYOUT.toolbarActions}>
           <Tip label={k.orchestrationSettings}>
             <Button
               aria-label={k.orchestrationSettings}
@@ -1388,7 +1393,7 @@ export function KanbanBoardPage() {
         </div>
       ) : (
         <div
-          className={cn('flex flex-1 gap-2 overflow-x-auto px-4 pt-1 pb-3', grabbing && 'cursor-grabbing')}
+          className={cn(KANBAN_LAYOUT.laneRail, grabbing && 'cursor-grabbing')}
           onMouseDown={onMouseDown}
           ref={lanesRef}
         >

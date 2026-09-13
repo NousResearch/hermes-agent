@@ -87,3 +87,30 @@ def test_schema_path_hints_follow_active_profile(two_profiles):
     for fn in json.loads(for_b):
         name, text = fn["function"]["name"], json.dumps(fn["function"])
         assert name in names and "profB" in text, name
+
+
+def test_tool_arg_truncation_limits_follow_active_profile(tmp_path, monkeypatch):
+    """Compression pass 3's limits are memoized per home, not in one process-wide slot.
+
+    A secondary profile configured with ``tool_arg_head_chars: 0`` (shrink disabled) must not inherit
+    the launch profile's 200-char cut just because the launch profile compacted first.
+    """
+    from agent import context_compressor as cc
+
+    prof_a, prof_b = tmp_path / "profA", tmp_path / "profB"
+    prof_a.mkdir()
+    prof_b.mkdir()
+    (prof_a / "config.yaml").write_text(
+        "compression:\n  tool_arg_head_chars: 200\n  tool_arg_min_chars: 500\n", encoding="utf-8")
+    (prof_b / "config.yaml").write_text(
+        "compression:\n  tool_arg_head_chars: 0\n  tool_arg_min_chars: 500\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(prof_a))
+    cc._reset_tool_arg_limits_cache()
+
+    try:
+        assert _under(prof_a, cc.get_tool_arg_truncation_limits) == (200, 500)
+        assert _under(prof_b, cc.get_tool_arg_truncation_limits) == (0, 500)
+        # Per-profile slots stay hot — switching back is not a single-slot ping-pong.
+        assert _under(prof_a, cc.get_tool_arg_truncation_limits) == (200, 500)
+    finally:
+        cc._reset_tool_arg_limits_cache()

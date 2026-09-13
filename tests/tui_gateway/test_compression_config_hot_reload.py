@@ -282,3 +282,26 @@ def test_removing_codex_native_threshold_restores_default(monkeypatch):
     session["agent"].codex_responses_compact_threshold = 120_000
     _sync_with_cfg(monkeypatch, session, {"compression": {}})
     assert session["agent"].codex_responses_compact_threshold == 200_000
+
+
+def test_live_tool_arg_edit_drops_the_memoized_limits(monkeypatch):
+    """A live edit to ``compression.tool_arg_*`` must reach the next turn, not the next restart.
+
+    The limits are memoized per home in ``agent.context_compressor``; the live-config path has to drop
+    that memo (the keys also bust the cached gateway agent — see GatewayRunner._CACHE_BUSTING_CONFIG_KEYS).
+    """
+    import agent.context_compressor as cc_mod
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda *a, **k: {"compression": {"tool_arg_head_chars": 200, "tool_arg_min_chars": 500}},
+    )
+    cc_mod._reset_tool_arg_limits_cache()
+    assert cc_mod.get_tool_arg_truncation_limits() == (200, 500)
+
+    session, _ = _neutral_session()
+    cfg = {"compression": {"tool_arg_head_chars": 40, "tool_arg_min_chars": 500}}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: cfg)
+    _sync_with_cfg(monkeypatch, session, cfg)
+
+    assert cc_mod.get_tool_arg_truncation_limits() == (40, 500)

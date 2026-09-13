@@ -12,6 +12,7 @@ let a user raise the cut or turn it off.
 import json
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -140,6 +141,59 @@ def test_call_site_truncates_under_the_default(monkeypatch):
 
     assert cc.ContextCompressor._truncate_tool_call_args_at(messages, 0) is True
     assert messages[0]["tool_calls"][0]["function"]["arguments"] != args
+
+
+# ---- the prune count must include pass 3 --------------------------------------------------
+
+
+def _prune_compressor(**kw):
+    """A compressor whose ONLY eligible prune is a large tool-call argument."""
+    defaults = dict(
+        model="test", quiet_mode=True, threshold_percent=0.50, protect_first_n=2, protect_last_n=4,
+        proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000,
+        proactive_prune_min_reclaim_tokens=0,
+    )
+    defaults.update(kw)
+    with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+        return cc.ContextCompressor(**defaults)
+
+
+def test_arg_only_truncation_is_counted_as_pruning(monkeypatch):
+    """An argument-only change is a real prune and must reach the returned count.
+
+    ``prune_tool_results_only`` returns the INPUT list when the count is 0 (its documented no-op
+    contract), so an uncounted pass-3 truncation was discarded and the configured shrink silently did
+    nothing. Count it, and the caller commits.
+    """
+    _set_compression(monkeypatch)
+    args, _ = _payload()
+    c = _prune_compressor()
+    messages = [_assistant_msg(args), {"role": "tool", "tool_call_id": "call_1", "content": "ok"}]
+
+    result, count = c._prune_old_tool_results(messages, protect_tail_count=1)
+
+    assert count == 1
+    assert result[0]["tool_calls"][0]["function"]["arguments"] != args
+
+
+def test_prune_tool_results_only_commits_an_arg_only_truncation(monkeypatch):
+    """End-to-end: the modified list must come back, not the original one."""
+    _set_compression(monkeypatch)
+    args, _ = _payload()
+    c = _prune_compressor()
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "write the file"},
+        _assistant_msg(args),
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+    ] + [{"role": "user", "content": f"tail {i}"} for i in range(6)]
+
+    result, count = c.prune_tool_results_only(messages, current_tokens=120_000)
+
+    assert count >= 1
+    assert result is not messages, "the truncated list must be committed, not discarded"
+    assert result[2]["tool_calls"][0]["function"]["arguments"] != args
+    assert len(result[2]["tool_calls"][0]["function"]["arguments"]) < 500
 
 
 # ---- robustness ---------------------------------------------------------------------------

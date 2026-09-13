@@ -4,6 +4,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -425,6 +426,103 @@ def _check_required_packages(should_fix: bool, f: Finding) -> None:
                 check_warn(name, "(optional, not installed)")
             else:
                 _fail_and_issue(name, "(missing)", f"Install {name}: {_python_install_cmd()} {module}", f.issues)
+
+
+# PEP 508 distribution names are restricted to this charset. Anything else came from a
+# corrupted or hostile METADATA, and must never reach a command line the user is invited
+# to paste (see `_check_installed_distributions`).
+_SAFE_DIST_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+_UNNAMED_DIST = "<unnamed distribution>"
+
+
+def _scan_installed_distributions(
+    paths: list[str] | None = None,
+) -> tuple[list[tuple[str, str]], int]:
+    """Find installed distributions whose metadata is incomplete.
+
+    Returns ``(broken, total)``, where *broken* is a list of ``(name, reason)``.
+    ``paths`` overrides the search path (tests only). A distribution too damaged
+    to name is reported as :data:`_UNNAMED_DIST` with its path in the reason.
+
+    A half-installed distribution is one whose files are on disk but whose
+    ``.dist-info`` metadata is not: pip can then neither use it nor uninstall it,
+    so the environment cannot repair itself. ``_check_required_packages`` cannot
+    stand in for this — the package directory is still importable in some of
+    these states, so the import probe passes.
+    """
+    import importlib.metadata as _md
+
+    broken: list[tuple[str, str]] = []
+    try:
+        dists = list(_md.distributions() if paths is None
+                     else _md.distributions(path=paths))
+    except Exception:
+        return [], 0
+
+    for dist in dists:
+        path = getattr(dist, "_path", None)
+        where = f" at {path}" if path is not None else ""
+        try:
+            name = (dist.metadata["Name"] or "").strip()
+        except Exception:
+            # Keep the path in the *reason*, never in the name slot: the name is
+            # interpolated into a pip command, and a path there yields something
+            # the user cannot run.
+            broken.append((_UNNAMED_DIST, f"METADATA unreadable{where}"))
+            continue
+        if not name:
+            broken.append((_UNNAMED_DIST, f"METADATA missing Name{where}"))
+            continue
+        try:
+            record = dist.read_text("RECORD")
+        except Exception as exc:
+            broken.append((name, f"RECORD unreadable ({type(exc).__name__})"))
+            continue
+        # An EMPTY record is the same broken state as a missing one: read_text
+        # returns "" for an existing-but-emptied file, which `is None` alone
+        # would miss. Only wheel installs (.dist-info) are guaranteed a RECORD —
+        # .egg-info / legacy / editable installs legitimately lack one, so
+        # restricting to .dist-info keeps this free of false alarms.
+        if not (record or "").strip() and str(path or "").endswith(".dist-info"):
+            broken.append((name, "RECORD missing or empty in .dist-info"))
+    return broken, len(dists)
+
+
+@doctor_check()
+def _check_installed_distributions(should_fix: bool, f: Finding) -> None:
+    """Report half-installed distributions in the active environment."""
+    broken, total = _scan_installed_distributions()
+    if not total:
+        # Enumeration returned nothing. A working environment always has at least
+        # this package installed, so the likely causes are a failed
+        # importlib.metadata scan or an unreadable site-packages — neither of which
+        # is a clean bill of health. Say so rather than skipping silently, which is
+        # the exact "All checks passed" blind spot this check exists to close.
+        check_warn(
+            "Installed package metadata",
+            "(no distributions found — could not enumerate the environment)")
+        return
+    if not broken:
+        check_ok("Installed package metadata", f"({total} distributions intact)")
+        return
+    for name, reason in sorted(broken)[:10]:
+        if name == _UNNAMED_DIST or not _SAFE_DIST_NAME.match(name):
+            # Either we never got a name, or METADATA carried something outside the
+            # PEP 508 charset. Both mean "no package name safe to put in a command":
+            # point at the directory instead of emitting a paste-able line.
+            fix = ("Inspect that .dist-info directory and remove it, then "
+                   "reinstall the owning package")
+        else:
+            # pip's uninstall step reads the very RECORD found missing here, so
+            # `--force-reinstall` (which uninstalls first) is the one remedy this
+            # defect rules out. `--ignore-installed` skips the uninstall and
+            # overwrites in place.
+            fix = (f"Reinstall without uninstalling: {_python_install_cmd()} "
+                   f"--ignore-installed {name}")
+        _fail_and_issue(f"Half-installed package: {name}", f"({reason})", fix, f.issues)
+    if len(broken) > 10:
+        check_warn("Half-installed packages", f"(+{len(broken) - 10} more not shown)")
 
 
 @doctor_check()

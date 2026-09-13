@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from agent.retry_utils import parse_retry_after_seconds
 from tools.skills_hub import _guarded_http_stream
 from tools.skills_hub_models import (
     GuardedFetchMixin, SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json,
@@ -377,10 +378,9 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                         return None
                     return self._owner_from_payload(self._coerce_skill_payload(raw))
                 if resp.status_code == 429:
-                    try:
-                        delay = float(resp.headers.get("Retry-After") or delay)
-                    except (TypeError, ValueError):
-                        pass
+                    retry_after = parse_retry_after_seconds(resp.headers)
+                    if retry_after is not None:
+                        delay = retry_after
                     reason = "HTTP 429"
                 elif 500 <= resp.status_code < 600:
                     reason = f"HTTP {resp.status_code}"
@@ -491,11 +491,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                     if resp is None:
                         return files
                     if resp.status_code == 429:
-                        try:
-                            retry_after = int(resp.headers.get("retry-after", "5"))
-                        except (ValueError, TypeError):
-                            retry_after = 5
-                        retry_after = max(0, min(retry_after, 15))  # Cap wait time
+                        retry_after = max(0, min(int(parse_retry_after_seconds(resp.headers) or 5), 15))  # Cap wait time
                         logger.debug(
                             "ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
                             slug, retry_after, attempt + 1, max_retries,

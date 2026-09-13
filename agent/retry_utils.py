@@ -5,6 +5,7 @@ when many sessions hit the same rate-limited provider concurrently.
 """
 
 import random
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -61,6 +62,48 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+# Free-text "reset" grammars providers put in error bodies, tried in order. One table so the
+# conversation loop's error context and the credential pool's cooldown agree on the same wait.
+_QUOTA_RESET_DELAY_RE = re.compile(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", re.IGNORECASE)
+# "Resets in 4hr 5min" (OpenCode Go weekly limits), "resets in 2 hours 5 minutes", "resets in 30s".
+_RESETS_IN_RE = re.compile(
+    r"resets?\s+in\s+"
+    r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
+    r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
+    r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?", re.IGNORECASE,
+)
+_RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE)
+
+
+def _quota_reset_seconds(m: "re.Match[str]") -> float:
+    value = float(m.group(1))
+    return value / 1000.0 if m.group(2).lower() == "ms" else value
+
+
+def _resets_in_seconds(m: "re.Match[str]") -> Optional[float]:
+    if not any(m.groups()):  # "resets in" with no unit-bearing number: not this grammar
+        return None
+    return float(m.group(1) or 0) * 3600 + float(m.group(2) or 0) * 60 + float(m.group(3) or 0)
+
+
+RETRY_DELAY_PATTERNS = (
+    (_QUOTA_RESET_DELAY_RE, _quota_reset_seconds),
+    (_RESETS_IN_RE, _resets_in_seconds),
+    (_RETRY_AFTER_SECONDS_RE, lambda m: float(m.group(1))),
+)
+
+
+def reset_delay_from_message(message: str) -> Optional[float]:
+    """Seconds-until-reset parsed from free-text provider error messages, or None."""
+    if not message:
+        return None
+    for pattern, to_seconds in RETRY_DELAY_PATTERNS:
+        m = pattern.search(message)
+        if m and (seconds := to_seconds(m)) is not None:
+            return seconds
+    return None
 
 
 def jittered_backoff(attempt: int, *, base_delay: float = 5.0, max_delay: float = 120.0, jitter_ratio: float = 0.5) -> float:

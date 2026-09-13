@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
-import { runElectronBuilder } from './run-electron-builder.mjs'
+import { HEAP_FLAG, builderNodeOptions, runElectronBuilder } from './run-electron-builder.mjs'
+import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import os from 'node:os'
 import { publishPackagingInputs } from './prepared-packaging.mjs'
@@ -65,4 +66,24 @@ test('strict builder refuses absent inputs before loading electron-builder', () 
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /run preparation again/)
   assert.doesNotMatch(result.stdout, /electron-builder\s+version/)
+})
+
+test('builder script is node itself, so npm-forwarded arguments reach the wrapper untouched', () => {
+  // A cross-env prefix needed its bin (#110121) and stripped bare quotes from
+  // forwarded arguments, so a staging dir under a profile like r'y'z lost its quotes (#103010).
+  const { scripts } = createRequire(import.meta.url)('../package.json')
+  assert.match(scripts.builder, /^node\s/)
+})
+
+test('source builds forward a quoted staging dir verbatim and set the heap flag once', () => {
+  const calls = []
+  const spawn = (_node, args, options) => { calls.push({ args, options }); return { status: 0 } }
+  const output = "-c.directories.output=/Users/r'y'z/apps/desktop/.staging-1"
+  assert.equal(runElectronBuilder(['--dir', output], { spawn }), 0)
+  const strict = calls.find(({ args }) => args[0].endsWith('run-electron-builder.mjs'))
+  assert.ok(strict.args.includes(output))
+  for (const { options } of calls) assert.match(options.env.NODE_OPTIONS, /--max-old-space-size/)
+  assert.equal(builderNodeOptions(''), HEAP_FLAG)
+  assert.equal(builderNodeOptions('--no-warnings'), `--no-warnings ${HEAP_FLAG}`)
+  assert.equal(builderNodeOptions('--max-old-space-size=4096'), '--max-old-space-size=4096')
 })

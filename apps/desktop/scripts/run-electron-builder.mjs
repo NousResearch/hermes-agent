@@ -14,6 +14,21 @@ const platformFlags = new Map([['--win', 'win32'], ['-w', 'win32'], ['--windows'
   ['--mac', 'darwin'], ['--macos', 'darwin'], ['-m', 'darwin'], ['-o', 'darwin'], ['--linux', 'linux'], ['-l', 'linux']])
 const architectures = ['--x64', '--arm64', '--ia32', '--armv7l', '--universal']
 
+// electron-builder's asar/blockmap pass outgrows the default V8 heap. The flag
+// is set here, on the node children this wrapper already spawns, instead of a
+// `cross-env NODE_OPTIONS=…` prefix on the `builder` npm script: that prefix
+// needed the cross-env bin (#110121), and cross-env strips bare `'` from every
+// forwarded argument, so a staging dir under C:\Users\r'y'z reached
+// electron-builder as C:\Users\ryz (#103010).
+export const HEAP_FLAG = '--max-old-space-size=16384'
+
+/** @param {string | undefined} inherited @returns {string} */
+export function builderNodeOptions(inherited = process.env.NODE_OPTIONS) {
+  const parts = (inherited ?? '').split(/\s+/).filter(Boolean)
+  if (!parts.some(part => part.startsWith('--max-old-space-size'))) parts.push(HEAP_FLAG)
+  return parts.join(' ')
+}
+
 /** @param {string[]} args @param {string} name @returns {string | undefined} */
 function takeOption(args, name) {
   const index = args.findIndex(arg => arg === name || arg.startsWith(`${name}=`))
@@ -100,7 +115,8 @@ function runSourceBuilds(args, nativeDeps, spawn) {
       '--prepared', path.join(out, 'prepared.json'), '--native-deps', native,
       ...args.filter(arg => !architectures.includes(arg)), flag])
     for (const command of commands) {
-      const result = spawn(process.execPath, command, { cwd: app, stdio: 'inherit' })
+      const result = spawn(process.execPath, command, { cwd: app, stdio: 'inherit',
+        env: { ...process.env, NODE_OPTIONS: builderNodeOptions() } })
       if (result.error) throw result.error
       if (result.status !== 0) return result.status ?? 1
     }
@@ -140,7 +156,7 @@ export function runElectronBuilder(args, { spawn = spawnSync } = {}) {
     preloads.push('--require', path.join(import.meta.dirname, 'dmgbuild-diagnostics.cjs'))
   }
   /** @type {NodeJS.ProcessEnv} */
-  const env = { ...process.env, HERMES_PREPARED_PACKAGING: manifest,
+  const env = { ...process.env, NODE_OPTIONS: builderNodeOptions(), HERMES_PREPARED_PACKAGING: manifest,
     HERMES_PREPARED_NATIVE_DEPS: nativeDeps, HERMES_PREPARED_TARGET: inputs.target }
   if (inputs.dmgbuild) env.CUSTOM_DMGBUILD_PATH = inputs.dmgbuild
   if (inputs.windows?.dotnetRoot) env.DOTNET_ROOT = inputs.windows.dotnetRoot

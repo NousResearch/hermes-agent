@@ -6,13 +6,23 @@ import { pathToFileURL } from 'node:url'
 
 import type { BrowserWindow, BrowserWindowConstructorOptions, IpcMain, IpcMainInvokeEvent, WebContents } from 'electron'
 
-import { safeViewerUrl } from './plugin-viewer-policy'
+import { safeViewerUrl, sameViewerLocation } from './plugin-viewer-policy'
 import { createSessionWindowRegistry } from './session-windows'
 
 export interface PluginViewerRequest {
   id: string
   url: string
   title: string
+}
+
+interface OwnedPluginViewer {
+  owner: number
+  plugin: string
+  id: string
+  origin: string
+  initialUrl: string
+  keepAlive: boolean
+  win: BrowserWindow
 }
 
 const safeSlug = (value: unknown): value is string =>
@@ -25,7 +35,7 @@ const safeSlug = (value: unknown): value is string =>
 export function createPluginViewerWindows(factory: (options: BrowserWindowConstructorOptions) => BrowserWindow) {
   const registry = createSessionWindowRegistry()
   const loadGenerations = new WeakMap<BrowserWindow, number>()
-  const owned = new Map<string, { owner: number; plugin: string; id: string; origin: string; win: BrowserWindow }>()
+  const owned = new Map<string, OwnedPluginViewer>()
   const keyFor = (owner: number, plugin: string, id: string) => JSON.stringify([owner, plugin, id])
 
   async function open(owner: number, plugin: string, raw: unknown): Promise<boolean> {
@@ -91,7 +101,22 @@ export function createPluginViewerWindows(factory: (options: BrowserWindowConstr
         session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
         session.setPermissionCheckHandler(() => false)
         session.on('will-download', event => event.preventDefault())
-        owned.set(key, { owner, plugin, id: input.id, origin, win: created })
+        const entry = { owner, plugin, id: input.id, origin, initialUrl: input.url, keepAlive: true, win: created }
+        owned.set(key, entry)
+        const noteNavigation = (url: string) => {
+          if (!sameViewerLocation(entry.initialUrl, url)) {
+            entry.keepAlive = false
+          }
+        }
+        created.webContents.on('did-navigate', (_event, url) => noteNavigation(url))
+        created.webContents.on('did-navigate-in-page', (_event, url, mainFrame) => {
+          if (mainFrame) {
+            noteNavigation(url)
+          }
+        })
+        created.webContents.on('render-process-gone', () => {
+          entry.keepAlive = false
+        })
         created.on('closed', () => {
           if (owned.get(key)?.win === created) {
             owned.delete(key)
@@ -104,10 +129,14 @@ export function createPluginViewerWindows(factory: (options: BrowserWindowConstr
 
     // Same id cannot retarget a live viewer to a different origin. Close it
     // explicitly before changing server, so its navigation policy stays exact.
-    if (!win || owned.get(key)?.origin !== new URL(input.url).origin) {
+    const entry = owned.get(key)
+
+    if (!win || !entry || entry.origin !== new URL(input.url).origin) {
       return false
     }
 
+    entry.initialUrl = input.url
+    entry.keepAlive = true
     win.setTitle(title)
     const generation = (loadGenerations.get(win) ?? 0) + 1
     loadGenerations.set(win, generation)
@@ -115,7 +144,7 @@ export function createPluginViewerWindows(factory: (options: BrowserWindowConstr
     try {
       await win.loadURL(input.url)
 
-      return !win.isDestroyed()
+      return !win.isDestroyed() && loadGenerations.get(win) === generation
     } catch {
       // A newer loadURL can abort this one while reusing the same window.
       if (loadGenerations.get(win) === generation && !win.isDestroyed()) {
@@ -124,6 +153,30 @@ export function createPluginViewerWindows(factory: (options: BrowserWindowConstr
 
       return false
     }
+  }
+
+  function isOpen(owner: number, plugin: string, id: string, initialUrl: string): boolean {
+    if (!safeSlug(plugin) || !safeSlug(id) || !safeViewerUrl(initialUrl)) {
+      return false
+    }
+
+    const entry = owned.get(keyFor(owner, plugin, id))
+
+    if (
+      !entry ||
+      entry.initialUrl !== initialUrl ||
+      !entry.keepAlive ||
+      entry.win.isDestroyed() ||
+      entry.win.webContents.isDestroyed()
+    ) {
+      return false
+    }
+
+    // A read can observe a navigation before its event. Never revive that lease
+    // just because the page subsequently navigates back to the original URL.
+    entry.keepAlive = sameViewerLocation(initialUrl, entry.win.webContents.getURL())
+
+    return entry.keepAlive
   }
 
   function close(owner: number, plugin: string, id?: string): boolean {
@@ -150,7 +203,7 @@ export function createPluginViewerWindows(factory: (options: BrowserWindowConstr
     }
   }
 
-  return { open, close, closeOwner }
+  return { open, isOpen, close, closeOwner }
 }
 
 export function registerPluginViewerIpc(
@@ -198,6 +251,9 @@ export function registerPluginViewerIpc(
   })
   ipc.handle('hermes:window:closePluginViewer', (event, plugin, id) =>
     trusted(event) ? viewers.close(event.sender.id, plugin, id) : false
+  )
+  ipc.handle('hermes:window:isPluginViewerOpen', (event, plugin, id, initialUrl) =>
+    trusted(event) ? viewers.isOpen(event.sender.id, plugin, id, initialUrl) : false
   )
 }
 

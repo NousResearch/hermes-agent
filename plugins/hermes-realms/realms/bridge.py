@@ -186,6 +186,13 @@ class ViewerServer:
             realm_id, self._ticket_generation(realm), can_control=can_control, ttl=ttl
         )
 
+    def renew(self, realm_id, token, *, ttl=300):
+        with self._lock:
+            realm = self.resolve_realm(realm_id)
+            return realm is not None and self.tickets.renew(
+                token, realm_id, self._ticket_generation(realm), ttl=ttl
+            )
+
     def _ticket_generation(self, realm):
         epoch = self.authority.epoch(realm["id"]) if self.authority else 0
         return f"{realm['generation']}:{epoch}"

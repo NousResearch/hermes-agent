@@ -132,6 +132,15 @@ The default mode **after opting in** is `realm`: eligible tools start a desktop 
 
 Normal turn completion does not destroy the realm; actual session finalization does. Watch/Pop out require a local connection: a remote loopback URL is not a tunnel. Never persist or log viewer tickets. Do not fall back to host display, input, accessibility buses or capture after a realm error.
 
+Desktop Watch and Pop out renew their short-lived authorization through the
+authenticated owner route while the original viewer remains open and live,
+including mounted background tabs. Closing, replacing or losing that viewer
+stops renewal; copied links cannot renew themselves. Expired or revoked tickets
+remain rejected. Temporary connection loss retries in the same viewer with
+bounded backoff, always in view-only mode: taking control again requires a click.
+Agent activity does not extend the viewer ticket. Realm stop, finalization and
+the configured idle cleanup still take precedence over viewing.
+
 To remove the feature, stop active realms first, disable its desktop UI, run `hermes plugins disable hermes-realms`, and restart the owning backend. This leaves profile data and the explicitly installed binary in place; it does not delete another profile's data.
 
 ## Verification scope

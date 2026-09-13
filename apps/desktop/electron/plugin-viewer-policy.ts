@@ -44,6 +44,18 @@ export function installViewerGuestPolicy(app: Pick<App, 'on'>, sessions: Pick<ty
   })
 }
 
+/** Compare the actual document, allowing a guest to remove its bootstrap fragment. */
+export function sameViewerLocation(initial: string, current: string): boolean {
+  if (!safeViewerUrl(initial) || !safeViewerUrl(current)) {
+    return false
+  }
+
+  const expected = new URL(initial)
+  const actual = new URL(current)
+
+  return expected.origin === actual.origin && expected.pathname === actual.pathname && expected.search === actual.search
+}
+
 /** Shared renderer/main policy: never promote a viewer URL to native privileges. */
 export function safeViewerUrl(value: unknown): string | null {
   if (typeof value !== 'string' || value.length > 16384 || /[\s\\]/.test(value)) {

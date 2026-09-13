@@ -87,6 +87,7 @@ declare global {
       openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
       openPluginViewer?: (pluginId: string, input: { id: string; url: string; title: string }) => Promise<boolean>
       closePluginViewer?: (pluginId: string, id?: string) => Promise<boolean>
+      isPluginViewerOpen?: (pluginId: string, id: string, initialUrl: string) => Promise<boolean>
       onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for

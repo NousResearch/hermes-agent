@@ -1,6 +1,6 @@
 """Short-lived viewer capabilities, minted only behind Hermes authentication."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import secrets
 import threading
@@ -51,6 +51,17 @@ class Tickets:
             if control and not ticket.can_control:
                 return None
             return ticket
+
+    def renew(self, token, realm_id, generation, *, ttl=300):
+        """Called only through the authenticated owner route, never by a viewer."""
+        if not 0 < ttl <= 3600:
+            raise ValueError("Ticket lifetime must be <= one hour")
+        with self._lock:
+            ticket = self.check(token, realm_id, generation)
+            if ticket is None:
+                return False
+            self._tickets[self._key(token)] = replace(ticket, expires=self._clock() + ttl)
+            return True
 
     def revoke(self, realm_id):
         with self._lock:

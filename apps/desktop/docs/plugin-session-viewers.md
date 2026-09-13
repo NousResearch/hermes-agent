@@ -46,6 +46,56 @@ Windows are keyed by originating app renderer + plugin + id. Reopening the same 
 
 Remote content is sandboxed with Node integration off, context isolation on, no app preload, no webviews, and a nonpersistent per-viewer partition. Permissions, downloads, child popups, cross-origin navigation and redirects are denied. IPC only accepts the main frame at the trusted app renderer URL (including an exact protocol check for file builds). Plugin disposal closes owned windows; app-renderer reload, crash, or destruction closes all its viewers. Calls from disposed plugin contexts fail closed.
 
+## Lifecycle-bound keep-alive (optional)
+
+Both `PluginPreviewInput` and `PluginViewerInput` accept the additive field
+`onKeepAlive?: () => Promise<void>`. Their open actions still return `Promise<boolean>`.
+
+```ts
+// Capture the contribution's owner and the plugin REST closure at the user action.
+const owner = { ...session }
+const rest = ctx.rest
+const onKeepAlive = async () => {
+  await rest('/viewer/renew', { method: 'POST', scope: owner, body: { ticket } })
+}
+await host.openPreview({ url, label: 'Viewer', session: owner, onKeepAlive })
+// Or, for an owned native window:
+await ctx.os.openViewer({ id: 'watch-session', url, title: 'Viewer', session: owner, onKeepAlive })
+```
+
+The host schedules an initial renewal once the preview's actual guest document
+is ready / the native viewer successfully opens, then waits 60 seconds after each completed renewal.
+It checks liveness before invoking the callback and again after completion.
+Renewals never overlap. Callback or liveness-probe failures are retried at
+5-second intervals, with at most three consecutive failed attempts; success
+resets that budget. Exhaustion stops renewal without reopening, navigating, or
+closing the viewer. Callback errors do not reject the open action or become
+unhandled rejections. A callback already in flight cannot be cancelled, but its
+late result cannot restart a retired loop. The backend remains responsible for
+finite expiry, authentication, ownership and revocation.
+
+Preview liveness uses the **original transient tab and ready guest-document identity**,
+not the visible/active tab or a cached URL alone. The preview pane publishes a
+memory-only document identity at `dom-ready` and invalidates it on full navigation,
+renderer loss, destruction and unmount; detached guests fail the live check too.
+Reopening/replacing that tab or document, closing it, or navigating its guest away
+retires its callback. Genuinely mounted parked tabs and switches to another profile/session do not.
+The native viewer checks the originating renderer + plugin + id + exact initial
+URL against its registry and the actual WebContents location. Document-location
+comparison preserves origin, pathname and query and ignores the fragment, so a
+guest can remove a bootstrap ticket fragment. Navigation away retires renewal
+even if the guest subsequently returns. Explicit close/replacement or plugin
+disposal stops the native renderer loop; native close/navigation is detected by
+the next liveness check. Renderer unload ends both kinds of loop naturally.
+
+`isPluginViewerOpen(pluginId, id, initialUrl): Promise<boolean>` is a narrow,
+read-only **internal native bridge** (`hermes:window:isPluginViewerOpen`), guarded
+by the same trusted main-frame check as open/close. It is not a model tool or a
+guest API. Only id/url/title cross the open IPC boundary; the callback and its
+captured REST scope remain in the trusted renderer. Older bridges without the
+liveness capability still open viewers but do not start native keep-alives.
+Never resolve the callback's owner from the foreground profile at renewal time.
+
 ### Linux limitation
 
 Electron 40.10.2 does not expose per-window WM_CLASS/app_id. The popup retains the host process identity; only its safe, host-prefixed title distinguishes it. There is **no guarantee of a separate `hermes-plugin-viewer` class**. Changing the global app name would affect unrelated windows, and an X11-only xprop workaround would not cover Wayland. Neither is used. See [Electron issue 45866](https://github.com/electron/electron/issues/45866) and [BaseWindow options](https://www.electronjs.org/docs/latest/api/structures/base-window-options).
@@ -58,7 +108,7 @@ From `apps/desktop`, run the contribution/viewer behavior tests and all three Ty
 
 ```sh
 npx vitest run src/contrib/session.test.tsx src/contrib/plugin-viewer.test.ts \
-  src/sdk/preview.test.ts src/sdk/preview-lifecycle.test.tsx \
+  src/sdk/preview.test.ts src/sdk/viewer-keep-alive.test.ts src/sdk/preview-lifecycle.test.tsx \
   src/app/chat/composer/status-stack/session-contribution.test.tsx \
   src/app/chat/session-tile-contribution.test.tsx src/app/chat/sidebar/session-row.test.tsx \
   src/api/plugins.test.ts src/contrib/plugin.test.ts \

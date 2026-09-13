@@ -67,21 +67,32 @@ export async function viewerId(session, realmId) {
   return `realm-${Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('')}`;
 }
 
-export async function openRealmViewer(ctx, session, realm, target, isCurrent = () => true) {
+export async function openRealmViewer(ctx, session, realm, target, isCurrent = () => true, isEnabled = () => true) {
   if (!validSession(session) || !ownedRealms({ realms: [realm] }, session).length) throw new Error('Realm session owner is unavailable');
   if (realm.state !== 'live') throw new Error('Realm is not live');
   if (!['watch', 'popout'].includes(target)) throw new Error('Unsupported viewer surface');
   if (session.connectionId !== LOCAL_CONNECTION_ID) throw new Error(REMOTE_VIEWER_UNSUPPORTED);
-  const reply = await ctx.rest(`/realms/${encodeURIComponent(realm.id)}/watch`, { method: 'POST', body: ownerBody(session), scope: session });
+  const scope = Object.freeze({ ...session });
+  const path = `/realms/${encodeURIComponent(realm.id)}`;
+  const reply = await ctx.rest(`${path}/watch`, { method: 'POST', body: ownerBody(scope), scope });
   let url;
   try { url = new URL(reply.url); } catch { throw new Error('Invalid viewer URL'); }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || /[\s\\]/.test(reply.url)) throw new Error('Invalid viewer URL');
-  const id = await viewerId(session, realm.id);
+  const token = new URLSearchParams(url.hash.slice(1)).get('ticket');
+  if (!token || !/^[A-Za-z0-9_-]{40,128}$/.test(token)) throw new Error('Invalid viewer authorization');
+  const onKeepAlive = async () => {
+    if (!isEnabled()) throw new Error('Viewer plugin is disabled');
+    const result = await ctx.rest(`${path}/renew`, {
+      method: 'POST', body: { ...ownerBody(scope), viewer_token: token }, scope
+    });
+    if (result?.renewed !== true) throw new Error('Viewer authorization could not be renewed');
+  };
+  const id = await viewerId(scope, realm.id);
   if (!isCurrent()) throw new Error('Realm owner changed before viewer opened');
-  const label = `${kindName(realm.kind)} · ${session.profile}`;
+  const label = `${kindName(realm.kind)} · ${scope.profile}`;
   const opened = target === 'watch'
-    ? await host.openPreview?.({ url: reply.url, label, session })
-    : await ctx.os?.openViewer?.({ id, url: reply.url, title: label.slice(0, 120), session });
+    ? await host.openPreview?.({ url: reply.url, label, session: scope, onKeepAlive })
+    : await ctx.os?.openViewer?.({ id, url: reply.url, title: label.slice(0, 120), session: scope, onKeepAlive });
   if (!opened) throw new Error('Viewer unavailable or session owner is stale');
 }
 
@@ -91,6 +102,8 @@ export default {
   name: 'Realms',
   description: 'Desktop viewing controls only. Enable hermes-realms under Agent plugins for each profile that should use private desktops.',
   register(ctx) {
+    let enabled = true;
+    ctx.onDispose?.(() => { enabled = false; });
     ctx.i18n?.register(setupLocales);
     function StatusRow({ session }) {
       const result = useQuery(realmQueryOptions(ctx, session));
@@ -107,7 +120,7 @@ export default {
         const current = () => mounted.current && currentOwner.current === ownerKey;
         setAction({ ownerKey, pending: true });
         try {
-          await openRealmViewer(ctx, session, realm, target, current);
+          await openRealmViewer(ctx, session, realm, target, current, () => enabled);
           if (current()) setAction(null);
         } catch {
           // Native/REST exceptions can include ticket URLs; never render/log them.

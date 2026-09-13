@@ -179,9 +179,15 @@ export const $previewTarget = computed(
  *  preview open and closed by the target they were handed. */
 export const $previewTabSources = computed($previewTabs, tabs => tabs.map(tab => tab.target.source))
 
+export interface BrowserDocument {
+  /** Live guest identity; deliberately memory-only and never persisted. */
+  isLive: () => boolean
+}
+
 export interface BrowserPage {
   title: string
   url: string
+  document?: BrowserDocument
 }
 
 /**
@@ -196,7 +202,7 @@ export const $browserPages = atom<Record<string, BrowserPage>>({})
 export function noteBrowserPage(tabId: string, page: BrowserPage) {
   const current = $browserPages.get()[tabId]
 
-  if (current?.title === page.title && current.url === page.url) {
+  if (current?.title === page.title && current.url === page.url && current.document === page.document) {
     return
   }
 
@@ -410,6 +416,8 @@ export function openPreview(target: PreviewTarget, source: PreviewRecordSource =
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   selectRightRailTab(id)
+
+  return tab
 }
 
 const blankPage = (): PreviewTarget => ({ kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' })

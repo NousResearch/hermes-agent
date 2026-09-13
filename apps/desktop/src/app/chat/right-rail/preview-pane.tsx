@@ -33,6 +33,7 @@ import { notify, notifyError } from '@/store/notifications'
 import {
   $browserPages,
   $previewServerRestart,
+  type BrowserDocument,
   canPopOutBrowserTab,
   commitBrowserTabLocation,
   failPreviewServerRestart,
@@ -1024,6 +1025,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     const webview = createPreviewWebview(target.url, target.browserContext) as PreviewWebview
+    let liveDocument: BrowserDocument | undefined
 
     const onConsole = (event: Event) => {
       const detail = event as Event & {
@@ -1068,7 +1070,26 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         return
       }
 
-      noteBrowserPage(tabId, guestPage(webview, target.url))
+      noteBrowserPage(tabId, { ...guestPage(webview, target.url), document: liveDocument })
+    }
+
+    const dropDocument = () => {
+      liveDocument = undefined
+      notePage()
+    }
+
+    const onReady = () => {
+      const current: BrowserDocument = { isLive: () => liveDocument === current && webview.isConnected }
+      liveDocument = current
+      notePage()
+    }
+
+    const onDocumentStart = (event: Event) => {
+      const detail = event as Event & { isMainFrame?: boolean; isInPlace?: boolean }
+
+      if (detail.isMainFrame && !detail.isInPlace) {
+        dropDocument()
+      }
     }
 
     const onNavigate = (event: Event) => {
@@ -1205,6 +1226,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     webview.addEventListener('console-message', onConsole)
+    webview.addEventListener('dom-ready', onReady)
+    webview.addEventListener('did-start-navigation', onDocumentStart)
+    webview.addEventListener('render-process-gone', dropDocument)
+    webview.addEventListener('destroyed', dropDocument)
     webview.addEventListener('context-menu', onGuestContextMenu)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
@@ -1221,6 +1246,11 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     return () => {
       annotateLoopRef.current += 1
+      dropDocument()
+      webview.removeEventListener('dom-ready', onReady)
+      webview.removeEventListener('did-start-navigation', onDocumentStart)
+      webview.removeEventListener('render-process-gone', dropDocument)
+      webview.removeEventListener('destroyed', dropDocument)
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)

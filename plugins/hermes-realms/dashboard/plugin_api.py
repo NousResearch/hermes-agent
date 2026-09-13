@@ -121,10 +121,7 @@ def vm_clean():
     return {**_cli.clean(service.vm), "storage": service.vm.storage()}
 
 
-@router.post("/realms/{realm_id}/watch")
-def watch_realm(realm_id: str, identity: SessionOwner, request: Request):
-    service = get_integration()
-    owner = resolve_owner(service, identity.model_dump())
+def require_owned_viewer(service, owner, realm_id, request):
     record = next((r for r in service.manager.list() if r["id"] == realm_id), None)
     if record is None and realm_id.startswith("v-"):
         record = next((r for r in service.vm.list() if r["id"] == realm_id), None)
@@ -134,7 +131,6 @@ def watch_realm(realm_id: str, identity: SessionOwner, request: Request):
         raise HTTPException(403, "Realm ownership mismatch")
     if record["status"] != "running":
         raise HTTPException(409, "Realm is not ready")
-    from fastapi.responses import JSONResponse
     import ipaddress
 
     try:
@@ -154,6 +150,15 @@ def watch_realm(realm_id: str, identity: SessionOwner, request: Request):
             503,
             "Remote viewing needs an explicit viewer tunnel; use Watch on the backend host",
         )
+
+
+@router.post("/realms/{realm_id}/watch")
+def watch_realm(realm_id: str, identity: SessionOwner, request: Request):
+    from fastapi.responses import JSONResponse
+
+    service = get_integration()
+    owner = resolve_owner(service, identity.model_dump())
+    require_owned_viewer(service, owner, realm_id, request)
     try:
         return JSONResponse(
             service.watch(owner, realm_id),
@@ -163,3 +168,20 @@ def watch_realm(realm_id: str, identity: SessionOwner, request: Request):
         raise HTTPException(
             503, "Viewer bridge unavailable; verify the realm is healthy"
         ) from None
+
+
+class ViewerRenewal(SessionOwner):
+    viewer_token: str
+
+
+@router.post("/realms/{realm_id}/renew")
+def renew_viewer(realm_id: str, identity: ViewerRenewal, request: Request):
+    from fastapi.responses import JSONResponse
+
+    service = get_integration()
+    owner = resolve_owner(service, identity.model_dump(exclude={"viewer_token"}))
+    require_owned_viewer(service, owner, realm_id, request)
+    viewer = _load_runtime("bridge").get_profile_viewer(service.home)
+    if not viewer.renew(realm_id, identity.viewer_token, ttl=300):
+        raise HTTPException(403, "Viewer authorization expired or was revoked")
+    return JSONResponse({"renewed": True}, headers={"Cache-Control": "no-store"})

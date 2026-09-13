@@ -128,3 +128,44 @@ it('first-open plugin viewer loads without profile consent and keeps its guest t
   expect(config.save).not.toHaveBeenCalled()
   expect(config.cache).not.toHaveBeenCalled()
 })
+
+it('renews only a mounted ready guest and retires its authority on crash or removal', async () => {
+  vi.useFakeTimers()
+
+  try {
+    const view = render(<Previews />)
+    const renew = vi.fn(async () => {})
+    await act(async () => {
+      await openPluginPreview({ url: 'https://viewer.example/view#ticket=fixture', session, onKeepAlive: renew })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(renew).not.toHaveBeenCalled()
+    const guest = view.container.querySelector('webview')!
+    await act(async () => {
+      guest.dispatchEvent(new Event('dom-ready'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(renew).toHaveBeenCalledOnce()
+    await act(async () => {
+      guest.dispatchEvent(new Event('render-process-gone'))
+      guest.dispatchEvent(new Event('dom-ready'))
+      await vi.advanceTimersByTimeAsync(120_000)
+    })
+    expect(renew).toHaveBeenCalledOnce()
+    await act(async () => {
+      await openPluginPreview({ url: 'https://viewer.example/second#ticket=fixture', session, onKeepAlive: renew })
+    })
+    const replacement = view.container.querySelectorAll('webview')[1]!
+    await act(async () => {
+      replacement.dispatchEvent(new Event('dom-ready'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(renew).toHaveBeenCalledTimes(2)
+    view.unmount()
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(renew).toHaveBeenCalledTimes(2)
+  } finally {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  }
+})

@@ -1746,10 +1746,10 @@ export { ackStoredSessionId, forgetSessionUnread, markSessionUnreadFinished } fr
  *  a setting, so a plugin that sets it must clear it on dispose. */
 export { $accentOverride, setAccentOverride } from '@/themes/accent-override'
 /** OKLCH colour maths, for anything deriving a palette rather than hardcoding
- *  one: perceptual conversion, the sRGB gamut boundary, WCAG contrast, and
- *  hue-stable blending. */
+ *  one: perceptual conversion, the sRGB gamut boundary, and hue-stable
+ *  blending. `readableOn` is the SDK's public name for the desktop's ink pick
+ *  (`#161616` or `#ffffff`, whichever measures better on the background). */
 export {
-  contrastRatio,
   hexToOklch,
   hueDelta,
   maxChroma,
@@ -1758,7 +1758,7 @@ export {
   type Oklch,
   oklchToHex,
   oklchToSrgb255,
-  readableOn
+  readableInk as readableOn
 } from '@/themes/color'
 /** The painted theme, its name, and the appearance it resolved to — plus
  *  `setTheme` / `setMode` to change it from a component. */
@@ -1783,6 +1783,9 @@ export {
   REASONING_EFFORTS,
   type ReasoningEffort
 } from '@hermes/shared'
+/** WCAG contrast, from the sRGB primitives shared with the TUI (`null` for
+ *  an unparseable colour, never a fake 0). */
+export { contrastRatio } from '@hermes/shared/color'
 /** Subscribe a component to a `host.state` atom. */
 export { useStore as useValue } from '@nanostores/react'
 /** The app's data-fetching layer. Plugins share the ONE QueryClient mounted at

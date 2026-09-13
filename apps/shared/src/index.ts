@@ -37,6 +37,18 @@ export {
   type SettlementOutcome
 } from './charge-settlement'
 export {
+  contrastRatio,
+  darken,
+  ensureContrast,
+  lighten,
+  mix,
+  parseColor,
+  readableOn,
+  relativeLuminance,
+  type Rgb,
+  toHex
+} from './color'
+export {
   createCronTriggerController,
   type CronTriggerController,
   type CronTriggerRunResult

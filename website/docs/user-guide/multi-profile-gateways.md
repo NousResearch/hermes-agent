@@ -806,6 +806,23 @@ install that is already multiplexing is left alone. `hermes update` also does
 nothing when no secondary profile runs its own gateway — it never flips modes
 on an install where nothing was running.
 
+### Opting out of the automatic migration
+
+Set `gateway.auto_migrate: false` on the **default** profile to keep the
+automatic fold from ever running on this install:
+
+```bash
+hermes config set gateway.auto_migrate false
+```
+
+`hermes update` then leaves per-profile gateways exactly as they are, with no
+output and no changes, however eligible the install looks. The setting lives in
+config, so it survives updates — the decision is made once rather than
+re-litigated on every release. It governs the **automatic** path only:
+`hermes gateway migrate --multiplex` is an explicit request and still migrates
+(and is the supported way to opt back in). Absent or `true` keeps the default
+behaviour described above.
+
 The explicit command is different: `hermes gateway migrate --multiplex` with
 two or more profiles and **no** standalone secondary gateway still applies the
 one remaining step — it sets `gateway.multiplex_profiles: true`, (re)starts the

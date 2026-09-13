@@ -1,10 +1,14 @@
-"""display.install runs its worker inside the caller's profile scope."""
+"""display.install runs its worker inside the caller's profile scope; display.observe mints the viewer identity."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 
 import pytest
+
+from hermes_cli.dashboard_auth import ws_tickets
 
 
 def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch):
@@ -73,3 +77,49 @@ def test_release_without_viewer_id_cannot_yank_another_viewers_lease(_fresh_leas
     assert _call(server, "display.lease.release", {"viewer_id": "viewer-1"})["result"]["lease"]["holder"] == _fresh_lease.AGENT
     _fresh_lease.acquire("viewer-2")
     assert _call(server, "display.lease.release", {"force": True})["result"]["lease"]["holder"] == _fresh_lease.AGENT
+
+def _rpc(server, method, params):
+    return server.handle_request({"jsonrpc": "2.0", "id": 7, "method": method, "params": params})
+
+
+def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monkeypatch, tmp_path):
+    """A client cannot choose its viewer id (it would impersonate the holder and co-drive or release
+    their lease), and no snapshot or broadcast carries the raw holder id — only a hash the holder
+    itself can match."""
+    from tools.bot_desktop import lease, runtime
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    lease._reset_for_tests()
+    broadcasts = []
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda ev, payload=None: broadcasts.append((ev, payload)))
+    try:
+        observed = _rpc(server, "display.observe", {"viewer_id": "victim"})["result"]
+        assert observed["viewer_id"] != "victim"
+        assert observed["viewer_id"] and len(observed["viewer_id"]) >= 16
+        assert ws_tickets.consume_ticket(observed["ticket"])["viewer_id"] == observed["viewer_id"]
+        holder = observed["viewer_id"]
+
+        # Only the connection that minted an id may reuse it (a reconnecting pane keeps its lease).
+        class _Peer:
+            def write(self, obj):
+                return True
+        mine, other = _Peer(), _Peer()
+        with_mine = server.dispatch({"jsonrpc": "2.0", "id": 8, "method": "display.observe", "params": {}}, mine)["result"]
+        again = server.dispatch({"jsonrpc": "2.0", "id": 9, "method": "display.observe",
+                                 "params": {"viewer_id": with_mine["viewer_id"]}}, mine)["result"]
+        assert again["viewer_id"] == with_mine["viewer_id"]
+        stolen = server.dispatch({"jsonrpc": "2.0", "id": 10, "method": "display.observe",
+                                  "params": {"viewer_id": with_mine["viewer_id"]}}, other)["result"]
+        assert stolen["viewer_id"] != with_mine["viewer_id"]
+
+        _rpc(server, "display.status", {})  # installs the broadcast listener
+        lease.acquire(holder)
+        status = _rpc(server, "display.status", {})["result"]
+        assert status["lease"]["holder"] == lease.HUMAN
+        assert holder not in json.dumps(status)
+        assert status["lease"]["viewer_hash"] == hashlib.sha256(holder.encode()).hexdigest()[:12]
+        lease_events = [p for ev, p in broadcasts if ev == "display.lease"]
+        assert lease_events and all(holder not in json.dumps(p) for p in lease_events)
+    finally:
+        lease._reset_for_tests()

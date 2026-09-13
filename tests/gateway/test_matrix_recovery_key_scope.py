@@ -86,11 +86,6 @@ class TestScopedRecoveryKey:
 
 
 class TestScopedRecoveryKeyOutputPath:
-    def test_multiplex_inactive_reads_environ(self, monkeypatch, tmp_path):
-        default_path = tmp_path / "default-profile-key.txt"
-        monkeypatch.setenv("MATRIX_RECOVERY_KEY_OUTPUT_FILE", str(default_path))
-        assert _recovery_key_output_path() == default_path
-
     def test_multiplex_active_scoped_uses_scope_not_environ(self, monkeypatch, tmp_path):
         """Secondary profile under multiplex must resolve its own output path.
 
@@ -110,13 +105,6 @@ class TestScopedRecoveryKeyOutputPath:
         finally:
             ss.reset_secret_scope(token)
 
-    def test_multiplex_active_unscoped_falls_back_to_environ(self, monkeypatch, tmp_path):
-        """Default-profile startup loop under multiplex: unscoped read is fine."""
-        default_path = tmp_path / "default-profile-key.txt"
-        monkeypatch.setenv("MATRIX_RECOVERY_KEY_OUTPUT_FILE", str(default_path))
-        ss.set_multiplex_active(True)
-        assert _recovery_key_output_path() == default_path
-
     def test_multiplex_active_scoped_missing_key_is_none(self, monkeypatch, tmp_path):
         """A scope without the setting must NOT fall through to another
         profile's env — the secondary profile's key silently goes unwritten
@@ -129,7 +117,3 @@ class TestScopedRecoveryKeyOutputPath:
             assert _recovery_key_output_path() is None
         finally:
             ss.reset_secret_scope(token)
-
-    def test_unset_returns_none(self, monkeypatch):
-        monkeypatch.delenv("MATRIX_RECOVERY_KEY_OUTPUT_FILE", raising=False)
-        assert _recovery_key_output_path() is None

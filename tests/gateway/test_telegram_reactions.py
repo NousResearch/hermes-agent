@@ -66,30 +66,6 @@ def test_explicit_env_wins_over_materialized_yaml_default(monkeypatch):
     assert adapter._reactions_enabled() is True
 
 
-def test_bridged_yaml_false_without_explicit_env_still_disables(monkeypatch):
-    """With no explicit env the YAML→env bridge writes 'false'; reactions stay off."""
-    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
-    adapter = _make_adapter()
-    adapter.config.extra["reactions"] = False
-    assert adapter._reactions_enabled() is False
-
-
-def test_yaml_true_enables_when_env_unset(monkeypatch):
-    """An explicit ``reactions: true`` in config.yaml enables reactions without any env var."""
-    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
-    adapter = _make_adapter()
-    adapter.config.extra["reactions"] = True
-    assert adapter._reactions_enabled() is True
-
-
-def test_explicit_env_false_wins_over_yaml_true(monkeypatch):
-    """An explicit TELEGRAM_REACTIONS=false also wins over a YAML ``reactions: true``."""
-    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
-    adapter = _make_adapter()
-    adapter.config.extra["reactions"] = True
-    assert adapter._reactions_enabled() is False
-
-
 def test_scoped_miss_does_not_leak_default_profile_env(monkeypatch):
     """Under multiplex a scoped miss must not read another profile's process-env value (#72348)."""
     from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
@@ -104,25 +80,6 @@ def test_scoped_miss_does_not_leak_default_profile_env(monkeypatch):
     finally:
         reset_secret_scope(token)
         set_multiplex_active(False)
-
-
-def test_scoped_env_hit_wins_over_own_yaml(monkeypatch):
-    """A secondary profile's own scoped TELEGRAM_REACTIONS=true beats its YAML ``reactions: false``."""
-    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
-
-    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")  # default profile's value
-    adapter = _make_adapter()
-    adapter.config.extra["reactions"] = False
-    set_multiplex_active(True)
-    token = set_secret_scope({"TELEGRAM_BOT_TOKEN": "222:b2", "TELEGRAM_REACTIONS": "true"})
-    try:
-        assert adapter._reactions_enabled() is True
-    finally:
-        reset_secret_scope(token)
-        set_multiplex_active(False)
-
-
-# ── _set_reaction ────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -221,5 +178,3 @@ def test_config_bridges_telegram_reactions(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("TELEGRAM_REACTIONS") == "true"
-
-

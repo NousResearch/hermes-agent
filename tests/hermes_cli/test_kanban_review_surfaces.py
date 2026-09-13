@@ -290,16 +290,39 @@ def test_cli_reopen_review_is_transition_first_and_redacts_reason(
         assert secret not in comments[0].body
 
 
-def test_goal_mode_review_handoff_cannot_bypass_judge(
+def test_goal_mode_review_handoff_scopes_judge_and_allows_independent_claim(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """Review handoff judges implementation readiness, then opens review.
+
+    This is the lifecycle regression for the deadlock: the reviewer must be
+    able to claim the task after request_review, and claiming it must not run
+    the goal judge again before reviewer execution.
+    """
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
+
+    judge_calls: list[str] = []
+    implementation_reason = (
+        "Implementation and focused verification are reported complete, but the required native "
+        "same-card review by os-reviewer has not yet been completed"
+    )
+    verbatim_rejection = (
+        "goal review handoff rejected by judge: "
+        f"{implementation_reason}. Provide acceptance evidence matching the task."
+    )
+
+    def scoped_judge(*, goal, last_response, **_kwargs):
+        judge_calls.append(goal)
+        assert last_response
+        if "do not withhold DONE merely because" in goal:
+            return "done", "implementation is ready for review", False, None, False
+        return "continue", implementation_reason, False, None, False
 
     with kbc.connect() as conn:
         tool_task = kb.create_task(
@@ -314,28 +337,62 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
 
     from tools import kanban_tools as tools
+    from hermes_cli import goals
+    import agent.auxiliary_client as auxiliary_client
 
     monkeypatch.setattr(tools, "_goal_judge_available", lambda: True)
+    monkeypatch.setattr(tools, "judge_goal", scoped_judge)
     monkeypatch.setattr(
-        tools,
-        "judge_goal",
-        lambda *args, **kwargs: (
-            "continue",
-            "acceptance evidence is missing",
-            False,
-            None,
-            False,
-        ),
+        auxiliary_client,
+        "get_text_auxiliary_client",
+        lambda purpose: (object(), "judge-model"),
     )
-    rejected = json.loads(tools._handle_request_review({"summary": "Looks ready."}))
-    assert "error" in rejected
-    assert "rejected by judge" in rejected["error"]
+    monkeypatch.setattr(goals, "judge_goal", scoped_judge)
+
+    # Reproduce the old semantic boundary: without the review-readiness note,
+    # the mocked judge returns the exact circular rejection from the defect.
+    with kbc.connect() as conn:
+        legacy_verdict, legacy_reason = kc._goal_mode_handoff_rejection(
+            kb.get_task(conn, tool_task),
+            "Implementation and focused verification are reported complete.",
+            handoff="complete",
+        )
+        assert legacy_verdict == "continue"
+        assert (
+            f"goal review handoff rejected by judge: {legacy_reason}. "
+            "Provide acceptance evidence matching the task."
+        ) == verbatim_rejection
+
+        # The actual CLI boundary uses the user-facing "review handoff" label;
+        # the implementation must canonicalize it before invoking the gate.
+        gate_error = kc._goal_gate_error(
+            conn,
+            tool_task,
+            "Implementation and focused verification are reported complete.",
+            "review handoff",
+            "blocked",
+            "continue",
+        )
+    assert gate_error is None
+
+    handed_off = json.loads(tools._handle_request_review({
+        "summary": "Implementation tests pass.",
+        "reviewer": "reviewer",
+    }))
+    assert handed_off["ok"] is True
+    assert handed_off["status"] == "review"
+
     with kbc.connect() as conn:
         tool_after = kb.get_task(conn, tool_task)
         assert tool_after is not None
-        assert tool_after.status == "running"
+        assert tool_after.status == "review"
+        assert tool_after.assignee == "reviewer"
+        review = kb.claim_review_task(conn, tool_task, claimer="reviewer:1")
+        assert review is not None
+    assert len([goal for goal in judge_calls if "do not withhold DONE merely because" in goal]) == 2
+    assert len([goal for goal in judge_calls if "do not withhold DONE merely because" not in goal]) == 1
 
-    # The shell/CLI path applies the same gate and must not bypass the tool.
+    # The shell/CLI path follows the same phase-scoped handoff rule.
     with kbc.connect() as conn:
         cli_task = kb.create_task(
             conn,
@@ -348,25 +405,15 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     monkeypatch.setenv("HERMES_KANBAN_TASK", cli_task)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(cli_claimed.current_run_id))
 
-    import agent.auxiliary_client as auxiliary_client
-    from hermes_cli import goals
-
-    monkeypatch.setattr(
-        auxiliary_client,
-        "get_text_auxiliary_client",
-        lambda purpose: (object(), "judge-model"),
-    )
-    monkeypatch.setattr(
-        goals,
-        "judge_goal",
-        lambda *args, **kwargs: ("continue", "tests are missing", False, None, False),
-    )
-    output = kc.run_slash(f"request-review {cli_task} --summary 'Looks ready.'")
-    assert "rejected by judge" in output
+    output = kc.run_slash(f"request-review {cli_task} --summary 'Implementation is ready.'")
+    assert "Requested review" in output
     with kbc.connect() as conn:
         cli_after = kb.get_task(conn, cli_task)
         assert cli_after is not None
-        assert cli_after.status == "running"
+        assert cli_after.status == "review"
+        cli_review = kb.claim_review_task(conn, cli_task, claimer="reviewer:2")
+        assert cli_review is not None
+    assert len([goal for goal in judge_calls if "do not withhold DONE merely because" in goal]) >= 3
 
 
 def test_goal_loop_stops_after_reviewer_requests_changes(

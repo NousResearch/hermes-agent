@@ -207,13 +207,29 @@ class InsightsEngine:
 
     def _generate_store_report(self, days: int, source: Optional[str] = None) -> Dict[str, Any]:
         """Build an insights report for this one store only."""
-        cutoff = time.time() - (days * 86400)
         # Drain the SessionDB's async accounting queue so counters are exact
-        # (self.db may be a raw sqlite3 connection in tests — guard).
+        # before opening the isolated read snapshot.  The writable SessionDB
+        # connection may be concurrently appending transcripts/accounting rows:
+        # never start a report transaction on that shared connection.
         flush = getattr(self.db, "flush_token_counts", None)
         if callable(flush):
             flush()
-        self._conn.execute("BEGIN")
+        if not getattr(self.db, "read_only", False) and getattr(self.db, "db_path", None):
+            from hermes_state import SessionDB
+
+            reader = SessionDB(db_path=self.db.db_path, read_only=True)
+            try:
+                return InsightsEngine(reader)._generate_store_report(days, source)
+            finally:
+                reader.close()
+
+        cutoff = time.time() - (days * 86400)
+        # Read-only SessionDB handles use their own connection.  A transaction
+        # pins every query in this report to one SQLite snapshot without taking
+        # the live writer's lock or transaction state.
+        use_snapshot = getattr(self.db, "read_only", False)
+        if use_snapshot:
+            self._conn.execute("BEGIN")
         try:
             sessions = self._get_sessions(cutoff, source)
             tool_usage = self._get_tool_usage(cutoff, source)
@@ -231,7 +247,8 @@ class InsightsEngine:
                 "activity": self._compute_activity_patterns(sessions), "top_sessions": self._compute_top_sessions(sessions),
             }
         finally:
-            self._conn.rollback()
+            if use_snapshot:
+                self._conn.rollback()
 
     def _is_canonical_default_store(self) -> bool:
         try:
@@ -243,12 +260,30 @@ class InsightsEngine:
 
     @staticmethod
     def _named_profile_stores() -> List[tuple[str, Path]]:
-        """Existing named-profile stores under the default home, in stable display order."""
+        """Canonical, non-symlinked named-profile stores in stable display order."""
         try:
-            from hermes_cli.profiles import _iter_named_profile_dirs
+            from hermes_cli.profiles import _get_profiles_root, _iter_named_profile_dirs
 
-            return [(entry.name, entry / "state.db") for entry in _iter_named_profile_dirs() if (entry / "state.db").is_file()]
-        except OSError:
+            root = _get_profiles_root()
+            resolved_root = root.resolve()
+            stores, seen = [], set()
+            for entry in _iter_named_profile_dirs():
+                if entry.is_symlink():
+                    continue
+                store = entry / "state.db"
+                if store.is_symlink() or not store.is_file():
+                    continue
+                resolved_store = store.resolve()
+                try:
+                    resolved_store.relative_to(resolved_root)
+                except ValueError:
+                    continue
+                if resolved_store in seen:
+                    continue
+                seen.add(resolved_store)
+                stores.append((entry.name, store))
+            return stores
+        except (OSError, RuntimeError):
             return []
 
     def _aggregate_fleet_reports(self, reports: List[tuple[str, Dict[str, Any]]]) -> Dict[str, Any]:
@@ -290,6 +325,10 @@ class InsightsEngine:
                  "total_tokens": item["overview"]["total_tokens"]}
                 for name, item in reports
             ],
+            # Session ids and every detailed breakdown are local to a profile.
+            # Fleet mode intentionally reports only safe aggregates.
+            "models": [], "platforms": [], "tools": [],
+            "skills": self._compute_skill_breakdown([]), "activity": {}, "top_sessions": [],
         }
 
     def get_usage_breakdown(self, days: int = 30, source: Optional[str] = None) -> Dict[str, Any]:

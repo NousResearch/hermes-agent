@@ -668,6 +668,15 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
 
 # --- Data classes ---
 
+@dataclass(frozen=True)
+class CompletionRefusal:
+    """Machine-readable reason why :func:`complete_task` did not commit."""
+
+    code: str
+    task_status: Optional[str] = None
+    blocking_parents: tuple[tuple[str, str], ...] = ()
+
+
 @dataclass
 class Task:
     """In-memory view of a row from the ``tasks`` table."""
@@ -2070,14 +2079,34 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return whether every direct parent is terminal for dependency gating."""
-    return conn.execute(
-        # Check if this task has children that still need the workspace. If any child is not yet
-        # done/archived, defer cleanup so the child can read handoff artifacts from the workspace (#33774).
-        "SELECT 1 FROM task_links l "
+    return not _blocking_parents(conn, task_id)
+
+
+def _blocking_parents(conn: sqlite3.Connection, task_id: str) -> tuple[tuple[str, str], ...]:
+    """Return unfinished direct parents in stable id order."""
+    rows = conn.execute(
+        "SELECT p.id, p.status FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
         "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
-    ).fetchone() is None
+        "AND p.status NOT IN ('done', 'archived') ORDER BY p.id", (task_id,),
+    ).fetchall()
+    return tuple((row["id"], row["status"]) for row in rows)
+
+
+def _completion_state_refusal(
+    conn: sqlite3.Connection, task_id: str, expected_run_id: Optional[int],
+) -> Optional[CompletionRefusal]:
+    row = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return CompletionRefusal("unknown_task")
+    status = row["status"]
+    if status not in {"running", "ready", "blocked", "review"}:
+        return CompletionRefusal("terminal_state", task_status=status)
+    if expected_run_id is not None and row["current_run_id"] != int(expected_run_id):
+        return CompletionRefusal("run_mismatch", task_status=status)
+    return None
 
 
 def _claim_and_open_run(
@@ -2531,7 +2560,8 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
-) -> bool:
+    with_reason: bool = False,
+):
     """``running|ready|blocked|review -> done``; records ``result``.
 
     ``ready`` is accepted for manual CLI completion, ``review`` for human
@@ -2541,11 +2571,20 @@ def complete_task(
     ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
+    The default return remains ``bool``; ``with_reason=True`` returns
+    ``(ok, CompletionRefusal | None)``.
     """
+    def _ret(ok: bool, refusal: Optional[CompletionRefusal] = None):
+        return (ok, refusal) if with_reason else ok
+
     now = int(time.time())
+    state_refusal = _completion_state_refusal(conn, task_id, expected_run_id)
+    if state_refusal is not None:
+        return _ret(False, state_refusal)
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
-    if not _parents_satisfied(conn, task_id):
-        return False
+    blockers = _blocking_parents(conn, task_id)
+    if blockers:
+        return _ret(False, CompletionRefusal("parents_not_satisfied", blocking_parents=blockers))
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     metadata = _merge_completion_prose_artifacts(
@@ -2554,14 +2593,15 @@ def complete_task(
     handoff_summary = summary if summary is not None else result
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
-        return False
+        return _ret(False, CompletionRefusal("acceptance_refused"))
     with write_txn(conn):
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
-        if not _parents_satisfied(conn, task_id):
-            return False
+        blockers = _blocking_parents(conn, task_id)
+        if blockers:
+            return _ret(False, CompletionRefusal("parents_not_satisfied", blocking_parents=blockers))
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
-            return False
+            return _ret(False, CompletionRefusal("acceptance_refused"))
         prior_status = _task_status(conn, task_id)
         sql = """
                 UPDATE tasks
@@ -2581,7 +2621,8 @@ def complete_task(
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
-            return False
+            refusal = _completion_state_refusal(conn, task_id, expected_run_id)
+            return _ret(False, refusal or CompletionRefusal("state_changed"))
         if isinstance(metadata, dict):
             _stage_completion_artifacts(conn, task_id, metadata, now)
         run_id = _end_run(
@@ -2613,7 +2654,7 @@ def complete_task(
     _done_task = get_task(conn, task_id)
     if fire_lifecycle_hook:
         _fire_task_hook("kanban_task_completed", _done_task, task_id, run_id, summary=handoff_summary)
-    return True
+    return _ret(True)
 
 
 _REVIEW_APPROVED_NOTE = "Review approved without additional evidence."

@@ -72,6 +72,29 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_kanban_complete_reports_all_blocking_parents_and_distinct_task_states(kanban_home):
+    with kbc.connect_closing() as conn:
+        blocked = kb.create_task(conn, title="blocked parent", initial_status="blocked")
+        waiting = kb.create_task(conn, title="waiting parent")
+        child = kb.create_task(conn, title="child", parents=[waiting, blocked])
+        done = kb.create_task(conn, title="done")
+        assert kb.complete_task(conn, done)
+
+    output = kc.run_slash(f"complete {child}")
+    expected_parents = ", ".join(
+        f"{task_id} ({status})"
+        for task_id, status in sorted(((blocked, "blocked"), (waiting, "ready")))
+    )
+    assert output == (
+        f"cannot complete {child}: unsatisfied parent dependencies: {expected_parents}; "
+        "complete the parents first (done or archived)"
+    )
+    assert kc.run_slash("complete t_missing00") == "cannot complete t_missing00: task not found"
+    assert kc.run_slash(f"complete {done}") == (
+        f"cannot complete {done}: task is already in terminal state 'done'"
+    )
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

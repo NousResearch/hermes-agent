@@ -442,6 +442,48 @@ def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def test_complete_task_structured_refusals_preserve_dependency_and_cas_invariants(
+    kanban_home, monkeypatch,
+):
+    from hermes_cli import kanban_pr_acceptance_store as acceptance_store
+
+    with kbc.connect() as conn:
+        parent_b = kb.create_task(conn, title="parent b", initial_status="blocked")
+        parent_a = kb.create_task(conn, title="parent a", initial_status="blocked")
+        child = kb.create_task(conn, title="child", parents=[parent_b, parent_a])
+
+        ok, refusal = kb.complete_task(conn, child, with_reason=True)
+        assert ok is False
+        assert refusal == kb.CompletionRefusal(
+            "parents_not_satisfied",
+            blocking_parents=tuple(sorted(((parent_a, "blocked"), (parent_b, "blocked")))),
+        )
+        assert kb.get_task(conn, child).status == "todo"
+
+        ok, refusal = kb.complete_task(conn, "t_missing00", with_reason=True)
+        assert (ok, refusal.code) == (False, "unknown_task")
+
+        assert kb.complete_task(conn, parent_a)
+        ok, refusal = kb.complete_task(conn, parent_a, with_reason=True)
+        assert (ok, refusal.code, refusal.task_status) == (False, "terminal_state", "done")
+
+        assert kb.complete_task(conn, parent_b)
+        original_prepare = acceptance_store.prepare_acceptance
+
+        def reopen_parent(db, task_id, expected_run_id, metadata):
+            with kb.write_txn(db):
+                db.execute("UPDATE tasks SET status='blocked' WHERE id=?", (parent_a,))
+            return original_prepare(db, task_id, expected_run_id, metadata)
+
+        monkeypatch.setattr(acceptance_store, "prepare_acceptance", reopen_parent)
+        ok, refusal = kb.complete_task(conn, child, with_reason=True)
+        assert ok is False
+        assert refusal == kb.CompletionRefusal(
+            "parents_not_satisfied", blocking_parents=((parent_a, "blocked"),),
+        )
+        assert kb.get_task(conn, child).status == "ready"
+
+
 
 
 

@@ -879,11 +879,33 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             if gate_err:
                 fail_msg[tid] = gate_err
                 return False
-            fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
-            return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
+            ok, refusal = kb.complete_task(
+                conn, tid, result=args.result, summary=summary, metadata=metadata,
+                expected_run_id=_worker_run_id_for(tid), with_reason=True,
+            )
+            if not ok:
+                fail_msg[tid] = _completion_refusal_message(tid, refusal)
+            return ok
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
+
+
+def _completion_refusal_message(tid: str, refusal: Optional[kb.CompletionRefusal]) -> str:
+    prefix = f"cannot complete {tid}: "
+    if refusal is None:
+        return prefix + "task state changed concurrently; inspect the task and retry"
+    if refusal.code == "parents_not_satisfied":
+        parents = ", ".join(f"{parent_id} ({status})" for parent_id, status in refusal.blocking_parents)
+        return prefix + f"unsatisfied parent dependencies: {parents}; complete the parents first (done or archived)"
+    if refusal.code == "unknown_task":
+        return prefix + "task not found"
+    if refusal.code == "terminal_state":
+        return prefix + f"task is already in terminal state {refusal.task_status!r}"
+    if refusal.code == "run_mismatch":
+        return prefix + "worker run no longer owns the task"
+    if refusal.code == "acceptance_refused":
+        return prefix + "completion acceptance check refused the handoff"
+    return prefix + "task state changed concurrently; inspect the task and retry"
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:

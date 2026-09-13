@@ -16,6 +16,8 @@ import logging
 import mimetypes
 import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 from urllib.parse import unquote as _unquote
 from typing import Any, Dict, List, Optional, Tuple
@@ -313,8 +315,30 @@ class MattermostAdapter(BasePlatformAdapter):
         return await self._send_local_file(chat_id, file_path, caption, reply_to, file_name, metadata)
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-                         reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
-        return await self._send_local_file(chat_id, audio_path, caption, reply_to, metadata=metadata)
+                         reply_to: Optional[str] = None, metadata: _Metadata = None, **kwargs) -> SendResult:
+        upload_path = audio_path
+        temporary_path: Optional[Path] = None
+        source = Path(audio_path)
+        if source.suffix.lower() in {".ogg", ".opus"} and source.is_file():
+            try:
+                with tempfile.NamedTemporaryFile(prefix="mattermost_voice_", suffix=".mp3", delete=False) as output:
+                    temporary_path = Path(output.name)
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    ["ffmpeg", "-y", "-loglevel", "error", "-i", str(source), str(temporary_path)],
+                    capture_output=True,
+                    check=False,
+                )
+                if result.returncode == 0 and temporary_path.is_file() and temporary_path.stat().st_size > 0:
+                    upload_path = str(temporary_path)
+            except Exception:
+                logger.debug("Mattermost: OGG/Opus to MP3 conversion failed for %s", audio_path, exc_info=True)
+        try:
+            return await self._send_local_file(chat_id, upload_path, caption, reply_to, metadata=metadata)
+        finally:
+            if temporary_path is not None:
+                with contextlib.suppress(OSError):
+                    temporary_path.unlink()
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:

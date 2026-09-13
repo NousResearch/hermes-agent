@@ -621,6 +621,28 @@ describe('assistant-ui streaming renderer', () => {
     expect(container.textContent).not.toContain('```ts')
   })
 
+  it('keeps the height-capped thinking preview scrollable after the turn settles', async () => {
+    const { container, settle } = renderSettlingReasoning()
+
+    const live = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+
+    expect(live).toContain('max-h-40')
+    expect(live).toMatch(/\boverflow-auto\b/)
+    expect(live).not.toMatch(/\boverflow-hidden\b/)
+
+    settle()
+
+    await waitFor(() => {
+      expect(within(container).getByRole('button', { name: /thought/i })).toBeTruthy()
+    })
+
+    const settled = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+
+    expect(settled).toContain('max-h-40')
+    expect(settled).toMatch(/\boverflow-auto\b/)
+    expect(settled).not.toMatch(/\boverflow-hidden\b/)
+  })
+
   it('does not collapse a live thinking preview when the turn settles', async () => {
     const { container, settle } = renderSettlingReasoning()
     const toggle = within(container).getByRole('button', { name: /thinking/i })

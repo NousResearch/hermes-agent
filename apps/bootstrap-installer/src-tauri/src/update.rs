@@ -724,24 +724,42 @@ pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHa
             return;
         }
         if Instant::now() >= deadline {
-            // Last resort: a backend hermes.exe (or the desktop Hermes.exe
-            // itself) is still holding one of the update-sensitive files. The
-            // desktop should have reaped its tree before handing off, but
-            // SIGTERM races / detached grandchildren / AV handles can leave a
-            // straggler. Rather than "proceed anyway" straight into uv's
-            // "Access is denied" or install.ps1's locked app.asar failure,
-            // force-kill every Hermes.exe except ourselves, then give the OS a
-            // beat to unload the image.
+            // Last resort: a backend shim can still hold update-sensitive
+            // files when the desktop's shutdown races a detached child. Only
+            // target the shim at this install root: the desktop binary is also
+            // Hermes.exe, so an image-name kill would tear down the app itself.
             emit_log(
                 app,
                 Some(stage),
                 LogStream::Stdout,
                 &format!(
-                    "[handoff] Hermes still holding install files ({}); force-killing stragglers…",
+                    "[handoff] Hermes still holding install files ({}); locating backend shims…",
                     format_locked_paths(&locked)
                 ),
             );
-            force_kill_other_hermes();
+            let shim = venv_hermes(install_root);
+            let shim_pids = backend_shim_pids(&shim);
+            if shim_pids.is_empty() {
+                emit_log(
+                    app,
+                    Some(stage),
+                    LogStream::Stdout,
+                    "[handoff] no installed backend shim matched the force-kill fallback",
+                );
+            } else {
+                for pid in &shim_pids {
+                    emit_log(
+                        app,
+                        Some(stage),
+                        LogStream::Stdout,
+                        &format!(
+                            "[handoff] force-killing backend shim PID {pid} ({})",
+                            shim.display()
+                        ),
+                    );
+                }
+                force_kill_process_trees(&shim_pids);
+            }
             tokio::time::sleep(Duration::from_millis(800)).await;
             let locked_after_kill = locked_paths(&lock_targets);
             if locked_after_kill.is_empty() {
@@ -799,42 +817,97 @@ fn format_locked_paths(paths: &[PathBuf]) -> String {
     paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
 }
 
-/// Force-kill any `hermes.exe` other than this process. Windows-only; a no-op
-/// elsewhere (POSIX has no mandatory-lock contention). We can't selectively
-/// target "the backend" by PID here — the desktop already exited and we never
-/// knew its children — so we kill the whole `hermes.exe` image tree via
-/// taskkill, excluding our own PID.
-///
-/// Safe w.r.t. our own update child: this runs inside the install-lock wait,
-/// which completes BEFORE we spawn `venv\Scripts\hermes.exe update`. And a
-/// desktop the user relaunches mid-update will NOT have spawned a backend —
-/// `startHermes()` in the desktop gates local-backend startup on our
-/// update-in-progress marker and parks until we finish (#50238). So the only
-/// hermes.exe images here are stragglers from the old desktop — exactly what
-/// we want gone. (`/FI PID ne <self>` also spares this Tauri process, though it
-/// isn't named hermes.exe.)
-fn force_kill_other_hermes() {
-    if !cfg!(target_os = "windows") {
-        return;
+/// Find processes running the exact `venv\Scripts\hermes.exe` shim for this
+/// installation. Windows image names are case-insensitive and the desktop is
+/// also Hermes.exe, so matching by image name alone is unsafe.
+#[cfg(windows)]
+fn backend_shim_pids(shim: &Path) -> Vec<u32> {
+    use std::ffi::OsString;
+    use std::mem::{size_of, zeroed};
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    const MAX_PATH_CHARS: usize = 32_768;
+
+    fn image_path_for_pid(pid: u32) -> Option<PathBuf> {
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return None;
+            }
+            let mut path = vec![0_u16; MAX_PATH_CHARS];
+            let mut len = path.len() as u32;
+            let ok = QueryFullProcessImageNameW(handle, 0, path.as_mut_ptr(), &mut len);
+            CloseHandle(handle);
+            (ok != 0).then(|| PathBuf::from(OsString::from_wide(&path[..len as usize])))
+        }
     }
-    #[cfg(target_os = "windows")]
-    {
-        let my_pid = std::process::id();
-        // /FI excludes our own PID; /T kills the tree; /F forces.
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Vec::new();
+    }
+
+    let mut entry: PROCESSENTRY32W = unsafe { zeroed() };
+    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+    let mut pids = Vec::new();
+    let mut inspected_candidates = 0_u32;
+    let own_pid = std::process::id();
+    let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while has_entry {
+        let pid = entry.th32ProcessID;
+        if pid != own_pid {
+            if let Some(path) = image_path_for_pid(pid) {
+                inspected_candidates += 1;
+                if same_windows_path(&path, shim) {
+                    pids.push(pid);
+                }
+            }
+        }
+        has_entry = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
+    if pids.is_empty() && inspected_candidates > 0 {
+        tracing::debug!(
+            expected_shim = %shim.display(),
+            inspected_candidates,
+            "no queryable process image matched the backend shim path"
+        );
+    }
+    pids
+}
+
+#[cfg(not(windows))]
+fn backend_shim_pids(_shim: &Path) -> Vec<u32> {
+    Vec::new()
+}
+
+fn same_windows_path(actual: &Path, expected: &Path) -> bool {
+    actual
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&expected.to_string_lossy())
+}
+
+#[cfg(windows)]
+fn force_kill_process_trees(pids: &[u32]) {
+    for pid in pids {
         let _ = std::process::Command::new("taskkill")
-            .args([
-                "/F",
-                "/T",
-                "/IM",
-                "hermes.exe",
-                "/FI",
-                &format!("PID ne {my_pid}"),
-            ])
+            .args(["/F", "/T", "/PID", &pid.to_string()])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
     }
 }
+
+#[cfg(not(windows))]
+fn force_kill_process_trees(_pids: &[u32]) {}
 
 /// Best-effort lock probe: try to open the file for read+write. On Windows an
 /// exclusively-held running .exe refuses the open with a sharing violation.
@@ -1339,6 +1412,22 @@ mod tests {
         let probes = install_lock_probe_paths(root);
 
         assert!(locked_paths(&probes).is_empty());
+    }
+
+    #[test]
+    fn same_windows_path_accepts_case_only_difference() {
+        assert!(same_windows_path(
+            Path::new(r"C:\Users\tester\.hermes\hermes-agent\venv\scripts\HERMES.EXE"),
+            Path::new(r"c:\users\tester\.hermes\hermes-agent\venv\Scripts\hermes.exe"),
+        ));
+    }
+
+    #[test]
+    fn same_windows_path_rejects_desktop_binary() {
+        assert!(!same_windows_path(
+            Path::new(r"C:\Users\tester\.hermes\hermes-agent\apps\desktop\Hermes.exe"),
+            Path::new(r"C:\Users\tester\.hermes\hermes-agent\venv\Scripts\hermes.exe"),
+        ));
     }
 
     #[test]

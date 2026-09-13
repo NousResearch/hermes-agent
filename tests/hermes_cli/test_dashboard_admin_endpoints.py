@@ -8,6 +8,9 @@ visible to the CLI data layer), not specific catalog values.
 """
 
 import pytest
+import hermes_cli.config as _cfg_mod
+import hermes_cli.web_server_files as _web_server_files
+import hermes_cli.web_server_gateway as _web_server_gateway
 
 
 def _client():
@@ -351,7 +354,7 @@ class TestWebhookEndpoints:
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config
 
-        ws._ACTION_PROCS.pop("gateway-restart", None)
+        _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
         restart_calls = []
 
         class FakeRestartProc:
@@ -361,7 +364,7 @@ class TestWebhookEndpoints:
             restart_calls.append((subcommand, name))
             return FakeRestartProc()
 
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", fake_spawn_action)
 
         r = self.client.post("/api/webhooks/enable")
 
@@ -384,7 +387,7 @@ class TestWebhookEndpoints:
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config
 
-        ws._ACTION_PROCS.pop("gateway-restart", None)
+        _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
 
         class FakeRunningProc:
             pid = 5151
@@ -392,12 +395,12 @@ class TestWebhookEndpoints:
             def poll(self):
                 return None
 
-        monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", FakeRunningProc())
+        monkeypatch.setitem(_web_server_gateway._ACTION_PROCS, "gateway-restart", FakeRunningProc())
 
         def fail_spawn_action(subcommand, name):
             raise AssertionError("must not spawn a second concurrent restart")
 
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", fail_spawn_action)
 
         r = self.client.post("/api/webhooks/enable")
 
@@ -645,7 +648,7 @@ class TestSkillsHubSourcesEndpoint:
             return srcs
 
         monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", _fake_router
+            "tools.skills_hub_search.create_source_router", _fake_router
         )
         r = self.client.get("/api/skills/hub/sources")
         assert r.status_code == 200
@@ -661,6 +664,42 @@ class TestSkillsHubSourcesEndpoint:
         assert isinstance(body["installed"], dict)
 
 
+class TestOfficialSkillsCatalogEndpoint:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_lists_full_catalog_with_installed_flags(self, monkeypatch):
+        # Serve the catalog from OptionalSkillSource.list_local() (no network),
+        # with the per-profile installed map marking already-installed rows.
+        metas = [
+            _FakeMeta("official/gifs/gif-search", "builtin", "official"),
+            _FakeMeta("official/creative/ascii-art", "builtin", "official"),
+        ]
+        monkeypatch.setattr(
+            "tools.skills_hub_official.OptionalSkillSource.list_local",
+            lambda self: metas,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.web_routers.skills._installed_hub_identifiers",
+            lambda profile=None: {"official/gifs/gif-search": {"name": "gif-search"}},
+        )
+        r = self.client.get("/api/skills/hub/official")
+        assert r.status_code == 200
+        skills = r.json()["skills"]
+        by_ident = {s["identifier"]: s for s in skills}
+        assert set(by_ident) == {
+            "official/gifs/gif-search",
+            "official/creative/ascii-art",
+        }
+        # Category derived from the identifier's directory segment.
+        assert by_ident["official/gifs/gif-search"]["category"] == "gifs"
+        assert by_ident["official/creative/ascii-art"]["category"] == "creative"
+        # Installed flag comes from the profile's hub lock.
+        assert by_ident["official/gifs/gif-search"]["installed"] is True
+        assert by_ident["official/creative/ascii-art"]["installed"] is False
+
+
 class TestSkillsHubPreviewEndpoint:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
@@ -669,7 +708,7 @@ class TestSkillsHubPreviewEndpoint:
 
     def test_preview_returns_skill_md_text(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", lambda: []
         )
         bundle = _FakeBundle("github/owner/repo/x")
         meta = _FakeMeta("github/owner/repo/x")
@@ -690,7 +729,7 @@ class TestSkillsHubPreviewEndpoint:
 
     def test_preview_404_when_unresolved(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", lambda: []
         )
         monkeypatch.setattr(
             "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
@@ -710,7 +749,7 @@ class TestSkillsHubScanEndpoint:
         from tools.skills_guard import ScanResult, Finding
 
         monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", lambda: []
         )
         bundle = _FakeBundle("github/owner/repo/x", trust_level="community")
         monkeypatch.setattr(
@@ -721,7 +760,7 @@ class TestSkillsHubScanEndpoint:
         from pathlib import Path
 
         monkeypatch.setattr(
-            "tools.skills_hub.quarantine_bundle", lambda b: Path("/tmp/_fake_q")
+            "tools.skills_hub_install.quarantine_bundle", lambda b: Path("/tmp/_fake_q")
         )
 
         fake_result = ScanResult(
@@ -805,7 +844,7 @@ class TestUpdateCheckEndpoint:
     def test_git_install_reports_behind_count(self, monkeypatch):
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
         # Stub the shared checker so the contract is deterministic (no network).
         import hermes_cli.banner as banner
 
@@ -834,9 +873,9 @@ class TestUpdateCheckEndpoint:
     def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "_dashboard_local_update_managed_externally", lambda: True)
+        monkeypatch.setattr(_web_server_files, "_dashboard_local_update_managed_externally", lambda: True)
         monkeypatch.setattr(
-            ws,
+            _cfg_mod,
             "detect_install_method",
             lambda *a, **k: pytest.fail(
                 "managed runtime update check should not probe install method"
@@ -976,11 +1015,12 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
     import hermes_cli.web_server as ws
 
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
-    monkeypatch.setattr(ws, "_ACTION_LOG_DIR", tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "default-action-provider-key")
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
     # Isolate the module-global proc registry: _spawn_hermes_action stores
     # _FakeProc (no poll()) in _ACTION_PROCS, and later tests' lifespan
     # shutdown (_terminate_desktop_managed_gateway) would trip over it.
-    monkeypatch.setattr(ws, "_ACTION_PROCS", {})
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
 
     captured = {}
 
@@ -993,10 +1033,139 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
 
     monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
 
-    ws._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+    _web_server_gateway._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
 
     assert "_HERMES_GATEWAY" not in captured["env"]
     assert captured["env"]["HERMES_NONINTERACTIVE"] == "1"
+    # Default-profile actions preserve the historical process environment.
+    assert captured["env"]["OPENAI_API_KEY"] == "default-action-provider-key"
+
+
+def test_named_profile_action_isolates_parent_env_and_loads_target_env(monkeypatch, tmp_path):
+    """A dashboard action for a named profile must not borrow the dashboard profile's
+    platform/provider environment, while the target profile's own dotenv still loads in the child."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import hermes_cli.env_loader as env_loader
+    import hermes_cli.web_server as ws
+
+    user_home = tmp_path / "user"
+    default_home = user_home / ".hermes"
+    target_home = default_home / "profiles" / "verifier"
+    target_home.mkdir(parents=True)
+
+    (default_home / ".env").write_text(
+        "\n".join([
+            "DISCORD_BOT_TOKEN=default-discord",
+            "API_SERVER_ENABLED=true",
+            "API_SERVER_KEY=default-api-server",
+            "BLUEBUBBLES_SERVER_URL=http://127.0.0.1:1234",
+            "BLUEBUBBLES_PASSWORD=default-bluebubbles",
+            "NTFY_TOPIC=default-topic",
+            "NTFY_TOKEN=default-ntfy",
+            "OPENAI_API_KEY=default-openai",
+            "ZAI_API_KEY=default-zai",
+            # Locally named routing credentials must be isolated too, even without a secret suffix.
+            "A2A_AUTH_MINI=default-a2a-auth",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    (target_home / ".env").write_text(
+        "\n".join(["A2A_PORT=9917", "OPENAI_API_KEY=target-openai", "TARGET_ONLY_TOKEN=target-only"]) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(Path, "home", lambda: user_home)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    for key, value in {
+        "DISCORD_BOT_TOKEN": "default-discord",
+        "API_SERVER_ENABLED": "true",
+        "API_SERVER_KEY": "default-api-server",
+        "BLUEBUBBLES_SERVER_URL": "http://127.0.0.1:1234",
+        "BLUEBUBBLES_PASSWORD": "default-bluebubbles",
+        "NTFY_TOPIC": "default-topic",
+        "NTFY_TOKEN": "default-ntfy",
+        "OPENAI_API_KEY": "default-openai",
+        "ZAI_API_KEY": "default-zai",
+        "A2A_AUTH_MINI": "default-a2a-auth",
+        "EXTERNAL_PROFILE_AUTH": "default-secret-source-auth",
+        "HERMES_ACP_AUTH_METHOD": "default-acp",
+        "PROFILE_ENV_TEST_BENIGN": "keep-me",
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
+    monkeypatch.setattr(
+        env_loader,
+        "get_secret_source_values",
+        lambda home: (
+            {"EXTERNAL_PROFILE_AUTH": "default-secret-source-auth"}
+            if Path(home).resolve() == default_home.resolve() else {}
+        ),
+    )
+
+    captured = {}
+    real_popen = subprocess.Popen
+
+    class _FakeProc:
+        pid = 4321
+
+    def _fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
+        return _FakeProc()
+
+    monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
+    _web_server_gateway._spawn_hermes_action(["-p", "verifier", "gateway", "restart"], "gateway-restart")
+
+    child_env = captured["env"]
+    assert captured["cmd"][-4:] == ["-p", "verifier", "gateway", "restart"]
+    assert child_env["HERMES_HOME"] == str(target_home)
+    assert child_env["HERMES_NONINTERACTIVE"] == "1"
+    assert child_env["PROFILE_ENV_TEST_BENIGN"] == "keep-me"
+    for leaked_key in (
+        "DISCORD_BOT_TOKEN", "API_SERVER_ENABLED", "API_SERVER_KEY", "BLUEBUBBLES_SERVER_URL",
+        "BLUEBUBBLES_PASSWORD", "NTFY_TOPIC", "NTFY_TOKEN", "OPENAI_API_KEY", "ZAI_API_KEY",
+        "A2A_AUTH_MINI", "EXTERNAL_PROFILE_AUTH", "HERMES_ACP_AUTH_METHOD",
+    ):
+        assert leaked_key not in child_env, leaked_key
+
+    # Exercise the real dotenv loader in a fresh interpreter with precisely the environment handed
+    # to the named child: the target profile's own values must load without reviving any
+    # default-profile value.
+    monkeypatch.setattr(ws.subprocess, "Popen", real_popen)
+    probe = subprocess.run(
+        [
+            sys.executable, "-c",
+            "import json, os; "
+            "from hermes_cli.env_loader import load_hermes_dotenv; "
+            "load_hermes_dotenv(hermes_home=os.environ['HERMES_HOME']); "
+            "keys=['A2A_PORT','OPENAI_API_KEY','TARGET_ONLY_TOKEN','DISCORD_BOT_TOKEN',"
+            "'API_SERVER_ENABLED','API_SERVER_KEY','BLUEBUBBLES_SERVER_URL','BLUEBUBBLES_PASSWORD',"
+            "'NTFY_TOPIC','NTFY_TOKEN','ZAI_API_KEY','A2A_AUTH_MINI','EXTERNAL_PROFILE_AUTH']; "
+            "print(json.dumps({key: os.environ.get(key) for key in keys}))",
+        ],
+        cwd=Path(ws.PROJECT_ROOT), env=child_env, check=True, capture_output=True, text=True,
+    )
+    loaded = json.loads(probe.stdout.strip().splitlines()[-1])
+    assert loaded == {
+        "A2A_PORT": "9917",
+        "OPENAI_API_KEY": "target-openai",
+        "TARGET_ONLY_TOKEN": "target-only",
+        "DISCORD_BOT_TOKEN": None,
+        "API_SERVER_ENABLED": None,
+        "API_SERVER_KEY": None,
+        "BLUEBUBBLES_SERVER_URL": None,
+        "BLUEBUBBLES_PASSWORD": None,
+        "NTFY_TOPIC": None,
+        "NTFY_TOKEN": None,
+        "ZAI_API_KEY": None,
+        "A2A_AUTH_MINI": None,
+        "EXTERNAL_PROFILE_AUTH": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1056,7 +1225,7 @@ def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
     monkeypatch.setenv("HERMES_DESKTOP", "1")
     monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
     monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
-    monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", _FakeRunningProc())
+    monkeypatch.setitem(_web_server_gateway._ACTION_PROCS, "gateway-restart", _FakeRunningProc())
 
     client, _header = _client()
     with client:

@@ -40,7 +40,6 @@ from hermes_cli.profiles import (
     _get_profiles_root,
     _get_default_hermes_home,
     seed_profile_skills,
-    has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
     profiles_to_serve,
@@ -133,6 +132,46 @@ class TestCreateProfile:
         assert mode == 0o600
 
 
+    def test_fresh_profile_inherits_a_usable_model(self, profile_env):
+        """A profile created without a clone source still resolves a provider.
+
+        Without this it gets no config.yaml at all, so its very first turn dies
+        with "No LLM provider configured" — created, but unable to run. Fresh
+        means fresh skills and SOUL, not unreachable.
+        """
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: nous\n  default: some/model\n"
+        )
+
+        profile_dir = create_profile("coder", no_alias=True)
+
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cfg["model"]["provider"] == "nous"
+        assert cfg["model"]["default"] == "some/model"
+
+
+    def test_fresh_profile_model_is_copied_not_linked(self, profile_env):
+        """Profiles stay independent islands.
+
+        The model block is copied at creation, so later edits to the source
+        profile never reach one already created from it.
+        """
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: nous\n  default: some/model\n"
+        )
+        profile_dir = create_profile("coder", no_alias=True)
+
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: other\n  default: changed/model\n"
+        )
+
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cfg["model"]["provider"] == "nous"
+        assert cfg["model"]["default"] == "some/model"
+
+
 
 
     def test_clone_config_copies_files(self, profile_env):
@@ -150,6 +189,21 @@ class TestCreateProfile:
         assert cloned_config["model"] == "test"
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+
+    def test_clone_all_does_not_copy_cron_jobs(self, profile_env):
+        # Cron jobs are scheduled work bound to the source profile + origin channel; a clone
+        # that inherits jobs.json fires every job twice (two gateways, same job ids).
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        (default_home / "cron").mkdir()
+        (default_home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{"id": "abc123def456"}]}))
+        (default_home / "cron" / "output").mkdir()
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert (profile_dir / "cron").is_dir()
+        assert not any((profile_dir / "cron").iterdir())
+        assert yaml.safe_load((profile_dir / "config.yaml").read_text())["model"] == "test"
 
 
 
@@ -170,9 +224,6 @@ class TestNoSkillsOptOut:
         assert marker.is_file(), "expected .no-bundled-skills marker in profile root"
         assert "--no-skills" in marker.read_text()
 
-        # has_bundled_skills_opt_out() agrees
-        assert has_bundled_skills_opt_out(profile_dir) is True
-
         # skills/ dir exists (profile bootstrapping still creates the dir) but
         # contains nothing yet because create_profile itself doesn't seed.
         assert (profile_dir / "skills").is_dir()
@@ -191,7 +242,7 @@ class TestNoSkillsOptOut:
         import subprocess as _sp
 
         profile_dir = create_profile("orchestrator", no_alias=True, no_skills=True)
-        assert has_bundled_skills_opt_out(profile_dir) is True
+        assert (profile_dir / NO_BUNDLED_SKILLS_MARKER).is_file()
 
         # Marker present: the subprocess still runs (essential-only seeding
         # happens inside sync_skills) and its skipped_opt_out flag surfaces.
@@ -214,7 +265,6 @@ class TestNoSkillsOptOut:
 
         # Delete marker → next call is a normal full sync.
         (profile_dir / NO_BUNDLED_SKILLS_MARKER).unlink()
-        assert has_bundled_skills_opt_out(profile_dir) is False
         r2 = seed_profile_skills(profile_dir, quiet=True)
         assert r2 == {"copied": []}
         assert len(called) == 2
@@ -718,6 +768,85 @@ class TestRenameProfile:
         assert cfg["hosts"]["hermes_heimdall"]["aiPeer"] == "ssi_health"
         assert cfg["hosts"]["hermes_heimdall"]["peerName"] == "user-peer"
 
+    def test_multiplexed_rename_unroutes_old_then_hot_serves_new(self, profile_env):
+        """A profile served by a live multiplexer is unrouted (tombstone + notify) BEFORE the
+        directory move, and the new name is hot-served after — so the old name cannot be
+        re-``mkdir``'d back into a ghost served profile (issue: rename resurrects old name)."""
+        tmp_path = profile_env
+        create_profile("oldname", no_alias=True)
+        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+        new_dir = tmp_path / ".hermes" / "profiles" / "newname"
+
+        calls = []
+
+        def _record_notify(name):
+            # Snapshot the world at each multiplexer signal to pin ordering.
+            calls.append({
+                "name": name,
+                "old_exists": old_dir.exists(),
+                "new_exists": new_dir.exists(),
+                "old_tombstoned": profiles.named_profile_is_deleted(old_dir),
+            })
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles._served_by_running_multiplexer", return_value=True), \
+             patch("hermes_cli.profiles._notify_multiplexer", side_effect=_record_notify):
+            rename_profile("oldname", "newname")
+
+        # Old name unrouted before the move: first signal names oldname, while old_dir still
+        # exists and is tombstoned so no live component can re-create it.
+        assert calls[0]["name"] == "oldname"
+        assert calls[0]["old_exists"] is True
+        assert calls[0]["old_tombstoned"] is True
+        # New name hot-served after the move completed.
+        assert calls[-1]["name"] == "newname"
+        assert calls[-1]["new_exists"] is True
+        assert calls[-1]["old_exists"] is False
+        # End state: old gone, new present, and no stale tombstone left to poison a future
+        # profile that reuses the old name.
+        assert not old_dir.exists()
+        assert new_dir.is_dir()
+        assert not profiles.named_profile_is_deleted(old_dir)
+
+    def test_unmultiplexed_rename_does_not_signal_multiplexer(self, profile_env):
+        """No live multiplexer serves this profile → rename must not tombstone or ping it
+        (guards against over-firing the unroute path on a single-profile install)."""
+        tmp_path = profile_env
+        create_profile("oldname", no_alias=True)
+        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles._served_by_running_multiplexer", return_value=False), \
+             patch("hermes_cli.profiles._notify_multiplexer") as notify:
+            new_dir = rename_profile("oldname", "newname")
+
+        notify.assert_not_called()
+        assert not profiles.named_profile_is_deleted(old_dir)
+        assert new_dir.is_dir()
+
+    def test_multiplexed_rename_failure_rolls_back_unroute(self, profile_env):
+        """If the directory move fails, the pre-move unroute is undone: the old name is
+        re-served (tombstone cleared, multiplexer re-notified) instead of left stranded as
+        tombstoned-but-present (which would make the profile vanish, worse than a ghost)."""
+        tmp_path = profile_env
+        create_profile("oldname", no_alias=True)
+        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+
+        signals = []
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles._served_by_running_multiplexer", return_value=True), \
+             patch("hermes_cli.profiles._notify_multiplexer", side_effect=signals.append), \
+             patch("hermes_cli.profiles.Path.rename", side_effect=OSError("EXDEV")):
+            with pytest.raises(OSError, match="EXDEV"):
+                rename_profile("oldname", "newname")
+
+        # Old dir still there, tombstone cleared, and the last signal re-served the old name.
+        assert old_dir.is_dir()
+        assert not profiles.named_profile_is_deleted(old_dir)
+        assert signals[0] == "oldname"   # unroute on the way in
+        assert signals[-1] == "oldname"  # rollback re-serves it, never "newname"
+        assert "newname" not in signals
+
 
 # ===================================================================
 # TestExportImport
@@ -1064,32 +1193,6 @@ class TestProfilesToServe:
         assert set(serve) == {"default", "coder", "writer"}
         assert serve["default"] == _get_default_hermes_home()
         assert serve["coder"] == get_profile_dir("coder")
-
-    def test_empty_allowlist_serves_only_default(self, profile_env):
-        create_profile("worker", no_alias=True)
-
-        serve = dict(profiles_to_serve(multiplex=True, profile_allowlist=[]))
-
-        assert serve == {"default": _get_default_hermes_home()}
-
-    def test_allowlist_normalizes_deduplicates_and_keeps_default(self, profile_env):
-        create_profile("worker", no_alias=True)
-        create_profile("guest", no_alias=True)
-
-        serve = dict(
-            profiles_to_serve(
-                multiplex=True,
-                profile_allowlist=[" Worker ", "worker", "default", "missing"],
-            )
-        )
-
-        assert set(serve) == {"default", "worker"}
-        assert serve["worker"] == get_profile_dir("worker")
-
-
-
-        assert set(serve) == {"default", "worker"}
-        assert serve["worker"] == get_profile_dir("worker")
 
 
 # ---------------------------------------------------------------------------

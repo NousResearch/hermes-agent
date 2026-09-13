@@ -162,7 +162,12 @@ All env vars are documented in `plugin.yaml`. The most important:
   as a synthetic `reaction:added:<emoji>` event. Removal after a sidecar
   restart is best-effort — the live reaction handle is lost, so a stale
   tapback heals when the next reaction replaces it. Group spaces stay
-  reachable across restarts via spectrum-ts' `space.get(id)`.
+  reachable across restarts via spectrum-ts' `space.get` rehydration.
+- **Read receipts are supported.** The sidecar marks an inbound iMessage read
+  after forwarding it to Hermes, so the sender sees `Read` without waiting for
+  a model/tool turn. Inbound receipts for Hermes-sent messages are consumed as
+  presence telemetry and never create an agent turn. Set
+  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`.
 - **Native polls are supported.** Hermes posts poll content through
   `spectrum-ts`' `poll(...)` builder via the sidecar's `/send-poll` endpoint.
 - **Message effects are supported.** Text can be sent with native iMessage

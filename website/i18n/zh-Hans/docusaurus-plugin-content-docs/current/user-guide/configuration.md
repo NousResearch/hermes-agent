@@ -738,6 +738,8 @@ Hermes 对流式传输有单独的超时层，以及用于非流式调用的陈�
 
 **陈旧非流检测**终止长时间没有响应的非流式调用。默认情况下，Hermes 在本地端点上禁用此功能，以避免长时间预填充期间的误报。如果您显式设置 `providers.<id>.stale_timeout_seconds`、`providers.<id>.models.<model>.stale_timeout_seconds` 或 `HERMES_API_CALL_STALE_TIMEOUT`，即使在本地端点上也会遵守该显式值。
 
+周期性的提供商等待提示仅在至少 **60 秒没有响应活动**后显示。Codex Responses 的**等待状态**描述的是没有流事件的时间，而不是生成的总时长：持续收到流事件（包括推理内容）时不会显示等待警告。如果事件停止，提示会显示多久没有收到流事件，而不会声称尚未收到任何响应；事件恢复后提示会清除。当重连进入新的首事件看门狗阶段时，等待状态也会跟随该阶段。这只影响状态显示，不会延长独立的调用总时长限制，也不会更改看门狗超时。Chat Completions 流同样会在数据块恢复时及时清除无输出警告，但不会覆盖本地模型加载状态。
+
 ## 上下文压力警告
 
 与迭代预算压力分开，上下文压力跟踪对话距**压缩阈值**有多近 —— 即上下文压缩触发以摘要旧消息的点。这有助于您和 agent 了解对话何时变长。
@@ -849,6 +851,8 @@ Hermes 中的每个模型槽位 —— 辅助任务、压缩、回退 —— 使
 :::warning `"main"` 仅用于辅助任务
 `"main"` provider 选项表示"使用我的主 agent 使用的任何 provider" —— 它仅在 `auxiliary:`、`compression:` 和 `fallback_model:` 配置中有效。它**不是**顶级 `model.provider` 设置的有效值。如果您使用自定义 OpenAI 兼容端点，请在 `model:` 部分设置 `provider: custom`。所有主模型 provider 选项请参阅 [AI Providers](/integrations/providers)。
 :::
+
+**后台审查有所不同：** 与主会话使用同一模型的审查分支始终继承主会话的推理强度；`auxiliary.background_review.reasoning_effort` 在这条路径上不会生效，即使显式指定了主会话的 provider/model 也一样。推理设置、系统 prompt、完整会话快照和工具定义保持逐字节一致，以复用 prompt 缓存前缀。没有用于同模型审查的独立推理强度开关。详见[同模型审查的推理强度](/user-guide/features/memory#same-model-review-reasoning)。路由到其他模型时的独立问题见 [#94825](https://github.com/NousResearch/hermes-agent/issues/94825)。
 
 ### 完整辅助配置参考
 

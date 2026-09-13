@@ -373,8 +373,23 @@ def _consumer():
 
 
 class TestDeliveredFinalMatches:
-    def test_no_record_returns_none(self):
+    def test_no_record_no_visible_text_returns_false(self):
+        """#95382 tightening: a record-less consumer with no visible match
+        for the final text is a demonstrable non-delivery, not legacy trust."""
         consumer = _consumer()
+        assert consumer.delivered_final_matches("anything") is False
+
+    def test_no_record_but_visible_final_returns_true(self):
+        """Ambiguous-dedup control: visible text equals the final answer."""
+        consumer = _consumer()
+        consumer._already_sent = True
+        consumer._last_sent_text = FULL_RESPONSE
+        assert consumer.delivered_final_matches(FULL_RESPONSE) is True
+
+    def test_no_record_ambiguous_timeout_returns_none(self):
+        """The explicitly-marked ambiguous timeout keeps legacy trust."""
+        consumer = _consumer()
+        consumer._delivery_ambiguous = True
         assert consumer.delivered_final_matches("anything") is None
 
     def test_matching_record_returns_true(self):

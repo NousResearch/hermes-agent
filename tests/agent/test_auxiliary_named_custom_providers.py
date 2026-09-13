@@ -1,5 +1,6 @@
 """Tests for named custom provider and 'main' alias resolution in auxiliary_client."""
 
+import json
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -122,6 +123,38 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         # no-key-required should be used
 
+    def test_providers_dict_uses_durable_pool_when_no_inline_key(self, tmp_path):
+        """Titles/compression/vision must read credential_pool.<key>, not a placeholder."""
+        _write_config(tmp_path, {
+            "providers": {
+                "b-ai": {
+                    "name": "B.AI",
+                    "base_url": "https://api.b.ai/v1",
+                },
+            },
+        })
+        auth_path = tmp_path / ".hermes" / "auth.json"
+        auth_path.write_text(json.dumps({
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "b-ai": [
+                    {
+                        "id": "k1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-real-b-ai-pool-key-12345",
+                    }
+                ]
+            },
+        }))
+        from agent.auxiliary_client import resolve_provider_client
+        client, _model = resolve_provider_client("b-ai", "b-ai-model")
+        assert client is not None
+        assert "api.b.ai" in str(client.base_url)
+        assert client.api_key == "sk-real-b-ai-pool-key-12345"
 
 
 class TestResolveProviderClientModelNormalization:
@@ -184,6 +217,43 @@ class TestResolveVisionProviderClientModelNormalization:
         assert provider == "zai"
         assert client is not None
         assert model == "glm-5v-turbo"  # zai has dedicated vision model in _PROVIDER_VISION_MODELS
+
+
+class TestAutoClientCacheModelCompatibility:
+    """Auto client cache should not keep OpenRouter-format model overrides on non-OR clients."""
+
+    def test_first_auto_cache_miss_drops_openrouter_model_for_named_custom_runtime(self, tmp_path):
+        from agent import auxiliary_client as ac
+
+        ac._client_cache.clear()
+        try:
+            fake_client = MagicMock()
+            fake_client.base_url = "https://aixj.vip/v1"
+            fake_client.api_key = "test-key"
+
+            runtime = {
+                "provider": "custom:aixj.vip",
+                "model": "gpt-5.4",
+                "base_url": "https://aixj.vip/v1",
+                "api_key": "***",
+                "api_mode": "codex_responses",
+            }
+
+            with patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fake_client, "gpt-5.4"),
+            ) as mock_resolve:
+                client, model = ac._get_cached_client(
+                    "auto",
+                    "google/gemini-3-flash-preview",
+                    main_runtime=runtime,
+                )
+
+            assert client is fake_client
+            assert model == "gpt-5.4"
+            mock_resolve.assert_called_once()
+        finally:
+            ac._client_cache.clear()
 
 
 class TestVisionPathApiMode:

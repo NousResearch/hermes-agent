@@ -9,10 +9,11 @@ thread-safely onto the loop.
 import asyncio
 import logging
 from collections import deque
-from typing import Any, Callable, Deque, Dict
+from typing import Any, Callable, Deque, Dict, Literal
+from uuid import uuid4
 
 import acp
-from acp.schema import AgentPlanUpdate, PlanEntry
+from acp.schema import AgentMessageChunk, AgentPlanUpdate, PlanEntry, TextContentBlock
 
 from .tools import _json_loads_maybe, build_tool_complete, build_tool_start, coerce_tool_args, make_tool_call_id
 
@@ -69,6 +70,25 @@ def _upgrade_queue(tool_call_ids: Dict[str, Deque[str]], name: str) -> Deque[str
     if isinstance(queue, str):
         queue = tool_call_ids[name] = deque([queue])
     return queue
+
+
+def make_commentary_cb(
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop,
+    turn_id: str, source: Literal["assistant", "background_review"],
+) -> Callable:
+    """Additional opt-in copies; never change the ordinary stream's delivery state."""
+    def _cb(text: str, *, already_streamed: bool = False) -> None:
+        if text:
+            _send_update(conn, session_id, loop, AgentMessageChunk(
+                session_update="agent_message_chunk",
+                message_id=f"hermes:{uuid4()}",
+                content=TextContentBlock(type="text", text=text),
+                field_meta={"hermes": {
+                    "messagePhases": 1, "phase": "commentary", "source": source, "turnId": turn_id,
+                }},
+            ))
+
+    return _cb
 
 
 def make_tool_progress_cb(

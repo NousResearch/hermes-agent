@@ -13,6 +13,7 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Deque, Optional
+from uuid import UUID
 
 import acp
 from acp.schema import (
@@ -28,7 +29,8 @@ from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, 
 from acp_adapter.commands import HERMES_VERSION, SlashCommandsMixin, _estimate_tokens
 from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_content, _extract_text
 from acp_adapter.events import (
-    _build_plan_update_from_todo_result, make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
+    _build_plan_update_from_todo_result, make_commentary_cb, make_message_cb, make_step_cb,
+    make_thinking_cb, make_tool_progress_cb,
 )
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
@@ -221,6 +223,8 @@ class _TurnCallbacks:
     approval_cb: Any = None
     edit_approval_requester: Any = None
     streamed: bool = False
+    interim_cb: Any = None
+    background_review_cb: Any = None
 
 
 class HermesACPAgent(SlashCommandsMixin, acp.Agent):
@@ -248,12 +252,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._message_phases = False
 
     # ---- Connection lifecycle -----------------------------------------------
 
     def on_connect(self, conn: acp.Client) -> None:
         """Store the client connection for sending session updates."""
         self._conn = conn
+        self._message_phases = False
         logger.info("ACP client connected")
 
     async def _send(self, session_id: str, update: Any, *, fail_msg: str, level: int = logging.WARNING) -> bool:
@@ -501,6 +507,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self, protocol_version: int | None = None, client_capabilities: ClientCapabilities | None = None,
         client_info: Implementation | None = None, **kwargs: Any,
     ) -> InitializeResponse:
+        meta = client_capabilities.field_meta if client_capabilities else None
+        hermes = meta.get("hermes") if isinstance(meta, dict) else None
+        version = hermes.get("messagePhases") if isinstance(hermes, dict) else None
+        self._message_phases = type(version) is int and version == 1
         auth_methods = build_auth_methods()
         logger.info(
             "Initialize from %s (protocol v%s)", client_info.name if client_info else "unknown",
@@ -511,6 +521,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             protocol_version=acp.PROTOCOL_VERSION,
             agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
             agent_capabilities=AgentCapabilities(
+                field_meta={"hermes": {"messagePhases": 1}} if self._message_phases else None,
                 load_session=True,
                 prompt_capabilities=PromptCapabilities(image=True),
                 session_capabilities=SessionCapabilities(
@@ -810,7 +821,19 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         conn, loop = self._conn, asyncio.get_running_loop()
         if state.cancel_event:
             state.cancel_event.clear()
-        cbs = self._wire_turn_callbacks(state, session_id, conn, loop)
+        # ACP's router expands top-level _meta into keyword arguments.
+        hermes = kwargs.get("hermes")
+        turn_id = hermes.get("turnId") if isinstance(hermes, dict) else None
+        if isinstance(turn_id, str):
+            try:
+                UUID(turn_id)
+            except ValueError:
+                turn_id = None
+        else:
+            turn_id = None
+        previous_interim = getattr(state.agent, "interim_assistant_callback", None)
+        previous_review = getattr(state.agent, "background_review_callback", None)
+        cbs = self._wire_turn_callbacks(state, session_id, conn, loop, turn_id)
 
         def _run_agent() -> dict:
             return self._run_agent_turn(
@@ -831,15 +854,24 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 state.is_running = False
                 state.current_prompt_text = ""
             return PromptResponse(stop_reason="end_turn")
+        finally:
+            # Restore before _finish_turn drains queued prompts. Reviews retain a
+            # snapshot taken when their worker was created, including a disabled None.
+            state.agent.interim_assistant_callback = previous_interim
+            state.agent.background_review_callback = previous_review
 
         return await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
 
     def _wire_turn_callbacks(
-        self, state: SessionState, session_id: str, conn: Any, loop: asyncio.AbstractEventLoop
+        self, state: SessionState, session_id: str, conn: Any, loop: asyncio.AbstractEventLoop,
+        turn_id: str | None = None,
     ) -> _TurnCallbacks:
         """Install the ACP streaming callbacks on the session agent for one turn."""
         cbs = _TurnCallbacks()
         if conn:
+            if self._message_phases and turn_id:
+                cbs.interim_cb = make_commentary_cb(conn, session_id, loop, turn_id, "assistant")
+                cbs.background_review_cb = make_commentary_cb(conn, session_id, loop, turn_id, "background_review")
             tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
             tool_call_meta: dict[str, dict[str, Any]] = {}
             policy_getter = lambda: self._edit_approval_policy_for_state(state)  # noqa: E731
@@ -871,6 +903,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         agent.thinking_callback = None
         agent.reasoning_callback, agent.step_callback = cbs.reasoning_cb, cbs.step_cb
         agent.stream_delta_callback = cbs.stream_delta_cb
+        agent.interim_assistant_callback = cbs.interim_cb
+        agent.background_review_callback = cbs.background_review_cb
         return cbs
 
     async def _finish_turn(

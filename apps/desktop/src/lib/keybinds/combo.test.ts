@@ -217,3 +217,37 @@ describe('comboFromEvent — IME composition keydowns never resolve to combos (#
     expect(comboFromEvent(keydown({ code: 'KeyN', isComposing: false, key: 'n', metaKey: true }))).toBe('mod+n')
   })
 })
+
+describe('comboFromEvent — malformed keyboard events', () => {
+  // Built as plain objects rather than via `new KeyboardEvent`, because the
+  // constructor coerces `code` to a string ("null", "42") and would hide the
+  // very shapes under test.
+  function malformed(init: Record<string, unknown>): KeyboardEvent {
+    return init as unknown as KeyboardEvent
+  }
+
+  it.each([
+    ['both key and code are absent', { code: undefined, key: undefined }],
+    ['code is null', { code: null, key: undefined }],
+    ['code is a number', { code: 42, key: undefined }],
+    ['code is an empty string', { code: '', key: undefined }]
+  ])('returns null when %s', async (_label, init) => {
+    const { comboFromEvent } = await loadCombo('Win32')
+
+    expect(comboFromEvent(malformed(init))).toBeNull()
+  })
+
+  // A junk `code` must make the physical fallback inert without discarding an
+  // otherwise legitimate event: some IME and synthetic keydowns carry an empty
+  // `code` alongside a real `key`, which still has to resolve via the key path.
+  it.each([
+    ['null', null],
+    ['a number', 42],
+    ['an empty string', '']
+  ])('resolves via event.key when code is %s but key is valid', async (_label, code) => {
+    const { comboFromEvent } = await loadCombo('Win32')
+
+    expect(comboFromEvent(malformed({ code, key: 'a' }))).toBe('a')
+    expect(comboFromEvent(malformed({ code, ctrlKey: true, key: 'k' }))).toBe('mod+k')
+  })
+})

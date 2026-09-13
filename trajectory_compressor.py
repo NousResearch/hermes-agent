@@ -11,6 +11,7 @@ Usage:
     python trajectory_compressor.py --input=data/trajectories.jsonl --output=out.jsonl --target_max_tokens=16000
 """
 
+import gzip
 import json
 import os
 import random
@@ -69,10 +70,25 @@ def _effective_temperature_for_model(model: str, requested_temperature: Optional
     return requested_temperature if fixed_temperature is None else fixed_temperature
 
 
+def _open_jsonl(path: Path, mode: str = "rt"):
+    """Open plain or gzip-compressed JSONL transparently."""
+    opener = gzip.open if str(path).endswith(".gz") else open
+    return opener(path, mode, encoding="utf-8")
+
+
+def _jsonl_inputs(directory: Path) -> list[Path]:
+    return sorted({path for pattern in ("*.jsonl", "*.jsonl.gz") for path in directory.glob(pattern)})
+
+
+def _default_output_path(input_path: Path, suffix: str = "_compressed") -> Path:
+    name = input_path.name.removesuffix(".gz").removesuffix(".jsonl")
+    return input_path.parent / f"{name}{suffix}.jsonl"
+
+
 def _load_jsonl(path: Path, on_error: Optional[Callable[[int, json.JSONDecodeError], None]] = None, start: int = 0) -> List[Tuple[int, Any]]:
     """Return ``(line_num, entry)`` for each non-blank line; bad lines go to ``on_error``."""
     entries = []
-    with open(path, 'r', encoding='utf-8') as f:
+    with _open_jsonl(path) as f:
         for line_num, line in enumerate(f, start):
             if not line.strip():
                 continue
@@ -85,7 +101,7 @@ def _load_jsonl(path: Path, on_error: Optional[Callable[[int, json.JSONDecodeErr
 
 
 def _write_jsonl(path: Path, entries) -> None:
-    with open(path, 'w', encoding='utf-8') as f:
+    with _open_jsonl(path, "wt") as f:
         for entry in entries:
             f.write(json.dumps(entry, ensure_ascii=False) + '\n')
 
@@ -617,7 +633,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         console = Console()
         self.aggregate_metrics.processing_start_time = datetime.now().isoformat()
         start_time = time.time()
-        jsonl_files = sorted(input_dir.glob("*.jsonl"))
+        jsonl_files = _jsonl_inputs(input_dir)
         if not jsonl_files:
             self.logger.warning("No JSONL files found in %s", input_dir)
             return
@@ -768,7 +784,7 @@ def _sample(entries: list, sample_percent: float) -> list:
 def _run_file_mode(input_path: Path, output: Optional[str], compression_config: CompressionConfig, sample_percent: Optional[float], seed: int, dry_run: bool) -> None:
     """Single-file input: (sample,) compress via a temp directory, merge into one output file."""
     print("📄 Input mode: Single JSONL file")
-    output_path = Path(output) if output else input_path.parent / (input_path.stem + compression_config.output_suffix + ".jsonl")
+    output_path = Path(output) if output else _default_output_path(input_path, compression_config.output_suffix)
     entries = [entry for _, entry in _load_jsonl(input_path, lambda n, e: print(f"⚠️  Skipping invalid JSON at line {n}: {e}"), start=1)]
     total_entries = len(entries)
     print(f"   Loaded {total_entries:,} trajectories from {input_path.name}")
@@ -786,9 +802,9 @@ def _run_file_mode(input_path: Path, output: Optional[str], compression_config: 
         _write_jsonl(temp_input_dir / "trajectories.jsonl", entries)
         TrajectoryCompressor(compression_config).process_directory(temp_input_dir, temp_output_dir)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as out_f:
-            for jsonl_file in sorted(temp_output_dir.glob("*.jsonl")):
-                with open(jsonl_file, 'r', encoding='utf-8') as in_f:
+        with _open_jsonl(output_path, "wt") as out_f:
+            for jsonl_file in _jsonl_inputs(temp_output_dir):
+                with _open_jsonl(jsonl_file) as in_f:
                     shutil.copyfileobj(in_f, out_f)
         metrics_file = temp_output_dir / compression_config.metrics_output_file
         if metrics_file.exists():
@@ -815,7 +831,7 @@ def _run_dir_mode(input_path: Path, output: Optional[str], compression_config: C
             temp_input_dir.mkdir()
             random.seed(seed)
             total_original = total_sampled = 0
-            for jsonl_file in sorted(input_path.glob("*.jsonl")):
+            for jsonl_file in _jsonl_inputs(input_path):
                 entries = [entry for _, entry in _load_jsonl(jsonl_file)]
                 sampled_entries = _sample(entries, sample_percent)
                 total_original += len(entries)

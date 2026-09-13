@@ -11,6 +11,7 @@ Covers:
 
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -478,3 +479,64 @@ def test_group_topic_skill_binding_second_topic():
 # ── _build_message_event: from_user=None fallback in DMs ──
 
 
+# ── _build_message_event: DM-topic lane inheritance for stamp-less media (#109527) ──
+
+
+def test_stampless_photo_inherits_last_topic_lane():
+    """A photo with no topic stamp at all inherits the sender's last stamped topic lane instead
+    of landing in the chat's default lane."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter()
+
+    text_msg = _make_mock_message(chat_id=111, user_id=42, thread_id=100, text="hi")
+    adapter._build_message_event(text_msg, MessageType.TEXT)
+
+    photo_msg = _make_mock_message(chat_id=111, user_id=42, thread_id=None, text="")
+    event = adapter._build_message_event(photo_msg, MessageType.PHOTO)
+
+    assert event.source.thread_id == "100"
+
+
+def test_stampless_photo_stays_in_default_lane_without_prior_topic():
+    """No prior stamped message for this (chat, user) means there is no lane to inherit."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter()
+
+    photo_msg = _make_mock_message(chat_id=111, user_id=42, thread_id=None, text="")
+    event = adapter._build_message_event(photo_msg, MessageType.PHOTO)
+
+    assert event.source.thread_id is None
+
+
+def test_stampless_photo_lane_expires_after_ttl():
+    """A lane older than the TTL window is not inherited — falls back to the default lane."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter()
+
+    text_msg = _make_mock_message(chat_id=111, user_id=42, thread_id=100, text="hi")
+    adapter._build_message_event(text_msg, MessageType.TEXT)
+
+    future = time.monotonic() + TelegramAdapter._DM_TOPIC_LANE_TTL_SECONDS + 1
+    with patch("plugins.platforms.telegram.adapter.time.monotonic", return_value=future):
+        photo_msg = _make_mock_message(chat_id=111, user_id=42, thread_id=None, text="")
+        event = adapter._build_message_event(photo_msg, MessageType.PHOTO)
+
+    assert event.source.thread_id is None
+
+
+def test_stampless_photo_does_not_inherit_another_users_lane():
+    """A lane recorded for one user must not leak to a different user in the same chat."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter()
+
+    text_msg = _make_mock_message(chat_id=111, user_id=42, thread_id=100, text="hi")
+    adapter._build_message_event(text_msg, MessageType.TEXT)
+
+    photo_msg = _make_mock_message(chat_id=111, user_id=99, thread_id=None, text="")
+    event = adapter._build_message_event(photo_msg, MessageType.PHOTO)
+
+    assert event.source.thread_id is None

@@ -3,6 +3,7 @@
 import pytest
 
 from hermes_cli.session_listing import (
+    AUTOMATION_SOURCES,
     format_gateway_session_listing,
     parse_session_listing_args,
     query_session_listing,
@@ -12,8 +13,6 @@ from hermes_cli.session_listing import (
 class TestParseSessionListingArgs:
     def test_plain_listing(self):
         assert parse_session_listing_args("") == (False, False, "", None)
-
-
 
 
 class TestQuerySessionListingSearch:
@@ -32,12 +31,9 @@ class TestQuerySessionListingSearch:
     def _ids(self, db, **kw):
         return [r["id"] for r in query_session_listing(db, **kw)]
 
-
-
     def test_source_scoping(self, db):
         assert self._ids(db, source="telegram", search_query="winton") == []
         assert self._ids(db, source="whatsapp", search_query="winton") == ["sess_winton"]
-
 
     def test_search_matches_compression_root_title(self, tmp_path):
         """Searching an old (compressed-away) title surfaces the live tip."""
@@ -74,6 +70,72 @@ class TestQuerySessionListingSearch:
 
         assert [r["id"] for r in rows] == ["sess_an94"]
         assert rows[0]["is_current_session"] is True
+
+
+class TestLocalCLIVisibilityPolicy:
+    @pytest.fixture
+    def db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "local.db")
+        human_sources = ("cli", "tui", "webui", "acp", "webhook", "custom-human")
+        for source in human_sources:
+            sid = f"human_{source}"
+            db.create_session(sid, source)
+            db.set_session_title(sid, f"Human {source}")
+        for source in AUTOMATION_SOURCES:
+            sid = f"automation_{source}"
+            db.create_session(sid, source)
+            db.set_session_title(sid, f"Automation {source}")
+        yield db
+        db.close()
+
+    def test_classic_cli_is_cross_source_but_denies_automation(self, db):
+        """Mirror the current CLISessionMixin call shape on current main.
+
+        The stale caller still passes source="cli", include_all_sources=False,
+        and only kanban/tool exclusions. Shared policy must treat the local cli
+        source as provenance, retain every human source, and extend the reviewed
+        deny-list to cron/tool/kanban/subagent without hiding ACP/webhook/custom.
+        """
+        rows = query_session_listing(
+            db,
+            source="cli",
+            current_session_id="human_cli",
+            include_all_sources=False,
+            include_unnamed=True,
+            limit=50,
+            exclude_sources=["kanban", "tool"],
+        )
+        ids = {row["id"] for row in rows}
+
+        assert "human_cli" not in ids
+        assert {
+            "human_tui",
+            "human_webui",
+            "human_acp",
+            "human_webhook",
+            "human_custom-human",
+        }.issubset(ids)
+        assert ids.isdisjoint({f"automation_{source}" for source in AUTOMATION_SOURCES})
+
+    def test_gateway_source_scope_is_not_widened(self, db):
+        """Cross-source local discovery must not become gateway authority."""
+        db.create_session(
+            "telegram_lane", "telegram", session_key="agent:main:telegram:dm:1",
+            user_id="u", chat_id="1",
+        )
+        db.set_session_title("telegram_lane", "Telegram lane")
+
+        rows = query_session_listing(
+            db,
+            source="telegram",
+            session_key="agent:main:telegram:dm:1",
+            include_unnamed=True,
+            limit=50,
+        )
+
+        assert [row["id"] for row in rows] == ["telegram_lane"]
 
 
 class TestFormatGatewaySessionListing:

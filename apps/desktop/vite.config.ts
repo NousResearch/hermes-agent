@@ -84,9 +84,13 @@ const emojibaseAssets = () => ({
     server.middlewares.use('/emojibase', (req, res, next) => {
       const rel = (req.url ?? '').split('?')[0].replace(/^\/+/, '')
 
-      if (!emojibaseDir || !EMOJIBASE_PATH.test(rel)) {return next()}
+      if (!emojibaseDir || !EMOJIBASE_PATH.test(rel)) {
+        return next()
+      }
       fs.readFile(path.join(emojibaseDir, rel), (err: unknown, buf: Buffer) => {
-        if (err) {return next()}
+        if (err) {
+          return next()
+        }
         res.setHeader('Content-Type', 'application/json')
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
         res.end(buf)
@@ -94,7 +98,9 @@ const emojibaseAssets = () => ({
     })
   },
   generateBundle(this: { emitFile: (asset: { type: 'asset'; fileName: string; source: Uint8Array }) => void }) {
-    if (!emojibaseDir) {return}
+    if (!emojibaseDir) {
+      return
+    }
 
     for (const rel of ['en/data.json', 'en/messages.json', 'en/shortcodes/emojibase.json']) {
       this.emitFile({

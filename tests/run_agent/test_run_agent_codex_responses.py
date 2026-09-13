@@ -1895,7 +1895,7 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
 
     assert finish_reason == "incomplete"
     assert (assistant_message.content or "") == ""
-    assert "inspect the repository" in (assistant_message.reasoning or "")
+    assert assistant_message.reasoning is None
     assert assistant_message.codex_message_items
     assert assistant_message.codex_message_items[0]["phase"] == "commentary"
     assert "inspect the repository" in assistant_message.codex_message_items[0]["content"][0]["text"]
@@ -1912,7 +1912,7 @@ def test_normalize_codex_response_does_not_fallback_to_output_text_for_commentar
 
     assert finish_reason == "incomplete"
     assert (assistant_message.content or "") == ""
-    assert "call the tool" in (assistant_message.reasoning or "")
+    assert assistant_message.reasoning is None
     assert assistant_message.codex_message_items[0]["phase"] == "commentary"
 
 

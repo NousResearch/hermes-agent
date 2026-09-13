@@ -428,7 +428,7 @@ def _chat_messages_to_responses_input(
     ``current_issuer_kind``: cross-issuer guard; foreign-stamped items drop, legacy items replay.
     ``native_compaction_eligible``: THIS request carries ``context_management``; gates both replaying ``compaction``
     checkpoints and ``prune_pre_checkpoint_items``. Checkpoints persist across model swaps / compression flips / resume,
-    so without the gate one checkpoint would erase pre-checkpoint history on a model that cannot decrypt it (lossless:
+    so without the gate one checkpoint would erase pre-checkpoint history on a model that cannot decrypt the blob (lossless:
     local history is never truncated).
 
     Earlier (PR #26644, May 2026) we believed xAI's OAuth/SuperGrok ``/v1/responses`` surface rejected
@@ -972,9 +972,13 @@ class _OutputScan:
         message_text = _extract_responses_message_text(item)
         if not message_text:
             return
-        # commentary/analysis text is mid-turn narration, never the final answer: route it
-        # to the reasoning channel; the exact item is still preserved for replay/cache.
-        (self.reasoning_parts if is_commentary_phase else self.content_parts).append(message_text)
+        # Commentary is user-facing progress, not reasoning or a final answer.
+        # Its exact message item below carries interim delivery and replay/cache;
+        # only the analysis phase belongs in the reasoning channel.
+        if normalized_phase == "analysis":
+            self.reasoning_parts.append(message_text)
+        elif normalized_phase != "commentary":
+            self.content_parts.append(message_text)
         item_id = getattr(item, "id", None)
         self.message_items_raw.append(_message_item(
             [{"type": "output_text", "text": message_text}], status=_normalize_responses_message_status(item_status),

@@ -1,23 +1,10 @@
-"""Best-effort accessors for the single-writer stream fence (#65991).
+"""Best-effort accessors for the single-writer stream fence.
 
-The fence itself lives on ``AIAgent`` (``_claim_stream_writer`` /
-``_stream_writer_is_current`` in ``run_agent.py``), but the streaming code paths
-that use it live in *other* modules — ``chat_completion_helpers`` (chat /
-anthropic / bedrock) and ``codex_runtime`` (codex responses). Calling the fence
-directly as ``agent._claim_stream_writer()`` from those modules makes them
-hard-depend on the method being present on whatever object is passed in as
-``agent``.
-
-That coupling is a latent crash: a partially-updated checkout (the streaming
-helper module newer than ``run_agent``), a hot-reloaded gateway, a duck-typed
-agent, or a test double without the method turns an *additive* safety net into a
-fatal ``AttributeError`` that aborts the whole turn. A cron job died exactly
-this way with ``'AIAgent' object has no attribute '_claim_stream_writer'``.
-
-The fence is only ever allowed to drop a *provably* superseded stream — never
-the sole legitimate writer. So when the guard is unavailable (or raises), the
-correct degradation is "no fence": keep streaming. These helpers make the
-claim/check best-effort to guarantee that.
+The fence lives on ``AIAgent`` (``_claim_stream_writer`` / ``_stream_writer_is_current``) but is
+used from other streaming modules. Calling it directly would turn an *additive* safety net into a
+fatal AttributeError on a partially-updated checkout, hot-reloaded gateway, duck-typed agent, or
+test double (a cron job died this way). The fence may only drop a *provably* superseded stream,
+never the sole writer, so when it is unavailable or raises the degradation is "no fence".
 """
 
 from __future__ import annotations
@@ -29,42 +16,23 @@ logger = logging.getLogger(__name__)
 
 
 def claim_stream_writer(agent: Any) -> int:
-    """Claim the delta sink for the calling stream attempt, best-effort.
-
-    Returns the agent's monotonic writer token when the fence is available, or
-    ``0`` when the agent doesn't expose it (or the claim raised). A ``0`` token
-    pairs with :func:`stream_writer_is_current` always returning ``True``, so a
-    guard-less agent is simply never fenced instead of crashing the turn.
-    """
-    claim = getattr(agent, "_claim_stream_writer", None)
-    if callable(claim):
-        try:
-            return int(claim())
-        except Exception:
-            logger.debug(
-                "stream single-writer: claim failed; proceeding unfenced",
-                exc_info=True,
-            )
-    return 0
+    """Claim the delta sink for this stream attempt; ``0`` (never fenced) when the agent lacks the fence or the claim raised."""
+    return _fence_call(agent, "_claim_stream_writer", int, 0, "claim failed; proceeding unfenced")
 
 
 def stream_writer_is_current(agent: Any, token: int) -> bool:
-    """True when ``token`` is still the active writer, best-effort.
-
-    A falsy token (from a claim that no-oped) or an agent without the fence
-    means we cannot prove supersession, so the stream is treated as current and
-    never fenced. This preserves the single-writer invariant's one-way promise:
-    only a demonstrably stale writer is ever stopped.
-    """
+    """True when ``token`` is still the active writer; a falsy token or a fence-less agent cannot prove supersession, so True."""
     if not token:
         return True
-    is_current = getattr(agent, "_stream_writer_is_current", None)
-    if callable(is_current):
+    return _fence_call(agent, "_stream_writer_is_current", bool, True, "is_current check failed; treating as current", token)
+
+
+def _fence_call(agent: Any, name: str, cast, fallback, failure_note: str, *args):
+    """Call ``agent.<name>(*args)`` when it exists; ``fallback`` when missing or raising (logged at debug)."""
+    fn = getattr(agent, name, None)
+    if callable(fn):
         try:
-            return bool(is_current(token))
+            return cast(fn(*args))
         except Exception:
-            logger.debug(
-                "stream single-writer: is_current check failed; treating as current",
-                exc_info=True,
-            )
-    return True
+            logger.debug("stream single-writer: %s", failure_note, exc_info=True)
+    return fallback

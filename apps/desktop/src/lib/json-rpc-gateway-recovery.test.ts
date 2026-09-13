@@ -132,6 +132,48 @@ describe('hermes-ws-recovery-v1 silent blackhole', () => {
     vi.useRealTimers()
   })
 
+  it('keeps a replacement socket open when a superseded connect times out', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', { OPEN: LoopbackSocket.OPEN })
+    const backend = new RecoveryBackend()
+    const sockets: LoopbackSocket[] = []
+    const states: string[] = []
+
+    const client = new JsonRpcGatewayClient({
+      connectTimeoutMs: 50,
+      heartbeatIntervalMs: 0,
+      socketFactory: () => {
+        const socket = new LoopbackSocket(sockets.length + 1, backend)
+
+        sockets.push(socket)
+
+        return socket as unknown as WebSocket
+      }
+    })
+
+    client.onState(state => states.push(state))
+
+    const staleConnect = client.connect('ws://gateway.test/a')
+    const staleRejection = expect(staleConnect).rejects.toThrow('WebSocket connection failed')
+
+    client.close()
+
+    const currentConnect = client.connect('ws://gateway.test/b')
+
+    sockets[1].open()
+    await currentConnect
+    expect(client.connectionState).toBe('open')
+
+    await vi.advanceTimersByTimeAsync(50)
+
+    await staleRejection
+    expect(client.connectionState).toBe('open')
+    expect(sockets[1].readyState).toBe(LoopbackSocket.OPEN)
+    expect(states.slice(states.lastIndexOf('open'))).toEqual(['open'])
+
+    client.close()
+  })
+
   it('recovers the persisted final on a replacement socket without duplicating the prompt', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('WebSocket', { OPEN: LoopbackSocket.OPEN })

@@ -38,6 +38,9 @@ def _write_arm(root: Path, model: str, arm: str, *, tasks: tuple[str, ...], conf
             '"metadata":{"status":"ok"},"data":{}}\n',
             encoding="utf-8",
         )
+        with trace.open("a") as handle:
+            handle.write(json.dumps({"kind": "evaluation", "category": "run",
+                                    "scope_category": "end", "run_id": run_id}) + "\n")
         rows.append(
             {
                 "run_id": run_id,
@@ -98,7 +101,7 @@ def test_report_returns_failure_for_incomplete_battery(tmp_path: Path) -> None:
 
 def test_report_requires_unique_complete_runs_and_current_provenance(tmp_path: Path) -> None:
     model = "test-model"
-    for defect in ("duplicate", "truncated", "config_changed"):
+    for defect in ("duplicate", "truncated", "missing_completion", "config_changed"):
         root = tmp_path / defect
         for arm in ("baseline", "fixes"):
             _write_arm(root, model, arm, tasks=("err_python_env",), config_digest="c" * 64)
@@ -111,6 +114,9 @@ def test_report_requires_unique_complete_runs_and_current_provenance(tmp_path: P
             meta.write_text(meta.read_text() * 2)
         elif defect == "truncated":
             (mdir / "baseline" / "err_python_env-r0.atof.jsonl").write_text('{}\n')
+        elif defect == "missing_completion":
+            trace = mdir / "baseline" / "err_python_env-r0.atof.jsonl"
+            trace.write_text("\n".join(trace.read_text().splitlines()[:-1]) + "\n")
         else:
             (root / "home").mkdir()
             (root / "home" / "config.yaml").write_text("model:\n  provider: changed\n")

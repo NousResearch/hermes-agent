@@ -22,6 +22,14 @@ in real production traffic.
   ATOF traces emitted by the run itself (`llm`/`tool` scope events), plus wall
   clock and a per-task programmatic success check (marker strings + on-disk
   verification).
+- **Completed traces only.** After a successful CLI exit, the harness appends a
+  run-end event. Scoring requires this final event, at least one completed LLM
+  scope, and balanced scopes. Older traces must be rerun.
+- **Configuration provenance.** Both provider configuration views (including
+  legacy custom providers) enter the redacted digest. A configuration or
+  evaluator change invalidates resume data.
+- **Workspace isolation.** The default workspace lives in the system temporary
+  directory. Explicit workspaces must be outside both evaluated checkouts.
 - **Resume-safe.** Completed `run_id`s in `meta.jsonl` are skipped, so a
   killed battery continues where it left off. Startup crashes (nonzero exit
   with empty output) are NOT recorded — they retry on resume instead of

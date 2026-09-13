@@ -276,6 +276,7 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
             work.mkdir(parents=True, exist_ok=True)
             make_sandbox(work)
             atof = resdir / f"{run_id}.atof.jsonl"
+            atof.unlink(missing_ok=True)
             relay_config = work / "relay-plugins.toml"
             relay_config.write_text(
                 f"""
@@ -324,6 +325,13 @@ mode = "overwrite"
                 print(f"[{arm}/{model}] {run_id} INFRA-CRASH exit={rc} "
                       f"{dt:.0f}s — not recorded, will retry on resume", flush=True)
                 continue
+            if rc == 0 and atof.exists():
+                # The CLI has exited, so the trace producer has finished flushing.
+                with atof.open("a", encoding="utf-8") as trace:
+                    trace.write("\n" + json.dumps({
+                        "kind": "evaluation", "category": "run", "scope_category": "end",
+                        "run_id": run_id,
+                    }) + "\n")
             rec = {"run_id": run_id, "task": name, "rep": rep, "arm": arm,
                    "model": model, "wall_s": round(dt, 1), "exit": rc,
                    "source_sha": source_sha,
@@ -346,7 +354,12 @@ def score_run(atof: Path):
     except (OSError, UnicodeError):
         return None
     open_scopes = Counter()
+    completed = False
     for line in lines:
+        if not line.strip():
+            continue
+        if completed:
+            return None
         try:
             ev = json.loads(line)
         except ValueError:
@@ -354,6 +367,8 @@ def score_run(atof: Path):
         if not isinstance(ev, dict):
             return None
         k, c, sc = ev.get("kind"), ev.get("category"), ev.get("scope_category")
+        if k == "evaluation" and c == "run" and sc == "end":
+            completed = ev.get("run_id") == atof.name.removesuffix(".atof.jsonl")
         if k == "scope":
             identity = (c, ev.get("scope_id", ev.get("name")))
             if sc == "start":
@@ -382,7 +397,7 @@ def score_run(atof: Path):
                 last_err_tool = ev.get("name")
             else:
                 last_err_tool = None
-    if not llm or any(open_scopes.values()):
+    if not completed or not llm or any(open_scopes.values()):
         return None
     return {"llm": llm, "tools": tools, "errs": errs,
             "retries": retries, "kb": result_bytes // 1024}

@@ -22,7 +22,12 @@ def _fmt_pending_list(subsystem: str) -> str:
     for r in records:
         origin = r.get("origin", "foreground")
         tag = " [auto]" if origin == "background_review" else ""
-        lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
+        status = wa.pending_status(r)
+        status_tag = f" [{status}]" if status != wa.PENDING else ""
+        lines.append(f"  {r['id']}{tag}{status_tag}  {r.get('summary', '')}")
+        if status == wa.NEEDS_REVIEW and r.get("last_error"):
+            error = " ".join(str(r["last_error"]).split())
+            lines.append(f"    Last failure: {error[:240]}")
     lines.append("")
     lines.append(f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id>")
     if subsystem == wa.SKILLS:
@@ -66,27 +71,56 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     records = wa.list_pending(subsystem)
     if not records:
         return f"No pending {subsystem} writes."
-    if target.lower() == "all":
-        targets = list(records)
+    approve_all = target.lower() == "all"
+    if approve_all:
+        target_ids = [rec["id"] for rec in records]
     else:
         rec = wa.get_pending(subsystem, target)
         if not rec:
             return f"No pending {subsystem} write with id '{target}'."
-        targets = [rec]
+        target_ids = [rec["id"]]
 
-    applied, failed = 0, []
-    for rec in targets:
-        ok, msg = _apply_one(subsystem, rec, memory_store)
-        if ok:
-            wa.discard_pending(subsystem, rec["id"])
+    applied, failed, skipped = 0, [], []
+    for pending_id in target_ids:
+        outcome = wa.process_pending(
+            subsystem,
+            pending_id,
+            lambda rec: _apply_one(subsystem, rec, memory_store),
+            allow_needs_review=not approve_all,
+            track_failure=subsystem == wa.MEMORY,
+        )
+        state = outcome.get("state")
+        if state == "applied":
             applied += 1
+        elif state == "skipped":
+            if approve_all:
+                status = outcome.get("record", {}).get("status", wa.PENDING)
+                skipped.append((pending_id, status))
+            else:
+                failed.append(f"{pending_id}: pending record is not actionable")
+        elif state == "missing":
+            if not approve_all:
+                return f"No pending {subsystem} write with id '{target}'."
         else:
-            failed.append(f"{rec['id']}: {msg}")
+            failed.append(f"{pending_id}: {outcome.get('error', 'approval failed')}")
 
     out = [f"Approved {applied} {subsystem} write(s)."]
     if failed:
         out.append("Failed:")
         out.extend(f"  {f}" for f in failed)
+    if skipped:
+        needs_review = sum(status == wa.NEEDS_REVIEW for _, status in skipped)
+        if needs_review == len(skipped):
+            message = (
+                f"Skipped {len(skipped)} {subsystem} write(s) marked needs_review. "
+                f"Fix the reported condition, then approve each by id or reject it."
+            )
+        else:
+            message = (
+                f"Skipped {len(skipped)} {subsystem} write(s) that are not actionable. "
+                f"Review each record before approving or rejecting it."
+            )
+        out.append(message)
     return "\n".join(out)
 
 

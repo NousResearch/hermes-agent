@@ -268,7 +268,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
-from gateway.platforms._shared import yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import send_error, yaml_env_setter as _yaml_env_setter
 
 
 async def _read_url_image_with_redirect_guard(
@@ -6544,13 +6544,6 @@ def _derive_forum_thread_name(message: str) -> str:
     return first_line[:100]
 
 
-def _standalone_sanitize_error(text) -> str:
-    """Local copy of tools.send_message_tool._sanitize_error_text (strips bot tokens); avoids hard dep."""
-    s = str(text)
-    import re as _re_san
-    return _re_san.sub(r"(Authorization:\s*Bot\s+)\S+", r"\1***", s, flags=_re_san.IGNORECASE)
-
-
 def _standalone_close_response(resp: Any) -> None:
     close = getattr(resp, "close", None)
     if callable(close):
@@ -6630,7 +6623,7 @@ async def _standalone_response_json_or_error(resp: Any, error_prefix: str):
     with the (size-capped) body text appended to ``error_prefix``."""
     if resp.status not in {200, 201}:
         body = await _standalone_read_text_limited(resp, _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES)
-        return None, {"error": f"{error_prefix} ({resp.status}): {body}"}
+        return None, send_error(f"{error_prefix} ({resp.status}): {body}")
     return await _standalone_read_json_limited(resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES), None
 
 
@@ -6672,14 +6665,14 @@ async def _standalone_send(
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     token = (getattr(pconfig, "token", None) or "").strip()
     if not token:
         # Profile-scoped read: under multiplex the env may hold another profile's token.
         from agent.secret_scope import get_secret
         token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
-        return {"error": "Discord standalone send: DISCORD_BOT_TOKEN is not set"}
+        return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set")
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
@@ -6726,7 +6719,7 @@ async def _standalone_send(
                                 if err:
                                     return err
                         except Exception as e:
-                            return {"error": _standalone_sanitize_error(f"Discord forum thread upload failed: {e}")}
+                            return send_error(f"Discord forum thread upload failed: {e}")
                     else:
                         # No media: JSON POST creates the thread with the text starter.
                         async with session.post(
@@ -6785,20 +6778,18 @@ async def _standalone_send(
                         async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
                             data, err = await _standalone_response_json_or_error(resp, "Discord API error")
                             if err:
-                                warning = _standalone_sanitize_error(f"Failed to send media {media_path}: {err['error']}")
+                                warning = send_error(f"Failed to send media {media_path}: {err['error']}")["error"]
                                 logger.error(warning)
                                 warnings.append(warning)
                                 continue
                             last_data = data
                 except Exception as e:
-                    warning = _standalone_sanitize_error(f"Failed to send media {media_path}: {e}")
+                    warning = send_error(f"Failed to send media {media_path}: {e}")["error"]
                     logger.error(warning)
                     warnings.append(warning)
         if last_data is None:
             error = "No deliverable text or media remained after processing"
-            if warnings:
-                return {"error": error, "warnings": warnings}
-            return {"error": error}
+            return {**send_error(error), **({"warnings": warnings} if warnings else {})}
         result = {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": last_data.get("id")}
         if warnings:
             result["warnings"] = warnings
@@ -6806,7 +6797,7 @@ async def _standalone_send(
     except Exception as e:
         # Include the exception type: str(TimeoutError()) is empty.
         logger.error("Discord standalone send failed", exc_info=True)
-        return {"error": _standalone_sanitize_error(f"Discord send failed: {type(e).__name__}: {e}")}
+        return send_error(f"Discord send failed: {type(e).__name__}: {e}")
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────

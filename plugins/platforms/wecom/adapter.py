@@ -32,7 +32,7 @@ from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendR
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
 from plugins.platforms.wecom.streaming import (
@@ -726,10 +726,10 @@ async def _send_via(adapter, chat_id, message, *, live: bool):
     try:
         result = await adapter.send(chat_id, message)
     except Exception as e:
-        return {"error": f"WeCom live adapter send failed: {e}" if live else f"WeCom send failed: {e}"}
+        return send_error(f"WeCom live adapter send failed: {e}" if live else f"WeCom send failed: {e}")
     if result.success:
         return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
-    return {"error": f"WeCom send failed: {result.error}"}
+    return send_error(f"WeCom send failed: {result.error}")
 
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
@@ -745,17 +745,17 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     if adapter is not None:
         return await _send_via(adapter, chat_id, message, live=True)
     if not check_wecom_requirements():
-        return {"error": "WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET."}
+        return send_error("WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET.")
     try:
         adapter = WeComAdapter(pconfig)
         if not await adapter.connect():
-            return {"error": f"WeCom: failed to connect - {getattr(adapter, 'fatal_error_message', None) or 'unknown error'}"}
+            return send_error(f"WeCom: failed to connect - {getattr(adapter, 'fatal_error_message', None) or 'unknown error'}")
         try:
             return await _send_via(adapter, chat_id, message, live=False)
         finally:
             await adapter.disconnect()
     except Exception as e:
-        return {"error": f"WeCom send failed: {e}"}
+        return send_error(f"WeCom send failed: {e}")
 
 
 _MANUAL_SETUP_STEPS = (

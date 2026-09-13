@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from agent.secret_scope import is_multiplex_active
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 
 from .cards import card_spec_to_cards_v2, format_message as _format_message
 
@@ -1641,7 +1641,7 @@ _STANDALONE_SA_ERRORS = {
 
 
 def _standalone_error(detail: str) -> Dict[str, Any]:
-    return {"error": f"Google Chat standalone send: {detail}"}
+    return send_error(f"Google Chat standalone send: {detail}")
 
 
 async def _standalone_send(
@@ -1701,7 +1701,7 @@ async def _standalone_send(
         return {"success": True, "message_id": payload.get("name")}
     except Exception as e:
         logger.debug("Google Chat standalone send raised", exc_info=True)
-        return {"error": f"Google Chat standalone send failed: {e}"}
+        return send_error(f"Google Chat standalone send failed: {e}")
 
 
 def register(ctx) -> None:

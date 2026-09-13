@@ -50,7 +50,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error, yaml_env_setter as _yaml_env_setter
 from plugins.platforms.dingtalk.inbound import collect_download_codes, extract_media, extract_text
 
 
@@ -632,26 +632,26 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     try:
         import httpx
     except ImportError:
-        return {"error": "httpx not installed"}
+        return send_error("httpx not installed")
     # Scoped: the webhook URL carries the robot's access_token and IS the delivery target — a raw
     # environ read would post a secondary profile's cron output to the default profile's robot.
     webhook_url = (getattr(pconfig, "extra", {}) or {}).get("webhook_url") or _get_scoped_secret("DINGTALK_WEBHOOK_URL", "")
     if not webhook_url:
-        return {"error": "DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config."}
+        return send_error("DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config.")
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(webhook_url, json={"msgtype": "text", "text": {"content": message}})
             resp.raise_for_status()
             data = resp.json()
         if data.get("errcode", 0) != 0:
-            return {"error": f"DingTalk API error: {data.get('errmsg', 'unknown')}"}
+            return send_error(f"DingTalk API error: {data.get('errmsg', 'unknown')}")
         return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
     except Exception as e:
         try:  # send_message_tool._error redacts access_token from webhook URLs (lazy import avoids a circular)
             from tools.send_message_tool import _error as _redact_error
             return _redact_error(f"DingTalk send failed: {e}")
         except Exception:
-            return {"error": f"DingTalk send failed: {e}"}
+            return send_error(f"DingTalk send failed: {e}")
 
 
 def interactive_setup() -> None:

@@ -58,7 +58,7 @@ from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import coerce_port, get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import coerce_port, get_scoped_secret as _get_scoped_secret, send_error
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +200,7 @@ async def _standalone_send(
     extra = getattr(pconfig, "extra", {}) or {}
     client_id, client_secret, tenant_id = _credentials(pconfig)
     if not (client_id and client_secret and tenant_id):
-        return {"error": "Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required"}
+        return send_error("Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required")
     raw_service_url = extra.get("service_url") or _get_scoped_secret("TEAMS_SERVICE_URL", "") or _DEFAULT_TEAMS_SERVICE_URL
     service_url = _validate_teams_service_url(raw_service_url)
     for failed, error in (
@@ -211,7 +211,7 @@ async def _standalone_send(
         (not _TEAMS_CONV_ID_RE.match(tenant_id), "TEAMS_TENANT_ID contains characters outside the expected set"),
         (not AIOHTTP_AVAILABLE, "aiohttp not installed")):
         if failed:
-            return {"error": f"Teams standalone send: {error}"}
+            return send_error(f"Teams standalone send: {error}")
     token_url, token_form = _bf_token_request(tenant_id, client_id, client_secret)
     activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
     try:
@@ -225,11 +225,11 @@ async def _standalone_send(
             ) as token_resp:
                 if token_resp.status >= 400:
                     body = await token_resp.text()
-                    return {"error": f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}"}
+                    return send_error(f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}")
                 token_payload = await token_resp.json()
             access_token = token_payload.get("access_token")
             if not access_token:
-                return {"error": "Teams standalone send: token response missing access_token"}
+                return send_error("Teams standalone send: token response missing access_token")
             async with session.post(
                 activities_url, json={"type": "message", "text": message, "textFormat": "markdown"},
                 headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
@@ -237,14 +237,14 @@ async def _standalone_send(
             ) as send_resp:
                 if send_resp.status >= 400:
                     body = await send_resp.text()
-                    return {"error": f"Teams standalone send: activity post failed ({send_resp.status}): {body[:300]}"}
+                    return send_error(f"Teams standalone send: activity post failed ({send_resp.status}): {body[:300]}")
                 send_payload = await send_resp.json()
         return {"success": True, "message_id": send_payload.get("id")}
     except asyncio.CancelledError:
         raise
     except Exception as e:
         logger.debug("Teams standalone send raised", exc_info=True)
-        return {"error": f"Teams standalone send failed: {e}"}
+        return send_error(f"Teams standalone send failed: {e}")
 
 
 # SDK module → names rebound into this module's globals by check_teams_requirements().

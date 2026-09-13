@@ -24,7 +24,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, profile_scoped as _profile_scoped_config_load
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, profile_scoped as _profile_scoped_config_load, send_error
 
 logger = logging.getLogger(__name__)
 
@@ -609,12 +609,12 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
 
     base_url, token = _url_and_token(pconfig)
     base_url, token = base_url.rstrip("/"), token.strip()
     if not base_url or not token:
-        return {"error": "Mattermost standalone send: MATTERMOST_URL and MATTERMOST_TOKEN must both be set"}
+        return send_error("Mattermost standalone send: MATTERMOST_URL and MATTERMOST_TOKEN must both be set")
     upload_headers = {"Authorization": f"Bearer {token}"}
     headers = {**upload_headers, "Content-Type": "application/json"}
     try:
@@ -635,7 +635,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
                                         **_req_kw) as upload_resp:
                     if upload_resp.status not in {200, 201}:
                         body = await upload_resp.text()
-                        return {"error": f"Mattermost file upload failed ({upload_resp.status}): {body[:400]}"}
+                        return send_error(f"Mattermost file upload failed ({upload_resp.status}): {body[:400]}")
                     upload_data = await upload_resp.json()
                     file_ids.extend(info["id"] for info in upload_data.get("file_infos", []) if info.get("id"))
             payload: Dict[str, Any] = {"channel_id": chat_id, "message": message}
@@ -646,13 +646,13 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
             async with session.post(f"{base_url}/api/v4/posts", headers=headers, json=payload, **_req_kw) as resp:
                 if resp.status not in {200, 201}:
                     body = await resp.text()
-                    return {"error": f"Mattermost API error ({resp.status}): {body[:400]}"}
+                    return send_error(f"Mattermost API error ({resp.status}): {body[:400]}")
                 data = await resp.json()
             return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
     except aiohttp.ClientError as exc:
-        return {"error": f"Mattermost send failed (network): {exc}"}
+        return send_error(f"Mattermost send failed (network): {exc}")
     except Exception as exc:  # noqa: BLE001
-        return {"error": f"Mattermost send failed: {exc}"}
+        return send_error(f"Mattermost send failed: {exc}")
 
 
 # --- Interactive setup wizard ---

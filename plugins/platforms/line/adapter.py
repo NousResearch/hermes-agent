@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
@@ -950,7 +950,7 @@ async def _standalone_send(
     extra = getattr(pconfig, "extra", {}) or {}
     token = _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token", "")
     if not token or not chat_id:
-        return {"error": "LINE standalone send: missing token or chat_id"}
+        return send_error("LINE standalone send: missing token or chat_id")
     messages = _text_messages(message or "") or [_text_message("")]
     if media_files:  # tell the recipient media was generated but not delivered
         messages.append(_text_message(f"[{len(media_files)} attachment(s) generated; not deliverable from cron]"))
@@ -959,7 +959,7 @@ async def _standalone_send(
         await _LineClient(token).push(chat_id, messages)
         return {"success": True, "message_id": None}
     except Exception as exc:
-        return {"error": str(exc)}
+        return send_error(str(exc))
 
 
 _SETUP_PROMPTS = (  # (env var, prompt, masked)

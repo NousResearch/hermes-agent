@@ -32,7 +32,7 @@ from agent.secret_scope import (
     UnscopedSecretError as _UnscopedSecretError, current_secret_scope as _current_secret_scope,
     get_secret as _scoped_get_secret, is_multiplex_active as _is_multiplex_active,
 )
-from gateway.platforms._shared import profile_scoped as _profile_scoped
+from gateway.platforms._shared import profile_scoped as _profile_scoped, send_error
 
 
 def _get_scoped_secret(name, default=None):
@@ -2020,14 +2020,14 @@ async def _standalone_send(
     try:
         auth_tag = _resolve_auth_tag(extra)
     except ValueError as exc:
-        return {"error": f"Buzz standalone send: {exc}"}
+        return send_error(f"Buzz standalone send: {exc}")
     cli_path = _configured_cli_path(extra)
     if not relay or not private_key:
-        return {"error": "Buzz standalone send: BUZZ_RELAY_URL and BUZZ_PRIVATE_KEY must be configured"}
+        return send_error("Buzz standalone send: BUZZ_RELAY_URL and BUZZ_PRIVATE_KEY must be configured")
     if not cli_path:
-        return {"error": "Buzz standalone send: buzz CLI binary not found"}
+        return send_error("Buzz standalone send: buzz CLI binary not found")
     if not (target := (chat_id or "").strip() or _configured_home_channel(extra)):
-        return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
+        return send_error("Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)")
     args = ["messages", "send", "--channel", target, "--content", "-"]
     # Same reply_to_mode / reply_in_thread gate as the live adapter.
     if thread_id and _reply_to_mode(pconfig, extra) != "off":
@@ -2044,12 +2044,12 @@ async def _standalone_send(
     except asyncio.CancelledError:
         raise
     except OSError as e:
-        return {"error": f"Buzz standalone send failed to launch CLI: {_bounded_cli_message(str(e))}"}
+        return send_error(f"Buzz standalone send failed to launch CLI: {_bounded_cli_message(str(e))}")
     if code != 0:
-        return {"error": f"Buzz standalone send failed: {_cli_error_message(err, code)}"}
+        return send_error(f"Buzz standalone send failed: {_cli_error_message(err, code)}")
     event_id, receipt_error = _parse_send_receipt(out)
     if receipt_error:
-        return {"error": f"Buzz standalone send failed: {receipt_error}"}
+        return send_error(f"Buzz standalone send failed: {receipt_error}")
     result = {"success": True, "message_id": event_id}
     if media_files:
         result["media_delivered"] = True

@@ -1230,3 +1230,149 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# kanban_block: the review-lane no-verdict disposition
+# ---------------------------------------------------------------------------
+
+
+def _review_worker_env(monkeypatch, tmp_path, *, goal_mode: bool = False):
+    """Isolated HERMES_HOME with one task claimed out of the ``review`` lane,
+    and the worker env pointing at that claimed review run."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-reviewer")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="review-no-verdict", assignee="test-worker", goal_mode=goal_mode,
+        )
+        implementation = kb.claim_task(conn, tid, claimer="test-worker")
+        assert kb.request_review(
+            conn, tid, summary="ready for independent review",
+            reviewer="test-reviewer", expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, tid, claimer="test-reviewer")
+        assert review is not None
+        run_id = review.current_run_id
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    return tid
+
+
+def test_block_schema_closes_review_disposition_to_no_verdict():
+    """The accepted set is exactly ``none`` (an unknown value must not be
+    silently downgraded to an ordinary block), the field is optional, and the
+    tool description separates an interruption from an Escalate verdict."""
+    from tools.kanban_tools_schemas import KANBAN_BLOCK_SCHEMA
+
+    params = KANBAN_BLOCK_SCHEMA["parameters"]
+    assert params["properties"]["review_disposition"]["enum"] == ["none"]
+    assert "review_disposition" not in params["required"]
+    description = KANBAN_BLOCK_SCHEMA["description"]
+    assert "no verdict" in description.lower()
+    assert "Escalate" in description
+
+
+def test_block_no_verdict_handler_records_review_interruption(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    tid = _review_worker_env(monkeypatch, tmp_path)
+
+    out = json.loads(kt._handle_block({
+        "reason": "no verdict: the dispatched review execution was retired",
+        "review_disposition": "none",
+    }))
+
+    assert out.get("ok") is True, out
+    assert out["status"] == "blocked"
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert (task.block_kind, task.block_recurrences) == (None, 0)
+        events = kb.list_events(conn, tid)
+        blocked = [e for e in events if e.kind == "blocked"][-1]
+        assert blocked.payload["verdict"] == "none"
+        assert blocked.payload["recurrence_exempt"] is True
+        assert blocked.payload["source_status"] == "review"
+        assert not [e for e in events if e.kind == "block_loop_detected"]
+
+
+def test_block_no_verdict_rejected_for_implementation_run(monkeypatch, worker_env):
+    """A run claimed from the implementation lane cannot record a no-verdict
+    interruption, and the refusal mutates nothing."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        before = kb.get_task(conn, worker_env)
+        before_events = kb.list_events(conn, worker_env)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(before.current_run_id))
+
+    out = json.loads(kt._handle_block({
+        "reason": "no verdict: nothing was reviewed",
+        "review_disposition": "none",
+    }))
+
+    assert "error" in out, out
+    assert "review" in out["error"]
+    with kbc.connect() as conn:
+        after = kb.get_task(conn, worker_env)
+        assert (after.status, after.current_run_id) == ("running", before.current_run_id)
+        assert (after.block_kind, after.block_recurrences) == (None, 0)
+        assert kb.list_events(conn, worker_env) == before_events
+
+
+def test_block_rejects_unknown_review_disposition(worker_env):
+    """An unsupported disposition is refused instead of being treated as an
+    ordinary block."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_block({
+        "reason": "looks like an escalation",
+        "review_disposition": "escalate",
+    }))
+
+    assert "error" in out, out
+    assert "review_disposition" in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+
+
+def test_block_no_verdict_allowed_for_goal_mode_review_run(monkeypatch, tmp_path):
+    """The goal-mode kind gate must not reject a valid review-origin no-verdict
+    call: an interrupted goal-mode review records the interruption instead of
+    being forced through the completion judge."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    tid = _review_worker_env(monkeypatch, tmp_path, goal_mode=True)
+
+    out = json.loads(kt._handle_block({
+        "reason": "no verdict: the goal-mode review execution was superseded",
+        "kind": "capability",
+        "review_disposition": "none",
+    }))
+
+    assert out.get("ok") is True, out
+    assert out["status"] == "blocked"
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert (task.block_kind, task.block_recurrences) == (None, 0)

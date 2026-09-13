@@ -2913,10 +2913,18 @@ def edit_completed_task_result(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    review_disposition: Optional[str] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``transient`` still counts toward the loop breaker
-    so a forever-flaky task escalates. True on any transition."""
+    so a forever-flaky task escalates. True on any transition.
+
+    ``review_disposition="none"`` records a review execution that produced no
+    candidate verdict: valid only for a claimed run whose provenance is
+    ``review``, recurrence-exempt, and always ``blocked``. Everywhere else it
+    is rejected with no task, run, event, or counter mutation."""
+    if review_disposition is not None and review_disposition != "none":
+        raise ValueError("review_disposition must be 'none' or None")
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
@@ -2926,17 +2934,23 @@ def block_task(
         if cur_row is None:
             return False
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
+        if review_disposition == "none" and source_status != "review":
+            # Kernel-boundary enforcement, not just a caller check: an explicit
+            # no-verdict disposition is only meaningful for a claimed run that
+            # originated from the review lane.
+            return False
         new_status, event_kind, set_sql, params, payload = _route_block(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
+            review_disposition=review_disposition,
         )
+        set_clause = f",\n                       {set_sql}" if set_sql else ""
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',
                        claim_lock    = NULL,
                        claim_expires = NULL,
-                       worker_pid    = NULL,
-                       {set_sql}
+                       worker_pid    = NULL{set_clause}
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """
@@ -2951,7 +2965,10 @@ def block_task(
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
         blocked_task = get_task(conn, task_id)
-        if kind == "dependency":
+        # The dependency lane historically fires inside the txn; a no-verdict
+        # interruption lands in `blocked`, so it keeps the ordinary
+        # (post-commit) blocked notifier path.
+        if kind == "dependency" and review_disposition is None:
             # Historical ordering: the dependency lane fires inside the txn.
             _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
             return True
@@ -2962,6 +2979,7 @@ def block_task(
 def _route_block(
     kind: Optional[str], reason: Optional[str], source_status: str, *,
     prev_kind: Optional[str], prev_recurrences: int,
+    review_disposition: Optional[str] = None,
 ) -> tuple[str, str, str, tuple, dict]:
     """``(new_status, event_kind, set_sql, params, payload)`` for :func:`block_task`.
 
@@ -2973,8 +2991,21 @@ def _route_block(
     incoming one means blocked -> unblocked -> re-block for the same cause
     (un-typed None compares equal to a prior un-typed block). At
     ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+
+    ``review_disposition="none"`` is an explicit no-verdict review
+    interruption, not a candidate verdict, so it takes precedence over kind
+    routing and never consumes recurrence: it lands in ``blocked`` with no
+    ``block_kind``/``block_recurrences`` write and cannot reach
+    ``block_loop_detected``. The caller guarantees a review-origin run.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
+    if review_disposition == "none":
+        return "blocked", "blocked", "", (), {
+            **payload,
+            "recurrence_exempt": True,
+            "verdict": "none",
+            "review_disposition": review_disposition,
+        }
     if kind == "dependency":
         return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
     recurrences = prev_recurrences + 1 if prev_kind == kind else 1

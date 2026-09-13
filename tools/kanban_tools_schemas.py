@@ -176,7 +176,10 @@ KANBAN_BLOCK_SCHEMA = _schema(
         "``reason`` is shown to the human on the board. If a task keeps "
         "getting unblocked and re-blocked for the same reason, it is "
         "auto-escalated to triage. Use for genuine blockers only — don't "
-        "block on things you can resolve yourself."
+        "block on things you can resolve yourself. On the review lane this is "
+        "the BLOCKED/Escalate verdict; a review run that produced NO verdict "
+        "at all uses ``review_disposition='none'`` instead, which is an "
+        "interruption record rather than a verdict."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
@@ -192,6 +195,20 @@ KANBAN_BLOCK_SCHEMA = _schema(
                 "Why you're blocked. 'dependency' waits in todo and "
                 "resumes automatically; the others surface to a human. "
                 "Omit only if none apply."
+            ),
+        },
+        "review_disposition": {
+            "type": "string",
+            "enum": ["none"],
+            "description": (
+                "Review lane only. Use 'none' when this review run was "
+                "interrupted or invalidated and you cannot honestly issue any "
+                "candidate verdict. It records a no-verdict interruption: the "
+                "task blocks, can be unblocked back to review, and never "
+                "counts toward block-loop escalation. Genuine uncertainty, an "
+                "external prerequisite, or a required human decision is an "
+                "ordinary Escalate block, NOT this. Valid only for a run "
+                "claimed from review."
             ),
         },
     },

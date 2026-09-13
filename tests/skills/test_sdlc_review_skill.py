@@ -93,3 +93,21 @@ def test_review_lenses_vary_per_round(skill_text: str) -> None:
     assert "`terminal`" in lenses
     # Fan-out note: parallel reviewers get different briefs.
     assert "`delegate_task`" in lenses
+
+
+def test_no_verdict_interruption_stays_distinct_from_escalation(skill_text: str) -> None:
+    """A review execution that produced no verdict has its own disposition and
+    is documented as an interruption, not as a fourth candidate verdict."""
+    verdicts = skill_text.split("### 3. Choose one verdict", 1)[1].split("### 4.", 1)[0]
+
+    # Approve / request changes / escalate remain the verdicts, each with its
+    # own terminal action.
+    assert "#### Approve" in verdicts
+    assert "#### Request changes" in verdicts
+    assert "#### Escalate" in verdicts
+
+    assert "#### No verdict" in verdicts
+    assert 'review_disposition="none"' in verdicts
+    assert "not a fourth candidate verdict" in verdicts
+    # The interruption is not a substitute for a genuine escalation.
+    assert "ordinary `kanban_block` Escalate" in verdicts

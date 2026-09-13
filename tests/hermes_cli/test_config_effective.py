@@ -4,6 +4,7 @@ bootstrap modules) goes through."""
 import textwrap
 
 import pytest
+import yaml
 
 
 @pytest.fixture
@@ -52,20 +53,12 @@ MANAGED_YAML = """
     """
 
 
-def _legacy_gateway_pipeline(config_path):
-    """The pre-unification gateway sequence (raw read → overlay → model-key canon → ${VAR} expansion)."""
-    from hermes_cli import managed_scope
-    from hermes_cli.config import _expand_env_vars, _normalize_root_model_keys, read_user_config_raw
-
-    raw = managed_scope.apply_managed_overlay(read_user_config_raw(config_path))
-    return _expand_env_vars(_normalize_root_model_keys(raw))
-
-
-def test_effective_equals_legacy_gateway_pipeline_and_carries_no_defaults(homes):
-    """Contract: the shared loader returns byte-for-byte what the gateway's hand-rolled pipeline did
-    for a user file with a managed overlay and ``${VAR}`` refs on both layers — so per-message
-    gateway config reads (and the system prompt built from them) do not change — while never
-    merging DEFAULT_CONFIG (a missing key stays missing)."""
+def test_effective_is_user_plus_managed_plus_env_with_no_defaults(homes):
+    """Contract as a fixture: given user config.yaml X, managed overlay Y and env Z, the effective
+    dict is exactly this literal — ``${VAR}`` expanded on both layers, managed keys winning,
+    root ``provider`` migrated under ``model``, and no DEFAULT_CONFIG key introduced (a missing
+    key stays missing). Per-message gateway reads (and the system prompt built from them) are
+    pinned by this shape, not by re-running the implementation's primitives."""
     from hermes_cli.config import DEFAULT_CONFIG
     from hermes_cli.config_effective import load_user_config_effective
 
@@ -75,13 +68,16 @@ def test_effective_equals_legacy_gateway_pipeline_and_carries_no_defaults(homes)
 
     effective = load_user_config_effective(home / "config.yaml")
 
-    assert effective == _legacy_gateway_pipeline(home / "config.yaml")
-    assert effective["model"] == {
-        "default": "user/model", "provider": "custom", "api_key": "user-secret",
-        "base_url": "https://managed.example"}
-    assert effective["display"]["skin"] == "managed-skin"
-    assert "provider" not in effective  # root key migrated under ``model`` (canonicalization applied)
-    assert "agent" not in effective and "agent" in DEFAULT_CONFIG  # no DEFAULT_CONFIG merge
+    assert effective == {
+        "model": {
+            "default": "user/model",
+            "provider": "custom",
+            "api_key": "user-secret",
+            "base_url": "https://managed.example",
+        },
+        "display": {"skin": "managed-skin"},
+    }
+    assert "agent" in DEFAULT_CONFIG  # would be present if defaults had been merged
 
 
 def test_broken_yaml_serves_last_good_and_fail_closed_raises(homes):
@@ -98,8 +94,26 @@ def test_broken_yaml_serves_last_good_and_fail_closed_raises(homes):
     _reset_caches_keep_last_good()
 
     assert load_user_config_effective(home / "config.yaml") == good
-    with pytest.raises(Exception):
+    with pytest.raises(yaml.YAMLError):  # the type _refresh_fallback_model's own last-good path keys on
         load_user_config_effective(home / "config.yaml", fail_closed=True)
+
+
+def test_good_backup_is_written_only_for_the_active_home(homes, tmp_path):
+    """Reading ANOTHER profile's config (doctor, TUI cwd lookup) is a read: it must not create
+    ``backups/config/`` inside that profile. The active home keeps the last-good copy."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    other = tmp_path / "other-profile"
+    other.mkdir()
+    _write(home / "config.yaml", USER_YAML)
+    _write(other / "config.yaml", USER_YAML)
+
+    load_user_config_effective(other / "config.yaml")
+    load_user_config_effective(home / "config.yaml")
+
+    assert not (other / "backups").exists()
+    assert list((home / "backups" / "config").glob("config.yaml.good.*"))
 
 
 def _reset_caches_keep_last_good():

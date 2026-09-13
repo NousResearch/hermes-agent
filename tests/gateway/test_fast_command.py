@@ -154,7 +154,6 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     runner = _make_runner()
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(
         gateway_run,
         "_load_gateway_config",

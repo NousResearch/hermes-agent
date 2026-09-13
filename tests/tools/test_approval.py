@@ -115,13 +115,34 @@ class TestDetectDangerousRm:
 
 
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
+        # The exemption is canonical-only by contract (see
+        # test_symlinked_temp_dir_only_exempts_canonical_target), so the operand must be
+        # spelled canonically or this fails wherever /tmp is a symlink, e.g. macOS (#70797).
+        canonical_tmp = os.path.realpath("/tmp")
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
-                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
+                assert detect_dangerous_command(
+                    f"rm -f {canonical_tmp}/{prefix}example.py"
+                ) == (
                     False,
                     None,
                     None,
                 )
+
+    @pytest.mark.windows_only
+    def test_verification_cleanup_exempt_when_temp_dir_is_a_windows_path(self):
+        """#95456: on Windows the exemption can never fire, so Hermes prompts for its own scratch file.
+
+        Under git-bash the model writes the MSYS form of the path (that is what the shell resolves),
+        while ``tempfile.gettempdir()`` returns the native form. ``os.path.join`` then builds a
+        backslash path that never equals the operand, so the ``rm`` falls through to
+        "delete in root path" and blocks on an approval prompt for a file Hermes itself just created.
+        """
+        native_temp = "C:" + chr(92) + "Temp"
+        msys_operand = "/c/Temp/hermes-verify-example.py"
+
+        with mock_patch("tempfile.gettempdir", return_value=native_temp):
+            assert detect_dangerous_command(f"rm -f {msys_operand}") == (False, None, None)
 
     def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
         real_temp = tmp_path / "real-temp"

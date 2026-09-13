@@ -19,6 +19,36 @@ import hermes_cli.models as _models_mod
 from hermes_cli import models_local
 from hermes_cli import models_validate
 
+
+def test_suppressed_claude_code_source_is_absent_from_model_cache_fingerprint(tmp_path, monkeypatch):
+    import os
+    from pathlib import Path
+    from hermes_cli.auth import suppress_credential_source
+
+    hermes_home = tmp_path / "profile"
+    fake_home = tmp_path / "home"
+    hermes_home.mkdir()
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    suppress_credential_source("anthropic", "claude_code")
+    real_stat = os.stat
+    monkeypatch.setattr(
+        _models_mod.os.path, "expanduser",
+        lambda rel: str(fake_home / rel.removeprefix("~/")),
+    )
+    probed = []
+
+    def tracking_stat(path, *args, **kwargs):
+        probed.append(str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(_models_mod.os, "stat", tracking_stat)
+    _models_mod._credential_fingerprint("anthropic")
+
+    claude_path = fake_home / ".claude" / ".credentials.json"
+    assert claude_path not in {Path(path) for path in probed}
+
 LIVE_OPENROUTER_MODELS = [
     ("anthropic/claude-opus-4.6", "recommended"),
     ("qwen/qwen3.7-max", ""),

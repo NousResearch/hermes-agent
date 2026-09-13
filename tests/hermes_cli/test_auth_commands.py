@@ -116,6 +116,49 @@ def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     assert entry["access_token"] == "sk-or-manual"
 
 
+def test_failed_auth_add_preserves_provider_suppression(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {"anthropic": ["claude_code"]},
+    })
+    from hermes_cli import auth_commands
+    from hermes_cli.auth import is_source_suppressed
+
+    monkeypatch.setattr(
+        auth_commands, "_add_credential",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("cancelled")),
+    )
+    args = type("Args", (), {
+        "provider": "anthropic", "auth_type": "oauth", "priority": None,
+    })()
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        auth_commands.auth_add_command(args)
+
+    assert is_source_suppressed("anthropic", "claude_code") is True
+
+
+def test_successful_auth_add_clears_provider_suppression(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {"anthropic": ["claude_code"]},
+    })
+    from hermes_cli.auth import is_source_suppressed
+    from hermes_cli.auth_commands import auth_add_command
+
+    args = type("Args", (), {
+        "provider": "anthropic", "auth_type": "api-key", "api_key": "sk-ant-test",
+        "label": "manual", "priority": None,
+    })()
+    auth_add_command(args)
+
+    assert is_source_suppressed("anthropic", "claude_code") is False
+
+
 def test_auth_add_configured_provider_uses_canonical_pool_key(tmp_path, monkeypatch):
     """A keyed providers row must keep its runtime slug in the auth pool."""
     hermes_home = tmp_path / "hermes"
@@ -954,6 +997,7 @@ def test_unsuppress_credential_source_clears_marker(tmp_path, monkeypatch):
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     # Empty suppressed_sources dict should be cleaned up entirely
     assert "suppressed_sources" not in payload
+    assert payload["suppression_generation"] == 2
 
 
 def test_unsuppress_credential_source_preserves_other_markers(tmp_path, monkeypatch):

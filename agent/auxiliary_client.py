@@ -3505,8 +3505,8 @@ def _refresh_anthropic_credentials(failed_api_key: str = "") -> bool:
     pool = load_pool("anthropic")
     if pool.entry_id_for_api_key(token):
         return pool.try_refresh_matching(api_key_hint=token) is not None
-    from hermes_cli.auth import is_source_suppressed
-    if is_source_suppressed("anthropic", "claude_code"):
+    from agent.anthropic_credentials import claude_code_source_is_suppressed
+    if claude_code_source_is_suppressed():
         return False
     from agent.anthropic_credentials import read_claude_code_credentials, _refresh_oauth_token
     creds = read_claude_code_credentials()

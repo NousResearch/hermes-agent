@@ -418,24 +418,50 @@ def _pricing_entry_from_metadata(
         return None
     pricing = metadata[model_id].get("pricing") or {}
 
-    def per_million(key: str, *aliases: str) -> Optional[Decimal]:
-        raw = pricing.get(key)
+    def per_million(row: dict[str, Any], key: str, *aliases: str) -> Optional[Decimal]:
+        raw = row.get(key)
         for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
-            raw = raw or pricing.get(alias)
+            raw = raw or row.get(alias)
         value = _to_decimal(raw)
         return None if value is None else value * _ONE_MILLION
 
-    prompt = per_million("prompt")
-    completion = per_million("completion")
+    prompt = per_million(pricing, "prompt")
+    completion = per_million(pricing, "completion")
     request = _to_decimal(pricing.get("request"))
     if prompt is None and completion is None and request is None:
         return None
+
+    tier: dict[str, Any] = {}
+    overrides = pricing.get("overrides")
+    if isinstance(overrides, (list, tuple)):
+        for override in overrides:
+            if not isinstance(override, dict):
+                continue
+            raw_threshold = override.get("min_prompt_tokens")
+            try:
+                threshold = int(raw_threshold) if not isinstance(raw_threshold, bool) else None
+            except (TypeError, ValueError):
+                threshold = None
+            if threshold is None or threshold < 0:
+                continue
+            tier = {
+                "tier_threshold_tokens": threshold,
+                "input_cost_per_million_above": per_million(override, "prompt"),
+                "output_cost_per_million_above": per_million(override, "completion"),
+                "cache_read_cost_per_million_above": per_million(
+                    override, "cache_read", "cached_prompt", "input_cache_read"
+                ),
+                "cache_write_cost_per_million_above": per_million(
+                    override, "cache_write", "cache_creation", "input_cache_write"
+                ),
+            }
+            break
     return PricingEntry(
         input_cost_per_million=prompt, output_cost_per_million=completion,
-        cache_read_cost_per_million=per_million("cache_read", "cached_prompt", "input_cache_read"),
-        cache_write_cost_per_million=per_million("cache_write", "cache_creation", "input_cache_write"),
+        cache_read_cost_per_million=per_million(pricing, "cache_read", "cached_prompt", "input_cache_read"),
+        cache_write_cost_per_million=per_million(pricing, "cache_write", "cache_creation", "input_cache_write"),
         request_cost=request, source="provider_models_api", source_url=source_url,
-        pricing_version=pricing_version, fetched_at=_UTC_NOW(),
+        pricing_version=pricing_version, fetched_at=_UTC_NOW(), **tier,
     )
 
 

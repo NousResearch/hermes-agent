@@ -173,6 +173,42 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
     assert entry.output_cost_per_million == Decimal("2")
 
 
+def test_openrouter_metadata_override_prices_every_prompt_bucket_at_tier(monkeypatch):
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {
+            "openai/tiered": {
+                "pricing": {
+                    "prompt": "0.000002",
+                    "completion": "0.000010",
+                    "input_cache_read": "0.0000002",
+                    "input_cache_write": "0.0000025",
+                    "overrides": [{
+                        "min_prompt_tokens": 272_000,
+                        "prompt": "0.000004",
+                        "completion": "0.000015",
+                        "input_cache_read": "0.0000004",
+                        "input_cache_write": "0.000005",
+                    }],
+                }
+            }
+        },
+    )
+
+    result = estimate_usage_cost(
+        "openai/tiered",
+        CanonicalUsage(
+            input_tokens=100_000,
+            cache_read_tokens=100_000,
+            cache_write_tokens=100_000,
+            output_tokens=10_000,
+        ),
+        provider="openrouter",
+    )
+
+    assert result.amount_usd == Decimal("1.09")
+
+
 
 
 def test_deepseek_deprecated_aliases_price_as_flash():

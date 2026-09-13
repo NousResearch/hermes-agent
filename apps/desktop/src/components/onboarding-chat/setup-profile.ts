@@ -275,10 +275,14 @@ export function buildHandoffCompleteNote(task: string): string {
 export async function ensureSetupProfile(request: GatewayRequest): Promise<void> {
   try {
     await request('profiles.ensure_onboarding', { soul: composeSetupSoul() })
+
     return
   } catch (error) {
-    if (!isMissingRpcMethod(error)) throw error
+    if (!isMissingRpcMethod(error)) {
+      throw error
+    }
   }
+
   try {
     await request('profiles.create', {
       description: 'Where Hermes met you — walks your first run, then checks in as you find your feet.',

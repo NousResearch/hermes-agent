@@ -41,7 +41,9 @@ export function continuationTarget(sessionId: string | null): ContinuationTarget
   if (sessionId) {
     const owner = knownOwnerForSession(sessionId)
 
-    if (!owner) return null
+    if (!owner) {
+      return null
+    }
 
     return {
       owner: typeof owner === 'string'
@@ -108,6 +110,7 @@ export async function refreshContinuation(
     if (generations.get(key) === generation && typeof status?.continuation_required === 'boolean') {
       const current = $freeTierContinuation.get()
       const previous = current[key]?.status
+
       if (previous?.continuation_required !== status.continuation_required || previous?.tool_calls_used !== status.tool_calls_used) {
         $freeTierContinuation.set({ ...current, [key]: { target, status } })
       }
@@ -122,10 +125,15 @@ export async function refreshContinuation(
 /** Runs before optimistic insertion or attachment/draft mutation, including
  * queue drains. The gateway still enforces the same rule for races/other clients. */
 export async function blockContinuationSend(sessionId: string | null): Promise<boolean> {
-  if (continuationSuppressed()) return false
+  if (continuationSuppressed()) {
+    return false
+  }
 
   const target = continuationTarget(sessionId)
-  if (!target) return false // Unresolved owners are handled by the submit router.
+
+  if (!target) {
+    return false // Unresolved owners are handled by the submit router.
+  }
 
   return refreshContinuation(target)
 }

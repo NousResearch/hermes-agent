@@ -86,6 +86,7 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
     void queryClient.invalidateQueries({ queryKey: ['billing'] })
     void queryClient.invalidateQueries({ queryKey: ['model-options'] })
     void getGlobalModelOptions({ refresh: true }, owner?.scope).catch(() => undefined)
+
     if (!owner) {
       void refreshFreeTierStatus(requestGateway)
       void refreshOnboardingProviders()

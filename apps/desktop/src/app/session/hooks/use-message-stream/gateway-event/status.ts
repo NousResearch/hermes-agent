@@ -6,10 +6,10 @@ import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgent
 import { clearClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting, setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
+import { continuationTarget, refreshContinuation } from '@/store/free-tier-continuation'
 import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
-import { continuationTarget, refreshContinuation } from '@/store/free-tier-continuation'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
@@ -139,7 +139,11 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
 
     if (notice?.key === 'free_tier.limit') {
       const target = continuationTarget(sessionId ?? null)
-      if (target && sessionId) void refreshContinuation(target)
+
+      if (target && sessionId) {
+        void refreshContinuation(target)
+      }
+
       return true
     }
 
@@ -202,7 +206,10 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
 
     if (payload?.code === 'free_tier_limit') {
       const target = continuationTarget(sessionId ?? null)
-      if (target && sessionId) void refreshContinuation(target)
+
+      if (target && sessionId) {
+        void refreshContinuation(target)
+      }
     } else if (looksLikeProviderSetup) {
       requestDesktopOnboarding(errorMessage)
     } else if (isDiskFullErrorMessage(errorMessage)) {

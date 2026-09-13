@@ -1,7 +1,6 @@
 import { type MutableRefObject, useCallback } from 'react'
 
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
-import type { FreeTierStatus } from '@/types/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
@@ -34,6 +33,7 @@ import {
   touchSessionActivity
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import type { FreeTierStatus } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
@@ -488,12 +488,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       const continuationSessionId = (targetStoredSessionId ? getRuntimeIdForStoredSession(targetStoredSessionId) : null)
         ?? sessionId ?? targetStoredSessionId
+
       if (await blockContinuationSend(continuationSessionId)) {
         releaseSubmitLock()
+
         return false
       }
+
       if (sessionDriftReason()) {
         releaseSubmitLock()
+
         return false
       }
 
@@ -872,13 +876,19 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         const refusal = err as { code?: string; data?: { code?: string; reason?: string; free_tier?: FreeTierStatus } }
+
         if (refusal?.code === 'free_tier_limit' || refusal?.data?.code === 'free_tier_limit' || refusal?.data?.reason === 'free_tier_limit') {
           dropOptimistic(sessionId)
           const target = continuationTarget(sessionId)
+
           if (target) {
-            if (refusal.data?.free_tier) recordContinuationRefusal(target, refusal.data.free_tier)
+            if (refusal.data?.free_tier) {
+              recordContinuationRefusal(target, refusal.data.free_tier)
+            }
+
             void refreshContinuation(target)
           }
+
           return false
         }
 

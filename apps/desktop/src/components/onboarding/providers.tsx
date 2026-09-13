@@ -3,6 +3,8 @@ import { useI18n } from '@/i18n'
 import { Check, ChevronRight, Terminal } from '@/lib/icons'
 import type { OAuthProvider } from '@/types/hermes'
 
+export const FEATURED_ID = 'nous'
+
 const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
   nous: { order: 0, title: 'Nous Portal' },
   'openai-codex': { order: 1, title: 'ChatGPT or Codex Subscription' },

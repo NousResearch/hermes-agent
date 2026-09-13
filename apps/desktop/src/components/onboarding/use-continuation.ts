@@ -57,7 +57,9 @@ export function useContinuation() {
   const busy = running || Boolean((runtimeId || storedId) && !hydrated)
 
   useEffect(() => {
-    if (!target || suppressed || busy || gatewayState !== 'open') return
+    if (!target || suppressed || busy || gatewayState !== 'open') {
+      return
+    }
 
     const request = continuationRequester(target)
     const pull = () => void refreshContinuation(target, request)

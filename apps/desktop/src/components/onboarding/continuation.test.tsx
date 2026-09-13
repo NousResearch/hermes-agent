@@ -3,9 +3,11 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import { $freeTierContinuation, continuationRequired, refreshContinuation } from '@/store/free-tier-continuation'
 import type { ContinuationTarget } from '@/store/free-tier-continuation'
+
 import { FreeTierReadyPanel } from '.'
 
 const target: ContinuationTarget = { owner: { connectionId: 'remote-a', profile: 'writer' }, sessionId: 'chat-a' }
+
 const status = (required: boolean) => ({
   has_guest: true, enabled: true, available: true, notice_pending: false, model: 'nous/welcome', label: 'Nous',
   tool_calls_used: 10, tool_call_cap: 10, capped: true, continuation_required: required
@@ -15,7 +17,7 @@ afterEach(() => { cleanup(); $freeTierContinuation.set({}) })
 
 it('the ready variant offers all three existing setup doors without a bypass', () => {
   const onSignIn = vi.fn(), onLocal = vi.fn(), onProviders = vi.fn(), onDismiss = vi.fn()
-  render(<FreeTierReadyPanel leaving={false} onDismiss={onDismiss} continuation={{ onSignIn, onLocal, onProviders }} />)
+  render(<FreeTierReadyPanel continuation={{ onSignIn, onLocal, onProviders }} leaving={false} onDismiss={onDismiss} />)
   fireEvent.click(screen.getByRole('button', { name: 'Sign in / create account' }))
   fireEvent.click(screen.getByRole('button', { name: 'Use local model' }))
   fireEvent.click(screen.getByRole('button', { name: 'Other providers' }))

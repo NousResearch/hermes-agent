@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
+
 import { ensureSetupProfile } from './setup-profile'
 
 beforeEach(() => vi.clearAllMocks())

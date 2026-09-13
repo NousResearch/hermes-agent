@@ -1,7 +1,6 @@
 import { atom } from 'nanostores'
 
 import { cancelOAuthSession, listOAuthProviders, pollOAuthSession, type ProfileScope, startOAuthLogin } from '@/hermes'
-
 import type { FreeTierStatus } from '@/types/hermes'
 
 import { type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from './free-tier'
@@ -275,14 +274,20 @@ async function pollOnce(sessionId: string, requestGateway: FreeTierRequester, mi
     // changed: reload its env and re-read the free-tier verdict before the
     // completed screen claims the user is signed in.
     await requestGateway('reload.env').catch(() => undefined)
-    if (!owner) await refreshFreeTierStatus(requestGateway)
+
+    if (!owner) {
+      await refreshFreeTierStatus(requestGateway)
+    }
 
     if (stale()) {
       return
     }
 
     await owner?.onCompleted?.()
-    if (stale()) return
+
+    if (stale()) {
+      return
+    }
 
     set({
       email: result.account_email ?? null,

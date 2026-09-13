@@ -2,17 +2,20 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
+import type * as Hermes from '@/hermes'
+import { listOAuthProviders } from '@/hermes'
+import { $freeTierContinuation, continuationKey } from '@/store/free-tier-continuation'
+import { closeFreeTierSignIn } from '@/store/free-tier-sign-in'
+import type * as Gateway from '@/store/gateway'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $onboardingGate } from '@/store/onboarding-gate'
 import { $activeSessionId, $gatewayState, $selectedStoredSessionId, setSessionOwnerHint } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
-import { $freeTierContinuation, continuationKey } from '@/store/free-tier-continuation'
-import { closeFreeTierSignIn } from '@/store/free-tier-sign-in'
+
 import { DesktopOnboardingOverlay } from '.'
-import { listOAuthProviders } from '@/hermes'
 
 vi.mock('@/hermes', async importOriginal => ({
-  ...await importOriginal<typeof import('@/hermes')>(),
+  ...await importOriginal<typeof Hermes>(),
   listOAuthProviders: vi.fn(async () => ({ providers: [
     { id: 'openai-codex', name: 'ChatGPT or Codex Subscription', flow: 'device_code', cli_command: 'hermes model', docs_url: '', status: { logged_in: false } }
   ] })),
@@ -21,7 +24,7 @@ vi.mock('@/hermes', async importOriginal => ({
 
 vi.mock('@/lib/onboarding-enabled', () => ({ isOnboardingEnabled: () => true }))
 vi.mock('@/store/gateway', async importOriginal => ({
-  ...await importOriginal<typeof import('@/store/gateway')>(),
+  ...await importOriginal<typeof Gateway>(),
   requestGatewayForAgent: vi.fn(async () => ({ has_guest: true, continuation_required: true, tool_calls_used: 10 }))
 }))
 

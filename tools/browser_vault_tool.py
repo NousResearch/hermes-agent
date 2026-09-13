@@ -31,6 +31,8 @@ import secrets
 import logging
 from typing import Any, Dict, Optional
 
+from tools.ansi_strip import sanitize_vault_metadata
+
 logger = logging.getLogger(__name__)
 
 
@@ -227,12 +229,15 @@ def browser_vault_list() -> str:
             errors.append({"backend": backend.name, "error": str(exc)[:200]})
             continue
         for meta in metas:
-            entry = {"handle": meta.id, "backend": backend.name, "label": meta.label, "kind": meta.kind,
-                     "origin": meta.origin, "available": meta.kind == "login" or bool(meta.origin)}
+            # Vault metadata is attacker-influenced (database writers control labels/identifiers);
+            # strip invisible Unicode before it reaches the tool result (#110278).
+            entry = {"handle": meta.id, "backend": backend.name, "label": sanitize_vault_metadata(meta.label),
+                     "kind": meta.kind, "origin": meta.origin,
+                     "available": meta.kind == "login" or bool(meta.origin)}
             if meta.has_otp or backend.needs_unlock:
                 entry["two_factor"] = "automatic" if meta.has_otp else "automatic if the manager stores a TOTP seed, else the user is asked"
             if meta.identifier:
-                entry["identifier"] = meta.identifier
+                entry["identifier"] = sanitize_vault_metadata(meta.identifier)
                 entry["identifier_type"] = meta.identifier_type
             items.append(entry)
     out: Dict[str, Any] = {"success": True, "items": items}
@@ -432,7 +437,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     if meta.kind != "login" and not meta.origin:
         return json.dumps({"success": False, "error_type": "no_origin",
                            "error": f"Vault item {handle!r} has no bound origin; {meta.kind} items are filled only on the site they were saved for."})
-    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, str(meta.origin)):
+    if meta.kind == "payment" and not _confirm_payment_fill(sanitize_vault_metadata(meta.label), str(meta.origin)):
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 

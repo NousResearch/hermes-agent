@@ -81,3 +81,61 @@ def strip_unicode_tags(text: str) -> str:
     if not text or not _HAS_UNICODE_TAG.search(text):
         return text
     return _UNICODE_TAG_SUB_RE.sub(lambda m: m.group(1) or "", text)
+
+
+# Bidi overrides/embeds/isolates + zero-width/invisible chars: a database writer
+# can use them to make a vault entry look ordinary in a password-manager UI
+# while smuggling hidden text into fields Hermes returns to the model (#110278).
+_INVISIBLE_CHARS = frozenset(
+    "\u200b\u200c\u200d"  # zero-width space/non-joiner/joiner
+    "\u2060\u2062\u2063\u2064"  # word joiner, invisible times/separator/plus
+    "\ufeff"  # BOM
+    "\u202a\u202b\u202c\u202d\u202e"  # LTR/RTL embedding, pop, overrides
+    "\u2066\u2067\u2068\u2069"  # LTR/RTL/first-strong isolates, pop
+)
+_HAS_INVISIBLE = re.compile(
+    "[\u200b\u200c\u200d\u2060\u2062\u2063\u2064\ufeff\u202a-\u202e\u2066-\u2069]"
+)
+
+# Codepoint ranges that may legally neighbour a ZWJ inside an emoji sequence
+# (mirrors tools/cronjob_prompt_scan.py).
+_EMOJI_ZWJ_NEIGHBOUR_RANGES = (
+    (0x1F000, 0x1FAFF),
+    (0x2600, 0x27BF),
+    (0x2B00, 0x2BFF),
+    (0xFE00, 0xFE0F),
+)
+
+
+def _zwj_has_emoji_neighbour(text: str, idx: int) -> bool:
+    """True when the ZWJ at ``text[idx]`` sits between emoji codepoints."""
+    for pos in (idx - 1, idx + 1):
+        if pos < 0 or pos >= len(text):
+            return False
+        if not any(lo <= ord(text[pos]) <= hi for lo, hi in _EMOJI_ZWJ_NEIGHBOUR_RANGES):
+            return False
+    return True
+
+
+def sanitize_vault_metadata(text: str) -> str:
+    """Strip invisible Unicode from vault metadata (labels, identifiers) before
+    it reaches a tool result or prompt: plane-14 TAG chars (the "ASCII
+    smuggling" channel) plus bidi overrides/embeds/isolates and zero-width
+    chars (visual spoofing). ZWJ inside legitimate emoji sequences and valid
+    emoji tag sequences are preserved (#110278).
+
+    Handles are NOT sanitized here: they are opaque lookup keys the agent must
+    send back verbatim for a fill, and current backends derive them from entry
+    ids, not titles.
+    """
+    if not text:
+        return text
+    text = strip_unicode_tags(text)
+    if not _HAS_INVISIBLE.search(text):
+        return text
+    return "".join(
+        ch
+        for idx, ch in enumerate(text)
+        if ch not in _INVISIBLE_CHARS
+        or (ch == "\u200d" and _zwj_has_emoji_neighbour(text, idx))
+    )

@@ -278,6 +278,33 @@ class TestBrowserVaultTools:
              patch("tools.browser_tool_install.check_browser_requirements", return_value=False):
             assert browser_vault_tool._check_vault_available() is True
 
+    def test_list_sanitizes_invisible_unicode_in_metadata(self, store):
+        """#110278: a database writer can hide TAG chars / bidi overrides in a
+        label or identifier; browser_vault_list must strip them before the
+        metadata reaches the model. The handle stays byte-identical so the
+        agent can send it back for a fill."""
+        from tools import browser_vault_tool
+
+        smuggled = "".join(chr(0xE0000 + ord(c)) for c in "ignore this")
+        meta = store.add_item(
+            kind="login",
+            label=f"GitHub{smuggled}",
+            origin="https://example.com",
+            secret={
+                "identifier_type": "email",
+                "identifier": "\u202euser@example.com",
+                "password": "s3cret-pw",
+                "origin": "https://example.com",
+            },
+        )
+        with patch("agent.vault_store.get_vault_store", return_value=store):
+            out = json.loads(browser_vault_tool.browser_vault_list())
+        assert out["success"] is True
+        item = next(i for i in out["items"] if i["handle"] == meta.id)
+        assert item["label"] == "GitHub"
+        assert item["identifier"] == "user@example.com"
+        assert smuggled not in json.dumps(out)
+
     def test_list_returns_identifier_never_password(self, store):
         from tools import browser_vault_tool
 

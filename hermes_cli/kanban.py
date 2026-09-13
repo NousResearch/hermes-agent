@@ -718,7 +718,7 @@ def _cmd_claim(args: argparse.Namespace) -> int:
             if existing is None:
                 return _err(f"no such task: {args.task_id}")
             return _err(f"cannot claim {args.task_id}: status={existing.status} "
-                        f"lock={existing.claim_lock or '(none)'}")
+                        f"owner={kb.public_run_fields({'claim_lock': existing.claim_lock})['owner'] or '(none)'}")
         workspace = kbw.resolve_workspace(task)
         kbw.set_workspace_path(conn, task.id, str(workspace))
     print(f"Claimed {task.id}\nWorkspace: {workspace}")

@@ -154,8 +154,9 @@ class TestBoardCRUD:
         # contains the resolved path, the CREATE TABLE pass is skipped and
         # downstream readers hit `no such table: task_events`.
         kb.create_board("recycle")
-        # First connect populates _INITIALIZED_PATHS for this DB.
-        with kbc.connect(board="recycle") as conn:
+        # First connect populates _INITIALIZED_PATHS for this DB. Close the
+        # handle before removal (sqlite's own context manager does not close).
+        with kbc.connect_closing(board="recycle") as conn:
             kb.create_task(conn, title="t1", assignee="dev")
         db_path = kb.board_dir("recycle") / "kanban.db"
         assert str(db_path.resolve()) in kb._INITIALIZED_PATHS

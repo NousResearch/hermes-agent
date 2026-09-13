@@ -34,6 +34,10 @@ class _FakeConn:
             outcome = outcomes.pop(0)
             if isinstance(outcome, Exception):
                 raise outcome
+        # Boundary-only fake represents an unenrolled, empty schema. Real
+        # authority-history tests exercise the validator against SQLite.
+        if key == 'SELECT':
+            return []
         return None
 
     def count(self, prefix):

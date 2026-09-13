@@ -243,7 +243,6 @@ def _relocate_imported_rows(conn: sqlite3.Connection, slug: str) -> tuple[dict[s
     * Runtime state is scrubbed again (untrusted input, one UPDATE).
     """
     warnings: list[str] = []
-    now = int(time.time())
     attachments_dir = kb.attachments_root(slug)
 
     with kb.write_txn(conn):
@@ -278,10 +277,12 @@ def _relocate_imported_rows(conn: sqlite3.Connection, slug: str) -> tuple[dict[s
             )
 
         for row in conn.execute("SELECT id FROM tasks").fetchall():
-            conn.execute(
-                "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-                "VALUES (?, NULL, 'imported', ?, ?)",
-                (row["id"], json.dumps({"board": slug, "parked": row["id"] in parked}, ensure_ascii=False), now),
+            # Through the single event writer: a raw INSERT here is invisible to
+            # durable history, so an enrolled board would import tasks with no
+            # record that the import happened.
+            kb._append_event(
+                conn, row["id"], "imported",
+                {"board": slug, "parked": row["id"] in parked},
             )
 
     return {"attachments": rehomed, "parked": len(parked)}, warnings

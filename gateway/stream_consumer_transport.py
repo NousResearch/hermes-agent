@@ -450,6 +450,13 @@ class StreamTransportMixin:
         if result.message_id:
             self._adopt_message_id(result.message_id)
             self._track_preview_ids_from_result(result)
+            # When send() split content across multiple 4096-char
+            # chunks (legacy path), treat it like an edit overflow:
+            # the content was fully delivered so the got_done block
+            # must not fire a second finalize edit (which would
+            # re-split into a duplicate chunk).
+            if getattr(result, "continuation_message_ids", None):
+                self._last_edit_overflowed = True
         else:
             # No editable id: fallback mode + sentinel so we don't re-enter first-send.
             self._enter_fallback_mode(self._visible_prefix())

@@ -1664,7 +1664,8 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
         if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
     }
     if "http_client" not in safe_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(base_url, verify=httpx_verify)
+        keepalive_http = agent._build_keepalive_http_client(
+            base_url, verify=httpx_verify, cookie_jar=getattr(agent, "_shared_cookie_jar", None))
         if keepalive_http is not None:
             safe_kwargs["http_client"] = keepalive_http
     client = GeminiNativeClient(**safe_kwargs)
@@ -1758,7 +1759,10 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             client_kwargs, timeout=timeout if isinstance(timeout, (int, float)) else None,
         )
     if "http_client" not in client_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""), verify=httpx_verify)
+        keepalive_http = agent._build_keepalive_http_client(
+            client_kwargs.get("base_url", ""), verify=httpx_verify,
+            cookie_jar=getattr(agent, "_shared_cookie_jar", None),
+        )
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
     # Retries belong to the outer conversation loop (honors Retry-After); SDK retries would

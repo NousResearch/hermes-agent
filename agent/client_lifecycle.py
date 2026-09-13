@@ -172,10 +172,17 @@ class ClientLifecycleMixin:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
-        """Build the shared OpenAI httpx client used by main and aux paths."""
+    def _build_keepalive_http_client(
+        base_url: str = "", *, verify: Any = True, cookie_jar: Any = None,
+    ) -> Any:
+        """Build the shared OpenAI httpx client used by main and aux paths.
+
+        ``cookie_jar`` (optional ``http.cookiejar.CookieJar``) enables cookie-based LB sticky
+        routing: the shared-jar transport extracts ``Set-Cookie`` from responses and injects
+        the ``Cookie`` header on subsequent requests, surviving per-request client rebuilds.
+        """
         from agent.process_bootstrap import build_keepalive_http_client
-        return build_keepalive_http_client(base_url, verify=verify)
+        return build_keepalive_http_client(base_url, verify=verify, cookie_jar=cookie_jar)
 
     _create_openai_client = _forward("agent.agent_runtime_helpers", "create_openai_client")
     _force_close_tcp_sockets = _forward_static("agent.agent_runtime_helpers", "force_close_tcp_sockets")

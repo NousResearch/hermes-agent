@@ -28,7 +28,7 @@ class _FakeAgent:
     def _client_log_context(self):
         return {}
 
-    def _build_keepalive_http_client(self, base_url, verify=True):
+    def _build_keepalive_http_client(self, base_url, verify=True, cookie_jar=None):
         return None
 
 

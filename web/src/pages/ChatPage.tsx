@@ -64,6 +64,7 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
+import { attachTouchScroll } from "@/lib/pty-touch-scroll";
 import { computeKeyboardInset, shouldPinScroll } from "@/lib/keyboard-inset";
 import {
   resolvePtyKeyboardShortcut,
@@ -820,6 +821,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return false;
     });
 
+    // Touch scrolling (mobile) — see lib/pty-touch-scroll.ts. xterm.js has
+    // no built-in touch scrolling, so on phones the transcript cannot be
+    // swiped; this converts one-finger vertical drags into scrollLines() on
+    // the browser-side transcript, mirroring the wheel handler above.
+    const detachTouchScroll = attachTouchScroll(host, term);
+
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
@@ -1524,6 +1531,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
+      detachTouchScroll();
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       keyboardInsetSyncRef.current = null;

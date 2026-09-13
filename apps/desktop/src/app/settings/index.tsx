@@ -28,6 +28,7 @@ import {
 } from '@/lib/icons'
 import { isEditableTarget } from '@/lib/keybinds/combo'
 import { typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
+import { isPickerSearchOpen } from '@/lib/picker-typeahead'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, openCommandPalettePage } from '@/store/command-palette'
 import { confirm } from '@/store/confirm'
@@ -321,7 +322,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   // reflex as the chat surface's type-to-focus, pointed at search instead.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if ($commandPaletteOpen.get() || isEditableTarget(event.target)) {
+      if ($commandPaletteOpen.get() || isEditableTarget(event.target) || isPickerSearchOpen()) {
         return
       }
 

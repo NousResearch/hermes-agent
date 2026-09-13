@@ -128,7 +128,7 @@ export function FallbackModelsField({
               <SelectTrigger className={cn('min-w-36', CONTROL_TEXT)}>
                 <SelectValue placeholder={m.provider} />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent searchable>
                 {providers.map(provider => (
                   <SelectItem key={provider.slug} value={provider.slug}>
                     {provider.name}
@@ -140,7 +140,7 @@ export function FallbackModelsField({
               <SelectTrigger className={cn('min-w-52 flex-1', CONTROL_TEXT)}>
                 <SelectValue placeholder={m.model} />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent searchable>
                 {modelItems.map(model => (
                   <SelectItem key={model} value={model}>
                     {model}

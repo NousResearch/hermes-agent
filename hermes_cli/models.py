@@ -543,7 +543,7 @@ def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tupl
 
 def fetch_openrouter_models(
     timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
-    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
+    """Return the OpenRouter picker list: curated ids first, then every other live tool-capable model."""
     # The curated list is filtered from this profile's manifest (``model_catalog.*`` config, its
     # ``<home>/cache`` copy), so a routed profile keeps its own slot instead of the module one.
     from hermes_cli.models_profile_cache import profile_slot_get, profile_slot_set
@@ -596,6 +596,17 @@ def fetch_openrouter_models(
         else:
             desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
+
+    # Hermes used to cap this picker at 50, then set the cap to None. None is
+    # unlimited on the slice path, but this function still returned only the
+    # curated handful — or a single injected current model when that handful
+    # missed the live catalog. Append the rest of the live tool-capable list.
+    seen = {mid for mid, _ in curated}
+    for mid, live_item in live_by_id.items():
+        if mid in seen or not _openrouter_model_supports_tools(live_item):
+            continue
+        desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
+        curated.append((mid, desc))
 
     if not curated:
         return list(cached or fallback)

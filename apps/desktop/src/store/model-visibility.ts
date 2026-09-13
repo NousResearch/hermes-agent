@@ -7,7 +7,7 @@ const STORAGE_KEY = 'hermes.desktop.visible-models'
 
 /** Models shown per provider in the status-bar dropdown before the user has
  *  customized the list. Backend `models` are already relevance-ordered. */
-export const DEFAULT_VISIBLE_PER_PROVIDER = 50
+export const DEFAULT_VISIBLE_PER_PROVIDER = 999
 
 /** Stable key for a provider/model pair (`::` avoids colliding with model ids
  *  that contain a single colon, e.g. `model:tag`). */
@@ -121,10 +121,17 @@ function expandProviderDefaults(provider: ModelOptionProvider, target: Set<strin
   const families = collapseModelFamilies(provider.models ?? [])
 
   const featured = provider.featured_models ?? []
-
-  const defaults = featured.length
+  const slug = (provider.slug || '').toLowerCase()
+  // OpenRouter (and the other uncapped aggregators) must show the full catalog.
+  // Using featured-only here is the "50 → none" regression: a missing/unmatched
+  // shortlist collapses the picker to the current model.
+  const uncapped = slug === 'openrouter' || slug === 'opencode-zen' || slug === 'opencode-go'
+  const cap = DEFAULT_VISIBLE_PER_PROVIDER
+  const defaults = !uncapped && featured.length
     ? families.filter(family => featured.includes(family.id))
-    : families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)
+    : cap
+      ? families.slice(0, cap)
+      : families
 
   for (const family of defaults) {
     target.add(modelVisibilityKey(provider.slug, family.id))

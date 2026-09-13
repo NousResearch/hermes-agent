@@ -8,6 +8,7 @@ import {
   type ComposerAttachment,
   createComposerAttachmentOccurrenceId,
   createComposerAttachmentScope,
+  MAX_COMPOSER_TEXT_CHARS,
   migrateSessionDraft,
   removeComposerAttachment,
   requestVoiceConversationStart,
@@ -242,6 +243,35 @@ describe('session drafts', () => {
     >
 
     expect(persisted['session-a']).toBe('survives reload')
+  })
+
+  it('drops an oversized draft from localStorage so a huge paste cannot poison the next launch (#98562)', () => {
+    stashSessionDraft('session-a', 'x'.repeat(MAX_COMPOSER_TEXT_CHARS + 1), [])
+
+    const persisted = JSON.parse(window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY) ?? '{}') as Record<
+      string,
+      string
+    >
+
+    expect(persisted['session-a']).toBeUndefined()
+  })
+
+  it('keeps an oversized draft in memory for the current session', () => {
+    const oversized = 'x'.repeat(MAX_COMPOSER_TEXT_CHARS + 1)
+    stashSessionDraft('session-a', oversized, [])
+
+    expect(takeSessionDraft('session-a').text).toBe(oversized)
+  })
+
+  it('persists a draft exactly at the cap', () => {
+    stashSessionDraft('session-a', 'x'.repeat(MAX_COMPOSER_TEXT_CHARS), [])
+
+    const persisted = JSON.parse(window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY) ?? '{}') as Record<
+      string,
+      string
+    >
+
+    expect(persisted['session-a']).toHaveLength(MAX_COMPOSER_TEXT_CHARS)
   })
 
   it('evicts empty drafts instead of leaving stale entries behind', () => {

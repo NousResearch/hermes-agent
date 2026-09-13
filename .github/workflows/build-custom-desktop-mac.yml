@@ -53,7 +53,7 @@ jobs:
           EXPECTED_ARCH="${{ matrix.arch }}"
           if [ "$EXPECTED_ARCH" = "x64" ]; then EXPECTED_ARCH="x86_64"; fi
           lipo -archs "$PTY" | grep -Fx "$EXPECTED_ARCH"
-          lipo -verify_arch "$EXPECTED_ARCH" "$APP_DIR/Contents/MacOS/Hermes"
+          lipo "$APP_DIR/Contents/MacOS/Hermes" -verify_arch "$EXPECTED_ARCH"
           codesign --force --deep --sign - "$APP_DIR"
           codesign --verify --deep --strict --verbose=2 "$APP_DIR"
           "$APP_DIR/Contents/MacOS/Hermes" --disable-gpu > /tmp/hermes-smoke.log 2>&1 &

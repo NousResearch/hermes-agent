@@ -80,6 +80,51 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     return normalized
 
 
+def _redact_env_assignment(value: str) -> str:
+    if "=" not in value:
+        return value
+    key, _secret = value.split("=", 1)
+    return f"{key}=***"
+
+
+def _redact_docker_env_args(args: list[str]) -> list[str]:
+    """Return a copy of docker args with ``-e KEY=VALUE`` values redacted."""
+    redacted: list[str] = []
+    redact_next = False
+    for arg in args:
+        if redact_next:
+            redacted.append(_redact_env_assignment(arg))
+            redact_next = False
+            continue
+        if arg in {"-e", "--env"}:
+            redacted.append(arg)
+            redact_next = True
+            continue
+        if arg.startswith("--env="):
+            redacted.append("--env=" + _redact_env_assignment(arg[len("--env="):]))
+            continue
+        if arg.startswith("-e="):
+            redacted.append("-e=" + _redact_env_assignment(arg[len("-e="):]))
+            continue
+        if arg.startswith("-e") and "=" in arg:
+            redacted.append("-e" + _redact_env_assignment(arg[2:]))
+            continue
+        redacted.append(arg)
+    return redacted
+
+
+def _redact_subprocess_error(error: BaseException) -> str:
+    """Format a subprocess exception without exposing docker env values."""
+    message = str(error)
+    cmd = getattr(error, "cmd", None)
+    if isinstance(cmd, (list, tuple)):
+        raw_cmd = [str(arg) for arg in cmd]
+        redacted_cmd = _redact_docker_env_args(raw_cmd)
+        rendered_cmd = tuple(redacted_cmd) if isinstance(cmd, tuple) else redacted_cmd
+        message = message.replace(repr(cmd), repr(rendered_cmd))
+    return message
+
+
 # Module-level binding: tests patch ``docker._load_hermes_env_vars`` to fake the .env file.
 _load_hermes_env_vars = load_hermes_env_vars
 
@@ -572,7 +617,7 @@ class DockerEnvironment(BaseEnvironment):
         all_run_args = (
             security_args + user_args + writable_args + resource_args
             + egress_host_args + volume_args + env_args + validated_extra)
-        logger.info("Docker run_args: %s", all_run_args)
+        logger.info("Docker run_args: %s", _redact_docker_env_args(all_run_args))
 
         # Labels identify hermes containers to the orphan reaper (hermes-agent=1),
         # cross-process reuse (task-id/profile) and operators. The reuse identity
@@ -783,13 +828,13 @@ class DockerEnvironment(BaseEnvironment):
         removed by name before re-raising."""
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
         run_cmd = self._run_command(container_name, cwd)
-        logger.debug("Starting container: %s", ' '.join(run_cmd))
+        logger.debug("Starting container: %s", ' '.join(_redact_docker_env_args(run_cmd)))
         try:
             result = run_capture(
                 run_cmd, timeout=120, check=True,  # image pull may take a while
                 env=self._docker_client_env(self._run_env_values))
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            logger.warning("docker run failed for %s, cleaning up orphaned container: %s", container_name, e)
+            logger.warning("docker run failed for %s, cleaning up orphaned container: %s", container_name, _redact_subprocess_error(e))
             subprocess.run(
                 [self._docker_exe, "rm", "-f", container_name],
                 capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
@@ -907,7 +952,7 @@ class DockerEnvironment(BaseEnvironment):
                 self._container_id = result.stdout.strip()
                 logger.info("Recovery: created fresh container %s (%s)", new_name, self._container_id[:12])
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
-                logger.error("Recovery: failed to create new container: %s", e)
+                logger.error("Recovery: failed to create new container: %s", _redact_subprocess_error(e))
                 return False
 
         try:

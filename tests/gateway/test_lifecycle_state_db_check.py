@@ -122,3 +122,37 @@ def test_clean_exit_does_not_pay_for_the_check(tmp_path: Path, monkeypatch) -> N
     record_startup(home=tmp_path)
 
     assert not called, "integrity check ran on a clean boot"
+
+
+# ── bounded startup check ──────────────────────────────────────────────────
+# A 3 GB store made quick_check hold startup for 16-29 minutes after unclean
+# deaths. Startup now waits a bounded time and finishes the check off-path.
+
+
+def test_a_check_over_budget_is_deferred_not_judged(tmp_path: Path, monkeypatch) -> None:
+    import gateway.lifecycle_ledger as ledger
+
+    _make_state_db(tmp_path, corrupt=False)
+    monkeypatch.setattr(ledger, "_INTEGRITY_PROGRESS_OPS", 1)
+    verdict = check_state_db_integrity(home=tmp_path, budget_s=-1.0)
+    assert verdict.startswith("check-deferred: over")
+    assert check_state_db_integrity(home=tmp_path, budget_s=60.0) == "ok"
+
+
+def test_startup_does_not_wait_for_a_slow_check(tmp_path: Path, monkeypatch) -> None:
+    import gateway.lifecycle_ledger as ledger
+
+    _make_state_db(tmp_path, corrupt=True)
+    _write_sentinel(tmp_path)
+    started = []
+    real = ledger._finish_integrity_check_later
+    monkeypatch.setattr(ledger, "UNCLEAN_INTEGRITY_STARTUP_BUDGET_S", -1.0)
+    monkeypatch.setattr(ledger, "_INTEGRITY_PROGRESS_OPS", 1)
+    monkeypatch.setattr(ledger, "_finish_integrity_check_later",
+                        lambda home: started.append(real(home)) or started[-1])
+    evidence = record_startup(home=tmp_path)
+    assert evidence is not None
+    assert evidence["state_db_integrity"].startswith("check-deferred")
+    started[0].join(timeout=30)
+    tags = [record.get("tag") for record in _exit_diag_records(tmp_path)]
+    assert "gateway.state_db_integrity_deferred" in tags

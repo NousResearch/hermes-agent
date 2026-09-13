@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from contextlib import closing
 from datetime import datetime, timezone
@@ -164,8 +165,20 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[Dict[str, Any]]
     return evidence
 
 
-def check_state_db_integrity(home: Optional[Path] = None) -> str:
+# quick_check scans every page (its argument caps the errors reported, not the pages read), so on
+# a multi-GB store under load it can hold gateway startup for many minutes after an unclean death.
+# Startup waits at most this long; a longer check finishes in a background thread and still logs
+# any damage.
+UNCLEAN_INTEGRITY_STARTUP_BUDGET_S = 20.0
+DEFERRED_INTEGRITY_VERDICT = "check-deferred"
+_INTEGRITY_PROGRESS_OPS = 100_000  # SQLite VM steps between deadline checks
+
+
+def check_state_db_integrity(home: Optional[Path] = None, *, budget_s: Optional[float] = None) -> str:
     """``"ok"``, ``"absent"``, or the first ``quick_check`` complaint.  Never raises.
+
+    With ``budget_s``, a check still running after that many seconds is abandoned and returns
+    ``"check-deferred: ..."``; nothing was judged.
 
     Only after an unclean death — SIGKILL mid-WAL-checkpoint can leave half-written
     b-tree pages.  ``quick_check(1)`` stops at the first problem (~2s on a healthy
@@ -177,7 +190,16 @@ def check_state_db_integrity(home: Optional[Path] = None) -> str:
         return "absent"
     try:
         with closing(sqlite3.connect(str(path))) as conn:
+            if budget_s is not None:
+                deadline = time.monotonic() + budget_s
+                # A non-zero return from the progress handler interrupts the query.
+                conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, _INTEGRITY_PROGRESS_OPS)
             row = conn.execute("PRAGMA quick_check(1)").fetchone()
+    except sqlite3.OperationalError as exc:
+        if budget_s is not None and "interrupt" in str(exc).lower():
+            size_mb = path.stat().st_size // (1024 * 1024) if path.exists() else 0
+            return f"{DEFERRED_INTEGRITY_VERDICT}: over {budget_s:.0f}s on a {size_mb} MB store"
+        return f"check-failed: {exc}"
     except Exception as exc:
         return f"check-failed: {exc}"
     return "check-failed: no result" if not row or row[0] is None else str(row[0])
@@ -186,8 +208,12 @@ def check_state_db_integrity(home: Optional[Path] = None) -> str:
 def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None:
     """Integrity-check the store, persist the exit-diag record, log at WARNING."""
     # The death may have torn the store; this is the only moment we know to look.
-    verdict = evidence["state_db_integrity"] = check_state_db_integrity(home=home)
-    if verdict not in ("ok", "absent"):
+    verdict = evidence["state_db_integrity"] = check_state_db_integrity(
+        home=home, budget_s=UNCLEAN_INTEGRITY_STARTUP_BUDGET_S
+    )
+    if verdict.startswith(DEFERRED_INTEGRITY_VERDICT):
+        _finish_integrity_check_later(home)
+    elif verdict not in ("ok", "absent"):
         logger.error(
             "state.db FAILED integrity check after an unclean gateway exit: %s — sessions may read as "
             "missing until it is repaired. Run `hermes doctor`.",
@@ -200,6 +226,31 @@ def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None
         evidence.get("prior_pid"), evidence.get("prior_started_at"), evidence.get("last_heartbeat_at"),
         evidence.get("last_heartbeat_mem"), evidence.get("suspected_oom", False),
     )
+
+
+def _finish_integrity_check_later(home: Optional[Path]) -> threading.Thread:
+    """Run the full check off the startup path; log damage the same way."""
+
+    def _run() -> None:
+        verdict = check_state_db_integrity(home=home)
+        if verdict in ("ok", "absent"):
+            logger.info("state.db deferred integrity check after an unclean exit: %s", verdict)
+            return
+        logger.error(
+            "state.db FAILED integrity check after an unclean gateway "
+            "exit: %s — sessions may read as missing until it is "
+            "repaired. Run `hermes doctor`.",
+            verdict,
+        )
+        _append_exit_diag(
+            {"ts": _now_iso(), "tag": "gateway.state_db_integrity_deferred",
+             "pid": os.getpid(), "state_db_integrity": verdict},
+            home,
+        )
+
+    thread = threading.Thread(target=_run, name="state-db-integrity", daemon=True)
+    thread.start()
+    return thread
 
 
 def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:

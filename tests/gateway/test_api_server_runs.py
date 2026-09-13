@@ -1524,7 +1524,12 @@ class TestHostedRoomRuns:
             "request_id": "approval-B",
             "command": "rm -rf build-B",
         })
+        from tools.approval_context import create_approval_resolver
+
+        resolver = create_approval_resolver(run_id)
+        assert resolver.activate() is True
         auth_adapter._run_approval_sessions[run_id] = run_id
+        auth_adapter._run_approval_resolvers[run_id] = resolver
         auth_adapter._run_statuses[run_id] = {
             "run_id": run_id,
             "status": "waiting_for_approval",
@@ -1559,6 +1564,7 @@ class TestHostedRoomRuns:
                     exact_body = await exact.json()
         finally:
             approval_mod.unregister_gateway_notify(run_id)
+            auth_adapter._run_approval_resolvers.pop(run_id, None)
 
         assert missing.status == 400
         assert missing_body["error"]["code"] == "approval_request_required"

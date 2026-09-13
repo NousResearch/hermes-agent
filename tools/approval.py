@@ -126,20 +126,28 @@ def register_gateway_notify(session_key: str, cb) -> None:
         _gateway_notify_cbs[session_key] = cb
 
 
-def unregister_gateway_notify(session_key: str) -> None:
+def unregister_gateway_notify(session_key: str, approval_resolver=None) -> None:
     """Unregister the callback and wake ALL blocked threads for this session so
-    they don't hang forever (agent run finished or interrupted)."""
+    they don't hang forever (agent run finished or interrupted). Revoke an
+    optional run resolver under the same lock as queue teardown."""
     with _lock:
+        if approval_resolver is not None:
+            approval_resolver.revoke()
         _gateway_notify_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
+        # A lifecycle teardown is a deny/cancel wake, not an approval. Preserve an
+        # already-recorded user choice if the approval endpoint won the queue race.
+        if entry.result is None:
+            entry.result = "deny"
         entry.event.set()
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None,
-                             request_id: Optional[str] = None) -> int:
+                             request_id: Optional[str] = None,
+                             approval_resolver=None) -> int:
     """Unblock waiting agent thread(s) from the gateway's /approve or /deny handler.
 
     *resolve_all* resolves every pending approval (``/approve all``); otherwise the oldest
@@ -147,6 +155,10 @@ def resolve_gateway_approval(session_key: str, choice: str,
     relayed to the agent in the BLOCKED message. Returns the number resolved.
     """
     with _lock:
+        # API-run lifecycle cancellation and approval resolution share this queue lock. Once
+        # the owning resolver is revoked, a stale endpoint must not release any waiter as approved.
+        if approval_resolver is not None and not approval_resolver.is_active():
+            return 0
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
@@ -728,6 +740,18 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if spec.user_approved:
             return _user_approved(session_key, description)
         return _approved()
+
+    # A run cancellation can revoke the resolver after presence/unattended checks
+    # but before this shared decision engine reaches the gateway branch. Never
+    # create a pending approval once the exact API run can no longer receive a reply.
+    if is_gateway and not approval_context._api_approval_resolver_available(session_key):
+        return deny(
+            spec.gateway_refused,
+            "blocked",
+            reason="approval resolver unavailable",
+            reason_addendum="",
+            timeout_addendum="",
+        )
 
     if spec.transport:
         attempt = _present_with_selected_transport(

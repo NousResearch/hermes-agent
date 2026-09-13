@@ -55,7 +55,7 @@ import {
   withTransientRetries
 } from './connection-config'
 
-test('remote-primary config PUT stays pinned and local routing remains the no-selection control', async () => {
+test('explicit config pin surfaces remote write failure without local fallback', async () => {
   const remote = { baseUrl: 'https://remote.example', sharedRemote: true }
   const requested: string[] = []
   let localResolutions = 0
@@ -75,8 +75,13 @@ test('remote-primary config PUT stays pinned and local routing remains the no-se
 
   await assert.rejects(
     dispatchApiRequestForSelectedConnection(
-      { body: { config: { model: 'remote/model' } }, method: 'PUT', path: '/api/config' },
-      { remotePrimaryConnectionId: 'remote-primary' },
+      {
+        body: { config: { model: 'remote/model' } },
+        connectionId: 'remote-primary',
+        method: 'PUT',
+        path: '/api/config'
+      },
+      { remotePrimaryConnectionId: 'other-primary' },
       deps
     ),
     remoteFailure
@@ -92,6 +97,58 @@ test('remote-primary config PUT stays pinned and local routing remains the no-se
     )
   )
   assert.equal(localResolutions, 1)
+})
+
+test('config write remains bound to read origin across connection handoff', async () => {
+  const dispatches: { connectionId: string; method: string }[] = []
+  const deps = {
+    dispatchProfile: async () => {
+      throw new Error('must not fall back to local')
+    },
+    dispatchRegistry: async (request, connectionId) => {
+      dispatches.push({
+        connectionId,
+        method: String(request.method || 'GET').toUpperCase()
+      })
+
+      return { model: `from-${connectionId}` }
+    }
+  }
+
+  const record = await dispatchApiRequestForSelectedConnection(
+    { method: 'GET', path: '/api/config' },
+    { remotePrimaryConnectionId: 'connection-a' },
+    deps
+  )
+  assert.deepEqual(record, { model: 'from-connection-a' })
+  assert.equal(dispatches.filter(entry => entry.connectionId === 'connection-b').length, 0)
+
+  await assert.rejects(
+    dispatchApiRequestForSelectedConnection(
+      { body: { config: record }, method: 'PUT', path: '/api/config' },
+      { remotePrimaryConnectionId: 'connection-b' },
+      deps
+    ),
+    /not bound to a connection\/profile route/
+  )
+  assert.equal(dispatches.filter(entry => entry.connectionId === 'connection-b').length, 0)
+
+  await dispatchApiRequestForSelectedConnection(
+    {
+      body: { config: record },
+      connectionId: 'connection-a',
+      method: 'PUT',
+      path: '/api/config'
+    },
+    { remotePrimaryConnectionId: 'connection-b' },
+    deps
+  )
+
+  assert.deepEqual(
+    dispatches.filter(entry => entry.method === 'PUT'),
+    [{ connectionId: 'connection-a', method: 'PUT' }]
+  )
+  assert.equal(dispatches.filter(entry => entry.connectionId === 'connection-b').length, 0)
 })
 
 // --- connectionScopeKey / normAuthMode ---

@@ -28,7 +28,7 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
 export function TerminalFontSetting() {
   const { t } = useI18n()
   const copy = t.settings.appearance
-  const { data: loadedConfig } = useHermesConfigRecord()
+  const { data: loadedConfig, writeScope } = useHermesConfigRecord()
   // draft === null ⇔ unseeded: nothing painted yet for this profile. The
   // profile-switch handler resets it to null and records the config object
   // it was looking at (`staleConfig`) — the seed effect refuses to re-seed
@@ -88,7 +88,7 @@ export function TerminalFontSetting() {
     const timeout = window.setTimeout(() => {
       const next = setNested(loadedConfig, 'terminal.font_family', value)
 
-      void saveHermesConfig(next)
+      void saveHermesConfig(next, writeScope)
         .then(result => {
           if (!result.ok) {
             throw new Error(t.settings.config.autosaveFailed)

@@ -1,6 +1,12 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
-import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
+import {
+  bindConfigReadOrigin,
+  getHermesConfigRecord,
+  type HermesConfigRecord,
+  peekConfigReadOrigin,
+  saveHermesConfig
+} from '@/hermes'
 
 import { TRANSLATIONS } from './catalog'
 import {
@@ -35,7 +41,7 @@ const defaultConfigClient: I18nConfigClient = {
       return Promise.resolve({ ok: true })
     }
 
-    return saveHermesConfig(config, undefined, { preserveLanguage: true })
+    return saveHermesConfig(config, peekConfigReadOrigin(config), { preserveLanguage: true })
   }
 }
 
@@ -50,13 +56,20 @@ export function getConfigDisplayLanguage(config: HermesConfigRecord): unknown {
 export function withConfigDisplayLanguage(config: HermesConfigRecord, locale: Locale): HermesConfigRecord {
   const display = isRecord(config.display) ? config.display : {}
 
-  return {
+  const next = {
     ...config,
     display: {
       ...display,
       language: localeConfigValue(locale)
     }
   }
+  const origin = peekConfigReadOrigin(config)
+
+  if (origin) {
+    bindConfigReadOrigin(next, origin)
+  }
+
+  return next
 }
 
 function toError(error: unknown): Error {

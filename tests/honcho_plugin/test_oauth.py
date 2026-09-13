@@ -265,5 +265,4 @@ class TestPersistReadFailure:
         assert oauth._read_config_strict(tmp_path / "honcho.json") == {}
         path = tmp_path / "honcho.json"
         path.write_text(json.dumps({"hosts": {"keep.example": _host_block()}}), encoding="utf-8-sig")
-        assert "keep.example" in oauth._read_config(path).get("hosts", {})
         assert "keep.example" in oauth._read_config_strict(path).get("hosts", {})

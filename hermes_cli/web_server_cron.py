@@ -235,41 +235,56 @@ def _load_cron_config_for_profile(profile: Optional[str]) -> Dict[str, Any]:
 
 
 def _authenticate_cron_fire(token: str, job_id: Optional[str]) -> Tuple[bool, Optional[str]]:
-    """Authenticate before scanning jobs, then require the actual owner's authority.
+    """Authenticate with current profile config, then revalidate the actual job owner.
 
-    Hints can outlive jobs or name a stale profile. They select a verifier only;
-    the persisted job store selects the destination, which must verify the same JWT.
-    Run this worker off the event loop: config, store and JWKS reads can all block.
+    Catalog claims select candidates, never authority. Config, JWT/JWKS and store reads
+    belong in this worker, off the event loop. Identical verifier settings run only once.
     """
-    from cron.chronos_fire_profiles import resolve_cron_fire_profile_hint
+    from cron.chronos_fire_profiles import (
+        _MAX_FIRE_TOKEN_BYTES, cron_fire_token_selectors, get_cron_fire_catalog,
+    )
     from plugins.cron_providers.chronos.verify import get_fire_verifier
 
+    if len(token) > _MAX_FIRE_TOKEN_BYTES:
+        return False, None
     verifier = get_fire_verifier()
+    verified_settings = {}
 
     def verify_profile(profile):
         try:
             cfg = _load_cron_config_for_profile(profile)
         except (HTTPException, OSError, ValueError):
             return False
-        return verifier(
-            token=token,
-            expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
-            jwks_or_key=cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,
-            issuer=cfg_get(cfg, "cron", "chronos", "portal_url", default="") or None,
-        ) is not None
+        settings = (
+            cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
+            cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,
+            cfg_get(cfg, "cron", "chronos", "portal_url", default="") or None,
+        )
+        if any(value is not None and not isinstance(value, str) for value in settings):
+            return False
+        if settings not in verified_settings:
+            verified_settings[settings] = verifier(
+                token=token, expected_audience=settings[0], jwks_or_key=settings[1],
+                issuer=settings[2],
+            ) is not None
+        return verified_settings[settings]
 
-    hinted_profile = resolve_cron_fire_profile_hint(job_id) if job_id else None
-    authenticated_profile = hinted_profile
-    if not verify_profile(hinted_profile):
-        if hinted_profile is None or not verify_profile(None):
+    # Preserve the process-profile verifier, including the pluggable non-JWT seam.
+    if not verify_profile(None):
+        selectors = cron_fire_token_selectors(token)
+        if not selectors:
             return False, None
-        authenticated_profile = None
+        catalog = get_cron_fire_catalog()
+        snapshot, candidates = catalog.candidates(selectors)
+        if not any(verify_profile(profile) for profile in candidates):
+            catalog.require_current(snapshot)
+            return False, None
     if not job_id:
         return True, None
     profile = _find_cron_job_profile(job_id)
     if profile is None:
         return True, None
-    if profile != authenticated_profile and not verify_profile(profile):
+    if not verify_profile(profile):
         return False, None
     return True, profile
 

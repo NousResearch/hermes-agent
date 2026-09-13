@@ -302,7 +302,15 @@ async def cron_fire_webhook(request: Request):
     job_id = body.get("job_id") if isinstance(body, dict) else None
     if not isinstance(job_id, str) or not job_id:
         job_id = None
-    authenticated, profile = await _run_cron_dashboard_io(_authenticate_cron_fire, token, job_id)
+    from cron.chronos_fire_profiles import CronFireCatalogPending
+
+    try:
+        authenticated, profile = await _run_cron_dashboard_io(_authenticate_cron_fire, token, job_id)
+    except CronFireCatalogPending:
+        return JSONResponse(
+            status_code=503, content={"error": "cron fire verifier discovery is in progress"},
+            headers={"Retry-After": "5"},
+        )
     if not authenticated:
         return JSONResponse({"error": "invalid fire token"}, status_code=401)
     if not job_id:

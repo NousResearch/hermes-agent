@@ -3185,7 +3185,7 @@ def _requeue_pending_steer(agent, steer_text: str) -> None:
         agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
 
 
-def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
+def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> bool:
     """Persist any pending /steer text as a standalone user message.
 
     Called at the end of a tool-call batch, before the next API call.
@@ -3204,12 +3204,17 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
       being smeared onto an already-persisted tool row that append-only
       persistence never rewrites (replayed histories then diverge from the
       live request bytes and break the provider prompt cache).
+
+    Returns True when a steer was consumed AND delivered. The tool-batch executors use
+    that to stop the batch: whatever the user just said must reach the model before more
+    tools run against the course it supersedes. A requeued steer (no tool row to anchor
+    to) returns False — nothing was delivered, so there is nothing to break out for.
     """
     if num_tool_msgs <= 0 or not messages:
-        return
+        return False
     steer_text = agent._drain_pending_steer()
     if not steer_text:
-        return
+        return False
     # Skip non-tool messages in the tail in case something else is appended at the boundary.
     tail = range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1)
     target = next((messages[j] for j in tail if isinstance(messages[j], dict) and messages[j].get("role") == "tool"), None)
@@ -3218,12 +3223,13 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         # requeue so the fallback path delivers it as a normal next-turn
         # user message (which persists like any other user turn).
         _requeue_pending_steer(agent, steer_text)
-        return
+        return False
     messages.append(steer_user_row(steer_text))
     _ra().logger.info(
         "Delivered /steer to agent after tool batch (%d chars) as new user message: %s", len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
+    return True
 
 
 def force_close_tcp_sockets(client: Any) -> int:

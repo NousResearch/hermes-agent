@@ -244,8 +244,15 @@ def _cmd_import(args):
 # -- handlers that receive an open SessionDB ----------------------------------
 
 def _default_exclude(args):
-    """Hide third-party tool sessions by default, but honour explicit --source."""
-    return None if getattr(args, "source", None) else ["tool"]
+    """Hide automation/third-party sessions by default, but honour explicit --source.
+
+    ``cron`` and ``subagent`` are not user conversations: every cron fire and every
+    delegate_task subagent run creates an untitled session row that would otherwise
+    flood ``sessions list`` (and the desktop session panel). They stay queryable via
+    ``--source cron`` / ``--source subagent``; ``session_search_tool`` already treats
+    them as hidden sources (see ``_HIDDEN_SESSION_SOURCES``).
+    """
+    return None if getattr(args, "source", None) else ["tool", "cron", "subagent"]
 
 
 def _cmd_list(db, args):

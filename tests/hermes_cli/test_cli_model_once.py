@@ -120,7 +120,6 @@ def test_cli_restore_model_runtime_prefers_primary_runtime():
 
     class Agent(_FakeAgent):
         _primary_runtime = None
-        _rate_limited_until = 123
 
         def __init__(self):
             super().__init__()
@@ -134,6 +133,14 @@ def test_cli_restore_model_runtime_prefers_primary_runtime():
 
     stub = _StubCLI()
     stub.agent = Agent()
+    from agent.cooldown_manager import (
+        CooldownManager, build_cooldown_key, get_cooldown_manager, set_cooldown_manager,
+    )
+    original = get_cooldown_manager()
+    manager = CooldownManager(storage_path=False)
+    key = build_cooldown_key("openrouter", "sk-old", "rate_limit")
+    manager.mark_failure(key, "rate_limit", cooldown_seconds=60)
+    set_cooldown_manager(manager)
     snapshot = {
         "model": "old/model",
         "provider": "openrouter",
@@ -146,11 +153,16 @@ def test_cli_restore_model_runtime_prefers_primary_runtime():
         "agent_primary_runtime": {
             "model": "old/model",
             "provider": "openrouter",
+            "api_key": "sk-old",
         },
     }
 
-    cli_mod.HermesCLI._restore_model_runtime_snapshot(stub, snapshot)
+    try:
+        cli_mod.HermesCLI._restore_model_runtime_snapshot(stub, snapshot)
+    finally:
+        set_cooldown_manager(original)
 
     assert stub.agent.model == "old/model"
     assert stub.agent.provider == "openrouter"
+    assert not manager.is_cooling(key)
     assert stub.agent.calls == []

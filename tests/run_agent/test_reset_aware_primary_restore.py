@@ -2,7 +2,7 @@
 rate-limit window actually resets.
 
 ``restore_primary_runtime`` retries the primary at the top of every turn
-once the 60s ``_rate_limited_until`` cooldown clears.  For transient 429s
+once the transient cooldown clears.  For transient 429s
 that is correct, but subscription-window limits (Claude Pro/Max 5-hour
 windows, ChatGPT weekly caps) report reset times hours or days away.  The
 credential pool already knows that timestamp (``last_error_reset_at``),
@@ -16,6 +16,8 @@ later than it does today.
 
 import time
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from run_agent import AIAgent
 from agent.credential_pool import (
@@ -111,6 +113,28 @@ def _make_agent(fallback_model=None):
         )
         agent.client = MagicMock()
         return agent
+
+
+@pytest.fixture(autouse=True)
+def _isolated_cooldown_manager():
+    from agent.cooldown_manager import CooldownManager, get_cooldown_manager, set_cooldown_manager
+
+    original = get_cooldown_manager()
+    set_cooldown_manager(CooldownManager(storage_path=False))
+    try:
+        yield
+    finally:
+        set_cooldown_manager(original)
+
+
+def _mark_primary_cooling(agent):
+    from agent.cooldown_manager import build_cooldown_key, get_cooldown_manager
+
+    runtime = agent._primary_runtime
+    get_cooldown_manager().mark_failure(
+        build_cooldown_key(runtime["provider"], runtime["api_key"], "rate_limit"),
+        "rate_limit", cooldown_seconds=60,
+    )
 
 
 def _activate_fallback(agent):
@@ -237,7 +261,6 @@ class TestResetAwareRestoreGate:
     def test_stays_on_fallback_until_reset(self):
         agent = _make_agent(fallback_model=self.FB)
         _activate_fallback(agent)
-        agent._rate_limited_until = 0  # 60s transient cooldown already cleared
 
         # Attached pool matches the primary provider and says: nobody can
         # serve until an hour from now.
@@ -252,7 +275,6 @@ class TestResetAwareRestoreGate:
         agent = _make_agent(fallback_model=self.FB)
         original_model = agent.model
         _activate_fallback(agent)
-        agent._rate_limited_until = 0
 
         agent._credential_pool = _FakePool("custom", next_at=None)
 
@@ -265,7 +287,6 @@ class TestResetAwareRestoreGate:
     def test_past_reset_time_does_not_block(self):
         agent = _make_agent(fallback_model=self.FB)
         _activate_fallback(agent)
-        agent._rate_limited_until = 0
 
         agent._credential_pool = _FakePool("custom", next_at=time.time() - 5)
 
@@ -277,7 +298,6 @@ class TestResetAwareRestoreGate:
         """Any exception inside the gate must not break restore."""
         agent = _make_agent(fallback_model=self.FB)
         _activate_fallback(agent)
-        agent._rate_limited_until = 0
 
         agent._credential_pool = _FakePool("custom", raise_on_next=True)
 
@@ -290,7 +310,6 @@ class TestResetAwareRestoreGate:
         fallback provider; the gate must consult the PRIMARY's pool."""
         agent = _make_agent(fallback_model=self.FB)
         _activate_fallback(agent)
-        agent._rate_limited_until = 0
 
         # Attached pool is the fallback provider's (mismatch with "custom").
         agent._credential_pool = _FakePool("openrouter", next_at=None)
@@ -306,7 +325,6 @@ class TestResetAwareRestoreGate:
         """Pool present but no reset info -> existing per-turn retry."""
         agent = _make_agent(fallback_model=self.FB)
         _activate_fallback(agent)
-        agent._rate_limited_until = 0
 
         agent._credential_pool = _FakePool("custom", next_at=None)
 
@@ -318,7 +336,6 @@ class TestResetAwareRestoreGate:
 
         agent = _make_agent(fallback_model=self.FB)
         _activate_fallback(agent)
-        agent._rate_limited_until = 0
         agent._credential_pool = _FakePool("custom", next_at=time.time() + 3600)
 
         with caplog.at_level(logging.INFO, logger="agent.agent_runtime_helpers"):
@@ -331,7 +348,7 @@ class TestResetAwareRestoreGate:
         """The existing 60s monotonic gate fires before the reset-aware one."""
         agent = _make_agent(fallback_model=self.FB)
         _activate_fallback(agent)
-        agent._rate_limited_until = time.monotonic() + 60
+        _mark_primary_cooling(agent)
         pool = _FakePool("custom", next_at=None)
         agent._credential_pool = pool
 

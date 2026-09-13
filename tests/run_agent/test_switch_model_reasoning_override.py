@@ -109,7 +109,6 @@ class TestSwitchModelReasoningOverride:
         agent._fallback_model = None
         agent._transport_cache = {}
         agent._config_context_length = None
-        agent._rate_limited_until = 0
         agent.model = "fallback-model"
         agent.provider = "openai"
         agent.reasoning_config = {"enabled": True, "effort": "medium"}

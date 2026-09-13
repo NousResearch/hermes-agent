@@ -497,7 +497,11 @@ class CLIModelSwitchMixin:
             try:
                 agent._primary_runtime = copy.deepcopy(primary)
                 agent._fallback_activated = True
-                agent._rate_limited_until = 0
+                from agent.cooldown_manager import build_cooldown_key, get_cooldown_manager
+                provider = str(primary.get("provider") or "").strip().lower()
+                manager = get_cooldown_manager()
+                manager.clear(provider)
+                manager.clear(build_cooldown_key(provider, primary.get("api_key"), "rate_limit"))
                 if agent._restore_primary_runtime():
                     return
             except Exception:

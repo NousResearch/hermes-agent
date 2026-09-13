@@ -1115,10 +1115,18 @@ def restore_primary_runtime(agent) -> bool:
     # leaves _fallback_index >= len(_fallback_chain) while _fallback_activated stays False. The next turn
     # skips this block entirely, stranding the index and silently blocking all future fallback attempts for
     # the session. Fixes #20465.
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
-        return False  # primary still in rate-limit cooldown, stay on fallback
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
+    from agent.cooldown_manager import build_cooldown_key, get_cooldown_manager
+
+    manager = get_cooldown_manager()
+    if (
+        manager.is_cooling(primary_provider)
+        or manager.is_cooling(
+            build_cooldown_key(primary_provider, (rt or {}).get("api_key"), "rate_limit")
+        )
+    ):
+        return False  # primary still on cooldown, stay on fallback
     primary_model = str((rt or {}).get("model") or "").strip()
     from agent.fallback_cooldown import _is_entitlement_rejected
     if primary_model and _is_entitlement_rejected(agent, primary_provider, primary_model):
@@ -1176,7 +1184,6 @@ def restore_primary_runtime(agent) -> bool:
             agent.reasoning_config = dict(saved_reasoning)
         agent._fallback_activated = False
         agent._fallback_index = 0
-        agent._rate_limit_backoff_count = 0
         # Reset the stale-call circuit breaker: its streak measured the fallback provider.
         from agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
         _reset_stale_streak(agent)

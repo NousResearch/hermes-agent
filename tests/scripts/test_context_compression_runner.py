@@ -73,6 +73,17 @@ def test_runner_resolves_root_strips_separator_and_rejects_stale_report(tmp_path
     assert list(latest.glob("report.stale.*.json"))
 
 
+def test_runner_rejects_nonfinite_timeout(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/compression_eval/run_context_compression_eval.py",
+         "--harness", str(tmp_path), "--hermes-root", str(tmp_path),
+         "--output", str(tmp_path / "out.json"), "--timeout-seconds", "nan", "--", "true"],
+        cwd=Path(__file__).parents[2], capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert "finite and positive" in result.stderr
+
+
 def test_runner_bounds_harness_timeout(tmp_path: Path) -> None:
     root = tmp_path / "hermes"
     harness = tmp_path / "harness"

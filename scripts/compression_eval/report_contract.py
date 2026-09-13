@@ -9,7 +9,13 @@ REQUIRED_KEYS = {
     "baseline_tokens", "probe_scores", "artifact_trail_preserved",
     "continuity_preserved", "model_provenance", "status",
 }
-FORBIDDEN_MARKERS = ("OPENAI_API_KEY=", "ANTHROPIC_API_KEY=", "/Users/", "/home/")
+FORBIDDEN_MARKERS = ("/Users/", "/home/")
+_CREDENTIAL_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:[a-z0-9]+[_-])*"
+    r"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
+    r"secret(?:[_-]access[_-]?key)?|password|authorization|credential|token)"
+    r"\s*=\s*[^\s,;}\]]+"
+)
 _CREDENTIAL_KEY = re.compile(
     r"(?i)(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
     r"secret|password|authorization|credential|token)$"
@@ -39,6 +45,11 @@ def validate_report(report: Mapping[str, object]) -> list[str]:
     for key in ("compressed_tokens", "baseline_tokens"):
         if not isinstance(report.get(key), int) or isinstance(report.get(key), bool):
             errors.append(f"{key}_must_be_integer")
+        elif report[key] < 0:
+            errors.append(f"{key}_must_be_nonnegative")
+    if isinstance(report.get("baseline_tokens"), int) and not isinstance(report.get("baseline_tokens"), bool):
+        if report["baseline_tokens"] <= 0:
+            errors.append("baseline_tokens_must_be_positive")
     if not isinstance(report.get("probe_scores"), Mapping):
         errors.append("probe_scores_must_be_mapping")
     if not isinstance(report.get("artifact_trail_preserved"), bool):
@@ -55,9 +66,15 @@ def validate_report(report: Mapping[str, object]) -> list[str]:
     else:
         errors.extend(f"missing:model_provenance.{key}"
                       for key in sorted(_PROVENANCE_KEYS - provenance.keys()))
+        for key in _PROVENANCE_KEYS:
+            value = provenance.get(key)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"model_provenance.{key}_must_be_nonempty_string")
     if report.get("status") not in {"pass", "fail", "unavailable"}:
         errors.append("invalid_status")
     errors.extend(_credential_errors(report))
     text = repr(dict(report))
+    if _CREDENTIAL_ASSIGNMENT.search(text):
+        errors.append("forbidden_credential_assignment")
     errors.extend(f"forbidden_marker:{marker}" for marker in FORBIDDEN_MARKERS if marker in text)
     return errors

@@ -37,7 +37,10 @@ def test_missing_and_invalid_fields_fail_closed() -> None:
 def test_secret_or_local_path_is_rejected() -> None:
     value = report()
     value["probe_scores"] = {"detail": "OPENAI_API_KEY=secret"}
-    assert any(error.startswith("forbidden_marker:") for error in validate_report(value))
+    assert "forbidden_credential_assignment" in validate_report(value)
+
+    value["probe_scores"] = {"detail": "OPENROUTER_API_KEY=secret"}
+    assert "forbidden_credential_assignment" in validate_report(value)
 
 
 def test_pass_requires_preservation_and_rejects_nested_credentials() -> None:
@@ -47,3 +50,14 @@ def test_pass_requires_preservation_and_rejects_nested_credentials() -> None:
     errors = validate_report(value)
     assert "artifact_trail_preserved_must_be_true_for_pass" in errors
     assert "forbidden_key:report.probe_scores.nested.OPENAI_API_KEY" in errors
+
+
+def test_report_rejects_impossible_counts_and_empty_provenance() -> None:
+    value = report()
+    value["compressed_tokens"] = -1
+    value["baseline_tokens"] = 0
+    value["model_provenance"]["compression_model"] = ""
+    errors = validate_report(value)
+    assert "compressed_tokens_must_be_nonnegative" in errors
+    assert "baseline_tokens_must_be_positive" in errors
+    assert "model_provenance.compression_model_must_be_nonempty_string" in errors

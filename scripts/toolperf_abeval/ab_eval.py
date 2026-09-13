@@ -42,6 +42,8 @@ from report_contract import validate_toolperf_report
 
 ROOT = Path(os.environ.get("ABEVAL_ROOT", "abeval-workspace")).resolve()
 HOME = Path(os.environ.get("ABEVAL_HOME", str(ROOT / "home"))).resolve()
+_BATTERY_MANIFEST = "manifest.json"
+_GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 TASKS = {
     # P: python-not-found + venv module confusion (terminal failure hints)
@@ -148,6 +150,14 @@ SUCCESS = {
 def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
     resdir = ROOT / "results" / model.replace("/", "_") / arm
     resdir.mkdir(parents=True, exist_ok=True)
+    manifest_path = ROOT / "results" / model.replace("/", "_") / _BATTERY_MANIFEST
+    manifest = {"model": model, "tasks": sorted(TASKS), "repetitions": reps}
+    if manifest_path.exists():
+        existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if existing != manifest:
+            raise SystemExit(f"evaluation battery manifest mismatch: {manifest_path}")
+    else:
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     meta_path = resdir / "meta.jsonl"
     try:
         source_sha = subprocess.run(
@@ -317,20 +327,41 @@ def report(models):
             print(f"{'TOTAL':20s} | {arm:8s} | {n:2d} {100 * a['ok'] / n:3.0f}% "
                   f"{a['llm'] / n:5.1f} {a['tools'] / n:5.1f} {a['errs'] / n:5.1f} "
                   f"{a['retries'] / n:5.1f} {a['kb'] / n:5.0f} {a['wall'] / n:5.0f}s")
+        manifest_path = mdir / _BATTERY_MANIFEST
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+        expected_tasks = set(manifest.get("tasks", ()))
+        repetitions = manifest.get("repetitions")
+        expected = (
+            {(task, rep) for task in expected_tasks for rep in range(repetitions)}
+            if isinstance(repetitions, int) and repetitions > 0 else set()
+        )
         provenance = {arm: "unavailable" for arm in ("baseline", "fixes")}
+        provenance_errors = []
         for arm in ("baseline", "fixes"):
             meta_path = mdir / arm / "meta.jsonl"
             if meta_path.exists():
                 rows = [json.loads(line) for line in meta_path.read_text(encoding="utf-8").splitlines()]
                 if rows:
-                    provenance[arm] = rows[0].get("source_sha", "unavailable")
+                    shas = {row.get("source_sha") for row in rows}
+                    if len(shas) != 1 or not all(isinstance(sha, str) and _GIT_SHA.fullmatch(sha) for sha in shas):
+                        provenance_errors.append(f"{arm}: mixed or unavailable source_sha values")
+                    else:
+                        provenance[arm] = next(iter(shas))
+        if provenance_errors:
+            raise SystemExit("invalid tool-performance provenance: " + "; ".join(provenance_errors))
+        observed = {}
+        for arm in ("baseline", "fixes"):
+            meta_path = mdir / arm / "meta.jsonl"
+            rows = [json.loads(line) for line in meta_path.read_text(encoding="utf-8").splitlines()] if meta_path.exists() else []
+            observed[arm] = {(row.get("task"), row.get("rep")) for row in rows}
+        complete = bool(expected) and all(observed[arm] == expected for arm in ("baseline", "fixes"))
         report_data = {
             "baseline_sha": provenance.get("baseline", "unavailable"),
             "fixes_sha": provenance.get("fixes", "unavailable"),
             "model": model,
-            "concurrency": max(aggn.values(), default=0),
+            "concurrency": 1,
             "metrics": {arm: dict(agg[arm]) for arm in ("baseline", "fixes")},
-            "status": "pass" if all(aggn[arm] for arm in ("baseline", "fixes")) else "partial",
+            "status": "pass" if complete else "fail",
         }
         errors = validate_toolperf_report(report_data)
         if errors:

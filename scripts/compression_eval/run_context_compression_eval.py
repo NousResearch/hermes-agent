@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -45,8 +46,8 @@ def main() -> int:
         command.pop(0)
     if not hermes_root.is_dir() or not harness.is_dir() or not command:
         raise SystemExit("--harness, --hermes-root, and a harness command are required")
-    if args.timeout_seconds <= 0:
-        raise SystemExit("--timeout-seconds must be positive")
+    if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
+        raise SystemExit("--timeout-seconds must be finite and positive")
     report_path = harness / "results" / "latest" / "report.json"
     if report_path.exists():
         stale = report_path.with_name(f"report.stale.{time.time_ns()}.json")

@@ -26,6 +26,7 @@ from agent.model_metadata import estimate_messages_tokens_rough, estimate_reques
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 from agent.turn_author import parse_turn_author
+from agent.turn_voice_context import parse_voice_context
 
 logger = logging.getLogger(__name__)
 
@@ -661,7 +662,8 @@ def _collect_pre_llm_call_context(
 ) -> str:
     """Run ``pre_llm_call`` plugins; their context is injected into the user message
     (never the system prompt). Oversized per-hook context is spilled to disk so a
-    runaway plugin can't inflate every subsequent turn's prompt."""
+    runaway plugin can't inflate every subsequent turn's prompt. Hooks also receive this
+    turn's ``voice_context`` (#109455) so a plugin can branch on it without core changes."""
     if getattr(agent, "_persist_disabled", False):
         return ""
     try:
@@ -678,6 +680,9 @@ def _collect_pre_llm_call_context(
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            # Trusted per-turn signal (#109455): {} on every non-voice turn, never the
+            # previous turn's value — see build_turn_context's reset-first comment.
+            voice_context=getattr(agent, "_turn_voice_context", None) or {},
         )
         try:
             # Spill oversized per-hook context to disk so a runaway plugin can't inflate every subsequent
@@ -855,6 +860,7 @@ def build_turn_context(
     persist_user_message: Optional[Any], persist_user_timestamp: Optional[float]=None,
     persist_user_platform_id: Optional[str]=None, *, persist_user_display_kind: Optional[str]=None,
     persist_user_display_metadata: Optional[Dict[str, Any]]=None, turn_author: Optional[Dict[str, Any]]=None,
+    voice_context: Optional[Dict[str, Any]]=None,
     restore_or_build_system_prompt,
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
     set_current_write_origin, ra, moa_active: bool=False,
@@ -873,6 +879,10 @@ def build_turn_context(
     # Reset first: a cached gateway agent must never carry the previous turn's bot author into a human turn.
     turn_author = parse_turn_author(turn_author)
     agent._turn_author = turn_author
+    # Same reset-first rule for voice context (#109455): a typed turn on a cached gateway
+    # agent must never inherit a prior turn's voice signal, so this is rewritten every turn
+    # to {} rather than left alone when the caller passes nothing.
+    agent._turn_voice_context = parse_voice_context(voice_context)
 
     # Recover a rotated session before binding log/turn ids or copying client history so
     # everything in this turn belongs to the canonical child.

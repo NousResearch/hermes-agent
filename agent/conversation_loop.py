@@ -1433,6 +1433,7 @@ def _run_conversation_turn(
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
     turn_author: Optional[Dict[str, Any]] = None,
+    voice_context: Optional[Dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run a complete conversation with tool calling until completion; returns the result dict.
@@ -1440,7 +1441,9 @@ def _run_conversation_turn(
     ``stream_callback``: per-text-delta callback (TTS). ``persist_user_message``: clean text to
     store when ``user_message`` carries API-only synthetic prefixes; timestamp / platform id are
     stored as metadata (platform id lets restart drain recovery dedup). ``persist_user_display_*``:
-    display-only event rendering; the model still receives the message unchanged."""
+    display-only event rendering; the model still receives the message unchanged. ``voice_context``:
+    trusted per-turn ``{input_modality, voice_session_active, client_surface}`` (#109455), never
+    persisted; reaches ``pre_llm_call`` hooks via ``agent._turn_voice_context``."""
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
             user_message, persist_user_message
@@ -1468,6 +1471,7 @@ def _run_conversation_turn(
             persist_user_display_metadata=persist_user_display_metadata,
             persist_user_platform_id=persist_user_platform_id,
             turn_author=turn_author,
+            voice_context=voice_context,
             restore_or_build_system_prompt=_restore_or_build_system_prompt,
             install_safe_stdio=_install_safe_stdio,
             sanitize_surrogates=_sanitize_surrogates,
@@ -1584,6 +1588,7 @@ def run_conversation(
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
     turn_author: Optional[Dict[str, Any]] = None,
+    voice_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
 
@@ -1608,6 +1613,7 @@ def run_conversation(
         persist_user_platform_id=persist_user_platform_id,
         moa_config=moa_config,
         turn_author=turn_author,
+        voice_context=voice_context,
     )
     return export_current_turn_boundary(agent, result, user_message)
 

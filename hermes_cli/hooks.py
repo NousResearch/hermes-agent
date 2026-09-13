@@ -116,6 +116,9 @@ _DEFAULT_PAYLOADS = {
     "pre_llm_call": {
         "session_id": "test-session", "user_message": "What is the weather?",
         "conversation_history": [], "is_first_turn": True, "model": "gpt-4", "platform": "cli",
+        # {} outside a voice turn (#109455) — non-empty only when the client marked this
+        # specific turn as voice input; see agent/turn_voice_context.py.
+        "voice_context": {},
     },
     "post_llm_call": {"session_id": "test-session", "model": "gpt-4", "platform": "cli"},
     "pre_verify": {

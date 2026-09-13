@@ -475,6 +475,14 @@ class TestBatchedDescribe:
         )
         assert name not in result.get("not_found", [])
 
+        disabled = json.loads(dispatch_tool_describe(
+            {"names": [name]},
+            current_tool_defs=[],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        assert "not enabled for this session/platform" in disabled["errors"][name]
+        assert "call it directly" not in disabled["errors"][name]
+
     def test_registry_lookup_failure_is_not_found(self, monkeypatch):
         from tools.registry import registry
         from tools.tool_search import ToolSearchConfig, dispatch_tool_describe

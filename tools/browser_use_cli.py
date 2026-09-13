@@ -356,9 +356,19 @@ def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dic
         return None
 
 
+def _served_profile_tag() -> str:
+    """``""`` outside a served-profile scope (every legacy key stays byte-identical); under a
+    multiplexed turn, the routed profile's home key — one profile's browser must never be handed
+    to another that happens to use the same session name or task id (#110032)."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    return "" if get_hermes_home_override() is None else hermes_home_key()
+
+
 def _backend_cache_key(task_id: Optional[str], session_name: str = "") -> str:
-    """Session-cache key for a backend browser: named sessions get their own."""
-    return f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
+    """Session-cache key for a backend browser: named sessions get their own; served profiles get their own."""
+    key = f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
+    tag = _served_profile_tag()
+    return f"{key}@{tag}" if tag else key
 
 
 def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:

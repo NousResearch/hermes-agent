@@ -768,9 +768,14 @@ export type GatewayEvent =
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
   | {
+      payload: { origin: string; request_id: string; site: string }
+      session_id?: string
+      type: 'vault.export_password.request'
+    }
+  | {
       payload: { request_id: string }
       session_id?: string
-      type: 'secret.expire' | 'sudo.expire' | 'vault.unlock.expire'
+      type: 'secret.expire' | 'sudo.expire' | 'vault.export_password.expire' | 'vault.unlock.expire'
     }
   | {
       payload: { backend: string; display_name: string; request_id: string }

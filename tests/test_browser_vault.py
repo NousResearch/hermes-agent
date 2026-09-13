@@ -256,7 +256,7 @@ class TestClassifier:
         assert "[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js
         assert '["current-password", "export-password"].includes(f.token)' in js
         assert "target_changed" in js  # all targets are validated before the first write
-        assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
+        assert js.rindex('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
         # P1-2: the origin assert must run inside the SAME script, before

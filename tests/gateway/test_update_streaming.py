@@ -129,9 +129,17 @@ class TestRestoreStashWithInputFn:
 class TestUpdateCommandGatewayFlag:
     """Verify the gateway spawns hermes update --gateway."""
 
+    @pytest.mark.linux_only
     @pytest.mark.asyncio
     async def test_spawns_with_gateway_flag(self, tmp_path):
-        """The spawned update command includes --gateway and PYTHONUNBUFFERED."""
+        """The spawned update command includes --gateway and PYTHONUNBUFFERED.
+
+        The assertions below (``rc=$?``, the ``PYTHONUNBUFFERED=1 …`` env prefix)
+        describe the POSIX ``bash -c`` spawn branch; Windows takes a separate
+        ``sys.executable -c`` helper branch.  Run this branch on native Linux
+        rather than faking the host OS; ``subprocess.Popen`` is mocked, while
+        the platform-specific control flow remains real.
+        """
         runner = _make_runner()
         event = _make_event()
 
@@ -397,4 +405,3 @@ class TestCmdUpdateGatewayMode:
 
         assert len(calls) == 1
         assert "Restore" in calls[0]
-

@@ -197,18 +197,19 @@ _TAB_PROBES["export_password"] = """(() => {
     const style = getComputedStyle(el);
     return !el.disabled && !el.readOnly && style.display !== 'none' && style.visibility !== 'hidden' && el.getClientRects().length;
   });
-  return fields.length === 2 && fields[0].form === fields[1].form;
+  return fields.length === 2 && !!fields[0].form && fields[0].form === fields[1].form;
 })()"""
 
 
-def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
+def _focus_bound_origin(task_id: str, origin: str, kind: str, *, supervisor=None) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
-    try:
-        supervisor = _ensure_supervisor(task_id)
-    except Exception:
-        supervisor = None
+    if supervisor is None:
+        try:
+            supervisor = _ensure_supervisor(task_id)
+        except Exception:
+            supervisor = None
     if supervisor is None:
         return None
     focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
@@ -404,12 +405,12 @@ def browser_vault_fill_export_password(task_id: Optional[str] = None) -> str:
     from agent.vault_login_classifier import (
         LoginControl, build_fill_js, build_inspection_js, select_export_password_fills,
     )
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
     effective_task_id = task_id or "default"
-    try:
-        supervisor = _ensure_supervisor(effective_task_id)
-    except Exception:
-        supervisor = None
+    # This capability check must not attach to or create a Hermes browser for
+    # an independent external-browser task that cannot securely redeem secrets.
+    supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
     if supervisor is None:
         return json.dumps({
             "success": False,
@@ -421,7 +422,7 @@ def browser_vault_fill_export_password(task_id: Optional[str] = None) -> str:
             ),
         })
 
-    if not _focus_bound_origin(effective_task_id, "", "export_password"):
+    if not _focus_bound_origin(effective_task_id, "", "export_password", supervisor=supervisor):
         return json.dumps({
             "success": False,
             "error_type": "no_export_password_fields",

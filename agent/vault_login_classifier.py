@@ -189,15 +189,20 @@ def select_export_password_fills(controls: List[LoginControl], password: str) ->
     """
     if not password:
         return []
-    groups: Dict[Optional[int], List[LoginControl]] = {}
+    groups: Dict[int, List[LoginControl]] = {}
     for control in controls:
-        if control.type == "password":
+        if control.type == "password" and control.form_index is not None:
             groups.setdefault(control.form_index, []).append(control)
     if len(groups) != 1 or len(next(iter(groups.values()), [])) != 2:
         return []
     selected = sorted(next(iter(groups.values())), key=lambda c: c.index)
     return [
-        {"index": control.index, "token": "export-password", "value": password}
+        {
+            "index": control.index,
+            "token": "export-password",
+            "value": password,
+            "formIndex": control.form_index,
+        }
         for control in selected
     ]
 
@@ -246,6 +251,7 @@ def select_checkout_fills(classified: List[ClassifiedLoginControl], secret: Dict
 # script resolves targets by the stamp of ITS OWN inspection instead of re-querying by position, so
 # neither a DOM reflow nor a second inspection in between can redirect the password into another field.
 INSPECTION_STAMP_ATTR = "data-hermes-vault-slot"
+INSPECTION_FORM_STAMP_ATTR = "data-hermes-vault-form"
 
 
 def build_otp_fills(otp_controls: List[ClassifiedLoginControl], code: str) -> List[Dict[str, Any]]:
@@ -272,6 +278,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
   const elements = Array.from(document.querySelectorAll("input, select"));
   const forms = Array.from(document.forms);
+  forms.forEach((form, index) => form.setAttribute("data-hermes-vault-form", nonce + ":" + index));
   elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
     if (element.disabled || element.readOnly) return [];
@@ -318,9 +325,12 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str 
     fill after a DOM/tab/frame change. No marker is left on filled controls so later model-driven DOM
     reads cannot address them deterministically.
     """
-    payload = json.dumps(
-        [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
-    )
+    payload = json.dumps([{
+        "index": f["index"],
+        "token": f.get("token", "current-password"),
+        "value": f["value"],
+        **({"formIndex": f["formIndex"]} if "formIndex" in f else {}),
+    } for f in fills])
     return (_FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
             .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
 
@@ -338,11 +348,50 @@ _FILL_JS_TEMPLATE = """(() => {
     f,
     el: document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')
   }));
-  if (targets.some(({ f, el }) => !el || (["current-password", "export-password"].includes(f.token) && el.type !== "password"))) {
+  const exportTargets = targets.filter(({ f }) => f.token === "export-password");
+  const exportPairValid = exportTargets.length === 0 || (() => {
+    if (exportTargets.length !== 2) return false;
+    const formIndex = exportTargets[0].f.formIndex;
+    if (!Number.isInteger(formIndex) || exportTargets.some(({ f }) => f.formIndex !== formIndex)) return false;
+    const form = document.querySelector('[data-hermes-vault-form="' + nonce + ':' + formIndex + '"]');
+    if (!form || exportTargets.some(({ el }) => !el || el.form !== form || el.disabled || el.readOnly)) return false;
+    if (exportTargets.some(({ el }) => {
+      const style = getComputedStyle(el);
+      return style.display === "none" || style.visibility === "hidden" || el.getClientRects().length === 0;
+    })) return false;
+    const eligible = Array.from(form.querySelectorAll('input[type="password"]')).filter((el) => {
+      const style = getComputedStyle(el);
+      return !el.disabled && !el.readOnly && style.display !== "none" && style.visibility !== "hidden" && el.getClientRects().length;
+    });
+    return eligible.length === 2 && exportTargets.every(({ el }) => eligible.includes(el));
+  })();
+  if (!exportPairValid || targets.some(({ f, el }) => !el || (["current-password", "export-password"].includes(f.token) && el.type !== "password"))) {
     document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+    document.querySelectorAll("[data-hermes-vault-form]").forEach((n) => n.removeAttribute("data-hermes-vault-form"));
     return JSON.stringify({ refused: "target_changed" });
   }
-  for (const { f, el } of targets) {
+  if (exportTargets.length) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    const previous = exportTargets.map(({ el }) => el.value);
+    try {
+      exportTargets.forEach(({ f, el }) => {
+        if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
+      });
+    } catch (e) {
+      exportTargets.forEach(({ el }, index) => {
+        try { if (setter && setter.set) { setter.set.call(el, previous[index]); } else { el.value = previous[index]; } } catch (_) {}
+      });
+      document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+      document.querySelectorAll("[data-hermes-vault-form]").forEach((n) => n.removeAttribute("data-hermes-vault-form"));
+      return JSON.stringify({ refused: "target_changed" });
+    }
+    exportTargets.forEach(({ el }) => {
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      filled += 1;
+    });
+  }
+  for (const { f, el } of targets.filter(({ f }) => f.token !== "export-password")) {
     try {
       if (el.tagName === "SELECT") {
         const want = norm(f.value);
@@ -360,5 +409,6 @@ _FILL_JS_TEMPLATE = """(() => {
     } catch (e) { /* skip */ }
   }
   document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  document.querySelectorAll("[data-hermes-vault-form]").forEach((n) => n.removeAttribute("data-hermes-vault-form"));
   return JSON.stringify({ filled });
 })()"""

@@ -234,6 +234,10 @@ class TestClassifier:
             [controls[0], _ctrl(index=3, form_index=1, type="password")], "x"
         ) == []
         assert select_export_password_fills(controls[:1], "x") == []
+        assert select_export_password_fills([
+            _ctrl(index=2, form_index=None, type="password"),
+            _ctrl(index=3, form_index=None, type="password"),
+        ], "x") == []
 
     def test_build_fill_js_contains_events(self):
         js = build_fill_js(
@@ -258,6 +262,20 @@ class TestClassifier:
         assert '["current-password", "export-password"].includes(f.token)' in js
         assert "target_changed" in js  # all targets are validated before the first write
         assert js.rindex('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
+
+    def test_export_fill_revalidates_writable_visible_pair_and_inspected_form(self):
+        fills = select_export_password_fills([
+            _ctrl(index=2, form_index=4, type="password"),
+            _ctrl(index=3, form_index=4, type="password"),
+        ], "x")
+        js = build_fill_js(fills, expected_origin="https://example.com", nonce="bound")
+        assert '"formIndex": 4' in js
+        assert "el.form !== form" in js
+        assert "el.disabled || el.readOnly" in js
+        assert "getClientRects().length === 0" in js
+        assert "eligible.length === 2" in js
+        assert js.index("exportPairValid") < js.index("setter.set.call")
+        assert js.index("exportTargets.forEach(({ f, el })") < js.index("dispatchEvent")
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
         # P1-2: the origin assert must run inside the SAME script, before
@@ -308,7 +326,7 @@ class TestBrowserVaultTools:
         secret_expressions = []
         unlock_mod.set_export_password_prompt_callback(lambda origin, site: canary)
         try:
-            with patch.object(browser_vault_tool, "_ensure_supervisor", return_value=object()), \
+            with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as registry, \
                  patch.object(browser_vault_tool, "_focus_bound_origin", return_value="https://seller.test/export"), \
                  patch.object(browser_vault_tool, "_current_page_origin", return_value="https://seller.test"), \
                  patch.object(browser_vault_tool, "_eval_js", return_value={"success": True, "result": json.dumps(controls)}), \
@@ -316,6 +334,7 @@ class TestBrowserVaultTools:
                               side_effect=lambda task, expr: secret_expressions.append(expr) or
                               {"success": True, "result": json.dumps({"filled": 2})}), \
                  patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                registry.get.return_value = object()
                 raw = browser_vault_tool.browser_vault_fill_export_password(task_id="task-bound")
         finally:
             unlock_mod.set_export_password_prompt_callback(None)
@@ -325,6 +344,19 @@ class TestBrowserVaultTools:
         assert canary not in raw and len(secret_expressions) == 1
         assert secret_expressions[0].count(canary) == 2
         assert "submit(" not in secret_expressions[0]
+
+    def test_export_password_refuses_unbound_task_without_starting_browser(self):
+        from tools import browser_vault_tool
+
+        with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as registry, \
+             patch("tools.browser_tool_session._run_browser_command") as run_command, \
+             patch.object(browser_vault_tool, "_focus_bound_origin") as focus:
+            registry.get.return_value = None
+            out = json.loads(browser_vault_tool.browser_vault_fill_export_password(task_id="external-task"))
+
+        assert out["error_type"] == "secure_fill_unsupported"
+        run_command.assert_not_called()
+        focus.assert_not_called()
 
     def test_list_returns_identifier_never_password(self, store):
         from tools import browser_vault_tool

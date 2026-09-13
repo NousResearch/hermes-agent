@@ -379,9 +379,20 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
   })
 }
 
-export function searchSessions(query: string): Promise<SessionSearchResponse> {
+// Session search accepts the same source exclusions the sidebar recents slice
+// uses (`sessions.exclude_sources`), so a term that only appears inside an
+// excluded source — A2A dispatches by default — doesn't surface a row the list
+// itself hides. The backend has honored `exclude_sources` all along; before
+// this, search sent only `q` and every exclusion was silently ignored.
+export function searchSessions(query: string, excludeSources: string[] = []): Promise<SessionSearchResponse> {
+  const params = new URLSearchParams({ q: query })
+
+  if (excludeSources.length) {
+    params.set('exclude_sources', excludeSources.join(','))
+  }
+
   return hermesApi<SessionSearchResponse>({
-    path: `/api/sessions/search?q=${encodeURIComponent(query)}`
+    path: `/api/sessions/search?${params.toString()}`
   })
 }
 

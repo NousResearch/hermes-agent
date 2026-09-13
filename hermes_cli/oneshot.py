@@ -167,12 +167,15 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    resume: Optional[str] = None,
+    reasoning: object = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
     Model/provider fall back to ``HERMES_INFERENCE_MODEL`` and config.yaml. ``usage_file`` gets a
-    JSON usage report even when the run fails. Returns the exit code; the caller owns process
-    termination.
+    JSON usage report even when the run fails. ``resume`` is a session id (already normalized by
+    the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
+    by this turn. Returns the exit code; the caller owns process termination.
     """
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
@@ -220,6 +223,8 @@ def run_oneshot(
                 toolsets=explicit_toolsets,
                 use_config_toolsets=use_config_toolsets,
                 skills=skills,
+                resume=resume,
+                reasoning=reasoning,
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -278,6 +283,7 @@ class _ModelChoice:
     provider: str | None
     base_url: str | None = None
     api_key: str | None = None
+    api_mode: str | None = None
 
 
 def _configured_model(model_cfg: object) -> str:
@@ -340,6 +346,67 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
     return choice
 
 
+def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str], list, Optional[dict]]:
+    """Resolve ``resume`` to ``(session_id, conversation_history, session_meta)`` for a oneshot turn.
+
+    Follows the same contract as the interactive CLI resume: compression-chain redirect via
+    ``resolve_resume_session_id``, safe-resume guard, model-projection history with
+    ``session_meta`` rows dropped. An unknown session raises (the user passed an explicit id;
+    silently starting a fresh session is the resume-dropped failure mode this exists to fix —
+    see #105892). An empty stored transcript still returns the resolved id: the turn replays
+    nothing but is recorded under the requested session — ``hermes -z "hello" -c <title>
+    --create-if-missing`` must fill the titled session it created, not mint a fresh id
+    (same contract as the interactive /resume of an empty session).
+
+    The resolved row is also reopened (best effort): the previous run stamped ``ended_at``,
+    the existing-row upsert never clears the end fields, and ``end_session()`` only writes
+    rows whose ``ended_at`` is null — so without this step the resumed turn would be recorded
+    under a session that stays closed and its new lifecycle boundary would be lost (same
+    reason the interactive resume calls ``reopen_session()`` before continuing).
+    """
+    if not resume:
+        return None, [], None
+    if session_db is None:
+        raise RuntimeError(f"cannot resume session {resume}: session store unavailable")
+    resolved = session_db.resolve_resume_session_id(resume) or resume
+    session_meta = session_db.get_session(resolved)
+    if not session_meta:
+        raise RuntimeError(f"session not found: {resume}")
+    session_db.assert_resume_safe(resolved, tip_only=True)
+    restored, _display = session_db.get_resume_conversations(resolved)
+    history = [m for m in restored if m.get("role") != "session_meta"]
+    try:
+        session_db.reopen_session(resolved)
+    except Exception:
+        logging.debug("reopen_session failed for resumed one-shot session %s", resolved, exc_info=True)
+    return resolved, history, session_meta
+
+
+def _apply_stored_session_runtime(
+    choice: _ModelChoice, session_meta: Optional[dict], *, explicit_model: bool,
+) -> _ModelChoice:
+    """Run a resumed one-shot on the session's stored runtime, not the ambient config — the same
+    contract as the interactive ``_restore_session_model``, via the shared ``stored_session_route``.
+    An explicit ``--model`` keeps the ambient choice. A changed provider drops the resolved
+    ``api_key``: it belongs to the ambient endpoint and is never persisted, so runtime resolution
+    re-fetches credentials for the restored provider."""
+    if explicit_model:
+        return choice
+    from hermes_cli.cli_model_switch_mixin import stored_session_route
+
+    route = stored_session_route(session_meta, current_model=choice.model, current_provider=choice.provider)
+    if route is None:
+        return choice
+    choice.model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
+    if provider_changed:
+        choice.provider = stored_provider
+        choice.base_url = stored_base_url
+        choice.api_key = None
+    if stored_api_mode:
+        choice.api_mode = str(stored_api_mode)
+    return choice
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -347,6 +414,8 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    resume: Optional[str] = None,
+    reasoning: object = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
@@ -357,12 +426,30 @@ def _run_agent(
 
     cfg = load_config()
     choice = _resolve_model_and_provider(cfg, model, provider)
+    # Resume resolves BEFORE the runtime provider: the session's stored model/route must
+    # replace the ambient config (see _apply_stored_session_runtime) and the ended row must
+    # be reopened before the agent can stamp a new lifecycle boundary.
+    session_db = _create_session_db_for_oneshot()
+    resume_sid, conversation_history, resume_meta = _load_resume_target(session_db, resume)
+    choice = _apply_stored_session_runtime(choice, resume_meta, explicit_model=bool((model or "").strip()))
     runtime = resolve_runtime_provider(
         requested=choice.provider,
         target_model=choice.model or None,
         explicit_base_url=choice.base_url,
         explicit_api_key=choice.api_key,
     )
+    if choice.api_mode:
+        runtime["api_mode"] = choice.api_mode
+
+    from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+
+    reasoning_config = resolve_reasoning_config(cfg, choice.model)
+    if reasoning is not None and str(reasoning).strip():
+        parsed_reasoning = parse_reasoning_effort(reasoning)
+        if parsed_reasoning is None:
+            logging.warning("Unknown --reasoning '%s', keeping the configured level", reasoning)
+        else:
+            reasoning_config = parsed_reasoning
 
     # sorted() gives stable ordering for config-derived sets; explicit values preserve user order.
     toolsets_list = _normalize_toolsets(toolsets)
@@ -381,7 +468,6 @@ def _run_agent(
 
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
-    session_db = _create_session_db_for_oneshot()
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = None
@@ -397,9 +483,11 @@ def _run_agent(
             quiet_mode=True,
             platform="cli",
             session_db=session_db,
+            session_id=resume_sid,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,
+            reasoning_config=reasoning_config,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
             # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
             # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.
@@ -410,7 +498,7 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
-        result = agent.run_conversation(prompt)
+        result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)

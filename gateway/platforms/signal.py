@@ -25,8 +25,10 @@ import httpx
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult, cache_image_from_bytes_async,
-    cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len)
+    BasePlatformAdapter, SendResult, cache_image_from_bytes_async,
+    cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len,
+)
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import redact_phone
 from gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
@@ -164,8 +166,8 @@ def check_signal_requirements() -> bool:
 def validate_signal_config(config: PlatformConfig) -> bool:
     """Check if Signal has enough config to connect."""
     extra = getattr(config, "extra", {}) or {}
-    http_url = (extra.get("http_url", "") or os.getenv("SIGNAL_HTTP_URL", "")).strip()
-    account = (extra.get("account", "") or os.getenv("SIGNAL_ACCOUNT", "")).strip()
+    http_url = (extra.get("http_url", "") or _sig_secret("SIGNAL_HTTP_URL", "")).strip()
+    account = (extra.get("account", "") or _sig_secret("SIGNAL_ACCOUNT", "")).strip()
     return bool(http_url and account)
 
 
@@ -190,7 +192,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.group_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_GROUP_ALLOWED_USERS", "")))
         _rm_cfg = extra.get("require_mention")
         self.require_mention = (bool(_rm_cfg) if _rm_cfg is not None
-                                else os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in TRUTHY_STRINGS)
+                                else (_sig_secret("SIGNAL_REQUIRE_MENTION", "false") or "false").lower() in TRUTHY_STRINGS)
         self.dm_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_ALLOWED_USERS", "*")))
         self.client: Optional[httpx.AsyncClient] = None
         self._sse_task: Optional[asyncio.Task] = None
@@ -779,11 +781,12 @@ class SignalAdapter(BasePlatformAdapter):
         return file_path, None, None
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
-                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send a batch of images via chunked Signal RPC calls. Alt texts are dropped (one shared body
-        per send); bad images are skipped with a warning; ``human_delay`` is ignored (scheduler paces)."""
+        per send); bad images are skipped with a warning; ``human_delay`` is ignored (scheduler paces).
+        Returns success when at least one batch was accepted, so media-only turns report SUCCESS."""
         if not images:
-            return
+            return SendResult(success=False, error="no images to send")
         scheduler = get_scheduler()
         logger.info("Signal send_multiple_images: received %d image(s) for %s — scheduler state: %s", len(images),
                     chat_id[:30], scheduler.state())
@@ -800,24 +803,30 @@ class SignalAdapter(BasePlatformAdapter):
         if not attachments:
             logger.error("Signal: no valid images in batch of %d (download=%d missing=%d oversize=%d)", len(images),
                          skipped["download"], skipped["missing"], skipped["oversize"])
-            return
+            return SendResult(success=False, error="no valid images in batch")
         logger.info("Signal send_multiple_images: %d/%d images valid, sending in chunks", len(attachments), len(images))
         base_params = await self._with_target({"account": self.account, "message": ""}, chat_id)
         per = SIGNAL_MAX_ATTACHMENTS_PER_MSG
         att_batches = [attachments[i:i + per] for i in range(0, len(attachments), per)]
         n_batches = len(att_batches)
+        delivered = False
         for idx, att_batch in enumerate(att_batches, start=1):
             n = len(att_batch)
             estimated = scheduler.estimate_wait(n)
             logger.debug("Signal batch %d/%d: %d attachments, estimated wait=%.1fs", idx, n_batches, n, estimated)
             if estimated >= SIGNAL_BATCH_PACING_NOTICE_THRESHOLD:
                 await self._notify_batch_pacing(chat_id, idx, n_batches, estimated)
-            await self._send_attachment_batch(scheduler, dict(base_params, attachments=att_batch), n,
-                                              f"{idx}/{n_batches}")
+            if await self._send_attachment_batch(scheduler, dict(base_params, attachments=att_batch), n,
+                                                 f"{idx}/{n_batches}"):
+                delivered = True
+        return SendResult(
+            success=delivered,
+            error=None if delivered else "all Signal attachment batches failed")
 
-    async def _send_attachment_batch(self, scheduler, params: Dict[str, Any], n: int, label: str) -> None:
+    async def _send_attachment_batch(self, scheduler, params: Dict[str, Any], n: int, label: str) -> bool:
         """Send one attachment batch with rate-limit pacing and a single transient retry. Tokens are
-        deducted only on validated success (None = server never accepted it); 429s feed the scheduler."""
+        deducted only on validated success (None = server never accepted it); 429s feed the scheduler.
+        Returns True when the server accepted the batch."""
         send_timeout, max_attempts = _signal_send_timeout(n), SIGNAL_RATE_LIMIT_MAX_ATTEMPTS
         for attempt in range(1, max_attempts + 1):
             await scheduler.acquire(n)
@@ -830,7 +839,7 @@ class SignalAdapter(BasePlatformAdapter):
                 if attempt >= max_attempts:
                     logger.error("Signal: rate-limit retries exhausted on batch %s (%d attachments lost, "
                                  "server retry_after=%s)", label, n, retry_after)
-                    return
+                    return False
                 logger.warning("Signal: rate-limited on batch %s (attempt %d/%d, server retry_after=%s); "
                                "scheduler will pace the retry", label, attempt, max_attempts, retry_after)
                 continue
@@ -841,13 +850,14 @@ class SignalAdapter(BasePlatformAdapter):
                 await scheduler.report_rpc_duration(duration, n)
                 logger.info("Signal batch %s: %d attachments sent in %.1fs (attempt %d/%d)", label, n, duration,
                             attempt, max_attempts)
-                return
+                return True
             logger.error("Signal: RPC send failed for batch %s (%d attachments, attempt %d/%d, rpc_duration=%.1fs)%s",
                          label, n, attempt, max_attempts, duration, f": {err_msg}" if result is not None else "")
             if attempt >= max_attempts:
-                return
+                return False
             logger.info("Signal: retrying batch %s after %.1fs backoff", label, 2.0 ** attempt)
             await asyncio.sleep(2.0 ** attempt)
+        return False
 
     async def _notify_batch_pacing(self, chat_id: str, next_batch_idx: int, total_batches: int, wait_s: float) -> None:
         """Tell the user about an inter-batch pacing wait over the notice threshold (best-effort)."""
@@ -947,7 +957,7 @@ class SignalAdapter(BasePlatformAdapter):
     def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
         """SIGNAL_REACTIONS env gate, then the DM allowlist: reactions fire before run.py's auth gate,
         so an unauthorized contact's 👀 would otherwise reveal a listening bot."""
-        if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
+        if str(_sig_secret("SIGNAL_REACTIONS", "true")).lower() in {"false", "0", "no"}:
             return False
         sender = getattr(getattr(event, "source", None), "user_id", None) if event is not None else None
         return not (sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from)

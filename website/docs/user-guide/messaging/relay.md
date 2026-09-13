@@ -96,12 +96,33 @@ environment.
 
 ## Configuration
 
-Relay activates when a connector relay URL is configured — there is no
-separate feature flag. Deployments that don't set it are unaffected.
+Relay activates when a connector relay URL is configured. To keep a profile off
+the relay even when the deployment injects a URL, disable the platform in
+`config.yaml`:
+
+```yaml
+platforms:
+  relay:
+    enabled: false
+```
+
+- **Explicit disable wins.** With `enabled: false` the gateway does not resolve
+  an identity token, provision or rewrite `GATEWAY_RELAY_*` credentials, register
+  the relay adapter or send the relevance policy — even with `gateway.relay_url`
+  or `GATEWAY_RELAY_URL` set. Native messaging adapters connect as if no relay
+  URL were present, and cron delivery treats no platform as relay-fronted.
+- **Omitting `enabled` keeps URL-based activation.** `enabled: true` still needs
+  a connector URL. A `gateway.json` `enabled: false` is advisory, as for every
+  other platform; put the opt-out in `config.yaml` (user or managed).
+
+The verdict comes from the same files and merge the gateway loader uses (top-level
+or `gateway.platforms` block, managed overlay) and is applied at activation time.
+Restart the gateway after changing it; an open relay socket is not torn down.
+`hermes gateway enroll` remains available while runtime relay is disabled.
 
 | Setting | Where | Meaning |
 |---------|-------|---------|
-| `GATEWAY_RELAY_URL` | env (`~/.hermes/.env`) | Connector relay WebSocket URL. Presence enables the relay platform. |
+| `GATEWAY_RELAY_URL` | env (`~/.hermes/.env`) | Connector relay WebSocket URL. Enables relay unless explicitly disabled in platform configuration. |
 | `gateway.relay_url` | `config.yaml` | Same as above, config-file form (env takes precedence). |
 | `GATEWAY_RELAY_ID` | env | This gateway instance's id (written by `enroll`). |
 | `GATEWAY_RELAY_SECRET` | env | Per-gateway secret authenticating the WebSocket upgrade (written by `enroll`). |

@@ -68,6 +68,25 @@ def _restore_file_metadata(path: Path, owner: "tuple[int, int] | None", mode: "i
             os.chmod(path, mode)
 
 
+def default_new_file_mode() -> "int | None":
+    """The mode ``open(path, "w")`` gives a file it has to create (``0o666 & ~umask``); ``None``
+    when the umask cannot be read or on non-POSIX hosts (Windows mode bits are synthesized).
+
+    ``mkstemp`` always creates at 0600, so publishing a *new* non-secret file through a temp
+    file would tighten it to owner-only — the Docker/NAS volume-mount hazard
+    :func:`_restore_file_metadata` documents. The transient mask is 0o077: a thread that opens
+    a file in the read window gets a tighter file, never a looser one.
+    """
+    if os.name != "posix":
+        return None
+    try:
+        current = os.umask(0o077)
+        os.umask(current)
+    except OSError:
+        return None
+    return 0o666 & ~current
+
+
 def _restore_file_owner(path: Path, owner: "tuple[int, int] | None") -> None:
     _restore_file_metadata(path, owner, None)
 
@@ -174,25 +193,56 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     return real_path
 
 
-def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None, preserve_owner: bool = True) -> None:
+def fsync_directory(path: Union[str, Path]) -> None:
+    """Best-effort fsync of a directory entry so a just-renamed file survives power loss.
+
+    No-op on Windows (directories can't be opened with ``os.open``; the file fsync still applies)
+    and on any OSError — durability of the directory entry is never worth failing a write that
+    has already been replaced into place.
+    """
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        with suppress(OSError):
+            os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
+                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
-    *write(f)* emits the payload into the open text handle. *mode* is fchmod'd onto the temp fd
-    BEFORE the replace so the target never transits through mkstemp's 0600 (fchmod is Unix-only;
-    the post-replace chmod is the sole path on Windows). The temp file is removed on any failure —
-    ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
+    *write(f)* emits the payload into the open handle (text, or bytes when *binary*). The temp file
+    is created by ``mkstemp`` — ``O_CREAT|O_EXCL`` at 0600 regardless of umask — so a secret is
+    never readable at process umask, not even between create and chmod. *mode* is fchmod'd onto
+    the temp fd BEFORE the replace so the target never transits through mkstemp's 0600 (fchmod is
+    Unix-only; the post-replace chmod is the sole path on Windows). With no *mode* a NEW target
+    gets what ``open(path, "w")`` would have given it (process umask) — the callers this replaced
+    wrote at umask, and silently tightening every fresh cache/state file to 0600 breaks shared
+    volume mounts; an existing target with no *mode* keeps mkstemp's bits, as before. *fsync_dir*
+    also fsyncs the parent so the rename itself is durable. The temp file is removed on any
+    failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    if mode is None and not path.exists():
+        mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding=encoding) as f:
+        with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
             if mode is not None and hasattr(os, "fchmod"):
                 os.fchmod(f.fileno(), mode)
             write(f)
             f.flush()
             os.fsync(f.fileno())
         _restore_file_metadata(Path(atomic_replace(tmp_path, path)), original_owner, mode)  # symlink-preserving
+        if fsync_dir:
+            fsync_directory(path.parent)
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)
@@ -206,22 +256,61 @@ def _mode_for_write(path: Path, create_mode: "int | None", preserve: bool = True
 
 
 def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
-                      preserve_mode: bool = False, create_mode: "int | None" = None) -> None:
+                      preserve_mode: bool = False, create_mode: "int | None" = None, mode: "int | None" = None,
+                      fsync_dir: bool = False) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
     The target is never left partially written on crash/interrupt. Shared by every destructive
-    file rewrite (memory store, skill manager, agent importer, ...).
+    file rewrite (memory store, skill manager, agent importer, ...). *mode* forces the final
+    permission bits (secret files: ``0o600``) regardless of what exists; *create_mode* applies only
+    when the target is new and *preserve_mode* carries an existing file's bits and owner across.
     """
     path = Path(path)
     _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, encoding=encoding,
-                  mode=_mode_for_write(path, create_mode, preserve=preserve_mode), preserve_owner=preserve_mode)
+                  mode=mode if mode is not None else _mode_for_write(path, create_mode, preserve=preserve_mode),
+                  preserve_owner=preserve_mode, fsync_dir=fsync_dir)
 
 
-def atomic_json_write(path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None, **dump_kwargs: Any) -> None:
-    """Write JSON to *path* atomically (temp file + fsync + replace)."""
+def atomic_write_bytes(path: Union[str, Path], content: bytes, *, tmp_prefix: str = ".tmp_",
+                       mode: "int | None" = None, fsync_dir: bool = False) -> None:
+    """Bytes variant of :func:`atomic_write_text` (encrypted blobs, key material)."""
     path = Path(path)
-    _atomic_write(path, lambda f: json.dump(data, f, indent=indent, ensure_ascii=False, **dump_kwargs),
-                  prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path))
+    _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, binary=True, preserve_owner=False,
+                  mode=mode if mode is not None else _preserve_file_mode(path), fsync_dir=fsync_dir)
+
+
+def _dump_json(data: Any, f, *, indent: "int | None", ensure_ascii: bool, dump_kwargs: dict) -> None:
+    """``json.dump`` that survives surrogate-escaped strings.
+
+    ``os.fsdecode`` of a non-UTF-8 filename/argv yields lone surrogates (``'\\udcff'``); a utf-8
+    text handle rejects them with ``UnicodeEncodeError`` — a ValueError, which callers guarding
+    ``except OSError`` never see. ``ensure_ascii=True`` escapes them as ``\\udcff`` and
+    ``json.loads`` restores the identical str, so the retry round-trips; ``surrogateescape``
+    would emit a raw 0xFF byte that the reader's utf-8 decode rejects. Serializing to a str first
+    keeps the failure before any byte reaches the file, so no partial payload is left behind.
+    """
+    text = json.dumps(data, indent=indent, ensure_ascii=ensure_ascii, **dump_kwargs)
+    try:
+        f.write(text)
+    except UnicodeEncodeError:
+        f.write(json.dumps(data, indent=indent, ensure_ascii=True, **dump_kwargs))
+
+
+def atomic_json_write(
+    path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None,
+    ensure_ascii: bool = False, fsync_dir: bool = False, **dump_kwargs: Any,
+) -> None:
+    """Write JSON to *path* atomically (temp file + fsync + replace).
+
+    Surrogate-escaped strings (non-UTF-8 argv/paths) are always persisted: the write falls back
+    to ``ensure_ascii=True`` escapes for that payload only, so normal content keeps its raw UTF-8
+    bytes. ``mode=0o600`` is the private-credential form: the temp file is 0600 from creation
+    (mkstemp), so the payload is never umask-readable.
+    """
+    path = Path(path)
+    _atomic_write(path, lambda f: _dump_json(data, f, indent=indent, ensure_ascii=ensure_ascii, dump_kwargs=dump_kwargs),
+                  prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path),
+                  fsync_dir=fsync_dir)
 
 
 def warn_if_credential_file_broadly_readable(path: Union[str, Path], *, label: str = "", log: logging.Logger | None = None) -> bool:

@@ -38,8 +38,10 @@ else:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from utils import atomic_json_write
 
 from .auth import load_project_credentials
 # Sidecar dir resolution is lazy (never at import): it probes the filesystem and may
@@ -88,22 +90,9 @@ def _runtime_record_path() -> Path:
 
 
 def _write_runtime_record(port: int, token: str, pid: int) -> None:
-    """Atomically persist ``{port, token, pid}`` with owner-only perms (best-effort)."""
-    import tempfile
+    """Atomically persist ``{port, token, pid}`` 0600 from creation (best-effort)."""
     try:
-        path = _runtime_record_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".photon-sidecar.", suffix=".tmp")
-        try:
-            with contextlib.suppress(OSError):  # perms BEFORE the token hits disk (Windows / odd fs)
-                os.chmod(tmp, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"port": port, "token": token, "pid": pid}, fh)
-            os.replace(tmp, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
+        atomic_json_write(_runtime_record_path(), {"port": port, "token": token, "pid": pid}, indent=None, mode=0o600)
     except Exception as e:
         logger.warning("[photon] failed to write sidecar runtime record: %s", e)
 
@@ -758,7 +747,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
         def _event(text: str, mtype: MessageType = MessageType.TEXT, **kwargs: Any) -> MessageEvent:
             source = self.build_source(chat_id=space_id, chat_name=space_id, chat_type=chat_type,
-                                       user_id=sender_id, user_name=sender_id or None)
+                                       user_id=sender_id, user_name=sender_id or None, message_id=message_id)
             return MessageEvent(text=text, message_type=mtype, source=source, message_id=message_id,
                                 raw_message=event, timestamp=timestamp, **kwargs)
         if ctype in {"read", "read_receipt"}:  # presence signal, not a user turn (receipts for our sends)
@@ -1623,7 +1612,7 @@ def register(ctx) -> None:
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'ProcessingOutcome': ('gateway.platforms.base', 'ProcessingOutcome'),
+    'ProcessingOutcome': ('gateway.platforms.event', 'ProcessingOutcome'),
     'resolve_sidecar_dir': ('plugins.platforms.photon.sidecar_paths', 'resolve_sidecar_dir'),
 }
 

@@ -30,6 +30,38 @@ from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_wa
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+
+def _exit_with_failure_verdict(runner) -> bool:
+    """True (after logging the reason) when the runner asked for a failure exit."""
+    if not runner.should_exit_with_failure:
+        return False
+    if runner.exit_reason:
+        logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+    return True
+
+
+def _resolve_gateway_exit_verdict(runner, signal_initiated_shutdown: bool) -> bool:
+    """Resolve the process verdict after either startup abort or normal shutdown."""
+    if _exit_with_failure_verdict(runner):
+        return False
+    if runner.exit_code is not None:
+        raise SystemExit(runner.exit_code)
+    if signal_initiated_shutdown and not runner._restart_requested:
+        logger.info(
+            "Exiting with code 1 (signal-initiated shutdown without restart "
+            "request) so the service manager can revive the gateway."
+        )
+        return False
+    # Older restart paths may not set ``runner.exit_code``; retain the service-restart fallback.
+    if runner._restart_via_service:
+        logger.info(
+            "Exiting with code %d (service-restart requested) so the service "
+            "manager relaunches the gateway.",
+            GATEWAY_SERVICE_RESTART_EXIT_CODE,
+        )
+        raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+    return True
+
 # Windows has no bash/setsid chain: a tiny detached Python watcher waits for the gateway PID to
 # exit (bounded), then spawns ``hermes gateway restart``.
 _WINDOWS_RESTART_WATCHER = """
@@ -845,7 +877,9 @@ class GatewayShutdownMixin:
         return len(notified)
 
     async def _shutdown_notification_target(self, session_key: str):
-        """``(source, platform_str, chat_id, thread_id)``: persisted origin > cached source > parsed key."""
+        """``(source, platform_str, chat_id, thread_id, profile)``: persisted origin > cached source >
+        parsed key. ``profile`` is the owning profile from the source or the ``agent:<profile>:`` key
+        namespace (``None`` = default) so the notice leaves through that profile's bot."""
         from gateway.run import _parse_session_key
         source = None
         try:
@@ -858,11 +892,11 @@ class GatewayShutdownMixin:
         if source is None:
             source = self._get_cached_session_source(session_key)
         if source is not None:
-            return source, source.platform.value, str(source.chat_id), source.thread_id
+            return source, source.platform.value, str(source.chat_id), source.thread_id, getattr(source, "profile", None)
         _parsed = _parse_session_key(session_key)
         if not _parsed:
             return None
-        return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id")
+        return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id"), _parsed.get("profile")
 
     async def _send_shutdown_notice(
         self, adapter, chat_id: str, msg: str, kind: str, platform_str: str, **send_kwargs
@@ -914,13 +948,18 @@ class GatewayShutdownMixin:
             target = await self._shutdown_notification_target(session_key)
             if target is None:
                 continue
-            source, platform_str, chat_id, thread_id = target
+            source, platform_str, chat_id, thread_id, profile = target
             dedup_key = _notice_target_key(platform_str, chat_id, thread_id)
             if dedup_key in notified:
                 continue
             try:
                 platform = Platform(platform_str)
-                adapter = self.adapters.get(platform)
+                # The session's OWN profile's bot (transport ref → profile map), never a bare
+                # self.adapters hit: under multiplex that is the default bot, so a secondary session's
+                # "Gateway shutting down" would land in the user's chat with the wrong bot.
+                adapter = self._adapter_for_source(source) if source is not None else None
+                if adapter is None:
+                    adapter = self._authorization_adapter(platform, profile)
                 if not adapter:
                     continue
                 if not self._notice_allowed(platform, "active session"):
@@ -1037,6 +1076,10 @@ class GatewayShutdownMixin:
         live agent (e.g. the user sent ``/new`` and a fresh agent took the slot mid-run, #12029).
         """
         if agent is None or (executor_task is not None and executor_task.done()):
+            return False
+        # Drain/restart already told the chat the task will be interrupted; a "still working"
+        # heartbeat after that notice reads as a contradiction (#10990).
+        if getattr(self, "_draining", False) or getattr(self, "_restart_requested", False):
             return False
         if session_key:
             _hb_state = self._peek_session_state(session_key)

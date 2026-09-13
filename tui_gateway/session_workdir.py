@@ -275,7 +275,7 @@ def _ensure_session_db_row(session: dict) -> bool:
                 # #94724 legacy-owner backfill exists to repair, and rows minted AFTER that one-shot
                 # backfill ran stayed NULL forever: profile-keyed matching then drops them from the sidebar
                 # and deep links can't resolve them (#99222).
-                profile_name=Path(profile_home).name if profile_home else _current_profile_name())
+                profile_name=profile_name_for_home(profile_home) or _current_profile_name())
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
             if session.get("pending_hidden"):
                 try:
@@ -305,11 +305,13 @@ _WORKDIR_SEED_FIELDS = (
 
 
 def _persist_branch_seed(session: dict) -> None:
-    """First-turn persist of a branch's copied transcript. A branch is a draft until its first submit: the parent's
-    messages live only in ``session["history"]`` (ridden into the agent as ``conversation_history``, which
-    ``_flush_messages_to_session_db`` skips by identity), so the row would otherwise resume missing its pre-branch
-    context. Runs once, after ``_ensure_session_db_row`` wrote the row + parent link."""
-    if not (key := session.get("session_key")) or not session.get("parent_session_id") or session.get("_branch_seed_persisted"):
+    """Persist a seeded transcript once its row exists. Seeded messages (a branch's copied parent, a client's
+    opening turns) live only in ``session["history"]`` (ridden into the agent as ``conversation_history``, which
+    ``_flush_messages_to_session_db`` skips by identity), so the row would otherwise resume without them. Runs
+    once: at create for a seeded session, else at the first submit after ``_ensure_session_db_row`` wrote the
+    row. ``seeded`` is stamped by session.create; a resumed session carries its stored transcript in
+    ``history`` and must never re-append it."""
+    if not (key := session.get("session_key")) or not session.get("seeded") or session.get("_branch_seed_persisted"):
         return
     with session["history_lock"]:
         seed = [dict(msg) for msg in (session.get("history") or [])]

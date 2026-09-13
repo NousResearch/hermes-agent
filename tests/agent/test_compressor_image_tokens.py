@@ -9,12 +9,8 @@ creative workflows that iterate on images across many turns.
 from __future__ import annotations
 
 
-from agent.context_compressor import (
-    _CHARS_PER_TOKEN,
-    _IMAGE_CHAR_EQUIVALENT,
-    _IMAGE_TOKEN_ESTIMATE,
-    _content_length_for_budget,
-)
+from agent.context_compressor import _CHARS_PER_TOKEN, _content_length_for_budget
+from agent.image_token_cost import DEFAULT_IMAGE_TOKEN_COST, image_cost_context
 
 
 class TestContentLengthForBudget:
@@ -36,17 +32,13 @@ class TestContentLengthForBudget:
 
 
 
-    def test_image_estimate_constant_is_reasonable(self):
-        """Sanity-check the estimate aligns with real provider billing.
-
-        Anthropic ≈ width*height/750 → ~1600 for 1000×1200.
-        OpenAI GPT-4o high-detail 2048×2048 ≈ 1445.
-        Gemini 258/tile × 6 tiles for a 2048×2048 ≈ 1548.
-        Anything in the 800-2000 range is defensible. Enforce bounds so an
-        accidental edit doesn't drop it to e.g. 16.
-        """
-        assert 800 <= _IMAGE_TOKEN_ESTIMATE <= 2500
-        assert _IMAGE_CHAR_EQUIVALENT == _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
+    def test_image_priced_at_the_learned_cost(self):
+        """The budget walk charges each image at the per-image price learned from provider usage
+        (the same figure the trigger estimator uses), falling back to the flat default."""
+        content = [{"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
+        assert _content_length_for_budget(content) == 4 + DEFAULT_IMAGE_TOKEN_COST * _CHARS_PER_TOKEN
+        with image_cost_context(4_000):
+            assert _content_length_for_budget(content) == 4 + 4_000 * _CHARS_PER_TOKEN
 
 
 class TestTokenBudgetWithImages:

@@ -249,6 +249,23 @@ class TestListAndCleanup:
 class TestPersistence:
     """Verify that sessions are persisted to SessionDB and can be restored."""
 
+    def test_first_persist_keeps_provider_snapshot(self, tmp_path):
+        """The FIRST row written for an ACP session carries provider/base_url/api_mode,
+        so a restart before any later save restores the same route (#9812)."""
+        agent = SimpleNamespace(
+            model="test-model", provider="anthropic",
+            base_url="https://anthropic.example/v1", api_mode="anthropic_messages",
+        )
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(agent_factory=lambda: agent, db=db)
+        state = manager.create_session(cwd="/work")
+        state.history.append({"role": "user", "content": "hello"})
+        manager.save_session(state.session_id)
+
+        mc = json.loads(db.get_session(state.session_id)["model_config"])
+        assert mc == {"cwd": "/work", "provider": "anthropic",
+                      "base_url": "https://anthropic.example/v1", "api_mode": "anthropic_messages"}
+
 
 
 

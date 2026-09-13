@@ -124,10 +124,11 @@ from gateway.config import Platform, PlatformConfig
 Platform("google_chat")
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult,
+    gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 # Pinned to the legacy module path so operator log filters keep matching.
 logger = logging.getLogger("gateway.platforms.google_chat")
@@ -919,7 +920,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             # Email is the canonical id (allowlists use emails); the ``users/{id}``
             # resource name moves to user_id_alt.
             user_id=(sender_email or sender_name), user_name=sender.get("displayName") or sender_email or sender_name,
-            thread_id=session_thread_id, user_id_alt=(sender_name or None),
+            thread_id=session_thread_id, user_id_alt=(sender_name or None), message_id=msg.get("name") or None,
         )
         return MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=msg, message_id=msg.get("name") or None,

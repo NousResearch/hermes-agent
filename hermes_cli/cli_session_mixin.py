@@ -216,7 +216,8 @@ class CLISessionMixin:
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") == "1":
             tool_status = "tools deferred"
         else:
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
+                                         disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
             tool_status = f"{len(tools) if tools else 0} tools"
 
         model_short = self.model.split("/")[-1] if "/" in self.model else self.model
@@ -306,6 +307,15 @@ class CLISessionMixin:
         if title:
             lines.append(f"Title: {title}")
         lines.append(f"Model: {model} ({provider})")
+        try:
+            from agent.i18n import t
+            from hermes_cli.auth import resolve_provider
+            from hermes_cli.anon_auth import guest_carries_inference
+
+            if resolve_provider("auto") == "nous" and guest_carries_inference():
+                lines.append(t("gateway.status.free_tier"))
+        except Exception:
+            pass
         optional = (("Reasoning", reasoning_label), ("Approvals", approval_label), ("Context", ctx_label))
         for label, value in optional:
             if value:
@@ -354,7 +364,7 @@ class CLISessionMixin:
         for idx, session in enumerate(sessions, start=1):
             title = session.get("title") or "—"
             preview = (session.get("preview") or "")[:38]
-            last_active = _relative_time(session.get("last_active"))
+            last_active = _relative_time(session.get("last_active"), session_id=session.get("id"))
             _cli_visible_print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
         _cli_visible_print()
         _cli_visible_print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
@@ -1281,9 +1291,9 @@ class CLISessionMixin:
         if not msg_count:
             try:
                 from hermes_cli.skin_engine import get_active_goodbye
-                goodbye = get_active_goodbye("Goodbye! ⚕")
+                goodbye = get_active_goodbye("Goodbye! ☤")
             except Exception:
-                goodbye = "Goodbye! ⚕"
+                goodbye = "Goodbye! ☤"
             print(goodbye)
             return
 

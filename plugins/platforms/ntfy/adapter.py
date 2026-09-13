@@ -25,7 +25,8 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
 logger = logging.getLogger(__name__)
@@ -255,7 +256,7 @@ class NtfyAdapter(BasePlatformAdapter):
         # NOT drive authorization, so user_id is fixed to the topic name.
         topic = event.get("topic") or self._topic
         source = self.build_source(
-            chat_id=topic, chat_name=topic, chat_type="dm", user_id=topic, user_name=topic)
+            chat_id=topic, chat_name=topic, chat_type="dm", user_id=topic, user_name=topic, message_id=msg_id)
         unix_ts, timestamp = event.get("time"), datetime.now(tz=timezone.utc)
         try:
             timestamp = datetime.fromtimestamp(int(unix_ts), tz=timezone.utc) if unix_ts else timestamp

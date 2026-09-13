@@ -178,6 +178,14 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def build_client_kwargs_extras(self, **context: Any) -> dict[str, Any]:
+        """Provider-specific OpenAI client keyword arguments.
+
+        Values are defaults: explicit runtime/custom-provider settings win.
+        The returned mapping must be cheap to build and must not perform I/O.
+        """
+        return {}
+
     def default_vision_model(self) -> str | None:
         """Return a default vision model id for this provider, or None.
 

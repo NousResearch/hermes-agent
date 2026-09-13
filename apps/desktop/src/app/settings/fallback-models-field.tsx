@@ -1,11 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
+import { ModelSelectItem } from '@/components/model-select-item'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Plus, X } from '@/lib/icons'
+import { useNousPricingRefresh } from '@/lib/use-nous-pricing-refresh'
 import { cn } from '@/lib/utils'
 
 import { CONTROL_TEXT } from './constants'
@@ -79,6 +81,8 @@ export function FallbackModelsField({
     queryFn: () => getGlobalModelOptions()
   })
 
+  useNousPricingRefresh({ providers: modelOptions.data?.providers, refetch: modelOptions.refetch })
+
   const providers = (modelOptions.data?.providers ?? []).filter(provider => provider.slug)
 
   const [rows, setRows] = useState<FallbackEntry[]>(() => normalizeEntries(value))
@@ -142,9 +146,11 @@ export function FallbackModelsField({
               </SelectTrigger>
               <SelectContent>
                 {modelItems.map(model => (
-                  <SelectItem key={model} value={model}>
-                    {model}
-                  </SelectItem>
+                  <ModelSelectItem
+                    key={model}
+                    model={model}
+                    provider={providers.find(provider => provider.slug === entry.provider)}
+                  />
                 ))}
               </SelectContent>
             </Select>

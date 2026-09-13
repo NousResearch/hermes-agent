@@ -2802,6 +2802,10 @@ export const zhHant = defineLocale({
       noModels: '找不到模型',
       editModels: '編輯模型…',
       refreshModels: '重新整理模型',
+      priceUnit: '美元 / 百萬 Token',
+      inputPrice: '輸入',
+      outputPrice: '輸出',
+      cachePrice: '快取',
       fast: '快速'
     },
     modelOptions: {

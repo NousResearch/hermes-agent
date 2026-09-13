@@ -3561,6 +3561,10 @@ export const zh = defineLocale({
       noModels: '未找到模型',
       editModels: '编辑模型…',
       refreshModels: '刷新模型',
+      priceUnit: '美元 / 百万 token',
+      inputPrice: '输入',
+      outputPrice: '输出',
+      cachePrice: '缓存',
       fast: '快速'
     },
     modelOptions: {

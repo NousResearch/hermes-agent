@@ -400,7 +400,7 @@ def _fetch_nous_pricing_for_provider(*, force_refresh: bool = False) -> dict[str
     api_key, base_url = _resolve_nous_pricing_credentials()
     if not base_url:
         return {}
-    _remember_provider_cache_key("nous", base_url.rstrip("/"))
+    _remember_provider_cache_key("nous", base_url.rstrip("/") + _pricing_auth_fingerprint(api_key))
     return _fetch_nous_pricing(api_key, base_url, force_refresh=force_refresh)
 
 
@@ -465,7 +465,8 @@ def pricing_cache_scope(provider: str, *, current_provider: str = "", current_ba
         persisted_base = get_cached_nous_inference_base_url()
         if persisted_base:
             return persisted_base
-        return _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized), _DEFAULT_NOUS_INFERENCE_BASE)
+        cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized), _DEFAULT_NOUS_INFERENCE_BASE)
+        return cache_key.split(_PRICING_AUTH_KEY_PREFIX, 1)[0]
     return ""
 
 

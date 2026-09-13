@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { ModelSelectItem } from '@/components/model-select-item'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -28,6 +29,7 @@ import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@/lib/reasoning-effort'
+import { useNousPricingRefresh } from '@/lib/use-nous-pricing-refresh'
 import { cn } from '@/lib/utils'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
 import { notifyError, readableError } from '@/store/notifications'
@@ -318,6 +320,17 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     },
     [m.loadFailed, scopeProfile, setCaughtError]
   )
+
+  const refreshCatalog = useCallback(async () => {
+    const epoch = profileEpoch.current
+    const options = await getGlobalModelOptions(undefined, scopeProfile)
+
+    if (profileEpoch.current === epoch) {
+      setProviders(options.providers ?? [])
+    }
+  }, [scopeProfile])
+
+  useNousPricingRefresh({ providers, refetch: refreshCatalog, scope: scopeProfile })
 
   useEffect(() => {
     void refresh()
@@ -889,9 +902,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                 </SelectTrigger>
                 <SelectContent>
                   {withActive(selectedProviderModels, selectedModel).map(model => (
-                    <SelectItem key={model} value={model}>
-                      {model}
-                    </SelectItem>
+                    <ModelSelectItem
+                      key={model}
+                      model={model}
+                      provider={providers.find(provider => provider.slug === selectedProvider)}
+                    />
                   ))}
                 </SelectContent>
               </Select>
@@ -1058,9 +1073,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                           </SelectTrigger>
                           <SelectContent>
                             {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
-                              <SelectItem key={model} value={model}>
-                                {model}
-                              </SelectItem>
+                              <ModelSelectItem
+                                key={model}
+                                model={model}
+                                provider={providers.find(provider => provider.slug === auxDraft.provider)}
+                              />
                             ))}
                           </SelectContent>
                         </Select>
@@ -1264,9 +1281,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                       </SelectTrigger>
                       <SelectContent>
                         {withActive(modelsForProvider(slot.provider), slot.model).map(model => (
-                          <SelectItem key={model} value={model}>
-                            {model}
-                          </SelectItem>
+                          <ModelSelectItem
+                            key={model}
+                            model={model}
+                            provider={providers.find(provider => provider.slug === slot.provider)}
+                          />
                         ))}
                       </SelectContent>
                     </Select>

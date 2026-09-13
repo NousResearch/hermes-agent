@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
+import { NousModelPrice } from '@/components/nous-model-price'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
@@ -25,6 +26,7 @@ import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } fro
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
+import { useNousPricingRefresh } from '@/lib/use-nous-pricing-refresh'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -146,7 +148,13 @@ export function ModelCatalogMenu({
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, profile, request, sessionId })
+    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, profile, request, sessionId }),
+  })
+
+  useNousPricingRefresh({
+    providers: modelOptions.data?.providers,
+    refetch: modelOptions.refetch,
+    scope: JSON.stringify([profile, sessionId, ownerConnectionId])
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
@@ -476,6 +484,9 @@ export function ModelCatalogMenu({
                     open={!collapsed}
                     size="0.625rem"
                   />
+                  {slug === 'nous' && !group.provider.free_tier_row && (
+                    <span className="ml-auto shrink-0 normal-case font-normal tracking-normal">{copy.priceUnit}</span>
+                  )}
                 </DropdownMenuItem>
                 {!collapsed &&
                   group.families.map(family => {
@@ -541,10 +552,23 @@ export function ModelCatalogMenu({
                           }}
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
-                          </span>
+                          <div className="min-w-0 flex-1">
+                            <span className="block truncate">
+                              <HighlightMatches foldSeparators query={search} text={name} />
+                              {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                            </span>
+                            {slug === 'nous' && !group.provider.free_tier_row && (
+                              <NousModelPrice
+                                price={
+                                  group.provider.pricing?.[
+                                    fastControl.kind === 'variant' && fastControl.on
+                                      ? fastControl.fastId
+                                      : (activeId ?? family.id)
+                                  ]
+                                }
+                              />
+                            )}
+                          </div>
                           {loadProgress ? (
                             <span
                               className="ml-auto flex shrink-0 items-center gap-1.5"

@@ -67,6 +67,21 @@ const CHAIN = [
 ]
 
 describe('FallbackModelsField', () => {
+  it('shows Nous option prices without copying them into the selected model value', async () => {
+    getGlobalModelOptions.mockResolvedValue({ providers: [{
+      slug: 'nous', name: 'Nous Portal', models: ['vendor/model'],
+      pricing: { 'vendor/model': { input: '$0.20', output: '$0.80', cache: '$0.02', free: false } }
+    }] })
+    const onChange = await renderField([{ provider: 'nous', model: 'vendor/model' }])
+    await waitFor(() => expect(screen.getAllByRole('combobox')[1].textContent).toBe('vendor/model'))
+    fireEvent.keyDown(screen.getAllByRole('combobox')[1], { key: 'ArrowDown' })
+    expect(await screen.findByText('In $0.20')).toBeTruthy()
+    expect(screen.getByText('USD / 1M tokens')).toBeTruthy()
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' })
+    expect(screen.getAllByRole('combobox')[1].textContent).toBe('vendor/model')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('renders each {provider, model} entry as its own row (never "[object Object]")', async () => {
     await renderField(CHAIN)
 

@@ -3429,6 +3429,10 @@ export const en: Translations = {
       noModels: 'No models found',
       editModels: 'Edit models…',
       refreshModels: 'Refresh models',
+      priceUnit: 'USD / 1M tokens',
+      inputPrice: 'In',
+      outputPrice: 'Out',
+      cachePrice: 'Cache',
       fast: 'Fast'
     },
     modelOptions: {

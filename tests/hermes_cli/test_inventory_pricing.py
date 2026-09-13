@@ -13,6 +13,58 @@ import hermes_cli.models as models_mod
 from hermes_cli import models_pricing
 
 
+def test_explicit_refresh_reads_changed_nous_prices_from_endpoint(monkeypatch):
+    """Refresh bypasses a warm Nous cache through the real inventory/HTTP path."""
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    current_price = {"prompt": "0.000001", "completion": "0.000004"}
+    reads = []
+
+    class CatalogHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            reads.append(self.path)
+            body = json.dumps({"data": [{"id": "vendor/model", "pricing": current_price}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), CatalogHandler)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    monkeypatch.setattr(models_pricing, "_resolve_nous_pricing_credentials", lambda: ("test-catalog-token", base_url))
+    monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda **_: False)
+    monkeypatch.setattr(models_mod, "get_cached_nous_free_tier", lambda **_: False)
+    monkeypatch.setattr("hermes_cli.model_switch.list_authenticated_providers", lambda **_: [
+        {"slug": "nous", "name": "Nous", "models": ["vendor/model"]},
+    ])
+    monkeypatch.setattr(inv, "_local_runtime_row", lambda _: None)
+    monkeypatch.setattr(inv, "_moa_provider_row", lambda _: None)
+    ctx = inv.ConfigContext("nous", "vendor/model", base_url, {}, [])
+
+    try:
+        first = inv.build_models_payload(ctx, pricing=True)
+        current_price.update(prompt="0.0000005", original={"prompt": "0.000001", "completion": "0.000004"})
+        cached = inv.build_models_payload(ctx, pricing=True, pricing_cache_only=True)
+        refreshed = inv.build_models_payload(ctx, pricing=True, refresh=True)
+        assert cached["providers"][0]["pricing"] == first["providers"][0]["pricing"]
+        updated = refreshed["providers"][0]["pricing"]["vendor/model"]
+        assert updated["input"] == "$0.50"
+        assert updated["discount_percent"] == 50
+        assert updated["was_input"] == first["providers"][0]["pricing"]["vendor/model"]["input"]
+        assert reads == ["/v1/models", "/v1/models"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+
+
 def _patch_pricing(monkeypatch, *, free_tier, pricing, unavailable=None):
     monkeypatch.setattr(models_pricing, "get_pricing_for_provider", lambda slug, **kw: pricing.get(slug, {}))
     monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: free_tier)
@@ -474,5 +526,3 @@ def test_cached_only_dynamic_pricing_is_profile_scoped(tmp_path, monkeypatch):
     assert in_profile(tmp_path / "b", endpoint_b, cached_only=False) == expected_b
     assert in_profile(tmp_path / "a", endpoint_b, cached_only=True) == expected_a
     assert in_profile(tmp_path / "b", endpoint_a, cached_only=True) == expected_b
-
-

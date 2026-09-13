@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { ModelSelectItem } from '@/components/model-select-item'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -48,6 +49,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { requestModelOptions } from '@/lib/model-options'
 import { asText } from '@/lib/text'
+import { useNousPricingRefresh } from '@/lib/use-nous-pricing-refresh'
 import { $cronFocusJobId, $cronJobs, invalidateCronJobsRequests, setCronFocusJobId } from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
@@ -1074,6 +1076,12 @@ function CronEditorDialog({
     enabled: open && !scriptOnlyJob && !isBlueprint
   })
 
+  useNousPricingRefresh({
+    providers: modelOptions.data?.providers,
+    refetch: modelOptions.refetch,
+    enabled: open && !scriptOnlyJob && !isBlueprint
+  })
+
   // Single source of truth for where a cron can deliver (local + configured
   // gateways) — same endpoint the dashboard uses, so no dialog offers a platform
   // that isn't connected. Shared by the manual editor and the blueprint form.
@@ -1351,13 +1359,13 @@ function CronEditorDialog({
                       <SelectGroup key={provider.slug}>
                         <SelectLabel>{provider.name}</SelectLabel>
                         {(provider.models ?? []).map(model => (
-                          <SelectItem
+                          <ModelSelectItem
                             className="font-mono"
                             key={`${provider.slug}:${model}`}
+                            model={model}
+                            provider={provider}
                             value={`${provider.slug}:${model}`}
-                          >
-                            {model}
-                          </SelectItem>
+                          />
                         ))}
                       </SelectGroup>
                     ))}

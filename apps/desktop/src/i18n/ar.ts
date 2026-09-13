@@ -2505,6 +2505,10 @@ export const ar = defineLocale({
       noModels: 'لا توجد نماذج',
       editModels: 'تحرير النماذج',
       refreshModels: 'تحديث النماذج',
+      priceUnit: 'دولار / مليون رمز',
+      inputPrice: 'إدخال',
+      outputPrice: 'إخراج',
+      cachePrice: 'ذاكرة مؤقتة',
       fast: 'سريع'
     },
     modelOptions: {

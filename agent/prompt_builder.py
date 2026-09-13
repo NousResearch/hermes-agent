@@ -606,7 +606,9 @@ PLATFORM_HINTS = {
         "\u2014 write markdown freely. No tables \u2014 use bullets or labeled lines. "
         f"{_MEDIA_NATIVE}Images (.jpg, .png) send as photos, videos (.mp4) inline, audio as voice/audio, other files as "
         "documents; ![alt](url) works. NOTE: Meta refuses free-form replies when the user hasn't messaged in "
-        "24h (error 131047) \u2014 relevant only for delayed/scheduled sends."
+        "24h (error 131047). Outside that window, use `hermes send --to whatsapp_cloud:RECIPIENT "
+        "--template-name NAME --template-language CODE` with a Meta-approved template. "
+        "Use --template-components for typed parameter values. Do not retry as free-form text."
     ),
     "telegram": (
         "You are on Telegram. Standard Markdown auto-converts: **bold**, "

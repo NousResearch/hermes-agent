@@ -685,6 +685,16 @@ class TestPromptBuilderConstants:
             assert "LOCAL-ONLY" in hint
             assert "deliver" in hint
 
+    def test_whatsapp_cloud_hint_mentions_24h_window(self):
+        """The Cloud API's 24-hour conversation window is a hard rule the
+        agent should know about. Free-form replies outside the window fail
+        with Graph error 131047, while approved templates remain available."""
+        hint = PLATFORM_HINTS["whatsapp_cloud"]
+        assert "24-hour" in hint or "24h" in hint or "24 hour" in hint
+        assert "131047" in hint
+        assert "hermes send" in hint
+        assert "--template-name" in hint
+        assert "--template-language" in hint
 
 
     def test_api_server_hint_scopes_media_tag_guidance(self):

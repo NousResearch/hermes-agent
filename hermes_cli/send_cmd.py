@@ -190,6 +190,26 @@ def _load_hermes_env() -> None:
             os.environ[key] = str(val)
 
 
+def _template_request(args, target):
+    name = getattr(args, "template_name", None)
+    language = getattr(args, "template_language", None)
+    components = getattr(args, "template_components", None)
+    if name is None and language is None and components is None:
+        return None
+    if target.partition(":")[0].strip().lower() != "whatsapp_cloud" or not name or not language:
+        _fail("hermes send: templates require a whatsapp_cloud target, --template-name and --template-language", _USAGE_EXIT)
+    if any(getattr(args, field, None) for field in ("message", "file", "subject")):
+        _fail("hermes send: template options cannot be combined with a message, --file or --subject", _USAGE_EXIT)
+    try:
+        values = json.loads(components) if components is not None else None
+    except json.JSONDecodeError as exc:
+        _fail(f"hermes send: --template-components must be a JSON array: {exc}", _USAGE_EXIT)
+    if components is not None and not isinstance(values, list):
+        _fail("hermes send: --template-components must be a JSON array", _USAGE_EXIT)
+    return {"action": "send_template", "target": target, "template_name": name,
+            "template_language": language, "template_components": values}
+
+
 def cmd_send(args: argparse.Namespace) -> None:
     """Entry point wired into the top-level argparse dispatcher."""
     _load_hermes_env()  # the downstream gateway config loader reads credentials from os.environ
@@ -206,6 +226,11 @@ def cmd_send(args: argparse.Namespace) -> None:
             "  hermes send --to discord:#ops --file report.md\n"
             "  hermes send --list      # list available targets",
             _USAGE_EXIT)
+    template_request = _template_request(args, target)
+    if template_request is not None:
+        from tools.send_message_tool import send_message_tool
+        result = send_message_tool(template_request)
+        sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
     message = _read_message_body(getattr(args, "message", None), getattr(args, "file", None))
     if message is None or not message.strip():
         _fail(
@@ -239,6 +264,9 @@ _SEND_ARGUMENTS = (
         "Read message body from PATH (text only). Use '-' to force stdin. "
         "To send an image/document as an attachment, use MEDIA:<path> in the message text instead."))),
     (("-s", "--subject"), dict(metavar="LINE", default=None, help="Prepend a subject/header line before the message body.")),
+    (("--template-name",), dict(metavar="NAME", help="Send an approved WhatsApp Cloud template instead of free-form text.")),
+    (("--template-language",), dict(metavar="CODE", help="Exact approved template language code, e.g. en_US.")),
+    (("--template-components",), dict(metavar="JSON", help="JSON array of typed template header, body and button values.")),
     (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
                             help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
     (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),

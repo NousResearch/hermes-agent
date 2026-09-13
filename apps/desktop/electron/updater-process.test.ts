@@ -303,6 +303,20 @@ test('collectRelaunchArgs drops Electron internals, keeps user/launcher args', (
   assert.deepEqual(collectRelaunchArgs(undefined), [])
 })
 
+test('collectRelaunchArgs: filters --inspect-brk and --inspect-wait variants', () => {
+  // --inspect alone was covered by the argv fixture above; these variants
+  // were absent from INTERNAL_ARG_PREFIXES and would cause the relaunched
+  // app to hang waiting for a debugger that is not there.
+  assert.deepEqual(collectRelaunchArgs(['--inspect-brk']), [])
+  assert.deepEqual(collectRelaunchArgs(['--inspect-brk=9229']), [])
+  assert.deepEqual(collectRelaunchArgs(['--inspect-wait']), [])
+  assert.deepEqual(collectRelaunchArgs(['--inspect-wait=9229']), [])
+  // User-supplied flags must survive alongside the filtered debug flag.
+  assert.deepEqual(collectRelaunchArgs(['--inspect-brk=9229', '--my-flag']), ['--my-flag'])
+  // Mid-argv: debug flag embedded between user flags (the actual regression shape).
+  assert.deepEqual(collectRelaunchArgs(['--my-flag', '--inspect-brk=9229', '--other-flag']), ['--my-flag', '--other-flag'])
+})
+
 test('sandboxFallbackFromEnv: ELECTRON_DISABLE_SANDBOX / --no-sandbox opt out', () => {
   assert.equal(sandboxFallbackFromEnv({ ELECTRON_DISABLE_SANDBOX: '1' }, []), true)
   assert.equal(sandboxFallbackFromEnv({ ELECTRON_DISABLE_SANDBOX: 'true' }, []), true)

@@ -123,6 +123,19 @@ describe('duplicating a bot', () => {
     expect(displayName.endsWith(' (copy)')).toBe(true)
   })
 
+  it('falls back from a malformed persisted title to the profile display name', async () => {
+    $botMeta.set({ analyst: { title: 42 as never } })
+
+    await duplicateBot({ display_name: 'Analyst', name: 'analyst' } as RosterRow, [
+      { name: 'analyst' } as RosterRow
+    ])
+
+    expect(calls.find(call => call.method === 'profiles.create')?.params).toMatchObject({
+      display_name: 'Analyst (copy)',
+      name: 'analyst-2'
+    })
+  })
+
   it('walks past taken suffixes to the first free slot', async () => {
     const roster = ['ops', 'ops-2', 'ops-3'].map(name => ({ name }) as RosterRow)
 

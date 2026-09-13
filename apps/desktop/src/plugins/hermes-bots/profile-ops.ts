@@ -334,7 +334,9 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
   }
 
   const meta = $botMeta.get()[botMetaKey(bot)]
-  const sourceTitle = meta?.title?.trim() || bot.display_name?.trim() || ''
+  const metaTitle = typeof meta?.title === 'string' ? meta.title.trim() : ''
+  const displayName = typeof bot.display_name === 'string' ? bot.display_name.trim() : ''
+  const sourceTitle = metaTitle || displayName
   const copySuffix = ' (copy)'
   const titlePrefix = Array.from(sourceTitle)
     .slice(0, 64 - copySuffix.length)

@@ -162,6 +162,17 @@ afterEach(() => {
 })
 
 describe('materializing the draft profile', () => {
+  it('persists at most 64 complete Unicode title code points', async () => {
+    await renderDialog(true)
+
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: '😀'.repeat(65) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    expect(createCalls()[0][1]).toMatchObject({ display_name: '😀'.repeat(64) })
+    expect(Array.from(createCalls()[0][1].display_name as string)).toHaveLength(64)
+  })
+
   it('creates it once when the Capabilities tab opens, pinned to the new slug', async () => {
     await renderDialog(true)
 

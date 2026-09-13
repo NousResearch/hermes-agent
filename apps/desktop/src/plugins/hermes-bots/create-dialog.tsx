@@ -675,8 +675,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           {labeled(
             'Title',
             <Input
-              maxLength={64}
-              onChange={event => setTitle(event.target.value)}
+              onChange={event => setTitle(Array.from(event.target.value).slice(0, 64).join(''))}
               placeholder="Inbox Triage"
               value={title}
             />

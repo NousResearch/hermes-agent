@@ -294,7 +294,9 @@ migration, no orphaned history. Every gateway path that reads a key back —
 delegation completions after a restart, shutdown notices, a per-user-thread
 `/stop` of a sibling's run, `/undo`, QQ approval buttons — accepts the
 `agent:<profile>:…` shape too, so secondary profiles get the same behaviour
-as the default one.
+as the default one. The one profile name that would collide with the default's
+namespace, a profile literally called `main`, is keyed `agent:main~:…` so it
+keeps its own sessions and its own `profiles/main/state.db`.
 
 Each profile's rows land in **its own** `state.db`: a named profile's under
 `profiles/<name>/state.db`, the default profile's under the launch home — even

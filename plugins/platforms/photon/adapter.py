@@ -941,7 +941,10 @@ class PhotonAdapter(BasePlatformAdapter):
         from hermes_cli._subprocess_compat import windows_hide_flags  # hide child console on Windows
         await self._apply_spectrum_patch(windows_hide_flags())
         try:
-            self._sidecar_proc = subprocess.Popen(  # noqa: S603
+            # Spawn off the event loop (ASYNC220): momentary, but to_thread keeps the
+            # gateway loop free of process-table stalls during cold sidecar starts.
+            self._sidecar_proc = await asyncio.to_thread(
+                subprocess.Popen,  # noqa: S603
                 [self._node_bin, str(_sidecar_dir() / "index.mjs")],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
                 start_new_session=(sys.platform != "win32"),

@@ -63,6 +63,41 @@ def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int]
     return (matches[0] if matches else None), False
 
 
+def validate_memory_batch(target: str, operations: Any) -> Optional[str]:
+    """Reject malformed batches before approval or disk access; never reinterpret their targets."""
+    if not isinstance(target, str) or target not in {"memory", "user"}:
+        return "A memory batch target must be 'memory' or 'user'."
+    if not isinstance(operations, list):
+        return "operations must be a list of {action, content?, new_text?, old_text?} objects."
+    if not operations:
+        return "operations list is empty."
+    allowed = {"action", "content", "new_text", "old_text"}
+    for index, op in enumerate(operations, 1):
+        prefix = f"Operation {index}"
+        if not isinstance(op, dict):
+            return f"{prefix} must be an object."
+        if "target" in op:
+            return (f"{prefix}: target is allowed only at the top level, never inside operations. "
+                    "Each batch applies to one store. Split changes into separate calls with "
+                    "target='memory' and target='user'.")
+        if unknown := set(op) - allowed:
+            return f"{prefix}: unknown field(s): {', '.join(sorted(map(str, unknown)))}."
+        action = op.get("action")
+        if not isinstance(action, str) or action not in {"add", "replace", "remove"}:
+            return f"{prefix}: action must be 'add', 'replace', or 'remove'."
+        for field in ("content", "new_text", "old_text"):
+            value = op.get(field)
+            if value is not None and not isinstance(value, str):
+                return f"{prefix}: {field} must be a string or null."
+        content = (op.get("content") or op.get("new_text") or "").strip()
+        old_text = (op.get("old_text") or "").strip()
+        if action in {"add", "replace"} and not content:
+            return f"{prefix} ({action}): content or new_text is required."
+        if action in {"replace", "remove"} and not old_text:
+            return f"{prefix} ({action}): old_text is required."
+    return None
+
+
 class MemoryStore:
     """Bounded curated memory with file persistence; one instance per AIAgent.
     ``_system_prompt_snapshot`` is frozen at load time (prefix-cache stable);
@@ -307,9 +342,9 @@ class MemoryStore:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or
         an over-limit result writes NOTHING and returns the first failure plus live state."""
-        if not operations:
-            return _error("operations list is empty.")
-        ops = [op or {} for op in operations]
+        if invalid := validate_memory_batch(target, operations):
+            return _error(invalid)
+        ops = operations
         # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
         for i, op in enumerate(ops):
             scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])

@@ -66,6 +66,28 @@ The agent uses the `memory` tool with these actions:
 
 There is no `read` action — memory content is automatically injected into the system prompt at session start. The agent sees its memories as part of its conversation context.
 
+### Batch operations use one target
+
+Use one top-level `target` for the entire `operations` array. To change both
+`memory` and `user`, make separate calls; do not put `target` inside an operation.
+Each batch is atomic within its selected store, with the character limit checked
+against the final result.
+
+```python
+memory(target="user", operations=[
+    {"action": "replace", "old_text": "prefers detailed replies",
+     "content": "User prefers concise replies"},
+    {"action": "add", "content": "User prefers metric units"},
+])
+```
+
+Malformed batches return an error before they can be staged for approval or
+written. This includes empty arrays, unknown operation fields, and nested
+`target` fields. Correct the proposal and submit it again. Existing pending
+batches are validated again when approved; they are never silently redirected
+to another store. Optional `operations: null` still selects the single-action
+form.
+
 ### Substring Matching
 
 The `replace` and `remove` actions use short unique substring matching — you don't need the full entry text. The `old_text` parameter just needs to be a unique substring that identifies exactly one entry:

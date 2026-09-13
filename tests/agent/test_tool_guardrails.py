@@ -5,9 +5,11 @@ import json
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
+    ToolGuardrailDecision,
     ToolCallSignature,
     canonical_tool_args,
     classify_tool_failure,
+    toolguard_halt_user_reason,
 )
 
 
@@ -376,3 +378,50 @@ def test_supervised_task_platforms_keep_warning_only_default():
     for platform in ("telegram", "discord", "cron", "kanban"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is True, platform
+
+
+def test_halt_user_reason_is_self_contained_per_failure_class():
+    """The final halt response reaches messaging users with no tool feed, so each
+    failure class must carry its own actionable reason, not a reference to a
+    tool result the user cannot see (#105404)."""
+    arg_replay = toolguard_halt_user_reason(
+        ToolGuardrailDecision(
+            action="block", code="repeated_exact_failure_block", tool_name="web_search"
+        )
+    )
+    assert "arguments" in arg_replay
+    streak = toolguard_halt_user_reason(
+        ToolGuardrailDecision(
+            action="halt", code="identical_call_streak_halt", tool_name="read_file"
+        )
+    )
+    assert "identical result" in streak
+    cap = toolguard_halt_user_reason(
+        ToolGuardrailDecision(
+            action="block", code="loop_web_search_cap", tool_name="web_search"
+        )
+    )
+    assert "limit" in cap
+    # Distinct failure classes must not collapse into one shared reason.
+    assert len({arg_replay, streak, cap}) == 3
+
+
+def test_halt_user_reason_fails_closed_on_unknown_code_and_never_leaks_details():
+    secret = "sk-live-supersecret-value"
+    unknown = toolguard_halt_user_reason(
+        ToolGuardrailDecision(
+            action="halt", code="totally_new_guardrail", message=f"boom {secret}"
+        )
+    )
+    assert unknown == "it made no progress after repeated attempts"
+    assert secret not in unknown
+    for code in (
+        "repeated_exact_failure_block",
+        "same_tool_failure_halt",
+        "identical_call_streak_halt",
+        "loop_subagent_cap",
+    ):
+        reason = toolguard_halt_user_reason(
+            ToolGuardrailDecision(action="halt", code=code, message=f"raw {secret}")
+        )
+        assert secret not in reason

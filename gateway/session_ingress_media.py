@@ -6,7 +6,6 @@ native bytes are released by ``release_admission_media`` once their row is
 terminal and no live native input or retained API image context still holds them.
 """
 import hashlib
-from contextlib import suppress
 import json
 import os
 from pathlib import Path
@@ -82,24 +81,32 @@ def capture_native_media(paths):
     # ``gateway.max_inbound_media_bytes`` bounds the whole admission, not each file: with
     # per-file caps alone ten attachments could commit ~1.25 GiB of retained bytes per turn.
     total = 0
-    # Files THIS batch published. No admission exists until every file is accepted, so a
-    # rejected batch rolls its own publications back; a target that already existed belongs
-    # to an earlier admission and is never touched.
-    published = []
+    # Only private snapshots belong exclusively to this batch. Published aliases
+    # can be reused by another capture before either admission is committed.
+    staged = []
     try:
         for value in paths:
-            _capture_file(Path(value), limit, total, references, published)
+            _capture_file(Path(value), limit, total, references, staged)
             total = sum(reference['size'] for reference in references)
-    except BaseException:
-        for target in published:
-            target.unlink(missing_ok=True)
-            with suppress(OSError):
-                target.parent.rmdir()
-        raise
+        for temporary, reference in zip(staged, references):
+            target = Path(reference['path'])
+            root = target.parent.parent
+            if target.parent.resolve() != target.parent:
+                raise RuntimeStoreError('invalid_params')
+            target.parent.mkdir(mode=0o700, exist_ok=True)
+            if target.exists() or target.is_symlink():
+                restore_native_media([reference])
+            else:
+                os.replace(temporary, target)
+            for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
+                _sync_directory(directory)
+    finally:
+        for temporary in staged:
+            temporary.unlink(missing_ok=True)
     return references
 
 
-def _capture_file(path, limit, total, references, published):
+def _capture_file(path, limit, total, references, staged):
     from gateway.platforms.base import validate_inbound_media_size
     try:
         source = _open_regular(path)
@@ -112,36 +119,26 @@ def _capture_file(path, limit, total, references, published):
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix='.capture-', dir=root)
         temporary = Path(name)
-        try:
+        staged.append(temporary)
+        with os.fdopen(fd, 'wb') as output:
             digest, size = hashlib.sha256(), 0
-            with os.fdopen(fd, 'wb') as output:
-                while chunk := source.read(1024 * 1024):
-                    size += len(chunk)
-                    try:
-                        validate_inbound_media_size(total + size, max_bytes=limit)
-                    except ValueError as exc:
-                        raise RuntimeStoreError('invalid_params') from exc
-                    digest.update(chunk)
-                    output.write(chunk)
-                output.flush()
-                os.fsync(output.fileno())
-            target = root / digest.hexdigest() / path.name
-            if target.parent.resolve() != target.parent:
-                raise RuntimeStoreError('invalid_params')
-            target.parent.mkdir(mode=0o700, exist_ok=True)
-            reference = {'path': str(target), 'sha256': digest.hexdigest(), 'size': size}
-            if target.exists():
-                # An earlier admission can reference this file. Never repair it by
-                # overwriting accepted bytes, even when a retry has the same digest.
-                restore_native_media([reference])
-            else:
-                os.replace(temporary, target)
-                published.append(target)
-            for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
-                _sync_directory(directory)
-            references.append(reference)
-        finally:
-            temporary.unlink(missing_ok=True)
+            while chunk := source.read(1024 * 1024):
+                size += len(chunk)
+                try:
+                    validate_inbound_media_size(total + size, max_bytes=limit)
+                except ValueError as exc:
+                    raise RuntimeStoreError('invalid_params') from exc
+                digest.update(chunk)
+                output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        target = root / digest.hexdigest() / path.name
+        if target.parent.resolve() != target.parent:
+            raise RuntimeStoreError('invalid_params')
+        reference = {'path': str(target), 'sha256': digest.hexdigest(), 'size': size}
+        if target.exists() or target.is_symlink():
+            restore_native_media([reference])
+        references.append(reference)
 
 
 def validate_media_batch_size(sizes):
@@ -177,6 +174,26 @@ def _held_media_paths(conn):
     return held
 
 
+def _file_identity(path):
+    saved = path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(saved.st_mode) or not saved.st_ino:
+        raise ValueError('uncertain native file identity')
+    return saved.st_dev, saved.st_ino
+
+
+def _held_file_identities(paths, root):
+    identities = set()
+    try:
+        for value in paths:
+            path = Path(value)
+            if path.parent.parent != root or path.parent.resolve() != path.parent:
+                return None
+            identities.add(_file_identity(path))
+    except (OSError, ValueError):
+        return None
+    return identities
+
+
 def release_admission_media(db, admission_id):
     """Delete eligible terminal native bytes unless another retained input holds them.
 
@@ -184,10 +201,9 @@ def release_admission_media(db, admission_id):
     replayed. Rows that are not terminal (queued, started, unknown) may still
     execute, so any path they reference stays on disk; API image references stay
     on disk in every status because they remain history context after settlement,
-    and are holders only, never deletion candidates. Storage is per
-    ``<digest>/<basename>`` and a row replays exactly the path it references, so holding
-    is per path too: equal bytes admitted under another basename are a separate file
-    whose own row decides its release.
+    and are holders only, never deletion candidates. Different regular files can
+    collect independently; physical aliases and uncertain stat results retain
+    conservatively. A shared hardlink can consequently retain an extra old alias.
     """
     from hermes_state_runtime import get_session_admission
     row = get_session_admission(db, admission_id=admission_id)
@@ -197,20 +213,26 @@ def release_admission_media(db, admission_id):
     if not mine:
         return 0
     root = _media_root()
-    with db._read_ctx() as conn:
+    def collect(conn):
         held = _held_media_paths(conn)
-    released = 0
-    for reference in mine:
-        path = Path(reference['path'])
-        if reference['path'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
-            continue
-        try:
-            path.unlink()
-            released += 1
-            path.parent.rmdir()
-        except OSError:
-            continue
-    return released
+        identities = _held_file_identities(held, root)
+        if identities is None:
+            return 0
+        released = 0
+        for reference in mine:
+            path = Path(reference['path'])
+            if reference['path'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
+                continue
+            try:
+                if path.parent.resolve() != path.parent or _file_identity(path) in identities:
+                    continue
+                path.unlink()
+                released += 1
+                path.parent.rmdir()
+            except (OSError, ValueError):
+                continue
+        return released
+    return db._execute_write(collect)
 
 
 def restore_native_media(references):

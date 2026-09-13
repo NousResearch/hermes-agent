@@ -20,6 +20,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { Input } from '@/components/ui/input'
 import { PaneStripGlyph } from '@/components/ui/pane-tab'
+import { BROWSER_TAB_ID, closeRightRailTab } from '@/store/preview'
 import { useI18n } from '@/i18n'
 import { ANNOTATE_BLUE } from '@/lib/preview-annotate'
 import { cn } from '@/lib/utils'
@@ -272,6 +273,11 @@ export function PreviewBrowserBar({
         icon={<Codicon name="bug" size="0.8125rem" />}
         label={devToolsOpen ? copy.hideDevTools : copy.openDevTools}
         onSelect={onToggleDevTools}
+      />
+      <PaneStripGlyph
+        icon={<Codicon name="x" size="0.8125rem" />}
+        label={t.common.close}
+        onSelect={() => closeRightRailTab(BROWSER_TAB_ID)}
       />
     </div>
   )

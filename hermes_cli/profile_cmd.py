@@ -616,4 +616,7 @@ def cmd_profile(args):
     """Profile management — create, delete, list, switch, alias."""
     handler = PROFILE_ACTIONS.get(getattr(args, "profile_action", None))
     if handler is not None:
-        return handler(args)
+        try:
+            return handler(args)
+        except TimeoutError as exc:
+            _die(f"Error: {exc}", err=True)

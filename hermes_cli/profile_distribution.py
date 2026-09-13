@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -20,6 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli.profiles_lifecycle import directory_identity, profile_lifecycle_lock
+from hermes_constants import named_profile_is_deleted
 
 
 MANIFEST_FILENAME = "distribution.yaml"
@@ -294,6 +297,9 @@ class InstallPlan:
     provenance: str
     target_dir: Path
     existing: bool  # True if target profile already exists (update path)
+    source_identity: tuple
+    target_identity: tuple | None
+    target_deleted: bool
     preserves_config: bool = True
     has_cron: bool = False
 
@@ -303,36 +309,51 @@ def _has_cron_jobs(staged: Path) -> bool:
     return cron_dir.is_dir() and (any(cron_dir.rglob("*.json")) or any(cron_dir.rglob("*.yaml")))
 
 
-def plan_install(source: str, workdir: Path, override_name: Optional[str] = None) -> InstallPlan:
+def plan_install(
+    source: str, workdir: Path, override_name: Optional[str] = None, *, guards: ExitStack | None = None,
+) -> InstallPlan:
     """Stage *source* and produce a plan describing what install would do."""
     from hermes_cli.profiles import _canon_valid, _validate_new_profile_target, get_profile_dir, profile_exists
     from hermes_cli import __version__ as hermes_version
     staged, provenance = _stage_source(source, workdir)
-    _reject_distribution_symlinks(staged)
-    manifest = read_manifest(staged)
-    if manifest is None:
-        raise DistributionError(
-            f"No {MANIFEST_FILENAME} found at the distribution root — this source is not a Hermes distribution."
+    with profile_lifecycle_lock():
+        _reject_distribution_symlinks(staged)
+        manifest = read_manifest(staged)
+        if manifest is None:
+            raise DistributionError(
+                f"No {MANIFEST_FILENAME} found at the distribution root — this source is not a Hermes distribution."
+            )
+        check_hermes_requires(manifest.hermes_requires, hermes_version)  # fail fast
+        canon = _canon_valid(override_name or manifest.name)
+        if canon == "default":
+            raise DistributionError(
+                "Cannot install a distribution as 'default' — that is the built-in "
+                "root profile (~/.hermes).  Pass --name <name> to install under a new profile."
+            )
+        manifest.name = canon
+        manifest.source = provenance
+        # Stamped once here so both fresh install and update propagate a fresh timestamp.
+        manifest.installed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        target_dir = get_profile_dir(canon)
+        existing = target_dir.is_dir()
+        if not profile_exists(canon):
+            _validate_new_profile_target(canon)
+        return InstallPlan(
+            manifest=manifest, staged_dir=staged, provenance=provenance, target_dir=target_dir, existing=existing,
+            source_identity=directory_identity(staged, guards), target_identity=directory_identity(target_dir, guards),
+            target_deleted=named_profile_is_deleted(target_dir),
+            preserves_config=existing, has_cron=_has_cron_jobs(staged),
         )
-    check_hermes_requires(manifest.hermes_requires, hermes_version)  # fail fast
-    canon = _canon_valid(override_name or manifest.name)
-    if canon == "default":
-        raise DistributionError(
-            "Cannot install a distribution as 'default' — that is the built-in "
-            "root profile (~/.hermes).  Pass --name <name> to install under a new profile."
-        )
-    manifest.name = canon
-    manifest.source = provenance
-    # Stamped once here so both fresh install and update propagate a fresh timestamp.
-    manifest.installed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    target_dir = get_profile_dir(canon)
-    existing = target_dir.is_dir()
-    if not profile_exists(canon):
-        _validate_new_profile_target(canon)
-    return InstallPlan(
-        manifest=manifest, staged_dir=staged, provenance=provenance, target_dir=target_dir, existing=existing,
-        preserves_config=existing, has_cron=_has_cron_jobs(staged),
-    )
+
+
+def _revalidate_plan(plan: InstallPlan) -> None:
+    """Called under the lifecycle lock immediately before publishing the payload."""
+    if (
+        directory_identity(plan.staged_dir) != plan.source_identity
+        or directory_identity(plan.target_dir) != plan.target_identity
+        or named_profile_is_deleted(plan.target_dir) != plan.target_deleted
+    ):
+        raise DistributionError("Profile distribution source or destination changed after planning; retry the command.")
 
 
 def _owned_entries(staged: Path, manifest: DistributionManifest):
@@ -409,19 +430,21 @@ def install_distribution(
     """Install a distribution from *source* into a new profile; returns the resolved plan.
     Use :func:`plan_install` first to preview + prompt."""
     from hermes_cli.profiles import check_alias_collision, create_wrapper_script
-    with tempfile.TemporaryDirectory(prefix="hermes_dist_install_") as tmp:
-        plan = plan_install(source, Path(tmp), override_name=name)
-        if plan.existing and not force:
-            raise DistributionError(
-                f"Profile '{plan.manifest.name}' already exists at {plan.target_dir}. "
-                "Use `hermes profile update` to upgrade in place, or pass --force to overwrite."
-            )
+    with ExitStack() as guards, tempfile.TemporaryDirectory(prefix="hermes_dist_install_") as tmp:
+        plan = plan_install(source, Path(tmp), override_name=name, guards=guards)
+        with profile_lifecycle_lock():
+            _revalidate_plan(plan)
+            if plan.existing and not force:
+                raise DistributionError(
+                    f"Profile '{plan.manifest.name}' already exists at {plan.target_dir}. "
+                    "Use `hermes profile update` to upgrade in place, or pass --force to overwrite."
+                )
 
-        # Fresh install: config.yaml comes from the distribution.
-        _bootstrap_user_dirs(plan.target_dir)
-        _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=False)
-        if create_alias and check_alias_collision(plan.manifest.name) is None:
-            create_wrapper_script(plan.manifest.name)
+            # Fresh install: config.yaml comes from the distribution.
+            _bootstrap_user_dirs(plan.target_dir)
+            _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=False)
+            if create_alias and check_alias_collision(plan.manifest.name) is None:
+                create_wrapper_script(plan.manifest.name)
         return plan
 
 
@@ -438,23 +461,30 @@ def _existing_profile(profile_name: str) -> Tuple[str, Path]:
 def update_distribution(profile_name: str, force_config: bool = False) -> InstallPlan:
     """Re-pull from the installed manifest's ``source:`` and apply: dist-owned files
     overwritten, user data never touched, ``config.yaml`` preserved unless ``force_config``."""
-    canon, target = _existing_profile(profile_name)
-    existing_manifest = read_manifest(target)
-    if existing_manifest is None:
-        raise DistributionError(
-            f"Profile '{canon}' is not a distribution (no {MANIFEST_FILENAME}). "
-            "Only profiles installed via `hermes profile install` can be updated."
-        )
-    if not existing_manifest.source:
-        raise DistributionError(
-            f"Profile '{canon}' has no recorded source.  Re-install with "
-            "`hermes profile install <source> --name {canon} --force`."
-        )
-    with tempfile.TemporaryDirectory(prefix="hermes_dist_update_") as tmp:
-        plan = plan_install(existing_manifest.source, Path(tmp), override_name=canon)
-        plan.preserves_config = not force_config
-        _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=plan.preserves_config)
-        return plan
+    with ExitStack() as guards:
+        with profile_lifecycle_lock():
+            canon, target = _existing_profile(profile_name)
+            original_identity = directory_identity(target, guards)
+            existing_manifest = read_manifest(target)
+        if existing_manifest is None:
+            raise DistributionError(
+                f"Profile '{canon}' is not a distribution (no {MANIFEST_FILENAME}). "
+                "Only profiles installed via `hermes profile install` can be updated."
+            )
+        if not existing_manifest.source:
+            raise DistributionError(
+                f"Profile '{canon}' has no recorded source.  Re-install with "
+                "`hermes profile install <source> --name {canon} --force`."
+            )
+        with tempfile.TemporaryDirectory(prefix="hermes_dist_update_") as tmp:
+            plan = plan_install(existing_manifest.source, Path(tmp), override_name=canon, guards=guards)
+            plan.preserves_config = not force_config
+            with profile_lifecycle_lock():
+                _revalidate_plan(plan)
+                if plan.target_identity != original_identity or read_manifest(target) != existing_manifest:
+                    raise DistributionError("Profile distribution destination changed while staging its update; retry the command.")
+                _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=plan.preserves_config)
+            return plan
 
 
 def describe_distribution(profile_name: str) -> Dict[str, Any]:

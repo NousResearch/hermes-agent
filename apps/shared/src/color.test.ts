@@ -79,4 +79,17 @@ describe('contrast', () => {
     expect(ensureContrast('#3D2F13', '#ffffff', 3.9)).toBe('#3D2F13')
     expect(ensureContrast('ansi256(245)', '#ffffff', 3.9)).toBe('ansi256(245)')
   })
+
+  it.each([0, -0.2, Number.MIN_VALUE, Number.NaN, Number.POSITIVE_INFINITY, 1.001])(
+    'ensureContrast rejects an invalid step of %s',
+    step => {
+      expect(() => ensureContrast('#777777', '#ffffff', 4.5, step)).toThrow(RangeError)
+    }
+  )
+
+  it.each([0.001, 1])('ensureContrast accepts the bounded step edge %s', step => {
+    const fixed = ensureContrast('#777777', '#ffffff', 4.5, step)
+
+    expect(contrastRatio(fixed, '#ffffff')!).toBeGreaterThanOrEqual(4.5)
+  })
 })

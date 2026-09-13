@@ -129,14 +129,19 @@ export function readableOn(bg: string, inks: readonly [string, ...string[]] = DE
  * exponentially, and the color stops at the first rung that passes. Returns
  * the original when it already passes or isn't parseable.
  *
- * `step` is the rung size. The default 0.2 (5 rungs) is the desktop's ladder
- * and MUST stay: `--dt-primary-solid` for every shipped preset is derived
- * from it and a finer ladder lands visibly different fills (nous `#3b6acb` vs
- * `#3f70d8`). The TUI's chainable form opts into 0.05 for less hue loss.
+ * `step` is a finite rung size in [0.001, 1] (at most 1,000 rungs). The
+ * default 0.2 (5 rungs) is the desktop's ladder and MUST stay:
+ * `--dt-primary-solid` for every shipped preset is derived from it and a finer
+ * ladder lands visibly different fills (nous `#3b6acb` vs `#3f70d8`). The
+ * TUI's chainable form opts into 0.05 for less hue loss.
  * The accumulating loop (rather than `i * step`) is deliberate — it is the
  * exact float sequence the old desktop ladder produced.
  */
 export function ensureContrast(color: string, bg: string, min: number, step = 0.2): string {
+  if (!Number.isFinite(step) || step < 0.001 || step > 1) {
+    throw new RangeError('ensureContrast step must be between 0.001 and 1')
+  }
+
   const bgLuminance = relativeLuminance(bg)
 
   if (bgLuminance === null || parseColor(color) === null) {

@@ -100,9 +100,11 @@ class TestCommandCodeReasoningWireControls:
         from plugins.model_providers.deepseek import deepseek
 
         rc = {"enabled": True, "effort": "low"}
+        expected = deepseek.build_api_kwargs_extras(reasoning_config=rc, model="deepseek-v4.1-flash")
+        assert expected[1].get("reasoning_effort") == "low"  # equality below must not be ({}, {}) == ({}, {})
         assert commandcode_profile.build_api_kwargs_extras(
             reasoning_config=rc, model="deepseek/deepseek-v4.1-flash"
-        ) == deepseek.build_api_kwargs_extras(reasoning_config=rc, model="deepseek-v4.1-flash")
+        ) == expected
         assert commandcode_profile.build_api_kwargs_extras(
             reasoning_config=rc, model="Qwen/Qwen3.7-Max"
         ) == ({}, {})

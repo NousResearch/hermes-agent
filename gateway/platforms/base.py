@@ -811,7 +811,7 @@ def _profile_cache_roots() -> List[Path]:
 def _profile_dirs() -> List[Path]:
     """Every ``<root>/profiles/<name>`` directory, read at check time."""
     try:
-        profile_dirs = [p for p in (get_hermes_home() / "profiles").iterdir() if p.is_dir()]
+        profile_dirs = [p for p in (_HERMES_ROOT / "profiles").iterdir() if p.is_dir()]
     except OSError:
         return []
     return profile_dirs

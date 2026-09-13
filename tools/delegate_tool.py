@@ -28,7 +28,7 @@ from tools.delegate_tool_child_run import (  # noqa: F401
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (  # noqa: F401
-    _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
+    _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_load_soul_identity, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
@@ -235,7 +235,7 @@ def _build_child_agent(
                 **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
-                skip_context_files=True, skip_memory=True, clarify_callback=None,
+                skip_context_files=True, load_soul_identity=_get_load_soul_identity(), skip_memory=True, clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                     if child_progress_cb else None

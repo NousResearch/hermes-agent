@@ -131,7 +131,9 @@ The base contract carries `objective`, `outcome`, `verification`, `constraints`,
 
 An optional **`tool_constraints`** section adds deterministic pre-dispatch enforcement. It can allow exact tool names, deny canonical capabilities (`read`, `mutate`, `delete`, `external_write`, `money`, `secrets`, `account`, `environment`, or `install`), and restrict literal filesystem or URL prefixes. Once typed constraints are active, a tool with missing or invalid capability metadata fails closed instead of being treated as safe.
 
-The typed contract can also persist a `landing` declaration for exact targets and lifecycle states. This layer records and validates that declaration; runtime receipt issuance and completion enforcement are added by the dependent landing-evidence change.
+An optional **`landing`** section can require declared targets to reach `PLANNED`, `WRITTEN`, `STAGED`, `COMMITTED`, `DEPLOYED`, `LOADED`, or `LIVE_ACCEPTED`. Completion is based only on runtime-issued receipts for the current mutation generation; a later mutation makes earlier verification stale, and `REGRESSION_OBSERVED` is terminal negative evidence that never satisfies a requirement. `restart_required: true` raises the effective minimum to `LOADED`.
+
+Built-in automatic receipt issuance currently covers successful core file mutations at `WRITTEN` for exact declared targets. Higher landing states require a trusted runtime integration to issue the corresponding mutation and verification receipts. Without that integration, the goal deliberately remains unfulfilled rather than accepting an assistant's prose claim.
 
 ## Adding criteria mid-goal: `/subgoal`
 

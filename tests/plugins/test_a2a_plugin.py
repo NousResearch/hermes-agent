@@ -1393,6 +1393,49 @@ class TestMultiAgentRouting:
         assert protocol.extract_text(terminal["artifacts"][0]) == "dev reply"
         assert adapter.tasks.get(terminal["id"])["state"] == protocol.STATE_COMPLETED
 
+    def test_local_dispatch_carries_task_id_into_session_source(self):
+        """The local (non-forwarded) dispatch path already put ``task_id`` on the
+        MessageEvent but never passed it to ``build_source()``, so
+        ``event.source.message_id`` stayed None for every A2A turn even though
+        the id was already in scope -- the same bug class #719cb67bdb fixed for
+        buzz/dingtalk/email/google_chat/line/ntfy/photon/sms/teams/wecom/whatsapp,
+        just not for a2a.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+        captured = {}
+
+        async def _completed():
+            return None
+
+        def fake_handle_message(event):
+            # A plain (non-async) stub: captures ``event`` at call time, i.e.
+            # exactly when _prepare_task builds it -- before it's wrapped into a
+            # coroutine and handed to asyncio.run_coroutine_threadsafe, so this
+            # assertion does not depend on the loop ever actually running it.
+            captured["event"] = event
+            return _completed()
+
+        adapter.handle_message = fake_handle_message  # type: ignore
+        adapter._message_handler = object()  # non-None so dispatch proceeds
+        adapter._loop = asyncio.new_event_loop()
+        try:
+            terminal, pending = adapter._prepare_task(
+                {"message": protocol.text_message(protocol.ROLE_USER, "hello", context_id="ctx-1")},
+                "peer-1",
+            )
+            adapter._loop.run_until_complete(asyncio.sleep(0))
+        finally:
+            adapter._loop.close()
+
+        assert terminal is None
+        assert pending is not None
+        event = captured["event"]
+        assert event.message_id == pending["task_id"]
+        assert event.source.message_id == pending["task_id"]
+
 
 class TestClientTenantAndDiscovery:
     def test_rpc_body_echoes_tenant_from_agent_card(self, monkeypatch):

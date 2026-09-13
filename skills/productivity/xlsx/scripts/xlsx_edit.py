@@ -46,12 +46,22 @@ import json
 import sys
 from datetime import date, datetime
 
-from openpyxl import load_workbook
-from openpyxl.comments import Comment
-from openpyxl.styles import Protection
-from openpyxl.utils import get_column_letter, range_boundaries
-from openpyxl.workbook.defined_name import DefinedName
-from openpyxl.worksheet.table import Table, TableStyleInfo
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
+try:
+    from openpyxl import load_workbook
+    from openpyxl.comments import Comment
+    from openpyxl.styles import Protection
+    from openpyxl.utils import get_column_letter, range_boundaries
+    from openpyxl.workbook.defined_name import DefinedName
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install openpyxl'", file=sys.stderr)
+    sys.exit(2)
 
 
 def infer(text):

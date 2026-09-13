@@ -6,6 +6,12 @@ import argparse
 import json
 import sys
 
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
 
 def parse_pages(spec: str, page_count: int) -> list[int]:
     """Parse a 1-based page spec like '1-3,5,9-' into 0-based indices."""

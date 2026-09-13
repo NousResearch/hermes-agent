@@ -147,3 +147,62 @@ def test_docs_pages_generated():
         assert (docs_dir / f"productivity-{name}.md").exists(), (
             f"missing generated docs page for {name}; run website/scripts/generate-skill-docs.py"
         )
+
+
+# Third-party modules the office scripts import. A bare import of any of these
+# raises ModuleNotFoundError on an install that lacks it, which the pdf skill
+# already avoids by guarding its imports and printing an install hint.
+THIRD_PARTY_IMPORTS = ("docx", "openpyxl", "pptx", "lxml", "reportlab", "pypdfium2")
+
+_IMPORT_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?:from (?P<from>[\w.]+)|import (?P<import>[\w.]+))",
+    re.MULTILINE,
+)
+
+
+@pytest.mark.parametrize("name", OFFICE_SKILLS)
+def test_third_party_imports_print_an_install_hint(name):
+    """A missing library must yield an install hint, not a raw traceback.
+
+    The scripts are run through the terminal tool, so their stderr is what the
+    agent (and the user) sees. `ModuleNotFoundError: No module named 'docx'`
+    gives neither a package name to install nor a usable exit code.
+    """
+    for script in sorted((_skill_dir(name) / "scripts").glob("*.py")):
+        content = script.read_text(encoding="utf-8")
+        for match in _IMPORT_RE.finditer(content):
+            module = (match.group("from") or match.group("import")).split(".")[0]
+            if module not in THIRD_PARTY_IMPORTS:
+                continue
+            assert match.group("indent"), (
+                f"{name}: scripts/{script.name} imports {module!r} at module level "
+                "without a try/except ImportError guard"
+            )
+            assert "except ImportError:" in content, (
+                f"{name}: scripts/{script.name} imports {module!r} but has no "
+                "ImportError handler"
+            )
+            assert "python3 -m pip install" in content, (
+                f"{name}: scripts/{script.name} guards {module!r} but prints no "
+                "install hint"
+            )
+
+
+@pytest.mark.parametrize("name", OFFICE_SKILLS)
+def test_lazy_install_runs_before_the_guarded_import(name):
+    """`ensure_ready()` must precede the guarded import it exists to satisfy.
+
+    The guard exits(2) on a missing library, so an `ensure_ready()` call placed
+    after it never runs on the install it was meant to repair.
+    """
+    for script in sorted((_skill_dir(name) / "scripts").glob("*.py")):
+        content = script.read_text(encoding="utf-8")
+        if "ensure_ready()" not in content:
+            continue
+        hint = content.find("python3 -m pip install")
+        if hint == -1:
+            continue
+        assert content.index("ensure_ready()") < hint, (
+            f"{name}: scripts/{script.name} calls ensure_ready() after its "
+            "guarded import, so the lazy install can never run"
+        )

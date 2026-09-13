@@ -20,6 +20,12 @@ import os
 import sys
 from pathlib import Path
 
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
 
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):

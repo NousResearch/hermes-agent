@@ -66,16 +66,26 @@ import json
 import sys
 from datetime import date, datetime
 
-from openpyxl import Workbook
-from openpyxl.chart import BarChart, LineChart, PieChart, Reference
-from openpyxl.comments import Comment
-from openpyxl.formatting.rule import CellIsRule, ColorScaleRule
-from openpyxl.styles import (Alignment, Border, Font, PatternFill,
-                             Protection, Side)
-from openpyxl.utils import column_index_from_string, range_boundaries
-from openpyxl.workbook.defined_name import DefinedName
-from openpyxl.worksheet.datavalidation import DataValidation
-from openpyxl.worksheet.table import Table, TableStyleInfo
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
+try:
+    from openpyxl import Workbook
+    from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+    from openpyxl.comments import Comment
+    from openpyxl.formatting.rule import CellIsRule, ColorScaleRule
+    from openpyxl.styles import (Alignment, Border, Font, PatternFill,
+                                 Protection, Side)
+    from openpyxl.utils import column_index_from_string, range_boundaries
+    from openpyxl.workbook.defined_name import DefinedName
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install openpyxl'", file=sys.stderr)
+    sys.exit(2)
 
 
 def parse_typed(value, type_hint=None):

@@ -224,7 +224,7 @@ If Chronos is misconfigured or the agent isn't logged into Nous,
 `resolve_cron_scheduler()` falls back to the built-in ticker (logged warning) —
 cron never loses its trigger. Recurring jobs re-arm after each fire; `repeat`-N
 jobs stop cleanly when the count is exhausted (no orphaned one-shot). The full
-agent↔Nous wire contract lives in `docs/chronos-managed-cron-contract.md`.
+agent↔Nous wire contract lives in [Chronos managed-cron contract](chronos-managed-cron-contract.md).
 
 ### Fresh Session Isolation
 

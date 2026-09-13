@@ -33,9 +33,12 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**antigravity-cli**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-antigravity-cli) | Operate the Antigravity CLI (agy): plugins, auth, sandbox. |
 | [**blackbox**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox) | Delegate coding tasks to the Blackbox AI multi-model CLI. |
+| [**dream-loop**](/docs/user-guide/skills/optional/creative/creative-dream-loop) | Build stunning 3D scenes via a concept-art fidelity loop. |
+>>>>>>> 3b37d1928e35 (feat(skills): add dream-loop — concept-art visual fidelity build loop (port of achimala/dream-loop, MIT))
 | [**dynamic-workflow**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow) | Plan-in-code fan-outs, adversarial verification, waves. |
 | [**grok**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok) | Delegate coding to xAI Grok Build CLI (features, PRs). |
 | [**honcho**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho) | Configure and troubleshoot Honcho memory for Hermes. |
+| [**mono-color**](/docs/user-guide/skills/optional/creative/creative-mono-color) | Generate one- or two-ink editorial print poster images. |
 | [**openhands**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands) | Delegate coding to OpenHands CLI (model-agnostic, LiteLLM). |
 
 ## blockchain
@@ -44,6 +47,7 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**evm**](/docs/user-guide/skills/optional/blockchain/blockchain-evm) | Read-only EVM client: wallets, tokens, gas across 8 chains. |
 | [**hyperliquid**](/docs/user-guide/skills/optional/blockchain/blockchain-hyperliquid) | Hyperliquid market data, account history, trade review. |
+| [**pr-lens**](/docs/user-guide/skills/optional/software-development/software-development-pr-lens) | Draw code changes as animated architecture/data-flow SVGs. |
 | [**solana**](/docs/user-guide/skills/optional/blockchain/blockchain-solana) | Query Solana wallets, tokens, txs, and NFTs in USD. |
 
 ## communication
@@ -76,6 +80,7 @@ hermes skills uninstall <skill-name>
 | [**simple-english**](/docs/user-guide/skills/optional/creative/creative-simple-english) | Rewrite text to ASD-STE100 Simplified Technical English. |
 | [**sketch**](/docs/user-guide/skills/optional/creative/creative-sketch) | Throwaway HTML mockups: 2-3 design variants to compare. |
 | [**social-media-content-calendar**](/docs/user-guide/skills/optional/creative/creative-social-media-content-calendar) | Plan multi-platform social campaigns: briefs to posting. |
+| [**system-atlas**](/docs/user-guide/skills/optional/creative/creative-system-atlas) | Build explorable isometric architecture atlases as HTML. |
 | [**tldraw-offline**](/docs/user-guide/skills/optional/creative/creative-tldraw-offline) | Drive and script tldraw offline canvases with an agent. |
 | [**unreal-mcp**](/docs/user-guide/skills/optional/creative/creative-unreal-mcp) | Automate Unreal Engine editor scenes, actors, and renders. |
 

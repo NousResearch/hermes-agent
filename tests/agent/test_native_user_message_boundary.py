@@ -73,3 +73,31 @@ def test_unavailable_storage_returns_no_descriptor(native, monkeypatch):
         raise OSError("storage unavailable")
     monkeypatch.setattr(native, "get_messages", unavailable)
     assert export(native, "parent", [row], 0) is None
+
+
+def test_resumed_durable_users_keep_current_anchor_and_merge_only_on_wire(native):
+    from copy import deepcopy
+    from agent.agent_runtime_helpers import (
+        drop_thinking_only_and_merge_users, repair_message_sequence,
+    )
+
+    old_id = native.append_message("parent", "user", "earlier task")
+    current_id = native.append_message("parent", "user", "resume task")
+    # Gateway replay omits historical row IDs; the current turn-start flush
+    # supplies its exact newly persisted coordinate before sequence repair.
+    messages = [
+        {"role": "user", "content": "earlier task", "_db_persisted": True},
+        {"role": "user", "content": "resume task", "_row_id": current_id,
+         "_db_persisted": True},
+    ]
+    before = deepcopy(messages)
+    assert repair_message_sequence(SimpleNamespace(), messages) == 0
+    assert messages == before
+    assert export(native, "parent", messages, 1, original="resume task", wrapper="resume task") == {
+        "role": "user", "content": "resume task", "_row_id": current_id}
+    assert [(row["id"], row["content"]) for row in native.get_messages("parent")] == [
+        (old_id, "earlier task"), (current_id, "resume task")]
+    wire = drop_thinking_only_and_merge_users([
+        {"role": row["role"], "content": row["content"]} for row in messages])
+    assert wire == [{"role": "user", "content": "earlier task\n\nresume task"}]
+    assert messages == before

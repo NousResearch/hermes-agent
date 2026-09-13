@@ -560,6 +560,9 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
         if (
             prev is not None and prev.get("role") == "user"
             and isinstance(msg, dict) and msg.get("role") == "user"
+            # Durable rows keep their separate content and ownership coordinates.
+            # The per-request API copy merges users for strict provider alternation.
+            and not prev.get("_db_persisted") and not msg.get("_db_persisted")
             # A summary carrier followed by a new user row is a deliberate durable shape after
             # retry/rewind; never mutate the persisted carrier (sanitizers merge copies later).
             and split_user_originated_turn(prev)[0] is None

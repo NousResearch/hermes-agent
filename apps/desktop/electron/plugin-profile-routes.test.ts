@@ -7,7 +7,8 @@ import {
   localRouteFallbackProfiles,
   type ProfileRouteConfig,
   registryGatewayWsUrl,
-  undialedSshRouteSeeds
+  undialedSshRouteSeeds,
+  withoutDeferredLocalRoutes
 } from './plugin-profile-routes'
 
 function config(overrides: Partial<ProfileRouteConfig> = {}): ProfileRouteConfig {
@@ -312,5 +313,29 @@ describe('undialedSshRouteSeeds', () => {
         [{ id: 'homelab', kind: 'ssh', remoteProfile: 'venture' }]
       )
     ).toEqual([])
+  })
+})
+
+describe('withoutDeferredLocalRoutes', () => {
+  const agents = [
+    { connectionId: 'local', profile: 'default' },
+    { connectionId: 'local', profile: 'omar' },
+    { connectionId: 'pandora', profile: 'default' }
+  ]
+
+  it('keeps a connect-on-demand local out of the plugin route table (display-only roster rows)', () => {
+    // A relay sweep dials every published route — a deferred local must not be one.
+    expect(withoutDeferredLocalRoutes(agents, 'local', 'connect-on-demand')).toEqual([
+      { connectionId: 'pandora', profile: 'default' }
+    ])
+  })
+
+  it('leaves an enumerated or genuinely failed local alone', () => {
+    expect(withoutDeferredLocalRoutes(agents, 'local', undefined)).toEqual(agents)
+    expect(withoutDeferredLocalRoutes(agents, 'local', 'timed out')).toEqual(agents)
+  })
+
+  it('is a no-op without a registered local source', () => {
+    expect(withoutDeferredLocalRoutes(agents, null, 'connect-on-demand')).toEqual(agents)
   })
 })

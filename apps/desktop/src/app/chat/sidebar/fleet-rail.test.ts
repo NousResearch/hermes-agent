@@ -95,6 +95,38 @@ describe('buildRestGroups', () => {
     expect(vps?.named).toEqual([])
   })
 
+  it('keeps a connect-on-demand gateway at rest — reachable, with its seeded squares — not marked unreachable', () => {
+    // This device while the registry primary is remote: Electron does not
+    // dial it, but inventories its profiles from disk and tags the source
+    // connect-on-demand (same as an undialed SSH box). That is a sleeping
+    // source, not a failed one — no amber dot, real named squares.
+    const onDemand: DesktopAgentRoster = {
+      agents: roster.agents,
+      sources: roster.sources.map(source =>
+        source.connectionId === 'local' ? { ...source, error: 'connect-on-demand' } : source
+      )
+    }
+
+    const [local] = buildRestGroups({ activeConnectionId: 'pandora', connections, roster: onDemand })
+
+    expect(local.connectionId).toBe('local')
+    expect(local.reachable).toBe(true)
+    expect(local.named.map(agent => agent.profile)).toEqual(['omer'])
+
+    // A desktop with no local runtime at all: nothing to seed (profiles null →
+    // reachable false from Electron) but the deferral is still not a failure.
+    const noRuntime: DesktopAgentRoster = {
+      agents: roster.agents.filter(agent => agent.connectionId !== 'local'),
+      sources: roster.sources.map(source =>
+        source.connectionId === 'local' ? { ...source, reachable: false, error: 'connect-on-demand' } : source
+      )
+    }
+
+    const [bare] = buildRestGroups({ activeConnectionId: 'pandora', connections, roster: noRuntime })
+    expect(bare.reachable).toBe(true)
+    expect(bare.named).toEqual([])
+  })
+
   it('shows every gateway with just its default before the roster has loaded', () => {
     const groups = buildRestGroups({ activeConnectionId: 'pandora', connections, roster: null })
 

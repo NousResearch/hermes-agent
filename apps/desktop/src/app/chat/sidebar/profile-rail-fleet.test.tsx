@@ -276,6 +276,45 @@ describe('ProfileRail fleet mode', () => {
     expect(within(vps as HTMLElement).getByRole('button', { name: 'default · VPS' })).toBeTruthy()
   })
 
+  it('re-enumerates the fleet as soon as the active gateway changes', async () => {
+    armFleet()
+    await renderFleet()
+
+    expect(getAgentRoster).toHaveBeenCalledTimes(1)
+
+    // A switch dials (and pools) the target — the roster the strip painted at
+    // boot may still call that source connect-on-demand. The last-used write
+    // that ends a switch raises no registry event, so the rail must re-pull on
+    // the activation itself, ignoring the 60s stale window.
+    await act(async () => {
+      activeConnectionId.set('local')
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(getAgentRoster).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows a connect-on-demand gateway at rest without the unreachable mark', async () => {
+    armFleet()
+    getAgentRoster.mockResolvedValue({
+      agents: roster.agents,
+      sources: roster.sources.map(source =>
+        source.connectionId === 'local' ? { ...source, error: 'connect-on-demand' } : source
+      )
+    })
+    const container = await renderFleet()
+
+    const local = container.querySelector('[data-slot="profile-rail-gateway"][data-connection-id="local"]')
+    expect(local?.getAttribute('data-reachable')).toBe('true')
+    expect(
+      container.querySelector(
+        '[data-slot="profile-rail-divider"][data-connection-id="local"] [data-slot="profile-rail-unreachable"]'
+      )
+    ).toBeNull()
+    expect(within(local as HTMLElement).getByRole('button', { name: 'omer · This device' })).toBeTruthy()
+  })
+
   it('re-homes onto the exact (gateway, profile) when an at-rest square is clicked', async () => {
     armFleet()
     await renderFleet()

@@ -2903,6 +2903,7 @@ export const zh = defineLocale({
       untitledChat: id => `会话 ${id}`,
       messageCount: count => `${count} 条消息`,
       todoProgress: '任务完成度',
+      runningSince: since => `自 ${since} 起运行中`,
       ageNow: '刚刚',
       ageDay: '天',
       ageHour: '时',

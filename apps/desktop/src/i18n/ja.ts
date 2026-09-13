@@ -2323,6 +2323,7 @@ export const ja = defineLocale({
       deleting: '削除中…',
       deleted: 'セッションを削除しました',
       untitledChat: id => `セッション ${id}`,
+      runningSince: since => `${since} から実行中`,
       ageNow: 'たった今',
       ageDay: '日',
       ageHour: '時間',

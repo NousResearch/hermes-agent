@@ -32,6 +32,7 @@ from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
 from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: hermes_cli.main, run_slash)
+from hermes_cli.kanban_usage import task_usage
 
 
 # --- Flag parsing helpers ---
@@ -485,6 +486,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         parents = kb.parent_ids(conn, args.task_id)
         children = kb.child_ids(conn, args.task_id)
         runs = kb.list_runs(conn, args.task_id, **rsk)
+        usage = task_usage(conn, args.task_id)
         # Workers hand off via task_runs.summary; tasks.result stays NULL unless set.
         latest_summary = kb.latest_summary(conn, args.task_id)
         if not want_json:
@@ -496,6 +498,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
             "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
+            "usage": usage,
         })
         return 0
 
@@ -525,6 +528,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
         else:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
     field("created", f"{_fmt_ts(task.created_at)} by {task.created_by or '-'}")
+    if usage["runs"]:
+        field(
+            "usage",
+            f"{usage['input_tokens'] + usage['output_tokens']:,} tokens, "
+            f"${usage['cost_usd']:.6f}, {usage['runs']} run(s)",
+        )
 
     # Diagnostics up top so CLI users see distress signals before scrolling.
     from hermes_cli import kanban_diagnostics as kd

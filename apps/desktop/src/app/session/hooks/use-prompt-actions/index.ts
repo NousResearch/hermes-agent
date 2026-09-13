@@ -1,11 +1,11 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { JsonRpcGatewayError } from '@hermes/shared'
+import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { stripAnsi } from '@/lib/ansi'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { pathLabel, SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'

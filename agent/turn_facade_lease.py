@@ -4,7 +4,8 @@ One process at a time may load -> run -> flush a session shared through state.db
 resume, gateway, background delivery). ``admit_durable_turn_lease`` acquires the row lease (or
 returns the early result the façade must hand back); ``DurableTurnLease`` owns the periodic
 refresher, the turn-liveness watchdog wiring, and the lease-loss / stall interrupt plumbing. Both
-timers run on the shared scheduler thread (``agent/periodic_scheduler.py``), not per-turn threads.
+timers run via the shared scheduler (``agent/periodic_scheduler.py``; timer thread orders,
+bodies run on per-handle workers), not per-turn threads.
 """
 import logging
 import os
@@ -172,7 +173,7 @@ class DurableTurnLease:
                 _set_interrupt(False, agent._execution_thread_id)
 
     def refresh_tick(self):
-        """One periodic renewal (every ``refresh_interval`` on the shared scheduler); a miss or
+        """One periodic renewal (every ``refresh_interval`` via the shared scheduler); a miss or
         error interrupts the turn. Returning False stops the timer.
 
         The holder-qualified UPDATE fences a late refresher from a successor lease. The façade's

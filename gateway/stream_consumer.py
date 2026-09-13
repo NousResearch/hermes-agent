@@ -164,6 +164,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._use_draft_streaming = False
         self._draft_id: Optional[int] = None
         self._draft_failures = 0
+        # TERMINAL authorization refusal for THIS RUN (see _send_draft_frame).
+        # Per-run state, constructed fresh each turn, so a refusal can never
+        # mute a healthy destination on a later turn.
+        self._egress_declined = False
         self._use_native_streaming = False
         self._native_stream_opened = False  # seed sent: bubble open, zero content
         self._native_last_pushed_len = 0    # throttle under WeCom's 30 frames/min

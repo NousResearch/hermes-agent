@@ -11,7 +11,7 @@ import stat
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -469,6 +469,10 @@ class ProfileInfo:
     description_auto: bool = False
     # Presentation-only display name; resolution/comparison/spawn always use ``name``.
     display_name: str = ""
+    # Canonical ids this profile was previously known by (``hermes profile rename``
+    # appends here). Lets Bot Mode group chats re-link persisted member
+    # descriptors to the renamed live profile (#110200).
+    previous_names: List[str] = field(default_factory=list)
 
 
 def _load_yaml_dict(path: Path) -> Optional[dict]:
@@ -604,20 +608,36 @@ def _count_skills(profile_dir: Path) -> int:
 
 
 def read_profile_meta(profile_dir: Path) -> dict:
-    """Read ``profile.yaml`` -> ``{description, description_auto, display_name}`` (empty
-    defaults when missing/unreadable). Never raises — a corrupt file on one profile must not
-    break ``hermes profile list``."""
+    """Read ``profile.yaml`` -> ``{description, description_auto, display_name,
+    previous_names}`` (empty defaults when missing/unreadable). Never raises — a
+    corrupt file on one profile must not break ``hermes profile list``."""
     data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
     return {
         "description": str(data.get("description") or "").strip(),
         "description_auto": bool(data.get("description_auto", False)),
         "display_name": str(data.get("display_name") or "").strip(),
+        "previous_names": _clean_previous_names(data.get("previous_names")),
     }
+
+
+def _clean_previous_names(raw) -> List[str]:
+    """Normalize the ``previous_names`` list from ``profile.yaml``: strings only,
+    stripped, de-duplicated preserving order. Never raises."""
+    if not isinstance(raw, list):
+        return []
+    cleaned: List[str] = []
+    seen = set()
+    for item in raw:
+        name = str(item or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            cleaned.append(name)
+    return cleaned
 
 
 def write_profile_meta(
     profile_dir: Path, *, description: Optional[str] = None, description_auto: Optional[bool] = None,
-    display_name: Optional[str] = None,
+    display_name: Optional[str] = None, previous_names: Optional[List[str]] = None,
 ) -> None:
     """Update ``profile.yaml`` in place: only passed fields are overwritten; the file is
     created if missing. The profile directory itself must exist."""
@@ -635,6 +655,14 @@ def write_profile_meta(
             existing["display_name"] = display_name.strip()
         else:
             existing.pop("display_name", None)
+    if previous_names is not None:
+        # Rename history for group-chat member sync (#110200): consumers match
+        # stale persisted handles against the live roster via these names.
+        cleaned = _clean_previous_names(previous_names)
+        if cleaned:
+            existing["previous_names"] = cleaned
+        else:
+            existing.pop("previous_names", None)
     # Atomic write: bare open("w") truncates before the dump, and the read path swallows
     # parse errors as {}, so a crashed write would silently drop unspecified fields.
     # See #51356.
@@ -1632,6 +1660,18 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
             print(f"✓ Honcho host updated: {source_host} → {new_host}")
 
 
+def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
+    """Append ``old_canon`` to the renamed profile's ``previous_names`` history.
+    Best-effort: never raises, so a metadata write failure cannot fail the rename."""
+    try:
+        history = read_profile_meta(new_dir).get("previous_names") or []
+        if old_canon not in history:
+            history = [*history, old_canon]
+        write_profile_meta(new_dir, previous_names=history)
+    except Exception:
+        pass
+
+
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
     profile's home IS the installation root, so "renaming" it sets a presentation-only
@@ -1661,6 +1701,11 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 2. Rename directory
     old_dir.rename(new_dir)
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
+
+    # 2b. Record the rename so Bot Mode group chats can re-link persisted
+    # member descriptors to the new slug (#110200). Best-effort: a metadata
+    # write failure must never fail the rename itself.
+    _record_profile_rename(new_dir, old_canon)
 
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
     _migrate_honcho_profile_host(old_canon, new_canon, new_dir)

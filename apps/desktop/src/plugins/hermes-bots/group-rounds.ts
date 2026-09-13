@@ -76,6 +76,40 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
         handles.set(form, groupMemberKey(member))
       }
     }
+
+    // Normalized slug/collapsed variants of the same live identity (the
+    // forms mentionNameForms derives: "bob.jones" -> "bob-jones",
+    // "bobjones" — including the dotted raw forms the hand-rolled collapse
+    // above never strips). Gap-filled only: an exact live name elsewhere in
+    // the roster always wins over another member's normalization variant,
+    // and every variant is claimed before previous-name aliases are
+    // considered, so an old handle can never squat on one (#110200).
+    for (const raw of [member.name, handle, title, ...botFriendlyNames(member)]) {
+      for (const form of mentionNameForms(raw)) {
+        if (form && !handles.has(form)) {
+          handles.set(form, groupMemberKey(member))
+        }
+      }
+    }
+  }
+
+  // Renamed members keep answering to their previous handles: a profile
+  // renamed after the room was created (or @-typed from muscle memory)
+  // still routes to the right member. Previous-name forms only fill gaps —
+  // the live loop above now claims every normalization variant of every
+  // live identity first, so a live name always wins over another member's
+  // history in ALL typed forms (#110200).
+  for (const member of members) {
+    const key = groupMemberKey(member)
+    const previous = Array.isArray(member.previous_names) ? member.previous_names : []
+
+    for (const name of previous) {
+      for (const form of mentionNameForms(name)) {
+        if (form && !handles.has(form)) {
+          handles.set(form, key)
+        }
+      }
+    }
   }
 
   for (const match of source.matchAll(/@([a-z0-9][a-z0-9._-]*)/gi)) {

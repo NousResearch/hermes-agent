@@ -395,7 +395,14 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
+import {
+  branchTipApiUrl,
+  cacheIsFresh,
+  compareApiUrl,
+  githubRepoSlug,
+  parseCompare,
+  targetIsKnownLocalAncestor
+} from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -3240,7 +3247,7 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
   const slug = githubRepoSlug(originUrl)
 
   const status = slug
-    ? await checkUpdatesViaApi({ slug, branch, currentSha })
+    ? await checkUpdatesViaApi({ slug, branch, currentSha, updateRoot })
     : await checkUpdatesViaLsRemote({ updateRoot, branch, currentSha })
 
   const result = {
@@ -3282,7 +3289,7 @@ function writeUpdateCheckCache(entry) {
 // then the compare endpoint only when the tips differ — it yields the exact
 // behind count plus the commit list the overlay renders, replacing both
 // `rev-list --count` and `git log HEAD..origin/<branch>`.
-async function checkUpdatesViaApi({ slug, branch, currentSha }) {
+async function checkUpdatesViaApi({ slug, branch, currentSha, updateRoot }) {
   let targetSha
 
   try {
@@ -3296,6 +3303,15 @@ async function checkUpdatesViaApi({ slug, branch, currentSha }) {
   }
 
   if (targetSha === currentSha) {
+    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+  }
+
+  // GitHub returns 404 when the base SHA exists only in this checkout.  Before
+  // interpreting that as an unknown update, use the already-present local
+  // object graph to recognize a custom build that contains the remote tip.
+  if (
+    await targetIsKnownLocalAncestor(targetSha, args => runGit(args, { cwd: updateRoot }))
+  ) {
     return { behind: 0, updateAvailable: false, targetSha, commits: [] }
   }
 

@@ -18,6 +18,7 @@ import {
   cacheIsFresh,
   githubRepoSlug,
   parseCompare,
+  targetIsKnownLocalAncestor,
   UPDATE_CHECK_FAILURE_TTL_MS,
   UPDATE_CHECK_TTL_MS
 } from './update-api-check'
@@ -39,6 +40,33 @@ test('cache serves a passive check for 24h, but not once HEAD or the branch chan
   const failed = { ...cached, status: { error: 'fetch-failed' } }
   assert.equal(cacheIsFresh(failed, { branch: 'main', currentSha: SHA_A, now: UPDATE_CHECK_FAILURE_TTL_MS - 1 }), true)
   assert.equal(cacheIsFresh(failed, { branch: 'main', currentSha: SHA_A, now: 2 * HOUR }), false)
+})
+
+test('known remote tip behind unpublished local HEAD is not an update', async () => {
+  const calls: string[][] = []
+
+  const ancestor = await targetIsKnownLocalAncestor(SHA_B, async args => {
+    calls.push(args)
+
+    return { code: 0 }
+  })
+
+  assert.equal(ancestor, true)
+  assert.deepEqual(calls, [
+    ['cat-file', '-e', `${SHA_B}^{commit}`],
+    ['merge-base', '--is-ancestor', SHA_B, 'HEAD']
+  ])
+
+  const unknownCalls: string[][] = []
+
+  const unknown = await targetIsKnownLocalAncestor(SHA_B, async args => {
+    unknownCalls.push(args)
+
+    return { code: 1 }
+  })
+
+  assert.equal(unknown, false)
+  assert.deepEqual(unknownCalls, [['cat-file', '-e', `${SHA_B}^{commit}`]])
 })
 
 test('compare payload maps to the behind count and a newest-first commit list; malformed = null', () => {

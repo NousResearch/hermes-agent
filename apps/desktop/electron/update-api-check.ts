@@ -70,6 +70,30 @@ export interface CompareCommit {
   at: number
 }
 
+interface GitProbeResult {
+  code: number
+}
+
+/**
+ * A GitHub compare request cannot name a commit that exists only in the local
+ * checkout, so an unpublished local-ahead HEAD produces a 404.  If the API's
+ * target tip is already present locally, the local graph can still prove that
+ * target is an ancestor of HEAD and therefore that no update is available.
+ * Unknown targets deliberately return false and keep the API result.
+ */
+export async function targetIsKnownLocalAncestor(
+  targetSha: string,
+  run: (args: string[]) => Promise<GitProbeResult>
+): Promise<boolean> {
+  const known = await run(['cat-file', '-e', `${targetSha}^{commit}`])
+
+  if (known.code !== 0) {
+    return false
+  }
+
+  return (await run(['merge-base', '--is-ancestor', targetSha, 'HEAD'])).code === 0
+}
+
 /**
  * Map the compare payload to the shape the update overlay renders. `ahead_by`
  * is how far the remote tip is ahead of local HEAD, i.e. the behind count; 0

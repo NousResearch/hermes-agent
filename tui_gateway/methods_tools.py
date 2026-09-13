@@ -41,7 +41,10 @@ def _profile_scoped_rpc(
             token = None
             if profile := _str_arg(params, "profile") if scoped else "":
                 try:
-                    profile_dir = _tools_mod("hermes_cli.profiles").get_profile_dir(profile)
+                    try:
+                        profile_dir = _tools_mod("hermes_cli.profiles").get_profile_dir(profile)
+                    except ValueError:  # traversal-shaped name: same answer as a missing dir
+                        profile_dir = None
                     if not profile_dir or not profile_dir.is_dir():
                         return _err(rid, 4064, f"profile '{profile}' not found")
                     token = _tools_mod("hermes_constants").set_hermes_home_override(str(profile_dir))

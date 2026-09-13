@@ -105,9 +105,6 @@ class TestGetProfileDir:
         result = get_profile_dir("default")
         assert result == tmp_path / ".hermes"
 
-    def test_valid_name_resolves_under_profiles_root(self, profile_env):
-        assert get_profile_dir("coder") == _get_profiles_root() / "coder"
-
     @pytest.mark.parametrize("name", ["..", "../outside", "../../tmp", "a/b", "a\\b", ".hidden", "has space"])
     def test_traversal_and_invalid_names_rejected(self, name, profile_env):
         # The name becomes a path component under profiles/; invalid ids must

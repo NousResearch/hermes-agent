@@ -75,6 +75,10 @@ class TestMalformedKey:
 class TestStringTypedGuardPreserved:
     def test_enum_off_stays_string(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        cfg.set_config_value("approvals.mode", "off")
+        # approvals.mode is a security-policy key (#81101): plain config set
+        # refuses it, so go through the dedicated approval_override channel —
+        # the string-coercion invariant under test is unchanged ("off" must
+        # survive the round-trip as a string, not YAML bool False).
+        cfg.set_config_value("approvals.mode", "off", approval_override=True)
         v = _read(tmp_path, "approvals", "mode")
         assert v == "off" and isinstance(v, str)  # not bool False

@@ -96,7 +96,8 @@ def test_exhausted_reasoning_only_delivers_labeled_excerpt(tmp_path, monkeypatch
     final = result["final_response"]
     assert "(empty)" != final
     assert "only internal reasoning" in final
-    assert "The answer is 42" in final
+    # Safe failure notice must not leak raw reasoning (provider-response validation #109664)
+    assert "The answer is 42" not in final
 
     # Persistence semantics unchanged: the delivered excerpt is
     # delivery-only. The turn finalizer strips the "(empty)" terminal

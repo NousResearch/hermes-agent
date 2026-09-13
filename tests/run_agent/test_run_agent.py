@@ -3524,7 +3524,8 @@ class TestRunConversation:
         # covers the truly-empty case.
         assert result["final_response"] != "(empty)"
         assert "only internal reasoning" in result["final_response"]
-        assert "reasoning only" in result["final_response"]
+        # Safe notice must not leak raw reasoning (provider-response validation #109664)
+        assert "reasoning only" not in result["final_response"]
         assert result["turn_exit_reason"] == "empty_response_exhausted"
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
@@ -3550,7 +3551,8 @@ class TestRunConversation:
         # test_empty_terminal_reasoning_surface.py).
         assert result["final_response"] != "(empty)"
         assert "only internal reasoning" in result["final_response"]
-        assert "structured reasoning answer" in result["final_response"]
+        # Safe notice must not leak raw reasoning (provider-response validation #109664)
+        assert "structured reasoning answer" not in result["final_response"]
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
 

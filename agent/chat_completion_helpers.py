@@ -44,6 +44,23 @@ from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
+
+def _is_reasoning_duplicate(content: str | None, reasoning: str | None) -> bool:
+    """True when stripped content exactly equals stripped reasoning (both non-empty)."""
+    if not isinstance(content, str) or not isinstance(reasoning, str):
+        return False
+    c = content.strip()
+    r = reasoning.strip()
+    return bool(c and r and c == r)
+
+def _content_is_prefix_of_reasoning(content: str | None, reasoning: str | None) -> bool:
+    """True when stripped content is a non-empty prefix of stripped reasoning (including equality)."""
+    if not isinstance(content, str) or not isinstance(reasoning, str):
+        return False
+    c = content.strip()
+    r = reasoning.strip()
+    return bool(c and r and (c == r or r.startswith(c)))
+
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 _PROVIDER_STREAM_ERROR_FINISH_REASONS = {"error", "error_finish"}
 _PROVIDER_STREAM_SSE_FIELDS = {"event", "data", "id", "retry"}
@@ -2769,6 +2786,7 @@ class _StreamingCall(StreamingWaitMonitor):
         content_parts: list = []
         reasoning_parts: list = []
         pending_text_parts: list[str] = []
+        held_duplicate_parts: list[str] = []
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
         finish_reason = model_name = usage_obj = None
@@ -2788,6 +2806,20 @@ class _StreamingCall(StreamingWaitMonitor):
             pending_text_parts.clear()
             for text in pending_parts:
                 (self._route_suppressed_text if tool_calls_acc else self._emit_text)(text)
+
+        def _flush_held_duplicate_parts():
+            held = list(held_duplicate_parts)
+            held_duplicate_parts.clear()
+            for text in held:
+                # Flush through normal emit path (no longer considered duplicate prefix)
+                if tool_calls_acc:
+                    self._route_suppressed_text(text)
+                elif pending_text_parts or _provider_stream_text_may_be_sse(text):
+                    pending_text_parts.append(text)
+                    if not _provider_stream_text_may_be_sse("".join(pending_text_parts)):
+                        _flush_pending_stream_text()
+                else:
+                    self._emit_text(text)
 
         from agent import relay_llm
         stream = self._set_managed_stream(relay_llm.stream(self.api_kwargs, _open_stream,
@@ -2848,6 +2880,16 @@ class _StreamingCall(StreamingWaitMonitor):
             delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
             if delta_content:
                 content_parts.append(delta_content)
+                # Hold visible content while it remains a prefix of accumulated reasoning (streaming containment for #109664).
+                total_content_so_far = "".join(content_parts)
+                total_reasoning_so_far = "".join(reasoning_parts)
+                if (not tool_calls_acc and total_reasoning_so_far and
+                        _content_is_prefix_of_reasoning(total_content_so_far, total_reasoning_so_far)):
+                    held_duplicate_parts.append(delta_content)
+                    continue
+                # Content has diverged from reasoning: flush any held prefix (tests require no loss on divergence).
+                if held_duplicate_parts:
+                    _flush_held_duplicate_parts()
                 if tool_calls_acc:
                     self._route_suppressed_text(delta_content)
                 elif pending_text_parts or _provider_stream_text_may_be_sse(delta_content):
@@ -2861,6 +2903,10 @@ class _StreamingCall(StreamingWaitMonitor):
             delta_tool_calls = getattr(delta, "tool_calls", None)
             if delta_tool_calls:
                 _flush_pending_stream_text()
+                # Flush held duplicate before tool calls: tool-call turn suppresses content but held reasoning must not be lost as content.
+                if held_duplicate_parts:
+                    # Tool call present means content stream ends; held duplicate is pure reasoning duplicate - drop it.
+                    held_duplicate_parts.clear()
                 for tc_delta in delta_tool_calls:
                     name = tool_calls.feed(tc_delta)
                     if name is not None:
@@ -2870,6 +2916,29 @@ class _StreamingCall(StreamingWaitMonitor):
                         self.result["partial_tool_names"].append(name)
 
         tool_calls.materialize()
+        # Final streaming-containment validation (#109664): if visible content exactly
+        # duplicates reasoning and no tool calls, suppress delivery and trigger empty-response recovery.
+        full_content_tmp = "".join(content_parts) if content_parts else None
+        full_reasoning_tmp = "".join(reasoning_parts) if reasoning_parts else None
+        is_dup = not tool_calls_acc and _is_reasoning_duplicate(full_content_tmp, full_reasoning_tmp)
+        if is_dup:
+            logger.warning("Suppressing reasoning-duplicate provider content (reasoning and visible content identical, %d chars) — treating as malformed (issue #109664)",
+                           len(full_content_tmp.strip()) if full_content_tmp else 0)
+            held_duplicate_parts.clear()
+            # Prevent already-streamed duplicate from being persisted as visible content
+            # (held buffer was never emitted, but reset streamed text as defense in depth).
+            try:
+                self.agent._current_streamed_assistant_text = ""
+                self.agent._streamed_assistant_text_parts = []
+            except Exception:
+                pass
+            # Clear any pending text that might have been buffered as SSE
+            pending_text_parts.clear()
+            content_parts = []
+            # Ensure downstream sees empty content so empty-response retry/fallback ladder runs
+        else:
+            if held_duplicate_parts:
+                _flush_held_duplicate_parts()
         self._close_managed_stream()
         if self._stream_attempt_was_cancelled(stream_attempt_id):
             raise _httpx.RemoteProtocolError(f"stream attempt {stream_attempt_id} was superseded")
@@ -2894,8 +2963,12 @@ class _StreamingCall(StreamingWaitMonitor):
                 self._emit_reasoning(reasoning_text)
             content = getattr(message, "content", None)
             if isinstance(content, str) and content:
-                self._fire_first_delta()
-                self.agent._fire_stream_delta(content)  # not _emit_text: deltas_were_sent stays False here
+                # Streaming containment for non-iterated final response path (#109664)
+                if not _is_reasoning_duplicate(content, reasoning_text if isinstance(reasoning_text, str) else None):
+                    self._fire_first_delta()
+                    self.agent._fire_stream_delta(content)  # not _emit_text: deltas_were_sent stays False here
+                else:
+                    logger.warning("Suppressing reasoning-duplicate in _adopt_final_response (%d chars) (#109664)", len(content.strip()))
         return final_response
 
     @staticmethod
@@ -2934,6 +3007,12 @@ class _StreamingCall(StreamingWaitMonitor):
         full_content = "".join(content_parts) or None
         full_reasoning = "".join(reasoning_parts) or None
         mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
+        # Provider-agnostic reasoning duplicate guard (#109664): malformed content exactly equal to reasoning must not be treated as valid final answer.
+        if not mock_tool_calls and _is_reasoning_duplicate(full_content, full_reasoning):
+            logger.warning("Suppressing reasoning-duplicate in _finish_chat_stream (%d chars) — treating as empty for retry (#109664)",
+                           len(full_content.strip()) if full_content else 0)
+            full_content = None
+            content_parts = []
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
         if finish_reason is None and not content_parts and not reasoning_parts and not tool_calls_acc:
             raise EmptyStreamError(

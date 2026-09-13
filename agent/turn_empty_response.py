@@ -131,10 +131,13 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
     agent._emit_status(
         "⚠️ Model produced reasoning but no visible response after all retries. Returning empty."
     )
+    # Safe failure notice: never publish raw reasoning excerpt (provider-response validation, #109664).
+    # Earlier code appended reasoning_preview directly, leaking private chain-of-thought when the
+    # provider returned reasoning duplicated as visible content. The preview is logged, not delivered.
     return (
         "⚠️ The model produced only internal reasoning and no final answer, despite retries"
         + (" and fallback" if agent._fallback_chain else "")
-        + ". Its last reasoning, which may contain the answer:\n\n" + reasoning_preview
+        + ". Please try again, rephrase your request, or switch to a fallback provider."
     )
 
 

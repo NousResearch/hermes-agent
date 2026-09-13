@@ -29,6 +29,7 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
+from hermes_state_ids import new_session_id as mint_session_id
 from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
@@ -1373,7 +1374,7 @@ class CLICommandsMixin:
             return _cp(_db_unavailable_line())
         branch_name = _command_arg(cmd_original)
         now = datetime.now()
-        new_session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        new_session_id = mint_session_id(now)
         branch_title = branch_name or self._session_db.get_next_title_in_lineage(
             self._session_db.get_session_title(self.session_id) or "branch")
         parent_session_id = self.session_id

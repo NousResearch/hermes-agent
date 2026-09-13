@@ -92,6 +92,11 @@ _BILLING_PATTERNS = (
     "billing hard limit", "exceeded your current quota", "account is deactivated", "plan does not include",
     "out of extra usage", "out of funds", "run out of funds", "balance_depleted",
     "model_not_supported_on_free_tier", "not available on the free tier",
+    # LiteLLM proxies word a hard cap as "hard billing limit" (structured twin:
+    # ``terminal_quota_exhausted`` in _BILLING_ERROR_CODES). "terminal billing
+    # limit" free text is NOT matched: substring rules can't negate the
+    # "non-terminal billing limit" wording, and the structured code covers it.
+    "hard billing limit",
 )
 
 # Not proof of exhaustion: Anthropic returns the same "out of extra usage" body
@@ -107,7 +112,7 @@ _XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
 _BILLING_ERROR_CODES = frozenset({
     "insufficient_quota", "billing_not_active", "payment_required", "insufficient_credits",
     "no_usable_credits", "balance_depleted", "model_not_supported_on_free_tier",
-    "member_spend_cap_exceeded", _XAI_SPENDING_LIMIT_ERROR_CODE,
+    "member_spend_cap_exceeded", "terminal_quota_exhausted", _XAI_SPENDING_LIMIT_ERROR_CODE,
 })
 
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
@@ -725,6 +730,11 @@ def _status_404(c: _Ctx) -> Verdict:
 
 
 def _status_429(c: _Ctx) -> Verdict:
+    # A structured billing code is decisive: LiteLLM stamps
+    # ``terminal_quota_exhausted`` (a hard cap, not throttling) on 429s, and
+    # this handler always returns, so _by_error_code never sees the code.
+    if c.code in _BILLING_ERROR_CODES:
+        return _V_BILLING
     # Z.AI/Zhipu reuse 429 for server-wide overload: back off on the same
     # key instead of burning the pool (#14038).
     if any(p in c.msg for p in _OVERLOADED_PATTERNS):

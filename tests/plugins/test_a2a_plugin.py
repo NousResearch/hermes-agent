@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
 import os
 import socket
 import threading
@@ -176,17 +177,28 @@ class TestInjectionFilter:
 
 
 class TestOutboundRedaction:
-    def test_openai_key_redacted(self):
-        out = security.redact_outbound("my key is sk-abcdefghij1234567890XYZ")
-        assert "sk-abcdefghij" not in out
-        assert "[redacted]" in out
+    def test_every_canonical_credential_class_is_scrubbed(self):
+        """Invariant: redact_outbound masks everything redact_sensitive_text masks. A2A ships text to a
+        REMOTE peer, so a private subset here silently drops every prefix later added to agent/redact.py.
+        Corpus: one synthetic token per registered prefix pattern, built from the pattern's literal prefix."""
+        from agent import redact as R
 
-    def test_github_token_redacted(self):
-        out = security.redact_outbound("token ghp_0123456789abcdefghij0123")
-        assert "ghp_0123456789" not in out
+        bodies = ("Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "QQ7ZP2MX9VLK4NRT", "b-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
+                  ".Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "1-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
+                  "Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0.Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0")
+        tokens = []
+        for pattern in R._PREFIX_PATTERNS + R._plugin_patterns():
+            prefix = R._extract_literal_prefix(pattern)
+            token = next((prefix + body for body in bodies if re.fullmatch(pattern, prefix + body)), None)
+            assert token, f"could not synthesize a token for {pattern!r}"
+            tokens.append(token)
+        assert len(tokens) == len(R._PREFIX_PATTERNS) + len(R._plugin_patterns())
+        for token in tokens:
+            assert token not in security.redact_outbound(f"peer, here: {token}"), token
 
-    def test_email_redacted(self):
-        out = security.redact_outbound("contact me at alice@example.com")
+    def test_bearer_and_email_redacted(self):
+        out = security.redact_outbound("Authorization: Bearer opaque0123456789abcdef; contact me at alice@example.com")
+        assert "opaque0123456789abcdef" not in out
         assert "alice@example.com" not in out
         assert "[redacted-email]" in out
 

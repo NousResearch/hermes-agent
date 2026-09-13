@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret
+from agent.retry_utils import reset_delay_from_message
 from agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
@@ -367,36 +368,6 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
     return None
 
 
-# (regex, seconds-from-match) pairs tried in order against provider error text.
-_RETRY_DELAY_PATTERNS: Tuple[Tuple[re.Pattern, Callable[[re.Match], float]], ...] = (
-    (
-        re.compile(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", re.IGNORECASE),
-        lambda m: float(m.group(1)) / 1000.0 if m.group(2).lower() == "ms" else float(m.group(1)),
-    ),
-    (
-        re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE),
-        lambda m: float(m.group(1)),
-    ),
-    # "Resets in 4hr 5min" format used by OpenCode Go weekly usage limits
-    (
-        re.compile(r"resets?\s+in\s+(\d+)\s*hr\s+(\d+)\s*min", re.IGNORECASE),
-        lambda m: int(m.group(1)) * 3600 + int(m.group(2)) * 60,
-    ),
-    (re.compile(r"resets?\s+in\s+(\d+)\s*hr\b", re.IGNORECASE), lambda m: int(m.group(1)) * 3600),
-    (re.compile(r"resets?\s+in\s+(\d+)\s*min\b", re.IGNORECASE), lambda m: int(m.group(1)) * 60),
-)
-
-
-def _extract_retry_delay_seconds(message: str) -> Optional[float]:
-    if not message:
-        return None
-    for pattern, to_seconds in _RETRY_DELAY_PATTERNS:
-        match = pattern.search(message)
-        if match:
-            return to_seconds(match)
-    return None
-
-
 def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(error_context, dict):
         return {}
@@ -413,7 +384,7 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
     parsed_reset_at = _parse_absolute_timestamp(reset_at)
     message = error_context.get("message")
     if parsed_reset_at is None and isinstance(message, str):
-        retry_delay_seconds = _extract_retry_delay_seconds(message)
+        retry_delay_seconds = reset_delay_from_message(message)
         if retry_delay_seconds is not None:
             parsed_reset_at = time.time() + retry_delay_seconds
     if parsed_reset_at is not None:

@@ -1,4 +1,6 @@
 import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
+import { compactNumber } from '@hermes/shared/format'
+import type { Usage } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
@@ -13,10 +15,9 @@ import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
-import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
-import type { Msg, Usage } from '../types.js'
+import type { Msg } from '../types.js'
 
 import { scrollbarColors } from './overlayPrimitives.js'
 
@@ -524,10 +525,10 @@ export function StatusRule({
     ok('context_detail') || ok('context_pct')
       ? usage.context_max
         ? segs.compactCtx
-          ? `${contextMark}${fmtK(usage.context_used ?? 0)} tok`
-          : `${contextMark}${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+          ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
+          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
         : usage.total > 0
-          ? `${fmtK(usage.total)} tok`
+          ? `${compactNumber(usage.total)} tok`
           : ''
       : ''
 

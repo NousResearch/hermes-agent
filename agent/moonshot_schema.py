@@ -60,6 +60,10 @@ def _repair_schema(node: Any) -> Any:
             repaired["anyOf"] = non_null
             return repaired
         repaired = {**{k: v for k, v in repaired.items() if k != "anyOf"}, **non_null[0]}
+        # A promoted mixed enum can itself be a union; its types belong on the branches.
+        if isinstance(repaired.get("anyOf"), list) and "enum" not in repaired:
+            repaired.pop("nullable", None)
+            return repaired
 
     # Moonshot also rejects the non-standard ``nullable`` keyword.
     repaired.pop("nullable", None)
@@ -102,7 +106,7 @@ def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
 
     A type list collapses to its first concrete member; otherwise
     ``properties``/``required``/``additionalProperties`` → object,
-    ``items``/``prefixItems`` → array, ``enum`` → type of its first value,
+    ``items``/``prefixItems`` → array, scalar ``enum`` → types of all members,
     else ``string`` (safest scalar).
     """
     node_type = node.get("type")
@@ -117,11 +121,36 @@ def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
     elif "items" in node or "prefixItems" in node:
         inferred = "array"
     elif isinstance(node.get("enum"), list) and node["enum"]:
-        sample = node["enum"][0]
-        inferred = next((t for cls, t in _ENUM_SAMPLE_TYPES if isinstance(sample, cls)), "string")
+        return _infer_enum_schema(node)
     else:
         inferred = "string"
     return {**node, "type": inferred}
+
+
+def _infer_enum_schema(node: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep the scalar enum domain without relying on member order."""
+    values = [v for v in node["enum"] if v is not None and v != ""]
+    if "anyOf" in node or not values or not all(isinstance(v, (str, int, float)) for v in values):
+        # Existing unions and unsupported structured enums keep their legacy fallback.
+        sample = node["enum"][0]
+        inferred = next((t for cls, t in _ENUM_SAMPLE_TYPES if isinstance(sample, cls)), "string")
+        return {**node, "type": inferred}
+
+    groups: Dict[str, List[Any]] = {}
+    for value in values:
+        kind = next((t for cls, t in _ENUM_SAMPLE_TYPES if isinstance(value, cls)), "string")
+        groups.setdefault(kind, []).append(value)
+    if "number" in groups and "integer" in groups:
+        groups["number"] = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        del groups["integer"]
+    if len(groups) == 1:
+        return {**node, "type": next(iter(groups))}
+
+    # A multi-type enum is not accepted directly. Each anyOf branch owns its type and values.
+    return {
+        **{k: v for k, v in node.items() if k not in {"type", "enum"}},
+        "anyOf": [{"type": kind, "enum": groups[kind]} for kind in sorted(groups)],
+    }
 
 
 def sanitize_moonshot_tool_parameters(parameters: Any) -> Dict[str, Any]:

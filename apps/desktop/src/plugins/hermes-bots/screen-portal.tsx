@@ -17,15 +17,19 @@ import { useEffect } from 'react'
 import { $lastRoster } from './data'
 import { useBots } from './i18n'
 import { resolveBotConnectionRoute } from './routing'
-import { type DisplayLease, displayRequest, type DisplayStatus, isEventForBotScreen, leaseHeldBy, type ScreenViewer } from './screen-connection'
+import { type DisplayLease, displayRequest, type DisplayStatus, isDisplayUnavailable, isEventForBotScreen, leaseHeldBy, type ScreenViewer } from './screen-connection'
 import { openBotScreen } from './screen-open'
-import { $screenState, screenStateFor, setScreenLease, setScreenStatus } from './screen-state'
+import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable } from './screen-state'
 import type { BotMeta, RosterRow } from './types'
 
-export type PortalTone = 'live' | 'human' | 'other' | 'off' | 'missing' | 'unsupported' | 'unknown'
+export type PortalTone = 'live' | 'human' | 'other' | 'off' | 'missing' | 'unsupported' | 'unavailable' | 'unknown'
 
 /** Pure: map cached status + lease (+ this window's minted viewer, if attached) to what the portal says. */
-export function portalTone(status: DisplayStatus | null, lease: DisplayLease | null, viewer: ScreenViewer | null = null): PortalTone {
+export function portalTone(status: DisplayStatus | null, lease: DisplayLease | null, viewer: ScreenViewer | null = null, unavailable = false): PortalTone {
+  if (unavailable) {
+    return 'unavailable'
+  }
+
   if (!status) {
     return 'unknown'
   }
@@ -56,6 +60,7 @@ const TONE_ICON: Record<PortalTone, string> = {
   off: 'debug-stop',
   missing: 'cloud-download',
   unsupported: 'circle-slash',
+  unavailable: 'circle-slash',
   unknown: 'device-desktop'
 }
 
@@ -66,6 +71,7 @@ const TONE_DOT: Record<PortalTone, string> = {
   off: 'bg-(--ui-text-quaternary)',
   missing: 'bg-(--ui-text-quaternary)',
   unsupported: 'bg-(--ui-text-quaternary)',
+  unavailable: 'bg-(--ui-text-quaternary)',
   unknown: 'bg-(--ui-text-quaternary)'
 }
 
@@ -76,7 +82,7 @@ export function useScreenPortalState(bot: RosterRow) {
   const profileKey = status?.profile_key
 
   useEffect(() => {
-    if (status) {
+    if (status || state?.unavailable) {
       return
     }
 
@@ -88,14 +94,18 @@ export function useScreenPortalState(bot: RosterRow) {
           setScreenStatus(bot, next)
         }
       })
-      .catch(() => {
-        /* offline bot / older backend: the portal stays in its unknown state */
+      .catch((error: unknown) => {
+        // An older Hermes without display.* is a settled answer (hide the surface);
+        // an offline bot is transient and stays in its unknown state.
+        if (!cancelled && isDisplayUnavailable(error)) {
+          setScreenUnavailable(bot)
+        }
       })
 
     return () => {
       cancelled = true
     }
-  }, [bot, status])
+  }, [bot, state?.unavailable, status])
 
   useEffect(
     () =>
@@ -109,7 +119,7 @@ export function useScreenPortalState(bot: RosterRow) {
     [bot, profileKey]
   )
 
-  return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null, state?.viewer ?? null) }
+  return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null, state?.viewer ?? null, state?.unavailable) }
 }
 
 export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; meta?: BotMeta | null; compact?: boolean }) {
@@ -123,10 +133,11 @@ export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; m
     off: t.screen.portalStopped,
     missing: t.screen.portalNotInstalled,
     unsupported: t.screen.portalUnsupported,
+    unavailable: t.screen.portalUnavailable,
     unknown: status?.display ?? ''
   }[tone]
 
-  if (tone === 'unsupported' && compact) {
+  if ((tone === 'unsupported' || tone === 'unavailable') && compact) {
     return null
   }
 

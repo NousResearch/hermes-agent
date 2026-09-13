@@ -253,6 +253,8 @@ type BotsMessages = {
     portalStopped: string
     portalNotInstalled: string
     portalUnsupported: string
+    portalUnavailable: string
+    unavailableTitle: string
     recheck: string
     stoppedTitle: string
     stoppedBody: string
@@ -521,6 +523,8 @@ const en: BotsMessages = {
     portalStopped: 'Stopped',
     portalNotInstalled: 'Not installed on host',
     portalUnsupported: 'Not available on this host',
+    portalUnavailable: 'Update the bot\u2019s Hermes to use Screen',
+    unavailableTitle: 'Screen needs a newer Hermes',
     recheck: 'Check again',
     stoppedTitle: 'Screen is off',
     stoppedBody: 'Start this bot\u2019s desktop to watch what it does and take over when it needs you.',
@@ -784,6 +788,8 @@ const ja: BotsMessages = {
     portalStopped: '停止中',
     portalNotInstalled: 'ホストに未インストール',
     portalUnsupported: 'このホストでは利用できません',
+    portalUnavailable: 'Screen を使うにはボットの Hermes を更新してください',
+    unavailableTitle: 'Screen には新しい Hermes が必要です',
     recheck: '再確認',
     stoppedTitle: '画面はオフです',
     stoppedBody: 'このボットのデスクトップを起動すると、動作を見守り、必要なときに操作を引き継げます。',
@@ -1042,6 +1048,8 @@ const zh: BotsMessages = {
     portalStopped: '已停止',
     portalNotInstalled: '主机未安装',
     portalUnsupported: '此主机不可用',
+    portalUnavailable: '更新机器人的 Hermes 以使用屏幕',
+    unavailableTitle: '屏幕需要更新版的 Hermes',
     recheck: '重新检查',
     stoppedTitle: '屏幕已关闭',
     stoppedBody: '启动此机器人的桌面，观看它的操作，并在需要时接管。',
@@ -1300,6 +1308,8 @@ const zhHant: BotsMessages = {
     portalStopped: '已停止',
     portalNotInstalled: '主機未安裝',
     portalUnsupported: '此主機不可用',
+    portalUnavailable: '更新機器人的 Hermes 以使用螢幕',
+    unavailableTitle: '螢幕需要較新版的 Hermes',
     recheck: '重新檢查',
     stoppedTitle: '螢幕已關閉',
     stoppedBody: '啟動此機器人的桌面，觀看它的操作，並在需要時接手。',

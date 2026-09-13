@@ -15,9 +15,9 @@ import type { RpcEvent } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
-import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isEventForBotScreen, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
+import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isDisplayUnavailable, isEventForBotScreen, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
 import { ScreenInstallCard } from './screen-install'
-import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenViewer } from './screen-state'
+import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable, setScreenViewer } from './screen-state'
 import type { RosterRow } from './types'
 
 type RfbLike = {
@@ -71,6 +71,10 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       setScreenStatus(bot, next)
       setError(null)
     } catch (err) {
+      if (isDisplayUnavailable(err)) {
+        setScreenUnavailable(bot)
+      }
+
       setError(err instanceof Error ? err.message : String(err))
     }
   }, [bot])
@@ -255,6 +259,10 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       setBusy(false)
     }
   }, [bot, viewer?.id])
+
+  if (state?.unavailable) {
+    return <EmptyState description={t.screen.portalUnavailable} title={t.screen.unavailableTitle} />
+  }
 
   if (status && !status.supported) {
     return <EmptyState description={t.screen.unsupportedBody} title={t.screen.unsupportedTitle} />

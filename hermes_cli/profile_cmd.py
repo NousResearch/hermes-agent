@@ -31,21 +31,10 @@ def _is_active(p, active: str) -> bool:
 
 
 def _env_file_has_key(env_path: Path, key: str) -> bool:
-    """True when *key* is assigned in *env_path*. Read as utf-8-sig: a Notepad-edited .env can
-    carry a BOM that would hide the first key behind U+FEFF. A mis-encoded file (UnicodeDecodeError
-    is a ValueError, not OSError) must not abort the install preview — skip the pre-check."""
-    if not env_path.is_file():
-        return False
-    try:
-        # .env is written as UTF-8 everywhere in the codebase, but a Notepad-edited file can carry a BOM —
-        # read as utf-8-sig so the first key isn't hidden behind U+FEFF (#62617).
-        for raw in env_path.read_text(encoding="utf-8-sig").splitlines():
-            line = raw.strip()
-            if line and not line.startswith("#") and line.split("=", 1)[0].strip() == key:
-                return True
-    except (OSError, UnicodeDecodeError):
-        pass
-    return False
+    """True when *key* is assigned in *env_path* (unreadable/mis-encoded file → False, never aborts)."""
+    from agent.secret_scope import load_env_file
+
+    return key in load_env_file(env_path)
 
 
 def _render_distribution_plan(plan) -> None:

@@ -797,6 +797,25 @@ def is_env_dump_command(command: str | None) -> bool:
     return False
 
 
+REDACTION_UNAVAILABLE = "[redaction-unavailable]"
+_BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+(?:\[[^\]]+\]|[A-Za-z0-9._~+/-]+=*)", re.IGNORECASE)
+
+
+def redact_for_egress(text: str) -> str:
+    """The one scrub for text leaving the process for a remote reader (chat platforms, A2A peers,
+    telemetry). ``redact_sensitive_text(force=True)`` — the only secret-pattern list — plus a bearer
+    sweep, because a ``Bearer <opaque>`` value with no vendor prefix carries no shape the prefix
+    matcher can key on. Fails CLOSED: if the redactor raises, the raw text is never returned."""
+    text = str(text or "")
+    try:
+        text = redact_sensitive_text(text, force=True)
+    except Exception:
+        return REDACTION_UNAVAILABLE
+    if "earer" in text:
+        text = _BEARER_RESIDUE_RE.sub("Bearer [redacted]", text)
+    return text
+
+
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:
     """Single redaction policy for ALL terminal-output surfaces: the ENV-assignment
     pass runs only when ``command`` is an env dump or reads a ``.env`` file

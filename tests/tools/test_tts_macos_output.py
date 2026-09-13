@@ -35,7 +35,7 @@ def _run_stream(monkeypatch):
     """
     from tools.tts_tool_speaker import stream_tts_to_speaker
 
-    monkeypatch.setattr("tools.tts_tool.get_env_value",
+    monkeypatch.setattr("hermes_cli.config.get_env_value",
                         lambda name, default=None: "fake-key"
                         if name == "ELEVENLABS_API_KEY" else default)
     monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: {})

@@ -55,11 +55,15 @@ _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"),
 
 
 def _schtasks_encoding() -> str:
-    """Console encoding for ``schtasks.exe`` output: localized Windows emits the OEM/ANSI code page,
-    not UTF-8, and decoding with the wrong codec raised UnicodeDecodeError in subprocess' reader
-    threads. Prefer the locale's preferred encoding, fall back to UTF-8."""
+    """Best-effort console encoding for decoding ``schtasks.exe`` output.
+
+    On localized Windows (e.g. Chinese), ``schtasks`` emits text in the OEM/ANSI
+    code page rather than UTF-8. Decoding with the wrong codec raised
+    ``UnicodeDecodeError`` inside ``subprocess``' reader threads. Use the locale
+    encoding without honoring Python UTF-8 Mode, and fall back to UTF-8.
+    """
     try:
-        return locale.getpreferredencoding(False) or "utf-8"
+        return locale.getencoding() or "utf-8"
     except Exception:
         return "utf-8"
 

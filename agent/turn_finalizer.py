@@ -441,6 +441,13 @@ def finalize_turn(
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
 
+    # Release only carriers not committed to the transcript; durable evidence stays put.
+    try:
+        from agent.delegation_inject import release_pending_injects
+        release_pending_injects(agent, messages, turn_id=turn_id)
+    except Exception:
+        logger.warning("Could not settle remaining delegation carriers", exc_info=True)
+
     final_response, _turn_exit_reason, preserved_verification_fallback = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,

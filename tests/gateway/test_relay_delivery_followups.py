@@ -457,19 +457,15 @@ def test_live_completion_event_carries_scope_id(tmp_path, monkeypatch):
         "completed_at": 101.0,
     }
 
-    captured = {}
-
-    class _Q:
-        def put(self, evt):
-            captured.update(evt)
-
-    class _PR:
-        completion_queue = _Q()
+    from tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
-    monkeypatch.setattr(
-        "tools.process_registry.process_registry", _PR(), raising=False
-    )
+    # Use the real registry/queue so publication exercises the shared routing
+    # reservation as well as the dispatch-time routing metadata.
+    registry = ProcessRegistry()
+    monkeypatch.setattr("tools.process_registry.process_registry", registry)
     ad._push_completion_event(record, {"summary": "ok"}, "completed")
+    captured = registry.completion_queue.get_nowait()
     assert captured.get("scope_id") == "G777"
     assert captured.get("user_id") == "U9"
+    assert registry.completion_queue.empty()

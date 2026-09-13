@@ -412,6 +412,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, action: Optional[str] = None, subagent_id: Optional[str] = None,
     message: Optional[str] = None, parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
+    result_delivery: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -437,6 +438,10 @@ def delegate_task(
     # background applies to single tasks AND batches: a batch is ONE async unit
     # that joins on every child and re-enters as a single consolidated message.
     background = is_truthy_value(background, default=False) if background is not None else False
+
+    _delivery = str(result_delivery or "after_turn").strip().lower()
+    if _delivery not in {"inject", "after_turn"}:
+        _delivery = "after_turn"
 
     depth = getattr(parent_agent, "_delegate_depth", 0)
     max_spawn = _get_max_spawn_depth()
@@ -491,7 +496,7 @@ def delegate_task(
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
-        live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        live_deleg_id, live_writers, live_paths, *origin, overall_start, result_delivery=_delivery,
     )
     return _run_batch(batch, background)
 
@@ -537,6 +542,7 @@ _DESCRIPTION_HEAD = (
     "wait or poll on transcripts, artifact files, or CI for a child. "
     "While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
     "child drifting.\n\n"
+    "Use result_delivery=inject for reviews that can affect this turn; otherwise results arrive after it.\n\n"
     "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
     "parallel workstreams.\n"
     "DO NOT USE FOR (use these instead):\n"
@@ -659,6 +665,16 @@ DELEGATE_TASK_SCHEMA = {
                 enum=["spawn", "list", "steer", "stop"],
             ),
             "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
+            "result_delivery": {
+                "type": "string", "enum": ["inject", "after_turn"], "default": "after_turn",
+                "description": (
+                    "'inject': for dependent reviews/audits; an already-ready completion unit may ride "
+                    "the last new tool result of a complete batch in this parent turn, before the next "
+                    "model request. Grouped tasks still finish together. Never waits or adds a request; "
+                    "missed boundaries fall back to ordinary after-turn delivery. "
+                    "'after_turn' (default): independent background work."
+                ),
+            },
             "message": _p(
                 "string",
                 "For action='steer': the course correction, appended to "
@@ -699,6 +715,7 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        result_delivery=args.get("result_delivery"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

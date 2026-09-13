@@ -640,3 +640,24 @@ Subagents compact at the same ratio trigger as their parent (`compression.thresh
 :::tip
 The agent handles delegation automatically based on the task complexity. You don't need to explicitly ask it to delegate — it will do so when it makes sense.
 :::
+
+
+### Time-sensitive results in the current turn
+
+`delegate_task(result_delivery="inject", tasks=[...])` opts a review or dependency into
+best-effort delivery at the next existing complete tool-result boundary of the originating
+parent turn. The ready report is clearly marked as background evidence on the last **new,
+unsent** tool result before its first transcript commit. It is not a new user request.
+
+The timing policy does not change completion grouping. By default, the whole call
+is one completion, eligible only when all its tasks finish. With
+`delegation.independent_completions: true`, ungrouped tasks report individually
+and tasks sharing a `group` report together. `result_delivery="inject"` never
+implicitly enables independent completions; every configured unit keeps its
+existing durable identity and shares the call's capacity slot.
+
+The default (including unknown or missing values) remains `after_turn`. An `inject` result
+that misses a boundary, cannot fit the ordinary tool-result budget or cannot be durably
+persisted stays on the same after-turn delivery rail. No waiting, polling, extra model
+request, new queue or extra iteration is added. Large reports use the ordinary persisted
+output mechanism; failed storage defers the full result rather than silently truncating it.

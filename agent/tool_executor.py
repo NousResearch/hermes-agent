@@ -170,28 +170,136 @@ def _resolve_concurrent_tool_timeout() -> float | None:
     )
 
 
-def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) -> bool:
-    """Flush tool-call progress to the session DB before projecting it to any UI: tool side
-    effects can kill/restart the process before turn-end persistence runs."""
+def _completed_tool_batch_size(messages: list) -> int:
+    """Return the size of a complete, not-yet-checked tool-result tail."""
+
+    if not messages or not isinstance(messages[-1], dict):
+        return 0
+    tail = messages[-1]
+    if (tail.get("role") != "tool" or tail.get("_external_input_boundary_checked")
+            or tail.get("_db_persisted") is True):
+        return 0
+
+    start = len(messages) - 1
+    while start >= 0 and isinstance(messages[start], dict) and messages[start].get("role") == "tool":
+        start -= 1
+    if start < 0:
+        return 0
+    assistant = messages[start]
+    if assistant.get("role") != "assistant" or not assistant.get("tool_calls"):
+        return 0
+
+    expected_ids: list[str] = []
+    for call in assistant.get("tool_calls") or []:
+        call_id = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+        if call_id:
+            expected_ids.append(str(call_id))
+    actual_ids = [
+        str(message.get("tool_call_id") or "")
+        for message in messages[start + 1 :]
+        if isinstance(message, dict) and message.get("role") == "tool"
+    ]
+    if not expected_ids or len(actual_ids) != len(expected_ids):
+        return 0
+    if len(set(expected_ids)) != len(expected_ids) or set(actual_ids) != set(expected_ids):
+        return 0
+    return len(actual_ids)
+
+
+
+def _flush_session_db_after_tool_progress(
+    agent,
+    messages: list,
+    *,
+    stage: str,
+    storage_env=None,
+    budget_config=None,
+) -> bool:
+    """Persist tool progress, carrying ready delegation evidence once per batch.
+
+    The last result of a complete tool batch is the only same-turn carrier. It
+    is enriched before the batch's first durable commit, so history remains
+    append-only and every provider sees the ordinary assistant/tool role shape.
+    """
     from agent.conversation_loop import _maybe_inject_run_budget_wrapup
     from agent.turn_iteration_prep import _maybe_inject_iteration_budget_warning
 
-    # Persist exactly the checkpoint text the next model call will see, before stamping
-    # this tool result as durable. Already-written rows must never be rewritten later.
+    # Preserve main's checkpoint warnings before sizing or stamping the tool result.
     _maybe_inject_run_budget_wrapup(agent, messages)
     _maybe_inject_iteration_budget_warning(agent, messages)
+
+    # A known no-op persistence path cannot accept a durable carrier. Do not
+    # acquire/release its claim at every tool batch: that would exhaust the
+    # delivery-attempt cap without ever offering the after-turn fallback.
+    persistence_unavailable = (
+        getattr(agent, "_persist_disabled", False) is True
+        or getattr(agent, "_session_db", True) is None
+    )
+    completed_batch_size = 0 if persistence_unavailable else _completed_tool_batch_size(messages)
+    if completed_batch_size:
+        messages[-1]["_external_input_boundary_checked"] = True
+        try:
+            from agent.delegation_inject import attach_ready_injects_to_tool_results
+
+            attach_ready_injects_to_tool_results(
+                agent,
+                messages,
+                num_tool_msgs=completed_batch_size,
+                turn_id=str(getattr(agent, "_active_turn_id", "") or ""),
+                storage_env=storage_env,
+                budget_config=budget_config,
+            )
+        except Exception as exc:
+            logger.warning("Delegation tool-boundary preparation failed: %s", exc)
+
+    def _release_unpersisted_carrier() -> None:
+        if not completed_batch_size:
+            return
+        try:
+            from agent.delegation_inject import release_pending_injects
+
+            release_pending_injects(
+                agent,
+                messages,
+                turn_id=str(getattr(agent, "_active_turn_id", "") or ""),
+            )
+        except Exception:
+            logger.warning(
+                "Could not release unpersisted delegation tool carrier",
+                exc_info=True,
+            )
+
     try:
-        persisted = agent._flush_messages_to_session_db(messages) is not False
+        flush_result = agent._flush_messages_to_session_db(messages)
+        persisted = flush_result is not False
         if not persisted:
             agent._incremental_persistence_failed = True
-            # The flush recorded any classified cause; default to 'unknown' only if nothing more specific exists.
+            # The flush caught its own exception and returned False; the
+            # classified cause (if any) was captured at the catch site. Only
+            # fall back to 'unknown' when nothing more specific is recorded.
             if getattr(agent, "_last_persistence_error_cause", None) is None:
                 agent._last_persistence_error_cause = "unknown"
+            _release_unpersisted_carrier()
+        elif completed_batch_size and (
+            flush_result is not True or messages[-1].get("_db_persisted") is not True
+        ):
+            # None is the established non-fatal return for a disabled/no-DB
+            # flush. Keep that contract, but do not consume durable evidence.
+            _release_unpersisted_carrier()
+        elif completed_batch_size:
+            from agent.delegation_inject import acknowledge_pending_injects
+
+            acknowledge_pending_injects(
+                agent,
+                turn_id=str(getattr(agent, "_active_turn_id", "") or ""),
+            )
         return persisted
     except Exception as exc:
         agent._incremental_persistence_failed = True
         from hermes_state import classify_persistence_error
+
         agent._last_persistence_error_cause = classify_persistence_error(exc)
+        _release_unpersisted_carrier()
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
         return False
 
@@ -322,7 +430,10 @@ def _append_skipped_tool_results(
                 status="cancelled", error_type=hook_error_type, error_message="Tool execution skipped due to user interrupt",
             )
         if flush_stage is not None:
-            flushed = _flush_session_db_after_tool_progress(agent, messages, stage=f"{flush_stage} {name}")
+            flushed = _flush_session_db_after_tool_progress(
+                agent, messages, stage=f"{flush_stage} {name}",
+                storage_env=get_active_env(effective_task_id), budget_config=_budget_for_agent(agent),
+            )
             if not flushed and stop_on_flush_failure:
                 return False
     return True
@@ -1032,7 +1143,10 @@ def _commit_tool_result(
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
     messages.append(tool_message)
-    if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
+    if not _flush_session_db_after_tool_progress(
+        agent, messages, stage=f"tool result {function_name}",
+        storage_env=get_active_env(effective_task_id), budget_config=budget,
+    ):
         return None
 
     if not blocked:
@@ -1572,7 +1686,10 @@ def _append_invalid_arguments_result(agent, messages: list, ref: _ToolCallRef, p
     """Emit + append the parse-error result for a call whose arguments were not a JSON object."""
     ref.emit_invalid_arguments(agent, parse_error)
     messages.append(make_tool_result_message(ref.name, parse_error, ref.call_id))
-    return _flush_session_db_after_tool_progress(agent, messages, stage=f"invalid tool arguments {ref.name}")
+    return _flush_session_db_after_tool_progress(
+        agent, messages, stage=f"invalid tool arguments {ref.name}",
+        storage_env=get_active_env(ref.task_id), budget_config=_budget_for_agent(agent),
+    )
 
 
 def _run_sequential_call(

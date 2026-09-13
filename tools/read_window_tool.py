@@ -6,21 +6,70 @@ blocking-prompt bridge like `read_terminal`: ``window.read.request`` -> the rend
 main process (native window enumeration) -> ``window.read.respond``.
 """
 
+import json
+import socket
 from typing import Callable, Optional
 
 from tools.read_terminal_tool import read_pane
 from tools.registry import registry
 
 
+def _agent_host(payload: dict) -> Optional[dict]:
+    """Describe the machine gap when the window is not one we can drive.
+
+    The renderer sets ``agent_on_this_machine`` false when the desktop app is
+    driving a remote gateway, because only it can know: an SSH tunnel makes the
+    client look like loopback from here. It sends the bare flag and we name
+    ourselves, so no host or connection detail has to cross.
+
+    Absent on a local session, so the common case costs nothing.
+    """
+    if payload.get("agent_on_this_machine") is not False:
+        return None
+
+    try:
+        host = socket.gethostname().strip()
+    except Exception:
+        host = ""
+
+    where = f"on {host}" if host else "on another machine"
+
+    return {
+        "same_machine": False,
+        "name": host or None,
+        "note": (
+            f"This window is on the user's screen. You are running {where}, so "
+            "computer_use drives that machine's desktop and cannot click, type "
+            "into, or screenshot this window. Say so and tell the user what to "
+            "do in it, rather than acting somewhere they aren't looking."
+        ),
+    }
+
+
 def read_window_below_tool(callback: Optional[Callable] = None) -> str:
     """Return the window underneath the Hermes window as a JSON string."""
-    return read_pane(callback, (), (
+    result = read_pane(callback, (), (
         "read_window_below is only available in the Hermes desktop app.",
         "",
         "Failed to read the window below: ",
         "Could not determine the window underneath (the desktop app did "
         "not answer, or window enumeration is unavailable on this system).",
     ))
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return result
+
+    if isinstance(payload, dict) and "agent_on_this_machine" in payload:
+        agent_host = _agent_host(payload)
+        payload.pop("agent_on_this_machine", None)
+
+        if agent_host:
+            payload["agent_host"] = agent_host
+
+        return json.dumps(payload, ensure_ascii=False)
+
+    return result
 
 
 READ_WINDOW_BELOW_SCHEMA = {
@@ -28,7 +77,10 @@ READ_WINDOW_BELOW_SCHEMA = {
     "description": (
         "Identify the app window directly behind the Hermes desktop window "
         "(what the user is working in). JSON: {window: {app, title, bounds, "
-        "id}, frontmost, platform}. title may be empty when the OS withholds "
+        "id}, frontmost, platform}. An `agent_host` key appears only when you "
+        "are running on a different machine than the user's screen — its "
+        "`note` says what you can and cannot do with the window, so relay it "
+        "rather than trying anyway. title may be empty when the OS withholds "
         "it (noted in `note`); where windows cannot be enumerated at all, "
         "{error, platform} says what would fix it — relay that instead of "
         "retrying. Metadata only; never captures pixels."

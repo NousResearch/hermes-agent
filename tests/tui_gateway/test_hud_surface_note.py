@@ -72,6 +72,16 @@ class TestNoteContents:
         assert "computer_use" in note
         assert "browser_navigate" not in note
 
+    def test_the_drive_it_prior_defers_to_what_the_window_read_reports(self):
+        """On a remote gateway computer_use drives the backend host's desktop,
+        not the one the HUD floats over. The note cannot know which — only the
+        read_window_below answer can — so it points at that instead of
+        instructing the model to click a machine nobody is looking at."""
+        assert "agent_host" in hud_surface_note({"read_window_below", "computer_use"})
+
+    def test_nothing_to_defer_to_without_the_tool_that_can_drive(self):
+        assert "agent_host" not in hud_surface_note({"read_window_below"})
+
     def test_no_tools_at_all(self):
         assert hud_surface_note(None) == ""
 

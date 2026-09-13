@@ -9,11 +9,12 @@ import os
 import platform
 import re
 import shlex
-import shutil
+import stat
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator
 
 from utils import env_var_enabled
@@ -437,12 +438,53 @@ def _process_has_no_new_privs() -> bool:
     return False
 
 
-def _wrap_local_command_for_no_new_privs(command: str) -> str:
+_TRUSTED_SYSTEMD_RUN = "/usr/bin/systemd-run"
+_NNP_SUDO_UNIT_RE = re.compile(r"--unit=(hermes-nnp-sudo-[0-9]+-[0-9a-f]+\.service)")
+
+
+def _trusted_systemd_run_binary() -> str | None:
+    """``/usr/bin/systemd-run`` only — never PATH. Must be a root-owned regular file."""
+    path = _TRUSTED_SYSTEMD_RUN
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0:
+        return None
+    if not os.access(path, os.X_OK):
+        return None
+    return path
+
+
+def _nnp_sudo_unit_from_command(command: str | None) -> str | None:
+    if not command:
+        return None
+    match = _NNP_SUDO_UNIT_RE.search(command)
+    return match.group(1) if match else None
+
+
+def _stop_nnp_sudo_unit(unit: str | None) -> None:
+    if not unit or not unit.startswith("hermes-nnp-sudo-"):
+        return
+    ctl = "/usr/bin/systemctl"
+    if not os.path.isfile(ctl):
+        return
+    for args in (
+        [ctl, "--user", "stop", "--quiet", unit],
+        [ctl, "--user", "reset-failed", "--quiet", unit],
+    ):
+        try:
+            subprocess.run(args, capture_output=True, timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return
+
+
+def _wrap_local_command_for_no_new_privs(command: str, *, cwd: str | None = None) -> str:
     """Run a local sudo-bearing command in a fresh systemd user unit.
 
     ``systemd-run --user --pipe`` is a sibling of the user manager, not a child
     of Electron, so it does not inherit NoNewPrivs. No-ops when the flag is
-    clear, systemd-run is missing, or the command has no real sudo invocation.
+    clear, the trusted binary is missing, or the command has no real sudo.
     """
     if not command or sys.platform == "win32":
         return command
@@ -450,15 +492,27 @@ def _wrap_local_command_for_no_new_privs(command: str) -> str:
         return command
     if _rewrite_real_sudo_invocations(command)[1] == 0:
         return command
-    binary = shutil.which("systemd-run")
+    binary = _trusted_systemd_run_binary()
     if not binary:
+        logger.warning(
+            "NoNewPrivs is set; local sudo cannot escape without /usr/bin/systemd-run "
+            "(root-owned). Command will fail with the kernel latch."
+        )
         return command
-    # --pipe: sudo -S password on our stdin reaches the unit.
-    # --wait/--collect: foreground, then drop the transient unit.
-    return (
-        f"{shlex.quote(binary)} --user --pipe --wait --quiet --collect -- "
-        f"/bin/bash -lc {shlex.quote(command)}"
-    )
+    unit = f"hermes-nnp-sudo-{os.getpid()}-{uuid.uuid4().hex[:8]}.service"
+    parts = [
+        shlex.quote(binary),
+        "--user",
+        "--pipe",
+        "--wait",
+        "--quiet",
+        "--collect",
+        f"--unit={unit}",
+    ]
+    if cwd and os.path.isabs(cwd) and os.path.isdir(cwd):
+        parts.append(f"--working-directory={shlex.quote(cwd)}")
+    parts.extend(["--", "/bin/bash", "-lc", shlex.quote(command)])
+    return " ".join(parts)
 
 
 def _transform_sudo_command(

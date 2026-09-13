@@ -4,6 +4,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { foldIncludes } from '@/lib/text'
 import { cn } from '@/lib/utils'
 
 /**
@@ -40,7 +41,7 @@ export function ComboboxInput({
   const query = value.trim().toLowerCase()
   const isExact = options.some(option => option.toLowerCase() === query)
 
-  const visible = query && !isExact ? options.filter(option => option.toLowerCase().includes(query)) : options
+  const visible = query && !isExact ? options.filter(option => foldIncludes(option, query)) : options
 
   return (
     <Popover onOpenChange={setOpen} open={open}>

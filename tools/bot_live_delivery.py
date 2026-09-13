@@ -97,7 +97,7 @@ def _read(path: Path) -> dict[str, Any] | None:
 
 
 def _write(path: Path, record: dict[str, Any]) -> None:
-    atomic_json_write(path, record, indent=None, sort_keys=True, fsync_dir=True)
+    atomic_json_write(path, record, indent=None, sort_keys=True, fsync_dir=True, mode=0o600)
 
 
 def deliver_to_live_owner(

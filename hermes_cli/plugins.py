@@ -1623,7 +1623,7 @@ def _persist_plugin_toolset_keys() -> None:
             portable = sorted(get_plugin_manager().get_portable_mcp_servers())
         except Exception:
             portable = []
-        atomic_json_write(_plugin_toolset_keys_cache_path(), {"toolset_keys": keys, "portable_mcp": portable}, indent=None)
+        atomic_json_write(_plugin_toolset_keys_cache_path(), {"toolset_keys": keys, "portable_mcp": portable}, indent=None, mode=0o600)
     except Exception:
         logger.debug("plugin toolset key persist failed", exc_info=True)
 

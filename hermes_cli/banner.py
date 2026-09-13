@@ -682,7 +682,7 @@ def save_banner_snapshot(tools: List[dict], enabled_toolsets: List[str], availab
 
     def _write():
         from utils import atomic_json_write
-        atomic_json_write(_banner_snapshot_path(), payload, indent=None)
+        atomic_json_write(_banner_snapshot_path(), payload, indent=None, mode=0o600)
     _quiet(_write)
 
 

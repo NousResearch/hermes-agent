@@ -110,3 +110,25 @@ def test_new_non_secret_file_follows_umask_while_secret_and_existing_modes_hold(
         assert stat.S_IMODE(existing.stat().st_mode) == 0o640
     finally:
         os.umask(old_umask)
+
+
+@pytest.mark.linux_only
+def test_mkstemp_heritage_writers_keep_new_files_owner_only(tmp_path):
+    """Writers that published through mkstemp on main created NEW files at 0600 regardless of umask
+    (bot mailboxes, turn markers); folding them into utils must not loosen that to umask."""
+    import os
+    import stat
+
+    from tools.bot_relay import _atomic_write_json
+    from tui_gateway.turn_marker import _store
+
+    old_umask = os.umask(0o022)
+    try:
+        relay_target = tmp_path / "relay" / "inbox.json"
+        _atomic_write_json(relay_target, {"k": 1})
+        marker = tmp_path / "turn-marker.json"
+        _store(marker, {"sess": {"started_at": 1.0}})
+        for path in (relay_target, marker):
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600, path
+    finally:
+        os.umask(old_umask)

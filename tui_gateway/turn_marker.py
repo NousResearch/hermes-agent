@@ -57,7 +57,7 @@ def _store(path: Path, entries: dict[str, dict]) -> None:
     if not entries:
         path.unlink(missing_ok=True)
         return
-    atomic_json_write(path, entries, indent=None)
+    atomic_json_write(path, entries, indent=None, mode=0o600)
 
 
 def _update(home: Path | str, session_key: str, mutate, what: str) -> None:

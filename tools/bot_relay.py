@@ -91,7 +91,7 @@ def _ensure_dirs(root: Path | str) -> Path:
 
 
 def _atomic_write_json(target: Path, payload: Any, *, sort_keys: bool = False) -> None:
-    atomic_json_write(target, payload, indent=None, sort_keys=sort_keys)
+    atomic_json_write(target, payload, indent=None, sort_keys=sort_keys, mode=0o600)
 
 
 def _bot_mode_cfg(key: str, *, loader: str) -> Any:

@@ -156,7 +156,7 @@ def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path
             sections.append(f"[{entry.model_id}]\n{body}\n")
 
     from utils import atomic_write_text
-    atomic_write_text(preset_path, "\n".join(sections), tmp_prefix=f".{preset_path.name}_")
+    atomic_write_text(preset_path, "\n".join(sections), tmp_prefix=f".{preset_path.name}_", mode=0o600)
     logger.info("wrote %d preset sections to %s", sum(e.keys is not None for e in entries), preset_path)
     return entries
 

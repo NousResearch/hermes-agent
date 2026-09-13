@@ -468,7 +468,7 @@ def save_allowlist(data: Dict[str, Any]) -> None:
     """Atomic write; on OSError log and keep the in-process approval."""
     p = allowlist_path()
     try:
-        atomic_json_write(p, data, sort_keys=True)
+        atomic_json_write(p, data, sort_keys=True, mode=0o600)
     except OSError as exc:
         logger.warning("Failed to persist shell hook allowlist to %s: %s. The approval is in-memory for this run, "
                        "but the next startup will re-prompt (or skip registration on non-TTY runs without "

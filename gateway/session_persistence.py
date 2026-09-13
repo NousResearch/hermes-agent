@@ -473,7 +473,7 @@ class SessionPersistenceMixin:
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index (atomic + fsync)."""
-        atomic_json_write(self.sessions_dir / "sessions.json", {"_README": _SESSIONS_JSON_README, **data})
+        atomic_json_write(self.sessions_dir / "sessions.json", {"_README": _SESSIONS_JSON_README, **data}, mode=0o600)
 
     def _save_entries(self) -> None:
         """Snapshot latest state under ``_lock`` and persist after releasing it."""

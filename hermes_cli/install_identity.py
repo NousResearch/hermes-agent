@@ -76,7 +76,7 @@ def read_or_create_install_id(root: Path | None = None) -> Optional[str]:
             existing, mint = _read_existing(path)
             if not mint:
                 return existing
-            atomic_write_text(path, uuid.uuid4().hex + "\n", tmp_prefix=".install_id-", fsync_dir=True)
+            atomic_write_text(path, uuid.uuid4().hex + "\n", tmp_prefix=".install_id-", fsync_dir=True, mode=0o600)
             committed = path.read_text(encoding="utf-8").strip().lower()
             return committed if _INSTALL_ID_RE.fullmatch(committed) else None
     except OSError:

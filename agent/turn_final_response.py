@@ -73,6 +73,16 @@ def finish_text_response(
         )
 
     final_response = assistant_message.content or ""
+    from agent.required_delegation import collect_required_delegations
+    required_continue, required_failure = collect_required_delegations(agent, messages)
+    if required_continue:
+        final_response = None
+        return _verdict("continue")
+    if required_failure:
+        final_response = required_failure
+        _turn_exit_reason = "required_delegation_incomplete"
+        append_message(messages, {"role": "assistant", "content": final_response})
+        return _verdict("break")
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.
     agent._mute_post_response = False

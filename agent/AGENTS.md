@@ -102,6 +102,14 @@ providers intentionally do not run during cron.
 
 ## Tests
 
+`SubagentLifecycleService.require()` is an opt-in prerequisite declared by a
+`pre_llm_call` policy. `required_delegation.py` owns its turn scope, result join and
+receipts. Keep declaration failures fail-closed across the ordinary fail-open hook
+boundary, append runtime result batches without rewriting a sent prefix, and gate
+both ordinary finalization and early returns. The parent retains its tools while
+required children run; an unconsumed result cannot become successful completion.
+`launch()` keeps its independent lifecycle semantics. See `subagent-lifecycle-api.md`.
+
 Loop/phase tests go in `tests/agent/`; patch the binding the phase actually reads (siblings often
 `from run_agent import X` inside the function — root "patch where production reads"). Assert
 message-shape invariants (alternation, byte-stable system prompt) rather than snapshotting prompt

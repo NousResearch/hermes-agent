@@ -977,6 +977,10 @@ def build_turn_context(
         original_user_message=original_user_message, messages=messages,
         conversation_history=conversation_history,
     )
+    from agent.required_delegation import seal_required_delegations
+    plugin_user_context = "\n\n".join(
+        part for part in (plugin_user_context, seal_required_delegations(agent)) if part
+    )
     plugin_user_context = _merge_gateway_notes(
         agent, messages, current_turn_user_idx, plugin_user_context
     )

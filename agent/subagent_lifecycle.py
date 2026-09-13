@@ -242,6 +242,17 @@ class SubagentLifecycleService:
     def __init__(self, parent_agent_resolver: Callable[[], Any]) -> None:
         self._parent_agent_resolver = parent_agent_resolver
 
+    def require(self, request: SubagentLaunchRequest) -> SubagentHandle:
+        """Launch work declared by a pre_llm_call policy and require its result this turn.
+
+        The parent keeps running with its normal tools. Before accepting a final
+        answer, Hermes joins required children and gives their results to the parent.
+        Failed launches remain unsatisfied even when the hook catches the exception.
+        """
+        from agent.required_delegation import require_subagent
+
+        return require_subagent(self._parent_agent_resolver(), self, request)
+
     def launch(self, request: SubagentLaunchRequest) -> SubagentHandle:
         parent = self._parent_agent_resolver()
         if parent is None:

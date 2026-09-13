@@ -800,7 +800,6 @@ def classify_destination(
     remote policy.  Missing or malformed endpoint data is unknown.
     """
 
-    del provider  # Provider labels are not a security boundary.
     mode = str(api_mode or "").strip().lower()
     if mode in _LOCAL_PROCESS_MODES:
         return DestinationClass.LOCAL_PROCESS

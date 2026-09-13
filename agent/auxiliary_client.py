@@ -2431,10 +2431,17 @@ def _auxiliary_egress_binding(
         or raw_runtime.get("llm_egress_policy_digest")
         or DEFAULT_POLICY_DIGEST
     )
-    base_url = str(getattr(client, "base_url", "") or "")
-    if not base_url.startswith(("http://", "https://")):
+    client_base_url = str(getattr(client, "base_url", "") or "")
+    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+
+    preserve_local_marker = (
+        _is_external_process_provider(normalized_provider)
+        and client_base_url.strip().lower().startswith("acp://")
+    )
+    base_url = client_base_url
+    if not base_url.startswith(("http://", "https://")) and not preserve_local_marker:
         base_url = str(raw_runtime.get("base_url") or "")
-    if not base_url.startswith(("http://", "https://")):
+    if not base_url.startswith(("http://", "https://")) and not preserve_local_marker:
         base_url = {
             "openai-codex": "https://chatgpt.com/backend-api/codex",
             "anthropic": "https://api.anthropic.com/v1",
@@ -2649,7 +2656,7 @@ def _relay_sync_stream(
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.stream_current(
-        kwargs, lambda request: client.chat.completions.create(**request), name=provider_name,
+        kwargs, callback, name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model), finalizer=dict, metadata=metadata,
         completed_response_predicate=lambda value: hasattr(value, "choices"),
     )
@@ -3881,6 +3888,7 @@ def _call_fallback_candidate_sync(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    stream: bool = False, stream_options: Optional[dict] = None,
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery: on an auth error refresh its
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
@@ -3898,6 +3906,10 @@ def _call_fallback_candidate_sync(
     )
 
     def _send(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
+        if stream:
+            from agent.auxiliary_egress_recovery import send_stream
+            return send_stream(client, request_kwargs, dest.provider, dest.api_mode,
+                               task=task, stream_options=stream_options)
         return _validate_llm_response(
             _relay_sync_completion(
                 client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode,
@@ -4031,21 +4043,29 @@ def _failed_backend_skip(
 def _try_main_agent_model_fallback(
     failed_provider: str, task: str = None, reason: str = "error",
     failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
+    excluded_identities: set[tuple[str, str, str, str]] | None = None,
+    async_mode: bool = False,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Last-resort fallback to the main agent provider + model after the configured chain is exhausted.
     ``failed_model`` scoping per ``_failed_backend_skip``; same-URL custom endpoints serve many models,
     so a hung aux model says nothing about the main model's health. Returns (client, model, label) or (None, None, "")."""
-    main_provider = (_read_main_provider() or "").strip()
-    main_model = (_read_main_model() or "").strip()
+    runtime = _normalize_main_runtime(main_runtime)
+    main_provider = (runtime.get("provider") or _read_main_provider() or "").strip()
+    main_model = (runtime.get("model") or _read_main_model() or "").strip()
     if main_provider.lower() == "moa":
         # MoA virtual provider: fall back to the preset's aggregator (the acting model).
         _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
         if not _agg_provider or not _agg_model:
             return None, None, ""
         main_provider, main_model = _agg_provider, _agg_model
+        # The facade endpoint and placeholder credential belong to the virtual
+        # MoA route, not to the aggregator that will actually receive this call.
+        runtime = dict(runtime, provider=main_provider, model=main_model,
+                       base_url="", api_key="", api_mode="")
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
-    main_base_url = _custom_health_base_url(main_provider)
+    main_base_url = str(runtime.get("base_url") or "").strip() or _custom_health_base_url(main_provider)
     if _failed_backend_skip(
             failed_provider, failed_model, failed_base_url=failed_base_url,
             failure_scope=failure_scope)(main_provider, main_model, main_base_url):
@@ -4053,8 +4073,24 @@ def _try_main_agent_model_fallback(
     if _is_provider_unhealthy(main_provider, main_base_url):
         _log_skip_unhealthy(main_provider, task, base_url=main_base_url)
         return None, None, ""
+    identity = (
+        main_provider,
+        main_model,
+        main_base_url,
+        str(runtime.get("api_mode") or "").strip(),
+    )
+    if excluded_identities is not None and identity in excluded_identities:
+        return None, None, ""
     try:
-        client, resolved_model = resolve_provider_client(provider=main_provider, model=main_model)
+        client, resolved_model = resolve_provider_client(
+            provider=main_provider,
+            model=main_model,
+            explicit_base_url=main_base_url or None,
+            explicit_api_key=runtime.get("api_key"),
+            api_mode=runtime.get("api_mode"),
+            main_runtime=runtime,
+            async_mode=async_mode,
+        )
     except Exception:
         client, resolved_model = None, None
     if client is None:
@@ -4120,6 +4156,8 @@ def _context_too_small(
 def _try_configured_fallback_chain(
     task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None, *,
     failed_base_url: str = "", failure_scope: Any = None,
+    excluded_identities: set[tuple[str, str, str, str]] | None = None,
+    async_mode: bool = False,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
     ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still
@@ -4150,10 +4188,23 @@ def _try_configured_fallback_chain(
         fb_model = fb_model_raw or None
         label = f"fallback_chain[{i}]({fb_provider})"
         try:
-            fb_client, resolved_model = _resolve_fallback_entry(entry)
+            resolve_kwargs = {"async_mode": True} if async_mode else {}
+            fb_client, resolved_model = _resolve_fallback_entry(entry, **resolve_kwargs)
         except Exception:
             fb_client, resolved_model = None, None
         if fb_client is not None:
+            destination = _fallback_destination_from_entry(
+                entry, fb_client, resolved_model or fb_model
+            )
+            identity = (
+                destination.provider,
+                destination.model or "",
+                destination.base_url,
+                destination.api_mode or "",
+            )
+            if excluded_identities is not None and identity in excluded_identities:
+                tried.append(f"{label} (already attempted)")
+                continue
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model, min_ctx, task=task, label=label, name_model=True,
             ) if resolved_model else None
@@ -4170,14 +4221,15 @@ def _try_configured_fallback_chain(
 
 
 def _try_configured_fallback_for_unavailable_client(
-    task: Optional[str], failed_provider: str
+    task: Optional[str], failed_provider: str, *, async_mode: bool = False
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Task fallback_chain when an explicit aux provider cannot build a client (no key/OAuth/pool creds);
     stops at the per-task chain — the main-agent model stays the runtime last resort."""
     explicit = (failed_provider or "").strip().lower()
     if not task or not explicit or explicit in {"auto"}:
         return None, None, ""
-    return _try_configured_fallback_chain(task, explicit, reason="provider unavailable")
+    fallback_kwargs = {"async_mode": True} if async_mode else {}
+    return _try_configured_fallback_chain(task, explicit, reason="provider unavailable", **fallback_kwargs)
 
 
 def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
@@ -4186,16 +4238,20 @@ def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
     return resolve_entry_api_key(entry)
 
 
-def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str]]:
+def _resolve_fallback_entry(
+    entry: Dict[str, Any], *, async_mode: bool = False
+) -> Tuple[Optional[Any], Optional[str]]:
     """Resolve one fallback entry through the central provider router."""
     provider = str(entry.get("provider") or "").strip()
     model = str(entry.get("model") or "").strip() or None
     if not provider or not model:
         return None, None
+    resolve_kwargs = {"async_mode": True} if async_mode else {}
     client, resolved_model = resolve_provider_client(
         provider, model=model, explicit_base_url=str(entry.get("base_url") or "").strip() or None,
         explicit_api_key=_fallback_entry_api_key(entry),
         api_mode=str(entry.get("api_mode") or entry.get("transport") or "").strip() or None,
+        **resolve_kwargs,
     )
     if client is not None:
         with contextlib.suppress(Exception):
@@ -4206,6 +4262,8 @@ def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optio
 def _try_main_fallback_chain(
     task: Optional[str], failed_provider: str = "", reason: str = "error", *,
     failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
+    excluded_identities: set[tuple[str, str, str, str]] | None = None,
+    async_mode: bool = False,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Top-level main-agent fallback chain for a ``provider: auto`` auxiliary call: auto tasks honour the
     user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
@@ -4241,11 +4299,24 @@ def _try_main_fallback_chain(
             tried.append(f"{label} (unhealthy)")
             continue
         try:
-            fb_client, resolved_model = _resolve_fallback_entry(entry)
+            resolve_kwargs = {"async_mode": True} if async_mode else {}
+            fb_client, resolved_model = _resolve_fallback_entry(entry, **resolve_kwargs)
         except Exception as exc:
             logger.debug("Auxiliary %s: main fallback %s failed to resolve: %s", task or "call", label, exc)
             fb_client, resolved_model = None, None
         if fb_client is not None:
+            destination = _fallback_destination_from_entry(
+                entry, fb_client, resolved_model or fb_model
+            )
+            identity = (
+                destination.provider,
+                destination.model or "",
+                destination.base_url,
+                destination.api_mode or "",
+            )
+            if excluded_identities is not None and identity in excluded_identities:
+                tried.append(f"{label} (already attempted)")
+                continue
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model or fb_model, min_ctx, task=task, label=label,
             )
@@ -4438,6 +4509,14 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Sync client → async counterpart, preserving Codex routing (``is_vision`` adds the Copilot vision header)."""
     from openai import AsyncOpenAI
+    if isinstance(sync_client, AsyncOpenAI):
+        return sync_client, model
+    if isinstance(sync_client, (
+        AsyncCodexAuxiliaryClient,
+        AsyncAnthropicAuxiliaryClient,
+        AsyncBedrockAuxiliaryClient,
+    )):
+        return sync_client, model
     if isinstance(sync_client, _AuxProbeClientStub):
         return sync_client, model
     if isinstance(sync_client, CodexAuxiliaryClient):
@@ -4448,6 +4527,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncBedrockAuxiliaryClient(sync_client), model
     with contextlib.suppress(ImportError):
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
+        if isinstance(sync_client, AsyncGeminiNativeClient):
+            return sync_client, model
         if isinstance(sync_client, GeminiNativeClient):
             return AsyncGeminiNativeClient(sync_client), model
     # ACP shims (subprocess, not an HTTP pool) are already async-safe and opt out of the wrapper.
@@ -6821,8 +6902,9 @@ def _resolve_call_client(
             effective_provider, client, final_model = resolve_vision_provider_client(
                 provider="auto", model=resolved_model, async_mode=async_mode,
                 main_runtime=main_runtime)
-        if client is not None:
-            resolved_provider = effective_provider or resolved_provider
+        # Preserve the requested route identity. The concrete backend belongs
+        # in ``effective_provider``; an auto request must retain access to the
+        # top-level fallback policy during recovery.
     else:
         client, final_model = _get_cached_client(
             resolved_provider, resolved_model, async_mode=async_mode, base_url=resolved_base_url,
@@ -6834,8 +6916,9 @@ def _resolve_call_client(
             # raising (fallback entries may use OAuth / credential-pool auth).
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
+                fallback_kwargs = {"async_mode": True} if async_mode else {}
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
-                    task, _explicit)
+                    task, _explicit, **fallback_kwargs)
                 if fb_client is None:
                     raise RuntimeError(
                         f"Provider '{_explicit}' is set in config.yaml but no API key was found. "
@@ -7139,13 +7222,14 @@ def _next_fallback_after_quarantine(
     """Next candidate after a fallback entry was quarantined mid-request: remaining configured
     entries (task chain, then main chain on auto) before the discovery chain."""
     reason = "stale fallback credential"
+    fallback_kwargs = {"async_mode": True} if route.async_mode else {}
     fb = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
-        failed_base_url=route.base_info, failure_scope=failure_scope)
+        failed_base_url=route.base_info, failure_scope=failure_scope, **fallback_kwargs)
     if fb[0] is None and is_auto:
         fb = _try_main_fallback_chain(
             task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
-            failed_base_url=route.base_info, failure_scope=failure_scope)
+            failed_base_url=route.base_info, failure_scope=failure_scope, **fallback_kwargs)
     if fb[0] is None:
         fb = _try_payment_fallback(
             resolved_provider, task, reason=reason, failed_base_url=route.base_info,
@@ -7190,13 +7274,14 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         if reason == "payment error" and _custom_health_base_url(resolved_provider, route.base_info)
         else None
     )
+    fallback_kwargs = {"async_mode": True} if route.async_mode else {}
     fb_client, fb_model, fb_label = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
-        failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
+        failed_base_url=route.base_info, failure_scope=_chain_failure_scope, **fallback_kwargs)
     if fb_client is None and is_auto:
         fb_client, fb_model, fb_label = _try_main_fallback_chain(
             task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
-            failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
+            failed_base_url=route.base_info, failure_scope=_chain_failure_scope, **fallback_kwargs)
         if fb_client is None:
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task, reason=reason, failed_base_url=route.base_info,
@@ -7204,14 +7289,27 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     elif fb_client is None:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
-            failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
+            failed_base_url=route.base_info, failure_scope=_chain_failure_scope, **fallback_kwargs)
     if fb_client is not None:
         # Second pass: the candidate credential was stale and quarantined — re-walk the CONFIGURED
         # chains first (the quarantined entry is now unhealthy and skipped, so later entries get
         # their turn), then discovery where the selection policy allows it.
         for _pass in range(2):
             _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
-            fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
+            try:
+                fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
+            except Exception as fallback_error:
+                from agent.llm_egress_firewall import EgressBlocked
+                if not isinstance(fallback_error, EgressBlocked):
+                    raise
+                # A capacity fallback may itself be remote. Reuse the
+                # local-only scanner so a blocked candidate cannot abort
+                # before a later trusted loopback/process candidate is tried.
+                from agent.auxiliary_egress_recovery import local_fallback_steps
+                local_resp = yield from local_fallback_steps(route, _LadderStep)
+                if local_resp is not None:
+                    return local_resp
+                break
             if fb_resp is not None:
                 return fb_resp
             if _pass == 0:
@@ -7244,6 +7342,11 @@ def _aux_recovery_ladder(
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info)
+    from agent.llm_egress_firewall import EgressBlocked
+    if isinstance(first_err, EgressBlocked):
+        from agent.auxiliary_egress_recovery import local_fallback_steps
+        response = yield from local_fallback_steps(route, _LadderStep)
+        return response if response is not None else _RERAISE_ORIGINAL
     resp, first_err, kwargs = yield from _ladder_parameter_rungs(first_err, route, kwargs, max_tokens)
     if first_err is None:
         return resp
@@ -7429,7 +7532,7 @@ def _ladder_step_call(
 ) -> Tuple[str, tuple, Dict[str, Any]]:
     """Resolve a ladder step into ``(kind, args, kwargs)`` for the sync/async performer."""
     if step.kind == "call":
-        return "call", step.args, dict(provider=req.resolved_provider, api_mode=req.resolved_api_mode)
+        return "call", step.args, dict(provider=req.request_provider, api_mode=req.resolved_api_mode)
     if step.kind == "retry_same_provider":
         retry_provider, retry_model = step.args
         return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
@@ -7471,17 +7574,12 @@ def _call_llm_impl(
         extra_headers=extra_headers, api_mode=api_mode, route_info=route_info,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
-    # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and
-    # the fallback chain (they assume a complete response); the caller owns reassembly/fallback.
     if stream:
-        kwargs["stream"] = True
-        if stream_options:
-            kwargs["stream_options"] = stream_options
-        if task == "moa_aggregator" and isinstance(client, CodexAuxiliaryClient):
-            # Responses-shim clients consume the stream internally and return a completed
-            # object Relay's managed stream would iterate; the MoA facade wraps it as one chunk.
-            return client.chat.completions.create(**kwargs)
-        return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
+        from agent.auxiliary_egress_recovery import stream_with_local_recovery
+        return stream_with_local_recovery(
+            req, retry_kwargs, candidate_kwargs, task=task,
+            stream_options=stream_options, route_info=route_info,
+        )
 
     def _primary(**validate_kw: Any) -> Any:
         # Retry on the same provider for a transient transport blip (connection reset / streaming-close /

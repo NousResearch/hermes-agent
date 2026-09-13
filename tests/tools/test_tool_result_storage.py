@@ -1,5 +1,12 @@
 """Tests for tools/tool_result_storage.py -- 3-layer tool result persistence."""
 
+import os
+import stat
+import subprocess
+import sys
+import time
+from pathlib import Path
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +23,7 @@ from tools.tool_result_storage import (
     _resolve_storage_dir,
     _safe_result_filename,
     _write_to_sandbox,
+    _write_to_spillover,
     cleanup_spillover_cache,
     enforce_turn_budget,
     generate_preview,
@@ -98,6 +106,140 @@ class TestWriteToSandbox:
         cmd = env.execute.call_args[0][0]
         # The semicolons must be inside quotes, not acting as command separators
         assert "'/tmp/x; rm -rf /; echo .txt'" in cmd
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    def test_real_write_is_private(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        storage_dir = tmp_path / "hermes-results"
+        storage_dir.mkdir(mode=0o755)
+        target = storage_dir / "fresh.txt"
+        assert _write_to_sandbox("private content", str(target), env) is True
+
+        assert target.read_text(encoding="utf-8") == "private content"
+        assert stat.S_IMODE(storage_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    def test_real_retry_replaces_permissive_target_mode(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        storage_dir = tmp_path / "hermes-results"
+        storage_dir.mkdir(mode=0o700)
+        target = storage_dir / "retry.txt"
+        target.write_text("stale", encoding="utf-8")
+        target.chmod(0o644)
+
+        assert _write_to_sandbox("replacement", str(target), env) is True
+
+        assert target.read_text(encoding="utf-8") == "replacement"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="requires POSIX shell semantics")
+    def test_real_write_fails_when_required_acl_removal_fails(self, tmp_path):
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        chmod = fake_bin / "chmod"
+        chmod.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = -N ]; then exit 42; fi\n"
+            "exec /bin/chmod \"$@\"\n",
+            encoding="utf-8",
+        )
+        chmod.chmod(0o755)
+        setfacl = fake_bin / "setfacl"
+        setfacl.write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+        setfacl.chmod(0o755)
+        class ShellEnv:
+            def execute(self, command, timeout, stdin_data):
+                result = subprocess.run(
+                    ["bash", "-c", command],
+                    input=stdin_data,
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout,
+                    env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+                    cwd=tmp_path,
+                    check=False,
+                )
+                return {"output": result.stdout + result.stderr, "returncode": result.returncode}
+
+        target = tmp_path / "hermes-results" / "private.txt"
+        assert _write_to_sandbox("private content", str(target), ShellEnv()) is False
+        assert not target.exists()
+
+    @pytest.mark.macos_only
+    def test_real_write_removes_inherited_acl(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        storage_dir = tmp_path / "hermes-results"
+        storage_dir.mkdir(mode=0o700)
+        subprocess.run(
+            [
+                "chmod",
+                "+a",
+                "everyone allow read,write,execute,file_inherit,directory_inherit",
+                str(storage_dir),
+            ],
+            check=True,
+        )
+
+        target = storage_dir / "private.txt"
+        assert _write_to_sandbox("private content", str(target), env) is True
+
+        directory_acl = subprocess.run(
+            ["ls", "-lde", str(storage_dir)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        file_acl = subprocess.run(
+            ["ls", "-le", str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert "group:everyone" not in directory_acl
+        assert "group:everyone" not in file_acl
+
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX symlink semantics",
+    )
+    def test_real_write_rejects_symlinked_storage_dir(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        storage_dir = tmp_path / "hermes-results"
+        storage_dir.symlink_to(outside, target_is_directory=True)
+
+        target = storage_dir / "escaped.txt"
+        assert _write_to_sandbox("private content", str(target), env) is False
+        assert not (outside / "escaped.txt").exists()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class TestResolveStorageDir:
@@ -223,7 +365,7 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         cmd = env.execute.call_args[0][0]
-        target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
+        target = cmd.split("cat > ", 1)[1].split(" &&", 1)[0]
 
         assert "Full output saved to: /tmp/hermes-results/outside_whoami_x_" in result
         assert "/tmp/hermes-results/../" not in result
@@ -345,6 +487,78 @@ class TestSpillover:
         assert spill_file.read_text(encoding="utf-8") == content
         assert str(spill_file) in result
 
+    @pytest.mark.skipif(
+        sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows"
+    )
+    def test_spillover_write_is_private_and_symlink_safe(self):
+        spill_dir = get_spillover_dir()
+        spill_dir.parent.mkdir(parents=True)
+        os.chmod(spill_dir.parent, 0o755)
+        spill_dir.mkdir()
+        if sys.platform == "darwin":
+            subprocess.run(
+                [
+                    "chmod",
+                    "+a",
+                    "everyone allow read,write,execute,file_inherit,directory_inherit",
+                    str(spill_dir),
+                ],
+                check=True,
+            )
+
+        assert _write_to_spillover("secret", "result.txt") == str(
+            spill_dir / "result.txt"
+        )
+
+        target = spill_dir / "result.txt"
+        assert stat.S_IMODE(spill_dir.parent.stat().st_mode) == 0o755
+        assert stat.S_IMODE(spill_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        if sys.platform == "darwin":
+            acl = subprocess.run(
+                ["ls", "-lde", str(spill_dir), str(target)],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            assert "group:everyone" not in acl
+
+        outside = spill_dir.parent / "outside.txt"
+        outside.write_text("unchanged", encoding="utf-8")
+        target.unlink()
+        target.symlink_to(outside)
+
+        assert _write_to_spillover("replacement", "result.txt") == str(target)
+        assert target.read_text(encoding="utf-8") == "replacement"
+        assert not target.is_symlink()
+        assert outside.read_text(encoding="utf-8") == "unchanged"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX directory symlinks",
+    )
+    def test_spillover_write_refuses_symlinked_shared_root(self):
+        spill_dir = get_spillover_dir()
+        spill_dir.parent.parent.mkdir(parents=True)
+        outside = spill_dir.parent.parent / "outside-root"
+        outside.mkdir()
+        spill_dir.parent.symlink_to(outside, target_is_directory=True)
+
+        assert _write_to_spillover("secret", "result.txt") is None
+        assert not (outside / "tool-results" / "result.txt").exists()
+
+    def test_spillover_security_setup_failure_falls_back(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.spill_safety.ensure_spill_dir",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                subprocess.CalledProcessError(1, ["chmod", "-N"])
+            ),
+        )
+
+        assert _write_to_spillover("secret", "result.txt") is None
+
     def test_local_env_persists_to_spillover_not_sandbox(self):
         """LocalEnvironment routes host-side: no env.execute() shell-out."""
         from tools.environments.local import LocalEnvironment
@@ -428,16 +642,75 @@ class TestSpillover:
         spill_dir.mkdir(parents=True, exist_ok=True)
         old = spill_dir / "old.txt"
         new = spill_dir / "new.txt"
+        legacy = spill_dir.parent / "legacy.txt"
         old.write_text("old")
         new.write_text("new")
+        legacy.write_text("legacy")
         stale = _time.time() - (48 * 3600)
         os.utime(old, (stale, stale))
+        os.utime(legacy, (stale, stale))
 
         removed = cleanup_spillover_cache(max_age_hours=24)
 
-        assert removed == 1
+        assert removed == 2
         assert not old.exists()
+        assert not legacy.exists()
         assert new.exists()
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX symlink timestamps",
+    )
+    def test_cleanup_ages_symlink_artifact_without_following_target(self):
+        spill_dir = get_spillover_dir()
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        outside = spill_dir.parent / "outside.txt"
+        outside.write_text("keep", encoding="utf-8")
+        alias = spill_dir / "expired.txt"
+        alias.symlink_to(outside)
+        stale = time.time() - (48 * 3600)
+        os.utime(alias, (stale, stale), follow_symlinks=False)
+
+        assert cleanup_spillover_cache(max_age_hours=24) == 1
+        assert not alias.is_symlink()
+        assert outside.read_text(encoding="utf-8") == "keep"
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX directory symlinks",
+    )
+    def test_cleanup_refuses_symlinked_private_directory(self):
+        spill_dir = get_spillover_dir()
+        spill_dir.parent.mkdir(parents=True)
+        outside = spill_dir.parent.parent / "outside"
+        outside.mkdir()
+        victim = outside / "victim.txt"
+        victim.write_text("keep", encoding="utf-8")
+        stale = time.time() - (48 * 3600)
+        os.utime(victim, (stale, stale))
+        spill_dir.symlink_to(outside, target_is_directory=True)
+
+        assert cleanup_spillover_cache(max_age_hours=24) == 0
+        assert victim.read_text(encoding="utf-8") == "keep"
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX directory symlinks",
+    )
+    def test_cleanup_refuses_symlinked_shared_root(self):
+        spill_dir = get_spillover_dir()
+        spill_dir.parent.parent.mkdir(parents=True)
+        outside = spill_dir.parent.parent / "outside-root"
+        private_outside = outside / "tool-results"
+        private_outside.mkdir(parents=True)
+        victim = private_outside / "victim.txt"
+        victim.write_text("keep", encoding="utf-8")
+        stale = time.time() - (48 * 3600)
+        os.utime(victim, (stale, stale))
+        spill_dir.parent.symlink_to(outside, target_is_directory=True)
+
+        assert cleanup_spillover_cache(max_age_hours=24) == 0
+        assert victim.read_text(encoding="utf-8") == "keep"
 
     def test_cleanup_missing_dir_returns_zero(self):
         assert cleanup_spillover_cache() == 0

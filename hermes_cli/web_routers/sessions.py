@@ -93,12 +93,14 @@ def _prune_sessions(body: SessionPrune):
             **{f: getattr(body, f) for f in _PRUNE_NUM_FILTERS}}
         skipped_open = db.count_open_prune_matches(**filters)
         if body.dry_run:
-            rows = db.list_prune_candidates(**filters)
+            report = {}
+            rows = db.list_prune_candidates(**filters, exclude_ledger_owned=True, report=report)
             return {
                 "ok": True,
                 "removed": 0,
                 "matched": len(rows),
                 "skipped_open": skipped_open,
+                "skipped_protected": report.get('skipped_protected', 0),
                 # Rows are ordered by last activity, not creation time.
                 "oldest_last_active": rows[0]["last_active"] if rows else None,
                 "newest_last_active": rows[-1]["last_active"] if rows else None,
@@ -106,9 +108,11 @@ def _prune_sessions(body: SessionPrune):
                 "newest_started_at": max(r["started_at"] for r in rows) if rows else None,
                 "sessions": [{k: r.get(k) for k in _PRUNE_ROW_KEYS} for r in rows]}
         sessions_dir = profile_home / "sessions"
+        report = {}
         removed = db.prune_sessions(
-            sessions_dir=sessions_dir if sessions_dir.exists() else None, **filters)
-        return {"ok": True, "removed": removed, "skipped_open": skipped_open}
+            sessions_dir=sessions_dir if sessions_dir.exists() else None, report=report, **filters)
+        return {"ok": True, "removed": removed, "skipped_open": skipped_open,
+                "skipped_protected": report.get('skipped_protected', 0)}
     finally:
         db.close()
 
@@ -132,7 +136,11 @@ def _with_db(profile: Optional[str], fn: Callable, *, read_only: bool):
     def run():
         db = _open_session_db_for_profile(profile, read_only=read_only)
         try:
-            return fn(db)
+            from hermes_state_raw_delete import SessionLedgerProtectedError
+            try:
+                return fn(db)
+            except SessionLedgerProtectedError as exc:
+                raise HTTPException(status_code=409, detail={'code': exc.reason, 'message': str(exc)}) from exc
         finally:
             db.close()
     if read_only:
@@ -430,9 +438,10 @@ async def import_sessions_endpoint(request: Request):
 @manage_router.get("/api/sessions/empty/count")
 async def count_empty_sessions_endpoint(profile: Optional[str] = None):
     """Count of empty, ended, non-archived sessions (the "Delete empty (N)" button)."""
+    report = {}
     count = await asyncio.to_thread(
-        _with_db, profile, lambda db: db.count_empty_sessions(), read_only=True)
-    return {"count": count}
+        _with_db, profile, lambda db: db.count_empty_sessions(report=report), read_only=True)
+    return {"count": count, "skipped_protected": report.get('skipped_protected', 0)}
 
 
 @manage_router.delete("/api/sessions/empty")
@@ -447,9 +456,10 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     Archived sessions are skipped — the user explicitly chose to keep those rows. * Children of deleted
     parents are orphaned, not cascade-deleted. See #95868.
     """
+    report = {}
     deleted = await asyncio.to_thread(
-        _with_db, profile, lambda db: db.delete_empty_sessions(), read_only=False)
-    return {"ok": True, "deleted": deleted}
+        _with_db, profile, lambda db: db.delete_empty_sessions(report=report), read_only=False)
+    return {"ok": True, "deleted": deleted, "skipped_protected": report.get('skipped_protected', 0)}
 
 
 @manage_router.get("/api/sessions/stats")

@@ -20,7 +20,7 @@ def _reserve_homes(tmp_path, monkeypatch, names=('alpha', 'beta')):
     for name in names:
         home = root / 'profiles' / name
         home.mkdir(parents=True, mode=0o700)
-        (home / 'config.yaml').write_text('{}')
+        (home / 'config.yaml').write_text('{}', encoding='utf-8')
         homes.append((name, home))
     return root, homes
 
@@ -37,6 +37,8 @@ def _runner(root, homes):
 
 @pytest.mark.asyncio
 async def test_multiplex_builds_one_authority_per_reserved_home(tmp_path, monkeypatch):
+    from gateway.hosted_room_input_reclamation import require_initialized
+    from gateway.session_authorities import owner_scope
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
     from hermes_constants import hermes_home_key
@@ -54,6 +56,8 @@ async def test_multiplex_builds_one_authority_per_reserved_home(tmp_path, monkey
             assert authority is not None
             assert Path(authority.db.db_path).resolve().parent == home.resolve()
             assert (home / 'state.db').exists()
+            with owner_scope(authority), authority.db._read_ctx() as conn:
+                require_initialized(conn, authority.db)
         epochs = {hermes_home_key(h): registry.for_home(h).epoch for _, h in homes}
         assert all(epoch >= 1 for epoch in epochs.values())
         # Descriptor + ticket store carry the whole served set.

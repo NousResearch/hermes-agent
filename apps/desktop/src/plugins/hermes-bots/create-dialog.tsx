@@ -1217,7 +1217,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       const roomMembers = durableGroupChatMembers(selected).map((member, index) => ({
         ...member,
         ...(member.route ? { route: { ...member.route } } : {}),
-        handle: botHandle(member.name, selected[index]),
+        handle: botHandle(selected[index].name, selected[index]),
         display_name: displayName(selected[index], botRosterMeta(selected[index], allMeta))
       }))
 

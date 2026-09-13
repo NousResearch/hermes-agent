@@ -1,6 +1,6 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { host } from '@hermes/plugin-sdk'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -13,6 +13,7 @@ import type * as GroupChatModule from './group-chat'
 import type * as GroupChatParts from './group-chat-parts'
 import { GroupChatWorkspace } from './group-chat-view'
 import { translateBots } from './i18n-test-helper'
+import type { RosterRow } from './types'
 
 const { request, notify, openWorkspace, activation } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn(), activation: { epoch: 1 } }))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
@@ -114,16 +115,49 @@ function answer(capabilities: unknown) {
   })
 }
 
-async function submitDialog() {
+async function submitDialog(picked: RosterRow[] = roster) {
   const onCreated = vi.fn()
   const onClose = vi.fn()
-  render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={roster} />)
+  render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={picked} />)
 
   for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
 
   return { onCreated, onClose }
 }
+
+it('freezes the visible handle for a new canonical default-profile participant', async () => {
+  const canonical = { driver: true, persistent_process: true }
+  answer(canonical)
+  const original = request.getMockImplementation()!
+  let finishCapabilities!: (value: unknown) => void
+  let deferred = false
+  request.mockImplementation((target, method, params) => {
+    if (method === 'groups.capabilities' && !deferred) {
+      deferred = true
+
+      return new Promise(resolve => { finishCapabilities = resolve })
+    }
+
+    return original(target, method, params)
+  })
+
+  const picked: RosterRow[] = [
+    { name: 'default', connectionId: 'local' },
+    { name: 'reviewer', handle: 'reviewer-laptop', connectionId: 'local' }
+  ]
+
+  const { onCreated } = await submitDialog(picked)
+  expect(screen.getByText('@hermes')).toBeTruthy()
+  picked[0].handle = 'changed-after-click'
+  await act(async () => { finishCapabilities(canonical) })
+  await waitFor(() => expect(onCreated).toHaveBeenCalled())
+  const members = request.mock.calls.find(call => call[1] === 'groups.create')?.[2].members
+  expect(members).toEqual([
+    { member_id: 'default', profile: 'default', handle: 'hermes', display_name: 'Hermes', target: { kind: 'local', profile: 'default' } },
+    { member_id: 'reviewer', profile: 'reviewer', handle: 'reviewer-laptop', display_name: 'Reviewer', target: { kind: 'local', profile: 'reviewer' } }
+  ])
+})
 
 function pendingCreation() {
   let finish!: () => void
@@ -153,7 +187,10 @@ it.each(refused)('classifies %j as unavailable on both surfaces: no legacy rende
   cleanup()
 
   const { onCreated, onClose } = await submitDialog()
-  expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable })
+  // The retained dialog owns an inline failure; the capability refusal must
+  // remain visible without minting a room or forcing a notification variant.
+  expect(screen.getByText(unavailable)).toBeTruthy()
+  expect(notify).not.toHaveBeenCalled()
   expect(onCreated).not.toHaveBeenCalled()
   expect(onClose).not.toHaveBeenCalled()
   expect(updateGroupChat).not.toHaveBeenCalled()
@@ -188,6 +225,54 @@ function moveSource(kind: 'profile' | 'gateway' | 'same-route-activation') {
     state.profile.set('default')
   }
 }
+
+it.each([false, true])('inline fresh creation freezes visible handles and preserves target identity (source moved: %s)', async moved => {
+  const picked: RosterRow[] = [
+    { name: 'default', connectionId: 'local' },
+    { name: 'reviewer-alias', handle: 'reviewer-laptop', connectionId: 'local',
+      route: { connectionId: 'local', profile: 'default', targetProfile: 'reviewer', mode: 'local' } }
+  ]
+  const originalMembers = structuredClone(picked)
+  let finish!: () => void
+
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.capabilities') {return { driver: true, persistent_process: true }}
+
+    if (method === 'groups.create') {
+      const room = { room_id: params.room_id, name: params.name, members: params.members }
+
+      return new Promise(resolve => { finish = () => resolve({ room }) })
+    }
+
+    throw new Error(`Unexpected RPC: ${method}`)
+  })
+  await act(async () => { render(<GroupChatWorkspace group="Existing" members={picked} />) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' })) })
+  expect(picked).toEqual(originalMembers)
+  expect(openWorkspace).not.toHaveBeenCalled()
+  picked[0].handle = 'changed-after-click'
+  picked[1].route!.targetProfile = 'another-profile'
+  await act(async () => {
+    if (moved) {moveSource('same-route-activation')}
+    finish()
+  })
+  const creates = request.mock.calls.filter(call => call[1] === 'groups.create')
+  expect(creates).toHaveLength(1)
+  const [route, , params] = creates[0]
+  expect(route).toMatchObject({ connectionId: 'local', profile: 'default', targetProfile: 'default' })
+  expect(params).toMatchObject({ name: 'Existing', profile: 'default', members: [
+    { member_id: 'default', profile: 'default', handle: 'hermes', target: { kind: 'local', profile: 'default' } },
+    { member_id: 'reviewer', profile: 'reviewer', handle: 'reviewer-laptop', target: { kind: 'local', profile: 'reviewer' } }
+  ] })
+  expect(params.room_id).toEqual(expect.any(String))
+  expect(params.room_id).not.toBe('Existing')
+  expect(updateGroupChat).not.toHaveBeenCalled()
+  expect($groupChats.get()).toEqual({})
+  expect(Object.values($canonicalGroupBindings.get())).toEqual(moved ? [] : [
+    { connectionId: 'local', profile: 'default', roomId: params.room_id }
+  ])
+  expect(openWorkspace).toHaveBeenCalledTimes(moved ? 0 : 1)
+})
 
 it.each(['profile', 'gateway', 'same-route-activation'] as const)('dialog: a creation approved before the %s moved is kept on its owner and never published', async kind => {
   const pending = pendingCreation()

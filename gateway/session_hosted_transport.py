@@ -263,7 +263,7 @@ def _check_remote_hosted_admission(authority, ref, row):
         from gateway.session_hosted_attachments import committed_submission_payload
         rpc = SimpleNamespace(authority=authority, **binding['selector'],
             hosted_attachment_data=_attachment_data(binding, attested, params))
-        if row['payload'] != committed_submission_payload(rpc, attested['prompt'], attested['attachments']):
+        if row['payload'] != committed_submission_payload(rpc, attested['prompt'], attested['attachments'], admission=row):
             raise ValueError('input changed')
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc

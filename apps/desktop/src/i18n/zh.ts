@@ -3023,7 +3023,7 @@ export const zh = defineLocale({
     queueSend: '发送',
     queueDelete: '删除',
     queueLostNote: '重启期间该轮次已丢失',
-    restoreImageDraft: '恢复图片草稿',
+    restoreImageDraft: '恢复草稿',
     queueLostDiscard: '丢弃',
     queueLostDiscardTip: '网关在该轮次进行中重启，无法完成。丢弃后其后的排队轮次将继续执行。',
     queueResume: '继续',

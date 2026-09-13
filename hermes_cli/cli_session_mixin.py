@@ -11,9 +11,9 @@ import contextlib
 import os
 import shutil
 import sys
-import uuid
 
 from hermes_constants import get_hermes_home
+from hermes_state_ids import new_session_id
 from pathlib import Path
 from rich.console import Console
 from rich.markup import escape as _escape
@@ -536,7 +536,7 @@ class CLISessionMixin:
             self._discard_session_if_empty(old_session_id)
 
         self.session_start = datetime.now()
-        self.session_id = f"{self.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        self.session_id = new_session_id(self.session_start)
         # getattr: tests drive new_session unbound against a SimpleNamespace stand-in.
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         self.conversation_history = []

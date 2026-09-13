@@ -2240,11 +2240,14 @@ class BasePlatformAdapter(ABC):
 
     def _event_session_key(self, event: "MessageEvent") -> str:
         """Adapter-level session key for ``event``, profile-namespaced like the agent run."""
+        return self._source_session_key(event.source)
+
+    def _source_session_key(self, source: "SessionSource") -> str:
         extra = self.config.extra
         return build_session_key(
-            event.source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(event.source))
+            profile=self._session_key_profile(source))
 
     def _text_batch_key(self, event: "MessageEvent") -> str:
         """Session-scoped key for text batching (subclasses may override)."""

@@ -8,12 +8,13 @@ import json
 import os
 import re
 import sys
-import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from stat import S_ISREG
 from typing import Any, Dict, List, Optional, Tuple
+
+from hermes_state_ids import new_session_id
 
 # User-message texts that are really injected context wrappers, not typed input.
 _WRAPPER_TAG_RE = re.compile(
@@ -244,7 +245,7 @@ def import_foreign_session(source: str, path, db=None) -> str:
         from hermes_state import SessionDB
         db = SessionDB()
     try:
-        session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        session_id = new_session_id()
         origin = {"imported_from": {"tool": tool, "path": str(path), "foreign_session_id": parsed.get("session_id")}}
         db.create_session(session_id, source=tool, cwd=parsed.get("cwd"), origin_json=json.dumps(origin))
         for turn in turns:

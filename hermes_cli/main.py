@@ -1334,11 +1334,10 @@ def _create_titled_session(title: str) -> Optional[str]:
     """
     db = None
     try:
-        import uuid as _uuid
-
         from hermes_state import SessionDB
+        from hermes_state_ids import new_session_id as mint_session_id
 
-        new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
+        new_session_id = mint_session_id()
         db = SessionDB()
         db.create_session(new_session_id, source="cli")
         db.set_session_title(new_session_id, title)

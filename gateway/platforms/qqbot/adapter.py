@@ -685,6 +685,12 @@ class QQAdapter(BasePlatformAdapter):
             return bool(session_user) and operator == session_user
         return False
 
+    def _update_prompt_session_key(self, event: InteractionEvent, chat: str) -> str:
+        """Session key an update-prompt click is authorized against, built by the ONE key builder so
+        it carries the profile namespace (a hard-coded ``agent:main:`` prefix never matched a
+        multiplexed secondary bot's lane). No participant: ``c2c`` authorizes on chat == operator."""
+        return self._source_session_key(self.build_source(chat_id=chat, chat_type=event.scene))
+
     async def _default_interaction_dispatch(self, event: InteractionEvent) -> None:
         """Default interaction callback: ``approve:<session_key>:<decision>`` →
         tools.approval.resolve_gateway_approval; ``update_prompt:<answer>`` →
@@ -718,7 +724,7 @@ class QQAdapter(BasePlatformAdapter):
         update_answer = parse_update_prompt_button_data(button_data)
         if update_answer is not None:
             chat = event.group_openid or event.guild_id or event.user_openid
-            if not self._is_authorized_interaction_for_session(event, f"agent:main:qqbot:{event.scene}:{chat}"):
+            if not self._is_authorized_interaction_for_session(event, self._update_prompt_session_key(event, chat)):
                 logger.warning(
                     "[%s] Rejected unauthorized update prompt click (operator=%s)", self._log_tag, event.operator_openid
                 )

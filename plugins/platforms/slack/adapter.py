@@ -32,7 +32,6 @@ from pathlib import Path as _Path
 
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
-from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
@@ -1610,17 +1609,10 @@ class SlackAdapter(BasePlatformAdapter):
             self._set_fatal_error("missing_dependency", "slack-bolt not installed", retryable=False)
             return False
         raw_token = self.config.token
-        # Scoped secret is authoritative; only an UNSCOPED read falls back to
-        # process env, else a secondary profile inherits the default's app.
-        try:
-            # Multiplex: profile secrets live in the secret scope, not process os.environ. When a scope is
-            # installed (secondary-profile connect), it is AUTHORITATIVE — do not fall through to os.getenv,
-            # or a secondary profile missing SLACK_APP_TOKEN silently inherits the default profile's Socket
-            # Mode app (#59739). Only an UNSCOPED read under multiplex (default-profile startup loop,
-            # background reconnect rebuild) falls back to process env, which is that profile's own.
-            app_token = get_secret("SLACK_APP_TOKEN")
-        except UnscopedSecretError:
-            app_token = os.getenv("SLACK_APP_TOKEN")
+        # The shared helper distinguishes the two valid startup cases: an unscoped
+        # default-profile read may use its own process environment, while an
+        # installed multiplex/profile scope is authoritative and fails closed.
+        app_token = _get_scoped_secret("SLACK_APP_TOKEN")
         for env_name, value in (("SLACK_BOT_TOKEN", raw_token), ("SLACK_APP_TOKEN", app_token)):
             if not value:
                 self._fatal_missing_env(env_name)

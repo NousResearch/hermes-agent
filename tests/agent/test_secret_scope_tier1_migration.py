@@ -153,6 +153,41 @@ class TestMatrixStartupSecret:
         assert helper("MATRIX_PASSWORD") == "own-env-pass"
 
 
+# -- Cluster B: Slack startup app-token read --------------------------------
+
+class TestSlackStartupSecret:
+    def _helper(self):
+        mod = pytest.importorskip("plugins.platforms.slack.adapter")
+        return mod._get_scoped_secret
+
+    def test_scoped_value_wins(self, monkeypatch):
+        helper = self._helper()
+        monkeypatch.setenv("SLACK_APP_TOKEN", "default-profile-token")
+        ss.set_multiplex_active(True)
+        with _Scope({"SLACK_APP_TOKEN": "secondary-profile-token"}):
+            assert helper("SLACK_APP_TOKEN") == "secondary-profile-token"
+
+    def test_scoped_miss_fails_closed(self, monkeypatch):
+        helper = self._helper()
+        monkeypatch.setenv("SLACK_APP_TOKEN", "default-profile-token")
+        ss.set_multiplex_active(True)
+        with _Scope({"UNRELATED": "x"}):
+            assert helper("SLACK_APP_TOKEN") is None
+
+    def test_unscoped_multiplex_falls_back_to_own_environment(self, monkeypatch):
+        helper = self._helper()
+        monkeypatch.setenv("SLACK_APP_TOKEN", "default-profile-token")
+        ss.set_multiplex_active(True)
+        assert helper("SLACK_APP_TOKEN") == "default-profile-token"
+
+    def test_single_profile_scope_miss_keeps_environment_fallback(self, monkeypatch):
+        helper = self._helper()
+        monkeypatch.setenv("SLACK_APP_TOKEN", "single-profile-token")
+        ss.set_multiplex_active(False)
+        with _Scope({"UNRELATED": "x"}):
+            assert helper("SLACK_APP_TOKEN") == "single-profile-token"
+
+
 # ── Cluster C: managed tool gateway token override ─────────────────────────
 
 class TestToolGatewayUserToken:

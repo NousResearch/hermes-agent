@@ -19,6 +19,7 @@ from gateway.capability_registry import CapabilityRegistry, CapabilitySignature,
 from gateway.specialist_handoff import HandoffSource, create_specialist_handoff
 from gateway.specialist_routing import RouteKind, SpecialistRouteDecision
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 NO_MATCH = CapabilitySignature(
@@ -78,7 +79,7 @@ def test_forged_no_match_cannot_create_candidate_when_local_registry_matches(tmp
 
     assert result.status == "rejected"
     assert result.request_id == ""
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         rows = conn.execute("SELECT request_id FROM candidate_profile_requests").fetchall()
     assert rows == []
 
@@ -151,7 +152,7 @@ def test_later_terminal_state_supersedes_an_older_candidate(tmp_path):
     candidate = requests.open_or_reuse(
         NO_MATCH, source_key="discord:terminal-state", resolution=NO_MATCH_RESOLUTION
     )
-    with kb.connect_closing(requests._db_path) as conn:
+    with kbc.connect_closing(requests._db_path) as conn:
         request_hash = conn.execute(
             "SELECT request_hash FROM candidate_profile_requests WHERE request_id = ?",
             (candidate.request_id,),
@@ -251,7 +252,7 @@ def test_unsanitized_evidence_is_rejected_and_not_persisted(requests):
 
     assert result.status == "rejected"
     assert "sanitized" in result.reason
-    with kb.connect_closing(requests._db_path) as conn:
+    with kbc.connect_closing(requests._db_path) as conn:
         stored = conn.execute(
             "SELECT evidence_ref_hashes_json FROM candidate_profile_requests"
         ).fetchone()
@@ -273,7 +274,7 @@ def test_candidate_ledger_never_persists_rejected_private_scope_or_plaintext_evi
         envelope=SanitizedTaskEnvelope(evidence_refs=("https://private.example/evidence",)),
     )
 
-    with kb.connect_closing(requests._db_path) as conn:
+    with kbc.connect_closing(requests._db_path) as conn:
         stored = conn.execute("SELECT * FROM candidate_profile_requests").fetchone()
     persisted = " ".join(str(stored[column]) for column in stored.keys())
     for forbidden in (
@@ -290,7 +291,7 @@ def test_candidate_request_rows_are_append_only(requests):
         NO_MATCH, source_key="discord:append-only", resolution=NO_MATCH_RESOLUTION
     )
 
-    with kb.connect_closing(requests._db_path) as conn:
+    with kbc.connect_closing(requests._db_path) as conn:
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             conn.execute(
                 "UPDATE candidate_profile_requests SET lifecycle_status = 'active' WHERE request_id = ?",
@@ -308,7 +309,7 @@ def test_candidate_request_migration_is_idempotent(tmp_path):
     kb.init_db(db_path)
     kb.init_db(db_path)
 
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(candidate_profile_requests)")
         }
@@ -328,7 +329,7 @@ def test_candidate_request_migration_is_idempotent(tmp_path):
 def test_legacy_plaintext_candidate_ledger_is_replaced_before_opening_requests(tmp_path):
     db_path = tmp_path / "legacy-candidate-requests.db"
     kb.init_db(db_path)
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         conn.execute("DROP TABLE candidate_profile_requests")
         conn.execute(
             """
@@ -390,7 +391,7 @@ def test_legacy_plaintext_candidate_ledger_is_replaced_before_opening_requests(t
 
     assert result.status == "candidate"
     kb.init_db(db_path)
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(candidate_profile_requests)")
         }
@@ -427,7 +428,7 @@ def test_legacy_plaintext_candidate_ledger_is_replaced_before_opening_requests(t
 def test_hybrid_candidate_ledger_is_replaced_before_opening_requests(tmp_path):
     db_path = tmp_path / "hybrid-candidate-requests.db"
     kb.init_db(db_path)
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         conn.execute("ALTER TABLE candidate_profile_requests ADD COLUMN domain TEXT")
         conn.execute(
             """
@@ -463,7 +464,7 @@ def test_hybrid_candidate_ledger_is_replaced_before_opening_requests(tmp_path):
     )
 
     assert result.status == "candidate"
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(candidate_profile_requests)")}
         rows = conn.execute("SELECT * FROM candidate_profile_requests").fetchall()
     assert "domain" not in columns
@@ -516,7 +517,7 @@ def test_no_match_handoff_uses_existing_orchestrator_and_preserves_source_idempo
     assert first.created is True
     assert repeated.created is False
     assert first.task_id == repeated.task_id
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, first.task_id)
         subscriptions = conn.execute(
             "SELECT COUNT(*) AS count FROM kanban_notify_subs WHERE task_id = ?", (first.task_id,)

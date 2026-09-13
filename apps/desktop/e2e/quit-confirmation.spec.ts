@@ -10,6 +10,7 @@ type QuitMode = 'never' | 'while-working' | 'always'
 
 interface QuitBridge {
   settings: {
+    getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
     getQuitConfirmation: () => Promise<QuitMode>
     setQuitConfirmation: (mode: QuitMode) => Promise<QuitMode>
   }
@@ -111,8 +112,8 @@ async function publishWork(page: Page, count: number): Promise<void> {
   await page.evaluate(async activeCount => {
     const desktop = (window as unknown as { hermesDesktop: QuitBridge }).hermesDesktop
     desktop.setActiveWork({ count: activeCount, titles: activeCount ? ['Unfinished quit-regression work'] : [] })
-    // Round-trip behind the report before sending a native quit request.
-    await desktop.settings.getQuitConfirmation()
+    // Flush the report without reading or initializing the quit preference.
+    await desktop.settings.getDefaultProjectDir()
   }, count)
 }
 
@@ -303,14 +304,24 @@ test('quit preference survives restart and native quit waits for one answer befo
     })
 
     for (const scenario of [
-      { persisted: 'always', mode: 'never', work: 1 },
-      { persisted: 'never', mode: 'while-working', work: 0 }
+      { title: 'saved Always protects idle quit before Settings reads', persisted: 'always', mode: 'never', work: 1 },
+      { title: 'saved Never allows active quit before Settings reads', persisted: 'never', mode: null, work: 1 },
+      { title: 'while-working allows idle quit after restart', persisted: 'never', mode: 'while-working', work: 0 }
     ] as const) {
-      await test.step(`${scenario.mode} allows its unguarded quit after a cold preference read`, async () => {
+      await test.step(scenario.title, async () => {
         launched = await launch(sandbox)
         running = launched.app
-        expect(await preference(launched.page)).toBe(scenario.persisted)
-        expect(await preference(launched.page, scenario.mode)).toBe(scenario.mode)
+
+        if (scenario.persisted === 'always') {
+          await publishWork(launched.page, 0)
+          await cancelRepeatedQuit(launched.app, launched.page, false)
+          expect(await preference(launched.page)).toBe(scenario.persisted)
+        }
+
+        if (scenario.mode !== null) {
+          expect(await preference(launched.page, scenario.mode)).toBe(scenario.mode)
+        }
+
         await publishWork(launched.page, scenario.work)
         await expectExit(launched.app, sandbox, false)
         running = null

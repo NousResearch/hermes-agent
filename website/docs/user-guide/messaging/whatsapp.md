@@ -169,14 +169,14 @@ with reconnection logic.
 
 ## Groups, Communities, and filtered traffic
 
-The Baileys bridge handles chats ending in `@g.us` as groups. This includes ordinary WhatsApp groups and Community subgroups. When Baileys reports a Community Announcements chat with an `@g.us` ID, that chat follows the same group access and mention rules. Classification uses the chat ID suffix: only `@newsletter` IDs are treated as Channels.
+The Baileys bridge supports ordinary WhatsApp groups and Community subgroups, subject to your group access and mention settings. It identifies groups by chat IDs ending in `@g.us`. A Community Announcements chat reported by Baileys with an `@g.us` ID follows those same rules; it is not automatically filtered because it is an announcement chat.
 
 Hermes ignores these inbound pseudo-chats before applying DM or group access rules:
 
 - Status updates and broadcast lists with IDs ending in `@broadcast`.
 - WhatsApp Channels, which Baileys identifies with IDs ending in `@newsletter`.
 
-Changing an allowlist or access policy does not enable these filtered chats. If you need group support through Hermes, use a regular group or Community subgroup. The [WhatsApp Cloud API adapter](./whatsapp-cloud.md#group-chats) currently handles direct messages only.
+Changing an allowlist or access policy does not enable these filtered chats. Send the request in a direct message to the bot, or in an allowed regular group or Community subgroup, instead. The [WhatsApp Cloud API adapter](./whatsapp-cloud.md#group-chats) currently handles direct messages only.
 
 ---
 

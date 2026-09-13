@@ -398,7 +398,7 @@ This uses your Nous Portal access token instead of needing a separate OpenAI key
 | Account ban risk | Yes (unofficial API) | No (officially supported) |
 | Inbound | Polling Node bridge | Webhook POST from Meta |
 | Outbound | Local bridge → Baileys | HTTPS to graph.facebook.com |
-| Groups | Full support ([groups and Communities](./whatsapp.md#groups-communities-and-filtered-traffic)) | DMs only (v1) |
+| Groups | [Groups and Communities](./whatsapp.md#groups-communities-and-filtered-traffic), subject to access and mention settings | DMs only (v1) |
 | 24h window | No restriction | Hard rule — templates required after |
 | Voice notes (out) | Native | Native with ffmpeg, MP3 fallback otherwise |
 | Read receipts | No | Yes (blue double-checkmarks) |

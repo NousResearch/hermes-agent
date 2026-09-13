@@ -119,209 +119,44 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "seed": False,
     },
     # ─── Expensive / premium tier ──────────────────────────────────────
-    "veo3.1": {
-        "display": "Veo 3.1",
-        "speed": "~60-120s",
-        "price": "premium",
-        "strengths": "Google DeepMind. Cinematic, native audio, strong prompt adherence.",
-        "tier": "premium",
-        "text_endpoint": "fal-ai/veo3.1",
-        "image_endpoint": "fal-ai/veo3.1/image-to-video",
-        "aspect_ratios": ("16:9", "9:16"),
-        "resolutions": ("720p", "1080p", "4k"),
-        "durations": (4, 6, 8),
-        "duration_suffix": "s",  # FAL veo3.1 wants "4s" not "4"
-        "audio": True,
-        "negative": True,
-        "seed": True,
-    },
-    "seedance-2.0": {
-        "display": "Seedance 2.0",
-        "speed": "~60-120s",
-        "price": "premium",
-        "strengths": "ByteDance. Cinematic, synchronized audio + lip-sync, 4-15s.",
-        "tier": "premium",
-        "text_endpoint": "bytedance/seedance-2.0/text-to-video",
-        "image_endpoint": "bytedance/seedance-2.0/image-to-video",
-        # Seedance accepts "auto" too — we omit it from the enum so the
-        # agent can't pass it; the endpoint defaults handle the rest.
-        "aspect_ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
-        "resolutions": ("480p", "720p", "1080p"),
-        "durations": (4, 15),
-        "audio": True,
-        "negative": False,
-        # FAL input schema has no `seed` (only returned on output).
-        "seed": False,
-    },
-    "seedance-2.5": {
-        "display": "Seedance 2.5",
-        "speed": "~60-180s",
-        "price": "premium",
-        "strengths": "ByteDance flagship. Native 30s single-pass, audio in the same latent space, lip-sync.",
-        "tier": "premium",
-        "text_endpoint": "bytedance/seedance-2.5/text-to-video",
-        "image_endpoint": "bytedance/seedance-2.5/image-to-video",
-        # i2v accepts only "auto" for aspect_ratio (it follows the input
-        # image), so aspect_ratio is dropped for image jobs via
-        # image_drop_keys.
-        "image_drop_keys": ("aspect_ratio",),
-        "aspect_ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
-        "resolutions": ("480p", "720p"),
-        "durations": (4, 30),
-        "audio": True,
-        "negative": False,
-        "seed": False,
-    },
-    "minimax-h3": {
-        "display": "MiniMax H3",
-        "speed": "~60-180s",
-        "price": "premium",
-        "strengths": "MiniMax frontier. Native 2K (up to 4K), 5-15s, seven aspect ratios.",
-        "tier": "premium",
-        "text_endpoint": "minimax/h3/text-to-video",
-        "image_endpoint": "minimax/h3/image-to-video",
-        # H3 takes duration as a JSON integer, not the stringified form
-        # most FAL endpoints use.
-        "duration_int": True,
-        # i2v derives the aspect ratio from the input image and rejects
-        # the key entirely.
-        "image_drop_keys": ("aspect_ratio",),
-        "aspect_ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
-        # H3 uses capitalized/2K-style resolution enums — mapped from the
-        # tool's usual 720p/1080p-style values via resolution_aliases.
-        "resolutions": ("768P", "2K", "4K"),
-        "resolution_aliases": {
-            "480p": "768P", "540p": "768P", "720p": "768P", "768p": "768P",
-            "1080p": "2K", "2k": "2K", "4k": "4K", "2160p": "4K",
-        },
-        "durations": (5, 15),
-        "audio": False,  # no generate_audio TOGGLE — audio is always on
-        "audio_native": True,  # native audio in every generation (fal docs)  # audio is native/always-on; no generate_audio key
-        "negative": False,
-        "seed": False,
-    },
-    "minimax-h3-max": {
-        "display": "MiniMax H3 Max (fal post-train)",
-        "speed": "~5-30s",
-        "price": "premium",
-        "strengths": "fal's post-trained MiniMax H3. Top-ranked quality/prompt adherence/aesthetics, 768p in seconds, 5-15s.",
-        "tier": "premium",
-        "text_endpoint": "minimax/h3-max/text-to-video",
-        "image_endpoint": "minimax/h3-max/image-to-video",
-        # Same wire quirks as base H3: integer duration, i2v derives the
-        # aspect ratio from the input image (t2v-only key on Max: the i2v
-        # schema doesn't declare aspect_ratio at all).
-        "duration_int": True,
-        "image_drop_keys": ("aspect_ratio",),
-        "aspect_ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
-        # Max tops out at 768P (no 2K/4K tiers like base H3); map the
-        # tool's usual values onto the two capitalized enums.
-        "resolutions": ("480P", "768P"),
-        "resolution_aliases": {
-            "480p": "480P", "540p": "480P",
-            "720p": "768P", "768p": "768P", "1080p": "768P",
-            "2k": "768P", "4k": "768P", "2160p": "768P",
-        },
-        "durations": (5, 15),
-        # `prompt_expansion_mode` is in the schema's required array (with a
-        # "balanced" default) — always send it.
-        "static_payload": {"prompt_expansion_mode": "balanced"},
-        "audio": False,  # no generate_audio TOGGLE — audio is always on
-        "audio_native": True,  # native audio in every generation (fal docs)  # audio is native/always-on; no generate_audio key
-        "negative": False,
-        "seed": True,
-        # Unlike base H3, Max declares `seed` on both endpoints.
-    },
-    "flux-3": {
-        "display": "FLUX 3 (via FAL)",
-        "speed": "~60-120s",
-        "price": "premium",
-        "strengths": "Black Forest Labs frontier video. Native audio, 5-20s, 8 aspect ratios.",
-        "tier": "premium",
-        "text_endpoint": "blackforestlabs/flux-3/text-to-video",
-        "image_endpoint": "blackforestlabs/flux-3/image-to-video",
-        # FLUX 3 duration enum is "auto" | 5..20 as JSON integers.
-        "duration_int": True,
-        "aspect_ratios": ("21:9", "2:1", "16:9", "4:3", "1:1", "3:4", "9:16"),
-        "resolutions": ("720p", "1080p"),
-        "durations": (5, 20),
-        "audio": True,
-        "negative": False,
-        "seed": False,
-    },
-    "grok-imagine-1.5": {
-        "display": "Grok Imagine 1.5 (via FAL)",
-        "speed": "~30-90s",
-        "price": "premium",
-        "strengths": "xAI. Fast stylized video with audio, 1-15s, cheap per second.",
-        "tier": "premium",
-        "text_endpoint": "xai/grok-imagine-video/v1.5/text-to-video",
-        "image_endpoint": "xai/grok-imagine-video/v1.5/image-to-video",
-        "duration_int": True,
-        # i2v derives aspect from the input image; the key is t2v-only.
-        "image_drop_keys": ("aspect_ratio",),
-        "aspect_ratios": ("16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16"),
-        "resolutions": ("480p", "720p", "1080p"),
-        "durations": (1, 15),
-        "audio": False,  # no generate_audio TOGGLE — audio is always on
-        "audio_native": True,  # native audio in every generation (fal docs)  # audio is native; no generate_audio key
-        "negative": False,
-        "seed": False,
-    },
-    "gemini-omni-flash": {
-        "display": "Gemini Omni Flash (via FAL)",
-        "speed": "~60-120s",
-        "price": "premium",
-        "strengths": "Google. Image-to-video with audio, physics-grounded motion, 3-10s.",
-        "tier": "premium",
-        # No text-to-video endpoint on FAL — image/reference only.
-        "text_endpoint": None,
-        "image_endpoint": "google/gemini-omni-flash/image-to-video",
-        "duration_int": True,
-        "aspect_ratios": ("16:9", "9:16"),
-        "resolutions": None,
-        "durations": (3, 10),
-        "audio": False,  # no generate_audio TOGGLE — audio is always on
-        "audio_native": True,  # native audio in every generation (fal docs)  # audio is native; no generate_audio key
-        "negative": False,
-        "seed": False,
-    },
-    "kling-v3-4k": {
-        "display": "Kling v3 4K",
-        "speed": "~120-300s",
-        "price": "premium",
-        "strengths": "4K output, native audio (Chinese/English), 3-15s.",
-        "tier": "premium",
-        "text_endpoint": "fal-ai/kling-video/v3/4k/text-to-video",
-        "image_endpoint": "fal-ai/kling-video/v3/4k/image-to-video",
-        # Kling 4K image-to-video uses `start_image_url` instead of
-        # `image_url`. Handled in _build_payload via image_param_key.
-        "image_param_key": "start_image_url",
-        "aspect_ratios": ("16:9", "9:16", "1:1"),
-        "resolutions": None,  # 4K is implicit
-        "durations": (3, 15),
-        "audio": True,
-        "negative": True,
-        "seed": True,
-    },
-    "happy-horse": {
-        "display": "Happy Horse 1.0",
-        "speed": "~60-120s",
-        "price": "premium",
-        "strengths": "Alibaba. New model, sparse public docs — conservative defaults.",
-        "tier": "premium",
-        "text_endpoint": "alibaba/happy-horse/text-to-video",
-        "image_endpoint": "alibaba/happy-horse/image-to-video",
-        # Docs don't expose duration/aspect/resolution — let the endpoint
-        # apply its own defaults.
-        "aspect_ratios": None,
-        "resolutions": None,
-        "durations": None,
-        "audio": False,  # no generate_audio TOGGLE — audio is always on
-        "audio_native": True,  # native audio in every generation (fal docs)
-        "negative": False,
-        "seed": True,
-    },
+    "veo3.1": _family("Veo 3.1", "~60-120s", "premium", "Google DeepMind. Cinematic, native audio, strong prompt adherence.", "fal-ai/veo3.1",
+                      "fal-ai/veo3.1/image-to-video", aspect_ratios=("16:9", "9:16"), resolutions=("720p", "1080p", "4k"), durations=(4, 6, 8),
+                      duration_suffix="s", audio=True, negative=True, seed=True),  # wants "4s" not "4"
+    "seedance-2.0": _family("Seedance 2.0", "~60-120s", "premium", "ByteDance. Cinematic, synchronized audio + lip-sync, 4-15s.",  # no "auto" aspect, no `seed`
+                            "bytedance/seedance-2.0/text-to-video", "bytedance/seedance-2.0/image-to-video", aspect_ratios=_SIX_ASPECTS,
+                            resolutions=("480p", "720p", "1080p"), durations=(4, 15), audio=True),
+    "seedance-2.5": _family("Seedance 2.5", "~60-180s", "premium", "ByteDance flagship. Native 30s single-pass, audio in the same latent space, lip-sync.",
+                            "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/image-to-video", aspect_ratios=_SIX_ASPECTS,
+                            image_drop_keys=("aspect_ratio",), resolutions=("480p", "720p"), durations=(4, 30), audio=True),  # i2v aspect is "auto" only
+    "minimax-h3": _family("MiniMax H3", "~60-180s", "premium", "MiniMax frontier. Native 2K (up to 4K), 5-15s, seven aspect ratios.",
+                          "minimax/h3/text-to-video", "minimax/h3/image-to-video", duration_int=True, image_drop_keys=("aspect_ratio",),  # i2v follows image
+                          aspect_ratios=_SIX_ASPECTS, resolutions=("768P", "2K", "4K"), resolution_aliases=_H3_ALIASES, durations=(5, 15), audio_native=True),
+    # i2v schema doesn't declare aspect_ratio; unlike base H3, Max declares `seed` on both endpoints; static key is in the schema's required array.
+    "minimax-h3-max": _family("MiniMax H3 Max (fal post-train)", "~5-30s", "premium", "fal's post-trained MiniMax H3. Top-ranked quality/prompt "
+                              "adherence/aesthetics, 768p in seconds, 5-15s.", "minimax/h3-max/text-to-video", "minimax/h3-max/image-to-video",
+                              duration_int=True, image_drop_keys=("aspect_ratio",), aspect_ratios=_SIX_ASPECTS, resolutions=("480P", "768P"),
+                              resolution_aliases=_H3_MAX_ALIASES, durations=(5, 15), static_payload={"prompt_expansion_mode": "balanced"}, audio_native=True, seed=True),
+    # Same schema shape as Max (required prompt_expansion_mode, no i2v aspect_ratio) but adds a 1080P tier and an end_image_url
+    # the tool surface doesn't expose; throughput-tuned so it's the fastest premium H3 tier ($0.025-0.08/s list).
+    "minimax-h3-max-turbo": _family("MiniMax H3 Max Turbo (fal post-train)", "~5-20s", "premium", "fal's throughput-tuned H3 Max variant. Near-Max "
+                                    "quality at a fraction of the price/latency, 480P-1080P, 5-15s.", "minimax/h3-max-turbo/text-to-video",
+                                    "minimax/h3-max-turbo/image-to-video", duration_int=True, image_drop_keys=("aspect_ratio",), aspect_ratios=_SIX_ASPECTS,
+                                    resolutions=("480P", "768P", "1080P"), resolution_aliases=_H3_MAX_TURBO_ALIASES, durations=(5, 15),
+                                    static_payload={"prompt_expansion_mode": "balanced"}, audio_native=True, seed=True),
+    "flux-3": _family("FLUX 3 (via FAL)", "~60-120s", "premium", "Black Forest Labs frontier video. Native audio, 5-20s, 8 aspect ratios.",
+                      "blackforestlabs/flux-3/text-to-video", "blackforestlabs/flux-3/image-to-video", duration_int=True,  # enum "auto" | 5..20 ints
+                      aspect_ratios=("21:9", "2:1", "16:9", "4:3", "1:1", "3:4", "9:16"), resolutions=("720p", "1080p"), durations=(5, 20), audio=True),
+    "grok-imagine-1.5": _family("Grok Imagine 1.5 (via FAL)", "~30-90s", "premium", "xAI. Fast stylized video with audio, 1-15s, cheap per second.",
+                                "xai/grok-imagine-video/v1.5/text-to-video", "xai/grok-imagine-video/v1.5/image-to-video", duration_int=True,
+                                image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16"),  # aspect is t2v-only
+                                resolutions=("480p", "720p", "1080p"), durations=(1, 15), audio_native=True),
+    "gemini-omni-flash": _family("Gemini Omni Flash (via FAL)", "~60-120s", "premium", "Google. Image-to-video with audio, physics-grounded motion, 3-10s.",
+                                 None, "google/gemini-omni-flash/image-to-video", duration_int=True, aspect_ratios=("16:9", "9:16"), durations=(3, 10), audio_native=True),
+    "kling-v3-4k": _family("Kling v3 4K", "~120-300s", "premium", "4K output, native audio (Chinese/English), 3-15s.", "fal-ai/kling-video/v3/4k/text-to-video",
+                           "fal-ai/kling-video/v3/4k/image-to-video", image_param_key="start_image_url", aspect_ratios=("16:9", "9:16", "1:1"),
+                           durations=(3, 15), audio=True, negative=True, seed=True),
+    "happy-horse": _family("Happy Horse 1.0", "~60-120s", "premium", "Alibaba. New model, sparse public docs — conservative defaults.",
+                           "alibaba/happy-horse/text-to-video", "alibaba/happy-horse/image-to-video", audio_native=True, seed=True),
 }
 
 DEFAULT_MODEL = "pixverse-v6"  # cheap, both modalities, sane defaults

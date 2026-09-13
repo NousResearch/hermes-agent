@@ -635,213 +635,103 @@ DEFAULT_CONFIG = {
                                       # threshold and this token count. Clamped to
                                       # the model's context length at apply-time.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
-        "tail_mode": "lean",          # tail retention policy (#87326):
-                                      #   "lean"   — clamped 2.5%-of-window tail (default)
-                                      #              (10K floor / 25K cap) plus chunked
-                                      #              digests, a mechanical anchor index,
-                                      #              verbatim user messages, and
-                                      #              session_search recovery pointers in
-                                      #              the summary. ~3x fewer retained
-                                      #              tokens after compaction; costs a few
-                                      #              extra summarizer calls at the
-                                      #              compaction boundary.
-                                      #   "legacy" — pre-#87326 0.20×threshold verbatim
-                                      #              tail (100-240K tokens on big-window
-                                      #              or raised-threshold setups).
-        "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "min_tail_user_messages": 1,  # REAL (actionable) user messages guaranteed to
-                                      # survive in the uncompressed tail. 1 = existing
-                                      # single last-user anchor (default, behavior-
-                                      # preserving); raise to e.g. 3 to keep the last
-                                      # 3 real user turns verbatim when bulky tool
-                                      # outputs fill the tail token budget.
-        "max_attempts": 3,            # compression retry rounds before a turn gives up
-                                      # with "max compression attempts reached". Raise
-                                      # (e.g. 6) for tool-schema-heavy sessions where 3
-                                      # rounds cannot clear the request estimate.
-                                      # Validated >= 1, hard-capped at 10.
-        "proactive_prune_tokens": 0,  # opt-in trigger (tokens) for the deterministic,
-                                      # no-LLM tool-result prune, run independently of
-                                      # `threshold` above. On large-window models
-                                      # `threshold` (≈50% of the window) rarely fires,
-                                      # so old tool output otherwise rides in history
-                                      # and is re-sent every turn; a low value like
-                                      # 48000 reclaims it early. 0 = off. Recent tail
-                                      # protected by `protect_last_n`. Built-in
-                                      # compressor only (other engines inherit a no-op).
-                                      # NOTE: each committed prune rewrites already-sent
-                                      # history, breaking the provider prompt-cache
-                                      # prefix — the min_reclaim gate below keeps those
-                                      # breaks episodic rather than per-turn.
-        "proactive_prune_min_result_chars": 8000,  # the prune's summarize pass only
-                                      # touches tool results larger than this (chars);
-                                      # clamped to >= 200 so a generated summary can't
-                                      # itself be re-summarized.
-        "proactive_prune_min_reclaim_tokens": 4096,  # a proactive prune only commits
-                                      # when it reclaims at least this many tokens
-                                      # (measured on the pruned output), then waits
-                                      # for a full trigger-sized token runway to
-                                      # regrow before rearming. Keeps prompt-cache
-                                      # breaks episodic. 0 = no minimum-savings gate.
-        "micro_compact": False,       # opt-in: after each completed turn, fold the
-                                      # oldest un-absorbed exchange into a rolling
-                                      # summary, amortizing compression cost instead
-                                      # of paying it in one batch stall. Default False
-                                      # because a pass rewrites already-sent history
-                                      # and so breaks the provider prompt-cache prefix
-                                      # EVERY turn — the per-turn cache break that
-                                      # `proactive_prune_min_reclaim_tokens` above
-                                      # exists to avoid. Enable only when you have
-                                      # measured that the amortized stall is worth
-                                      # more to you than the cached-prefix discount.
-                                      # See docs/micro-compaction.md.
-        "micro_compact_every_n_turns": 1,  # cadence: run a pass every Nth completed
-                                      # turn. Since each pass costs one prompt-cache
-                                      # break, this is the dial for how often that
-                                      # cost is paid — 1 reclaims most aggressively
-                                      # at one break per turn, 5 trades reclaim rate
-                                      # for a fifth of the breaks. Clamped to >= 1.
-                                      # Ignored unless `micro_compact` is true.
-        "micro_compact_defrag_threshold_tokens": 2000,  # once the rolling summary
-                                      # exceeds this many tokens, the next pass
-                                      # re-summarizes the summary itself instead of
-                                      # letting it grow without bound.
-        "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
-        "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
-                                      # WITHOUT forward progress. The summary call streams, so
-                                      # this is an inactivity budget: a slow model still
-                                      # producing tokens keeps extending the wait; only a
-                                      # silent/hung call is cut off.
-        "hygiene_total_ceiling_seconds": 600,  # absolute cap on the hygiene compression wait even
-                                      # while tokens are still moving — bounds a degenerate
-                                      # trickle stream. Clamped to >= hygiene_timeout_seconds.
-        "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
-        "hygiene_max_turn_hold_seconds": 10,  # max seconds an ARRIVING user turn is held while a
-                                      # still-streaming hygiene summary finishes. Distinct from
-                                      # hygiene_timeout_seconds (compressor inactivity budget):
-                                      # this bounds user-visible latency once real input is
-                                      # waiting. Kept well under chat-transport idle timeouts
-                                      # (Telegram ~30s). On expiry the turn proceeds
-                                      # uncompressed — an availability boundary, not a failure.
-                                      # The detached worker keeps its commit admission when its
-                                      # commit is watermark-fenced, so the finished summary is
-                                      # adopted at the next safe boundary instead of being
-                                      # discarded (#97963 — thinking summary models).
-        "context_timeout_seconds": 120,  # inactivity budget for in-agent compress_context
-                                      # (conversation loop, /compress, preflight, etc.).
-                                      # Same progress-aware semantics as hygiene_timeout_seconds:
-                                      # streamed summary tokens extend the wait; only a silent
-                                      # worker is cut off. 0 = disable the owned wrapper
-                                      # (callers that already pass commit_fence, e.g. gateway
-                                      # hygiene, never use this path).
-        "context_total_ceiling_seconds": 600,  # absolute cap on the *pre-commit*
-                                      # in-agent compress_context wait (summary /
-                                      # stream phase) even while tokens are still
-                                      # moving. Clamped to >= context_timeout_seconds
-                                      # when the idle budget is > 0. Guarantee:
-                                      # the summary phase is bounded by this
-                                      # ceiling; an already-started SessionDB
-                                      # commit is never abandoned mid-flight —
-                                      # if the commit itself runs past the
-                                      # ceiling it is logged (WARNING, then
-                                      # ERROR) and surfaced to the user via the
-                                      # warning channel while the host keeps
-                                      # waiting in bounded increments for the
-                                      # commit to finish.
-        "protect_first_n": 3,         # non-system head messages always preserved
-                                      # verbatim, in ADDITION to the system prompt
-                                      # (which is always implicitly protected). Set to
-                                      # 0 for long-running rolling-compaction sessions
-                                      # where you want nothing pinned except the
-                                      # system prompt + rolling summary + recent tail.
-        "abort_on_summary_failure": False,  # When True, auto-compression that fails
-                                      # to generate a summary (aux LLM errored / returned
-                                      # non-JSON / timed out) aborts entirely instead of
-                                      # dropping the middle window with a static
-                                      # "summary unavailable" placeholder.  Messages are
-                                      # preserved unchanged and the session "freezes" at
-                                      # its current size until the user runs /compress
-                                      # (which bypasses the failure cooldown) or /new.
-                                      # Default False matches historical behavior; set to
-                                      # True if you'd rather pause than silently lose
-                                      # context turns when your aux model is flaky.
-        "codex_gpt55_autoraise": True,  # Historical key name kept for compatibility.
-                                      # When True, gpt-5.4 / gpt-5.5 / gpt-5.6 on the
-                                      # ChatGPT Codex OAuth route raise their compaction
-                                      # trigger to 85% (vs the global `threshold` above).
-                                      # Codex hard-caps these families at a 272K window, so
-                                      # the default 50% would compact at ~136K and waste half
-                                      # the usable context. Set to False to opt back down to
-                                      # the global threshold (e.g. 0.50) for those Codex
-                                      # sessions. Only this exact route is affected —
-                                      # gpt-5.4 / 5.5 / 5.6 on OpenAI's direct API,
-                                      # OpenRouter, and Copilot keep the global threshold
-                                      # regardless.
-        "codex_gpt55_autoraise_notice": True,  # Display the one-time Codex gpt-5.4/5.5/5.6
-                                      # autoraise banner. Set False to keep the
-                                      # 85% threshold autoraise but suppress the
-                                      # user-facing notice in CLI/gateway output.
-        "codex_app_server_auto": "native",  # Codex app-server (codex CLI runtime) thread
-                                      # compaction mode. The codex agent owns the real
-                                      # thread context, so Hermes' summarizer cannot
-                                      # shrink it (#36801). native = codex decides when
-                                      # to compact its own thread (default); hermes =
-                                      # Hermes' compression threshold triggers
-                                      # thread/compact/start; off = never auto-trigger
-                                      # (codex may still compact natively).
-        "codex_responses_native": False,  # Opt in to OpenAI's server-side compaction
-                                      # on the Responses API. Engages ONLY for
-                                      # gpt-5.6-family models on api.openai.com or
-                                      # the ChatGPT Codex backend; every other
-                                      # route/model is unaffected. Hermes' local
-                                      # compression stays armed as the fallback.
-        "codex_responses_compact_threshold": None,  # Optional absolute server compaction
-                                      # trigger in input tokens. None follows the
-                                      # resolved local compression trigger with a
-                                      # safety margin. Explicit values only clamp
-                                      # downward so the server compacts first.
-        "in_place": True,             # When True, compaction rewrites the message
-                                      # list and rebuilds the system prompt WITHOUT
-                                      # rotating the session id — the conversation
-                                      # keeps one durable id for its whole life
-                                      # (no parent_session_id chain, no `name #N`
-                                      # renumbering). Eliminates the session-rotation
-                                      # bug cluster (#33618 /goal loss, #14238 lost
-                                      # response, #33907 orphans, #45117 search gaps,
-                                      # #42228 null cwd) — see #38763. Non-destructive:
-                                      # the live context is compacted (lossy for what
-                                      # the model reloads), but the pre-compaction
-                                      # turns are soft-archived under the same id
-                                      # (active=0, compacted=1) — still searchable via
-                                      # session_search and recoverable, not deleted.
-                                      # Default True since 2107b86024; set False to
-                                      # restore the legacy rotating-compaction path.
-        "model_thresholds": {},       # Per-model threshold overrides. Keys are
-                                      # substring-matched against the model name
-                                      # (longest match wins); values replace the
-                                      # global `threshold` for that model, e.g.
-                                      #   model_thresholds:
-                                      #     "glm-5.2": 0.40
-                                      #     "claude-sonnet": 0.35
-                                      # The small-context floor (0.75 for <512K
-                                      # models) still applies on top of overrides
-                                      # (raise-only: an override above the floor
-                                      # wins; one below it is raised to the floor).
-        "idle_compact_after_seconds": 0,  # Opt-in idle compaction (0 = disabled).
-                                      # When > 0, a session that resumes after at
-                                      # least this many seconds of inactivity
-                                      # compacts its accumulated history up front,
-                                      # before the first reply — so a long-lived
-                                      # thread resumed hours later doesn't re-read
-                                      # its full stale context on every turn.
-                                      # Time-based; complements (does not replace)
-                                      # the size-based `threshold` above. Skipped
-                                      # when the context is already at/below the
-                                      # post-compression target (threshold ×
-                                      # target_ratio) and it honors the same
-                                      # failure-cooldown / anti-thrash / per-session
-                                      # lock guards as every automatic compaction.
-                                      # Example: 1800 = compact after 30 min idle.
+        # tail_mode: "lean" = clamped 2.5%-of-window tail (10K floor / 25K cap) plus chunked
+        # digests, anchor index, verbatim user messages and session_search pointers in the summary
+        # (~3x fewer retained tokens; a few extra summarizer calls at the boundary). "legacy" =
+        # 0.20×threshold verbatim tail (100-240K tokens on big windows).
+        "tail_mode": "lean",
+        "protect_last_n": 20,         # minimum recent messages kept uncompressed
+        # min_tail_user_messages: REAL (actionable) user messages guaranteed to survive in the tail.
+        # 1 = single last-user anchor; raise (e.g. 3) when bulky tool outputs fill the tail budget.
+        "min_tail_user_messages": 1,
+        # max_attempts: retry rounds before a turn gives up with "max compression attempts reached".
+        # Raise (e.g. 6) for tool-schema-heavy sessions. Validated >= 1, cap 10.
+        "max_attempts": 3,
+        # proactive_prune_tokens: opt-in trigger (tokens) for the deterministic no-LLM tool-result
+        # prune, independent of `threshold` (which rarely fires on large windows, so old tool output
+        # is re-sent every turn); e.g. 48000 reclaims early. 0 = off. Tail protected by
+        # `protect_last_n`. Built-in compressor only. Each committed prune rewrites sent history and
+        # breaks the prompt-cache prefix — the min_reclaim gate below keeps those breaks episodic.
+        "proactive_prune_tokens": 0,
+        # Prune's summarize pass only touches tool results larger than this (chars); clamped >= 200
+        # so a generated summary can't be re-summarized.
+        "proactive_prune_min_result_chars": 8000,
+        # A prune only commits when it reclaims at least this many tokens, then waits for a
+        # trigger-sized runway to regrow before rearming. 0 = no minimum-savings gate.
+        "proactive_prune_min_reclaim_tokens": 4096,
+        # micro_compact: opt-in — after each turn fold the oldest un-absorbed exchange into a
+        # rolling summary, amortizing compression cost. Off by default because every pass rewrites
+        # sent history and breaks the prompt-cache prefix EVERY turn; enable only if the amortized
+        # stall beats the cached-prefix discount. See website/docs/developer-guide/micro-compaction.md.
+        "micro_compact": False,
+        # Cadence: run a pass every Nth completed turn (1 = one cache break per turn, 5 = a fifth of
+        # the breaks). Clamped >= 1; ignored unless micro_compact is true.
+        "micro_compact_every_n_turns": 1,
+        # Once the rolling summary exceeds this many tokens, the next pass re-summarizes it.
+        "micro_compact_defrag_threshold_tokens": 2000,
+        # Gateway session-hygiene force-compress threshold, by message count.
+        "hygiene_hard_message_limit": 5000,
+        # Max seconds the gateway waits for pre-agent hygiene compression WITHOUT forward progress.
+        # Inactivity budget: a slow model still streaming tokens extends the wait.
+        "hygiene_timeout_seconds": 30,
+        # Absolute cap on the hygiene wait even while tokens are moving (bounds a trickle stream).
+        # Clamped >= hygiene_timeout_seconds.
+        "hygiene_total_ceiling_seconds": 600,
+        "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts
+        # Max seconds an ARRIVING user turn is held while a streaming hygiene summary finishes;
+        # bounds user-visible latency (keep under chat idle timeouts, Telegram ~30s). On expiry the
+        # turn proceeds uncompressed; the detached worker keeps its watermark-fenced commit, so the
+        # summary is adopted at the next safe boundary.
+        "hygiene_max_turn_hold_seconds": 10,
+        # Inactivity budget for in-agent compress_context (loop, /compress, preflight); same
+        # progress-aware semantics as hygiene_timeout_seconds. 0 = disable the owned wrapper
+        # (callers passing commit_fence, e.g. gateway hygiene, never use it).
+        "context_timeout_seconds": 120,
+        # Absolute cap on the *pre-commit* compress_context wait (summary/stream phase) even while
+        # tokens move. Clamped >= context_timeout_seconds when that is > 0. A started SessionDB
+        # commit is never abandoned: past the ceiling it is logged (WARNING, then ERROR) and
+        # surfaced on the warning channel while the host keeps waiting.
+        "context_total_ceiling_seconds": 600,
+        # Non-system head messages always kept verbatim, in ADDITION to the (always protected)
+        # system prompt. 0 = pin nothing but system prompt + summary + tail.
+        "protect_first_n": 3,
+        # When True, auto-compression whose summary fails (aux error / non-JSON / timeout) aborts
+        # instead of dropping the middle with a "summary unavailable" placeholder; the session
+        # freezes at its size until /compress (bypasses the cooldown) or /new.
+        "abort_on_summary_failure": False,
+        # (Historical key name.) When True, gpt-5.4/5.5/5.6 and gpt-6 Astra (any slug containing
+        # "astra" without "900k") on the ChatGPT Codex OAuth route raise their compaction trigger to
+        # 85%: Codex hard-caps them at a 272K window, so the global 50% would compact at ~136K. False = global `threshold`. Only that route; the same models via
+        # OpenAI direct, OpenRouter or Copilot keep the global value.
+        "codex_gpt55_autoraise": True,
+        # Show the one-time autoraise banner; False keeps the autoraise, hides the notice.
+        "codex_gpt55_autoraise_notice": True,
+        # Codex app-server thread compaction mode. The codex agent owns the thread context, so
+        # Hermes' summarizer cannot shrink it. native = codex decides; hermes = Hermes' threshold
+        # triggers thread/compact/start; off = never auto-trigger.
+        "codex_app_server_auto": "native",
+        # Opt in to OpenAI server-side compaction on the Responses API. Only gpt-5.6-family on
+        # api.openai.com or the Codex backend; local compression stays as fallback.
+        "codex_responses_native": False,
+        # Absolute server compaction trigger (input tokens). None follows the local trigger with a
+        # safety margin; explicit values only clamp downward so the server goes first.
+        "codex_responses_compact_threshold": None,
+        # in_place: compaction rewrites the message list and system prompt WITHOUT rotating the
+        # session id (no parent_session_id chain, no `name #N` renumbering), avoiding the
+        # session-rotation bug cluster. Pre-compaction turns are soft-archived under the same id
+        # (active=0, compacted=1) — still session_search-able. False = legacy rotating-compaction
+        # path.
+        "in_place": True,
+        # Per-model threshold overrides: keys substring-match the model name (longest wins), values
+        # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a key with "<provider>:" to
+        # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter/Nous at the
+        # global value). The <512K floor (0.75) still applies raise-only on top.
+        "model_thresholds": {},
+        # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts
+        # up front, before the first reply. Time-based complement to `threshold`; skipped when
+        # already at/below threshold × target_ratio; honors the same cooldown/ anti-thrash/lock
+        # guards. Example: 1800 = 30 min.
+        "idle_compact_after_seconds": 0,
     },
     # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h"; other
     # non-falsy values are ignored; falsy (false, null, "off", "disabled", "no", "none") disables
@@ -1300,17 +1190,13 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # order shown; drop any to hide
         },
-        # CLI/TUI interactive status bar field customization (mirrors the
-        # runtime_footer.fields pattern above). When the list is non-empty,
-        # only the listed fields appear; the built-in order is preserved
-        # (the config controls visibility, not ordering). Empty = show the
-        # default set. Available: model, context_detail, context_pct,
-        # cache_hit, latency, tps, compressions, bg_tasks, bg_processes,
-        # bg_subagents, goal, duration, prompt_elapsed, idle_since, focus,
-        # yolo, stash, battery, title, total_tokens.
-        # total_tokens (session Σ) is opt-in only — it never shows unless
-        # listed here. Narrow terminals still drop wide-mode-only fields
-        # (context_detail, prompt_elapsed, idle_since) regardless of config.
+        # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,
+        # config controls visibility not ordering); empty = default set. Available: model,
+        # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,
+        # bg_processes, bg_subagents, goal, git_branch (⎇ current branch, opt-in only), duration,
+        # prompt_elapsed, idle_since, focus, yolo,
+        # stash, battery, title, total_tokens (session Σ, opt-in only). Narrow terminals still drop
+        # context_detail/prompt_elapsed/idle_since.
         "status_bar": {
             "fields": [],  # empty = built-in defaults (all fields)
         },
@@ -2215,26 +2101,13 @@ DEFAULT_CONFIG = {
             # restore silent (no-push) cron deliveries.
             "notify": True,
         },
-        # Make cron deliveries CONTINUABLE: a user can reply to a cron brief
-        # and the agent has it in context (no "what is Task #2?" amnesia).
-        # Default False preserves the historical isolation guarantee (cron
-        # deliveries live only in the cron job's own session). Per-job
-        # `attach_to_session` overrides this for a single job.
-        #
-        # Behaviour is THREAD-PREFERRED, scoped to the job's origin chat:
-        #   - Thread-capable platforms (Telegram forum/DM topics, Discord
-        #     threads, Slack threads): a dedicated thread is opened for the job
-        #     via the adapter's create_handoff_thread, the brief is delivered
-        #     into it, and that thread's session is seeded so the user's reply
-        #     in-thread continues with full context. Each continuable job gets
-        #     its own scrollback, isolated from the parent channel.
-        #   - DM-only platforms (WhatsApp / Signal / SMS): no threads exist, so
-        #     the brief is mirrored into the origin DM session instead — the
-        #     DM itself is the continuation surface.
-        # Both paths ride the shipped gateway.mirror.mirror_to_session and are
-        # alternation- and cache-safe (appended at a turn boundary, never
-        # mid-loop, never mutating the cached system prompt). Only the origin
-        # chat is ever touched — fan-out / broadcast targets are never mirrored.
+        # Make cron deliveries CONTINUABLE (user can reply to a brief with it in context). False
+        # keeps deliveries isolated to the job's session; per-job `attach_to_session` overrides.
+        # Thread-capable platforms (Telegram topics, Discord/Slack threads) get a seeded thread per
+        # job via create_handoff_thread; DM-only platforms mirror the brief into the target DM
+        # session. Appended at a turn boundary via mirror_to_session, cached system prompt
+        # untouched. User-written bare platforms address home conversations, unlike `all`
+        # broadcast expansions, which do not gain mirror eligibility.
         "mirror_delivery": False,
         # Max due jobs run in parallel per tick. None/0 = unbounded (thread count only); 1 = serial.
         # Env override: HERMES_CRON_MAX_PARALLEL.
@@ -2567,16 +2440,12 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_interval_s": 30.0,
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
-
-        # Startup-liveness watchdog (OOF-298): plain daemon thread armed at
-        # process entry for gateway runs, hard-exits 75 if the event loop is
-        # not confirmed live within the deadline. The watchdog module itself
-        # is stdlib-only and armed before config can load, so run_gateway()
-        # bridges these keys to the internal HERMES_STARTUP_WATCHDOG /
-        # HERMES_STARTUP_WATCHDOG_TIMEOUT_S env vars AND applies them to the
-        # already-armed handle (disarm on disable, disarm+re-arm on a config
-        # timeout) — config.yaml is the user-facing surface; explicit env
-        # values win as operator override.
+        # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.
+        "bot_loop_guard": {"enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600},
+        # Startup-liveness watchdog: stdlib-only daemon thread armed at process entry that
+        # hard-exits 75 if the loop isn't live within the deadline. Armed before config loads, so
+        # run_gateway() bridges these to HERMES_STARTUP_WATCHDOG / HERMES_STARTUP_WATCHDOG_TIMEOUT_S
+        # and re-arms the live handle; explicit env wins.
         "startup_watchdog": True,
         "startup_watchdog_timeout_seconds": 300,
 
@@ -2586,78 +2455,44 @@ DEFAULT_CONFIG = {
         # external tooling and downgrade safety; set to false to stop
         # producing ~/.hermes/sessions/sessions.json entirely.
         "write_sessions_json": True,
-
-        # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
-        # and, when an instance is opted in via the NAS "Labs" toggle (carried as
-        # the HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent
-        # AND a wakeUrl is registered, drives the relay transport dormant so the
-        # platform (e.g. Fly autostop:"suspend") can suspend the now-idle machine;
-        # it wakes on the connector's wakeUrl poke. This is the idle TIMEOUT only
-        # — whether the feature is enabled at all is the Labs toggle, never a
-        # config key (decisions.md D2/D11). 0/negative falls back to the default.
-        "scale_to_zero": {
-            "idle_timeout_minutes": 2,
-        },
-
-        # Auto-resume restart-loop breaker (#30719, defense-3). When the
-        # gateway is killed mid-turn (SIGTERM) and revived by a supervisor
-        # (launchd KeepAlive / systemd Restart=), it auto-resumes the
-        # restart-interrupted session on the next boot. If the resumed turn
-        # keeps triggering another kill (e.g. the agent runs a raw
-        # `launchctl kickstart ai.hermes.gateway` that defenses 1-2 don't
-        # cover), the result is a tight SIGTERM-respawn loop. This breaker
-        # chains restart-interrupted boots together and, once `max_restarts`
-        # of them chain up, SKIPS auto-resume for that boot — the gateway
-        # still starts and serves real inbound messages, it just stops
-        # replaying the session that keeps killing it. Set `max_restarts` to
-        # 0 to disable the breaker.
-        # Two boots belong to the same chain when they are no more than
-        # `max_gap_seconds` apart (floored by `window_seconds`). Chaining on
-        # the GAP rather than on a fixed window is what makes the breaker see
-        # SLOW crash cycles: a loop whose period exceeds the window used to
-        # prune its own history on every boot, so the counter never left 1 and
-        # the breaker never tripped — e.g. the ~150s wedged-event-loop cycle in
-        # #81642 (stall -> ~90s liveness-watchdog hard-exit -> respawn ->
-        # auto-resume replays the same session), which also makes
-        # `hermes update` hang because it can never drain the gateway.
-        "restart_loop_guard": {
-            "max_restarts": 3,
-            "window_seconds": 60,
-            "max_gap_seconds": 300,
-        },
-
-        # Portable respawn-storm circuit breaker (complements
-        # ``restart_loop_guard`` above). Counts gateway (re)starts in a sliding
-        # window and, when too many land, sleeps an exponential backoff before
-        # booting so a crash-looping supervisor (launchd KeepAlive, systemd
-        # Restart=always) can't hammer the process into a respawn storm.
-        # ``max_starts <= 0`` disables the breaker. The env vars
-        # ``HERMES_GATEWAY_MAX_STARTS`` / ``HERMES_GATEWAY_START_WINDOW_S``
-        # override these defaults for escape-hatch use.
-        "respawn_storm": {
-            "max_starts": 5,
-            "window_seconds": 120,
-        },
-
-        # Inject a human-readable timestamp prefix (e.g.
-        # "[Tue 2026-04-28 13:40:53 CEST]") onto user messages IN THE MODEL'S
-        # CONTEXT so the agent has temporal awareness of when each message was
-        # sent. Off by default — when off, the model sees clean message text.
-        # Persisted transcripts always stay clean (the timestamp is stored as
-        # message metadata regardless of this toggle), so turning it on later
-        # surfaces send-times for past messages too.
-        "message_timestamps": {
-            "enabled": False,
-        },
-
-        # Maximum bytes for an inbound image / audio / video payload the
-        # gateway will buffer into memory and cache to disk. Inbound media is
-        # read fully into RAM before being written, so an unbounded upload
-        # (Discord Nitro allows 500 MB) or a remote media URL pointing at a
-        # huge file can spike memory and OOM-kill the gateway on constrained
-        # deployments. Enforced in the shared cache helpers
-        # (gateway/platforms/base.py), so the cap holds across every platform
-        # adapter. ``0`` disables the cap. Default 128 MiB.
+        # One gateway for every profile on this host: the DEFAULT profile's gateway also connects
+        # each named profile's bots (their own .env / config.yaml, per-profile secret scope) and
+        # stamps the profile into session keys. Flip with `hermes gateway migrate --multiplex`
+        # (records a rollback manifest; `--standalone` undoes it) or `hermes config set
+        # gateway.multiplex_profiles true` + `hermes gateway restart`. GATEWAY_MULTIPLEX_PROFILES
+        # in the environment overrides. Two profiles configuring the same bot token cannot be
+        # served together — the duplicate adapter is parked; `hermes profile create --clone`
+        # therefore leaves messaging channels behind unless --clone-channels is passed.
+        "multiplex_profiles": False,
+        # Route inbound chats of the default profile's bots to another profile
+        # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
+        # Most-specific match wins; only read by the multiplexing default gateway.
+        "profile_routes": [],
+        # Scale-to-zero idle TIMEOUT only. When an instance is opted in via the NAS "Labs" toggle
+        # (HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent AND a wakeUrl is
+        # registered, the relay transport goes dormant so the platform (e.g. Fly autostop) can
+        # suspend the machine; it wakes on the wakeUrl poke. Enablement is the Labs toggle, never a
+        # config key. 0/negative = default.
+        "scale_to_zero": {"idle_timeout_minutes": 2},
+        # Auto-resume restart-loop breaker. A supervisor-revived gateway auto-resumes the
+        # SIGTERM-interrupted session; if that turn keeps triggering the kill, boots no more than
+        # `max_gap_seconds` apart (floored by `window_seconds`) chain, and after `max_restarts`
+        # auto-resume is SKIPPED for that boot (inbound messages still served). Gap-based chaining
+        # also catches SLOW ~150s crash cycles. max_restarts=0 disables.
+        "restart_loop_guard": {"max_restarts": 3, "window_seconds": 60, "max_gap_seconds": 300},
+        # Respawn-storm circuit breaker (complements restart_loop_guard): counts (re)starts in a
+        # sliding window and sleeps an exponential backoff before booting so a crash-looping
+        # supervisor can't hammer the process. max_starts <= 0 disables. Env escape hatches:
+        # HERMES_GATEWAY_MAX_STARTS / HERMES_GATEWAY_START_WINDOW_S.
+        "respawn_storm": {"max_starts": 5, "window_seconds": 120},
+        # Prefix user messages IN THE MODEL'S CONTEXT with a timestamp (e.g. "[Tue 2026-04-28
+        # 13:40:53 CEST]") for temporal awareness. Persisted transcripts stay clean (timestamp is
+        # message metadata regardless), so enabling later surfaces past send-times too.
+        "message_timestamps": {"enabled": False},
+        # Max bytes of inbound image/audio/video the gateway buffers into RAM and caches to disk.
+        # Media is read fully into memory first, so unbounded uploads (Discord Nitro: 500 MB) or
+        # huge remote URLs can OOM-kill constrained deployments. Enforced in
+        # gateway/platforms/base.py for every adapter. 0 = no cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
 
         # Whether gateway platform adapters let aiohttp read proxy settings
@@ -2792,12 +2627,9 @@ DEFAULT_CONFIG = {
         # reads connected accounts silently); off = plain intro only.
         "profile_build": "ask",
     },
-
-    # Privacy-safe aggregate metrics written to this profile's local telemetry
-    # directory. Collection is opt-in (``enabled``). Transmission to the Nous
-    # telemetry service is a SEPARATE opt-in (``send``) and is off by default;
-    # see docs/observability/relay-shared-metrics.md, Appendix A, for the
-    # consent, identity, rotation, retention, and deletion decisions.
+    # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
+    # and transmission to Nous (`send`) are SEPARATE opt-ins; see
+    # website/docs/developer-guide/relay-shared-metrics.md Appendix A for consent/retention.
     "telemetry": {
         "shared_metrics": {
             "enabled": False,
@@ -3121,6 +2953,20 @@ DEFAULT_CONFIG = {
         # frequent while raising it has no effect below the derived tick.
         # 0 disables the keepalive thread entirely.
         "keepalive_interval_seconds": 900,
+        # anthropic_wire: which Portal route carries anthropic/* models. "chat" =
+        # /v1/chat/completions (default for now); "native" = /v1/messages, the Anthropic
+        # Messages wire (signed thinking passthrough, native cache_control scopes); "auto" =
+        # start on chat and, per session, switch to native from the first response when the
+        # Portal upstream serving the model is one where native is known clean. Native is the
+        # better wire but on the OpenRouter-served path it re-writes the previous turn's cache on
+        # 14-20% of consecutive calls in concurrent tool loops (measured 2026-09-06;
+        # NousResearch/api#227), so chat is the default until that is fixed.
+        "anthropic_wire": "chat",
+        # Nous free tier: true opts into first-use provisioning (nous/welcome + connectors)
+        # independently of the launcher; false disables it entirely. null preserves an older
+        # launcher's explicit onboarding hint, but stays off without one. This must not default
+        # to true: load_config_readonly merges defaults before the provisioning gate reads them.
+        "guest": None,
     },
 
     "vertex": {
@@ -3153,9 +2999,7 @@ DEFAULT_CONFIG = {
         # addition to the default 8080.
         "detect_ports": [],
     },
-
-    # Config schema version - bump this when adding new required fields
-    "_config_version": 40,
+    "_config_version": 44,  # Config schema version - bump this when adding new required fields
 }
 
 
@@ -3314,251 +3158,116 @@ OPTIONAL_ENV_VARS = {
         "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)",
         "Azure Foundry base URL", None, password=False),
     # ── Tool API keys ──
-    "EXA_API_KEY": {
-        "description": "Exa API key for AI-native web search and contents",
-        "prompt": "Exa API key",
-        "url": "https://exa.ai/",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
-    "PARALLEL_API_KEY": {
-        "description": "Parallel API key for AI-native web search and extract",
-        "prompt": "Parallel API key",
-        "url": "https://parallel.ai/",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
-    "FIRECRAWL_API_KEY": {
-        "description": "Firecrawl API key for web search and scraping",
-        "prompt": "Firecrawl API key",
-        "url": "https://firecrawl.dev/",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
-    "FIRECRAWL_API_URL": {
-        "description": "Firecrawl API URL for self-hosted instances (optional)",
-        "prompt": "Firecrawl API URL (leave empty for cloud)",
-        "url": None,
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "FIRECRAWL_GATEWAY_URL": {
-        "description": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
-        "prompt": "Firecrawl gateway URL (leave empty to derive from domain)",
-        "url": None,
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "TOOL_GATEWAY_DOMAIN": {
-        "description": "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",
-        "prompt": "Tool-gateway domain suffix",
-        "url": None,
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "TOOL_GATEWAY_SCHEME": {
-        "description": "Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts (`https` by default, set `http` for local gateway testing)",
-        "prompt": "Tool-gateway URL scheme",
-        "url": None,
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "TOOL_GATEWAY_USER_TOKEN": {
-        "description": "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise read from the Hermes auth store)",
-        "prompt": "Tool-gateway user token",
-        "url": None,
-        "password": True,
-        "category": "tool",
-        "advanced": True,
-    },
-    "TAVILY_API_KEY": {
-        "description": "Tavily API key for AI-native web search and extract (optional — keyless works when Tavily is selected)",
-        "prompt": "Tavily API key",
-        "url": "https://app.tavily.com/home",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
-    "KEENABLE_API_KEY": {
-        "description": "Keenable API key for fast independent-index web search and page fetch (optional — keyless free tier works without it)",
-        "prompt": "Keenable API key",
-        "url": "https://keenable.ai",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
-    "SEARXNG_URL": {
-        "description": "URL of your SearXNG instance for free self-hosted web search",
-        "prompt": "SearXNG URL (e.g. http://localhost:8080)",
-        "url": "https://searxng.github.io/searxng/",
-        "tools": ["web_search"],
-        "password": False,
-        "category": "tool",
-    },
-    "BRAVE_SEARCH_API_KEY": {
-        "description": "Brave Search API subscription token (free tier: 2,000 queries/mo)",
-        "prompt": "Brave Search subscription token",
-        "url": "https://brave.com/search/api/",
-        "tools": ["web_search"],
-        "password": True,
-        "category": "tool",
-    },
-    "BROWSERBASE_API_KEY": {
-        "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
-        "prompt": "Browserbase API key",
-        "url": "https://browserbase.com/",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": True,
-        "category": "tool",
-    },
-    "BROWSERBASE_PROJECT_ID": {
-        "description": "Browserbase project ID (optional — only needed for cloud browser)",
-        "prompt": "Browserbase project ID",
-        "url": "https://browserbase.com/",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": False,
-        "category": "tool",
-    },
-    "BROWSER_USE_API_KEY": {
-        "description": "Browser Use API key for cloud browser (optional — local browser works without this)",
-        "prompt": "Browser Use API key",
-        "url": "https://browser-use.com/",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": True,
-        "category": "tool",
-    },
-    "FIRECRAWL_BROWSER_TTL": {
-        "description": "Firecrawl browser session TTL in seconds (optional, default 300)",
-        "prompt": "Browser session TTL (seconds)",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": False,
-        "category": "tool",
-    },
-    "AGENT_BROWSER_ENGINE": {
-        "description": "Browser engine for local mode: auto (default Chrome), lightpanda (faster, no screenshots), chrome",
-        "prompt": "Browser engine (auto/lightpanda/chrome)",
-        "url": "https://github.com/vercel-labs/agent-browser",
-        "tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "CAMOFOX_URL": {
-        "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
-        "prompt": "Camofox server URL",
-        "url": "https://github.com/jo-inc/camofox-browser",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": False,
-        "category": "tool",
-    },
-    "CAMOFOX_API_KEY": {
-        "description": "Optional bearer token sent as Authorization header to a remote/authenticated Camofox server",
-        "prompt": "Camofox API key",
-        "url": "https://github.com/jo-inc/camofox-browser",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": True,
-        "category": "tool",
-        "advanced": True,
-    },
-    "FAL_KEY": {
-        "description": "FAL API key for image and video generation",
-        "prompt": "FAL API key",
-        "url": "https://fal.ai/",
-        "tools": ["image_generate", "video_generate"],
-        "password": True,
-        "category": "tool",
-    },
-    "KREA_API_KEY": {
-        "description": "Krea API key for Krea 2 image generation (Medium + Large)",
-        "prompt": "Krea API key",
-        "url": "https://www.krea.ai/settings/api-tokens",
-        "tools": ["image_generate"],
-        "password": True,
-        "category": "tool",
-    },
-    "VOICE_TOOLS_OPENAI_KEY": {
-        "description": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
-        "prompt": "OpenAI API Key (for Whisper STT + TTS)",
-        "url": "https://platform.openai.com/api-keys",
-        "tools": ["voice_transcription", "openai_tts"],
-        "password": True,
-        "category": "tool",
-    },
-    "ELEVENLABS_API_KEY": {
-        "description": "ElevenLabs API key for premium text-to-speech voices and Scribe transcription",
-        "prompt": "ElevenLabs API key",
-        "url": "https://elevenlabs.io/",
-        "tools": ["elevenlabs_tts", "voice_transcription"],
-        "password": True,
-        "category": "tool",
-    },
-    "MISTRAL_API_KEY": {
-        "description": "Mistral API key for Voxtral TTS and transcription (STT)",
-        "prompt": "Mistral API key",
-        "url": "https://console.mistral.ai/",
-        "password": True,
-        "category": "tool",
-    },
-    "PORCUPINE_ACCESS_KEY": {
-        "description": "Picovoice access key for the Porcupine 'Hey Hermes' wake word engine (optional; openWakeWord is the free default)",
-        "prompt": "Picovoice access key",
-        "url": "https://console.picovoice.ai/",
-        "password": True,
-        "category": "tool",
-    },
-    "GITHUB_TOKEN": {
-        "description": "GitHub token for Skills Hub (higher API rate limits, skill publish)",
-        "prompt": "GitHub Token",
-        "url": "https://github.com/settings/tokens",
-        "password": True,
-        "category": "tool",
-    },
-
-    # ── Bundled skills (opt-in: only needed if the user uses that skill) ──
-    # These use category="skill" (distinct from "tool") so the sandbox
-    # env blocklist in tools/environments/local.py does NOT rewrite them —
-    # skills legitimately need these passed through to curl via
-    # tools/env_passthrough.py when the user's skill calls out.
-    "NOTION_API_KEY": {
-        "description": "Notion integration token (used by the `notion` skill)",
-        "prompt": "Notion API key",
-        "url": "https://www.notion.so/my-integrations",
-        "password": True,
-        "category": "skill",
-        "advanced": True,
-    },
-    "LINEAR_API_KEY": {
-        "description": "Linear personal API key (used by the `linear` skill)",
-        "prompt": "Linear API key",
-        "url": "https://linear.app/settings/account/security",
-        "password": True,
-        "category": "skill",
-        "advanced": True,
-    },
-    "AIRTABLE_API_KEY": {
-        "description": "Airtable personal access token (used by the `airtable` skill)",
-        "prompt": "Airtable API key",
-        "url": "https://airtable.com/create/tokens",
-        "password": True,
-        "category": "skill",
-        "advanced": True,
-    },
-    "TENOR_API_KEY": {
-        "description": "Tenor API key for GIF search (used by the `gif-search` skill)",
-        "prompt": "Tenor API key",
-        "url": "https://developers.google.com/tenor/guides/quickstart",
-        "password": True,
-        "category": "skill",
-        "advanced": True,
-    },
-
+    "EXA_API_KEY": _tool("Exa API key for AI-native web search and contents", "Exa API key",
+        "https://exa.ai/", tools=["web_search", "web_extract"]),
+    "PARALLEL_API_KEY": _tool("Parallel API key for AI-native web search and extract",
+        "Parallel API key", "https://parallel.ai/", tools=["web_search", "web_extract"]),
+    "FIRECRAWL_API_KEY": _tool("Firecrawl API key for web search and scraping", "Firecrawl API key",
+        "https://firecrawl.dev/", tools=["web_search", "web_extract"]),
+    "FIRECRAWL_API_URL": _tool("Firecrawl API URL for self-hosted instances (optional)",
+        "Firecrawl API URL (leave empty for cloud)", None, password=False, advanced=True),
+    "FIRECRAWL_GATEWAY_URL": _tool(
+        "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
+        "Firecrawl gateway URL (leave empty to derive from domain)", None, password=False,
+        advanced=True),
+    "TOOL_GATEWAY_URL": _tool(
+        "Exact shared tool-gateway origin for on-origin vendors and media uploads (optional)",
+        "Shared tool-gateway URL (leave empty to derive from domain)", None,
+        password=False, advanced=True),
+    "CONNECTOR_GATEWAY_URL": _tool(
+        "Exact connector-gateway origin for the connectors API (optional)",
+        "Connector-gateway URL (leave empty to derive from domain)", None,
+        password=False, advanced=True),
+    "TOOL_GATEWAY_DOMAIN": _tool(
+        "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor "
+        "hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",
+        "Tool-gateway domain suffix", None, password=False, advanced=True),
+    "TOOL_GATEWAY_SCHEME": _tool(
+        "Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts "
+        "(`https` by default, set `http` for local gateway testing)", "Tool-gateway URL scheme",
+        None, password=False, advanced=True),
+    "TOOL_GATEWAY_USER_TOKEN": _tool(
+        "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise "
+        "read from the Hermes auth store)", "Tool-gateway user token", None, advanced=True),
+    "TAVILY_API_KEY": _tool(
+        "Tavily API key for AI-native web search and extract (optional — keyless works when "
+        "Tavily is selected)", "Tavily API key", "https://app.tavily.com/home",
+        tools=["web_search", "web_extract"]),
+    "PERPLEXITY_API_KEY": _tool(
+        "Perplexity API key for the Search API web backend (ranked results + query-relevant page "
+        "snippets)", "Perplexity API key", "https://www.perplexity.ai/account/api",
+        tools=["web_search", "web_extract"]),
+    "KEENABLE_API_KEY": _tool(
+        "Keenable API key for fast independent-index web search and page fetch (optional — "
+        "keyless free tier works without it)", "Keenable API key", "https://keenable.ai",
+        tools=["web_search", "web_extract"]),
+    "SEARXNG_URL": _tool("URL of your SearXNG instance for free self-hosted web search",
+        "SearXNG URL (e.g. http://localhost:8080)", "https://searxng.github.io/searxng/",
+        tools=["web_search"], password=False),
+    "BRAVE_SEARCH_API_KEY": _tool(
+        "Brave Search API subscription token (free tier: 2,000 queries/mo)",
+        "Brave Search subscription token", "https://brave.com/search/api/", tools=["web_search"]),
+    "BROWSERBASE_API_KEY": _tool(
+        "Browserbase API key for cloud browser (optional — local browser works without this)",
+        "Browserbase API key", "https://browserbase.com/",
+        tools=["browser_navigate", "browser_click"]),
+    "BROWSERBASE_PROJECT_ID": _tool(
+        "Browserbase project ID (optional — only needed for cloud browser)",
+        "Browserbase project ID", "https://browserbase.com/",
+        tools=["browser_navigate", "browser_click"], password=False),
+    "BROWSER_USE_API_KEY": _tool(
+        "Browser Use API key for cloud browser (optional — local browser works without this)",
+        "Browser Use API key", "https://browser-use.com/",
+        tools=["browser_navigate", "browser_click"]),
+    "FIRECRAWL_BROWSER_TTL": _tool(
+        "Firecrawl browser session TTL in seconds (optional, default 300)",
+        "Browser session TTL (seconds)", tools=["browser_navigate", "browser_click"],
+        password=False),
+    "AGENT_BROWSER_ENGINE": _env(
+        "Local browser engine: auto (default Chrome), lightpanda (faster, no screenshots; Browser Use mode "
+        "spawns lightpanda serve), chrome", "Browser engine (auto/lightpanda/chrome)",
+        url="https://lightpanda.io/docs/run-locally/installation/one-liner",
+        tools=["browser_exec", "browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
+        password=False, category="tool", advanced=True),
+    "CAMOFOX_URL": _tool(
+        "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
+        "Camofox server URL", "https://github.com/jo-inc/camofox-browser",
+        tools=["browser_navigate", "browser_click"], password=False),
+    "CAMOFOX_API_KEY": _tool(
+        "Optional bearer token sent as Authorization header to a remote/authenticated Camofox "
+        "server", "Camofox API key", "https://github.com/jo-inc/camofox-browser",
+        tools=["browser_navigate", "browser_click"], advanced=True),
+    "FAL_KEY": _tool("FAL API key for image and video generation", "FAL API key", "https://fal.ai/",
+        tools=["image_generate", "video_generate"]),
+    "KREA_API_KEY": _tool("Krea API key for Krea 2 image generation (Medium + Large)",
+        "Krea API key", "https://www.krea.ai/settings/api-tokens", tools=["image_generate"]),
+    "VOICE_TOOLS_OPENAI_KEY": _tool(
+        "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
+        "OpenAI API Key (for Whisper STT + TTS)", "https://platform.openai.com/api-keys",
+        tools=["voice_transcription", "openai_tts"]),
+    "ELEVENLABS_API_KEY": _tool(
+        "ElevenLabs API key for premium text-to-speech voices and Scribe transcription",
+        "ElevenLabs API key", "https://elevenlabs.io/",
+        tools=["elevenlabs_tts", "voice_transcription"]),
+    "MISTRAL_API_KEY": _tool("Mistral API key for Voxtral TTS and transcription (STT)",
+        "Mistral API key", "https://console.mistral.ai/"),
+    "PORCUPINE_ACCESS_KEY": _tool(
+        "Picovoice access key for the Porcupine 'Hey Hermes' wake word engine (optional; "
+        "openWakeWord is the free default)", "Picovoice access key",
+        "https://console.picovoice.ai/"),
+    "GITHUB_TOKEN": _tool("GitHub token for Skills Hub (higher API rate limits, skill publish)",
+        "GitHub Token", "https://github.com/settings/tokens"),
+    # ── Bundled skills (opt-in) ── category="skill" (not "tool") so the sandbox env blocklist in
+    # tools/environments/local.py does NOT rewrite them; skills need them passed through to curl
+    # via tools/env_passthrough.py.
+    "NOTION_API_KEY": _skill("Notion integration token (used by the `notion` skill)",
+        "Notion API key", "https://www.notion.so/my-integrations"),
+    "LINEAR_API_KEY": _skill("Linear personal API key (used by the `linear` skill)",
+        "Linear API key", "https://linear.app/settings/account/security"),
+    "AIRTABLE_API_KEY": _skill("Airtable personal access token (used by the `airtable` skill)",
+        "Airtable API key", "https://airtable.com/create/tokens"),
+    "TENOR_API_KEY": _skill("Tenor API key for GIF search (used by the `gif-search` skill)",
+        "Tenor API key", "https://developers.google.com/tenor/guides/quickstart"),
     # ── Honcho ──
     "HONCHO_API_KEY": _tool("Honcho API key for AI-native persistent memory", "Honcho API key",
         "https://app.honcho.dev", tools=["honcho_context"]),

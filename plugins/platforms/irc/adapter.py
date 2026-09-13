@@ -439,54 +439,21 @@ def is_connected(config) -> bool:
 
 
 def _env_enablement() -> dict | None:
-    """Seed ``PlatformConfig.extra`` from env vars during gateway config load.
-
-    Called by the platform registry's env-enablement hook (landed in the
-    generic-plugin-interface migration) BEFORE adapter construction, so
-    ``gateway status`` and ``get_connected_platforms()`` reflect env-only
-    configuration without instantiating the IRC client.  Returns ``None``
-    when IRC isn't minimally configured; the caller skips auto-enabling.
-
-    The special ``home_channel`` key in the returned dict is handled by
-    the core hook — it becomes a proper ``HomeChannel`` dataclass on the
-    ``PlatformConfig`` rather than being merged into ``extra``.
-    """
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env BEFORE adapter construction;
+    ``None`` when IRC isn't minimally configured. Passwords also live in extra for back-compat with
+    config.yaml users; env wins at construct time. Home channel defaults to IRC_CHANNEL so cron
+    ``deliver=irc`` has a target without extra config."""
     server = _get_scoped_secret("IRC_SERVER", "").strip()
     channel = _get_scoped_secret("IRC_CHANNEL", "").strip()
     if not (server and channel):
         return None
-    seed: dict = {
-        "server": server,
-        "channel": channel,
-    }
-    port = _get_scoped_secret("IRC_PORT", "").strip()
-    if port:
-        try:
-            seed["port"] = int(port)
-        except ValueError:
-            pass
-    nickname = _get_scoped_secret("IRC_NICKNAME", "").strip()
-    if nickname:
-        seed["nickname"] = nickname
-    use_tls = _get_scoped_secret("IRC_USE_TLS", "").strip().lower()
-    if use_tls:
-        seed["use_tls"] = use_tls in {"1", "true", "yes"}
-    # Passwords live in PlatformConfig.extra as well for back-compat with
-    # existing config.yaml users; env-reads at construct time still win.
-    if _get_scoped_secret("IRC_SERVER_PASSWORD"):
-        seed["server_password"] = _get_scoped_secret("IRC_SERVER_PASSWORD")
-    if _get_scoped_secret("IRC_NICKSERV_PASSWORD"):
-        seed["nickserv_password"] = _get_scoped_secret("IRC_NICKSERV_PASSWORD")
-    # Optional home-channel (usually the same as IRC_CHANNEL, but can be a
-    # dedicated reports channel).  Defaults to IRC_CHANNEL so cron jobs
-    # with ``deliver=irc`` have a sensible target without extra config.
-    home = _get_scoped_secret("IRC_HOME_CHANNEL") or channel
-    if home:
-        seed["home_channel"] = {
-            "chat_id": home,
-            "name": _get_scoped_secret("IRC_HOME_CHANNEL_NAME", home),
-        }
-    return seed
+    seed = _seed_extra_from_env((
+        ("IRC_PORT", "port", int), ("IRC_NICKNAME", "nickname", None),
+        ("IRC_USE_TLS", "use_tls", lambda v: v.lower() in _TRUTHY),
+        ("IRC_SERVER_PASSWORD", "server_password", None), ("IRC_NICKSERV_PASSWORD", "nickserv_password", None),
+    ), home_env="IRC_HOME_CHANNEL", home_default=channel)
+    return {"server": server, "channel": channel, **seed}
+
 
 
 def _strip_irc_control_chars(text: str) -> str:

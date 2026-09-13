@@ -23,7 +23,7 @@ import { type GatewayClient } from '../gatewayClient.js'
 import type { SubagentListResponse } from '../gatewayTypes.js'
 import type {
   AnyGatewayEvent,
-  ClarifyLockResponse,
+  ClarifyRespondResponse,
   ConfigSetResponse,
   SessionActiveListResponse,
   SessionCloseResponse,
@@ -242,7 +242,6 @@ export function useMainApp(gw: GatewayClient) {
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
   const onEventRef = useRef<(ev: AnyGatewayEvent) => void>(() => {})
-  const onServerRequestRef = useRef<(request: ServerRequest) => boolean>(() => false)
   const sysRef = useRef<(text: string) => void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
   const submitLiteralRef = useRef<(value: string) => void>(() => {})
@@ -984,18 +983,8 @@ export function useMainApp(gw: GatewayClient) {
 
   onEventRef.current = onEvent
 
-  const onServerRequest = useMemo(
-    () =>
-      createServerRequestHandler({
-        ringPromptBell: () => {
-          if (bellOnPrompt && stdout?.isTTY) {
-            stdout.write('\x07')
-          }
-        },
-        setStatus: status => patchUiState({ status })
-      }),
-    [bellOnPrompt, stdout]
-  )
+  useEffect(() => {
+    const handler = (ev: AnyGatewayEvent) => onEventRef.current(ev)
 
   onServerRequestRef.current = onServerRequest
 
@@ -1204,7 +1193,7 @@ export function useMainApp(gw: GatewayClient) {
         patchOverlayState({ vaultUnlock: null })
       }
 
-      respondWith(requestId, { value: password }, () => {
+      return respondWith('vault.unlock.respond', { password, request_id: requestId }, () => {
         patchOverlayState({ vaultUnlock: null })
         patchUiState({ status: 'running…' })
       })

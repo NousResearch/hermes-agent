@@ -42,11 +42,11 @@ setup, doctor), hydrated from a disk mirror across processes, and refreshed
 by a background warmer when cold or stale.
 """
 
-from __future__ import annotations
-
+import contextvars
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -70,15 +70,49 @@ _efforts_lock = threading.Lock()
 _warm_started = False
 _disk_checked = False
 
-#: Disk-mirror staleness bound. Vocabularies change rarely; a stale verdict
-#: beats no verdict, so a past-TTL mirror is still served while a background
-#: refresh runs (same policy as the OpenRouter caps mirror).
-_DISK_TTL_SECONDS = 24 * 60 * 60
+
+class _CacheState:
+    """Efforts cache + once-only flags for one Hermes home (same names as the module slots)."""
+
+    __slots__ = ("_efforts_cache", "_warm_started", "_disk_checked")
+
+    def __init__(self) -> None:
+        self._efforts_cache: Optional[dict[str, list[str]]] = None
+        self._warm_started = False
+        self._disk_checked = False
+
+
+# The catalog is account-scoped and the disk mirror lives under each profile's home, so under a
+# multiplexed profile override the memory cache and its once-only flags are per home too;
+# otherwise profile B's clamp would be built from profile A's key (and A's warm/disk flags).
+_state_by_home: dict[str, _CacheState] = {}
+
+
+def _state() -> Any:
+    """Holder of ``_efforts_cache``/``_warm_started``/``_disk_checked``: this module when unscoped
+    (tests monkeypatch those slots), else the active home's ``_CacheState``."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+
+    if get_hermes_home_override() is None:
+        return sys.modules[__name__]
+    with _efforts_lock:
+        return _state_by_home.setdefault(hermes_home_key(), _CacheState())
 
 
 def _base_url() -> str:
-    """Allow a base-URL override via ``RAMP_ROUTER_BASE_URL``."""
-    return os.getenv("RAMP_ROUTER_BASE_URL", "").strip().rstrip("/") or ROUTER_DEFAULT_BASE_URL
+    """Router base URL: profile ``.env`` first (scope-aware), plain os.environ as the fallback."""
+    try:
+        from hermes_cli.config import get_env_value_prefer_dotenv as prefer_dotenv
+    except Exception:
+        prefer_dotenv = None
+    for resolve in filter(None, (prefer_dotenv, os.environ.get)):
+        try:
+            value = str(resolve("RAMP_ROUTER_BASE_URL") or "").strip().rstrip("/")
+        except Exception:
+            value = ""
+        if value:
+            return value
+    return ROUTER_DEFAULT_BASE_URL
 
 
 def _resolve_api_key() -> str:
@@ -218,13 +252,12 @@ def _load_disk() -> tuple[Optional[dict[str, list[str]]], float]:
 
 def _seed_efforts(items: Any) -> Optional[dict[str, list[str]]]:
     """Seed memory + disk caches from a ``/v1/models`` payload."""
-    global _efforts_cache
     parsed = _parse_efforts(items)
-    if parsed is None:
-        return None
-    with _efforts_lock:
-        _efforts_cache = parsed
-    _save_disk(parsed)
+    if parsed is not None:
+        state = _state()
+        with _efforts_lock:
+            state._efforts_cache = parsed
+        _save_disk(parsed)
     return parsed
 
 
@@ -255,38 +288,40 @@ def _fetch_catalog_items(
 
 
 def _efforts_cache_only() -> Optional[dict[str, list[str]]]:
-    """Memory, else the disk mirror. Never HTTP (hot-path safe)."""
-    global _efforts_cache, _disk_checked
+    """Memory, else the disk mirror (checked once per home). Never HTTP (hot-path safe)."""
+    state = _state()
     with _efforts_lock:
-        cached = _efforts_cache
-    if cached is not None:
+        cached = state._efforts_cache
+    if cached is not None or state._disk_checked:
         return cached
-    if _disk_checked:
-        return None
-    _disk_checked = True
+    state._disk_checked = True
     parsed, age = _load_disk()
     if parsed is None:
         return None
     with _efforts_lock:
-        if _efforts_cache is None:
-            _efforts_cache = parsed
-        cached = _efforts_cache
+        if state._efforts_cache is None:
+            state._efforts_cache = parsed
+        cached = state._efforts_cache
     if age >= _DISK_TTL_SECONDS:
         _warm_efforts_async()
     return cached
 
 
 def _warm_efforts_async() -> None:
-    """Refresh the efforts cache in the background, at most once per process."""
-    global _warm_started
+    """Refresh the efforts cache in the background, at most once per home.
+
+    Skipped under pytest (a mid-suite fetch makes cache state timing-dependent)
+    and without a key (it would 401; the first authenticated fetch_models() seeds).
+    """
     if os.environ.get("PYTEST_CURRENT_TEST"):
         # Match the canonical caps warmer (hermes_cli/models.py): a mid-suite
         # background fetch would make cache state timing-dependent in tests.
         return
+    state = _state()
     with _efforts_lock:
-        if _warm_started:
+        if state._warm_started:
             return
-        _warm_started = True
+        state._warm_started = True
     if not _resolve_api_key():
         # Without a key the fetch would 401; the first authenticated
         # fetch_models() (picker/setup/doctor) seeds the cache instead.
@@ -298,8 +333,10 @@ def _warm_efforts_async() -> None:
             _seed_efforts(items)
 
     try:
+        # copy_context: the home override / secret scope are ContextVars, so a bare thread would
+        # fetch with the launch profile's key and mirror into its cache dir.
         threading.Thread(
-            target=_refresh, name="router-caps-warm", daemon=True
+            target=contextvars.copy_context().run, args=(_refresh,), name="router-caps-warm", daemon=True,
         ).start()
     except Exception as exc:
         logger.debug("router: caps warmer failed to start: %s", exc)

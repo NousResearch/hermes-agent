@@ -706,15 +706,13 @@ def nonretryable_client_error_result(
     _plabel = provider_label_for(provider)
     _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
     agent._emit_status(f"❌ {_label}: {_nonretryable_summary}")
-    # The endpoint/status trace is developer detail: verbose only (the log has it always).
-    if getattr(agent, "verbose_logging", False):
-        _vlines(
-            agent,
-            f"   🔌 Provider: {provider}  Model: {model}  (HTTP {status_code})",
-            f"   🌐 Endpoint: {base_url}",
-        )
+    _vlines(
+        agent,
+        f"❌ Non-retryable client error (HTTP {status_code}). Aborting.",
+        f"   🔌 Provider: {provider}  Model: {model}",
+        f"   🌐 Endpoint: {base_url}",
+    )
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
-    _prefix_suggestion = _missing_vendor_prefix_suggestion(api_error, provider, model)
     if _welcome_hint:
         # A free-tier gate or a wrong-host refusal: the way forward is a sign-in or another
         # provider, never the key/credits advice below.
@@ -772,14 +770,9 @@ def nonretryable_client_error_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
         )
+    _final_response = _nonretryable_summary
     if _welcome_hint:
-        _final_response = f"{_nonretryable_summary}\n\n{_welcome_tier_guidance(classified, model=model, in_chat=True)}"
-    else:
-        # Every surface reads final_response; the CLI hint lines above never reach chat.
-        _final_response = nonretryable_copy(
-            classified, provider=provider, model=model, summary=_nonretryable_summary,
-            prefix_suggestion=_prefix_suggestion,
-        )
+        _final_response += f"\n\n{_welcome_tier_guidance(classified, model=model, in_chat=True)}"
     result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
     # Same verdict fields as the max-retries path: without them the UI descriptor
     # (agent/error_surface.py) reads a rejected OAuth token as a retryable
@@ -882,12 +875,7 @@ def max_retries_exhausted_result(
             provider, base_url, model, _billing_guidance, unverified=_billing_unverified
         )
     else:
-        # Every surface reads final_response (the 💡 lines above are CLI-only), so the chat
-        # text carries the plain what-happened + next step itself.
-        _final_response = exhausted_copy(
-            classified.reason.value, label=provider_label_for(provider), attempts=max_retries,
-            summary=_final_summary,
-        )
+        _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
         if _welcome_hint:
             _final_response += f"\n\n{_welcome_tier_guidance(classified, model=model, in_chat=True)}"
     if _is_thinking_timeout:

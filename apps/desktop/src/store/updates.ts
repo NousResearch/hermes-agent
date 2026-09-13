@@ -116,10 +116,7 @@ function isUpdateToastSnoozed(): boolean {
 // v5: requires raised WebSocket frame size for large one-shot file.attach.
 // v6: requires key-addressed plugins.manage rows (keyless rows render
 //     read-only in Capabilities → Plugins).
-// v7: requires JSON-RPC server->client requests for every blocking prompt
-//     (approval/clarify/sudo/secret/vault/MCP setup); a v6 backend's
-//     `<kind>.request` notifications would never render a card.
-export const REQUIRED_BACKEND_CONTRACT = 7
+const REQUIRED_BACKEND_CONTRACT = 6
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even
@@ -599,7 +596,7 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
   if (returned) {
     $backendUpdateApply.set(IDLE)
     setUpdateOverlayOpen(false)
-    void checkBackendUpdates()
+    void checkBackendUpdates({ force: true })
     // The update restarted the gateway process, which strands this window's
     // WebSocket: over SSH/tailscale tunnels the old TCP connection often dies
     // without a close event, so connectionState still reads 'open' while every
@@ -860,7 +857,7 @@ async function maybeNudgeClientAfterBackendUpdate(): Promise<void> {
     return
   }
 
-  const status = (await checkUpdates().catch(() => null)) ?? $updateStatus.get()
+  const status = (await checkUpdates({ force: true }).catch(() => null)) ?? $updateStatus.get()
 
   if (!status || status.error || (!status.updateAvailable && (status.behind ?? 0) <= 0)) {
     return
@@ -978,12 +975,12 @@ async function runEverythingUpdate(): Promise<void> {
     // 3. The client last — its apply relaunches or hands off the app, so it
     //    must come after every dispatch above. Skipped when already current.
     //    Re-check rather than trusting `$updateStatus`: the cached value can be
-    //    up to a poll interval (30 min) old and was captured BEFORE the backend
+    //    up to a poll interval (24h) old and was captured BEFORE the backend
     //    update above, so a cached `behind: 0` would skip the client leg and
     //    leave the app stale — the exact failure this flow exists to prevent.
     //    `checkUpdates()` resolves with an error-status rather than rejecting,
     //    so fall back to the pre-flow snapshot when the live check can't answer.
-    const freshClientStatus = await checkUpdates().catch(() => null)
+    const freshClientStatus = await checkUpdates({ force: true }).catch(() => null)
     const clientStatus = freshClientStatus?.error ? cachedClientStatus : (freshClientStatus ?? cachedClientStatus)
 
     if ((clientStatus?.behind ?? 0) > 0 || clientStatus?.updateAvailable) {
@@ -1021,6 +1018,7 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
 }
 
 let pollerStarted = false
+let lastFocusAt = 0
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let connectionUnsub: (() => void) | null = null
 let lastConnectionMode: string | undefined
@@ -1056,9 +1054,7 @@ function configuredAutomaticUpdateChecks(config: Record<string, unknown>): boole
 
   // Accept a flat value from older config writers while always writing the
   // setting under `desktop`, which is the canonical config.yaml section.
-  return typeof config[AUTO_UPDATE_CHECKS_CONFIG_KEY] === 'boolean'
-    ? config[AUTO_UPDATE_CHECKS_CONFIG_KEY]
-    : undefined
+  return typeof config[AUTO_UPDATE_CHECKS_CONFIG_KEY] === 'boolean' ? config[AUTO_UPDATE_CHECKS_CONFIG_KEY] : undefined
 }
 
 function hydrateAutomaticUpdateChecks(restartRetries = false): void {
@@ -1130,8 +1126,7 @@ function runBackgroundChecks(): void {
     return
   }
 
-  void checkUpdates()
-  void checkBackendUpdates()
+  runPassiveChecks()
 }
 
 function syncBackgroundTimer(): void {
@@ -1149,7 +1144,7 @@ function syncBackgroundTimer(): void {
   }
 
   runBackgroundChecks()
-  backgroundTimer = setInterval(runBackgroundChecks, 30 * 60 * 1000)
+  backgroundTimer = setInterval(runBackgroundChecks, BACKGROUND_UPDATE_CHECK_MS)
 }
 
 export function setAutomaticUpdateChecksEnabled(enabled: boolean): void {
@@ -1326,20 +1321,15 @@ function onFocus() {
 
   lastFocusAt = now
 
+  void refreshDesktopVersion()
+
   if (!automaticUpdatePreferenceLoaded) {
     hydrateAutomaticUpdateChecks(true)
 
     return
   }
 
-  if (!$automaticUpdateChecksEnabled.get()) {
-    return
-  }
-
-  runBackgroundChecks()
-  void refreshDesktopVersion()
-
-  if (passiveCheckDue(Date.now())) {
-    runPassiveChecks()
+  if ($automaticUpdateChecksEnabled.get() && passiveCheckDue(now)) {
+    runBackgroundChecks()
   }
 }

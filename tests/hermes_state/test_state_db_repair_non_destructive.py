@@ -66,8 +66,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_state
-import hermes_state_repair
-from hermes_state_repair import repair_state_db_schema
+from hermes_state import repair_state_db_schema
 
 PAGE_SIZE = 4096
 
@@ -81,17 +80,16 @@ def _writer_after_stage(
     """Try one real cross-process write after staging has begun.
 
     The repair process owns the SQLite exclusion for the complete
-    stage/strategy/promotion interval.  The writer arrives mid-repair (a
-    pre-existing foreign holder is refused up front, #103339) and is allowed to
-    fail or to wait until that interval ends and commit afterwards; what is
-    forbidden is a successful commit that promotion silently overwrites.
+    stage/strategy/promotion interval.  A writer is allowed to fail or to
+    wait until that interval ends and commit afterwards; what is forbidden is
+    a successful commit that promotion silently overwrites.
     """
-    ready.set()
-    if not start.wait(20):
-        result.put(("not-started", "repair did not reach staging"))
-        return
     conn = sqlite3.connect(db_path, timeout=0.75, isolation_level=None)
     try:
+        ready.set()
+        if not start.wait(20):
+            result.put(("not-started", "repair did not reach staging"))
+            return
         try:
             conn.execute(
                 "INSERT INTO messages (body) VALUES ('committed-after-stage')"
@@ -132,7 +130,7 @@ def _leave_hot_wal_row(db_path: str) -> None:
 def _probe_repair_lock_from_child(db_path: str, result) -> None:
     """Attempt the repair lock with a short timeout from another process."""
     hermes_state._REPAIR_LOCK_TIMEOUT_SECONDS = 0.5
-    with hermes_state_repair._cross_process_repair_lock(Path(db_path)) as holding:
+    with hermes_state._cross_process_repair_lock(Path(db_path)) as holding:
         result.put(holding)
 
 
@@ -198,13 +196,13 @@ def test_strategies_never_receive_the_live_database(corrupt_db, monkeypatch):
     """Every strategy mutates its argument in place, so the property that
     makes them safe is simply that the argument is never the real file."""
     seen: list[Path] = []
-    real = hermes_state_repair._run_repair_strategies
+    real = hermes_state._run_repair_strategies
 
     def spy(path, report):
         seen.append(path)
         return real(path, report)
 
-    monkeypatch.setattr(hermes_state_repair, "_run_repair_strategies", spy)
+    monkeypatch.setattr(hermes_state, "_run_repair_strategies", spy)
     repair_state_db_schema(corrupt_db)
 
     assert seen, "the repair path did not run at all"
@@ -261,7 +259,7 @@ def test_successful_repair_is_promoted_over_the_original(tmp_path, monkeypatch):
     # Force the "already healthy" short-circuit off so the staging path runs,
     # and have the strategy pass mark a repair after writing a marker row.
     monkeypatch.setattr(
-        hermes_state_repair, "_db_opens_cleanly", lambda path: "forced-unhealthy"
+        hermes_state, "_db_opens_cleanly", lambda path: "forced-unhealthy"
     )
 
     def fake_strategies(scratch_path, report):
@@ -273,7 +271,7 @@ def test_successful_repair_is_promoted_over_the_original(tmp_path, monkeypatch):
         report["strategy"] = "test_strategy"
         return report
 
-    monkeypatch.setattr(hermes_state_repair, "_run_repair_strategies", fake_strategies)
+    monkeypatch.setattr(hermes_state, "_run_repair_strategies", fake_strategies)
 
     report = repair_state_db_schema(db)
     assert report["repaired"] is True
@@ -305,7 +303,7 @@ def test_committed_writer_after_staging_is_never_lost(
     _make_repair_test_db(db, journal_mode=journal_mode)
 
     monkeypatch.setattr(
-        hermes_state_repair, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
+        hermes_state, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
     )
     ready = multiprocessing.get_context("spawn").Event()
     start = multiprocessing.get_context("spawn").Event()
@@ -331,7 +329,7 @@ def test_committed_writer_after_staging_is_never_lost(
         report["strategy"] = "race_test"
         return report
 
-    monkeypatch.setattr(hermes_state_repair, "_run_repair_strategies", staged_strategy)
+    monkeypatch.setattr(hermes_state, "_run_repair_strategies", staged_strategy)
     report = repair_state_db_schema(db, backup=False)
     writer.join(20)
     if writer.is_alive():
@@ -363,10 +361,11 @@ def test_environmental_aborts_do_not_burn_repair_ledger(tmp_path, monkeypatch):
     db = tmp_path / "state.db"
     _make_repair_test_db(db)
     monkeypatch.setattr(
-        hermes_state_repair, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
+        hermes_state, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
     )
     monkeypatch.setattr(
-        hermes_state_repair, "_repair_scratch_space_error",
+        hermes_state,
+        "_repair_scratch_space_error",
         lambda _path: "temporary disk pressure",
     )
 
@@ -375,10 +374,10 @@ def test_environmental_aborts_do_not_burn_repair_ledger(tmp_path, monkeypatch):
         assert report["repaired"] is False
         assert report["error"] == "temporary disk pressure"
 
-    ledger_path = hermes_state_repair._repair_ledger_path(db)
+    ledger_path = hermes_state._repair_ledger_path(db)
     assert not ledger_path.exists(), "environmental aborts must not consume attempts"
 
-    monkeypatch.setattr(hermes_state_repair, "_repair_scratch_space_error", lambda _path: None)
+    monkeypatch.setattr(hermes_state, "_repair_scratch_space_error", lambda _path: None)
 
     def successful_strategy(scratch_path, report):
         with sqlite3.connect(str(scratch_path)) as conn:
@@ -388,7 +387,7 @@ def test_environmental_aborts_do_not_burn_repair_ledger(tmp_path, monkeypatch):
         report["strategy"] = "after_environmental_aborts"
         return report
 
-    monkeypatch.setattr(hermes_state_repair, "_run_repair_strategies", successful_strategy)
+    monkeypatch.setattr(hermes_state, "_run_repair_strategies", successful_strategy)
     report = repair_state_db_schema(db, backup=False)
     assert report["repaired"] is True
     assert report["strategy"] == "after_environmental_aborts"
@@ -398,7 +397,7 @@ def test_actual_strategy_failure_still_consumes_one_attempt(tmp_path, monkeypatc
     db = tmp_path / "state.db"
     _make_repair_test_db(db)
     monkeypatch.setattr(
-        hermes_state_repair, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
+        hermes_state, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
     )
 
     def failed_strategy(_scratch_path, report):
@@ -406,10 +405,10 @@ def test_actual_strategy_failure_still_consumes_one_attempt(tmp_path, monkeypatc
         report["strategy"] = None
         return report
 
-    monkeypatch.setattr(hermes_state_repair, "_run_repair_strategies", failed_strategy)
+    monkeypatch.setattr(hermes_state, "_run_repair_strategies", failed_strategy)
     report = repair_state_db_schema(db, backup=False)
     assert report["repaired"] is False
-    ledger = hermes_state_repair._read_repair_ledger(db)
+    ledger = hermes_state._read_repair_ledger(db)
     assert ledger["failed_attempts"] == 1
 
 
@@ -420,7 +419,7 @@ def test_repair_outcome_is_recorded_while_cross_process_lock_is_held(
     db = tmp_path / "state.db"
     _make_repair_test_db(db)
     monkeypatch.setattr(
-        hermes_state_repair, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
+        hermes_state, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
     )
 
     def failed_strategy(_scratch_path, report):
@@ -428,10 +427,10 @@ def test_repair_outcome_is_recorded_while_cross_process_lock_is_held(
         report["strategy"] = None
         return report
 
-    monkeypatch.setattr(hermes_state_repair, "_run_repair_strategies", failed_strategy)
+    monkeypatch.setattr(hermes_state, "_run_repair_strategies", failed_strategy)
     observed = []
     lock_released = threading.Event()
-    real_repair_lock = hermes_state_repair._cross_process_repair_lock
+    real_repair_lock = hermes_state._cross_process_repair_lock
 
     @contextlib.contextmanager
     def tracking_repair_lock(path):
@@ -440,7 +439,7 @@ def test_repair_outcome_is_recorded_while_cross_process_lock_is_held(
         lock_released.set()
 
     monkeypatch.setattr(
-        hermes_state_repair, "_cross_process_repair_lock", tracking_repair_lock
+        hermes_state, "_cross_process_repair_lock", tracking_repair_lock
     )
 
     def record_outcome(_db_path, *, repaired, fingerprint=None):
@@ -463,7 +462,7 @@ def test_repair_outcome_is_recorded_while_cross_process_lock_is_held(
                 probe.join(5)
         assert repaired is False
 
-    monkeypatch.setattr(hermes_state_repair, "_record_repair_outcome", record_outcome)
+    monkeypatch.setattr(hermes_state, "_record_repair_outcome", record_outcome)
     report = repair_state_db_schema(db, backup=False)
 
     assert report["repaired"] is False
@@ -485,9 +484,9 @@ def test_exhaustion_is_rechecked_after_acquiring_repair_lock(tmp_path, monkeypat
         return len(exhaustion_checks) >= 2
 
     monkeypatch.setattr(
-        hermes_state_repair, "_persistent_repair_attempts_exhausted", exhaustion_probe
+        hermes_state, "_persistent_repair_attempts_exhausted", exhaustion_probe
     )
-    monkeypatch.setattr(hermes_state_repair, "_live_writer_holds_db", lambda _path: False)
+    monkeypatch.setattr(hermes_state, "_live_writer_holds_db", lambda _path: False)
     surgery_calls = []
 
     def unexpected_surgery(_db_path, *, backup, report):
@@ -495,7 +494,7 @@ def test_exhaustion_is_rechecked_after_acquiring_repair_lock(tmp_path, monkeypat
         return report
 
     monkeypatch.setattr(
-        hermes_state_repair, "_repair_state_db_schema_locked", unexpected_surgery
+        hermes_state, "_repair_state_db_schema_locked", unexpected_surgery
     )
 
     report = repair_state_db_schema(db, backup=False)
@@ -514,7 +513,7 @@ def test_scratch_budget_counts_sidecars_in_vacuum_multiplier(tmp_path, monkeypat
     db.write_bytes(b"m" * main_bytes)
     db.with_name(db.name + "-wal").write_bytes(b"w" * wal_bytes)
     total = 10_000_000_000
-    headroom = hermes_state_repair._repair_backup_headroom_bytes(total)
+    headroom = hermes_state._repair_backup_headroom_bytes(total)
     # This exactly satisfies the obsolete ``snapshot + 2*main + headroom``
     # calculation, but is below the corrected ``3*snapshot + headroom``.
     old_required = main_bytes + wal_bytes + (2 * main_bytes) + headroom
@@ -524,7 +523,7 @@ def test_scratch_budget_counts_sidecars_in_vacuum_multiplier(tmp_path, monkeypat
         lambda _path: SimpleNamespace(total=total, free=old_required),
     )
 
-    error = hermes_state_repair._repair_scratch_space_error(db)
+    error = hermes_state._repair_scratch_space_error(db)
 
     assert error is not None
     assert "VACUUM may need another" in error
@@ -537,7 +536,7 @@ def test_environmental_promotion_failures_do_not_burn_ledger(
     db = tmp_path / "state.db"
     _make_repair_test_db(db)
     monkeypatch.setattr(
-        hermes_state_repair, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
+        hermes_state, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
     )
 
     def successful_strategy(_scratch_path, report):
@@ -545,8 +544,8 @@ def test_environmental_promotion_failures_do_not_burn_ledger(
         report["strategy"] = "promotion_environment_test"
         return report
 
-    monkeypatch.setattr(hermes_state_repair, "_run_repair_strategies", successful_strategy)
-    real_copy = hermes_state_repair._copy_database_snapshot
+    monkeypatch.setattr(hermes_state, "_run_repair_strategies", successful_strategy)
+    real_copy = hermes_state._copy_database_snapshot
     copy_calls = 0
 
     def fail_promotion_three_times(source, destination, **kwargs):
@@ -557,17 +556,17 @@ def test_environmental_promotion_failures_do_not_burn_ledger(
         return real_copy(source, destination, **kwargs)
 
     monkeypatch.setattr(
-        hermes_state_repair, "_copy_database_snapshot", fail_promotion_three_times
+        hermes_state, "_copy_database_snapshot", fail_promotion_three_times
     )
     for _ in range(3):
         report = repair_state_db_schema(db, backup=False)
         assert report["repaired"] is False
         assert "could not be promoted" in report["error"]
 
-    ledger = hermes_state_repair._read_repair_ledger(db)
+    ledger = hermes_state._read_repair_ledger(db)
     assert ledger.get("failed_attempts", 0) == 0
 
-    monkeypatch.setattr(hermes_state_repair, "_copy_database_snapshot", real_copy)
+    monkeypatch.setattr(hermes_state, "_copy_database_snapshot", real_copy)
     report = repair_state_db_schema(db, backup=False)
     assert report["repaired"] is True
     assert report["strategy"] == "promotion_environment_test"
@@ -578,7 +577,7 @@ def test_corrupt_promotion_failure_consumes_one_attempt(tmp_path, monkeypatch):
     db = tmp_path / "state.db"
     _make_repair_test_db(db)
     monkeypatch.setattr(
-        hermes_state_repair, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
+        hermes_state, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
     )
 
     def successful_strategy(_scratch_path, report):
@@ -586,8 +585,8 @@ def test_corrupt_promotion_failure_consumes_one_attempt(tmp_path, monkeypatch):
         report["strategy"] = "corrupt-promotion-test"
         return report
 
-    monkeypatch.setattr(hermes_state_repair, "_run_repair_strategies", successful_strategy)
-    real_copy = hermes_state_repair._copy_database_snapshot
+    monkeypatch.setattr(hermes_state, "_run_repair_strategies", successful_strategy)
+    real_copy = hermes_state._copy_database_snapshot
     calls = 0
 
     def fail_promotion_with_corruption(source, destination, **kwargs):
@@ -598,12 +597,12 @@ def test_corrupt_promotion_failure_consumes_one_attempt(tmp_path, monkeypatch):
         return real_copy(source, destination, **kwargs)
 
     monkeypatch.setattr(
-        hermes_state_repair, "_copy_database_snapshot", fail_promotion_with_corruption
+        hermes_state, "_copy_database_snapshot", fail_promotion_with_corruption
     )
     report = repair_state_db_schema(db, backup=False)
 
     assert report["repaired"] is False
-    assert hermes_state_repair._read_repair_ledger(db)["failed_attempts"] == 1
+    assert hermes_state._read_repair_ledger(db)["failed_attempts"] == 1
 
 
 def test_snapshot_includes_committed_wal_frames(tmp_path):
@@ -618,7 +617,7 @@ def test_snapshot_includes_committed_wal_frames(tmp_path):
         assert db.with_name(db.name + "-wal").exists()
 
         scratch = tmp_path / "state.db.repair-scratch"
-        hermes_state_repair._copy_database_snapshot(db, scratch)
+        hermes_state._copy_database_snapshot(db, scratch)
         with sqlite3.connect(str(scratch)) as check:
             assert check.execute("SELECT body FROM messages").fetchall() == [
                 ("committed-only-in-wal",)
@@ -647,7 +646,7 @@ def test_failed_wal_repair_preserves_committed_rows_semantically(
         pytest.skip("SQLite/filesystem did not retain a hot WAL sidecar")
 
     monkeypatch.setattr(
-        hermes_state_repair, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
+        hermes_state, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
     )
 
     strategy_calls = []
@@ -658,7 +657,7 @@ def test_failed_wal_repair_preserves_committed_rows_semantically(
         report["strategy"] = None
         return report
 
-    monkeypatch.setattr(hermes_state_repair, "_run_repair_strategies", failed_strategy)
+    monkeypatch.setattr(hermes_state, "_run_repair_strategies", failed_strategy)
     report = repair_state_db_schema(db, backup=False)
     assert report["repaired"] is False
     assert strategy_calls == [True], "the test must exercise strategy failure"
@@ -674,12 +673,12 @@ def test_snapshot_deadline_has_a_floor_and_scales_with_source_size(
     tmp_path, monkeypatch
 ):
     """Large snapshots get more than the lock floor without huge fixtures."""
-    deadline = getattr(hermes_state_repair, "_repair_snapshot_timeout_seconds", None)
+    deadline = getattr(hermes_state, "_repair_snapshot_timeout_seconds", None)
     assert callable(deadline), "repair snapshots need a size-scaled deadline"
     # Lower the throughput only for this arithmetic test so a 72 MiB fixture
     # crosses the floor without allocating a multi-GB file.
     monkeypatch.setattr(
-        hermes_state_repair, "_REPAIR_SNAPSHOT_MIN_THROUGHPUT_BYTES_PER_SECOND", 256 * 1024
+        hermes_state, "_REPAIR_SNAPSHOT_MIN_THROUGHPUT_BYTES_PER_SECOND", 256 * 1024
     )
 
     db = tmp_path / "state.db"
@@ -712,7 +711,7 @@ def test_transactional_promotion_preserves_a_live_wal_reader(tmp_path):
         reader.execute("BEGIN")
         assert reader.execute("SELECT body FROM messages").fetchall() == [("old",)]
 
-        hermes_state_repair._copy_database_snapshot(scratch, live)
+        hermes_state._copy_database_snapshot(scratch, live)
 
         assert reader.execute("SELECT body FROM messages").fetchall() == [("old",)]
         with sqlite3.connect(str(live)) as fresh:
@@ -743,7 +742,7 @@ def test_interrupted_snapshot_rolls_back_destination(tmp_path, monkeypatch):
     monkeypatch.setattr(hermes_state.time, "monotonic", lambda: next(ticks))
 
     with pytest.raises(TimeoutError):
-        hermes_state_repair._copy_database_snapshot(source, destination)
+        hermes_state._copy_database_snapshot(source, destination)
 
     with sqlite3.connect(str(destination)) as conn:
         assert conn.execute("SELECT value FROM marker").fetchall() == [("original",)]
@@ -753,7 +752,7 @@ def test_failed_promotion_returns_failure_and_preserves_original(tmp_path, monke
     db = tmp_path / "state.db"
     _write_populated_db(db)
     before = hashlib.sha256(db.read_bytes()).hexdigest()
-    real_copy = hermes_state_repair._copy_database_snapshot
+    real_copy = hermes_state._copy_database_snapshot
     calls = 0
 
     def fail_second_copy(source, destination, **kwargs):
@@ -769,10 +768,10 @@ def test_failed_promotion_returns_failure_and_preserves_original(tmp_path, monke
         return report
 
     monkeypatch.setattr(
-        hermes_state_repair, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
+        hermes_state, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
     )
-    monkeypatch.setattr(hermes_state_repair, "_copy_database_snapshot", fail_second_copy)
-    monkeypatch.setattr(hermes_state_repair, "_run_repair_strategies", fake_strategies)
+    monkeypatch.setattr(hermes_state, "_copy_database_snapshot", fail_second_copy)
+    monkeypatch.setattr(hermes_state, "_run_repair_strategies", fake_strategies)
 
     report = repair_state_db_schema(db, backup=False)
 
@@ -786,12 +785,12 @@ def test_failed_promotion_returns_failure_and_preserves_original(tmp_path, monke
 def test_scratch_space_guard_accounts_for_snapshot_and_vacuum(tmp_path, monkeypatch):
     db = tmp_path / "state.db"
     db.write_bytes(b"x" * 4096)
-    headroom = hermes_state_repair._repair_backup_headroom_bytes(10_000_000_000)
+    headroom = hermes_state._repair_backup_headroom_bytes(10_000_000_000)
     free = (3 * db.stat().st_size) + headroom - 1
     usage = SimpleNamespace(total=10_000_000_000, free=free)
     monkeypatch.setattr(shutil, "disk_usage", lambda _path: usage)
 
-    error = hermes_state_repair._repair_scratch_space_error(db)
+    error = hermes_state._repair_scratch_space_error(db)
 
     assert error is not None
     assert "VACUUM may need" in error
@@ -809,7 +808,7 @@ def test_stale_scratch_is_removed_before_health_check(tmp_path, monkeypatch):
         assert not scratch.exists()
         return None
 
-    monkeypatch.setattr(hermes_state_repair, "_db_opens_cleanly", fake_health)
+    monkeypatch.setattr(hermes_state, "_db_opens_cleanly", fake_health)
 
     report = repair_state_db_schema(db, backup=False)
 
@@ -827,7 +826,7 @@ def test_stale_scratch_is_removed_before_space_check(tmp_path, monkeypatch):
     checked_space = False
 
     monkeypatch.setattr(
-        hermes_state_repair, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
+        hermes_state, "_db_opens_cleanly", lambda _path: "forced-unhealthy"
     )
 
     def fake_space_check(_path):
@@ -837,7 +836,7 @@ def test_stale_scratch_is_removed_before_space_check(tmp_path, monkeypatch):
         return "forced low space"
 
     monkeypatch.setattr(
-        hermes_state_repair, "_repair_scratch_space_error", fake_space_check
+        hermes_state, "_repair_scratch_space_error", fake_space_check
     )
 
     report = repair_state_db_schema(db, backup=False)
@@ -858,9 +857,9 @@ def test_stale_scratch_cleanup_failure_aborts_before_probe(tmp_path, monkeypatch
         probed = True
         return "forced-unhealthy"
 
-    monkeypatch.setattr(hermes_state_repair, "_db_opens_cleanly", fake_health)
+    monkeypatch.setattr(hermes_state, "_db_opens_cleanly", fake_health)
     monkeypatch.setattr(
-        hermes_state_repair, "_unlink_db_triple", lambda _path: "scratch is locked"
+        hermes_state, "_unlink_db_triple", lambda _path: "scratch is locked"
     )
     report = {
         "repaired": False,
@@ -869,7 +868,7 @@ def test_stale_scratch_cleanup_failure_aborts_before_probe(tmp_path, monkeypatch
         "error": None,
     }
 
-    result = hermes_state_repair._repair_state_db_schema_locked(
+    result = hermes_state._repair_state_db_schema_locked(
         db, backup=False, report=report
     )
 

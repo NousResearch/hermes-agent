@@ -8,17 +8,10 @@ any actual MCP servers or API keys.
 import argparse
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tools import mcp_tool_config as _mcp_config
-
-
-def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
-    from unittest.mock import MagicMock
-
-    mock_stdin = MagicMock()
-    mock_stdin.isatty.return_value = is_tty
-    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
 
 
 # ---------------------------------------------------------------------------
@@ -727,12 +720,13 @@ class TestMcpRemoveEvictsManager:
             "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _set_interactive_stdin(monkeypatch)
-
         from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
         reset_manager_for_tests()
 
         mgr = get_manager()
+        # Exercise the real cache and removal path without starting an OAuth
+        # flow or depending on a real interactive Windows console.
+        monkeypatch.setattr(mgr, "_build_provider", lambda *_: SimpleNamespace())
         mgr.get_or_build_provider(
             "oauth-srv", "https://example.com/mcp", None,
         )
@@ -882,4 +876,3 @@ def test_tool_filters_keeps_explicit_empty_include():
     assert _tool_filters({"tools": {"include": []}}) == ([], None)
     assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
     assert _tool_filters({}) == (None, None)
-

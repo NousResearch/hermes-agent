@@ -1658,7 +1658,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.20.6"
+version = "0.21.2"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
@@ -2037,8 +2037,8 @@ requires-dist = [
     { name = "sherpa-onnx", marker = "extra == 'wake'", specifier = "==1.13.4" },
     { name = "slack-bolt", marker = "extra == 'messaging'", specifier = "==1.30.0" },
     { name = "slack-bolt", marker = "extra == 'slack'", specifier = "==1.30.0" },
-    { name = "slack-sdk", marker = "extra == 'messaging'", specifier = "==3.43.0" },
-    { name = "slack-sdk", marker = "extra == 'slack'", specifier = "==3.43.0" },
+    { name = "slack-sdk", marker = "extra == 'messaging'", specifier = "==3.44.1" },
+    { name = "slack-sdk", marker = "extra == 'slack'", specifier = "==3.44.1" },
     { name = "snowballstemmer", specifier = "==3.1.1" },
     { name = "sounddevice", marker = "extra == 'voice'", specifier = "==0.5.5" },
     { name = "sounddevice", marker = "extra == 'wake'", specifier = "==0.5.5" },

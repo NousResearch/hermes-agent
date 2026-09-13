@@ -30,6 +30,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
+from cron import executions as _executions
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
@@ -80,13 +81,19 @@ def _db_path() -> Path:
     return get_hermes_home().resolve() / "cron" / "executions.db"
 
 
-def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state import apply_wal_with_fallback
+def _connect() -> sqlite3.Connection:
+    # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
+    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
+    # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
+    from cron.jobs import _ensure_cron_dir
+    from hermes_cli.sqlite_util import open_db
 
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=5000")
-    apply_wal_with_fallback(conn, db_label="cron/executions.db")
-    conn.execute("PRAGMA synchronous=FULL")
+    path = _db_path()
+    _ensure_cron_dir(path.parent)
+    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+
+
+def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """CREATE TABLE IF NOT EXISTS cron_incidents (
              id            TEXT PRIMARY KEY,
@@ -114,20 +121,10 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, always close.
+    from hermes_cli.sqlite_util import transaction
 
-    Mirrors ``cron.executions._transaction``: schema init runs inside the
-    ``try`` so a PRAGMA/DDL failure after a successful ``connect()`` still
-    closes the connection instead of leaking it.
-    """
-    with _lock:
-        conn = _connect()
-        try:
-            _initialize_schema(conn)
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+    with _lock, transaction(_connect()) as conn:
+        yield conn
 
 
 def _normalize_error(error: str) -> str:
@@ -141,7 +138,7 @@ def _redact_error(error: str) -> str:
     try:
         from agent.redact import redact_sensitive_text
 
-        text = redact_sensitive_text(text)
+        text = redact_sensitive_text(text, force=True)  # persisted to disk: always scrub
     except Exception:
         # Redaction is best-effort; the scheduler path never fails on it.
         pass

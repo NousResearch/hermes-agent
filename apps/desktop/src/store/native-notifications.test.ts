@@ -68,6 +68,20 @@ afterEach(() => {
   resetBackgroundPollingGuard()
 })
 
+it('captures durable navigation identity while keeping the runtime id for approval actions', () => {
+  const runtimeId = freshSession()
+  publishSessionState(runtimeId, createClientSessionState('durable-chat'))
+
+  try {
+    dispatchNativeNotification({ kind: 'approval', sessionId: runtimeId, title: 'Approval' })
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: runtimeId, focusSessionId: 'durable-chat' })
+    )
+  } finally {
+    dropSessionState(runtimeId)
+  }
+})
+
 describe('dispatchNativeNotification focus gating', () => {
   it('fires a completion notification for the active session when the window is hidden', () => {
     const sessionId = freshSession()

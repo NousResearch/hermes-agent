@@ -1,13 +1,19 @@
-import { isGatewayReauthRequired, JsonRpcGatewayError, resolveGatewayWsUrl } from '@hermes/shared'
+import {
+  type GatewayEvent,
+  isGatewayReauthRequired,
+  isGatewayWebSocketUrl,
+  JsonRpcGatewayError,
+  reconnectBackoffDelayMs,
+  resolveGatewayWsUrl
+} from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
-import type { HermesConnection } from '@/global'
+import type { DesktopBootProgress, HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { decideLivenessForceClose, LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
-import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
@@ -61,6 +67,7 @@ import {
   $activeSessionId,
   $connection,
   $currentCwd,
+  $gatewayState,
   $selectedStoredSessionId,
   $sessions,
   ensureDefaultWorkspaceCwd,
@@ -109,16 +116,6 @@ const RECONNECT_ESCALATE_AFTER_MS = 300_000
 // only a STREAK of unanswered pings rebuilds the transport.
 const GATEWAY_LIVENESS_PROBE_TIMEOUT_MS = 5_000
 
-// Bound for the sleep/wake liveness probe (see reconnectNow): long enough to
-// ride out a busy-but-healthy backend's scheduling jitter, short enough that a
-// half-open socket fails fast instead of hanging the wake path. Independent of
-// PROMPT_SUBMIT_REQUEST_TIMEOUT_MS (30 min) — that long timeout is correct for
-// an in-flight turn, but must never be what a dead connection burns. A probe
-// TIMEOUT alone no longer tears the socket down mid-turn (#95327): while a
-// turn is in flight the first timeout defers behind one bounded re-probe, so
-// only a STREAK of unanswered pings rebuilds the transport.
-const GATEWAY_LIVENESS_PROBE_TIMEOUT_MS = 5_000
-
 // Bounded self-heal for a failed REMOTE boot (#82679): main classifies every
 // fault it can see (via getBootProgress().retryable); the renderer adds the one
 // it cannot — a valid remote WebSocket dial that fails before becoming usable.
@@ -153,8 +150,6 @@ export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'c
 interface GatewayBootOptions {
   beforeConnectionSwitch: () => void
   handleGatewayEvent: (event: GatewayEvent) => void
-  /** Server→client request from any registry socket; false = no handler (the channel answers -32601). */
-  handleServerRequest: (request: ScopedServerRequest) => boolean
   onConnectionReady: (
     connection: Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null
   ) => void
@@ -427,10 +422,13 @@ export function useGatewayBoot({
         // through to the backoff in the finally block below — they must NOT
         // take the full-screen "couldn't start" path (locks reading/drafting).
         if (!cancelled && isGatewayReauthRequired(err) && !reauthNotified) {
-          reauthNotified = true
-          const message = err instanceof Error ? err.message : String(err)
-          failDesktopBoot(message)
-          notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
+          primaryReauthError = err instanceof Error ? err.message : String(err)
+          syncPrimaryReauthError()
+
+          if (isActivePrimary()) {
+            reauthNotified = true
+            notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
+          }
         }
       } finally {
         reconnecting = false
@@ -624,6 +622,7 @@ export function useGatewayBoot({
         reconnectFailingSince = null
         escalated = false
         reauthNotified = false
+        primaryReauthError = null
 
         gateway.close()
         // The primary mode is changing, but registered v2 sources remain
@@ -741,7 +740,13 @@ export function useGatewayBoot({
       // (otherwise a 1–3 min blip bricks reading/drafting behind "couldn't start").
       if ($gatewaySwitching.get() || bootCompleted) {
         if (payload.error && shouldApplyPostBootProgressError(payload.error)) {
-          applyDesktopBootProgress(payload)
+          primaryReauthError = payload.error
+
+          if (bootCompleted) {
+            syncPrimaryReauthError()
+          } else {
+            applyDesktopBootProgress(payload)
+          }
         }
 
         return
@@ -1099,15 +1104,21 @@ export function useGatewayBoot({
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
         // ticket is single-use with a short TTL, so the ticket baked into
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it rather than
-        // connecting with a dead ticket. Auth rejection asks for sign-in;
-        // connectivity failures remain retryable. Bounded like the reconnect
-        // path (#93454) so a wedged mint fails into boot retry instead of
-        // hanging "Starting Hermes…" forever.
+        // connecting with a dead ticket. Auth rejection asks for sign-in. This
+        // await is bounded like the reconnect path (#93454) so a wedged mint
+        // reaches the recovery affordance instead of hanging "Starting Hermes…".
         const wsUrl = await withTimeout(
           resolveGatewayWsUrl(desktop, conn),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out minting the gateway WebSocket URL'
         )
+
+        // Only a valid WebSocket dial against a remote descriptor counts as a
+        // transient renderer-side failure; URL and capability failures stay
+        // terminal at their own boundaries.
+        if (conn.mode === 'remote' && isGatewayWebSocketUrl(wsUrl)) {
+          stage = 'dialing'
+        }
 
         await gateway.connect(wsUrl)
         stage = 'connected'

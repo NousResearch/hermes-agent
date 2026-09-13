@@ -411,130 +411,46 @@ DEFAULT_CONTEXT_LENGTHS = {
     # (version-less canonical id, 2026-09 Flash refresh) needs a discrete entry or the
     # longest-key-first scan falls through to the 128K ``deepseek`` catch-all below.
     # https://api-docs.deepseek.com/zh-cn/quick_start/pricing
-    "deepseek-v4-pro": 1_000_000,
-    "deepseek-v4-flash": 1_000_000,
-    "deepseek-chat": 1_000_000,
-    "deepseek-reasoner": 1_000_000,
-    "deepseek": 128000,
-    # Meta
-    "llama": 131072,
-    # Muse Spark family (1.1/1.2/1.3 + contributor tiers) ships with a 1M
-    # context window: 1,048,576 per OpenRouter live metadata (verified
-    # 2026-09-02). The family key covers every checkpoint; live endpoint /
-    # models.dev metadata still wins when available. Substring match also
-    # covers -contributor and provider-prefixed ids (meta/...).
-    "muse-spark-1.3": 1_048_576,
-    "muse-spark": 1_048_576,
-    # Thinking Machines — Inkling family ships with a 1M context window
-    # (max output 256K).  Verified against OpenRouter live metadata
-    # (context_length 1,048,576 for inkling, inkling-small, and the
-    # :free SKUs, 2026-08-27).  Substring matching means "inkling"
-    # covers inkling-small and every :free/:batch variant; the :batch
-    # SKU's smaller live window (524,288) is served by the provider's
-    # live metadata when available.
-    "inkling": 1_048_576,
-    # Qwen — specific model families before the catch-all.
-    # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
-    "qwen3.8-max": 1_000_000,     # 1M context (OpenRouter & Nous portal, verified 2026-08-03)
-    "qwen3.8-flash": 1_000_000,   # 1M context (OpenRouter & Nous portal, verified 2026-08-28)
-    "qwen3.6-plus": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
-    "qwen3.7-plus": 1048576,      # 1M context (DashScope/Alibaba)
-    "qwen3-coder-plus": 1000000,  # 1M context
-    "qwen3-coder": 262144,        # 256K context
-    "qwen3-max": 262144,          # 256K context (qwen3-max-2026-01-23 snapshot, Coding Plan)
-    "qwen": 131072,
-    # MiniMax — M3 is 1M context (max output 512K); M2.x series is 204,800.
-    # Keys use substring matching (longest-first), so "minimax-m3" wins over
-    # the generic "minimax" catch-all for the M3 slug on every surface
-    # (native MiniMax-M3, OpenRouter/Nous minimax/minimax-m3).
-    # https://platform.minimax.io/docs/api-reference/text-chat-openai
-    "minimax-m3": 1000000,
-    "minimax": 204800,
-    # GLM — GLM-5.2 and GLM-5.3 ship with a 1M context window.  GLM-5.2 was
-    # verified empirically (needle-in-a-haystack retrieval at 789K prompt
-    # tokens succeeded with zero errors on api.z.ai/api/coding/paas/v4).
-    # GLM-5.3 uses the same base model (all gains are post-training) with
-    # 1M context / 128K max output per docs.z.ai/guides/llm/glm-5.3
-    # (verified 2026-08-14).  Older GLM models (5, 5.1, 5-turbo) are ~202K.
-    # Longest-key-first substring matching ensures "glm-5.2"/"glm-5.3"
-    # resolve to 1M while older variants still hit the generic 202K fallback.
-    "glm-5.2": 1_048_576,
-    # OpenRouter's free GLM-5.2 variant is capped at 256K (live metadata,
-    # 2026-08-21) — longer key wins over the 1M paid entry above.
-    "glm-5.2:free": 256_000,
-    "glm-5.3": 1_048_576,
-    "glm": 202752,
-    # xAI Grok — xAI /v1/models does not return context_length metadata,
-    # so these hardcoded fallbacks prevent Hermes from probing-down to
-    # the default 128k when the user points at https://api.x.ai/v1
-    # via a custom provider. Values sourced from models.dev (2026-04).
-    # Keys use substring matching (longest-first), so e.g. "grok-4.20"
-    # matches "grok-4.20-0309-reasoning" / "-non-reasoning" / "-multi-agent-0309".
-    # OAuth-only slug; absent from GET /v1/models. xAI publishes a 200k
-    # usable context window for Composer 2.5 on Grok Build (SuperGrok /
-    # Premium+); /v1/responses additionally enforces a ~262144 input+output
-    # budget, but the usable context (what we track here) is 200k.
-    "grok-composer": 200000,    # grok-composer-2.5-fast (Grok Build CLI)
-    "grok-build-latest": 500000,  # alias of grok-4.5 (early access)
-    "grok-build": 256000,       # grok-build-0.1
-    "grok-code-fast": 256000,   # grok-code-fast-1
-    "grok-2-vision": 8192,      # grok-2-vision, -1212, -latest
-    "grok-4-fast": 2000000,     # grok-4-fast-(non-)reasoning, also matches -reasoning
-    "grok-4.20": 2000000,       # grok-4.20-0309-(non-)reasoning, -multi-agent-0309
-    "grok-4.6": 500000,         # grok-4.6 — 500K context (OpenRouter / docs.x.ai)
-    "grok-4.5": 500000,         # grok-4.5, grok-4.5-latest — 500K context per docs.x.ai
-    "grok-4.3": 1000000,        # grok-4.3, grok-4.3-latest — 1M context per docs.x.ai
-    "grok-4": 256000,           # grok-4, grok-4-0709
-    "grok-3": 131072,           # grok-3, grok-3-mini, grok-3-fast, grok-3-mini-fast
-    "grok-2": 131072,           # grok-2, grok-2-1212, grok-2-latest
-    "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
-    # Kimi — K3 ships with a 1 Mi context window (1,048,576; verified against
-    # models.dev and OpenRouter live metadata, matching the endpoint-scoped
-    # override in _endpoint_scoped_context_length). Longest-key-first substring
-    # matching ensures "kimi-k3" resolves to 1M while older/unknown Kimi models
-    # still hit the generic 256K fallback.
-    "kimi-k3": 1_048_576,
-    "kimi": 262144,
-    # Upstage Solar — api.upstage.ai/v1/models does not return context_length,
-    # so these fallbacks keep token budgeting / compression from probing down
-    # to the 128k default. Ids are matched longest-first, so dated variants
-    # (e.g. solar-pro3-250127) resolve via their family prefix.
-    # Sources: Solar Pro 3 = 128K, Solar Pro 2 = 64K, Solar Mini = 32K,
-    # Solar Open 2 = 256K.
-    "solar-open2": 262144,  # 256K
-    "solar-pro3": 131072,
-    "solar-pro2": 65536,
-    "solar-mini": 32768,
-    # Tencent — Hy4 Preview (Hunyuan), 1M context window per OpenRouter
-    # live metadata (2026-08-28). Longest-key-first so this wins over any
-    # future shorter hy* catch-all.
-    "hy4-preview": 1_048_576,
-    # Tencent — Hy3 Preview (Hunyuan) with 256K context window.
-    # OpenRouter live metadata reports 262144 (256 × 1024); align the
-    # static fallback so cache and offline both agree (issue #22268).
-    "hy3-preview": 262144,
-    # Tencent — Hy3 (GA successor to Hy3 Preview), same 256K window.
-    "hy3": 262144,
-    # OpenCode Zen — "Ox Alpha" stealth model (x-preview-f-free). 1M context
-    # per OpenCode's launch announcement (2026-08-20); free, ZDR.
-    "x-preview-f": 1_048_576,
-    # OpenRouter — same "Ox Alpha" stealth model under its OpenRouter slug
-    # (stealth/ox-alpha). 1M context per OpenRouter live metadata (2026-08-20).
-    "ox-alpha": 1_048_576,
-    # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
-    # EXCEPT 3.5 Lightning, which ships a 1M window (OpenRouter live metadata
-    # + OpenCode Zen free tier, verified 2026-08-21).
-    "nemotron-3.5-lightning": 1_000_000,
-    "nemotron": 131072,
-    # Poolside Laguna 2.1 (s/xs) — 256K window per OpenRouter live metadata
-    # (2026-08-21). Covers laguna-s-2.1:free, laguna-xs-2.1:free, and the
-    # OpenCode Zen laguna-s-2.1-free slug via substring matching.
-    "laguna-s-2.1": 262144,
-    "laguna-xs-2.1": 262144,
-    # Arcee
-    "trinity": 262144,
-    # OpenRouter
-    "elephant": 262144,
+    "deepseek-v4-pro": 1_000_000, "deepseek-v4.1-flash": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-chat": 1_000_000,
+    "deepseek-reasoner": 1_000_000, "deepseek-flash": 1_000_000, "deepseek": 128000,
+    # Meta; Muse Spark family (1.1/1.2/1.3, -contributor(-free), meta/ prefixed) is 1M per OpenRouter,
+    # models.dev and api.commandcode.ai /models — keep the "muse-spark" prefix (bare "muse" would match
+    # muse-image/muse-voice). Thinking Machines inkling (covers inkling-small and :free/:batch variants)
+    "llama": 131072, "muse-spark-1.3": 1_048_576, "muse-spark": 1_048_576, "inkling": 1_048_576,
+    # Qwen — https://help.aliyun.com/zh/model-studio/developer-reference/ (3.8-max/flash
+    # 1M verified on OpenRouter & Nous portal 2026-08; qwen3-max = 256K Coding Plan snapshot)
+    "qwen3.8-max": 1_000_000, "qwen3.8-flash": 1_000_000, "qwen3.6-plus": 1048576, "qwen3.7-plus": 1048576,
+    "qwen3-coder-plus": 1000000, "qwen3-coder": 262144, "qwen3-max": 262144, "qwen": 131072,
+    # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
+    "minimax-m3": 1000000, "minimax": 204800,
+    # GLM — Nous + OpenRouter /v1/models (2026-09-09): 5.3 / 5.3-flash 1,310,720 (:batch/:US 1,048,576);
+    # 5.2 1,048,576; 5 / 5.1 / 4.7 / 4.6 204,800; *-turbo / 4.7-flash 202,752 (the catch-all).
+    # The OpenRouter :free variant is capped; the longer key wins.
+    "glm-5.3": 1_310_720, "glm-5.3-flash": 1_310_720, "glm-5.3:batch": 1_048_576, "glm-5.3:us": 1_048_576,
+    "glm-5.3-flash:batch": 1_048_576, "glm-5.3-flash:us": 1_048_576,
+    "glm-5.2": 1_048_576, "glm-5.2:free": 256_000,
+    "glm-5.1": 204_800, "glm-5-turbo": 202752, "glm-5v-turbo": 202752, "glm-5": 204_800,
+    "glm-4.7-flash": 202752, "glm-4.7": 204_800, "glm-4.6v": 131072, "glm-4.6": 204_800, "glm": 202752,
+    # xAI — /v1/models returns no context_length, so these prevent probe-down on api.x.ai
+    # custom providers (docs.x.ai). grok-composer(-2.5-fast, Grok Build CLI) is OAuth-only:
+    # 200k usable (the /v1/responses ~262144 input+output budget is a separate limit).
+    # grok-build-latest aliases grok-4.5; grok-4-fast / grok-4.20 also match their
+    # -(non-)reasoning and -multi-agent variants; "grok" is the catch-all.
+    "grok-composer": 200000, "grok-build-latest": 500000, "grok-build": 256000, "grok-code-fast": 256000,
+    "grok-2-vision": 8192, "grok-4-fast": 2000000, "grok-4.20": 2000000,
+    "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
+    "grok-3": 131072, "grok-2": 131072, "grok": 131072,
+    # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
+    "kimi-k3": 1_048_576, "kimi": 262144,
+    # Upstage Solar — /v1/models returns no context_length; dated variants resolve via prefix.
+    "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768,
+    # Tencent Hunyuan (262144 = 256 × 1024, aligned with OpenRouter live metadata)
+    "hy4-preview": 1_048_576, "hy3-preview": 262144, "hy3": 262144,
+    # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); NVIDIA Nemotron (128K
+    # except 3.5 Lightning); Poolside Laguna 2.1 (:free / -free slugs); Arcee; OpenRouter.
+    "x-preview-f": 1_048_576, "ox-alpha": 1_048_576,
+    "nemotron-3.5-lightning": 1_000_000, "nemotron": 131072,
+    "laguna-s-2.1": 262144, "laguna-xs-2.1": 262144, "trinity": 262144, "elephant": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
     "Qwen/Qwen3.5-397B-A17B": 131072, "Qwen/Qwen3.5-35B-A3B": 131072, "deepseek-ai/DeepSeek-V3.2": 65536,
     "moonshotai/Kimi-K2.5": 262144, "moonshotai/Kimi-K2.6": 262144, "moonshotai/Kimi-K2-Thinking": 262144,
@@ -1203,16 +1119,10 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         cached = _endpoint_model_metadata_cache.get(memo_key)
         if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(memo_key, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
-        if not is_local_endpoint(normalized):
-            memo = _endpoint_disk_cache_get(normalized)
-            if memo is not None:
-                _endpoint_model_metadata_cache[normalized] = memo
-                _endpoint_model_metadata_cache_time[normalized] = time.time()
-                return memo
-
-    # Blackholed endpoint: every candidate below would spend its full 5s
-    # connect budget. Returned empty rather than cached, so the endpoint is
-    # retried as soon as the blackhole entry expires.
+        memo = _endpoint_disk_cache_get(normalized) if not local else None
+        if memo is not None:
+            return _remember_endpoint_models(memo_key, memo)
+    # Blackholed: return empty WITHOUT caching so it is retried once the entry expires.
     if _endpoint_blackholed(normalized):
         return {}
     alternate = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized + "/v1"
@@ -1317,7 +1227,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
             _endpoint_model_metadata_cache_time[normalized] = time.time()
             if cache and not is_local_endpoint(normalized):
                 _endpoint_disk_cache_put(normalized, cache)
-            return cache
+            return _remember_endpoint_models(memo_key, cache)
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
@@ -1582,7 +1492,7 @@ _OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("available_tokens",), ("available tokens",),
     ("in the output", "maximum context length"), ("requested", "output tokens"),
     ("should be",), ("less than or equal",), ("must be",), ("exceeds model", "maximum output tokens"),
-    ("output limit",), ("maximum allowed number of output tokens",),
+    ("output limit",),
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1597,7 +1507,7 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("in the output", "maximum context length"),
     ("maximum context length", "requested", "output tokens"),
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
-    ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
+    ("output limit",),
 )
 
 
@@ -3061,32 +2971,11 @@ def estimate_tokens_rough(text: str) -> int:
     if not text:
         return 0
     text = str(text)
-    if text.isascii():
-        # O(1) fast path — ASCII text cannot contain token-dense CJK chars.
-        return (len(text) + 3) // 4
+    if text.isascii():  # flag check on CPython; ASCII cannot contain token-dense CJK
+        return (len(text) + 3) // CHARS_PER_TOKEN
     stripped = _CJK_DENSE_RE.sub("", text)
     dense = len(text) - len(stripped)
-    if not dense:
-        # Non-ASCII but no CJK (accents, Cyrillic, emoji, ...): count UTF-8
-        # BYTES at ~4/token instead of characters. The byte width is the
-        # corrective: Cyrillic/Greek/Arabic are 2 bytes per char, so they
-        # count as ~chars/2 — matching their real BPE cost (~2-3 chars per
-        # token) where chars/4 under-counted them ~2x and let sessions ride
-        # the provider's context ceiling below the compaction threshold.
-        # ASCII spans inside mixed text still count at 1 byte each.
-        #
-        # Calibrated against cl100k/o200k/Qwen2.5 (estimate / mean real):
-        # Russian 0.67->1.24, Ukrainian 0.55->1.03, Arabic 0.53->0.96,
-        # Hindi 0.34->0.90, Greek 0.37->0.68, Polish 0.63->0.69; accented
-        # Latin barely moves (French 1.02->1.03, German 0.99->1.02,
-        # Spanish 1.04->1.07) because only the accented chars widen.
-        # Pure-ASCII prose already over-counts at ~1.4 on the same rule.
-        # errors="replace": lone surrogates (routine in tool output; see
-        # message_sanitization) must not turn an estimate into a raise.
-        return (len(text.encode("utf-8", "replace")) + 3) // 4
-    # Mixed CJK + other: dense chars stay ~1 token each; the sparse
-    # remainder is byte-counted for the same corrective.
-    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // 4)
+    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // CHARS_PER_TOKEN)
 
 
 def estimate_messages_tokens_rough(

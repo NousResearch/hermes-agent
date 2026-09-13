@@ -572,118 +572,18 @@ def cron_status():
 
     provider = _active_cron_provider_name()
     if provider != "builtin":
-        # An external provider (e.g. Chronos) does NOT run the in-process 60s
-        # ticker — it arms one external one-shot per job and is fired by a
-        # NAS-mediated webhook, so between fires there is intentionally NO
-        # ticker thread and NO heartbeat file. Reporting the ticker-heartbeat
-        # staleness here would always say "stalled / not firing" on a perfectly
-        # healthy Chronos instance. Report the provider instead and skip the
-        # ticker-liveness heuristics entirely.
-        print(color(
-            f"✓ Cron provider: {provider} — jobs fire via the managed scheduler, "
-            "not the in-process ticker.",
-            Colors.GREEN,
-        ))
-        print(color(
-            "  (No ticker heartbeat is expected for an external provider; "
-            "due jobs are delivered by an authenticated webhook.)",
-            Colors.DIM,
-        ))
-        print()
-        _print_active_jobs_summary(list_jobs(include_disabled=False))
-        print()
-        return
-
-    pids = find_gateway_pids()
-    gateway_alive_via_lock = False
-    if not pids:
-        # Same false-alarm class the cronjob tool fixed (#95947): the pid scan
-        # can transiently miss a live gateway (just after a restart) while the
-        # runtime lock — held for exactly the gateway's lifetime — proves the
-        # ticker's process is alive. Only declare "not running" when both the
-        # scan AND the lock say so.
-        try:
-            from gateway.status import get_running_pid, is_gateway_runtime_lock_active
-
-            if is_gateway_runtime_lock_active():
-                gateway_alive_via_lock = True
-                lock_pid = get_running_pid()
-                if lock_pid:
-                    pids = [lock_pid]
-        except Exception:
-            pass
-    if pids or gateway_alive_via_lock:
-        # The gateway PROCESS is alive — but the cron ticker THREAD inside it
-        # can die silently, or stay alive while every tick fails. Check both
-        # the liveness heartbeat and the last-successful-tick marker so we
-        # don't report "will fire" when the ticker is dead or failing
-        # (#32612, #32895).
-        from cron.jobs import (
-            get_ticker_heartbeat_age,
-            get_ticker_last_error,
-            get_ticker_success_age,
-            TICKER_INTERVAL_SECONDS,
-        )
-        from cron.scheduler import _is_fd_exhaustion_text as _cron_is_fd_exhaustion_text
-
-        # Allow ~3 missed ticker iterations (+ a little slack) before declaring
-        # trouble. Derived from the shared interval constant so this threshold
-        # tracks the ticker cadence instead of assuming a hardcoded 60s.
-        STALE_AFTER = TICKER_INTERVAL_SECONDS * 3 + 20  # = 200s at the 60s default
-        hb_age = get_ticker_heartbeat_age()
-        ok_age = get_ticker_success_age()
-
-        if hb_age is not None and hb_age > STALE_AFTER:
-            # No heartbeat at all → the ticker thread is gone.
-            print(color(
-                "⚠ Gateway is running but the cron ticker looks STALLED — "
-                f"no heartbeat for {int(hb_age)}s (expected every ~60s).",
-                Colors.YELLOW,
-            ))
-            if pids:
-                print(f"  PID: {', '.join(map(str, pids))}")
-            print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
-        elif hb_age is not None and ok_age is not None and ok_age > STALE_AFTER:
-            # Loop is alive (fresh heartbeat) but no tick has SUCCEEDED in a
-            # long time → ticks are failing every iteration.
-            print(color(
-                "⚠ Gateway and cron ticker are running, but no tick has "
-                f"succeeded in {int(ok_age)}s — ticks may be failing.",
-                Colors.YELLOW,
-            ))
-            if pids:
-                print(f"  PID: {', '.join(map(str, pids))}")
-            last_error = get_ticker_last_error()
-            if last_error:
-                # Show WHY ticks fail — e.g. a root-rewritten jobs.json
-                # (PermissionError) that silently locked out the ticker's
-                # uid for ~14h in the field (#68483), or fd exhaustion
-                # (EMFILE) that used to stall the scheduler invisibly
-                # (#87644).
-                print(color(f"  Last tick error: {last_error}", Colors.RED))
-                if "Permission denied" in last_error:
-                    print(color(
-                        "  Hint: jobs.json may be owned by another user "
-                        "(e.g. rewritten by a root `docker exec hermes "
-                        "hermes cron ...`). Fix ownership to match the "
-                        "gateway user, and prefer `docker exec -u <uid>:<gid>`.",
-                        Colors.YELLOW,
-                    ))
-                elif _cron_is_fd_exhaustion_text(last_error):
-                    print(color(
-                        "  Hint: the ticker hit file-descriptor exhaustion "
-                        "(EMFILE). The scheduler now retries with backoff and "
-                        "attempts fd reclamation, but if the leak persists, "
-                        "restart the gateway to recover scheduling.",
-                        Colors.YELLOW,
-                    ))
-            print("  Check the gateway log for 'Cron tick error'.")
-        else:
-            print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
-            if pids:
-                print(f"  PID: {', '.join(map(str, pids))}")
-            if hb_age is not None:
-                print(f"  Ticker heartbeat: {int(hb_age)}s ago")
+        # External providers fire via webhook: no ticker thread / heartbeat file by design, so
+        # the liveness heuristics would always say "stalled".
+        print(color(f"✓ Cron provider: {provider} — jobs fire via the managed scheduler, "
+                    "not the in-process ticker.", Colors.GREEN))
+        print(color("  (No ticker heartbeat is expected for an external provider; "
+                    "due jobs are delivered by an authenticated webhook.)", Colors.DIM))
+    elif not find_gateway_pids() and named_profile_served_by_running_multiplexer():
+        # Satellite profile: the default multiplexer's ticker fires this store (same answer as
+        # `_builtin_gateway_liveness`, which `cron list` uses -- the two must not disagree).
+        print(color("✓ Gateway is running via the default-profile multiplexer — it ticks this profile's jobs.",
+                    Colors.GREEN))
+        print(color("  Ticker health is reported by `hermes cron status` on the default profile.", Colors.DIM))
     else:
         pids = find_gateway_pids()
         gateway_alive_via_lock = False
@@ -1153,49 +1053,11 @@ _CRON_SUBCOMMANDS["rm"] = _CRON_SUBCOMMANDS["delete"] = _CRON_SUBCOMMANDS["remov
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
-
-    if subcmd is None or subcmd == "list":
-        show_all = getattr(args, 'all', False)
-        cron_list(show_all)
-        return 0
-
-    if subcmd == "status":
-        cron_status()
-        return 0
-
-    if subcmd == "tick":
-        return cron_tick()
-
-    if subcmd in {"runs", "history"}:
-        cron_runs(getattr(args, "job_id", None), getattr(args, "limit", 20))
-        return 0
-
-    if subcmd == "incidents":
-        return cron_incidents(args)
-
-    if subcmd == "notepad":
-        return cron_notepad(args)
-
-    if subcmd in {"create", "add"}:
-        return cron_create(args)
-
-    if subcmd == "edit":
-        return cron_edit(args)
-
-    if subcmd == "pause":
-        return _job_action("pause", args.job_id, "Paused")
-
-    if subcmd == "resume":
-        return cron_resume(args)
-
-    if subcmd == "run":
-        return _job_action("run", args.job_id, "Triggered")
-
-    if subcmd in {"remove", "rm", "delete"}:
-        return _job_action("remove", args.job_id, "Removed")
-
-    print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|tick]")
+    handler = _CRON_SUBCOMMANDS.get("list" if subcmd is None else subcmd)
+    if handler is not None:
+        return handler(args)
+    print(f"Unknown cron command: {subcmd}\n"
+          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|resnap|status|runs|doctor|tick]")
     sys.exit(1)
 
 

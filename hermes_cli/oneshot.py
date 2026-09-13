@@ -204,20 +204,10 @@ def run_oneshot(
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
-    Args:
-        prompt: The user message to send.
-        model: Optional model override. Falls back to HERMES_INFERENCE_MODEL
-            env var, then config.yaml's model.default / model.model.
-        provider: Optional provider override. Falls back to config.yaml's
-            model.provider, then "auto".
-        toolsets: Optional comma-separated string or iterable of toolsets.
-        skills: Optional repeated/comma-separated skill identifiers to preload.
-        usage_file: Optional path; when set, a JSON usage report (estimated
-            cost, token counts, model, api_calls) is written there after the
-            run — even when the run fails — so pipelines can account for
-            spend per invocation.
-
-    Returns the exit code.  The caller owns process termination.
+    Model/provider fall back to ``HERMES_INFERENCE_MODEL`` and config.yaml. ``usage_file`` gets a
+    JSON usage report even when the run fails. ``resume`` is a session id (already normalized by
+    the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
+    by this turn. Returns the exit code; the caller owns process termination.
     """
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
@@ -481,6 +471,8 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    resume: Optional[str] = None,
+    reasoning: object = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
@@ -533,11 +525,8 @@ def _run_agent(
 
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
-    session_db = _create_session_db_for_oneshot()
-    # The try spans agent construction (not just ``chat``) so the SQLite store
-    # opened above is always closed — including when ``AIAgent(...)`` itself
-    # raises on a provider/config error. The one-shot exit path hard-exits via
-    # os._exit and skips finalizers, so an un-closed connection here would leak.
+    # The try spans agent construction (not just ``chat``) so the store is always closed, even when
+    # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = None
     try:
         agent = AIAgent(
@@ -555,17 +544,10 @@ def _run_agent(
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
             ephemeral_system_prompt=skills_prompt,
-            # Interactive callbacks are intentionally NOT wired beyond this
-            # one.  In oneshot mode there's no user sitting at a terminal:
-            #   - clarify  → returns a synthetic "pick a default" instruction
-            #                so the agent continues instead of stalling on
-            #                the tool's built-in "not available" error
-            #   - sudo password prompt → terminal_tool gates on
-            #                HERMES_INTERACTIVE which we never set
-            #   - shell-hook approval → auto-approved via HERMES_ACCEPT_HOOKS=1
-            #                (set above); also falls back to deny on non-tty
-            #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
-            #   - skill secret capture → returns gracefully when no callback set
+            reasoning_config=reasoning_config,
+            # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
+            # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
+            # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.
             clarify_callback=_oneshot_clarify_callback,
         )
         # Belt-and-braces: no streaming display callbacks may bypass our stdout capture.

@@ -16,55 +16,10 @@ import {
   rankSkillCommands,
   rememberDesktopCommandsCatalog,
   resolveDesktopCommand,
-  slashCompletionGroup
+  slashCompletionGroup,
+  TS_ONLY_NO_DESKTOP_SURFACE
 } from './desktop-slash-commands'
 import desktopSlashRegistry from './desktop-slash-registry.json'
-
-function registryCatalog(
-  modes: Record<string, DesktopSlashArgumentMode | null>,
-  aliases: Record<string, string> = {}
-): CommandsCatalogLike {
-  const commands: Record<string, CommandCatalogMeta> = {}
-  const canon: Record<string, string> = {}
-
-  for (const [name, argument_mode] of Object.entries(modes)) {
-    commands[name] = { argument_mode, desktop: null }
-    canon[name] = name
-  }
-
-  for (const [alias, target] of Object.entries(aliases)) {
-    commands[alias] = commands[target]
-    canon[alias] = target
-  }
-
-  return { commands, canon }
-}
-
-const REGISTRY_CATALOG = registryCatalog(
-  {
-    '/approvals': 'options',
-    '/review': 'text',
-    '/refine': 'text',
-    '/usage': null,
-    '/version': null,
-    '/agents': null,
-    '/steer': 'text',
-    '/stop': null,
-    '/bg': 'text',
-    '/btw': 'text',
-    '/debug': null,
-    '/goal': 'mixed',
-    '/personality': 'options',
-    '/queue': 'text',
-    '/retry': null,
-    '/rollback': null,
-    '/tools': 'options',
-    '/undo': null,
-    '/loop': 'mixed',
-    '/lcm': 'text'
-  },
-  { '/tasks': '/agents', '/background': '/bg', '/q': '/queue', '/proactive': '/loop' }
-)
 
 function registryCatalog(
   modes: Record<string, DesktopSlashArgumentMode | null>,

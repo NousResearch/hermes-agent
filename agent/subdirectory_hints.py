@@ -104,39 +104,9 @@ class SubdirectoryHintTracker:
         if found and found[1]:
             self._loaded_digests.add(_digest(found[1]))
 
-    def _seed_working_dir_digest(self) -> None:
-        """Record the CWD context file's digest so it is never re-injected.
-
-        ``prompt_builder`` already loads the working directory's context file at
-        startup.  Seeding its digest here means the same content reached through
-        a different path (a symlink farm, a shared workspace) is recognised as a
-        duplicate instead of being sent a second time.
-        """
-        for filename in _HINT_FILENAMES:
-            candidate = self.working_dir / filename
-            try:
-                if not candidate.is_file():
-                    continue
-                content = (_read_text_with_timeout(candidate) or "").strip()
-            except (OSError, UnicodeDecodeError):
-                continue
-            if content:
-                self._loaded_digests.add(
-                    hashlib.sha256(content.encode("utf-8")).hexdigest()
-                )
-            break  # first match wins, mirroring startup loading
-
-    def check_tool_call(
-        self,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-    ) -> Optional[str]:
-        """Check tool call arguments for new directories and load any hint files.
-
-        Returns formatted hint text to append to the tool result, or None.
-        """
-        dirs = self._extract_directories(tool_name, tool_args)
-        if not dirs:
+    def check_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+        """Return formatted hint text for newly visited directories, or None."""
+        if not self.enabled:
             return None
         all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
         return "\n\n" + "\n\n".join(all_hints) if all_hints else None

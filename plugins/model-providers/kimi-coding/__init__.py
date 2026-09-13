@@ -50,53 +50,9 @@ class KimiProfile(ProviderProfile):
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Kimi reasoning controls.
-
-        Moonshot's wire shape treats ``extra_body.thinking`` (a binary toggle)
-        and a top-level ``reasoning_effort`` as mutually exclusive — sending
-        both is at best redundant and risks "cannot specify both 'thinking' and
-        'reasoning_effort'" (HTTP 400). This mirrors the kimi-k2 handling on the
-        opencode-go relay: send effort when one is requested, otherwise fall
-        back to ``extra_body.thinking`` — never both.
-        """
-        extra_body = {}
-        top_level = {}
-
-        if not reasoning_config or not isinstance(reasoning_config, dict):
-            # No config → thinking enabled, let the server pick the depth.
-            # (Previously also sent reasoning_effort="medium", which paired
-            # thinking + effort on every default call.)
-            extra_body["thinking"] = {"type": "enabled"}
-            return extra_body, top_level
-
-        enabled = reasoning_config.get("enabled", True)
-        if enabled is False:
-            extra_body["thinking"] = {"type": "disabled"}
-            return extra_body, top_level
-
-        # Enabled: prefer an explicit effort; only fall back to extra_body
-        # thinking when no recognized effort is requested.
-        # K3's vocabulary (low/high/max, default high) and its documented
-        # rounding (medium→high, xhigh→max) are declared in
-        # agent.reasoning_effort — shared with the chat-completions
-        # transport's Kimi path so both stay in sync.
-        from agent.reasoning_effort import (
-            KIMI_K3_EFFORTS,
-            KIMI_K3_OVERRIDES,
-            clamp_effort,
-        )
-
-        effort = (reasoning_config.get("effort") or "").strip().lower()
-        if effort and effort != "none":
-            k3_effort = clamp_effort(effort, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES)
-        else:
-            k3_effort = None
-        if k3_effort in KIMI_K3_EFFORTS:
-            top_level["reasoning_effort"] = k3_effort
-        else:
-            extra_body["thinking"] = {"type": "enabled"}
-
-        return extra_body, top_level
+        """Moonshot treats extra_body.thinking and reasoning_effort as mutually
+        exclusive (400 on both): send effort when requested, else the toggle."""
+        return thinking_toggle_extras(reasoning_config, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES)
 
 
 def _kimi(name: str, aliases: tuple, env_vars: tuple, base_url: str) -> KimiProfile:

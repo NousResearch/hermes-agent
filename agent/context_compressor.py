@@ -24,7 +24,8 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.message_sanitization import tool_result_id_variants
+from agent.micro_compaction import MicroCompactionMixin
+from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
     strip_opaque_replay_items,
@@ -5496,18 +5497,11 @@ This compaction should PRIORITISE preserving all information related to the focu
         """Return whether *message* contains user input worth anchoring."""
         if not isinstance(message, dict) or message.get("role") != "user":
             return False
-        # Display-only timeline metadata (e.g. ``display_kind="internal_notification"``
-        # for Kanban/background completion wakes, ``"hidden"`` scaffolding) is a
-        # DB-sidecar notice, not human input. Treating it as an actionable turn
-        # lets routine operational traffic anchor the compaction tail or become
-        # the auto-focus source instead of the user's real objective (#92703).
-        # Mirrors the exclusion in ``is_user_originated_turn``.
-        if message.get("display_kind"):
-            return False
-        if cls._has_compressed_summary_metadata(message):
-            return False
-        content = message.get("content")
-        if cls._is_context_summary_content(content):
+        # display_kind rows (internal notifications, hidden scaffolding) are not human input
+        # and must not anchor the tail or seed auto-focus. Mirrors is_user_originated_turn.
+        # A /steer row is typed for the renderer and the alternation repair, but it IS human input.
+        display_kind = message.get("display_kind")
+        if (display_kind and display_kind != STEER_DISPLAY_KIND) or cls._is_context_summary_message(message):
             return False
         return not cls._is_blank_user_turn(message)
 

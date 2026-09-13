@@ -17927,8 +17927,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if pet_render.supports_kitty_placeholders():
             from prompt_toolkit.output import ColorDepth
 
-            color_depth_kw = {"color_depth": ColorDepth.DEPTH_24_BIT}
-        app = Application(
+            extra_kw["color_depth"] = ColorDepth.DEPTH_24_BIT
+        if _cpr_disabled_output is not None:
+            extra_kw["output"] = _cpr_disabled_output
+        if _STEADY_CURSOR is not None:
+            extra_kw["cursor"] = _STEADY_CURSOR
+        if EditingMode is not None:
+            # Vi editing mode when display.vim_mode is on.
+            # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
+            extra_kw["editing_mode"] = EditingMode.VI if self._vim_mode else EditingMode.EMACS
+        return Application(
             layout=layout,
             key_bindings=kb,
             style=style,
@@ -18714,68 +18722,26 @@ def _sync_cli_session_id_from_agent(cli) -> None:
         cli.session_id = cli.agent.session_id
 
 
-def _run_quiet_single_query(cli, effective_query, emitter=None):
+def _run_quiet_single_query(cli, effective_query):
     """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code.
-    With a ``StreamJsonEmitter`` the final answer and the exit line become the terminal ``result`` JSONL record instead.
-    HERMES_TURN_AUTHOR (set only by a bot-to-bot dispatcher) is consumed here so tool subprocesses do not inherit it.
-    Nested Bot Mode notifies bind this session's key (not the dispatcher's) and resume in-process
-    before stdout is printed, so a teammate reply is the quiet run's final answer rather than a
-    stranded receipt."""
+    HERMES_TURN_AUTHOR (set only by a bot-to-bot dispatcher) is consumed here so tool subprocesses do not inherit it."""
     from agent.interrupt_compat import _accepts_keyword
     from agent.turn_author import take_turn_author_from_env
-    from hermes_cli.quiet_single_query import (
-        bind_quiet_session_key, continue_quiet_notify_completions, quiet_notify_linger_seconds,
-    )
 
     author = take_turn_author_from_env()
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
-    with bind_quiet_session_key(getattr(cli, "session_id", "") or "default"):
-        try:
-            result = cli.agent.run_conversation(
-                user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
-            )
-        except KeyboardInterrupt:
-            _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
-            if emitter is not None:
-                sys.exit(emitter.emit_result({"failed": True, "error": "Interrupted"}, session_id=cli.session_id or "", exit_code=130))
-            print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-            sys.exit(130)
-        # The exit line below reports session_id to stderr for automation wrappers;
-        # without this sync it would point at the ended parent after compression.
-        _sync_cli_session_id_from_agent(cli)
-        if isinstance(result, dict) and not result.get("failed"):
-            history = result.get("messages") or cli.conversation_history
-
-            def _follow_up(text):
-                nonlocal history
-                follow = cli.agent.run_conversation(
-                    user_message=text, conversation_history=history, **author_kwargs,
-                )
-                if isinstance(follow, dict) and follow.get("messages"):
-                    history = follow["messages"]
-                # Same sync contract as the main turn: a compression rotation during a
-                # follow-up must not leave a stale id on the exit line / drain key.
-                _sync_cli_session_id_from_agent(cli)
-                return follow
-
-            # One shared linger budget for the whole run: the loop below and the later
-            # _wait_for_oneshot_background_completions pass must not each wait the full
-            # oneshot_completion_wait_seconds on the same stuck notify_on_complete child.
-            # Flagged after the loop (finally-equivalent): the wait is the loop's first
-            # statement, so anything raising past that point has consumed budget the
-            # finalize pass must not re-wait.
-            try:
-                continued = continue_quiet_notify_completions(
-                    getattr(cli, "session_id", "") or "",
-                    _follow_up,
-                    owns_event=getattr(cli, "_owns_process_notification", None),
-                    linger_budget=quiet_notify_linger_seconds(),
-                )
-            finally:
-                cli._quiet_notify_linger_done = True
-            if isinstance(continued, dict):
-                result = continued
-        response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+    try:
+        result = cli.agent.run_conversation(
+            user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
+        )
+    except KeyboardInterrupt:
+        _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+        sys.exit(130)
+    # The exit line below reports session_id to stderr for automation wrappers;
+    # without this sync it would point at the ended parent after compression.
+    _sync_cli_session_id_from_agent(cli)
+    response = result.get("final_response", "") if isinstance(result, dict) else str(result)
     # Surface backend errors that produced no visible output (e.g. invalid model slug
     # -> provider 4xx) on stderr so piped stdout stays clean.
     if emitter is not None:

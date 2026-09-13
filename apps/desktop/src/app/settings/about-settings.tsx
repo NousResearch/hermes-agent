@@ -240,7 +240,7 @@ export function AboutSettings() {
         <ToggleRow
           checked={automaticUpdateChecksEnabled}
           description={a.automaticUpdatesDesc}
-          hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
+          hint={`${a.updateSource}: ${status?.repository ? `${status.repository} · ` : ''}${a.branchCommit(`origin/${status?.branch ?? 'unknown'}`, status?.currentSha?.slice(0, 7) ?? 'unknown')}`}
           label={a.automaticUpdates}
           onChange={setAutomaticUpdateChecksEnabled}
         />

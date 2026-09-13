@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -315,12 +316,14 @@ describe('useMessageStream interim text sealing', () => {
     await start()
 
     // No payload at all
-    await act(() => stream.handleEvent({ type: 'message.interim' } as RpcEvent))
+    await act(() => stream.handleEvent({ type: 'message.interim' } as GatewayEvent))
     // Empty text
-    await act(() => stream.handleEvent({ payload: { text: '' }, session_id: SID, type: 'message.interim' } as RpcEvent))
+    await act(() =>
+      stream.handleEvent({ payload: { text: '' }, session_id: SID, type: 'message.interim' } as GatewayEvent)
+    )
     // Undefined text
     await act(() =>
-      stream.handleEvent({ payload: { text: undefined }, session_id: SID, type: 'message.interim' } as RpcEvent)
+      stream.handleEvent({ payload: { text: undefined }, session_id: SID, type: 'message.interim' } as GatewayEvent)
     )
 
     // Turn continues without finalizing or throwing

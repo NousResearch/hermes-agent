@@ -185,34 +185,17 @@ class InternalSessionRPC(Protocol):
         """Resume the canonical room session."""
 
     def submit(
-        self,
-        *,
-        profile: str,
-        session_id: str,
-        prompt: str,
-        source: str,
-        task: state.TaskIdentity,
-        execution_generation: int,
-        on_terminal: Callable[[Mapping[str, Any]], None],
-    ) -> Mapping[str, Any]:
-        """Submit one fenced room turn and durably report its terminal result."""
-
+        self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
+    ) -> Mapping[str, Any]: ...
     def history(
-        self, *, profile: str, session_id: str, source: str
-    ) -> Sequence[Mapping[str, Any]]:
-        """Return normalized session messages in durable order."""
-
-    def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]:
-        """Return normalized live status for a session."""
-
-    def interrupt_admitted(
-        self,
-        *,
-        task: state.TaskIdentity,
-        execution_generation: int,
-        source: str,
-    ) -> Mapping[str, Any] | None:
-        """Interrupt the exact process-local admitted task proof, if present."""
+        self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]: ...
+    def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]: ...
+    def interrupt(
+        self, *, profile: str, session_id: str, source: str, expected_task_id: str,
+        expected_task: state.TaskIdentity | None = None, expected_execution_generation: int | None = None,
+        expected_member_id: str | None = None,
+    ) -> Mapping[str, Any] | None: ...
 
 
 def _owner_process_state(pid: int, start_time: int) -> state.OwnerProcessState:
@@ -687,13 +670,20 @@ class HostedRoomRuntime:
                 return True
             if not active:
                 return True
-            if not _info_is_active_for(info, task["identity"], require_exact=True):
+            if not _info_is_active_for(
+                info, task["identity"], require_exact=True,
+                execution_generation=int(task["execution_generation"]),
+                member_id=_member_id(task),
+            ):
                 return False
             result = admitted_transport.interrupt(
                 profile=admitted_profile,
                 session_id=admitted_session_id,
                 source=ROOM_SESSION_SOURCE,
                 expected_task_id=task["identity"].task_id,
+                expected_task=task["identity"],
+                expected_execution_generation=int(task["execution_generation"]),
+                expected_member_id=_member_id(task),
             )
             if result is None:
                 return False
@@ -740,26 +730,20 @@ class HostedRoomRuntime:
             if self._info_acknowledges_peer_cancel(info, task):
                 return True
             return not foreign_owner_may_be_live
-        if not _info_is_active_for(info, task["identity"], require_exact=True):
+        if not _info_is_active_for(
+            info, task["identity"], require_exact=True,
+            execution_generation=int(task["execution_generation"]),
+            member_id=_member_id(task),
+        ):
             return False
         result = transport.interrupt(
-            profile=profile,
-            session_id=session_id,
-            source=ROOM_SESSION_SOURCE,
-        )
-        if result is None:
-            return False
-        if result.get("found") is False or result.get("status") == "absent":
-            return not submission_in_progress
-        if submission_in_progress and result.get("interrupted") is not True:
-            return False
-        if result.get("active") is False:
-            return True
-        return result.get("interrupted") is True or str(result.get("status") or "") in {
-            "cancelled",
-            "interrupted",
-            "stopping",
-        }
+            **_session_kw(profile, session_id), expected_task_id=task["identity"].task_id,
+            expected_task=task["identity"],
+            expected_execution_generation=int(task["execution_generation"]),
+            expected_member_id=_member_id(task))
+        return result is not None and (
+            result.get("interrupted") is True
+            or str(result.get("status") or "") in _STOP_ACK_STATUSES)
 
     def _settle_stopping_completion(
         self,
@@ -1313,7 +1297,8 @@ class HostedRoomRuntime:
                         source=ROOM_SESSION_SOURCE,
                         task=attempt.identity,
                         execution_generation=attempt.execution_generation,
-                        on_terminal=on_terminal,
+                        on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt),
+                        member_id=_member_id(task),
                     )
                 finally:
                     _unregister_process_submission(submission_key)
@@ -1935,17 +1920,14 @@ def _durable_terminal_receipt(
 
 
 def _info_is_active_for(
-    info: Mapping[str, Any],
-    identity: state.TaskIdentity,
-    *,
-    require_exact: bool = False,
+    info: Mapping[str, Any], identity: state.TaskIdentity, *, require_exact: bool = False,
+    execution_generation: int | None = None, member_id: str | None = None,
 ) -> bool:
-    if not bool(info.get("active", info.get("running", False))):
-        return False
-    active_task_id = info.get("task_id")
-    if require_exact:
-        return active_task_id == identity.task_id
-    return active_task_id in {None, identity.task_id}
+    if execution_generation is not None:
+        return _info_active(info) and info.get("hosted_task") == {
+            **asdict(identity), "execution_generation": execution_generation, "member_id": member_id}
+    accepted = (identity.task_id,) if require_exact else (None, identity.task_id)
+    return _info_active(info) and info.get("task_id") in accepted
 
 
 @contextlib.contextmanager

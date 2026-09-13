@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, Optional, Any
 
 from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
+    apply_yaml_bridge as _apply_yaml_bridge, get_scoped_secret, send_error
 )
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
@@ -794,15 +794,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 
-    def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
-        from gateway.session import build_session_key
-        return build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(event.source),
-        )
+    @staticmethod
+    def _classify_bridge_message(data: Dict[str, Any]) -> MessageType:
+        media_type = str(data.get("mediaType", "") or "")
+        if media_type in _NATIVE_MEDIA_TYPES:
+            return _NATIVE_MEDIA_TYPES[media_type]
+        if not data.get("hasMedia"):
+            return MessageType.TEXT
+        return next((kind for needle, kind in _MEDIA_NEEDLES if needle in media_type), MessageType.DOCUMENT)
 
     async def _collect_bridge_media(self, data: Dict[str, Any], msg_type: MessageType) -> tuple[list, list]:
         """``mediaUrls`` → ``(cached_urls, media_types)``: remote image/audio cached locally; absolute paths only inside a cache dir."""

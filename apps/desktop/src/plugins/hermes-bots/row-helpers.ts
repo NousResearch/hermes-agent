@@ -84,19 +84,58 @@ export function workerActiveAt(bot: null | RosterRow | undefined, now = Date.now
   return Boolean(ts && now / 1000 - ts < WORKER_ACTIVE_WINDOW_S)
 }
 
-/** Bots that are working right now: the profile the gateway is running a
- *  turn for (busy), any bot whose last message landed inside the liveness
- *  window, plus any bot with a live kanban/tool worker. Pure — output
- *  follows the input roster's order, so presence never reorders or hides
- *  the normal list. */
+/** Older shells without the live-turn atom remain idle rather than reading socket state. */
+const $idleTurn = atom(false)
+
+export function useTurnBusy(): boolean {
+  return useValue(host.state.busy || $idleTurn)
+}
+
+interface WorkingOwner {
+  authoritative: boolean
+  connectionId: string
+  name: string
+}
+
+/** The busy atom follows tile focus, not the gateway socket or row selection. */
+export function botWorkingMood(
+  bot: RosterRow,
+  owner: WorkingOwner | null,
+  turnBusy: boolean,
+  activeConnectionId = 'local',
+  now = Date.now(),
+  groupKeys?: ReadonlySet<string>
+): 'idle' | 'think' | 'work' {
+  if (groupKeys?.has(botRosterKey(bot))) {
+    return 'think'
+  }
+
+  const botConnectionId = bot.connectionId || (bot.remoteSource ? '' : activeConnectionId)
+
+  if (
+    turnBusy &&
+    owner?.authoritative &&
+    owner.connectionId &&
+    owner.name === bot.name &&
+    owner.connectionId === botConnectionId
+  ) {
+    return 'think'
+  }
+
+  return workerActiveAt(bot, now) ? 'work' : 'idle'
+}
+
+/** Focused turns, recent messages and live workers, preserving roster order. */
 export function activeBots(
   roster: null | RosterRow[] | undefined,
-  activeProfile: string,
-  gatewayState: string,
-  now = Date.now()
+  owner: WorkingOwner | null,
+  turnBusy: boolean,
+  now = Date.now(),
+  activeConnectionId = 'local',
+  groupKeys?: ReadonlySet<string>
 ): RosterRow[] {
   return (roster || []).filter(bot => {
-    const busyTurn = !bot.remoteSource && bot.name === activeProfile && gatewayState === 'busy'
+    const busyTurn = botWorkingMood(bot, owner, turnBusy, activeConnectionId, now, groupKeys) !== 'idle'
     const last = botActivitySession(bot)?.last_active || 0
     const inWindow = Boolean(last && now / 1000 - last < ACTIVE_WINDOW_S)
 

@@ -35,26 +35,12 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms.base import (
-    gateway_trust_env,
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    ProcessingOutcome,
-    SendResult,
-    SUPPORTED_DOCUMENT_TYPES,
-    SUPPORTED_VIDEO_TYPES,
-    _TEXT_INJECT_EXTENSIONS,
-    is_host_excluded_by_no_proxy,
-    resolve_proxy_url,
-    safe_url_for_log,
-    _ssrf_redirect_guard,
-    cache_document_from_bytes_async,
-    cache_video_from_bytes_async,
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    platform_gate_env as _scoped_gate_env, send_error
 )
 from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -3107,8 +3093,9 @@ class SlackAdapter(BasePlatformAdapter):
             pass
 
     def _slack_allow_bots(self) -> str:
-        """Return normalized Slack bot-message policy (scoped ``SLACK_ALLOW_BOTS`` → YAML → none)."""
-        raw = _extra_or_secret(self.config.extra, "allow_bots", "SLACK_ALLOW_BOTS", "none")
+        """Return normalized Slack bot-message policy."""
+        # Scoped read: under multiplex os.environ is the DEFAULT profile's bot-admission policy.
+        raw = self.config.extra.get("allow_bots", "") or _get_scoped_secret("SLACK_ALLOW_BOTS", "none")
         value = str(raw).lower().strip()
         if value not in {"none", "mentions", "all"}:
             logger.warning("[Slack] Unknown allow_bots=%r; treating as 'none'", raw)
@@ -3132,7 +3119,7 @@ class SlackAdapter(BasePlatformAdapter):
         if cached is None:
             raw = self.config.extra.get("api_human_users")
             if raw is None:
-                raw = os.getenv("SLACK_API_HUMAN_USERS", "")
+                raw = _get_scoped_secret("SLACK_API_HUMAN_USERS", "")
             parts = raw if isinstance(raw, (list, tuple, set)) else str(raw).split(",")
             cached = self._api_human_users_cache = frozenset(
                 str(p).strip() for p in parts if str(p).strip()
@@ -3520,8 +3507,10 @@ class SlackAdapter(BasePlatformAdapter):
         return await self._react(channel, timestamp, emoji, team_id, remove=True)
 
     def _reactions_enabled(self) -> bool:
-        """Whether message reactions are enabled (scoped ``SLACK_REACTIONS`` → ``extra.reactions`` → on)."""
-        configured = _extra_or_secret(self.config.extra, "reactions", "SLACK_REACTIONS", "true")
+        """Whether message reactions are enabled (``extra.reactions`` / ``SLACK_REACTIONS``)."""
+        configured = self.config.extra.get("reactions")
+        if configured is None:
+            configured = _get_scoped_secret("SLACK_REACTIONS", "true")
         return str(configured).lower() not in {"false", "0", "no"}
 
     def _reacting_target(self, event: MessageEvent) -> Optional[Tuple[str, str, Any]]:
@@ -5845,55 +5834,15 @@ class SlackAdapter(BasePlatformAdapter):
             user_name=user_name,
             thread_id=thread_ts,
             scope_id=str(team_id) if team_id else None,
-            # Slack Workflow Builder / app posts arrive as
-            # subtype=bot_message with user=None; flag them so the
-            # gateway SLACK_ALLOW_BOTS bypass can authorize them
-            # (they carry no user_id to match against the allowlist).
-            # Same predicate as the drop gate above, so an api_human_users
-            # post is a plain human here too.
-            is_bot=self._event_declares_bot_sender(event),
-        )
-
-        # Per-channel ephemeral prompt
-        from gateway.platforms.base import (
-            resolve_channel_prompt,
-            resolve_channel_skills,
-        )
-
-        _channel_prompt = resolve_channel_prompt(
-            self.config.extra,
-            channel_id,
-            None,
-        )
-        # Prepend the bot's Slack identity (ephemeral — applied at API-call
-        # time, never persisted, so prompt caching is preserved) so the agent
-        # knows its own handle and won't read a human's mention as a self-
-        # mention. Combine with any per-channel prompt rather than overwriting.
-        _identity_prompt = self._build_identity_prompt(team_id)
-        if _identity_prompt:
-            _channel_prompt = (
-                f"{_identity_prompt}\n\n{_channel_prompt}".strip()
-                if _channel_prompt
-                else _identity_prompt
-            )
-        _auto_skill = resolve_channel_skills(
-            self.config.extra,
-            channel_id,
-            None,
-        )
-
-        # Humanize remaining user mentions: the bot's own mention was already
-        # stripped above, so any ``<@UID>`` left in the trigger text refers to
-        # OTHER participants. Render them as ``@DisplayName`` so the agent can
-        # tell who is being addressed and never mistakes a human's mention for
-        # a mention of itself (the "bot thinks it's @someone-else" bug).
-        # Mirrors Discord's clean_content. channel_context (thread backfill)
-        # already renders senders by display name via _format_thread_context.
-        text = await self._humanize_user_mentions(
-            text, chat_id=channel_id, team_id=team_id
-        )
-
-        msg_event = MessageEvent(
+            message_id=ts,
+            # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
+            # authorize them. Same predicate as the drop gate (api_human_users stay human).
+            is_bot=self._event_declares_bot_sender(event))
+        from gateway.platforms.base import resolve_channel_skills
+        # Remaining ``<@UID>`` are OTHER participants (own mention stripped
+        # above); render as ``@DisplayName`` so the agent knows who is addressed.
+        text = await self._humanize_user_mentions(text, chat_id=channel_id, team_id=team_id)
+        return MessageEvent(
             text=(command_probe_text if is_command_text else text),
             message_type=msg_type,
             source=source,
@@ -6087,7 +6036,7 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] %s failed: %s", label, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
-    _EA_HEADER = f":warning: *{EA_HEADER_TEXT}*\n"
+    _EA_HEADER = ":warning: *Command Approval Required*\n"
     _EA_CODE_OPEN = "```"
     _EA_CODE_CLOSE = "```\n"
     _EA_SMART_DENY_LINE = "\n*Smart DENY:* owner override applies to this one operation only."
@@ -6099,7 +6048,7 @@ class SlackAdapter(BasePlatformAdapter):
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # execute_code approvals embed the whole script, so budget the preview against the cap.
         fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
+                 + len(self._EA_REASON_LABEL) + len(description) + len("...")
                  + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0))
         return max(0, self._EA_SECTION_CAP - fixed)
 
@@ -6629,16 +6578,10 @@ class SlackAdapter(BasePlatformAdapter):
             except Exception:
                 logger.debug(
                     "[Slack] Falling back to env-only interactive auth for user %s",
-                    normalized_user_id,
-                    exc_info=True,
-                )
-
-        # Env-only fallback (no injected check, no bound runner). Gate reads go
-        # through the shared per-profile accessor: under multiplex a scoped
-        # miss returns "" instead of falling through to ``os.environ``, which
-        # holds the DEFAULT profile's allow-all flag / allowlist.
-        from gateway.authz_mixin import _platform_gate_env as _env
-
+                    normalized_user_id, exc_info=True)
+        # Env-only fallback. Per-profile accessor: under multiplex a scoped miss
+        # returns "" rather than leaking the DEFAULT profile's os.environ allowlist.
+        _env = _scoped_gate_env
         if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
             return True
 

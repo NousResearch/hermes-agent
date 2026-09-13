@@ -1,7 +1,8 @@
 """Inbound dispatch + dedup tests for PhotonAdapter.
 
-These exercise the sidecar-event stream and parsing without spawning the
-Node sidecar or binding ports.
+These bypass the loopback HTTP stream — they call ``_dispatch_inbound`` /
+``_on_inbound_line`` / ``_dedup`` directly, exercising the
+sidecar-event parsing without spawning the Node sidecar or binding ports.
 """
 from __future__ import annotations
 

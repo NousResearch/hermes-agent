@@ -1137,7 +1137,7 @@ class TestRunJobConfigLogging:
             with caplog.at_level(logging.WARNING):
                 run_job(job)
 
-        assert any("formatting error" in r.message and "config.yaml" in r.message for r in caplog.records), \
+        assert any("Failed to parse" in r.message and "config.yaml" in r.message for r in caplog.records), \
             f"Expected a config.yaml parse warning in logs, got: {[r.message for r in caplog.records]}"
 
 

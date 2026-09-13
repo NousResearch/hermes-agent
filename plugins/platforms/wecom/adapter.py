@@ -29,16 +29,10 @@ AIOHTTP_AVAILABLE = aiohttp is not None
 HTTPX_AVAILABLE = httpx is not None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms.base import (
-    gateway_trust_env,
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    SendResult,
-    cache_document_from_bytes_async,
-    cache_image_from_bytes_async,
-)
+from gateway.platforms.helpers import MessageDeduplicator, bounded_put
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
@@ -191,56 +185,7 @@ class ReplyFrame:
     sent_at: Optional[float] = None
 
 
-class ReplyQueue:
-    """Per-req_id pending ack tracker.
-
-    Ensures:
-    - Intermediate frames skip if a previous frame's ack is pending
-    - Final frames wait for pending ack before sending
-
-    Aligned with official SDK's replyStreamNonBlocking + 5s ack timeout.
-    """
-    def __init__(self, req_id: str):
-        self.req_id = req_id
-        self.pending_ack: Optional[ReplyFrame] = None
-
-
-
-class StreamTurn:
-    """Per-turn stream state to avoid global state conflicts.
-
-    Each inbound message creates its own StreamTurn, ensuring concurrent
-    messages don't interfere with each other's stream state.
-    """
-    def __init__(self, chat_id: str, req_id: str):
-        self.chat_id = chat_id
-        self.req_id = req_id
-        self.stream_id = f"stream_{uuid.uuid4().hex[:12]}"
-        self.accumulated_text = ""
-        self.finalized = False
-        self.seeded = False  # True after seed frame sent (prevents double seed)
-        self.start_time = time.monotonic()
-        self.expired = False
-        # Track the last content that was ACTUALLY sent to WeCom (not skipped).
-        # Used by finalize to detect duplicate content and avoid silent ack drops.
-        self.last_sent_content: str = ""
-        # Per-turn intermediate-frame counter (count-based cap at
-        # MAX_INTERMEDIATE_FRAMES to leave room for the finalize frame).
-        self._last_frame_sent_at: float = 0.0
-        self._intermediate_frames_sent: int = 0
-        # Idle flush handle — retained for _cancel_idle_flush() compatibility
-        # (called in finalize/boundary paths; always None in fire-and-forget).
-        self.idle_flush_handle: Optional[asyncio.TimerHandle] = None
-        # Keep-alive handle (Layer 1) — set when the stream-level keep-alive
-        # timer is armed.  Structurally identical to idle_flush_handle: a
-        # per-turn asyncio TimerHandle that MUST be cancelled on every turn
-        # exit path (finalize / expired / error / cleanup) to avoid a leaked
-        # timer firing on a dead turn.  None when keep-alive is disabled or
-        # the turn has no armed timer.
-        self.keepalive_handle: Optional[asyncio.TimerHandle] = None
-
-
-class WeComAdapter(BasePlatformAdapter):
+class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     ALLOW_ALL_ENV_PREFIX = "WECOM"
@@ -332,6 +277,28 @@ class WeComAdapter(BasePlatformAdapter):
             "stream_keepalive_interval_seconds", STREAM_KEEPALIVE_INTERVAL_SECONDS
         )
 
+        self._bot_id = _setting("bot_id", env="WECOM_BOT_ID")
+        self._secret = _setting("secret", env="WECOM_SECRET")
+        self._ws_url = _setting("websocket_url", "websocketUrl", env="WECOM_WEBSOCKET_URL", default=DEFAULT_WS_URL) or DEFAULT_WS_URL
+        self._dm_policy = _setting("dm_policy", env="WECOM_DM_POLICY", default="pairing").lower()
+        # WECOM_ALLOWED_USERS fallback: env-only allowlist setups otherwise drop every DM at intake.
+        self._allow_from = _coerce_list(extra.get("allow_from") or extra.get("allowFrom") or _get_scoped_secret("WECOM_ALLOWED_USERS", ""))
+        self._group_policy = _setting("group_policy", env="WECOM_GROUP_POLICY", default="pairing").lower()
+        self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
+        self._groups = extra.get("groups") if isinstance(extra.get("groups"), dict) else {}
+        self._session = self._ws = self._http_client = self._listen_task = self._heartbeat_task = None
+        self._pending_responses: Dict[str, asyncio.Future] = {}
+        self._reply_queues: Dict[str, ReplyQueue] = {}
+        self._dedup, self._reply_req_ids = MessageDeduplicator(max_size=DEDUP_MAX_SIZE), {}
+        # Text batching (clients split long messages ~4000 chars); attachment-only frames are held
+        # for the merge window so the trailing text callback joins the same event (official: 800ms).
+        self._text_batch_delay_seconds = env_float("HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS", 0.6)
+        self._text_batch_split_delay_seconds = env_float("HERMES_WECOM_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
+        self._attachment_text_merge_delay_seconds = _extra_float("attachment_text_merge_delay_seconds", 0.8)
+        # Stream keep-alive config (see streaming.py STREAM_* constants).
+        self._stream_safe_duration_seconds = _extra_float("stream_safe_duration_seconds", STREAM_SAFE_DURATION_SECONDS)
+        self._stream_keepalive_enabled = bool(extra.get("stream_keepalive_enabled", STREAM_KEEPALIVE_ENABLED_DEFAULT))
+        self._stream_keepalive_interval_seconds = _extra_float("stream_keepalive_interval_seconds", STREAM_KEEPALIVE_INTERVAL_SECONDS)
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
         # Turns keyed f"{chat_id}:{req_id|turn_id}"; expired chats clear on the next inbound req_id.
@@ -1281,52 +1248,10 @@ class WeComAdapter(BasePlatformAdapter):
             self._flush_text_batch(key)
         )
 
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text.
-
-        Uses a longer delay when the latest chunk is near WeCom's 4000-char
-        split point, since a continuation chunk is almost certain.
-        """
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            # An attachment-only buffered event (no text yet) waits the
-            # attachment/text merge window for a trailing text frame. A text
-            # buffered event uses the normal (or split-continuation) delay.
-            is_attachment_only = bool(
-                pending and pending.media_urls and not (pending.text or "").strip()
-            )
-            if is_attachment_only:
-                delay = self._attachment_text_merge_delay_seconds
-            elif last_len >= self._SPLIT_THRESHOLD:
-                delay = self._text_batch_split_delay_seconds
-            else:
-                delay = self._text_batch_delay_seconds
-            await asyncio.sleep(delay)
-            # Guard against the cancel-delivery race: when the sleep timer
-            # fires just before cancel() is called, CPython sets
-            # Task._must_cancel but cannot cancel the already-done sleep
-            # future, so CancelledError is delivered at the *next* await
-            # (handle_message) rather than here.  By that point this task
-            # has already popped the merged event, so the superseding task
-            # sees an empty batch and silently drops the message.
-            # This check is synchronous — no await between the sleep and
-            # the pop — so no other coroutine can modify the task registry
-            # in between.
-            if self._pending_text_batch_tasks.get(key) is not current_task:
-                return
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            logger.info(
-                "[WeCom] Flushing batch %s (%d chars, %d media)",
-                key, len(event.text or ""), len(event.media_urls or []),
-            )
-            await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
+    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
+        if pending is not None and pending.media_urls and not (pending.text or "").strip():
+            return self._attachment_text_merge_delay_seconds  # attachment-only: wait for the text frame
+        return super()._text_batch_delay_for(pending)
 
     @staticmethod
     def _extract_text(body: Dict[str, Any]) -> Tuple[str, Optional[str]]:
@@ -1495,44 +1420,8 @@ class WeComAdapter(BasePlatformAdapter):
             return MessageType.VOICE
         return MessageType.TEXT
 
-    # ------------------------------------------------------------------
-    # Policy helpers
-    # ------------------------------------------------------------------
-
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """WeCom gates DM/group access at intake via dm_policy/group_policy."""
-        return True
-
-    def _open_dm_opted_in(self) -> bool:
-        # Scoped reads (#93522): the default profile's allow-all flag must
-        # not leak into a multiplexed secondary profile's admission gate.
-        if (_get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}:
-            return True
-        return (_get_scoped_secret("WECOM_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}
-
-    def _is_dm_allowed(self, sender_id: str) -> bool:
-        if self._dm_policy == "disabled":
-            return False
-        if self._dm_policy == "allowlist":
-            return _entry_matches(self._allow_from, sender_id)
-        if self._dm_policy == "open":
-            return self._open_dm_opted_in()
-        return False
-
-    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
-        principal = str(sender_id or "").strip()
-        if not principal:
-            return False
-        if self._dm_policy == "disabled":
-            return False
-        if self._dm_policy == "allowlist":
-            return _entry_matches(self._allow_from, principal)
-        if self._dm_policy == "pairing":
-            return True
-        if self._dm_policy == "open":
-            return self._open_dm_opted_in()
-        return False
+    def _entry_matches(self, entries: List[str], target: str) -> bool:
+        return _entry_matches(entries, target)
 
     def _is_group_allowed(self, chat_id: str, sender_id: str) -> bool:
         """Per-group ``groups.<id>.allow_from`` restricts senders on top of the chat-level policy."""
@@ -1551,237 +1440,11 @@ class WeComAdapter(BasePlatformAdapter):
         return next((c for c in candidates if isinstance(c, dict)), {})
 
     def _remember_chat_req_id(self, chat_id: str, req_id: str) -> None:
-        """Cache the most recent inbound req_id per chat.
-
-        Used as a fallback reply target when we need to send into a group
-        without an explicit ``reply_to`` — WeCom AI Bots are blocked from
-        APP_CMD_SEND in groups and must use APP_CMD_RESPONSE bound to some
-        prior req_id. Bounded like _reply_req_ids so long-running gateways
-        don't leak memory across many chats.
-        """
-        normalized_chat_id = str(chat_id or "").strip()
-        normalized_req_id = str(req_id or "").strip()
-        if not normalized_chat_id or not normalized_req_id:
-            return
-        self._last_chat_req_ids[normalized_chat_id] = normalized_req_id
-        while len(self._last_chat_req_ids) > DEDUP_MAX_SIZE:
-            self._last_chat_req_ids.pop(next(iter(self._last_chat_req_ids)))
-        # A fresh inbound req_id resurrects the stream channel — drop any
-        # stale "stream is dead" marker from prior 846608 responses so the
-        # next outbound turn can attempt native streaming again.
-        self._stream_expired_chats.discard(normalized_chat_id)
-        # A new inbound message starts a new "turn" — allow send_typing to
-        # open a fresh stream again (the previous turn's delivery guard is
-        # no longer relevant).
-
-    def _resolve_stream_req_id(
-        self, chat_id: str, reply_to: Optional[str]
-    ) -> Optional[str]:
-        """Pick a req_id for a stream reply.
-
-        Precedence: explicit ``reply_to`` (a prior message id we cached) →
-        last inbound req_id for this chat → ``None`` (stream impossible).
-        """
-        req_id = self._reply_req_id_for_message(reply_to)
-        if req_id:
-            return req_id
-        return self._last_chat_req_ids.get(str(chat_id or "").strip()) or None
-
-    def _get_or_create_stream_turn(self, chat_id: str, req_id: str) -> StreamTurn:
-        """Get or create a StreamTurn for the given chat and req_id."""
-        key = f"{chat_id}:{req_id}"
-        if key not in self._stream_turns:
-            self._stream_turns[key] = StreamTurn(chat_id, req_id)
-        return self._stream_turns[key]
-
-    def _cleanup_stream_turn(self, chat_id: str, req_id: str) -> None:
-        """Clean up a StreamTurn after finalization or error."""
-        key = f"{chat_id}:{req_id}"
-        turn = self._stream_turns.pop(key, None)
-        if turn is not None:
-            self._cancel_idle_flush(turn)
-            self._cancel_keepalive(turn)
-
-    def _cancel_idle_flush(self, turn: StreamTurn) -> None:
-        """Cancel a pending idle-flush timer on the turn (no-op if unarmed)."""
-        handle = turn.idle_flush_handle
-        if handle is not None:
-            try:
-                handle.cancel()
-            except Exception:
-                pass
-            turn.idle_flush_handle = None
-
-    # ── Stream-level keep-alive (Layer 1) ─────────────────────────────────
-    # Structurally mirrors the idle-flush timer: a per-turn asyncio TimerHandle
-    # stored on the StreamTurn, cancelled on every turn-exit path.  The only
-    # difference from idle-flush is cadence (minutes vs 250ms) and intent
-    # (refresh the server's 6-min stream window vs ship a partial buffer).
-
-    def _cancel_keepalive(self, turn: StreamTurn) -> None:
-        """Cancel a pending keep-alive timer on the turn (no-op if unarmed)."""
-        handle = turn.keepalive_handle
-        if handle is not None:
-            try:
-                handle.cancel()
-            except Exception:
-                pass
-            turn.keepalive_handle = None
-
-    def _arm_keepalive(
-        self,
-        turn: StreamTurn,
-        *,
-        turn_id: Optional[str],
-    ) -> None:
-        """Arm the keep-alive timer (Layer 1) if enabled and not already armed.
-
-        Idempotent — re-arming while one is pending no-ops; a fresh timer is
-        only scheduled after the previous one fired or was cancelled.  Skips
-        entirely when keep-alive is disabled by config (the default).
-        """
-        if not self._stream_keepalive_enabled:
-            return
-        if turn.finalized or turn.expired:
-            return
-        if turn.keepalive_handle is not None:
-            return  # already armed
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return  # not inside a loop (defensive)
-        handle = loop.call_later(
-            self._stream_keepalive_interval_seconds,
-            self._on_keepalive_fire,
-            turn,
-            turn_id,
-        )
-        turn.keepalive_handle = handle
-
-    def _on_keepalive_fire(
-        self,
-        turn: StreamTurn,
-        turn_id: Optional[str],
-    ) -> None:
-        """Loop callback — dispatch an async keep-alive send without blocking."""
-        turn.keepalive_handle = None
-        if turn.finalized or turn.expired:
-            return
-        try:
-            asyncio.ensure_future(self._keepalive_send(turn, turn_id))
-        except RuntimeError:
-            pass
-
-    async def _keepalive_send(
-        self,
-        turn: StreamTurn,
-        turn_id: Optional[str],
-    ) -> None:
-        """Re-send the accumulated text as a finish=false frame to refresh the
-        WeCom server's stream window, then re-arm for the next interval.
-
-        Deliberately conservative (see ANALYSIS §4.2/§5):
-
-        * **Never sends a placeholder.**  When there is no accumulated text yet
-          (e.g. a cron turn still fetching data), the tick is skipped and the
-          timer is re-armed — we'd rather let Layer 2's clock fallback handle a
-          content-less turn than pollute ``last_sent_content`` with a filler
-          frame or strand the user on a "still working…" bubble.
-        * Reuses ``_send_stream_reply(finish=False)`` with the queue's
-          ``skip_if_pending`` semantics, so a heartbeat that races an in-flight
-          ack is dropped rather than piling onto the ack queue.
-        * On 846604/846608 marks the turn expired and retires it so finalize
-          takes the Layer 2 fallback; stops the timer (no re-arm).
-        """
-        if turn.finalized or turn.expired:
-            return
-        if turn._intermediate_frames_sent >= MAX_INTERMEDIATE_FRAMES:
-            # No room left for intermediate frames; stop keeping alive and let
-            # finalize (or Layer 2) run.  Do not re-arm.
-            return
-        content = turn.accumulated_text or ""
-        if not content.strip():
-            # Nothing to refresh with yet — skip this tick, re-arm for later.
-            self._arm_keepalive(turn, turn_id=turn_id)
-            return
-        try:
-            await self._send_stream_reply(
-                turn.req_id,
-                turn.stream_id,
-                content,
-                finish=False,
-            )
-        except WeComStreamExpiredError:
-            turn.expired = True
-            self._retire_turn(turn, turn_id)
-            self._stream_expired_chats.add(turn.chat_id)
-            return
-        except Exception as exc:
-            logger.debug(
-                "[%s] keep-alive send failed (chat=%s, turn=%s): %s",
-                self.name, turn.chat_id, turn.stream_id, exc,
-            )
-            # Transient failure — re-arm and try again next interval.
-            self._arm_keepalive(turn, turn_id=turn_id)
-            return
-        turn._last_frame_sent_at = time.monotonic()
-        turn.last_sent_content = content
-        # Re-arm for the next interval (guarded internally against
-        # finalized/expired).
-        self._arm_keepalive(turn, turn_id=turn_id)
-
-    def _retire_turn(self, turn: StreamTurn, turn_id: Optional[str]) -> None:
-        """Remove a turn from the registry and cancel BOTH of its timers.
-
-        Single choke point for the "turn is dead" cleanup shared by the
-        expired/error paths.  Cancels idle-flush and keep-alive timers before
-        popping so neither can fire on a retired turn.
-        """
-        self._cancel_idle_flush(turn)
-        self._cancel_keepalive(turn)
-        if turn_id:
-            self._stream_turns.pop(f"{turn.chat_id}:{turn_id}", None)
-        else:
-            self._cleanup_stream_turn(turn.chat_id, turn.req_id)
-
-    def _find_active_turn_for_chat(self, chat_id: str) -> Optional[StreamTurn]:
-        """Find the most recent active (non-finalized) turn for a chat."""
-        for turn in self._stream_turns.values():
-            if turn.chat_id == chat_id and not turn.finalized:
-                return turn
-        return None
-
-    def _reset_native_stream_state(self) -> None:
-        """Legacy method for compatibility. Now a no-op since state is per-turn."""
-        # No-op: stream state is now per-turn, not global.
-        # Kept for compatibility with existing code that calls this.
-        pass
-
-    async def _force_reconnect_on_stale_subscription(self, errcode: int) -> None:
-        """Force-close the WS when server rejects our subscription (846609).
-
-        WeCom errcode 846609 means the server no longer considers this WS
-        session subscribed — all sends will fail until we reconnect. Rather
-        than waiting for the WS to close naturally (can take 2+ minutes of
-        timeouts), we proactively close it to trigger _listen_loop's
-        reconnect cycle immediately.
-        """
-        if errcode != STREAM_NOT_SUBSCRIBED_ERRCODE:
-            return
-        logger.warning(
-            "[%s] Got errcode %d (subscription lost) — clearing stale state",
-            self.name, errcode,
-        )
-        # Only invalidate cached req_ids (bound to the dead session).
-        # Do NOT close the WS — closing triggers _listen_loop to reconnect,
-        # which opens a second WS connection. WeCom only allows one long-lived
-        # connection per bot; the server kicks the second one and invalidates
-        # the first's session, creating an infinite kick-reconnect loop.
-        # The WS will be closed by the server side naturally; _listen_loop
-        # handles the reconnect when that happens.
-        self._last_chat_req_ids.clear()
-        self._reply_req_ids.clear()
-        self._reset_native_stream_state()
+        """Cache the chat's latest inbound req_id; a fresh one also resurrects its stream channel."""
+        chat_id, req_id = str(chat_id or "").strip(), str(req_id or "").strip()
+        if chat_id and req_id:
+            bounded_put(self._last_chat_req_ids, chat_id, req_id, DEDUP_MAX_SIZE)
+            self._stream_expired_chats.discard(chat_id)
 
     def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
         normalized = str(reply_to or "").strip()
@@ -2733,27 +2396,14 @@ async def _send_via(adapter, chat_id, message, *, live: bool):
     return send_error(f"WeCom send failed: {result.error}")
 
 
-async def _standalone_send(
-    pconfig,
-    chat_id,
-    message,
-    *,
-    thread_id=None,
-    media_files=None,
-    force_document=False,
-):
-    """WeCom delivery via live gateway adapter or ephemeral connection.
-
-    Implements the standalone_sender_fn contract. WeCom only allows ONE
-    WebSocket connection per bot — opening a second kicks the first. So
-    when the gateway is running in-process, we reuse the live adapter.
-    Only when running out-of-process (cron separate from gateway) do we
-    open an ephemeral connection.
-    """
-    # Prefer the live gateway adapter to avoid kicking the main connection.
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+    """Reuse the live gateway adapter in-process, else connect ephemerally (WeCom allows ONE
+    WebSocket per bot — a second connection kicks the first). The live adapter is the ACTIVE
+    PROFILE's (``_live_adapter``): a bare ``runner.adapters`` hit is the default profile's bot under
+    multiplex, so a secondary profile's send would leave with the wrong identity."""
     try:
-        from gateway.run import _gateway_runner_ref
-        runner = _gateway_runner_ref()
+        from tools.send_message_senders import _live_adapter
+        _, adapter = _live_adapter(Platform.WECOM)
     except Exception:
         runner = None
 

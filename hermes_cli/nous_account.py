@@ -105,9 +105,6 @@ class NousPortalAccountInfo:
     error: Optional[str] = None
     # NAS account tier claim; ``"anonymous"`` is the free tier (no Nous account behind it).
     account_tier: Optional[str] = None
-    # Portal ``managed_tools`` (JWT claim and account API): the portal has enabled connectors for
-    # this account. ``None`` = the portal did not say (a token minted before the claim shipped).
-    managed_tools: Optional[bool] = None
 
     @property
     def is_paid(self) -> bool:
@@ -560,7 +557,6 @@ def _info_from_valid_jwt(
         tool_access=_tool_access_from_value(claims.get("tool_access")),
         raw_claims=dict(claims),
         account_tier=_coerce_str(claims.get("account_tier")) or _coerce_str(state.get("account_tier")),
-        managed_tools=_coerce_bool(claims.get("managed_tools")),
     )
 
 
@@ -591,7 +587,6 @@ def _info_from_account_payload(
         raw_account=dict(payload),
         account_tier=_coerce_str(payload.get("account_tier")) or _coerce_str(user.get("account_tier"))
         or _coerce_str(state.get("account_tier")),
-        managed_tools=_coerce_bool(payload.get("managed_tools")),
     )
 
 

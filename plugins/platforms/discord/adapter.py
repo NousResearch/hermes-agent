@@ -271,31 +271,17 @@ from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
 from gateway.platforms.base import (
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    ProcessingOutcome,
-    SendResult,
-    cache_image_from_url,
-    cache_image_from_bytes_async,
-    cache_audio_from_url,
-    cache_audio_from_bytes_async,
-    cache_document_from_bytes_async,
-    SUPPORTED_DOCUMENT_TYPES,
-    _TEXT_INJECT_EXTENSIONS,
-    _prefix_within_utf16_limit,
-    utf16_len,
-    validate_inbound_media_size,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
+    cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
+    cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
+    _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import (
-    env_is_connected as _env_is_connected, extra_or_secret as _extra_or_secret,
-    platform_gate_env as _scoped_gate_env, send_error, yaml_env_setter as _yaml_env_setter
+    env_is_connected as _env_is_connected, platform_gate_env as _scoped_gate_env, send_error,
+    yaml_env_setter as _yaml_env_setter
 )
-
-# Every refusal (slash command, approval button, picker, prompt) says the same thing.
-_UNAUTHORIZED = unauthorized_action_notice(Platform.DISCORD)
 
 
 async def _read_url_image_with_redirect_guard(
@@ -635,12 +621,9 @@ def _build_allowed_mentions(extra: Optional[dict] = None):
     configured = configured if isinstance(configured, dict) else {}
 
     def _b(name: str, key: str, default: bool) -> bool:
-        # Explicit (scoped) env → this profile's YAML → safe default; a scoped miss never reads
-        # another profile's bridged env, and an explicit ``=false`` beats ``everyone: true``.
-        raw = _extra_or_secret(configured, key, name, None)
-        if raw is None:
-            return default
-        return raw if isinstance(raw, bool) else str(raw).strip().lower() in {"true", "1", "yes", "on"}
+        if (raw := configured.get(key)) is not None:
+            return str(raw).strip().lower() in {"true", "1", "yes", "on"}
+        return _env_bool(name, default)
 
     return discord.AllowedMentions(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", "everyone", False),
@@ -1147,17 +1130,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         watchdog off with no log line — indistinguishable from "the watchdog missed it".
         An explicit ``0`` is an intentional opt-out and stays silent.
         """
-        # This knob gates one dimension inside the health check, not the probe's startup
-        # guard, so an unusable value leaves ack-age/latency guarding (see _read_websocket_health).
-        scope = (
-            "the event-silence dimension of the websocket liveness probe"
-            if key == "websocket_event_max_silence_seconds"
-            else "the websocket liveness probe"
-        )
         logger.warning(
             "[%s] Discord liveness knob %s=%r is not a usable positive number; "
-            "%s is disabled by this value",
-            self.name, key, raw, scope,
+            "the websocket liveness probe is disabled by this value",
+            self.name, key, raw,
         )
 
     def _liveness_knob(self, key: str, default: Any, cast: type, *, env_key: Optional[str] = None):
@@ -4922,17 +4898,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
 
     def _extra_or_env_flag(self, key: str, env_key: str, env_default: str, *, truthy: bool) -> bool:
-        """Boolean: explicit scoped ``env_key`` → ``config.extra[key]`` (str parsed permissively) →
-        ``env_default``. ``truthy=True`` values must be in {true,1,yes,on}; ``truthy=False`` values are
-        on unless in {false,0,no,off} — matching each flag's historical default shape."""
+        """Boolean from ``config.extra[key]`` (str parsed permissively) else ``env_key``.
+        ``truthy=True`` env values must be in {true,1,yes,on}; ``truthy=False`` env values are on
+        unless in {false,0,no,off} — matching each flag's historical default shape."""
         extra = getattr(self.config, "extra", None)
-        configured = _extra_or_secret(extra if isinstance(extra, dict) else None, key, env_key, None)
-        if configured is None:
-            configured = env_default
-        if isinstance(configured, bool):
-            return configured
-        text = str(configured).strip().lower()
-        return text in {"true", "1", "yes", "on"} if truthy else text not in {"false", "0", "no", "off"}
+        configured = extra.get(key) if isinstance(extra, dict) else None
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        env = _scoped_gate_env(env_key, env_default).lower()
+        return env in {"true", "1", "yes", "on"} if truthy else env not in {"false", "0", "no", "off"}
 
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""
@@ -5603,19 +5579,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return text if len(text) <= limit else text[: limit - 3] + "..."
 
     # Payload lives in plain content: embeds can be invisible/detached on web/mobile.
-    _EA_HEADER = (f"⚠️ **{EA_HEADER_TEXT}**\n\n"
+    _EA_HEADER = ("⚠️ **Command Approval Required**\n\n"
                   "Do you want Hermes to run this command?\n\n"
                   "**Requested command:**\n")
     _EA_CODE_OPEN = "```bash\n"
     _EA_CODE_CLOSE = "\n```\n"
-    _EA_REASON_LABEL = f"**{EA_REASON_LABEL_TEXT}:** "
+    _EA_REASON_LABEL = "**Reason:** "
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_REASON_BUDGET = 300
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # Mentions ride in front of the content and count against the 2000-char message cap too.
         fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
+                 + len(self._EA_REASON_LABEL) + len(description) + len("...")
                  + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0)
                  + len(self._approval_mention_content() or "") + 1)
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
@@ -5628,11 +5604,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if mention_content:
                 content = f"{mention_content}\n{content}"
             embed = discord.Embed(
-                title=f"⚠️ {EA_HEADER_TEXT}",
+                title="⚠️ Command Approval Required",
                 description=f"```\n{self._embed_body(prompt.command)}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name=EA_REASON_LABEL_TEXT, value=self._truncate_preview(prompt.description, self._EA_REASON_BUDGET), inline=False)
+            embed.add_field(name="Reason", value=self._truncate_preview(prompt.description, self._EA_REASON_BUDGET), inline=False)
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
             choices = set(prompt.choices)
             view = ExecApprovalView(
@@ -5734,18 +5710,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 session_key=session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
-            # Mirror the prompt in plain content — embeds are invisible on
-            # some clients (see send_exec_approval).
-            content = self._self_contained_prompt_content(
-                "⚕ **Update Needs Your Input**", f"{prompt}{default_hint}"
-            )
-            msg = await channel.send(content=content, embed=embed, view=view)
-            view._message = msg  # store for on_timeout expiration editing
-            if _metadata_marks_nonconversational(metadata):
-                await self._nonconversational_messages.mark_many([str(msg.id)])
-            return SendResult(success=True, message_id=str(msg.id))
-        except Exception as e:
-            return SendResult(success=False, error=str(e))
+            content = self._self_contained_prompt_content("☤ **Update Needs Your Input**", f"{prompt}{default_hint}")
+            return {"content": content, "embed": embed, "view": view}, view
+        result = await self._send_prompt(chat_id, metadata, _build)
+        if result.success and _metadata_marks_nonconversational(metadata):
+            await self._nonconversational_messages.mark_many([result.message_id])
+        return result
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str,
@@ -6354,95 +6324,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         else:
             await self.handle_message(event)
         return True
-
-    # ------------------------------------------------------------------
-    # Text message aggregation (handles Discord client-side splits)
-    # ------------------------------------------------------------------
-
-    def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching.
-
-        Passes ``event.source.profile`` through so routed messages batch
-        under the same namespace the agent run will use (e.g.
-        ``agent:crypto-trader`` instead of ``agent:main``). Without this,
-        the batch key would always land in ``agent:main`` even when the
-        routed profile differs.
-        """
-        from gateway.session import build_session_key
-        return build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(event.source),
-        )
-
-    def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text event and reset the flush timer.
-
-        When Discord splits a long user message at 2000 chars, the chunks
-        arrive within a few hundred milliseconds.  This merges them into
-        a single event before dispatching.
-        """
-        key = self._text_batch_key(event)
-        existing = self._pending_text_batches.get(key)
-        chunk_len = len(event.text or "")
-        if existing is None:
-            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            self._pending_text_batches[key] = event
-        else:
-            if event.text:
-                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
-            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
-
-        prior_task = self._pending_text_batch_tasks.get(key)
-        if prior_task and not prior_task.done():
-            prior_task.cancel()
-        self._pending_text_batch_tasks[key] = asyncio.create_task(
-            self._flush_text_batch(key)
-        )
-
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text.
-
-        Uses a longer delay when the latest chunk is near Discord's 2000-char
-        split point, since a continuation chunk is almost certain.
-        """
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            if last_len >= self._SPLIT_THRESHOLD:
-                delay = self._text_batch_split_delay_seconds
-            else:
-                delay = self._text_batch_delay_seconds
-            await asyncio.sleep(delay)
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            logger.info(
-                "[Discord] Flushing text batch %s (%d chars)",
-                key, len(event.text or ""),
-            )
-            # Shield the downstream dispatch so that a subsequent chunk
-            # arriving while handle_message is mid-flight cannot cancel
-            # the running agent turn.  _enqueue_text_event always cancels
-            # the prior flush task when a new chunk lands; without this
-            # shield, CancelledError would propagate from our task down
-            # into handle_message → the agent's streaming request,
-            # aborting the response the user was waiting on.  The new
-            # chunk is handled by the fresh flush task regardless.
-            await asyncio.shield(self.handle_message(event))
-        except asyncio.CancelledError:
-            # Only reached if cancel landed before the pop — the shielded
-            # handle_message is unaffected either way.  Let the task exit
-            # cleanly so the finally block cleans up.
-            pass
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
 
 
 # ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ from agent.message_sanitization import (
     tool_call_id_variants,
     tool_result_id_variants,
 )
-from agent.prompt_builder import format_steer_marker
+from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
@@ -1331,43 +1331,8 @@ def try_recover_primary_transport(
             with contextlib.suppress(Exception):
                 agent._retire_shared_openai_client(agent.client, reason="primary_recovery")
         rt = agent._primary_runtime
-        agent._client_kwargs = dict(rt["client_kwargs"])
-        agent.model = rt["model"]
-        agent.provider = rt["provider"]
-        agent.requested_provider = rt.get("requested_provider", agent.provider)
-        agent.base_url = rt["base_url"]
-        agent.api_mode = rt["api_mode"]
-        if hasattr(agent, "_transport_cache"):
-            agent._transport_cache.clear()
-        agent.api_key = rt["api_key"]
-        agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
-        agent.request_overrides = dict(rt.get("request_overrides") or {})
-
-        if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
-            agent._anthropic_api_key = rt["anthropic_api_key"]
-            agent._anthropic_base_url = rt["anthropic_base_url"]
-            agent._anthropic_client = build_anthropic_client(
-                rt["anthropic_api_key"], rt["anthropic_base_url"],
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
-            )
-            agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
-            agent.client = None
-        elif (agent.provider or "").strip().lower() == "moa":
-            # MoA is a virtual provider with empty client_kwargs — rebuilding
-            # via _create_openai_client would raise "api_key client option
-            # must be set". Recreate the facade through the shared factory so
-            # the reference_callback relay survives recovery (#53802).
-            from agent.moa_loop import build_moa_facade
-
-            agent.client = build_moa_facade(agent, agent.model)
-        else:
-            agent.client = agent._create_openai_client(
-                dict(rt["client_kwargs"]),
-                reason="primary_recovery",
-                shared=True,
-            )
-
+        _apply_primary_runtime_fields(agent, rt)
+        _rebuild_primary_client(agent, rt, reason="primary_recovery")
         wait_time = min(3 + retry_count, 8)
         agent._vprint(
             f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "
@@ -1596,6 +1561,31 @@ def restore_primary_runtime(agent) -> bool:
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
     rt = agent._primary_runtime
+    primary_provider = str((rt or {}).get("provider") or "").strip().lower()
+    primary_model = str((rt or {}).get("model") or "").strip()
+    from agent.fallback_cooldown import _is_entitlement_rejected
+    if primary_model and _is_entitlement_rejected(agent, primary_provider, primary_model):
+        # The primary slug was rejected as unentitled for this account (#106475): restoring
+        # here would announce a recovery that was never verified and re-fail every turn.
+        # Stay on the fallback; the user sees the terminal entitlement error instead.
+        return False
+    primary_runtime_base_url = str((rt or {}).get("base_url") or "")
+
+    def _matches_primary(candidate) -> bool:
+        return credential_pool_matches_provider(candidate, primary_provider, base_url=primary_runtime_base_url)
+
+    def _load_primary_pool():
+        """Load the primary provider's pool; None when absent or provider-mismatched."""
+        from agent.credential_pool import load_pool
+        key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
+        loaded = load_pool(key) if key else None
+        return loaded if loaded is not None and _matches_primary(loaded) else None
+    blocked, prefetched_pool, prefetched = _primary_reset_gate_blocks(
+        agent, rt, primary_provider, primary_runtime_base_url, _matches_primary, _load_primary_pool
+    )
+    if blocked:
+        return False
+    agent._restore_wait_logged = False
     fallback_route = getattr(agent, "_provider_fallback_route", None)
     if (
         isinstance(fallback_route, (list, tuple))
@@ -2516,61 +2506,20 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def _apply_switched_provider_request_overrides(agent, new_provider):
-    """Re-derive the switched-to provider's ``request_overrides`` onto a live agent.
-
-    A ``custom_providers`` entry can carry an ``extra_body`` (e.g.
-    ``chat_template_kwargs`` to toggle a local model's thinking). The gateway
-    rebuild path carries this via ``request_overrides``; an *in-place* swap
-    (CLI / TUI ``/model``) must re-derive it for the switched-to provider,
-    otherwise the previous provider's ``extra_body`` lingers.
-
-    The switched-to entry is matched by **provider key, base_url, and model** —
-    the same condition ``agent_init._merge_custom_provider_extra_body`` applies
-    at build time — via the shared ``_custom_provider_extra_body_for_agent``
-    matcher. Matching by name alone would let a *different* model selected at the
-    same named endpoint inherit an ``extra_body`` configured for another model.
-    A stale ``extra_body`` is always cleared when the switched-to provider/model
-    resolves none; non-provider overrides (``service_tier`` / ``speed`` from
-    ``/fast``) are preserved.
-    """
-    from agent.agent_init import _custom_provider_extra_body_for_agent
-
-    # Prefer the init-time cache (agent_init stores ``agent._custom_providers``
-    # right where it runs its own _merge_custom_provider_extra_body); fall back
-    # to a fresh load only if a caller built the agent without it.
-    custom_providers = getattr(agent, "_custom_providers", None)
-    if custom_providers is None:
-        try:
-            from hermes_cli.config import load_config, get_compatible_custom_providers
-            custom_providers = get_compatible_custom_providers(load_config())
-        except Exception:
-            custom_providers = []
-
-    new_extra_body = _custom_provider_extra_body_for_agent(
-        provider=new_provider,
-        model=getattr(agent, "model", "") or "",
-        base_url=getattr(agent, "base_url", "") or "",
-        custom_providers=custom_providers or [],
-    )
-
-    overrides = dict(getattr(agent, "request_overrides", {}) or {})
-    overrides.pop("extra_body", None)  # always drop the previous provider's extra_body
-    if new_extra_body:
-        overrides["extra_body"] = dict(new_extra_body)
-    agent.request_overrides = overrides
-
-
-def switch_model(
-    agent,
-    new_model,
-    new_provider,
-    api_key='',
-    base_url='',
-    api_mode='',
-    capabilities=None,
-):
-    """Switch the model/provider in-place for a live agent.
+def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+    from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+    from agent.ssl_verify import resolve_httpx_verify
+    # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
+    # leaks into later requests (a torn-down httpx transport got reused).
+    # Callers pass agent._client_kwargs (or shallow copies of it) in; any in-place mutation leaks back into
+    # the stored dict and is reused on subsequent requests. #10933 hit this by injecting an httpx.Client
+    # transport that was torn down after the first request, so the next request wrapped a closed transport
+    # and raised "Cannot send a request, as the client has been closed" on every retry. The revert resolved
+    # that specific path; this copy locks the contract so future transport/keepalive work can't reintroduce
+    # the same class of bug.
+    client_kwargs = dict(client_kwargs)
+    try:
+        from providers import get_provider_profile
 
         profile = get_provider_profile(getattr(agent, "provider", ""))
         if profile is not None:
@@ -2762,7 +2711,11 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
         new_provider or ""
     ).strip().lower():
         effective_base_url = getattr(agent, "base_url", "")
-
+    if is_actual_route(new_provider, effective_base_url):
+        api_mode = "chat_completions"
+        if effective_base_url:
+            from hermes_cli.auth import normalize_actual_base_url
+            base_url = normalize_actual_base_url(effective_base_url)
     destination_capabilities = (
         dict(capabilities)
         if isinstance(capabilities, dict)
@@ -2832,11 +2785,35 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
         agent, "_credential_pool_entry_id", _MISSING
     )
 
-    def _restore_snapshot() -> None:
-        for _name, _value in _snapshot.items():
-            if _value is _MISSING:
-                # Attribute did not exist before the swap — don't fabricate it.
-                continue
+def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm) -> None:
+    """Build the client for the switched-to destination (MoA facade / native Anthropic / OpenAI wire)."""
+    if new_norm == "moa":
+        from agent.moa_loop import build_moa_facade
+        # MoA speaks only chat.completions via the MoAClient facade; the aggregator's real transport
+        # is applied inside the fan-out. Pin api_mode so the loop never dispatches
+        # client.responses.create against the facade (matches agent_init.py).
+        agent.api_mode = "chat_completions"
+        agent.api_key = api_key or "moa-virtual-provider"
+        agent.base_url = "moa://local"
+        agent._client_kwargs = {}
+        agent.client = build_moa_facade(agent, agent.model)
+        return
+    if new_provider == "bedrock" and api_mode in ("anthropic_messages", "bedrock_converse"):
+        # Non-Mantle Bedrock wires authenticate through boto3, never through the generic
+        # Anthropic/OpenAI builders (which would ship the ``aws-sdk`` sentinel as a credential).
+        from agent.bedrock_adapter import bind_bedrock_runtime
+        bind_bedrock_runtime(agent, base_url or agent.base_url, api_mode)
+        return
+    if api_mode == "anthropic_messages":
+        from agent.anthropic_adapter import build_anthropic_client
+        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
+        # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
+        # must never receive Anthropic credentials.
+        is_native_anthropic = new_provider == "anthropic"
+        effective_key = api_key or agent.api_key or (resolve_anthropic_token() if is_native_anthropic else "") or ""
+        # MiniMax OAuth: per-request callable token provider survives 15-min expiry (rationale in
+        # agent_init.py).
+        if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
             try:
                 setattr(agent, _name, _value)
             except Exception:  # noqa: BLE001

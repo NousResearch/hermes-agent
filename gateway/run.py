@@ -1867,15 +1867,22 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
 
 
 def _current_max_iterations() -> int:
-    """Return the current per-turn iteration budget after runtime env refresh.
-
-    Goes through :func:`hermes_cli.config.resolve_turn_limit` so that
-    ``agent.max_turns: none`` / ``unlimited`` (bridged into
-    ``HERMES_MAX_ITERATIONS`` as a string) resolves to the unlimited sentinel
-    instead of crashing ``int()``.
-    """
+    """Return the per-turn iteration budget after runtime env refresh; ``resolve_turn_limit`` maps
+    ``agent.max_turns: none``/``unlimited`` (bridged as a string) to the unlimited sentinel, not an
+    ``int()`` crash. A routed profile (HERMES_HOME override, multiplexed turns) reads ITS
+    ``agent.max_turns`` straight from config: the ``HERMES_MAX_ITERATIONS`` bridge is one process-wide
+    slot holding the launch profile's value, so every secondary would inherit the default's budget."""
     _reload_runtime_env_preserving_config_authority()
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+    override = get_hermes_home_override()
+    if override:
+        config_path = Path(override) / 'config.yaml'
+        try:
+            cfg = _load_bridge_config(config_path) if config_path.exists() else {}
+        except Exception:
+            cfg = {}
+        agent_cfg = cfg.get("agent")
+        return _resolve_turn_limit(agent_cfg.get("max_turns") if isinstance(agent_cfg, dict) else None)
     return _resolve_turn_limit(os.getenv("HERMES_MAX_ITERATIONS"))
 
 
@@ -1926,135 +1933,12 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     return list(profiles_to_serve(multiplex=True))
 
 
-def _enable_multiplex_log_routing(config: object) -> bool:
-    """Route agent.log/errors.log/gateway.log records to their owning profile.
-
-    ``setup_logging(mode="gateway")`` binds the queued file handlers to the
-    launch home, so under ``multiplex_profiles`` every secondary profile's
-    records (emitted inside ``_profile_runtime_scope``) land in the default
-    profile's log files (#82936). Swap the static handlers for the
-    profile routers from #99440 — the same primitive the Desktop cron ticker
-    uses — once the served-profile set is known. Inert for single-profile
-    gateways (``enable_profile_log_routing`` is a no-op below two homes).
-    """
-    if not getattr(config, "multiplex_profiles", False):
-        return False
-    try:
-        from hermes_logging import enable_profile_log_routing
-
-        return enable_profile_log_routing(
-            [home for _name, home in _multiplex_profile_homes(config)]
-        )
-    except Exception:
-        logger.debug("could not enable per-profile log routing", exc_info=True)
-        return False
-
-
-def _handoff_watch_scopes(runner: object) -> list:
-    """``(profile_name, home)`` pairs whose ``state.db`` the watcher must poll.
-
-    ``/handoff`` writes ``handoff_state='pending'`` into the store of the
-    profile the CLI ran under (``hermes -p medicina``), but the watcher
-    resolves ``_session_db`` from whatever HERMES_HOME is active on its task.
-    Unscoped, that is always the ROOT store, so a pending handoff queued by
-    any secondary profile is never seen and the CLI times out with the
-    gateway plainly alive.
-
-    ``(None, None)`` means "poll unscoped" (the root/default store — the
-    legacy single-profile path, always first so its behaviour is unchanged).
-    A multiplexed gateway additionally yields each SECONDARY profile's
-    ``(name, home)`` to be polled inside ``_profile_runtime_scope``. The
-    default profile is deliberately not repeated: its home resolves to the
-    very same ``state.db`` as the unscoped poll, and polling it twice per
-    tick is pure waste.
-
-    Module-level and defensive on purpose: the watcher's tests bind
-    ``_handoff_watcher`` onto a ``SimpleNamespace`` with no ``config``, and a
-    raising scope resolver would be swallowed by the loop's exception handler
-    and silently disable the watcher. Any failure degrades to the root poll.
-    """
-    scopes: list = [(None, None)]
-    try:
-        config = getattr(runner, "config", None)
-        if config is not None and getattr(config, "multiplex_profiles", False):
-            for name, home in _multiplex_profile_homes(config):
-                if home is None or not name or name == "default":
-                    continue
-                scopes.append((name, home))
-    except Exception:
-        logger.debug("Could not resolve multiplex homes for handoff watcher", exc_info=True)
-    return scopes
-
-
-async def _reclaim_stale(runner: object) -> None:
-    """Fail handoffs left in ``running`` by a gateway that died mid-dispatch.
-
-    Runs once per store at watcher startup. ``running`` is only ever set by
-    the watcher for the duration of one in-process dispatch, so a row still
-    in that state belongs to a previous process. It can never reach a
-    terminal state on its own, and ``request_handoff`` refuses a NEW request
-    while the row sits there — the session would be permanently unable to
-    hand off again, with nothing surfaced to the user.
-
-    Defensive throughout: the watcher's unit tests bind it onto stand-ins
-    with no such method, and a raising reclaim would abort watcher startup.
-    """
-    session_db = getattr(runner, "_session_db", None)
-    if session_db is None:
-        return
-    reclaim = getattr(session_db, "reclaim_stale_running_handoffs", None)
-    if not callable(reclaim):
-        return
-    try:
-        ids = await reclaim(
-            "gateway stopped mid-handoff; state reclaimed at startup. "
-            "Re-run /handoff to try again."
-        )
-    except Exception:
-        logger.debug("Stale-handoff reclaim raised", exc_info=True)
-        return
-    if ids:
-        logger.warning(
-            "Reclaimed %d handoff(s) stranded in 'running' by a previous "
-            "gateway: %s", len(ids), ", ".join(str(i) for i in ids),
-        )
-
-
-def _terminal_scope_cwd(default: str = "") -> str:
-    """Scope-aware TERMINAL_CWD read for footer/context surfaces.
-
-    Only an import failure falls back: an active refusal scope must raise,
-    not resolve the launch profile's cwd.
-    """
-    try:
-        from tools.terminal_scope import terminal_env as _ts_env
-    except ImportError:
-        return os.environ.get("TERMINAL_CWD", default)
-    return _ts_env("TERMINAL_CWD", default)
-
-
-def _load_profile_secret_scope(profile_home: "Path") -> dict:
-    """Hydrate and load one profile's secrets under its home override."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from agent.secret_scope import build_profile_secret_scope
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
-
-    home_token = set_hermes_home_override(str(profile_home))
-    try:
-        hydrate_profile_secret_sources(Path(profile_home))
-        return build_profile_secret_scope(Path(profile_home))
-    finally:
-        reset_hermes_home_override(home_token)
-
-
-@_contextmanager
-def _profile_runtime_scope(
-    profile_home: "Path",
-    prepared_secret_scope: Optional[dict] = None,
-    *,
-    hydrate_secrets: bool = True,
-):
-    """Scope config/skills/memory AND credentials to a profile for one turn.
+def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
+    """Profile homes the in-process ticker visits under multiplex: the served set PLUS the
+    process-active profile: ``profiles_to_serve`` lists default + every live named profile, but a
+    ``--profile <name>`` multiplexer's own profile may sit outside ``profiles/`` (custom
+    HERMES_HOME). Adapter startup already skips ``active``."""
+    from hermes_cli.profiles import get_active_profile_name, get_profile_dir
 
     homes = _multiplex_profile_homes(config)
     active = get_active_profile_name() or "default"
@@ -2241,33 +2125,6 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
 async def _discover_gateway_mcp_tools(config: object) -> None:
     """Run startup MCP discovery for every profile this gateway serves.
 
-    ``discover_mcp_tools`` reads ``mcp_servers`` from ``get_hermes_home()``'s
-    config, so an unscoped call only ever connects the launch profile's
-    servers (#95518). Under multiplex, run it once per served profile inside
-    that profile's ``_profile_runtime_scope`` and carry the scope into the
-    executor thread with ``copy_context()`` (the same shape as
-    ``_run_in_executor_with_context``). Single-profile gateways keep the one
-    unscoped call.
-    """
-    from tools.mcp_tool import discover_mcp_tools
-
-    loop = asyncio.get_running_loop()
-    if not getattr(config, "multiplex_profiles", False):
-        await loop.run_in_executor(None, discover_mcp_tools)
-        return
-    for profile_name, profile_home in _multiplex_profile_homes(config):
-        try:
-            with _profile_runtime_scope(Path(profile_home)):
-                await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
-        except Exception:
-            logger.warning(
-                "MCP tool discovery failed for profile '%s'", profile_name, exc_info=True,
-            )
-
-
-def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:
-    """Return True when a token-authenticated platform has a usable bot credential.
-
     Under multiplex, run it once per served profile inside that profile's ``_profile_runtime_scope`` and
     carry the scope into the executor thread with ``copy_context()`` (the same shape as
     ``_run_in_executor_with_context``). See #95518.
@@ -2277,7 +2134,19 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
     same gate the CLI's background discovery uses. An expired token then parks the server with an
     actionable ``hermes mcp login`` warning instead of opening an authorize tab.
     """
-    from gateway.config import PLATFORM_TOKEN_ENV_NAMES, Platform
+    from tools.mcp_oauth import suppress_interactive_oauth
+    from tools.mcp_tool_discovery import discover_mcp_tools
+    loop = asyncio.get_running_loop()
+    with suppress_interactive_oauth():
+        if not getattr(config, "multiplex_profiles", False):
+            await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
+            return
+        for profile_name, profile_home in _multiplex_profile_homes(config):
+            try:
+                with _profile_runtime_scope(Path(profile_home)):
+                    await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
+            except Exception:
+                logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
 
 def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:
@@ -3656,8 +3525,7 @@ _PROFILE_ID_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key (``agent:{ns}:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
 
-    ``{ns}`` is ``main`` for the default profile, ``main~`` for a profile literally named ``main``
-    (``gateway.session._session_key_namespace``), or a named-profile id (profile ids match
+    ``{ns}`` is ``main`` for the default profile or a named-profile id (profile ids match
     ``[a-z0-9][a-z0-9_-]{0,63}`` — never contain ``:`` — so a plain split stays unambiguous).
     For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id``
     is omitted. Named profiles are reported as ``profile``; ``main`` keys keep their historical
@@ -3667,11 +3535,11 @@ def _parse_session_key(session_key: str) -> "dict | None":
     if (
         len(parts) >= 5
         and parts[0] == "agent"
-        and (parts[1] in ("main", "main~") or _PROFILE_ID_KEY_RE.match(parts[1]))
+        and (parts[1] == "main" or _PROFILE_ID_KEY_RE.match(parts[1]))
     ):
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
         if parts[1] != "main":
-            result["profile"] = profile_from_session_key_namespace(parts[1])
+            result["profile"] = parts[1]
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result
@@ -3815,9 +3683,9 @@ def _normalize_empty_agent_response(
                 "turn was stopped to protect your conversation history. "
                 "Your message should already be saved — please send it again in a moment.")
         if is_overflow:
-            return _CONTEXT_OVERFLOW_REPLY
-        # Raw exception text (class names, JSON bodies, URLs) stays in the gateway log.
-        logger.warning("Agent turn failed; reply sanitized for chat. Detail: %s", str(error_detail)[:500])
+            return (
+                "⚠️ Session too large for the model's context window.\n"
+                "Use /compact to compress the conversation, or /reset to start fresh.")
         return (
             "⚠️ Something went wrong and I couldn't finish this reply. Use /retry to try again, "
             "or /new to start a fresh conversation. Technical details are in the gateway log "
@@ -16690,11 +16558,19 @@ class GatewayRunner(
                 allow_adapter_delegation=False,
             )
 
-        authorization_home = getattr(source, "_authorization_profile_home", None)
-        if authorization_home is not None:
-            with _profile_runtime_scope(Path(authorization_home)):
-                return _check()
-        return _check()
+        return self._under_authorization_profile(source, _check)
+
+    def _admit_bot_message_for_source(self, source: SessionSource) -> bool:
+        """Count a bot message under the profile that authorized it, so the guard's peek, count and
+        config all read the transport profile's ``gateway.bot_loop_guard``."""
+        return self._under_authorization_profile(source, lambda: self._admit_bot_message(source))
+
+    def _under_authorization_profile(self, source: SessionSource, check):
+        authorization_home = self._authorization_home_for_source(source)
+        if authorization_home is None:
+            return check()
+        with _profile_runtime_scope(Path(authorization_home)):
+            return check()
 
     def _primary_platform_event_handler(self):
         if getattr(self.config, "multiplex_profiles", False):
@@ -27395,956 +27271,6 @@ class GatewayRunner(
         ("checkpoints", "max_file_size_mb"),
     )
 
-    _HONCHO_CACHE_BUSTING_KEYS = (
-        "honcho.peer_name",
-        "honcho.ai_peer",
-        "honcho.pin_peer_name",
-        "honcho.runtime_peer_prefix",
-        "honcho.user_peer_aliases",
-    )
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
-
-    @classmethod
-    def _empty_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        return {key: None for key in cls._HONCHO_CACHE_BUSTING_KEYS}
-
-    @classmethod
-    def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        """Extract Honcho identity keys, memoized by honcho.json mtime."""
-        try:
-            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-
-            path = resolve_config_path()
-            try:
-                mtime_ns = path.stat().st_mtime_ns
-            except OSError:
-                mtime_ns = None
-            memo_key = (str(path), mtime_ns)
-            cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
-            if cached is not None:
-                return dict(cached)
-
-            hcfg = HonchoClientConfig.from_global_config(config_path=path)
-            aliases = hcfg.user_peer_aliases or {}
-            values = {
-                "honcho.peer_name": hcfg.peer_name,
-                "honcho.ai_peer": hcfg.ai_peer,
-                "honcho.pin_peer_name": bool(hcfg.pin_peer_name),
-                "honcho.runtime_peer_prefix": hcfg.runtime_peer_prefix or "",
-                "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
-            }
-            cls._HONCHO_CACHE_BUSTING_MEMO = {memo_key: values}
-            return dict(values)
-        except Exception:
-            return cls._empty_honcho_cache_busting_config()
-
-    @classmethod
-    def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
-        """Pull values that must bust the cached agent.
-
-        Returns a flat dict keyed by 'section.key'.  Missing config keys and
-        non-dict sections yield None values, which still contribute to the
-        signature (so 'absent' vs 'present-and-null' differ).
-
-        The live tool registry generation is included too.  MCP reloads and
-        dynamic MCP tool-list changes mutate the registry without necessarily
-        changing config.yaml.  Cached AIAgent instances freeze their tool
-        schemas at construction time, so a registry generation change must
-        rebuild the agent before the next turn.
-        """
-        out: Dict[str, Any] = {}
-        cfg = user_config if isinstance(user_config, dict) else {}
-        for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
-            section_val = cfg.get(section)
-            if section == "checkpoints" and isinstance(section_val, bool):
-                # Preserve legacy ``checkpoints: true`` behavior.  A live
-                # toggle must still rebuild the cached agent.
-                out[f"{section}.{key}"] = section_val if key == "enabled" else None
-            elif isinstance(section_val, dict):
-                out[f"{section}.{key}"] = section_val.get(key)
-            else:
-                out[f"{section}.{key}"] = None
-        try:
-            from tools.registry import registry
-
-            out["tools.registry_generation"] = getattr(registry, "_generation", None)
-        except Exception:
-            out["tools.registry_generation"] = None
-
-        # Honcho identity-mapping keys live in honcho.json, not user_config.
-        # Only read that file when Honcho is the active memory provider.
-        provider = cfg_get(cfg, "memory", "provider")
-        if isinstance(provider, str) and provider.lower() == "honcho":
-            out.update(cls._extract_honcho_cache_busting_config())
-        else:
-            out.update(cls._empty_honcho_cache_busting_config())
-
-        return out
-
-    @staticmethod
-    def _agent_config_signature(
-        model: str,
-        runtime: dict,
-        enabled_toolsets: list,
-        ephemeral_prompt: str,
-        cache_keys: dict | None = None,
-        user_id: str | None = None,
-        user_id_alt: str | None = None,
-        skip_context_files: bool = False,
-    ) -> str:
-        """Compute a stable string key from agent config values.
-
-        When this signature changes between messages, the cached AIAgent is
-        discarded and rebuilt.  When it stays the same, the cached agent is
-        reused — preserving the frozen system prompt and tool schemas for
-        prompt cache hits.
-
-        ``cache_keys`` is an optional flat dict of additional config values
-        that should invalidate the cache when they change.  Callers pass
-        the output of ``_extract_cache_busting_config(user_config)`` so
-        edits to model.context_length / compression.* in config.yaml are
-        picked up on the next gateway message without a manual restart.
-
-        ``user_id`` and ``user_id_alt`` are the runtime user identities
-        carried by the current message's gateway source.  They participate
-        in the cache key because the Honcho memory provider freezes them
-        into ``HonchoSessionManager`` at first-message init (see
-        ``plugins/memory/honcho/__init__.py::_do_session_init``).  Without
-        them in the signature, a shared-thread session_key (one in which
-        ``build_session_key`` intentionally omits the participant ID,
-        e.g. ``thread_sessions_per_user=False``) would reuse the cached
-        AIAgent across distinct users, causing the second user's messages
-        to be attributed to the first user's resolved Honcho peer.  This
-        broke #27371's per-user-peer contract in multi-user gateways.
-        Per-user agent rebuilds in shared threads trade prompt-cache
-        warmth for correct memory attribution.
-        """
-        import hashlib, json as _j
-
-        # Fingerprint the FULL credential string instead of using a short
-        # prefix. OAuth/JWT-style tokens frequently share a common prefix
-        # (e.g. "eyJhbGci"), which can cause false cache hits across auth
-        # switches if only the first few characters are considered.
-        _api_key = str(runtime.get("api_key", "") or "")
-        _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
-
-        _cache_keys_sorted = sorted((cache_keys or {}).items())
-
-        blob = _j.dumps(
-            [
-                model,
-                _api_key_fingerprint,
-                runtime.get("base_url", ""),
-                runtime.get("provider", ""),
-                runtime.get("requested_provider", ""),
-                runtime.get("api_mode", ""),
-                sorted((runtime.get("capabilities") or {}).items()),
-                sorted(enabled_toolsets) if enabled_toolsets else [],
-                # reasoning_config excluded — it's set per-message on the
-                # cached agent and doesn't affect system prompt or tools.
-                ephemeral_prompt or "",
-                _cache_keys_sorted,
-                str(user_id or ""),
-                str(user_id_alt or ""),
-                # skip_context_files changes the agent's frozen system prompt
-                # (context files in vs out) — a toggled config edit must
-                # rebuild the cached agent, not silently reuse it.
-                bool(skip_context_files),
-            ],
-            sort_keys=True,
-            default=str,
-        )
-        return hashlib.sha256(blob.encode()).hexdigest()[:16]
-
-    def _rehydrate_session_model_override(self, session_key: str) -> None:
-        """Lazily restore a persisted /model override after a gateway restart.
-
-        ``_session_model_overrides`` is in-memory only, so before persistence
-        a restart silently reverted every session to the global default model.
-        The non-secret parts (model/provider/base_url) are written through to
-        the session store when /model runs (and cleared on /new); here we read
-        them back on first use and re-resolve credentials via the normal
-        runtime provider resolution — api_key is never persisted to disk.
-
-        No-op when an in-memory override already exists (live state wins) or
-        when the store has nothing persisted (e.g. the user ran /new, which
-        clears both the in-memory dict and the persisted field).
-        """
-        _rehydrate_state = self._peek_session_state(session_key)
-        if (
-            _rehydrate_state is not None
-            and _rehydrate_state.conversation.model_override is not None
-        ):
-            return
-        store = getattr(self, "session_store", None)
-        if store is None:
-            return
-        try:
-            persisted = store.get_model_override(session_key)
-        except Exception:
-            logger.debug(
-                "Failed to read persisted session model override", exc_info=True
-            )
-            return
-        if not persisted:
-            return
-        override: Dict[str, Any] = {
-            "model": persisted.get("model"),
-            "provider": persisted.get("provider"),
-            "base_url": persisted.get("base_url"),
-        }
-        provider = persisted.get("provider")
-        if provider:
-            # Re-resolve credentials for the persisted provider. On failure
-            # (e.g. credentials were removed since the switch) keep the
-            # credential-less override — _resolve_session_agent_runtime falls
-            # back to env-based resolution and applies model/provider on top.
-            try:
-                runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
-                override["api_key"] = runtime.get("api_key")
-                override["api_mode"] = runtime.get("api_mode")
-                override["credential_pool"] = runtime.get("credential_pool")
-                override["request_overrides"] = dict(
-                    runtime.get("request_overrides") or {}
-                )
-                override["requested_provider"] = runtime.get("requested_provider")
-                override["capabilities"] = dict(runtime.get("capabilities") or {})
-                override["max_tokens"] = runtime.get("max_tokens")
-                if not override.get("base_url"):
-                    override["base_url"] = runtime.get("base_url")
-            except Exception:
-                logger.debug(
-                    "Credential re-resolution failed for persisted override "
-                    "(provider=%s); using credential-less override",
-                    provider, exc_info=True,
-                )
-        self._session_state(session_key).conversation.model_override = override
-        logger.info(
-            "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
-            session_key, override.get("model"), provider or "",
-        )
-
-    def _apply_session_model_override(
-        self, session_key: str, model: str, runtime_kwargs: dict
-    ) -> tuple:
-        """Apply /model session overrides if present, returning (model, runtime_kwargs).
-
-        The gateway /model command stores per-session overrides in
-        ``_session_model_overrides``.  These must take precedence over
-        config.yaml defaults so the switched model is actually used for
-        subsequent messages.  Fields with ``None`` values are skipped so
-        partial overrides don't clobber valid config defaults.
-        """
-        _apply_state = self._peek_session_state(session_key)
-        override = _apply_state.conversation.model_override if _apply_state else None
-        if not override:
-            return model, runtime_kwargs
-        model = override.get("model", model)
-        for key in (
-            "provider",
-            "requested_provider",
-            "api_key",
-            "base_url",
-            "api_mode",
-            "credential_pool",
-            "capabilities",
-            "max_tokens",
-        ):
-            val = override.get(key)
-            if val is not None:
-                runtime_kwargs[key] = val
-        # request_overrides reflects the switched-to provider; apply whenever
-        # the override recorded it (even as None) so switching to a provider
-        # without configured overrides clears a stale value left by the
-        # default provider's runtime resolution.
-        if "request_overrides" in override:
-            override_request_overrides = override.get("request_overrides")
-            if isinstance(override_request_overrides, dict) and override_request_overrides:
-                runtime_kwargs["request_overrides"] = dict(override_request_overrides)
-            else:
-                runtime_kwargs["request_overrides"] = override_request_overrides
-        if (
-            runtime_kwargs.get("api_key")
-            and runtime_kwargs.get("credential_pool") is None
-            and override.get("provider")
-        ):
-            runtime_kwargs["credential_pool"] = _credential_pool_for_provider(
-                override.get("provider")
-            )
-        return model, runtime_kwargs
-
-    def _snapshot_session_model_override(self, session_key: str) -> dict:
-        """Capture a gateway session override before a one-turn switch."""
-        _snap_state = self._peek_session_state(session_key)
-        override = _snap_state.conversation.model_override if _snap_state else None
-        return {
-            "had_override": override is not None,
-            "override": dict(override) if override is not None else None,
-        }
-
-    def _restore_session_model_override(self, session_key: str, snapshot: dict) -> None:
-        """Restore the session override captured before a one-turn switch."""
-        if not session_key:
-            return
-        if snapshot.get("had_override"):
-            self._session_state(session_key).conversation.model_override = dict(
-                snapshot.get("override") or {}
-            )
-        else:
-            _rst_state = self._peek_session_state(session_key)
-            if _rst_state is not None:
-                _rst_state.conversation.model_override = None
-        self._evict_cached_agent(session_key)
-
-    def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
-        """Return True if *agent_model* matches an active /model session override."""
-        _ims_state = self._peek_session_state(session_key)
-        override = _ims_state.conversation.model_override if _ims_state else None
-        return override is not None and override.get("model") == agent_model
-
-    def _release_running_agent_state(
-        self,
-        session_key: str,
-        *,
-        run_generation: Optional[int] = None,
-    ) -> bool:
-        """Pop ALL per-running-agent state entries for ``session_key``.
-
-        Replaces ad-hoc ``del self._running_agents[key]`` calls scattered
-        across the gateway.  Those sites had drifted: some popped only
-        ``_running_agents``; some also ``_running_agents_ts``; only one
-        path also cleared ``_busy_ack_ts``.  Each missed entry was a
-        small, persistent leak — a (str_key → float) tuple per session
-        per gateway lifetime.
-
-        Use this at every site that ends a running turn, regardless of
-        cause (normal completion, /stop, /reset, /resume, sentinel
-        cleanup, stale-eviction).  Per-session state that PERSISTS
-        across turns (``_session_model_overrides``, ``_voice_mode``,
-        ``_pending_approvals``, ``_update_prompt_pending``) is NOT
-        touched here — those have their own lifecycles.
-
-        When ``run_generation`` is provided, only clear the slot if that
-        generation is still current for the session.  This prevents an
-        older async run whose generation was bumped by /stop or /new from
-        clobbering a newer run's state during its own unwind.  Returns
-        True when the slot was cleared, False when an ownership guard
-        blocked it.
-        """
-        if not session_key:
-            return False
-        if run_generation is not None and not self._is_session_run_current(
-            session_key, run_generation
-        ):
-            return False
-        state = self._peek_session_state(session_key)
-        if state is not None:
-            lease = state.turn.lease
-            if lease is not None:
-                try:
-                    lease.release()
-                except Exception:
-                    logger.debug(
-                        "Failed to release active session slot", exc_info=True
-                    )
-            # One structured reset instead of the old drifting pop-list
-            # (agent / started_ts / lease / busy_ack_ts).  Turn-lease tokens
-            # are deliberately NOT cleared here — _release_turn_lease owns
-            # them (#64934).
-            state.turn.clear()
-        # Turn boundary: a running-agent slot was just released.  Persist the
-        # new (lower) in-flight count so the dashboard readout stays current
-        # between lifecycle transitions.  Preserves gateway_state (see
-        # _persist_active_agents).
-        self._persist_active_agents()
-        return True
-
-    def _release_turn_lease(self, session_key: str, run_generation: int) -> bool:
-        """Release the turn lease acquired by (``session_key``, ``run_generation``).
-
-        Companion to the acquisition in ``_handle_message_with_agent``
-        (#64934). The token map is keyed by (routing key, run generation), so
-        this can only ever free the lease its own turn acquired — a stale
-        unwind whose generation was bumped by /stop or /new pops ITS token,
-        and the registry's identity check refuses it if a newer turn already
-        holds the lease. Idempotent and safe for bare test runners built via
-        ``object.__new__`` (getattr defaults).
-        """
-        if not session_key:
-            return False
-        registry = getattr(self, "_turn_leases", None)
-        state = self._peek_session_state(session_key)
-        if state is None or registry is None:
-            return False
-        turn = state.turn
-        if turn.lease_token is None or turn.lease_generation != run_generation:
-            return False
-        token = turn.lease_token
-        turn.lease_token = None
-        turn.lease_generation = None
-        try:
-            return registry.release(token)
-        except Exception:
-            logger.debug("Failed to release turn lease", exc_info=True)
-            return False
-
-    def _rebind_turn_lease(
-        self, session_key: str, run_generation: int, new_session_id: str
-    ) -> bool:
-        """Follow a mid-turn session_id rotation with the held turn lease.
-
-        Compression (session-hygiene pre-compression or the agent's own
-        compressor) can rotate ``session_entry.session_id`` while this turn
-        is in flight. The turn's flush targets the NEW id, so the
-        serialization boundary must follow it — otherwise an alias routing
-        key resolving the new id (topic tip-walk onto the fresh child) could
-        start a concurrent turn the lease never sees (#64934 rotation-alias
-        window). Call at every site that reassigns session_entry.session_id
-        mid-turn. Fail-open no-op when there is no held token.
-        """
-        if not session_key or not new_session_id:
-            return False
-        registry = getattr(self, "_turn_leases", None)
-        state = self._peek_session_state(session_key)
-        if state is None or registry is None:
-            return False
-        turn = state.turn
-        if turn.lease_token is None or turn.lease_generation != run_generation:
-            return False
-        try:
-            return registry.rebind(turn.lease_token, new_session_id)
-        except Exception:
-            logger.debug("Failed to rebind turn lease", exc_info=True)
-            return False
-
-    def _clear_conversation_scope(self, session_key: str, *, reason: str) -> None:
-        """Clear ALL conversation-scoped per-session state for ``session_key``.
-
-        THE single conversation-boundary funnel. Call this — and nothing
-        else — whenever a session_key crosses a conversation boundary:
-        /new, /resume, auto-reset (idle/daily/suspended), expiry
-        finalization, and the compression-exhausted auto-reset.
-
-        Why a funnel: these boundaries used to each carry a hand-copied
-        pop-list of the per-session dicts, and the lists drifted every time
-        a new dict was added (#48031, #58403, #10702, #35809 were all
-        "boundary X forgot dict Y" bugs — e.g. /new cleared the /model
-        override but not the /model --once restore snapshot). Adding a new
-        conversation-scoped dict now means adding its attribute name to
-        _CONVERSATION_SCOPED_STATE below; every boundary picks it up
-        automatically.
-
-        Scope rules:
-        - Conversation-scoped (cleared here): model/reasoning overrides,
-          one-turn restore snapshots, pending model notes, last-resolved
-          model cache, queued follow-up events, and the boundary security
-          state (approvals, /yolo, slash-confirm, update prompts).
-        - Turn-scoped (NOT cleared here): _running_agents/_ts, slot leases,
-          turn-lease tokens — owned by _release_running_agent_state and the
-          dispatch finally.
-        - Idle agent-cache eviction is NOT a conversation boundary: the
-          session is still alive and a resumed turn rebuilds from these
-          overrides. Only true boundaries call this.
-
-        Safe on bare test runners built via ``object.__new__`` (every
-        access is getattr-guarded).
-        """
-        if not session_key:
-            return
-        # Structural clear: every conversation-scoped field resets in one
-        # call — no per-attribute pop-list to drift.
-        state = self._peek_session_state(session_key)
-        if state is not None:
-            state.conversation.clear()
-        # Legacy plain-dict stores still registered in
-        # _CONVERSATION_SCOPED_STATE (not yet folded into SessionState),
-        # e.g. _pending_model_notes.  SessionState-backed names resolve to
-        # MutableMapping views (not dict), so the isinstance(dict) guard
-        # skips them — already handled above.
-        for attr in _CONVERSATION_SCOPED_STATE:
-            store = getattr(self, attr, None)
-            if isinstance(store, dict):
-                store.pop(session_key, None)
-        self._clear_session_boundary_security_state(session_key)
-        logger.debug(
-            "Cleared conversation scope for %s (%s)", session_key, reason
-        )
-
-    def _clear_session_boundary_security_state(self, session_key: str) -> None:
-        """Clear per-session control state that must not survive a boundary switch."""
-        if not session_key:
-            return
-
-        pending_skills_reload_notes = getattr(
-            self, "_pending_skills_reload_notes", None
-        )
-        if isinstance(pending_skills_reload_notes, dict):
-            pending_skills_reload_notes.pop(session_key, None)
-
-        _sec_state = self._peek_session_state(session_key)
-        if _sec_state is not None:
-            _sec_state.persistent.approvals = None
-            _sec_state.persistent.update_prompt_pending = False
-
-        try:
-            from tools import slash_confirm as _slash_confirm_mod
-        except Exception:
-            _slash_confirm_mod = None
-        if _slash_confirm_mod is not None:
-            try:
-                _slash_confirm_mod.clear(session_key)
-            except Exception as e:
-                logger.debug(
-                    "Failed to clear slash-confirm state for session boundary %s: %s",
-                    session_key,
-                    e,
-                )
-
-        try:
-            from tools.approval import clear_session as _clear_approval_session
-        except Exception:
-            return
-
-        try:
-            _clear_approval_session(session_key)
-        except Exception as e:
-            logger.debug(
-                "Failed to clear approval state for session boundary %s: %s",
-                session_key,
-                e,
-            )
-
-    def _begin_session_run_generation(self, session_key: str) -> int:
-        """Claim a fresh run generation token for ``session_key``.
-
-        Every top-level gateway turn gets a monotonically increasing token.
-        If a later command like /stop or /new invalidates that token while the
-        old worker is still unwinding, the late result can be recognized and
-        dropped instead of bleeding into the fresh session.
-        """
-        if not session_key:
-            return 0
-        persistent = self._session_state(session_key).persistent
-        # Monotonic by design (#28686): incremented here, NEVER reset.
-        persistent.run_generation = int(persistent.run_generation) + 1
-        return persistent.run_generation
-
-    def _invalidate_session_run_generation(self, session_key: str, *, reason: str = "") -> int:
-        """Invalidate any in-flight run token for ``session_key``."""
-        generation = self._begin_session_run_generation(session_key)
-        if reason:
-            logger.info(
-                "Invalidated run generation for %s → %d (%s)",
-                session_key,
-                generation,
-                reason,
-            )
-        return generation
-
-    def _is_session_run_current(self, session_key: str, generation: int) -> bool:
-        """Return True when ``generation`` is still current for ``session_key``."""
-        if not session_key:
-            return True
-        state = self._peek_session_state(session_key)
-        current = state.persistent.run_generation if state is not None else 0
-        return int(current) == int(generation)
-
-    def _bind_adapter_run_generation(
-        self,
-        adapter: Any,
-        session_key: str,
-        generation: int | None,
-    ) -> None:
-        """Bind a gateway run generation to the adapter's active-session event."""
-        if not adapter or not session_key or generation is None:
-            return
-        try:
-            interrupt_event = getattr(adapter, "_active_sessions", {}).get(session_key)
-            if interrupt_event is not None:
-                setattr(interrupt_event, "_hermes_run_generation", int(generation))
-        except Exception:
-            pass
-
-    async def _interrupt_and_clear_session(
-        self,
-        session_key: str,
-        source: SessionSource,
-        *,
-        interrupt_reason: str,
-        invalidation_reason: str,
-        release_running_state: bool = True,
-    ) -> None:
-        """Interrupt the current run and clear queued session state consistently."""
-        if not session_key:
-            return
-        _iac_state = self._peek_session_state(session_key)
-        running_agent = _iac_state.turn.agent if _iac_state else None
-        _process_task_id = ""
-        _process_baseline = None
-        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            request_hard_interrupt(running_agent, interrupt_reason)
-            _process_task_id = getattr(
-                running_agent, "_gateway_turn_process_task_id", ""
-            )
-            _process_baseline = getattr(
-                running_agent, "_gateway_turn_process_baseline", None
-            )
-        # Bump the generation *before* scheduling the reap thread and capture
-        # the post-bump value: task_id is session-scoped (task_id ==
-        # session_id), so if a replacement turn claims this session and
-        # spawns its own process before the reap thread actually runs, that
-        # claim bumps the generation again. The closure below then sees a
-        # stale generation and skips — the replacement turn's own baseline
-        # covers its own cleanup, so nothing is left permanently unreaped.
-        _generation_at_interrupt = self._invalidate_session_run_generation(
-            session_key, reason=invalidation_reason
-        )
-        if _process_task_id and _process_baseline is not None:
-            threading.Thread(
-                target=_reap_gateway_turn_processes,
-                args=(_process_task_id, _process_baseline),
-                kwargs={
-                    "source": "gateway_turn_interrupt",
-                    "is_still_current": lambda: self._is_session_run_current(
-                        session_key, _generation_at_interrupt
-                    ),
-                },
-                name=f"gateway-turn-reaper-{_process_task_id[:12]}",
-                daemon=True,
-            ).start()
-        adapter = self._adapter_for_source(source)
-        interrupt_session_activity = getattr(
-            type(adapter), "interrupt_session_activity", None
-        )
-        if adapter and callable(interrupt_session_activity):
-            metadata = self._thread_metadata_for_source(source)
-            try:
-                params = inspect.signature(interrupt_session_activity).parameters
-                accepts_metadata = "metadata" in params or any(
-                    param.kind is inspect.Parameter.VAR_KEYWORD
-                    for param in params.values()
-                )
-            except (TypeError, ValueError):
-                accepts_metadata = False
-            if accepts_metadata:
-                await adapter.interrupt_session_activity(
-                    session_key, source.chat_id, metadata=metadata
-                )
-            else:
-                await adapter.interrupt_session_activity(session_key, source.chat_id)
-        if adapter and hasattr(adapter, "get_pending_message"):
-            adapter.get_pending_message(session_key)  # consume and discard
-        if _iac_state is not None:
-            _iac_state.persistent.pending_command_text = None
-        if release_running_state:
-            self._release_running_agent_state(session_key)
-            # Evict the cached agent: ``_interrupt_requested`` is only
-            # cleared by the turn finalizer, so on a hung or still-draining
-            # run the flag survives the lock release and kills the session's
-            # NEXT message at the top of the tool loop (interrupted=True,
-            # api_calls=0, empty response — silently swallowed, #44212).
-            # Evicting mirrors the /new and /model paths: the next message
-            # rebuilds the agent from session history, while the old agent
-            # object keeps its interrupt flag so a hung drain still dies
-            # when it unblocks.
-            self._evict_cached_agent(session_key)
-
-    async def _refresh_agent_cache_message_count(
-        self, session_key: str, session_id: Optional[str]
-    ) -> None:
-        """Re-baseline a cached agent's stored message_count after THIS turn.
-
-        The cross-process coherence guard (#45966) compares the session's
-        on-disk ``message_count`` against the count snapshotted next to the
-        cached agent, and rebuilds the agent on a mismatch.  But the snapshot
-        is taken at agent-BUILD time — before this turn writes its own user +
-        assistant (+ tool) rows — and the cache entry is never rewritten on a
-        reuse.  So without this re-baseline, THIS process's own turn would
-        grow ``message_count`` and the very next turn would see a mismatch
-        and rebuild the agent — every turn, for every conversation — silently
-        destroying the per-conversation prompt caching the cache exists to
-        protect.
-
-        Call this once a turn has completed and the agent has flushed its
-        rows to the SessionDB.  It snapshots the now-current count (which
-        includes this process's own writes) so the guard only fires when a
-        DIFFERENT process changes the transcript out from under us.  The
-        ``_sig`` is left untouched; only the count element is refreshed, and
-        only when the same agent is still cached (no rebuild/eviction raced
-        in between).  Fail-safe: any DB error leaves the snapshot as-is, which
-        at worst costs one unnecessary rebuild on the next turn.
-
-        When the cache entry records a ``session_id`` (4-tuple form, #54947)
-        that differs from the current ``session_id`` — meaning the cache
-        was built for a DIFFERENT conversation under the same ``session_key``
-        — the snapshot is intentionally left untouched.  Overwriting it with
-        the current session's count would corrupt the original conversation's
-        baseline and cause the next switch back to fire the cross-process
-        guard spuriously.  Fail-safe: the legacy 3-tuple shape (no
-        ``session_id``) is still re-baselined as before.
-        """
-        if self._session_db is None or not session_id:
-            return
-        _cache_lock = getattr(self, "_agent_cache_lock", None)
-        _cache = getattr(self, "_agent_cache", None)
-        if not _cache_lock or _cache is None:
-            return
-        try:
-            _sess_row = await self._session_db.get_session(session_id)
-            _live = _sess_row.get("message_count", 0) if _sess_row else None
-        except Exception:
-            return
-        if _live is None:
-            return
-        with _cache_lock:
-            cached = _cache.get(session_key)
-            # Only re-baseline a live 3-tuple entry; skip pending sentinels,
-            # legacy 2-tuples (they intentionally opt out of the guard), and
-            # the case where the entry was evicted/rebuilt mid-turn.
-            if (
-                isinstance(cached, tuple)
-                and len(cached) > 2
-                and cached[0] is not _AGENT_PENDING_SENTINEL
-            ):
-                # If the snapshot was taken for a different session_id
-                # (same session_key, different conversation), leave the
-                # snapshot alone — the current session_id's count belongs
-                # to a different DB row (#54947).
-                _snapshot_sid = cached[3] if len(cached) > 3 else None
-                if _snapshot_sid is not None and _snapshot_sid != session_id:
-                    return
-                if cached[2] != _live:
-                    if _snapshot_sid is None:
-                        # Legacy 3-tuple: preserve the original 3-element
-                        # shape so existing entries stay compatible with
-                        # callers that index ``cached[2]`` directly.
-                        _cache[session_key] = (cached[0], cached[1], _live)
-                    else:
-                        _cache[session_key] = (
-                            cached[0], cached[1], _live, _snapshot_sid,
-                        )
-
-    def _set_pending_turn_sidecar_notes(self, session_key: str, notes: List[str]) -> None:
-        """Stage per-turn must-deliver notes for the next agent run (one-shot)."""
-        if not session_key or not notes:
-            return
-        self._session_state(session_key).conversation.sidecar_notes = list(notes)
-
-    def _consume_pending_turn_sidecar_notes(self, session_key: str) -> List[str]:
-        if not session_key:
-            return []
-        state = self._peek_session_state(session_key)
-        if state is None:
-            return []
-        staged = state.conversation.sidecar_notes
-        state.conversation.sidecar_notes = []
-        return list(staged) if isinstance(staged, list) else []
-
-    def _voice_channel_sidecar_note(self, event, source: SessionSource, session_key: str) -> Optional[str]:
-        """Return a ``[Voice channel now: ...]`` note when VC state changed.
-
-        Compares the live Discord voice-channel context against the last
-        value delivered for this session and returns a note only on change
-        (including leaving the channel).  Unchanged state returns ``None`` so
-        the per-turn member/speaking serialization cannot churn the prompt.
-        """
-        if source.platform != Platform.DISCORD:
-            return None
-        adapter = self.adapters.get(Platform.DISCORD)
-        guild_id = self._get_guild_id(event)
-        if not (guild_id and adapter and hasattr(adapter, "get_voice_channel_context")):
-            return None
-        try:
-            vc_now = adapter.get_voice_channel_context(guild_id) or ""
-        except Exception:
-            logger.debug("voice-channel context read failed", exc_info=True)
-            return None
-        vc_prev = None
-        if session_key:
-            _vc_state = self._session_state(session_key)
-            vc_prev = _vc_state.conversation.vc_last
-            _vc_state.conversation.vc_last = vc_now
-        if vc_now == (vc_prev if vc_prev is not None else ""):
-            return None
-        if not vc_now:
-            return "[Voice channel now: not connected to a voice channel]"
-        return f"[Voice channel now: {vc_now}]"
-
-    def _pinned_session_context_prompt(
-        self, context, redact_pii: bool, session_key: Optional[str]
-    ) -> str:
-        """Return the session-context prompt, pinned per session.
-
-        Key hit → the pinned bytes are reused VERBATIM (immunizes the
-        composed system prompt against renderer nondeterminism); key miss →
-        re-render ``build_session_context_prompt`` and re-pin (a legitimate
-        cache bust: rename, topic edit, /sethome, redact_pii flip, ...).
-        """
-        _eph_key = self._ephemeral_change_key(context, redact_pii)
-        _eph_pin = None
-        if session_key:
-            _pin_state = self._peek_session_state(session_key)
-            _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
-        if _eph_pin is not None and _eph_pin[0] == _eph_key:
-            return _eph_pin[1]
-        text = build_session_context_prompt(context, redact_pii=redact_pii)
-        if session_key:
-            self._session_state(session_key).conversation.ephemeral_pin = (
-                _eph_key,
-                text,
-            )
-        return text
-
-    @staticmethod
-    def _ephemeral_change_key(context, redact_pii: bool) -> str:
-        """Hash the exact inputs ``build_session_context_prompt`` renders.
-
-        This key decides when the pinned per-session context-prompt bytes are
-        reused verbatim vs re-rendered.  The maintained invariant (guarded by
-        the parity test in tests/gateway/test_prompt_tail_freeze.py): any
-        input whose change alters the rendered bytes MUST appear here —
-        omission means a stale pinned prompt (cosmetic staleness); inclusion
-        of an extra field only costs a spurious re-render.
-        """
-        import hashlib
-
-        src = context.source
-        platform = src.platform.value if src.platform else ""
-
-        discord_ids: tuple = ()
-        discord_tools = ""
-        if src.platform == Platform.DISCORD:
-            from gateway.session import _discord_tools_loaded
-
-            discord_tools = "1" if _discord_tools_loaded() else "0"
-            discord_ids = (
-                str(src.guild_id or ""),
-                str(src.parent_chat_id or ""),
-                str(src.thread_id or ""),
-                str(src.chat_id or ""),
-                # Only PRESENCE is rendered (the id itself is delivered
-                # per-turn in the user message) — keying on the value would
-                # re-render every message for zero byte change.
-                "1" if src.message_id else "0",
-            )
-
-        # Slack renders a capability-aware platform note gated on
-        # _slack_tools_loaded() — the gate state must appear in the key
-        # (same parity contract as the Discord gate above) so a config /
-        # MCP-registration flip re-renders once instead of serving a
-        # stale pinned note for the rest of the session.
-        slack_tools = ""
-        if src.platform == Platform.SLACK:
-            from gateway.session import _slack_tools_loaded
-
-            slack_tools = "1" if _slack_tools_loaded() else "0"
-
-        try:
-            from hermes_constants import display_hermes_home
-
-            home_display = str(display_hermes_home())
-        except Exception:
-            home_display = ""
-
-        key_tuple = (
-            platform,
-            str(src.chat_id or ""),
-            str(src.thread_id or ""),
-            str(src.chat_type or ""),
-            str(src.chat_name or ""),
-            str(src.chat_topic or ""),
-            str(src.user_name or ""),
-            str(src.user_id or ""),
-            str(getattr(src, "profile", None) or ""),
-            bool(context.shared_multi_user_session),
-            discord_ids,
-            discord_tools,
-            slack_tools,
-            tuple(p.value for p in context.connected_platforms),
-            tuple(
-                (
-                    p.value,
-                    str(getattr(hc, "name", "") or ""),
-                    str(getattr(hc, "chat_id", "") or ""),
-                )
-                for p, hc in context.home_channels.items()
-            ),
-            bool(redact_pii),
-            home_display,
-        )
-        return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
-
-    def _evict_cached_agent(self, session_key: str) -> None:
-        """Remove a cached agent for a session (called on /new, /model, etc).
-
-        Pops the entry AND soft-releases the evicted agent's LLM client
-        pool so the httpx connection (sockets + held buffers) is freed
-        promptly rather than waiting on CPython GC — AIAgent holds
-        reference cycles (callbacks, tool state) that delay refcount
-        collection, so a manual release is required to keep gateway RSS
-        flat across many /new, /model, undo and reset operations (#29298,
-        same leak class as #25315).
-
-        The release is soft (``release_clients()``): it frees the client
-        pool and per-turn child subagents but PRESERVES the session's
-        terminal sandbox, browser daemon, and tracked bg processes (keyed
-        on task_id), because the session may resume with a freshly-built
-        agent.  Call sites that want a hard teardown (true conversation
-        boundaries like /new) already call ``_cleanup_agent_resources``
-        before evicting; ``release_clients`` is idempotent and safe to
-        run again after that (the client is already None).
-
-        Cleanup runs on a daemon thread so we never block holding
-        ``_agent_cache_lock`` on slow socket teardown — mirrors the
-        cap-enforcer and idle-sweeper paths.
-        """
-        # Prompt-stability state rides the agent-cache lifecycle: a fresh
-        # agent must re-render its session-context bytes (the pin) and re-see
-        # the current voice-channel state once.
-        _evict_state = self._peek_session_state(session_key)
-        if _evict_state is not None:
-            _evict_state.conversation.ephemeral_pin = None
-            _evict_state.conversation.vc_last = None
-
-        _lock = getattr(self, "_agent_cache_lock", None)
-        evicted = None
-        if _lock:
-            with _lock:
-                evicted = self._agent_cache.pop(session_key, None)
-        else:
-            _cache = getattr(self, "_agent_cache", None)
-            if _cache is not None:
-                evicted = _cache.pop(session_key, None)
-
-        agent = evicted[0] if isinstance(evicted, tuple) and evicted else evicted
-        if agent is None or agent is _AGENT_PENDING_SENTINEL:
-            return
-
-        # Don't tear down an agent that's actively mid-turn — its client,
-        # sandbox and child subagents are in use by the running request.
-        running_ids = {
-            id(a)
-            for _, a in self._running_agent_items()
-            if a is not None and a is not _AGENT_PENDING_SENTINEL
-        }
-        if id(agent) in running_ids:
-            return
-
-        try:
-            threading.Thread(
-                target=self._release_evicted_agent_soft,
-                args=(agent,),
-                daemon=True,
-                name=f"agent-evict-{str(session_key)[:24]}",
-            ).start()
-        except Exception:
-            # If we can't spawn a thread (interpreter shutdown), release
-            # inline as a best-effort fallback.
-            try:
-                self._release_evicted_agent_soft(agent)
-            except Exception:
-                pass
-
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
         """Reset per-turn state on a cached agent before a new turn starts.
@@ -28368,917 +27294,15 @@ class GatewayRunner(
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
 
-    def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
-        """Fire on_session_end extraction before soft-evicting a live agent.
-
-        Soft eviction (``_release_evicted_agent_soft``) deliberately keeps the
-        session resumable and does NOT fire ``on_session_end`` — that hook is
-        reserved for the true session boundary, tear-down done by
-        ``_session_expiry_watcher`` when the session finally expires.
-
-        But the watcher tears down whatever agent it finds in ``_agent_cache``
-        at expiry time.  If cache pressure (the LRU cap) soft-evicts a
-        finalizable session's agent BEFORE it expires, the watcher later finds
-        no cached agent and ``on_session_end`` is silently skipped — memory
-        providers never see the transcript (#11205, LRU-cap variant).
-
-        We hold the live, fully-scoped agent right now, so commit its
-        end-of-session memory extraction here using the agent's own memory
-        manager (correct per-user/chat scoping, no reconstruction).  This uses
-        ``commit_memory_session`` — extraction WITHOUT provider teardown — so
-        the eviction stays soft and a resumed turn keeps working.
-
-        Only fires for sessions the expiry watcher will eventually finalize
-        (finite reset policy).  For ``mode == "none"`` sessions the watcher
-        never runs, so there is no missed-boundary to compensate for and we
-        skip the commit (the agent is simply released).  Best-effort: any
-        failure is swallowed so eviction still proceeds.
-        """
-        if agent is None or not hasattr(agent, "commit_memory_session"):
-            return
-        if getattr(agent, "_memory_manager", None) is None:
-            return  # no external memory provider — nothing to commit
-        try:
-            _store = getattr(self, "session_store", None)
-            if _store is None:
-                return
-            _store._ensure_loaded()
-            entry = _store._entries.get(key)
-            if entry is None:
-                return
-            # Only compensate when the watcher would otherwise expect to find
-            # this agent at expiry (finite policy, not yet expired). Expired
-            # sessions are torn down by the watcher directly; mode="none"
-            # sessions are never finalized.
-            if not _store.is_session_finalizable(entry):
-                return
-            if _store._is_session_expired(entry):
-                return
-            messages = getattr(agent, "_session_messages", None)
-            agent.commit_memory_session(messages if isinstance(messages, list) else None)
-            logger.debug(
-                "Committed on_session_end extraction before soft-evicting "
-                "finalizable session=%s (cache pressure, pre-expiry)", key,
-            )
-        except Exception as _e:
-            logger.debug("Pre-evict memory commit failed for %s: %s", key, _e)
-
-    def _commit_then_release_soft(self, agent: Any, key: str) -> None:
-        """Commit end-of-session memory (if warranted), then soft-release.
-
-        Runs on the daemon eviction thread so the memory-provider call and the
-        client teardown never block the caller's held cache lock. Order matters:
-        commit uses the live agent's memory manager before ``release_clients``
-        drops the message buffer.
-        """
-        self._commit_memory_before_soft_evict(agent, key)
-        self._release_evicted_agent_soft(agent)
-
-    def _release_evicted_agent_soft(self, agent: Any) -> None:
-        """Soft cleanup for cache-evicted agents — preserves session tool state.
-
-        Called from _enforce_agent_cache_cap and _sweep_idle_cached_agents.
-        Distinct from _cleanup_agent_resources (full teardown) because a
-        cache-evicted session may resume at any time — its terminal
-        sandbox, browser daemon, and tracked bg processes must outlive
-        the Python AIAgent instance so the next agent built for the
-        same task_id inherits them.
-        """
-        if agent is None:
-            return
-        try:
-            if hasattr(agent, "release_clients"):
-                agent.release_clients()
-            else:
-                # Older agent instance (shouldn't happen in practice) —
-                # fall back to the legacy full-close path.
-                self._cleanup_agent_resources(agent)
-        except Exception:
-            pass
-        # Free conversation history memory — can be tens of MB with tool
-        # outputs (file reads, terminal output, search results) on heavy
-        # 100+-tool-call sessions. release_clients() deliberately preserves
-        # session tool state for resume, but the message list is rebuilt from
-        # persisted session JSON on the next turn, so dropping it here is safe.
-        if hasattr(agent, "_session_messages"):
-            agent._session_messages = []
-        # _db_flush_scan_prefix is a shallow copy of the flushed transcript
-        # (run_agent.py, stamped on every successful flush) — it shares every
-        # message dict, so leaving it pins the multi-MB content strings the
-        # eviction exists to free. Pressure-evictable agents have flushed by
-        # definition, so this attribute is always populated on exactly the
-        # agents the memory valve targets.
-        if hasattr(agent, "_db_flush_scan_prefix"):
-            agent._db_flush_scan_prefix = None
-
-    def _agent_cache_bounds(self):
-        """Operator-configured agent-cache bounds, resolved once per process.
-
-        Resolved lazily rather than in ``__init__`` so it also works for the
-        ``__new__``-constructed runners used by tests and by the slash-command
-        mixin.
-        """
-        bounds = getattr(self, "_agent_cache_bounds_cache", None)
-        if bounds is None:
-            from gateway.agent_cache_pressure import resolve_agent_cache_bounds
-
-            try:
-                bounds = resolve_agent_cache_bounds(_load_gateway_config())
-            except Exception as _e:
-                logger.debug("Agent cache bounds config read failed: %s", _e)
-                # Resolve from an empty config rather than bare
-                # AgentCacheBounds(): the dataclass default has
-                # memory_high_mb=None (pressure pass OFF), but an *absent*
-                # config section means "auto" — a transient config read
-                # failure must not permanently disable the OOM valve this
-                # feature exists to provide.
-                bounds = resolve_agent_cache_bounds({})
-            self._agent_cache_bounds_cache = bounds
-        return bounds
-
-    def _agent_cache_cap(self) -> int:
-        """Effective LRU cap — the configured override, else the default."""
-        configured = self._agent_cache_bounds().max_size
-        return configured if configured else _AGENT_CACHE_MAX_SIZE
-
-    def _agent_cache_idle_ttl(self) -> float:
-        """Effective idle TTL in seconds — configured override, else default."""
-        configured = self._agent_cache_bounds().idle_ttl_secs
-        return configured if configured else _AGENT_CACHE_IDLE_TTL_SECS
-
-    def _sweep_agent_cache_under_pressure(self) -> int:
-        """Shed cached transcripts once the gateway's own heap nears its budget.
-
-        The LRU cap counts entries and the idle sweep counts seconds; neither
-        knows that one cached agent pins a full ``_session_messages``
-        transcript — tens of MB on a session with 100+ tool calls.  A gateway
-        serving many chats therefore holds every warm transcript indefinitely:
-        agents that took a turn within the TTL are never idle-swept, and the
-        sweep additionally defers finalizable sessions until they expire.  RSS
-        climbs until the cgroup throttles and SIGTERM can no longer flush
-        inside systemd's stop timeout (#80764).
-
-        This is the missing valve.  Above the configured anonymous-RSS budget
-        it evicts LRU agents through the same soft path the cap enforcer uses,
-        so the transcript is dropped and rebuilt from the persisted session on
-        the next turn.  Three things are never touched: agents mid-turn (their
-        clients and sandboxes are in use), the most recently used sessions
-        (whose prompt cache is worth the most), and any session whose live
-        transcript has not finished reaching disk.
-
-        Returns the number of entries evicted (0 when memory is fine).
-        """
-        from gateway.agent_cache_pressure import (
-            plan_pressure_evictions,
-            read_anon_rss_mb,
-            transcript_persistence_caught_up,
-        )
-
-        bounds = self._agent_cache_bounds()
-        if not bounds.memory_high_mb:
-            return 0
-        _cache = getattr(self, "_agent_cache", None)
-        _lock = getattr(self, "_agent_cache_lock", None)
-        if not _cache or _lock is None:
-            # Nothing cached — whatever is using the heap, it isn't us, and
-            # warning about it every tick would point at the wrong subsystem.
-            return 0
-
-        rss_mb = read_anon_rss_mb()
-        if rss_mb is None or rss_mb < bounds.memory_high_mb:
-            return 0
-
-        running_ids = {
-            id(a)
-            for _, a in self._running_agent_items()
-            if a is not None and a is not _AGENT_PENDING_SENTINEL
-        }
-
-        def _is_evictable(key: str, agent: Any) -> bool:
-            if agent is None or agent is _AGENT_PENDING_SENTINEL:
-                return False
-            if id(agent) in running_ids:
-                return False
-            return transcript_persistence_caught_up(agent)
-
-        with _lock:
-            ordered = [
-                (key, entry[0] if isinstance(entry, tuple) and entry else entry)
-                for key, entry in _cache.items()
-            ]
-            plan = plan_pressure_evictions(
-                ordered,
-                is_evictable=_is_evictable,
-                max_evictions=bounds.max_evictions_per_pass,
-                protect_recent=bounds.protect_recent,
-            )
-            for key, _ in plan:
-                _cache.pop(key, None)
-
-        if not plan:
-            _mid_turn = sum(1 for _, a in ordered if a is not None and id(a) in running_ids)
-            _unflushed = sum(
-                1
-                for _, a in ordered
-                if a is not None
-                and a is not _AGENT_PENDING_SENTINEL
-                and id(a) not in running_ids
-                and not transcript_persistence_caught_up(a)
-            )
-            logger.warning(
-                "Agent cache pressure: anon RSS %dMB over budget %dMB but no "
-                "evictable session (%d cached, %d mid-turn, %d blocked on "
-                "un-flushed persistence)%s",
-                rss_mb, bounds.memory_high_mb, len(ordered), _mid_turn, _unflushed,
-                (
-                    " — transcripts are not reaching the session DB "
-                    "(session persistence disabled or failing?); the memory "
-                    "valve cannot shed sessions until they persist."
-                    if _unflushed and not _mid_turn
-                    else " — memory will keep climbing until those turns finish."
-                ),
-            )
-            return 0
-
-        evicted_count = len(plan)
-        logger.warning(
-            "Agent cache pressure: anon RSS %dMB over budget %dMB — evicting "
-            "%d LRU session(s): %s",
-            rss_mb, bounds.memory_high_mb, evicted_count,
-            ", ".join(key for key, _ in plan),
-        )
-        try:
-            threading.Thread(
-                target=self._release_pressure_batch,
-                args=(plan,),
-                daemon=True,
-                name="agent-cache-pressure",
-            ).start()
-        except Exception:
-            self._release_pressure_batch(plan)
-        # NOTE: _release_pressure_batch drains `plan` in place (so the trim
-        # runs with no lingering agent references) — len(plan) is 0 by the
-        # time the daemon thread finishes, hence the pre-captured count.
-        return evicted_count
-
-    def _release_pressure_batch(self, plan: List[tuple]) -> None:
-        """Release a pressure-evicted batch, then return the heap to the OS.
-
-        Sequential on one daemon thread rather than a thread per agent: the
-        batch is already capped, and the point of the pass is to reclaim
-        memory, not to race N teardowns. The trailing ``malloc_trim`` is what
-        turns "Python dropped the transcript" into "RSS actually fell" —
-        without it glibc keeps the freed arenas and the cgroup never notices.
-
-        The plan is drained (``pop`` + ``del``) rather than iterated so that
-        no local reference pins the evicted agents when ``gc.collect`` +
-        ``malloc_trim`` run — otherwise the trim frees almost nothing in this
-        pass, the next tick re-reads a still-high RSS, and the valve
-        over-evicts an extra batch of warm prompt caches every cycle.
-        """
-        while plan:
-            key, agent = plan.pop(0)  # FIFO — evict LRU-first order preserved
-            try:
-                self._commit_then_release_soft(agent, key)
-            except Exception as _e:
-                logger.debug("Pressure release failed for %s: %s", key, _e)
-            del agent
-        try:
-            from hermes_cli.mem_trim import trim_memory
-
-            trim_memory(force=True, reason="agent_cache_pressure")
-        except Exception:
-            pass
-
-    def _enforce_agent_cache_cap(self) -> None:
-        """Evict oldest cached agents when cache exceeds the LRU cap.
-
-        Must be called with _agent_cache_lock held.  Resource cleanup
-        (memory provider shutdown, tool resource close) is scheduled
-        on a daemon thread so the caller doesn't block on slow teardown
-        while holding the cache lock.
-
-        Agents currently in _running_agents are SKIPPED — their clients,
-        terminal sandboxes, background processes, and child subagents
-        are all in active use by the running turn.  Evicting them would
-        tear down those resources mid-turn and crash the request.  If
-        every candidate in the LRU order is active, we simply leave the
-        cache over the cap; it will be re-checked on the next insert.
-        """
-        _cache = getattr(self, "_agent_cache", None)
-        if _cache is None:
-            return
-        # OrderedDict.popitem(last=False) pops oldest; plain dict lacks the
-        # arg so skip enforcement if a test fixture swapped the cache type.
-        if not hasattr(_cache, "move_to_end"):
-            return
-
-        # Snapshot of agent instances that are actively mid-turn.  Use id()
-        # so the lookup is O(1) and doesn't depend on AIAgent.__eq__ (which
-        # MagicMock overrides in tests).
-        running_ids = {
-            id(a)
-            for _, a in self._running_agent_items()
-            if a is not None and a is not _AGENT_PENDING_SENTINEL
-        }
-
-        # Walk LRU → MRU and evict excess-LRU entries that aren't mid-turn.
-        # We only consider entries in the first (size - cap) LRU positions
-        # as eviction candidates.  If one of those slots is held by an
-        # active agent, we SKIP it without compensating by evicting a
-        # newer entry — that would penalise a freshly-inserted session
-        # (which has no cache history to retain) while protecting an
-        # already-cached long-running one.  The cache may therefore stay
-        # temporarily over cap; it will re-check on the next insert,
-        # after active turns have finished.
-        cap = self._agent_cache_cap()
-        excess = max(0, len(_cache) - cap)
-        evict_plan: List[tuple] = []  # [(key, agent), ...]
-        if excess > 0:
-            ordered_keys = list(_cache.keys())
-            for key in ordered_keys[:excess]:
-                entry = _cache.get(key)
-                agent = entry[0] if isinstance(entry, tuple) and entry else None
-                if agent is not None and id(agent) in running_ids:
-                    continue  # active mid-turn; don't evict, don't substitute
-                evict_plan.append((key, agent))
-
-        for key, _ in evict_plan:
-            _cache.pop(key, None)
-
-        remaining_over_cap = len(_cache) - cap
-        if remaining_over_cap > 0:
-            logger.warning(
-                "Agent cache over cap (%d > %d); %d excess slot(s) held by "
-                "mid-turn agents — will re-check on next insert.",
-                len(_cache), cap, remaining_over_cap,
-            )
-
-        for key, agent in evict_plan:
-            logger.info(
-                "Agent cache at cap; evicting LRU session=%s (cache_size=%d)",
-                key, len(_cache),
-            )
-            if agent is not None:
-                # Commit end-of-session memory extraction, then soft-release,
-                # both on the daemon thread so the (possibly network-bound)
-                # provider call never blocks the held cache lock. The commit
-                # only fires for finalizable-not-yet-expired sessions whose
-                # agent would otherwise vanish before the expiry watcher can
-                # fire on_session_end (#11205, LRU-cap variant).
-                threading.Thread(
-                    target=self._commit_then_release_soft,
-                    args=(agent, key),
-                    daemon=True,
-                    name=f"agent-cache-evict-{key[:24]}",
-                ).start()
-
-    def _sweep_idle_cached_agents(self) -> int:
-        """Evict cached agents whose AIAgent has been idle past the idle TTL.
-
-        Safe to call from the session expiry watcher without holding the
-        cache lock — acquires it internally.  Returns the number of entries
-        evicted.  Resource cleanup is scheduled on daemon threads.
-
-        Agents currently in _running_agents are SKIPPED for the same reason
-        as _enforce_agent_cache_cap: tearing down an active turn's clients
-        mid-flight would crash the request.
-        """
-        _cache = getattr(self, "_agent_cache", None)
-        _lock = getattr(self, "_agent_cache_lock", None)
-        if _cache is None or _lock is None:
-            return 0
-        now = time.time()
-        idle_ttl = self._agent_cache_idle_ttl()
-        to_evict: List[tuple] = []
-        running_ids = {
-            id(a)
-            for _, a in self._running_agent_items()
-            if a is not None and a is not _AGENT_PENDING_SENTINEL
-        }
-        with _lock:
-            for key, entry in list(_cache.items()):
-                agent = entry[0] if isinstance(entry, tuple) and entry else None
-                if agent is None:
-                    continue
-                if id(agent) in running_ids:
-                    continue  # mid-turn — don't tear it down
-                last_activity = getattr(agent, "_last_activity_ts", None)
-                if last_activity is None:
-                    continue
-                if (now - last_activity) > idle_ttl:
-                    # Check whether the session has actually expired in the
-                    # session store.  If it hasn't (e.g. daily-reset mode
-                    # where the reset fires hours after the user's last
-                    # message), keep the agent in cache so the session-store
-                    # expiry watcher can still find it and call
-                    # on_session_end() with the live transcript.  Skipping
-                    # eviction here means the agent stays alive until the
-                    # session genuinely expires, at which point the watcher
-                    # (gateway/run.py _session_expiry_watcher) tears it down
-                    # properly.  (#11205 follow-up)
-                    #
-                    # BUT only defer when the watcher will EVER finalize this
-                    # session.  For a mode == "none" session the watcher never
-                    # fires (is_session_finalizable() is False), so deferring
-                    # would pin the agent in cache for the gateway's entire
-                    # lifetime — the exact leak this idle sweep exists to
-                    # relieve.  Those sessions fall through to soft eviction
-                    # WITHOUT on_session_end, and that is correct: a mode=="none"
-                    # session never reaches a session-end boundary, so there is
-                    # no missed on_session_end to compensate for.  (The finite
-                    # case — a session evicted under LRU-cap pressure before it
-                    # expires — is instead covered by _commit_memory_before_soft_
-                    # evict on the cap path, which fires on_session_end via the
-                    # live agent's memory manager before releasing it.)
-                    session_entry = None
-                    _store = getattr(self, "session_store", None)
-                    try:
-                        if _store is not None:
-                            _store._ensure_loaded()
-                            session_entry = _store._entries.get(key)
-                    except Exception:
-                        session_entry = None
-                    if (
-                        session_entry is not None
-                        and _store is not None
-                        and _store.is_session_finalizable(session_entry)
-                        and not _store._is_session_expired(session_entry)
-                    ):
-                        continue  # keep agent — finite session hasn't expired
-                    to_evict.append((key, agent))
-            for key, _ in to_evict:
-                _cache.pop(key, None)
-        for key, agent in to_evict:
-            logger.info(
-                "Agent cache idle-TTL evict: session=%s (idle=%.0fs)",
-                key, now - getattr(agent, "_last_activity_ts", now),
-            )
-            threading.Thread(
-                target=self._release_evicted_agent_soft,
-                args=(agent,),
-                daemon=True,
-                name=f"agent-cache-idle-{key[:24]}",
-            ).start()
-        return len(to_evict)
-
-    # ------------------------------------------------------------------
-    # Proxy mode: forward messages to a remote Hermes API server
-    # ------------------------------------------------------------------
-
-    def _get_proxy_url(self) -> Optional[str]:
-        """Return the proxy URL if proxy mode is configured, else None.
-
-        Checks GATEWAY_PROXY_URL env var first (convenient for Docker),
-        then ``gateway.proxy_url`` in config.yaml.
-        """
-        url = os.getenv("GATEWAY_PROXY_URL", "").strip()
-        if url:
-            return url.rstrip("/")
-        cfg = _load_gateway_config()
-        url = (cfg.get("gateway") or {}).get("proxy_url")
-        url = (url or "").strip()
-        if url:
-            return url.rstrip("/")
-        return None
-
-    def _build_stream_consumer_config(
-        self,
-        source: "SessionSource",
-        scfg: Any,
-        adapter: Any,
-        *,
-        on_missing_cursor: str,
-    ) -> "tuple[Any, Optional[Callable[[], None]]]":
-        """Build the shared ``StreamConsumerConfig`` and the optional
-        Telegram pause-typing closure used by both agent-run paths.
-
-        ``on_missing_cursor`` controls how platforms whose adapter sets
-        ``SUPPORTS_MESSAGE_EDITING = False`` are handled — both semantics
-        are preserved verbatim from the pre-refactor call sites:
-
-        - ``"fallback"`` (proxy path): stream anyway with an empty cursor.
-        - ``"raise"`` (in-process agent path): raise ``RuntimeError`` so
-          the caller's ``except`` skips streaming entirely.
-
-        Returns ``(consumer_cfg, pause_typing_before_finalize)``.
-        """
-        from gateway.stream_consumer import StreamConsumerConfig
-
-        _pause_typing_before_finalize = None
-        if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
-            def _pause_typing_before_finalize(
-                _adapter=adapter,
-                _chat_id=source.chat_id,
-            ) -> None:
-                _adapter.pause_typing_for_chat(_chat_id)
-        # Platforms that don't support editing sent messages
-        # (e.g. QQ, WeChat) should skip streaming entirely —
-        # without edit support, the consumer sends a partial
-        # first message that can never be updated, resulting in
-        # duplicate messages (partial + final).
-        # (The proxy path instead opts into a cursorless fallback
-        # via on_missing_cursor="fallback".)
-        _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
-        # Adapters that can't edit messages but provide a native-streaming
-        # transport (e.g. WeCom's msgtype: "stream" via send_stream_frame)
-        # get past the gate — the consumer's native branch delivers the full
-        # turn through that transport.
-        _adapter_supports_native_stream = bool(getattr(
-            adapter, "SUPPORTS_NATIVE_STREAMING", False,
-        ))
-        if (
-            not _adapter_supports_edit
-            and not _adapter_supports_native_stream
-            and on_missing_cursor == "raise"
-        ):
-            raise RuntimeError("skip streaming for non-editable platform")
-        _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
-        # Some Matrix clients render the streaming cursor
-        # as a visible tofu/white-box artifact.  Keep
-        # streaming text on Matrix, but suppress the cursor.
-        _buffer_only = False
-        if source.platform == Platform.MATRIX:
-            _effective_cursor = ""
-            _buffer_only = True
-        # Fresh-final applies to Telegram only — other
-        # platforms either edit in place cheaply (Discord,
-        # Slack) or don't have the timestamp-on-edit /
-        # edit-timestamp-stays-stale problem.
-        # (Ported from openclaw/openclaw#72038.)
-        _fresh_final_secs = (
-            float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0)
-            if source.platform == Platform.TELEGRAM
-            else 0.0
-        )
-        _consumer_cfg = StreamConsumerConfig(
-            edit_interval=scfg.edit_interval,
-            buffer_threshold=scfg.buffer_threshold,
-            cursor=_effective_cursor,
-            buffer_only=_buffer_only,
-            fresh_final_after_seconds=_fresh_final_secs,
-            transport=scfg.transport or "edit",
-            chat_type=getattr(source, "chat_type", "") or "",
-        )
-        return _consumer_cfg, _pause_typing_before_finalize
-
-    async def _run_agent_via_proxy(
-        self,
-        message: str,
-        context_prompt: str,
-        history: List[Dict[str, Any]],
-        source: "SessionSource",
-        session_id: str,
-        session_key: str = None,
-        run_generation: Optional[int] = None,
-        event_message_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Forward the message to a remote Hermes API server instead of
-        running a local AIAgent.
-
-        When ``GATEWAY_PROXY_URL`` (or ``gateway.proxy_url`` in config.yaml)
-        is set, the gateway becomes a thin relay: it handles platform I/O
-        (encryption, threading, media) and delegates all agent work to the
-        remote server via ``POST /v1/chat/completions`` with SSE streaming.
-
-        This lets a Docker container handle Matrix E2EE while the actual
-        agent runs on the host with full access to local files, memory,
-        skills, and a unified session store.
-        """
-        try:
-            from aiohttp import ClientSession as _AioClientSession, ClientTimeout
-        except ImportError:
-            return {
-                "final_response": "⚠️ Proxy mode requires aiohttp. Install with: pip install aiohttp",
-                "messages": [],
-                "api_calls": 0,
-                "tools": [],
-            }
-
-        proxy_url = self._get_proxy_url()
-        if not proxy_url:
-            return {
-                "final_response": "⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)",
-                "messages": [],
-                "api_calls": 0,
-                "tools": [],
-            }
-
-        # Scope-aware read: the proxy key is a per-profile credential; under
-        # multiplex honor the installed scope's verdict (Slack pattern for
-        # the unscoped default-profile loop).
-        try:
-            from agent.secret_scope import UnscopedSecretError, get_secret
-
-            try:
-                proxy_key = (get_secret("GATEWAY_PROXY_KEY") or "").strip()
-            except UnscopedSecretError:
-                proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
-        except Exception:
-            proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
-
-        def _run_still_current() -> bool:
-            if run_generation is None or not session_key:
-                return True
-            return self._is_session_run_current(session_key, run_generation)
-
-        # Build messages in OpenAI chat format --------------------------
-        #
-        # The remote api_server can maintain session continuity via
-        # X-Hermes-Session-Id, so it loads its own history.  We only
-        # need to send the current user message.  If the remote has
-        # no history for this session yet, include what we have locally
-        # so the first exchange has context.
-        #
-        # We always include the current message.  For history, send a
-        # compact version (text-only user/assistant turns) — the remote
-        # handles tool replay and system prompts.
-        api_messages: List[Dict[str, str]] = []
-
-        if context_prompt:
-            api_messages.append({"role": "system", "content": context_prompt})
-
-        for msg in history:
-            role = msg.get("role")
-            content = msg.get("content")
-            if role in {"user", "assistant"} and content:
-                api_messages.append({"role": role, "content": content})
-
-        api_messages.append({"role": "user", "content": message})
-
-        # HTTP headers ---------------------------------------------------
-        headers: Dict[str, str] = {"Content-Type": "application/json"}
-        if proxy_key:
-            headers["Authorization"] = f"Bearer {proxy_key}"
-        if session_id:
-            headers["X-Hermes-Session-Id"] = session_id
-
-        body = {
-            "model": "hermes-agent",
-            "messages": api_messages,
-            "stream": True,
-        }
-
-        # Set up platform streaming if available -------------------------
-        _stream_consumer = None
-        _scfg = getattr(getattr(self, "config", None), "streaming", None)
-        if _scfg is None:
-            from gateway.config import StreamingConfig
-            _scfg = StreamingConfig()
-
-        platform_key = _platform_config_key(source.platform)
-        user_config = _load_gateway_config()
-        from gateway.display_config import resolve_display_setting
-        _plat_streaming = resolve_display_setting(
-            user_config, platform_key, "streaming"
-        )
-        _streaming_enabled = (
-            _scfg.enabled and _scfg.transport != "off"
-            if _plat_streaming is None
-            else bool(_plat_streaming)
-        )
-
-        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
-
-        if _streaming_enabled:
-            try:
-                from gateway.stream_consumer import GatewayStreamConsumer
-                _adapter = self._adapter_for_source(source)
-                if _adapter:
-                    _consumer_cfg, _pause_typing_before_finalize = (
-                        self._build_stream_consumer_config(
-                            source, _scfg, _adapter,
-                            on_missing_cursor="fallback",
-                        )
-                    )
-                    _stream_consumer = GatewayStreamConsumer(
-                        adapter=_adapter,
-                        chat_id=source.chat_id,
-                        config=_consumer_cfg,
-                        metadata=_thread_metadata,
-                        on_before_finalize=_pause_typing_before_finalize,
-                        initial_reply_to_id=event_message_id,
-                        run_still_current=_run_still_current,
-                    )
-            except Exception as _sc_err:
-                logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
-
-        # Run the stream consumer task in the background
-        stream_task = None
-        if _stream_consumer:
-            stream_task = asyncio.create_task(_stream_consumer.run())
-
-        # Send typing indicator
-        _adapter = self._adapter_for_source(source)
-        if _adapter:
-            try:
-                await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
-            except Exception:
-                pass
-
-        # Make the HTTP request with SSE streaming -----------------------
-        full_response = ""
-        _start = time.time()
-
-        try:
-            _timeout = ClientTimeout(total=0, sock_read=1800)
-            async with _AioClientSession(timeout=_timeout) as session:
-                async with session.post(
-                    f"{proxy_url}/v1/chat/completions",
-                    json=body,
-                    headers=headers,
-                ) as resp:
-                    if resp.status != 200:
-                        error_text = await resp.text()
-                        logger.warning(
-                            "Proxy error (%d) from %s: %s",
-                            resp.status, proxy_url, error_text[:500],
-                        )
-                        return {
-                            "final_response": f"⚠️ Proxy error ({resp.status}): {error_text[:300]}",
-                            "messages": [],
-                            "api_calls": 0,
-                            "tools": [],
-                        }
-
-                    # Parse SSE stream
-                    buffer = ""
-                    async for chunk in resp.content.iter_any():
-                        if not _run_still_current():
-                            logger.info(
-                                "Discarding stale proxy stream for %s — generation %d is no longer current",
-                                session_key or "?",
-                                run_generation or 0,
-                            )
-                            return {
-                                "final_response": "",
-                                "messages": [],
-                                "api_calls": 0,
-                                "tools": [],
-                                "history_offset": len(history),
-                                "session_id": session_id,
-                                "response_previewed": False,
-                            }
-                        text = chunk.decode("utf-8", errors="replace")
-                        buffer += text
-
-                        # Process complete SSE lines
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
-                            if not line:
-                                continue
-                            if line.startswith("data: "):
-                                data = line[6:]
-                                if data.strip() == "[DONE]":
-                                    break
-                                try:
-                                    obj = json.loads(data)
-                                    choices = obj.get("choices", [])
-                                    if choices:
-                                        delta = choices[0].get("delta", {})
-                                        content = delta.get("content", "")
-                                        if content:
-                                            full_response += content
-                                            if _stream_consumer:
-                                                _stream_consumer.on_delta(content)
-                                except json.JSONDecodeError:
-                                    pass
-                        if len(buffer) > _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS:
-                            raise ValueError(
-                                "Proxy SSE stream exceeded max buffer size without a line boundary"
-                            )
-
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error("Proxy connection error to %s: %s", proxy_url, e)
-            if not full_response:
-                return {
-                    "final_response": f"⚠️ Proxy connection error: {e}",
-                    "messages": [],
-                    "api_calls": 0,
-                    "tools": [],
-                }
-            # Partial response — return what we got
-        finally:
-            # Finalize stream consumer
-            if _stream_consumer:
-                _stream_consumer.finish()
-            if stream_task:
-                try:
-                    await asyncio.wait_for(stream_task, timeout=5.0)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    stream_task.cancel()
-
-        _elapsed = time.time() - _start
-        if not _run_still_current():
-            logger.info(
-                "Discarding stale proxy result for %s — generation %d is no longer current",
-                session_key or "?",
-                run_generation or 0,
-            )
-            return {
-                "final_response": "",
-                "messages": [],
-                "api_calls": 0,
-                "tools": [],
-                "history_offset": len(history),
-                "session_id": session_id,
-                "response_previewed": False,
-            }
-        logger.info(
-            "proxy response: url=%s session=%s time=%.1fs response=%d chars",
-            proxy_url, (session_id or "")[:20], _elapsed, len(full_response),
-        )
-
-        return {
-            "final_response": full_response or "(No response from remote agent)",
-            "messages": [
-                {"role": "user", "content": message},
-                {"role": "assistant", "content": full_response},
-            ],
-            "api_calls": 1,
-            "tools": [],
-            "history_offset": len(history),
-            "session_id": session_id,
-            "response_previewed": _stream_consumer is not None and bool(full_response),
-        }
-
-    # ------------------------------------------------------------------
-
-    async def _run_agent(
-        self,
-        message: str,
-        context_prompt: str,
-        history: List[Dict[str, Any]],
-        source: SessionSource,
-        session_id: str,
-        session_key: str = None,
-        run_generation: Optional[int] = None,
-        _interrupt_depth: int = 0,
-        event_message_id: Optional[str] = None,
-        inbound_message_id: Optional[str] = None,
-        channel_prompt: Optional[str] = None,
-        moa_config: Optional[dict] = None,
-        persist_user_message: Optional[Any] = None,
-        persist_user_timestamp: Optional[float] = None,
-        persist_user_display_kind: Optional[str] = None,
-        message_type: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Profile-scoping wrapper around the agent run.
-
-        When multiplexing is active, resolve the inbound source's profile and
-        run the whole turn inside ``_profile_runtime_scope`` so config/skills/
-        memory resolve to that profile's home AND credentials resolve from that
-        profile's secret scope (never the process-global ``os.environ``). When
-        multiplexing is off this is a transparent pass-through — zero behavior
-        change for single-profile gateways.
-        """
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            return await self._run_agent_inner(
-                message, context_prompt, history, source, session_id,
-                session_key=session_key, run_generation=run_generation,
-                _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                inbound_message_id=inbound_message_id,
-                channel_prompt=channel_prompt, moa_config=moa_config,
-                persist_user_message=persist_user_message,
-                persist_user_timestamp=persist_user_timestamp,
-                persist_user_display_kind=persist_user_display_kind,
-                message_type=message_type,
-            )
-
-        profile_home = self._resolve_profile_home_for_source(source)
-        with _profile_runtime_scope(profile_home):
-            return await self._run_agent_inner(
-                message, context_prompt, history, source, session_id,
-                session_key=session_key, run_generation=run_generation,
-                _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                inbound_message_id=inbound_message_id,
-                channel_prompt=channel_prompt, moa_config=moa_config,
-                persist_user_message=persist_user_message,
-                persist_user_timestamp=persist_user_timestamp,
-                persist_user_display_kind=persist_user_display_kind,
-                message_type=message_type,
-            )
-
-    def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
-        """Resolve the profile name for an inbound source via configured routes.
-
-        Returns ``None`` when multiplexing is off, no routes are configured, or
-        no route matches. Callers (``build_source``,
-        ``_resolve_profile_home_for_source``) treat ``None`` as "use the
-        default/active profile". When ``gateway.profile_routes`` is configured,
-        the most specific matching route wins (guild < channel < thread). See
-        :mod:`gateway.profile_routing` for matching rules.
-
-        Gated on ``gateway.multiplex_profiles``: routing stamps
-        ``source.profile``, which selects the session-key namespace and batch
-        keys — but the profile-scoped agent run only activates under
-        multiplexing. Without this gate, a configured route with multiplexing
-        off would namespace batch/session keys by profile while the agent
-        still runs in ``agent:main``, splitting the two out of agreement.
-        """
+    def _profile_name_for_source(
+        self, source: SessionSource, adapter_profile: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve the profile name for an inbound source via configured routes (most specific wins).
+        ``None`` = default/active profile (or, for a secondary adapter, its own profile — the caller
+        stamps it). Gated on ``multiplex_profiles``, since the scoped run only activates under
+        multiplexing; otherwise keys would be profile-namespaced while the agent ran in ``agent:main``.
+        ``adapter_profile`` is the profile owning the receiving bot; only routes declaring it as
+        ``bot_profile`` apply (#104933)."""
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
@@ -31330,19 +29354,123 @@ def _housekeeping_media_caches() -> None:
     MISFIRE_SWEEP_EVERY = 5  # ticks — every 5 minutes (grace window gates real work)
     FTS_STALE_RETRY_EVERY = 1  # SessionDB rate-limits the real work (_FTS_STALE_RETRY_SECONDS)
 
-    # Every platform media cache prunes on the same hourly cadence — one loop
-    # over (name, cleanup_fn), not a copy-pasted try/except per cache.
-    MEDIA_CACHE_CLEANUPS = (
-        ("Image", cleanup_image_cache),
-        ("Document", cleanup_document_cache),
-        ("Audio", cleanup_audio_cache),
-        ("Video", cleanup_video_cache),
-        ("Screenshot", cleanup_screenshot_cache),
-        ("Spillover", cleanup_spillover_cache),
-        ("Terminal temp", cleanup_terminal_temp_cache),
-        ("Bot DM", cleanup_bot_dm_cache),
-        ("Bot relay", cleanup_bot_relay_artifacts),
-    )
+def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
+    """External cron providers only: fire jobs whose time passed with no external fire delivered (dead
+    loopback hop). No-op for the built-in ticker; enforces misfire_grace_minutes; CAS claim de-dupes."""
+    from cron.scheduler_provider import fire_overdue_jobs
+    caught_up = fire_overdue_jobs(cron_provider, adapters=adapters, loop=loop)
+    if caught_up:
+        logger.info("Misfire catch-up: fired %d overdue job(s)", caught_up)
+
+
+def _housekeeping_curator() -> None:
+    """maybe_run_curator() is gated by config.interval_hours (7 days default); this is the poll."""
+    from agent.curator import maybe_run_curator
+    maybe_run_curator(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
+
+
+def _housekeeping_skill_sync() -> None:
+    """Inert unless the access gate is open and a sync base URL is configured."""
+    from tools.skills_sync_client import maybe_pull_skills
+    maybe_pull_skills()
+
+
+def _housekeeping_org_skill_sync() -> None:
+    """Gated on real org membership (the token must carry an org role): solo accounts never reach the network."""
+    from tools.skills_sync_client_org import maybe_pull_org_skills
+    maybe_pull_org_skills()
+
+
+def _housekeeping_auto_archive() -> None:
+    """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
+    is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound."""
+    from hermes_cli.config import load_config as _load_full_config
+    from hermes_state_registry import acquire, release_or_close
+    _sess_cfg = (_load_full_config().get("sessions") or {})
+    if _sess_cfg.get("auto_archive", False):
+        _adb = acquire()
+        try:
+            _adb.maybe_auto_archive(
+                idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
+                min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
+        finally:
+            release_or_close(_adb)
+
+
+def _housekeeping_deferred_fts_retry() -> None:
+    """A SessionDB opened while another process held the rebuild lock fails closed onto the LIKE fallback
+    and the gateway stays up for days. Non-blocking, rate-limited inside SessionDB; no-op when not stale."""
+    # Retry here, on the existing tick, against the shared instances this process already holds:
+    # non-blocking admission, no new thread, rate-limited inside SessionDB. No-op when nothing is stale (one
+    # attribute read per instance). See #100108.
+    from hermes_state_registry import borrow_live_shared_session_dbs
+    with borrow_live_shared_session_dbs() as _session_dbs:
+        for _sdb in _session_dbs:
+            _retry = getattr(_sdb, "retry_deferred_fts_recovery", None)
+            if callable(_retry) and _retry():
+                logger.info(
+                    "Deferred state.db FTS rebuild completed in-process for %s; full-text search restored.",
+                    getattr(_sdb, "db_path", "state.db"))
+
+
+def _housekeeping_memory_trim() -> None:
+    """Messaging-gateway counterpart to the TUI idle reaper; config-gated and rate-limited inside."""
+    from hermes_cli.mem_trim import trim_memory
+    trim_memory(reason="messaging gateway housekeeping")
+
+
+def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
+    """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
+    profile (empty adapter map) drains through the primary's adapters routed by its own profile routes."""
+    from cron import scheduler as cron_scheduler
+    from cron import scheduler_preflight as sched_preflight
+
+    if runner is None:
+        if adapters is not None:
+            cron_scheduler.drain_delivery_queue(adapters, loop)
+        return
+    for profile_name, profile_home in _handoff_watch_scopes(runner):
+        if profile_name is None:
+            profile_adapters = adapters
+        else:
+            profile_adapters = getattr(runner, "_profile_adapters", {}).get(profile_name)
+        if profile_adapters is None:
+            continue
+        with _profile_runtime_scope(profile_home or get_hermes_home()):
+            if profile_name is not None and not profile_adapters and adapters:
+                routes = sched_preflight._primary_profile_routes_for_current_home()
+                if routes:
+                    profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)
+            cron_scheduler.drain_delivery_queue(profile_adapters, loop)
+
+
+def _start_gateway_housekeeping(
+    stop_event: threading.Event, adapters=None, loop=None, interval: int = 60, cron_provider=None, runner=None,
+):
+    """Background thread for gateway-only periodic chores (NOT cron). Separate from the cron trigger
+    so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
+    Cadences are ticks of ``interval``; inner gates own the real cadence."""
+    from gateway.run_profile_reconcile import _mcp_config_reconciler
+    chores: list[tuple[int, str, Any]] = []
+    if adapters is not None or runner is not None:
+        # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
+        # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.
+        chores.append((1, "Cron durable delivery queue drain",
+                       lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
+    chores += [
+        (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
+        (60, "Media cache cleanup", _housekeeping_media_caches),
+        (60, "Paste sweep", _housekeeping_paste_sweep)]
+    if cron_provider is not None:
+        chores.append((5, "Misfire catch-up sweep", lambda: _housekeeping_misfire_catch_up(cron_provider, adapters, loop)))
+    chores += [
+        (60, "Curator tick", _housekeeping_curator),
+        (60, "Sync pull tick", _housekeeping_skill_sync),
+        (60, "Org sync pull tick", _housekeeping_org_skill_sync),
+        (60, "Auto-archive tick", _housekeeping_auto_archive),
+        (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
+        (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
+        (1, "MCP config reconcile", _mcp_config_reconciler(runner))]
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
     tick_count = 0

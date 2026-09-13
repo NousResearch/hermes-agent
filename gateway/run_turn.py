@@ -52,17 +52,6 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
     "payload too large", "input is too long",
 )
 
-_UNEXPECTED_SILENCE_REPLY = (
-    "⚠️ The model returned only a silence marker for a message that needed a reply. "
-    "Try again or rephrase."
-)
-
-
-def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
-    """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
-    text = " ".join(str(prompt or "").split())
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
-
 
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
     """One verdict for "this failed turn is a context overflow", shared by transcript persistence
@@ -1842,8 +1831,10 @@ class GatewayTurnMixin:
         if status_code in {400, 500} and len(prepared.history) > 50:
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
-            from gateway.run import _CONTEXT_OVERFLOW_REPLY
-            return _CONTEXT_OVERFLOW_REPLY
+            return (
+                "⚠️ Session too large for the model's context window.\nUse /compact to "
+                "compress the conversation, or /reset to start fresh."
+            )
         # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
@@ -1876,11 +1867,10 @@ class GatewayTurnMixin:
             else:
                 status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
         elif status_code == 400:
-            status_hint = " The AI model service rejected the request."
+            status_hint = " The request was rejected by the API."
         return self._hmwa_add_failed_turn_notice(
-            f"⚠️ Something went wrong and I couldn't finish this reply.{status_hint}\n"
-            "Use /retry to try again, or /new to start a fresh conversation. "
-            "Technical details are in the gateway log (`hermes logs`).",
+            f"Sorry, I encountered an unexpected error.{status_hint}\n"
+            "Try again or use /reset to start a fresh session.",
             self._PARTIAL_FAILED_TURN_NOTICE,
         )
 
@@ -2397,8 +2387,8 @@ class GatewayTurnMixin:
             def _scoped_server_names() -> set:
                 with _lock:
                     return {
-                        _key_name(key) for key in _servers
-                        if _server_visible_in_scope(key, reload_scope)
+                        name for name in _servers
+                        if _server_visible_in_scope(name, reload_scope)
                     }
 
             old_servers = _scoped_server_names()
@@ -3610,7 +3600,6 @@ class GatewayTurnMixin:
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
         next_inbound_id = None
-        next_display_kind = display_kind_for_event(pending_event)
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3677,24 +3666,13 @@ class GatewayTurnMixin:
         try:
             await self._refresh_agent_cache_message_count(session_key, session_id)
 
-            followup_result = await self._run_agent(
-                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-                source=next_source, session_id=session_id, session_key=next_session_key,
-                run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-                event_message_id=next_message_id, inbound_message_id=next_inbound_id,
-                channel_prompt=next_channel_prompt, message_type=next_message_type,
-                persist_user_display_kind=next_display_kind,
-            )
-        except asyncio.CancelledError:
-            await _run_followup_processing_hook(
-                _hook_adapter, pending_event, "on_processing_complete", _followup_cancel_outcome(_hook_adapter))
-            raise
-        except BaseException:
-            await _run_followup_processing_hook(
-                _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
-            raise
-        await _run_followup_processing_hook(
-            _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
+        followup_result = await self._run_agent(
+            message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+            source=next_source, session_id=session_id, session_key=next_session_key,
+            run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+            event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+            channel_prompt=next_channel_prompt, message_type=next_message_type,
+        )
         merged = _preserve_queued_followup_history_offset(result, followup_result)
         # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
         # the adapter brackets against the event that OPENED the chain. Without this the terminal
@@ -3703,11 +3681,7 @@ class GatewayTurnMixin:
         # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
         # so only fill the key while it is still absent: the innermost turn wins.
         if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
-            merged = {
-                **merged,
-                "queued_terminal_inbound_id": next_inbound_id,
-                "queued_terminal_display_kind": next_display_kind,
-            }
+            merged = {**merged, "queued_terminal_inbound_id": next_inbound_id}
         return merged
 
     async def _run_agent_cleanup_turn_tasks(

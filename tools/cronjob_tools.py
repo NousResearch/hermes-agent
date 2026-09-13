@@ -773,159 +773,6 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
 def _relay_fronted_delivery_platforms(job: Dict[str, Any]) -> set:
     """Delivery-platform names for this job that the relay connector fronts."""
     try:
-        from gateway.relay import relay_fronted_platforms
-    except Exception:
-        return set()
-    fronted = relay_fronted_platforms()
-    if not fronted:
-        return set()
-    try:
-        from cron.scheduler import _resolve_delivery_targets
-
-        targets = _resolve_delivery_targets(job) or []
-    except Exception:
-        return set()
-    theirs = {t.get("platform") for t in targets if t.get("platform")}
-    return theirs & fronted
-
-
-def _forward_relay_fronted_run(
-    job: Dict[str, Any], extra_prompt: Optional[str] = None
-) -> Optional[str]:
-    """Forward a manual run to the gateway when it targets a relay-fronted
-    platform and this process has no live relay adapter.
-
-    Relay-fronted delivery has no standalone sender: the connector owns the
-    credential and the gateway's live relay adapter is the only path. The
-    gateway api_server's ``POST /api/jobs/{id}/run`` marks the job due for its
-    own ticker, which fires it with the live adapter. ``extra_prompt``
-    (transient per-run context) rides in the request body so the forwarded
-    fire keeps it. Returns a JSON result string when forwarding engages
-    (dispatch or the accurate error), else None to fall through to the normal
-    in-process run.
-    """
-    if not _relay_fronted_delivery_platforms(job):
-        return None
-    job_id = job["id"]
-    import os
-
-    port_raw = os.getenv("API_SERVER_PORT", "").strip()
-    try:
-        port = int(port_raw) if port_raw else 8642
-    except ValueError:
-        port = 8642
-    # Mirror the api_server's own bind resolution (adapter reads
-    # extra.host -> API_SERVER_HOST -> 127.0.0.1). A wildcard bind
-    # (0.0.0.0/::) listens on loopback too, so dial loopback for those.
-    host = ""
-    try:
-        from hermes_cli.config import cfg_get, load_config_readonly
-
-        host = str(
-            cfg_get(
-                load_config_readonly(), "platforms", "api_server", "extra", "host",
-                default="",
-            )
-            or ""
-        ).strip()
-    except Exception:
-        host = ""
-    if not host:
-        host = os.getenv("API_SERVER_HOST", "").strip()
-    if not host or host in ("0.0.0.0", "::", "*"):
-        host = "127.0.0.1"
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"  # bare IPv6 literal
-    url = f"http://{host}:{port}/api/jobs/{job_id}/run"
-
-    from agent.secret_scope import get_secret
-
-    key = get_secret("API_SERVER_KEY", "") or ""
-
-    resp = None
-    try:
-        import httpx
-
-        resp = httpx.post(
-            url,
-            headers={"Authorization": f"Bearer {key}"},
-            json=({"prompt": extra_prompt} if extra_prompt else {}),
-            timeout=10.0,
-        )
-    except Exception:
-        resp = None
-
-    if resp is not None and resp.status_code < 300:
-        return json.dumps(
-            {
-                "success": True,
-                "forwarded_to_gateway": True,
-                "note": (
-                    "This job targets a relay-fronted platform; it was dispatched "
-                    "to the running gateway, whose live relay adapter owns that "
-                    "delivery."
-                ),
-            },
-            indent=2,
-        )
-    return json.dumps(
-        {
-            "success": False,
-            "error": (
-                "This job targets a relay-fronted platform, which has no "
-                "standalone sender. Start the gateway — its ticker will "
-                "deliver the job on schedule via the live relay adapter."
-            ),
-        },
-        indent=2,
-    )
-
-
-def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
-    """Parenthetical delivery note for a manual run's completion summary.
-
-    Follows the refreshed job record (#83993): ``run_one_job`` writes
-    ``last_delivery_error`` via ``mark_job_run`` when the post-run delivery
-    (telegram/discord/…) failed, and the summary must not claim success over
-    that record — the calling agent relays this line to the user. Local jobs
-    never deliver; an empty/missing error keeps the legacy wording
-    byte-for-byte.
-    """
-    # Falsy deliver ("", stored JSON null) means no delivery target — the
-    # fire-time path normalizes it to "local" (no delivery, output persisted
-    # in last_output, no delivery error), so it must read as saved-locally,
-    # not as a delivered remote target. Whitespace-only values are NOT folded
-    # in here: they keep falling through to the error check, where the
-    # fire-time "no delivery target resolved" error gets surfaced.
-    if not deliver or deliver == "local":
-        return " (output saved locally only)"
-    err = str(refreshed.get("last_delivery_error") or "").strip()
-    if not err:
-        return " (output was delivered there by the job itself)"
-    return f" (⚠ delivery FAILED: {err[:200]})"
-
-
-def _execute_job_now(
-    job: Dict[str, Any], extra_prompt: Optional[str] = None
-) -> Dict[str, Any]:
-    """Execute a cron job immediately, outside the scheduler tick.
-
-    Atomically claims the job first via ``claim_job_for_fire`` — the same
-    at-most-once CAS the scheduler/external-provider fire path uses — so a
-    concurrently-running gateway ticker cannot also fire it (the claim both
-    blocks a duplicate fire and advances ``next_run_at`` for recurring jobs).
-    If the claim is lost (another fire is in flight), this is a no-op.
-
-    The actual firing is delegated to ``run_one_job`` — the single shared
-    execute→save→deliver→mark body the ticker and external providers use — so
-    failure delivery, ``[SILENT]`` handling, and live-adapter delivery stay
-    identical across paths and can't drift.
-
-    Returns {"claimed": bool, "success": bool, "error": str|None}.
-    """
-    job_id = job["id"]
-    claimed_job = None
-    try:
         claimed_job = claim_job_for_fire(job_id, manual=True, return_job=True)
         if isinstance(claimed_job, dict):
             return claimed_job, None
@@ -1776,6 +1623,7 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
+    all: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
     paused: bool = False,
@@ -2287,6 +2135,8 @@ CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
     "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
 
+'resnap' adopts the CURRENT global inference resolution for an unpinned job (job_id) or all unpinned jobs (all=true) WITHOUT pinning it, so it keeps tracking future global changes — use after deliberately changing the default model.
+
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Prefer updating an existing job over creating near-duplicates.""",
     "parameters": {
         "type": "object",
@@ -2337,7 +2187,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "script": {
                 "type": "string",
-                "description": f"Optional script run each tick; stdout is injected into the agent's prompt as context (with no_agent=True the script IS the job). Relative paths resolve under {display_hermes_home()}/scripts/; .sh/.bash via bash, else Python. On update, '' clears."
+                "description": _script_description("the profile HERMES_HOME")
             },
             "monitor": {
                 "type": "string",
@@ -2368,7 +2218,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "attach_to_session": {
                 "type": "boolean",
-                "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
+                "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
             },
         },
         "required": ["action"]

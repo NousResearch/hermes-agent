@@ -1,29 +1,9 @@
-#!/usr/bin/env python3
-"""Run a guided tour (highlight + narrate UI elements) in the Hermes desktop GUI.
-
-One generic tool, no baked-in tour definitions: the agent discovers what is on
-screen (``action="targets"``), then highlights any element by CSS selector with
-its own title/text — either one step at a time (``show``, agent-paced) or as a
-full step list the user pages through with Next/Prev (``start``).
-
-Two surfaces share the same engine (driver.js in the renderer):
-
-- ``surface="app"`` — the Hermes desktop app's own DOM (tours of Hermes itself).
-- ``surface="preview"`` — the page loaded in the in-app browser/preview pane
-  (tours of ANY web app, e.g. a project open via open_preview).
-
-Round-trips through the gateway's blocking-prompt bridge like ``read_preview``:
-tui_gateway emits ``tour.request``, the renderer drives driver.js (injecting it
-into the preview's webview when needed) and answers ``tour.respond`` with the
-outcome, so the agent knows whether the selector matched. This module is just
-schema + a thin dispatcher over the platform-injected callback.
-
-Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for
-desktop-sourced sessions, and withdraws itself when the user has switched tours
-off (Settings → Appearance). A tour takes the whole screen, so "no thanks" has
-to mean the model is never told the tool exists — a switch that only made the
-call fail would leave Hermes offering walkthroughs it cannot give.
-"""
+"""Guided tour (highlight + narrate UI elements) in the Hermes desktop GUI: the agent discovers
+targets (``action="targets"``), then highlights one step at a time (``show``) or hands over a
+step list the user pages (``start``). Round-trips through the gateway blocking-prompt bridge
+(``tour.request``/``tour.respond``) so the agent learns whether the selector matched. Registered in
+``desktop_ui`` and hidden from the model when tours are off: a tour covers the whole screen, so "off"
+must mean the model is never told the tool exists rather than offered a call that fails."""
 
 import json
 from typing import Callable, Optional

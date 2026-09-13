@@ -85,13 +85,17 @@ _STALL_GUARD_REPEATABLE_SUFFIXES = (
 # canonical args, same result). 3 tolerates one legitimate double-check while
 # catching the observed re-issue loops (3x/4x identical calls in eval traces).
 STALL_GUARD_IDENTICAL_CALL_THRESHOLD = 3
-
-# Result-reference stubbing (agent.stall_guards): from the 2nd consecutive
-# identical call whose FRESH result is byte-identical to the previous one,
-# the duplicate payload is replaced in context by a short reference stub.
-# Results under this size aren't worth stubbing (the stub itself plus the
-# lost locality outweigh the savings), and error results are never stubbed
-# (the model must see every fresh error verbatim).
+# Repeating multi-call cycles (A,B,A,B,... with identical args AND results) defeat the
+# consecutive streak above — every alternation resets it, so a model replaying the same
+# 2–4 call batch each iteration ran to the budget unflagged (port of can1357/oh-my-pi#10521,
+# which widened their loop guard from single-call turns to whole tool-call batches).
+# Longest cycle period detected; laps reuse the streak thresholds (notice at
+# STALL_GUARD_IDENTICAL_CALL_THRESHOLD laps, halt at no_progress_block_after laps).
+_STALL_GUARD_MAX_CYCLE_PERIOD = 4
+# History window: enough for block_after laps of the longest cycle plus slack.
+_STALL_GUARD_CYCLE_HISTORY = 64
+# From the 2nd byte-identical repeat the duplicate payload becomes a reference stub; smaller results
+# aren't worth it, errors never are. The args preview keeps WHAT was called if compression evicts the original.
 IDENTICAL_RESULT_STUB_MIN_CHARS = 512
 
 # How much of the canonical args JSON the stub carries so the model still
@@ -522,10 +526,11 @@ class ToolCallGuardrailController:
         # result-reference stub can point at the message that carries the
         # full payload.
         self._identical_streak_first_call_id: str = ""
-        # tool_call_id -> spillover file path for results that were persisted
-        # out of context (persisted-output preview). Lets a reference stub
-        # carry the file path so the reference can't dangle when the first
-        # occurrence entered context as a preview.
+        # Batch-cycle loop breaker (port of can1357/oh-my-pi#10521): sequence of
+        # (signature, result_hash, repeatable) for every observed call this turn, so a repeating
+        # multi-call cycle (A,B,A,B,...) is caught even though it resets the consecutive streak above.
+        self._call_history: deque[tuple[ToolCallSignature, str, bool]] = deque(maxlen=_STALL_GUARD_CYCLE_HISTORY)
+        # tool_call_id -> spillover path, so a stub referencing a persisted-output preview can't dangle.
         self._persisted_result_paths: dict[str, str] = {}
         # Per-turn runaway-loop cap counters. Reset every turn (this method
         # runs at the start of each run_conversation), so the caps bound a

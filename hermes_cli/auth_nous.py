@@ -108,24 +108,6 @@ _ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({
     # Free-tier (anonymous) host: serves the single ``nous/welcome`` model.
     "welcome-api.nousresearch.com"})
 
-def _nous_inference_host_allowed(hostname: Optional[str]) -> bool:
-    """Production hosts always; otherwise only the host the operator named in
-    ``NOUS_INFERENCE_BASE_URL``.
-
-    A non-production Portal's refresh response names that environment's inference gateway. The
-    Portal-returned value is network provenance, so it does not get bearer-receive authority on
-    its own — not even for a Nous-owned host: the operator's explicit override is the authority,
-    and the network value is accepted exactly when it agrees with it. Then the persisted endpoint,
-    the pricing scope and the proxy all follow the environment the operator chose, and the
-    per-turn "refusing inference URL host" warning stops.
-    """
-    if hostname in _ALLOWED_NOUS_INFERENCE_HOSTS:
-        return True
-    if not hostname:
-        return False
-    override = _nous_inference_env_override()
-    return override is not None and urlparse(override).hostname == hostname
-
 
 def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[str]:
     """Validate a Portal-returned inference URL against the host allowlist.
@@ -178,7 +160,12 @@ def _nous_inference_env_override() -> Optional[str]:
     profile's process-wide value (#65941).
     """
     from hermes_cli.auth import _optional_base_url
-    return _optional_base_url(_scoped_operator_override("NOUS_INFERENCE_BASE_URL"))
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        override = get_secret("NOUS_INFERENCE_BASE_URL")
+    except UnscopedSecretError:
+        override = os.getenv("NOUS_INFERENCE_BASE_URL")  # unscoped default-profile/CLI path: environ IS its own value
+    return _optional_base_url(override)
 
 
 def _nous_portal_env_override() -> Optional[str]:

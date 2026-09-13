@@ -40,6 +40,9 @@ jobs:
         with:
           command: npm ci
 
+      - name: Verify workspace runner failure reporting
+        run: node --test .github/scripts/run-workspace-checks.test.mjs
+
       - name: Run all workspace checks
         # The UI suite already uses a bounded Vitest pool. Keeping the outer
         # workspace scheduler at two prevents concurrent builds and test
@@ -55,7 +58,7 @@ jobs:
     permissions:
       contents: read
     env:
-      CI: "true"
+      CI: 'true'
     steps:
       - name: Checkout exact candidate without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

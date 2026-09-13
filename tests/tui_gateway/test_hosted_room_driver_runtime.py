@@ -184,6 +184,7 @@ class FakeSessionRPC:
         title: str = room_session_title(ROOM_ID),
         active: bool = False,
         task_id: str | None = None,
+        member_id: str | None = None,
         history: list[dict[str, Any]] | None = None,
     ) -> str:
         with self._lock:
@@ -196,6 +197,9 @@ class FakeSessionRPC:
                 "task_id": task_id,
                 "task": None,
                 "execution_generation": None,
+                "hosted_task": ({**asdict(_identity(task_id)), "execution_generation": 1,
+                                 "member_id": member_id if member_id is not None else profile}
+                                if task_id else None),
                 "history": list(history or []),
                 "on_terminal": None,
                 "pending_approval": None,
@@ -273,6 +277,7 @@ class FakeSessionRPC:
         task: state.TaskIdentity,
         execution_generation: int,
         on_terminal,
+        member_id="",
     ):
         self._assert_lock(profile)
         params = {
@@ -283,6 +288,7 @@ class FakeSessionRPC:
             "task": task,
             "execution_generation": execution_generation,
             "on_terminal": on_terminal,
+            "member_id": member_id,
         }
         self.calls.append(("submit", params))
         with self._lock:
@@ -290,6 +296,8 @@ class FakeSessionRPC:
             self.states[session_id]["task_id"] = task.task_id
             self.states[session_id]["task"] = task
             self.states[session_id]["execution_generation"] = execution_generation
+            self.states[session_id]["hosted_task"] = {
+                **asdict(task), "execution_generation": execution_generation, "member_id": member_id}
             self.states[session_id]["on_terminal"] = on_terminal
         self.submitted.set()
         if self.auto_complete:
@@ -337,6 +345,10 @@ class FakeSessionRPC:
         task: state.TaskIdentity,
         execution_generation: int,
         source: str,
+        expected_task_id: str,
+        expected_task: state.TaskIdentity | None = None,
+        expected_execution_generation: int | None = None,
+        expected_member_id: str | None = None,
     ):
         params = {
             "task": task,
@@ -345,20 +357,11 @@ class FakeSessionRPC:
             "expected_task_id": task.task_id,
         }
         with self._lock:
-            matches = [
-                (session_id, current)
-                for session_id, current in self.states.items()
-                if current.get("task") == task
-                and current.get("execution_generation") == execution_generation
-            ]
-            if len(matches) > 1:
-                raise RuntimeError("ambiguous admitted hosted room task")
-            if not matches:
-                self.calls.append(("interrupt_absent", params))
-                return {"found": False, "active": False, "interrupted": False}
-            session_id, current = matches[0]
-            params["session_id"] = session_id
-            if not current["active"] or current["task_id"] != task.task_id:
+            current = self.states[session_id]
+            exact = expected_task is None or current["hosted_task"] == {
+                **asdict(expected_task), "execution_generation": expected_execution_generation,
+                "member_id": expected_member_id}
+            if not current["active"] or current["task_id"] != expected_task_id or not exact:
                 self.calls.append(("interrupt_skipped", params))
                 return {"found": True, "active": False, "interrupted": False}
             current["active"] = False

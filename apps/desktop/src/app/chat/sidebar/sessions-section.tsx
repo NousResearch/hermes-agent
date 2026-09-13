@@ -22,6 +22,7 @@ import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import {
   $sidebarListGroupIds,
+  $sidebarShowAllSessions,
   $sidebarWorkspaceNodeOpen,
   listGroupNodeId,
   toggleWorkspaceNodeCollapsed
@@ -376,18 +377,15 @@ export function SidebarSessionsSection({
   // together. Compute boundaries from the whole pool, just like Updated.
   const renderPreviewRows = useCallback(
     (items: SessionInfo[], projectId: string) => {
-      const rows = groupEntriesByRecency(
-        flattenSessionsWithBranches(items),
-        undefined,
-        undefined,
-        showAllSessions ? Infinity : 2
-      ).map(row => (row.kind === 'divider' ? { ...row, key: `project:${projectId}:${row.key}` } : row))
+      const rows = groupEntriesByRecency(flattenSessionsWithBranches(items), undefined, undefined, 2).map(row =>
+        row.kind === 'divider' ? { ...row, key: `project:${projectId}:${row.key}` } : row
+      )
 
       const ordered = manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
 
       return hideCollapsedGroupRows(ordered, isListGroupOpen).map(row => renderListRow(row, false))
     },
-    [isListGroupOpen, manualOrderIds, renderListRow, showAllSessions]
+    [isListGroupOpen, manualOrderIds, renderListRow]
   )
 
   // Same as `renderRows`, but with date dividers folded in — used for

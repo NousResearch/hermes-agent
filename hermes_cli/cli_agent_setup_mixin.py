@@ -614,12 +614,6 @@ class CLIAgentSetupMixin:
             # ``cli._active_agent_ref`` None forever — so memory shutdown never ran on /exit (#49287).
             import cli as _cli
             _cli._active_agent_ref = self.agent
-            # Seed the agent's once-per-lifecycle auto_load cache with the bytes the preload
-            # thread rendered, so the shared prompt path never re-reads config or skill files.
-            _auto_result = getattr(self, "_auto_load_skills_result", None)
-            if _auto_result is not None:
-                self.agent._auto_load_skills_result = _auto_result
-                self.agent._auto_load_skills_resolved = True
             # Route agent status output through prompt_toolkit so ANSI escapes aren't garbled by
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.

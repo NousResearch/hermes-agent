@@ -853,23 +853,6 @@ def _gateway_home_for_pid(pid: int):
     return None
 
 
-def _sudo_noninteractive_ok(targeted_probe: list) -> bool:
-    """True when this user can elevate without a prompt.
-
-    ``sudo -n true`` first; a refusal is inconclusive because a NOPASSWD sudoers entry scoped
-    to one command (the hardened shape) rejects the blanket probe, so fall back to running
-    ``sudo -n <targeted_probe>`` — callers pass a non-destructive stand-in for the argv they
-    are about to elevate.
-    """
-    try:
-        if subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0:
-            return True
-        # Blanket sudo refused — a targeted NOPASSWD sudoers entry may still work.
-        return subprocess.run(["sudo", "-n", *targeted_probe], capture_output=True, timeout=5).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
 def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: str):
     """Resolve the command prefix for manage-units verbs (None ⇒ no privilege path).
 

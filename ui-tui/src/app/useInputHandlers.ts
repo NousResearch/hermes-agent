@@ -172,6 +172,15 @@ export function dismissSensitivePrompt(
 
     respondToServerRequest(requestId, { value: '' })
   }
+
+  if (overlay.vaultUnlock) {
+    const requestId = overlay.vaultUnlock.requestId
+
+    patchOverlayState({ vaultUnlock: null })
+    sys(`${overlay.vaultUnlock.displayName} stays locked`)
+
+    return rpc<SecretRespondResponse>('vault.unlock.respond', { password: '', request_id: requestId })
+  }
 }
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))

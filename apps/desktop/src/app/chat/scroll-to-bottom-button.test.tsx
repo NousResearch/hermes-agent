@@ -44,7 +44,7 @@ describe('ScrollToBottomButton', () => {
   it('morphs into the approval pill when scrolled up with a pending approval', () => {
     pendingApproval()
     setThreadAtBottom(false)
-    render(<ScrollToBottomButton sessionId={null} />)
+    render(<ScrollToBottomButton sessionId="sess-1" />)
 
     expect(screen.getByRole('button', { name: 'Approval needed' })).toBeTruthy()
     expect(screen.getByText('Approval needed')).toBeTruthy()

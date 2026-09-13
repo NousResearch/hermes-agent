@@ -5,43 +5,10 @@ platform + chat_id + thread_id (14) → platform + chat_id (6) → platform + gu
 → default profile. For Discord threads/forum posts ``parent_chat_id`` carries the
 direct parent, so a channel route also matches any thread/post under it.
 
-Matching priority (most specific first):
-  1. platform + chat_id + thread_id (exact thread)  — specificity 14
-  2. platform + chat_id (channel route)             — specificity 6
-  3. platform + guild_id (guild/server route)       — specificity 2
-  4. No match                                       → default profile
-
-Parent-chain matching:
-For Discord threads and forum posts, ``parent_chat_id`` carries the
-direct parent (the channel for a thread, the forum channel for a post).
-Routes keyed on a channel match both direct messages and messages in
-any thread/post whose parent is that channel.
-
-Configuration (config.yaml):
-
-    gateway:
-      profile_routes:
-        - name: server-default
-          platform: discord
-          guild_id: "YOUR_GUILD_ID"
-          profile: server-profile
-
-        - name: special-channel
-          platform: discord
-          guild_id: "YOUR_GUILD_ID"
-          chat_id: "YOUR_CHANNEL_ID"
-          profile: channel-profile
-
-        - name: thread-route
-          platform: discord
-          chat_id: "YOUR_CHANNEL_ID"
-          thread_id: "YOUR_THREAD_ID"
-          profile: thread-profile
-
-        - name: owner-whatsapp
-          platform: whatsapp
-          chat_id: "15551234567"   # phone, JID, or LID — all equivalent
-          profile: owner
+A route applies only to messages received by the bot of its ``bot_profile`` (default: the
+default profile's shared bot). Telegram DM ``chat_id == user_id`` for EVERY bot, so without
+this a ``chat_id`` route meant for the shared bot would re-home the same user's DM with a
+dedicated secondary bot into another profile (#104933).
 """
 
 from __future__ import annotations
@@ -119,18 +86,10 @@ class ProfileRoute:
     ) -> bool:
         """True if every discriminator the route declares holds (AND).
 
-        All configured discriminators are matched conjunctively (AND): every
-        discriminator that the route declares must hold. ``chat_id`` supports
-        hierarchical matching for Discord forums/threads:
-        - Direct channel match: chat_id == route.chat_id
-        - Thread in channel: parent_chat_id == route.chat_id
-        A route declaring both ``guild_id`` and ``chat_id`` requires both to
-        match (a chat match alone does not satisfy a guild constraint).
-
-        WhatsApp / WhatsApp Cloud ``chat_id`` also matches across user-identity
-        forms (bare number, JID, LID) after the exact-string check. Exact
-        matches always win first, so existing configs keep working. Groups
-        (``@g.us``) and broadcasts stay exact-only.
+        ``chat_id`` matches the channel directly or as the parent of a thread/forum post; WhatsApp
+        ``chat_id`` also matches across number/JID/LID after the exact check (groups/broadcasts stay exact-only).
+        ``adapter_profile`` is the profile owning the receiving bot (``None`` = default); it must equal
+        the route's ``bot_profile``.
         """
         if not self.enabled or self.platform != platform:
             return False
@@ -147,6 +106,12 @@ class ProfileRoute:
         if self.guild_id and self.guild_id != guild_id:
             return False
         return True
+
+
+def _bot_profile_key(name: Optional[str]) -> Optional[str]:
+    """``None`` for the default profile, else the profile name (mirrors ``set_owner_profile``)."""
+    name = (name or "").strip()
+    return None if not name or name == "default" else name
 
 
 def _coerce_route_id(value: Any) -> Optional[str]:
@@ -197,18 +162,14 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
         except (ValueError, ImportError):
             logger.warning("Skipping profile route %s: invalid profile name %r", name, profile)
             continue
-        routes.append(
-            ProfileRoute(
-                name=name,
-                platform=platform,
-                profile=profile,
-                guild_id=_coerce_route_id(entry.get("guild_id")),
-                chat_id=_coerce_route_id(entry.get("chat_id")),
-                thread_id=_coerce_route_id(entry.get("thread_id")),
-                enabled=entry.get("enabled", True),
-            )
-        )
-    # Sort: most specific first so the first match wins.
+        routes.append(ProfileRoute(
+            name=name, platform=platform, profile=profile,
+            guild_id=_coerce_route_id(entry.get("guild_id")),
+            chat_id=_coerce_route_id(entry.get("chat_id")),
+            thread_id=_coerce_route_id(entry.get("thread_id")),
+            enabled=entry.get("enabled", True),
+            bot_profile=_bot_profile_key(entry.get("bot_profile")),
+        ))
     routes.sort(key=lambda r: r.specificity, reverse=True)
     logger.debug("Loaded %d profile routes (most-specific-first)", len(routes))
     return routes

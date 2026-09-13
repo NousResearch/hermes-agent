@@ -593,7 +593,12 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str]) -
     except subprocess.TimeoutExpired as e:
         raise PluginOperationError("Git clone timed out after 60 seconds.") from e
     if result.returncode != 0:
-        raise PluginOperationError(_clone_failure_message(git_url, _safe_git_error(result, git_url)))
+        error = _safe_git_error(result, git_url)
+        if re.search(r"could not read Username|Authentication failed|Repository not found", error):
+            error += (
+                "\n\nIf this repository is private, authenticate first: run `gh auth login`, set GITHUB_TOKEN "
+                "(or GH_TOKEN) in your .env, or store a credential in git's credential helper for this host.")
+        raise PluginOperationError(f"Git clone failed:\n{error}")
     _scrub_cloned_origin(tmp_clone, git_exe, git_url)
     if revision:
         _checkout_exact_revision(tmp_clone, git_exe, revision, source_url=git_url)

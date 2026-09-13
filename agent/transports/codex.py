@@ -10,6 +10,16 @@ import logging
 import re
 from typing import Any, Callable, Optional
 
+from agent.reasoning_effort import (
+    CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
+    XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
+    # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
+    # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
+    codex_supported_efforts,
+)
+from agent.transports.base import ProviderTransport
+from agent.transports.types import NormalizedResponse, ToolCall
+
 logger = logging.getLogger(__name__)
 
 # Cron fires build session_id as ``cron_<job_id>_<YYYYMMDD_HHMMSS>`` (see

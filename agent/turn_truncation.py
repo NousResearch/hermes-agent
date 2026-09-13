@@ -28,8 +28,8 @@ logger = logging.getLogger("agent.conversation_loop")
 
 _CONTINUABLE_MODES = {"chat_completions", "bedrock_converse", "anthropic_messages"}
 _THINK_TAG_RE = re.compile(r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>', re.IGNORECASE)
-_TRUNCATED_FINAL = site_copy("truncated")
-_FIRST_TRUNCATED_FINAL = _TRUNCATED_FINAL
+_TRUNCATED_FINAL = "Response truncated due to output length limit"
+_FIRST_TRUNCATED_FINAL = "First response truncated due to output length limit"
 # #106260: a stream that died on a context-overflow error after partial delivery must not seed a
 # continuation — the transcript already cannot fit, and appending the partial stub grows every
 # later request into the same overflow. End the turn via the recovery contract instead.
@@ -158,13 +158,11 @@ class _Trunc(TruncationVerdict):
         self, final_response: str, error: Optional[str] = None, *,
         result_messages: Optional[List[Dict[str, Any]]] = None, cleanup: bool = True,
         failed: bool = False, compression_exhausted: bool = False,
-        failure: Tuple[str, bool] = ("truncated", True),
     ) -> TruncationVerdict:
         """Persist and end the turn as partial (or ``failed``).
 
         ``compression_exhausted`` forwards the #98722 typed bit so the gateway can
-        move future input off a bloated session (run_turn.py consumes it). ``failure`` is
-        the ``(failure_reason, retryable)`` verdict for the UI descriptor.
+        move future input off a bloated session (run_turn.py consumes it).
         """
         agent = self.agent
         if cleanup:
@@ -173,7 +171,7 @@ class _Trunc(TruncationVerdict):
         return self.done("return", stamp_failure(partial_result(
             self.messages if result_messages is None else result_messages, self.api_call_count,
             final_response, error, failed=failed, compression_exhausted=compression_exhausted,
-        ), *failure))
+        ))
 
     @property
     def is_stub(self) -> bool:
@@ -409,7 +407,6 @@ def recover_from_truncation(
             error=_CONTEXT_OVERFLOW_PARTIAL_FINAL,
             failed=True,
             compression_exhausted=True,
-            failure=("context_overflow", False),
         )
 
     _trunc_msg = normalize_response_for_agent(agent, response)

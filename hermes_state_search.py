@@ -13,20 +13,10 @@ from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
 from hermes_state_common import (
-    FTS_CJK_STALE_KEY,
-    FTS_SQL,
-    FTS_STALE_KEY,
-    FTS_STORAGE_VERSION,
-    FTS_TOOL_CONTENT_PREFIX_CHARS,
-    FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,
-    FTS_TRIGRAM_EXCLUDED_SOURCES,
-    FTS_TRIGRAM_SQL,
-    fts_trigram_session_sql,
-    MAX_FTS5_QUERY_CHARS,
-    SCHEMA_VERSION,
-    _FTS_CJK_TRIGGERS,
-    escape_like as _escape_like,
-    fts_rebuild_admission,
+    FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
+    FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
+    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
+    escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -1076,15 +1066,9 @@ class SessionSearchMixin:
         decode loop; otherwise ``/undo N`` pairs an in-memory count that excludes handoffs
         with a DB pick that includes them."""
         active_clause = "" if include_inactive else " AND active = 1"
-        # Match CLI/desktop: only real user turns, not timeline bookkeeping.
-        display_clause = " AND (display_kind IS NULL OR display_kind = '')"
-        # Legacy standalone compaction handoffs (persisted pre-#80622) are
-        # durable role='user' rows with NO display_kind — SQL can't see them,
-        # so fetch with headroom and drop them in the decode loop below.
-        # Without this, /undo N and rewind pair an in-memory count that
-        # excludes handoffs with a DB pick that includes them, soft-deleting
-        # the wrong turn.
-        fetch_limit = int(limit) * 2 + 5
+        # A /steer row is typed for the renderer but is human input: keep it so the DB pick agrees
+        # with the in-memory user_originated_turn_view count.
+        display_clause = " AND (display_kind IS NULL OR display_kind = '' OR display_kind = 'steer')"
         with self._read_ctx() as conn:
             cursor = conn.execute(
                 "SELECT id, timestamp, content FROM messages "
@@ -1838,26 +1822,17 @@ class SessionSearchMixin:
         ``fts_rebuild_admission`` and FAILS CLOSED, returning 0 on deferral (callers treat 0
         as "no progress" and use the stale-FTS breadcrumb path). Returns indexes rebuilt.
 
-        Uses the FTS5 ``'rebuild'`` command, which rewrites the internal
-        b-tree segments from the content rows. This is the documented
-        recovery for a corrupt FTS index that rejects message writes while
-        reads still succeed (issue #50502). Unlike ``optimize_fts`` (which
-        merges existing segments), ``rebuild`` discards and recreates the
-        index data entirely.
-
-        A full structural rebuild must never run concurrently in two
-        processes sharing one state.db — that interleaving has structurally
-        corrupted the database in production (PR #93200) — so this admits
-        through the cross-process ``fts_rebuild_admission`` authority and
-        FAILS CLOSED: if another process holds the rebuild lock beyond the
-        bounded wait, this call defers (returns 0) rather than racing it.
-        Callers already treat 0 as "rebuild made no progress" and fall back
-        to the stale-FTS breadcrumb path, which retries in-process from the
-        gateway housekeeping tick (``retry_deferred_fts_recovery``) and at
-        next startup.
-
-        Safe to call when FTS tables don't exist (skips them).
-        Returns the number of FTS indexes that were rebuilt.
+        Uses the FTS5 ``'rebuild'`` command, which rewrites the internal b-tree segments from the content
+        rows. Unlike ``optimize_fts`` (which merges existing segments), ``rebuild`` discards and recreates
+        the index data entirely — the more destructive of the two, so it is quarantined the same way. See
+        #50502.
+        A full structural rebuild must never run concurrently in two processes sharing one state.db — that
+        interleaving has structurally corrupted the database in production (PR #93200) — so this admits
+        through the cross-process ``fts_rebuild_admission`` authority and FAILS CLOSED: if another process
+        holds the rebuild lock beyond the bounded wait, this call defers (returns 0) rather than racing it.
+        Callers already treat 0 as "rebuild made no progress" and fall back to the stale-FTS breadcrumb
+        path, which retries in-process from the gateway housekeeping tick (``retry_deferred_fts_recovery``)
+        and at next startup.
         """
         self._raise_if_db_corrupt()
         self._raise_if_db_replaced()

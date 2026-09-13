@@ -1188,8 +1188,15 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
     if (settingsCatalog.pluginEntries.length > 0) {
       result.push({
-        heading: t.settings.nav.plugins,
-        items: settingsCatalog.pluginEntries.map(settingsEntryItem)
+        heading: t.skills.tabPlugins,
+        items: settingsCatalog.pluginEntries.map(entry => ({
+          detail: entry.context,
+          icon: entry.icon,
+          id: `sp-${entry.id}`,
+          keywords: [entry.context, entry.description ?? '', ...entry.keywords],
+          label: entry.label,
+          run: go(`${SKILLS_ROUTE}?tab=plugins&plugin=${encodeURIComponent(entry.plugin)}`)
+        }))
       })
     }
 
@@ -1297,13 +1304,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         heading: cc.settingsFields,
         items: [...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
       })
-
-      if (settingsCatalog.pluginEntries.length > 0) {
-        result.push({
-          heading: t.settings.nav.plugins,
-          items: settingsCatalog.pluginEntries.map(settingsEntryItem)
-        })
-      }
 
       if (settingsCatalog.credentialEntries.length > 0) {
         result.push({

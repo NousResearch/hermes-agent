@@ -1254,29 +1254,11 @@ def _recover_via_lost_and_found(
         "BEST-EFFORT page-level salvage: the source table schemas were unreadable, so rows were rebuilt from raw "
         "pages and mapped heuristically. Review every count before trusting this output."
     )
-    verification["complete"] = False
-
-    # Structural checks cannot see a positional mis-mapping (#101409):
-    # every row still inserts, so integrity/FK/FTS stay green. A
-    # systematic timestamp violation is the semantic tell — surface it
-    # so a mis-mapped salvage is never reported as verified.
-    plausibility_conn = sqlite3.connect(str(output), isolation_level=None)
-    try:
-        plausibility_errors = _lost_and_found_plausibility_errors(
-            plausibility_conn
-        )
-    finally:
-        plausibility_conn.close()
-    if plausibility_errors:
-        verification["errors"].extend(plausibility_errors)
-        verification["healthy"] = False
-
-    source_unchanged = (
-        _source_fingerprint(source) == inspection["source_fingerprint"]
-    )
-    if not source_unchanged:
-        verification["errors"].append(
-            "the source database bundle changed during recovery"
+    if cli_report.get("header_zeroed"):
+        verification["warnings"].append(
+            "header salvage: SQLite refused the source outright (page-1 header damaged, 'file is not a "
+            "database'); the header of the private snapshot copy was zeroed so .recover could walk the "
+            "surviving pages. Rows written only to a -wal after the last checkpoint are not included."
         )
     verification.update(loss_detected=True, complete=False)
     # Structural checks cannot see a positional mis-mapping: every row still inserts, so integrity/FK/FTS

@@ -3,8 +3,8 @@
 import os
 import sys
 
-__version__ = "0.20.6"
-__release_date__ = "2026.8.27"
+__version__ = "0.21.2"
+__release_date__ = "2026.9.11"
 
 
 def _ensure_utf8():

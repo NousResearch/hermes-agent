@@ -28,8 +28,40 @@ if TYPE_CHECKING:
     from typing import TypeGuard
 
 from hermes_cli import __version__ as _HERMES_VERSION
-from hermes_cli.urllib_security import open_credentialed_url, url_origin
-from utils import atomic_json_write, base_url_host_matches
+from hermes_cli.urllib_security import open_credentialed_url
+from hermes_cli.models_catalog_static import (
+    CANONICAL_PROVIDERS,
+    OPENROUTER_MODELS,
+    PREFERRED_SILENT_DEFAULT_MODEL,
+    VERCEL_AI_GATEWAY_MODELS,
+    _AGGREGATOR_PROVIDERS,
+    _AZURE_FOUNDRY_RESPONSES_PREFIXES,
+    _BORROWED_MODEL_PROVIDERS,
+    _COPILOT_MODEL_ALIASES,
+    _KEYLESS_STABLE_CACHE_PROVIDERS,
+    _LIVE_FIRST_PICKER_PROVIDERS,
+    _MODELS_DEV_PREFERRED,
+    _OPENAI_FAST_MODE_PREFIXES,
+    _PROVIDER_ALIASES,
+    _PROVIDER_LABELS,
+    _PROVIDER_MODELS,
+    _PROVIDER_RETIRED_ALIASES,
+    _SILENT_DEFAULT_PROVIDERS,
+    _xai_finalize_catalog)
+from hermes_cli.models_reasoning_caps import (
+    _OPENROUTER_CATALOG_URL,
+    _seed_reasoning_caps)
+from hermes_cli.models_local import (
+    _OLLAMA_LOCAL_MODELS_CACHE,
+    _OLLAMA_LOCAL_MODELS_CACHE_TTL,
+    _OLLAMA_LOCAL_PROBE_FAILURE_CACHE,
+    _OLLAMA_LOCAL_PROBE_REACHABLE,
+    _get_ollama_base_url,
+    _get_ollama_native_headers,
+    _ollama_local_catalog,
+    _ollama_probe_cache_key,
+    _root_for_ollama_native_api,
+    fetch_ollama_cloud_models)
 
 logger = logging.getLogger(__name__)
 
@@ -1868,15 +1900,10 @@ def fetch_openrouter_models(
         remote = None
     fallback = list(remote) if remote else list(OPENROUTER_MODELS)
 
-    try:
-        req = urllib.request.Request(
-            _OPENROUTER_CATALOG_URL,
-            headers={"Accept": "application/json"},
-        )
-        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
-    except Exception:
-        return list(_openrouter_catalog_cache or fallback)
+    live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
+    if live is None:
+        return list(cached or fallback)
+    live_items, live_by_id = live
 
     live_items = payload.get("data", [])
     if not isinstance(live_items, list):
@@ -3246,35 +3273,6 @@ _AGGREGATOR_PROVIDERS = frozenset(
 _OPENROUTER_VARIANT_SUFFIXES = frozenset({"nitro", "floor", "exacto", "online"})
 
 
-def _openrouter_variant_base(model_id: str) -> Optional[str]:
-    """Return the base model id when ``model_id`` carries a recognized
-    OpenRouter routing-variant suffix (e.g. ``x-ai/grok-4:nitro`` →
-    ``x-ai/grok-4``), else ``None``."""
-    base, sep, suffix = (model_id or "").rpartition(":")
-    if not sep or not base:
-        return None
-    if suffix.lower() in _OPENROUTER_VARIANT_SUFFIXES:
-        return base
-    return None
-
-# Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
-# would be listed here (tried only as a last resort for bare short-alias
-# resolution, after every native-vendor catalog, so they never hijack an alias
-# away from the model's native vendor). None are currently defined.
-_BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
-
-# Providers whose live /v1/models endpoint is the authoritative catalog, so the
-# curated list is a discovery-only fallback. For these, the picker merges
-# live-first (live entries lead, curated-only entries append). Every OTHER
-# provider keeps curated-first (commit 658ac1d86, #46309) so a deliberately
-# surfaced newest model stays at the top even when the live API lags. OpenCode
-# Zen / Go re-expose dozens of upstream vendors and rotate them frequently, so
-# their stale curated entries must not pollute the top of the picker. (#49129)
-_LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
-    {"opencode-zen", "opencode-go", "meta-ai"}
-)
-
-
 def _resolve_static_model_alias(
     name_lower: str, current_keys: set[str]) -> Optional[tuple[str, str]]:
     """Resolve short aliases (e.g. sonnet/opus) using static catalogs only."""
@@ -3476,17 +3474,11 @@ def _detection_candidates(name: str, current_provider: str):
             return
         yield ("openrouter", or_slug)
 
-    # --- Step 3: explicit ``vendor/model`` prefix naming a configured provider ---
-    # Checked after the OpenRouter slug lookup so aggregator-native slugs
-    # (e.g. ``deepseek/deepseek-chat``) keep their existing routing; only
-    # vendors the user defined in their ``providers:`` block route here,
-    # so catalog/default behavior for built-in vendor prefixes is unchanged
-    # (#87189).
-    prefix_match = _resolve_provider_prefix(name)
-    if prefix_match is not None:
-        return prefix_match
-
-    return None
+    # Explicit ``vendor/model`` prefix naming a configured provider — AFTER the OpenRouter lookup so
+    # aggregator-native slugs (``deepseek/deepseek-chat``) keep their routing.
+    prefixed = _resolve_provider_prefix(name)
+    if prefixed:
+        yield prefixed
 
 
 def _find_openrouter_slug(model_name: str) -> Optional[str]:
@@ -4634,6 +4626,11 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
+        # A fresh copilot-acp CLI login must be visible to the next /model switch (this helper is
+        # what ``--refresh`` runs): don't let the 5-min session memo (or its failure memo) serve
+        # a stale signed-out probe past an explicit refresh.
+        global _copilot_acp_session_memo
+        _copilot_acp_session_memo = None
         if provider is None:
             path = _provider_models_cache_path()
             if path.exists():
@@ -5127,14 +5124,11 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER = "opencode-zen-free-keyless"
 _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 
-# Free-tier models whose slug does NOT carry the ``-free`` suffix.
-# (big-pickle is OpenCode's rotating free stealth slot.)
-_OPENCODE_KEYLESS_EXTRA_SLUGS = frozenset({"big-pickle"})
-
-# Models whose slug carries ``-free`` but are NOT anonymous-servable: they are
-# KEYED (Go-subscription) models and must be excluded from the keyless free
-# catalog even though the suffix looks free. ox-alpha-free is the Go relay's
-# subscription twin of the Zen keyless Ox Alpha (verified 2026-08-21).
+# ``-free``-suffixed slugs that are KEYED (Go-subscription) models, NOT anonymous-servable —
+# excluded from the keyless catalog despite the suffix (ox-alpha-free is Ox Alpha's Go twin).
+# The Go relay delisted ox-alpha-free (2026-09-09; GET /zen/go/v1/models omits it, POST → 401),
+# so it is gone from the opencode-go curated floor too — the exclusion stays so a stale live
+# list can never route it into the keyless catalog.
 _OPENCODE_FREE_KEYED_SUFFIX_MODELS = frozenset({"ox-alpha-free"})
 
 # In-process memo for _fetch_opencode_free_models(): (fetched_at, ids-or-None).

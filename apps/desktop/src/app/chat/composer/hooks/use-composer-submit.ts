@@ -1,7 +1,7 @@
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
-import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
@@ -115,8 +115,15 @@ export function useComposerSubmit({
   // button) route through the same send path. Match both the composer target
   // and the exact visible surface captured at click time — every tile stays
   // mounted, and a session can be rendered in more than one pane.
-  const dispatchSubmitRef = useRef(dispatchSubmit)
-  dispatchSubmitRef.current = dispatchSubmit
+  //
+  // Busy: a request from a card the user just clicked must not be dropped
+  // because the agent is mid-sentence — that gap is exactly when they click.
+  // Steer the live turn (the same stop-and-correct a typed message gets), and
+  // if the turn has already ended, or a steer is not possible, queue it so it
+  // runs next. This holds for hidden setup notes and for visible messages a
+  // button sends on the user's behalf alike.
+  const externalSubmitRef = useRef({ busy, compacting, dispatchSubmit, onSteer, onSteerHidden })
+  externalSubmitRef.current = { busy, compacting, dispatchSubmit, onSteer, onSteerHidden }
 
   useLayoutEffect(
     () =>
@@ -128,10 +135,58 @@ export function useComposerSubmit({
           paneVisible &&
           !inputDisabled
         ) {
-          dispatchSubmitRef.current(text, undefined, displayKind)
+          const current = externalSubmitRef.current
+
+          if (!current.busy) {
+            current.dispatchSubmit(text, undefined, displayKind)
+
+            return
+          }
+
+          const queueKey = activeQueueSessionKeyRef.current
+
+          // External requests contain only text; the unsent draft and its attachments stay in the composer.
+          const enqueue = () =>
+            void enqueueQueuedPrompt(queueKey, { text, attachments: [], ...(displayKind ? { displayKind } : {}) })
+
+          // A hidden note never becomes a user turn: it rides session.steer into
+          // the model's next tool result, and keeps its kind if it has to queue.
+          if (displayKind) {
+            if (current.onSteerHidden) {
+              void Promise.resolve(current.onSteerHidden(text))
+                .then(accepted => {
+                  if (!accepted) {
+                    enqueue()
+                  }
+                })
+                .catch(enqueue)
+            } else {
+              enqueue()
+            }
+
+            return
+          }
+
+          if (
+            current.onSteer &&
+            !current.compacting &&
+            !hasBlockingPromptRequest(sessionId) &&
+            text.trim() &&
+            !SLASH_COMMAND_RE.test(text.trim())
+          ) {
+            void Promise.resolve(current.onSteer(text))
+              .then(accepted => {
+                if (!accepted) {
+                  enqueue()
+                }
+              })
+              .catch(enqueue)
+          } else {
+            enqueue()
+          }
         }
       }),
-    [inputDisabled, paneVisible, scope.target, surfaceId]
+    [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
   )
 
   const submitDraft = () => {

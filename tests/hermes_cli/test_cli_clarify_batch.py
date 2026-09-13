@@ -5,7 +5,7 @@ thread (the way the agent thread calls it) and simulates the keybinding
 handlers by calling the same helper methods they call
 (``_clarify_batch_set_active`` for Tab, ``_clarify_batch_enter`` for
 Enter, ``_clarify_batch_lock`` for the freetext submit path). No real
-terminal needed — mirrors tests/cli/test_cli_approval_ui.py.
+terminal needed — mirrors tests/hermes_cli/test_cli_approval_ui.py.
 """
 
 import json

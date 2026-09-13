@@ -7,37 +7,6 @@ from tui_gateway import session_notifications, session_auto_continue
 from tui_gateway.turn_marker import record_turn_start, read_turn_marker
 
 
-def test_live_mailbox_checks_share_idle_poll_cadence(monkeypatch):
-    import queue
-    from tools.process_registry import process_registry
-
-    stop = threading.Event()
-    clock = [10.0]
-    polls = []
-
-    class TickQueue:
-        def get(self, timeout):
-            clock[0] += timeout
-            if clock[0] >= 16.0:
-                stop.set()
-            raise queue.Empty
-
-        def qsize(self):
-            return 0
-
-    monkeypatch.setattr(process_registry, "completion_queue", TickQueue())
-    noop = lambda *args, **kwargs: None
-    loop = rebind(session_notifications._notification_poller_loop, {
-        "time": SimpleNamespace(monotonic=lambda: clock[0]),
-        "_poll_bot_live_delivery_once": lambda *args: polls.append(clock[0]),
-        "_notif_handle_ready": noop, "_notif_poll_kanban": noop,
-        "_maybe_fire_tui_loop_tick": noop, "_maybe_fire_tui_heartbeat_tick": noop,
-        "_LOOP_POLL_SECONDS": 5.0, "_KANBAN_POLL_SECONDS": 5.0,
-    })
-    loop(stop, "ordinary", {})
-    assert polls == [10.0, 15.0]
-
-
 def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
     import contextlib
     import contextvars

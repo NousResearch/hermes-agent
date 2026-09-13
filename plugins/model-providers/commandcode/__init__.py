@@ -65,8 +65,52 @@ class CommandCodeProfile(ProviderProfile):
         base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
-        """Fetch from the public CommandCode /models endpoint."""
-        return _fetch_commandcode_models(timeout=timeout, base_url=base_url)
+        """Public (unauthenticated) /models endpoint. The picker passes base_url
+        unconditionally, so only a value differing from the default is a custom endpoint."""
+        caller_base = (base_url or "").strip().rstrip("/")
+        custom = caller_base and caller_base != _COMMANDCODE_BASE
+        models_url = caller_base + "/models" if custom else _COMMANDCODE_MODELS_URL
+        try:
+            req = urllib.request.Request(models_url)
+            req.add_header("Accept", "application/json")
+            req.add_header("User-Agent", _profile_user_agent())
+            with open_credentialed_url(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+            return [m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m]
+        except Exception as exc:
+            logger.debug("fetch_models(commandcode): %s", exc)
+            return None
+
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict, dict]:
+        """DeepSeek ids (``deepseek/deepseek-v4-flash``) get the native DeepSeek wire
+        controls: DeepSeek V4+ defaults to thinking when ``thinking`` is omitted, so
+        without them ``/reasoning`` never reaches the request (#95232). Other model
+        families stay a no-op — CommandCode declares no reasoning vocabulary for them."""
+        m = (model or "").strip()
+        if not m.lower().startswith("deepseek/"):
+            return {}, {}
+        # Registry lookup, not a module import: the deepseek shim is only a loader-injected
+        # sys.modules entry, and the registry honours a user override of the profile.
+        native = get_provider_profile("deepseek")
+        if native is None:
+            return {}, {}
+        return native.build_api_kwargs_extras(
+            reasoning_config=reasoning_config, model=m.split("/", 1)[1], **context,
+        )
+
+
+class CommandCodeAnthropicProfile(CommandCodeProfile):
+    """CommandCode — Anthropic Messages API-compatible endpoint."""
+
+    def fetch_models(
+        self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
+    ) -> list[str] | None:
+        """Public /models endpoint, filtered to Anthropic-family models."""
+        all_models = super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
+        return None if all_models is None else [m for m in all_models if m.startswith("claude-")]
 
 
 commandcode = CommandCodeProfile(

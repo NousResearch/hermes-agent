@@ -30,9 +30,9 @@ When Tool Search activates for a turn, the model sees three new tools in
 place of the deferred ones:
 
 ```
-tool_search(queries, limit?)   — search the deferred-tool catalog (one or more queries)
-tool_describe(names)           — load the full schemas for one or more tools
-tool_call(name, arguments)     — invoke a deferred tool
+tool_search(queries, limit?)   search the deferred-tool catalog (one or more queries)
+tool_describe(names)           load the full schemas for one or more tools
+tool_call(calls)               invoke deferred tools; `calls` is an array of {name, arguments}
 ```
 
 `calls` takes one entry per invocation; a single local call is an array of
@@ -53,7 +53,8 @@ Model: tool_search(["create a github issue", "send a slack message"])
 Model: tool_describe(["mcp_github_create_issue", "mcp_slack_post_message"])
   → { tools: { mcp_github_create_issue: { parameters: { ... } },
                mcp_slack_post_message: { parameters: { ... } } } }
-Model: tool_call("mcp_github_create_issue", { title: "...", body: "..." })
+Model: tool_call({ calls: [{ name: "mcp_github_create_issue",
+                             arguments: { title: "...", body: "..." } }] })
   → { ok: true, issue_number: 42 }
 ```
 
@@ -166,14 +167,11 @@ account), everything above is invisible: local search behaves exactly as
 described in the rest of this page, with no errors shown to the model.
 
 A connector call that needs an account you haven't linked returns a
-`CONNECTION_REQUIRED` error. The `manage_connections` tool lists connectors and
-their connection state and starts an authorization: in the desktop app the call
-shows a card, blocks until each app is connected or skipped, and reports the
-outcomes; elsewhere it returns a connect link per app for the user to open.
-Disconnecting an account is done by the user in the Portal. The same tool also installs, enables and authorizes
-local MCP servers from the catalog (targets with `mcp: true`), so it is
-present whether or not you are signed in; only the managed-connector actions
-need the sign-in.
+`CONNECTION_REQUIRED` error carrying a connect link. The `manage_connections`
+tool (available on the same condition as the connector bridge) lists
+connectors and their connection state, starts an authorization, and can wait
+for the user to finish it; disconnecting an account is done by the user in
+the Portal.
 
 `tool_call` accepts a batch: `calls` is an array of `{name, arguments}`
 entries (a single call is an array of one). Each connector entry in a batch
@@ -231,10 +229,13 @@ to any progressive-disclosure design, not specific to this implementation:
   finds that server's tools even when a tool's own name doesn't carry
   the service), description, and parameter names, with Snowball
   stemming (English) applied to both the index and the query so
-  morphological variants match ("issues" finds `create_issue`). Falls
-  back to a literal substring match on the tool name when no query
-  token matches any document (e.g. searching `"hub"` where the token is
-  `github`).
+  morphological variants match ("issues" finds `create_issue`). A tool is
+  a result only if it contains the query's rarest token (the one in the
+  fewest tool documents, so the word that names the intent: `gmail`,
+  `github`, `incident`, not `send` or `create`). A query whose rarest
+  token appears in no tool returns an empty group with the connected
+  sources and a retry hint, instead of `limit` tools that share one
+  common word.
 - **Parallel execution unwraps the bridge.** The batch planner decides
   concurrency on the *underlying* tool of a `tool_call`, not on the
   literal bridge name — so an MCP server opted in via

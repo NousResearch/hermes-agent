@@ -220,6 +220,14 @@ def _fetch_live_models_or_empty(creds: Optional[Dict[str, Any]]) -> Dict[str, Di
         return {}
 
 
+def _fetch_live_models_or_empty(creds: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    try:
+        return _fetch_live_models() if creds is None else _fetch_live_models(creds)
+    except Exception as exc:  # noqa: BLE001 - offline/unauth → static fallback
+        logger.debug("xAI live image model catalog unavailable: %s", exc)
+        return {}
+
+
 def _resolve_model(caller_model: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
     """Decide which model to use and return ``(model_id, meta)``.
 

@@ -27,6 +27,9 @@ from urllib.parse import urlparse
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
 from agent.secret_scope import is_multiplex_active
+from gateway.platforms._shared import (
+    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+)
 
 
 def _get_scoped_secret(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -1736,64 +1739,16 @@ _ENV_SEED_KEYS = (  # (env var, extra key, conv) for seed_extra_from_env
 
 
 def _env_enablement() -> Optional[Dict[str, Any]]:
-    """Seed ``PlatformConfig.extra`` from env vars during
-    ``_apply_env_overrides``.
-
-    The registry's env-enablement hook is called BEFORE the adapter is
-    constructed, so ``gateway status`` and ``get_connected_platforms()``
-    reflect env-only configuration without instantiating the Pub/Sub client.
-    Returns ``None`` when the required Pub/Sub project/subscription aren't
-    set; the caller then skips auto-enabling the platform.
-
-    The special ``home_channel`` key in the returned dict is handled by the
-    core hook — it becomes a proper ``HomeChannel`` dataclass on the
-    ``PlatformConfig`` rather than being merged into ``extra``.
-    """
-    project = (
-        _get_scoped_secret("GOOGLE_CHAT_PROJECT_ID")
-        or _get_scoped_secret("GOOGLE_CLOUD_PROJECT")
-    )
-    subscription = (
-        _get_scoped_secret("GOOGLE_CHAT_SUBSCRIPTION_NAME")
-        or _get_scoped_secret("GOOGLE_CHAT_SUBSCRIPTION")
-    )
-    http_events_url = _get_scoped_secret("GOOGLE_CHAT_HTTP_EVENTS_URL")
-    if not (http_events_url or (project and subscription)):
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env before the adapter exists
+    (so ``gateway status`` reflects env-only config); ``None`` when the minimum inbound settings are absent."""
+    if not _env_inbound_configured():
         return None
-    seed: Dict[str, Any] = {}
-    if project:
-        seed["project_id"] = project
-    if subscription:
-        seed["subscription_name"] = subscription
-    if http_events_url:
-        seed["http_events_url"] = http_events_url
-    http_events_audience = _get_scoped_secret("GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE")
-    if http_events_audience:
-        seed["http_events_audience"] = http_events_audience
-    http_events_sa_email = _get_scoped_secret("GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL")
-    if http_events_sa_email:
-        seed["http_events_service_account_email"] = http_events_sa_email
-    for env_name, extra_name in (
-        ("GOOGLE_CHAT_MAX_MESSAGES", "max_messages"),
-        ("GOOGLE_CHAT_MAX_BYTES", "max_bytes"),
-        ("GOOGLE_CHAT_BOOTSTRAP_SPACES", "bootstrap_spaces"),
-        ("GOOGLE_CHAT_DEBUG_RAW", "debug_raw"),
-    ):
-        value = _get_scoped_secret(env_name)
-        if value:
-            seed[extra_name] = value
-    sa_json = (
-        _get_scoped_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
-        or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS")
-    )
-    if sa_json:
-        seed["service_account_json"] = sa_json
-    home = _get_scoped_secret("GOOGLE_CHAT_HOME_CHANNEL")
-    if home:
-        seed["home_channel"] = {
-            "chat_id": home,
-            "name": _get_scoped_secret("GOOGLE_CHAT_HOME_CHANNEL_NAME", "Home"),
-        }
+    project, subscription, http_events_url = _env_inbound_settings()
+    values = [("project_id", project), ("subscription_name", subscription), ("http_events_url", http_events_url),
+              ("service_account_json", _get_scoped_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
+               or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS"))]
+    seed = {extra_name: value for extra_name, value in values if value}
+    seed.update(_seed_extra_from_env(_ENV_SEED_KEYS, home_env="GOOGLE_CHAT_HOME_CHANNEL"))
     return seed
 
 

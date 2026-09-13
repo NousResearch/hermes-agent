@@ -3,7 +3,7 @@ import { execFile } from 'child_process'
 import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes/ink'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
-import type { StreamDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+import type { SubagentStatus, Usage } from '@hermes/shared/gateway-events'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
@@ -22,7 +22,7 @@ import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
-import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall, stripAnsi } from '../lib/text.js'
+import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
@@ -931,8 +931,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         turnController.showNotice({
-          id: p.id ?? undefined,
-          key: p.key ?? undefined,
+          id: p.id,
+          key: p.key,
           kind: p.kind === 'ttl' ? 'ttl' : 'sticky',
           level: isNoticeLevel(p.level) ? p.level : 'info',
           text: p.text,
@@ -979,12 +979,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.stderr': {
-        // Every raw line is already in the /logs buffer (gatewayClient.pushLog).
-        // Only failure-looking lines earn an activity row, and a traceback's
-        // many lines collapse into one (pushActivity dedupes a repeated tail).
         if (!ev.payload) {
           return
         }
+
+        const line = String(ev.payload.line).slice(0, 120)
 
         const line = String(ev.payload.line)
 
@@ -1230,6 +1229,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
+        turnController.recordTodos(ev.payload.todos)
         turnController.recordToolStart(
           ev.payload.tool_id,
           ev.payload.name ?? 'tool',
@@ -1261,16 +1261,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             inlineDiffText,
             ev.payload.tool_id,
             ev.payload.name,
-            ev.payload.duration_s ?? undefined,
+            ev.payload.duration_s,
             resultText
           )
         } else {
           turnController.recordToolComplete(
             ev.payload.tool_id,
             ev.payload.name,
-            ev.payload.summary ?? undefined,
-            ev.payload.duration_s ?? undefined,
-            ev.payload.todos ?? undefined,
+            ev.payload.summary,
+            ev.payload.duration_s,
+            ev.payload.todos,
             resultText
           )
         }
@@ -1279,6 +1279,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'clarify.request': {
+        if (!ev.payload) {
+          return
+        }
+
         const batch = (ev.payload.questions ?? [])
           .filter(q => typeof q?.qid === 'string' && q.qid && typeof q?.question === 'string' && q.question.trim())
           .map(q => ({
@@ -1310,6 +1314,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'approval.request': {
+        if (!ev.payload) {
+          return
+        }
+
         const description = String(ev.payload.description ?? 'dangerous command')
         // Only an explicit false (tirith warning) drops the permanent-allow option.
         const allowPermanent = ev.payload.allow_permanent !== false
@@ -1344,6 +1352,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'sudo.request':
+        if (!ev.payload) {
+          return
+        }
+
         patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
         setStatus('sudo password needed')
         ringPromptBell()
@@ -1351,6 +1363,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'secret.request':
+        if (!ev.payload) {
+          return
+        }
+
         patchOverlayState({
           secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
         })
@@ -1358,16 +1374,45 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         ringPromptBell()
 
         return
+      case 'sudo.expire': {
+        const expired = ev.payload?.request_id
 
-      case 'sudo.expire':
-        patchOverlayState(prev => (prev.sudo?.requestId === ev.payload.request_id ? { ...prev, sudo: null } : prev))
-
-        return
-
-      case 'secret.expire':
-        patchOverlayState(prev => (prev.secret?.requestId === ev.payload.request_id ? { ...prev, secret: null } : prev))
+        patchOverlayState(prev => (prev.sudo?.requestId === expired ? { ...prev, sudo: null } : prev))
 
         return
+      }
+
+      case 'secret.expire': {
+        const expired = ev.payload?.request_id
+
+        patchOverlayState(prev => (prev.secret?.requestId === expired ? { ...prev, secret: null } : prev))
+
+        return
+      }
+
+      case 'vault.unlock.request':
+        if (!ev.payload) {
+          return
+        }
+
+        patchOverlayState({
+          vaultUnlock: {
+            backend: ev.payload.backend,
+            displayName: ev.payload.display_name,
+            requestId: ev.payload.request_id
+          }
+        })
+        setStatus(`unlock ${ev.payload.display_name}`)
+        ringPromptBell()
+
+        return
+      case 'vault.unlock.expire': {
+        const expired = ev.payload?.request_id
+
+        patchOverlayState(prev => (prev.vaultUnlock?.requestId === expired ? { ...prev, vaultUnlock: null } : prev))
+
+        return
+      }
 
       case 'background.complete':
         if (!ev.payload) {
@@ -1380,6 +1425,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'btw.complete':
+        if (!ev.payload) {
+          return
+        }
+
         sys(`[btw${ev.payload.question ? ` "${ev.payload.question}"` : ''}] ${ev.payload.text}`)
 
         return

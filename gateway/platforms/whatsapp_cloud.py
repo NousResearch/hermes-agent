@@ -40,7 +40,6 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.helpers import bounded_put
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
@@ -438,58 +437,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self, chat_id: str, interactive: Dict[str, Any], metadata: Optional[Dict[str, Any]],
         state: "OrderedDict[str, str]", state_id: str, session_key: str,
     ) -> SendResult:
-        """Low-level POST for an ``interactive`` message payload.
-
-        ``interactive_body`` is the inner ``interactive: {...}`` dict —
-        the caller supplies ``type``, ``body``, and ``action``. This
-        wrapper handles auth, error mapping, and message_id extraction so
-        each send_* method stays focused on its own button shape.
-        """
-        if self._http_client is None:
-            return SendResult(success=False, error="Not connected")
-
-        url = self._graph_url("messages")
-        headers = {
-            "Authorization": f"Bearer {self._access_token}",
-            "Content-Type": "application/json",
-        }
-        payload: Dict[str, Any] = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": chat_id,
-            "type": "interactive",
-            "interactive": interactive_body,
-        }
-        if reply_to:
-            payload["context"] = {"message_id": reply_to}
-
-        try:
-            resp = await self._http_client.post(url, headers=headers, json=payload)
-        except Exception as exc:
-            logger.exception("[whatsapp_cloud] interactive send failed")
-            return SendResult(success=False, error=str(exc) or type(exc).__name__)
-
-        if resp.status_code != 200:
-            try:
-                body = resp.json()
-            except Exception:
-                body = {"raw": resp.text[:500]}
-            error_msg = self._format_graph_error(body, resp.status_code)
-            logger.warning(
-                "[whatsapp_cloud] interactive rejected (status=%d): %s",
-                resp.status_code, error_msg,
-            )
-            return SendResult(success=False, error=error_msg)
-
-        last_message_id: Optional[str] = None
-        try:
-            data = resp.json()
-            ids = data.get("messages") or []
-            if ids:
-                last_message_id = ids[0].get("id")
-        except Exception:
-            pass
-        return SendResult(success=True, message_id=last_message_id)
+        """POST an ``interactive`` message (caller supplies ``type``/``body``/``action``) and, on
+        success, remember ``state_id → session_key`` for the tap. Free-form interactives need no
+        Meta approval but are only valid inside the 24h window — fine, all senders here reply to a user."""
+        result = await self._post_message_result(
+            self._outbound_payload(chat_id, "interactive", interactive, _reply_to_from(metadata)),
+            fail_log="[whatsapp_cloud] interactive send failed",
+            reject_log="[whatsapp_cloud] interactive rejected (status=%d): %s",
+        )
+        if result.success:
+            bounded_put(state, state_id, session_key, INTERACTIVE_STATE_CACHE_SIZE)
+        return result
 
     @staticmethod
     def _truncate_button_label(text: str, limit: int = 20) -> str:
@@ -541,7 +499,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             interactive = {"type": "list", "body": {"text": body_text}, "action": {"button": "Choose", "sections": [{"title": "Options", "rows": rows}]}}
         return await self._send_interactive(chat_id, interactive, metadata, self._clarify_state, clarify_id, session_key)
 
-    _EA_HEADER = f"⚠️ *{EA_HEADER_TEXT}*\n\n"
+    _EA_HEADER = "⚠️ *Command Approval Required*\n\n"
     _EA_CODE_CLOSE = "\n```\n\n"
     _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
 

@@ -72,15 +72,17 @@ export interface Translations {
     opening: string
     waiting: string
     timeout: string
+    keepWaiting: string
     refresh: string
     statusError: string
     connectError: string
-    connectErrorFor: (app: string) => string
     unavailable: string
     ownerMissing: string
     search: string
     empty: string
     disclaimer: string
+    connectTitle: (app: string) => string
+    describe: (app: string) => string
     execution: string
   }
   sessionImport: {
@@ -495,7 +497,7 @@ export interface Translations {
         desktopSuccess: (name: string) => string
         agentFailed: string
         desktopFailed: string
-        missingEnv: (name: string, vars: string) => string
+        missingEnv: (vars: string) => string
       }
     }
     vault: {
@@ -567,38 +569,6 @@ export interface Translations {
         unlockDescription: string
         masterPasswordPlaceholder: string
       }
-      installModal: {
-        title: string
-        description: string
-        repoLabel: string
-        includesHeading: string
-        agentLabel: string
-        desktopLabel: string
-        agentTargetLocal: (profile: string) => string
-        agentTargetRemote: (profile: string) => string
-        desktopTarget: string
-        desktopOnlyNote: string
-        insecureWarning: string
-        securityHeading: string
-        securityIntro: string
-        sourceHeading: string
-        viewRepository: string
-        viewPluginFiles: string
-        gitCloneLabel: string
-        enableAgent: string
-        forceReinstall: string
-        install: string
-        installing: string
-        probing: string
-        probeUnavailable: string
-        desktopUnavailable: string
-        selectComponent: string
-        agentSuccess: (name: string) => string
-        desktopSuccess: (name: string) => string
-        agentFailed: string
-        desktopFailed: string
-        missingEnv: (vars: string) => string
-      }
     }
     notifications: {
       title: string
@@ -643,6 +613,10 @@ export interface Translations {
       tabStripAuto: string
       tabStripAlways: string
       tabStripNever: string
+      appActionsTitle: string
+      appActionsDesc: string
+      appActionsLeft: string
+      appActionsRight: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string
@@ -696,6 +670,9 @@ export interface Translations {
       embedsReset: (count: number) => string
       resumeLastSessionTitle: string
       resumeLastSessionDesc: string
+      loginStartupTitle: string
+      loginStartupDesc: string
+      loginStartupFailed: string
       product: string
       productDesc: string
       technical: string
@@ -792,6 +769,7 @@ export interface Translations {
       checking: string
       seeWhatsNew: string
       updateNow: string
+      updateSource: string
       releaseNotes: string
       onLatest: string
       installing: string
@@ -1227,6 +1205,9 @@ export interface Translations {
       /** Recommended-badge tooltip by resolver branch; unknown keys (newer
        *  backend) simply show no tooltip. */
       recommendedReason: Record<string, string>
+      noRecommendationTitle: string
+      noRecommendationDetail: string
+      noRecommendationAction: string
       downloaded: string
       downloadAction: (size: string) => string
       downloadProgress: (done: string, total: string) => string
@@ -1491,6 +1472,7 @@ export interface Translations {
   skills: {
     tabSkills: string
     tabToolsets: string
+    tabHub: string
     configuringProfile: string
     tabMcp: string
     all: string
@@ -1540,6 +1522,45 @@ export interface Translations {
     archive: string
     skillArchivedTitle: string
     skillArchivedMessage: string
+    tabPlugins: string
+    plugins: {
+      agentTitle: string
+      agentBlurb: string
+      pageBlurb: string
+      halfDesktop: string
+      halfDesktopHint: string
+      halfAgent: string
+      halfAgentIn: (profile: string) => string
+      defaultProfile: string
+      kindAgent: string
+      kindDesktop: string
+      kindBoth: string
+      installAgentHere: string
+      installAgentHereTip: (profile: string) => string
+      installAgentHereNoOrigin: string
+      desktopHalfPending: string
+      desktopHalfPendingTip: string
+      emptyAll: string
+      empty: string
+      emptyHint: string
+      loadFailed: string
+      toggleFailed: (name: string) => string
+      legacyBackend: string
+      portableBadge: string
+      catalogTitle: string
+      catalogBrowse: string
+      catalogHide: string
+      catalogHint: string
+      alreadyInstalled: (name: string) => string
+      catalogProvenance: (sha: string) => string
+      pinnedProvenance: (sha: string) => string
+      pinnedBadge: (sha: string) => string
+      tierOfficial: string
+      tierCommunity: string
+      updateToPin: (sha: string) => string
+      updateFailed: (name: string) => string
+      updated: (name: string) => string
+    }
     officialCatalog: string
     officialPill: string
     hub: {
@@ -1910,9 +1931,6 @@ export interface Translations {
     restartNow: string
     restarting: string
     restartFailedManual: string
-    restartFailedManualDetail: string
-    restartAgain: string
-    openLogs: string
     telegramQr: {
       title: string
       subtitle: string
@@ -2495,6 +2513,13 @@ export interface Translations {
     stopDictation: string
     transcribingDictation: string
     voiceControls: string
+    voiceEngine: string
+    voiceEngineChained: string
+    voiceEngineLive: string
+    voiceEngineLiveNeedsKey: string
+    voiceEngineChangeFailed: string
+    voiceEngineChainedShort: string
+    voiceEngineLiveShort: string
     voiceDictation: string
     speakReplies: string
     stopSpeakingReplies: string
@@ -3436,7 +3461,15 @@ export interface Translations {
         streaming: string
       }
       errorRetry: string
+      /** Escape hatch when Retry would only reproduce SESSION_NOT_OWNED (#106217). */
+      errorStartNewSession: string
       errorSwitchProvider: string
+      /** One-click recovery for an expired/revoked OAuth grant: re-runs that
+       *  provider's sign-in flow (auth layer, authKind 'oauth'). */
+      errorSignInAgain: (provider: string) => string
+      /** Explains WHY the turn failed for an OAuth 401 — the raw body
+       *  ("HTTP 401: User not found.") doesn't say "sign in again". */
+      errorOauthExpired: (provider: string) => string
       errorOpenLogs: string
       errorOpenLogsFailed: string
       errorOpenDesktopLogs: string

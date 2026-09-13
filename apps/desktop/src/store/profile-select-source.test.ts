@@ -20,6 +20,8 @@ const resetStarmapGraph = vi.fn()
 vi.mock('@/store/gateway', () => ({
   $gateway,
   activeGatewayConnectionId,
+  // Activation now verifies the socket's route before publishing the profile.
+  activeGatewayProfileKey: () => ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get(),
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForProfile

@@ -625,9 +625,7 @@ def _stale_aux_pins(cfg: dict, new_provider: str) -> list:
         if not isinstance(slot_cfg, dict):
             continue
         slot_provider = str(slot_cfg.get("provider", "") or "").strip()
-        # "main" is an alias for the active main provider (auxiliary_client._normalize_aux_provider):
-        # it follows the switch and is never a stale pin.
-        if slot_provider and slot_provider.lower() not in {"auto", "", "main"} and slot_provider.lower() != new_provider:
+        if slot_provider and slot_provider.lower() not in {"auto", ""} and slot_provider.lower() != new_provider:
             # A pin on a private/LAN endpoint (per-task base_url, e.g. a home Ollama box) never bills
             # a provider, so a main switch does not orphan it.
             if is_local_endpoint(str(slot_cfg.get("base_url", "") or "")):
@@ -668,15 +666,8 @@ def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str
     provider_entry = _provider_entry(cfg, provider)
     if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
         base_url = str(provider_entry.get("base_url") or "").strip()
-    return base_url, _validated_main_model_selection(cfg, provider, model, base_url, api_key)
-
-
-def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: str, api_key: str,
-                                prepared: "Optional[tuple[str, ModelSwitchResult]]" = None) -> dict:
-    from hermes_cli.config import save_config
-    base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
+    result = _validated_main_model_selection(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
-    provider_entry = _provider_entry(cfg, provider)
     model_cfg = _apply_main_model_assignment(cfg.get("model", {}), result, api_key)
     _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg

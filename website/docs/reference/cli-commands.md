@@ -149,31 +149,6 @@ hermes chat --ignore-user-config --ignore-rules -q "Repro without my personal se
 hermes chat --safe-mode -q "Is this bug mine or Hermes'?"
 ```
 
-### `--format stream-json` — structured JSONL output
-
-Use `--format stream-json` when a program needs to consume progress without
-scraping terminal output. It requires `-q` / `--query` (or `--query-file`), implies
-quiet non-interactive CLI mode, and rejects an explicit `--tui` request. Every
-stdout line is one JSON object; diagnostics and the `session_id:` line stay on stderr.
-
-```bash
-hermes chat -q "Summarize this repository" --format stream-json
-```
-
-Every event carries `timestamp` (Unix epoch milliseconds).
-
-| Event `type` | Fields |
-|---|---|
-| `system` | `subtype: "init"`, `model`, `session_id` |
-| `text` | `text` — a streamed assistant text delta |
-| `tool_use` | `name`; `input` when the tool arguments are available |
-| `tool_result` | `name`, `output` (capped at 5000 chars), `duration_ms`, `is_error` |
-| `result` | `session_id`, `exit_code`, `text`, `tokens` (`input`, `output`, `total`, `cache_read`, `cache_write`), `duration_ms`; `error` when the turn failed |
-
-Once a conversation starts, its terminal record is always `result` — including
-`exit_code: 130` when it is interrupted with Ctrl-C. Treat that record as the
-completion signal; the process exit code matches its `exit_code`.
-
 #### Delegation in finite chat runs
 
 When chat answers and exits (`-Q`, `chat --oneshot`, or a query with non-TTY

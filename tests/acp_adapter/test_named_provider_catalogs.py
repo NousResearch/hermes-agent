@@ -12,8 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from acp_adapter.model_catalog import _named_custom_provider_catalogs
-from acp_adapter.server import HermesACPAgent
+from acp_adapter.server import HermesACPAgent, _named_custom_provider_catalogs
 from acp_adapter.session import SessionManager
 from acp.schema import SessionModelState
 
@@ -45,7 +44,7 @@ class TestNamedCustomProviderCatalogs:
             }
         )
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models",
+            "hermes_cli.model_switch._fetch_picker_live_models",
             return_value=["model-a", "model-b"],
         ):
             catalogs = _named_custom_provider_catalogs()
@@ -70,7 +69,7 @@ class TestNamedCustomProviderCatalogs:
             }
         )
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models", return_value=None
+            "hermes_cli.model_switch._fetch_picker_live_models", return_value=None
         ):
             assert _named_custom_provider_catalogs() == []
 
@@ -86,7 +85,7 @@ class TestNamedCustomProviderCatalogs:
             }
         )
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models", return_value=None
+            "hermes_cli.model_switch._fetch_picker_live_models", return_value=None
         ):
             assert _named_custom_provider_catalogs() == []
 
@@ -103,7 +102,7 @@ class TestNamedCustomProviderCatalogs:
             ]
         )
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models", return_value=None
+            "hermes_cli.model_switch._fetch_picker_live_models", return_value=None
         ):
             catalogs = _named_custom_provider_catalogs()
 
@@ -120,10 +119,10 @@ class TestNamedCustomProviderCatalogs:
             }
         )
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.models_local.should_use_ollama_native_catalog",
+            "hermes_cli.models.should_use_ollama_native_catalog",
             return_value=True,
         ), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models",
+            "hermes_cli.model_switch._fetch_picker_live_models",
             return_value=["qwen3:1.7b"],
         ) as fetch:
             catalogs = _named_custom_provider_catalogs()
@@ -148,10 +147,10 @@ class TestNamedCustomProviderCatalogs:
             ]
         )
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.models_local.should_use_ollama_native_catalog",
+            "hermes_cli.models.should_use_ollama_native_catalog",
             return_value=True,
         ), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models",
+            "hermes_cli.model_switch._fetch_picker_live_models",
             return_value=["qwen3:1.7b"],
         ) as fetch:
             catalogs = _named_custom_provider_catalogs()
@@ -169,13 +168,13 @@ class TestNamedCustomProviderCatalogs:
                 }
             }
         )
-        from hermes_cli.model_switch_providers import _NativePickerModelList
+        from hermes_cli.model_switch import _NativePickerModelList
 
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.models_local.should_use_ollama_native_catalog",
+            "hermes_cli.models.should_use_ollama_native_catalog",
             return_value=True,
         ), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models",
+            "hermes_cli.model_switch._fetch_picker_live_models",
             return_value=_NativePickerModelList(),
         ):
             assert _named_custom_provider_catalogs() == [
@@ -193,8 +192,8 @@ class TestModelStateIncludesNamedProviders:
         )
         acp_agent = HermesACPAgent(session_manager=manager)
 
-        with patch(
-            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+        with patch("hermes_cli.models.curated_models_for_provider", return_value=[]), patch(
+            "acp_adapter.server._named_custom_provider_catalogs",
             return_value=[("custom:ollama", "Ollama", [])],
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
@@ -216,7 +215,10 @@ class TestModelStateIncludesNamedProviders:
         acp_agent = HermesACPAgent(session_manager=manager)
 
         with patch(
-            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            "hermes_cli.models.curated_models_for_provider",
+            return_value=[("gpt-5.4", "recommended")],
+        ), patch(
+            "acp_adapter.server._named_custom_provider_catalogs",
             return_value=[
                 (
                     "custom:bedrock-mantle",
@@ -238,41 +240,6 @@ class TestModelStateIncludesNamedProviders:
             if m.model_id == "custom:bedrock-mantle:openai.gpt-5.5"
         )
         assert "AWS Bedrock Mantle" in (named.description or "")
-
-    @pytest.mark.asyncio
-    async def test_configured_provider_inventory_row_uses_custom_choice_id(self):
-        """A ``providers:`` row must not expose its raw config key to ACP."""
-        from hermes_cli.models import parse_model_input
-
-        manager = SessionManager(
-            agent_factory=lambda: SimpleNamespace(model="model-a", provider="relay")
-        )
-        acp_agent = HermesACPAgent(session_manager=manager)
-        cfg = {
-            "providers": {
-                "relay": {
-                    "name": "Relay",
-                    "base_url": "https://relay.example/v1",
-                }
-            }
-        }
-        inventory = {
-            "providers": [{"slug": "relay", "name": "Relay", "is_user_defined": True, "models": ["model-a"]}]
-        }
-
-        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.inventory.build_models_payload", return_value=inventory
-        ), patch(
-            "acp_adapter.model_catalog._named_custom_provider_catalogs",
-            return_value=[("custom:relay", "Relay", [("model-a", "")])],
-        ):
-            resp = await acp_agent.new_session(cwd="/tmp")
-            choice_ids = [item.model_id for item in resp.models.available_models]
-            provider, model = parse_model_input(resp.models.current_model_id, "relay")
-
-        assert choice_ids == ["custom:relay:model-a"]
-        assert provider == "custom:relay"
-        assert model == "model-a"
 
     def test_selector_choice_id_round_trips_through_parse_model_input(self):
         """The encoded choice id must resolve back to the named provider."""
@@ -310,28 +277,3 @@ class TestModelStateIncludesNamedProviders:
             )
         assert provider == "custom:local-127.0.0.1:11434"
         assert model == "qwen3:1.7b"
-
-    @pytest.mark.asyncio
-    async def test_named_entry_shadowing_a_canonical_provider_keeps_the_canonical_session(self):
-        """``providers.openrouter:`` (a proxy) must not swallow the canonical OpenRouter rows nor
-        relabel a session running on openrouter.ai as ``custom:openrouter`` (that id resolves to
-        the proxy base_url)."""
-        manager = SessionManager(
-            agent_factory=lambda: SimpleNamespace(
-                model="model-c", provider="openrouter", base_url="https://openrouter.ai/api/v1")
-        )
-        acp_agent = HermesACPAgent(session_manager=manager)
-        inventory = {"providers": [
-            {"slug": "openrouter", "name": "OpenRouter", "is_user_defined": False, "models": ["model-c"]},
-            {"slug": "custom:openrouter", "name": "openrouter", "is_user_defined": True,
-             "api_url": "https://or.example/api/v1", "models": ["model-a"]},
-        ]}
-
-        with patch("hermes_cli.inventory.build_models_payload", return_value=inventory), patch(
-            "acp_adapter.model_catalog._named_custom_provider_catalogs",
-            return_value=[("custom:openrouter", "openrouter", [("model-a", "")])],
-        ):
-            resp = await acp_agent.new_session(cwd="/tmp")
-
-        assert resp.models.current_model_id == "openrouter:model-c"
-        assert [m.model_id for m in resp.models.available_models] == ["openrouter:model-c", "custom:openrouter:model-a"]

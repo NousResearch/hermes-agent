@@ -9,7 +9,12 @@ import { useBackgroundSync } from './use-background-sync'
 const noop = () => undefined
 const requestGateway = async () => ({ sessions: [] })
 
-function render(activeGatewayProfile: string, activeConnectionId: string, refreshSessions: () => Promise<void>) {
+function render(
+  activeGatewayProfile: string,
+  activeConnectionId: string,
+  refreshSessions: () => Promise<void>,
+  gatewayRequest = requestGateway
+) {
   return renderHook(
     ({ connectionId, profile }: { connectionId: string; profile: string }) => {
       useBackgroundSync({

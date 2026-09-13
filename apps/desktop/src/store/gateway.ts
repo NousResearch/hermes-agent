@@ -3,15 +3,13 @@ import {
   type GatewayEvent,
   reconnectBackoffDelayMs,
   registryBackendScopeKey,
-  resolveGatewayWsUrl,
-  type ServerRequest
+  resolveGatewayWsUrl
 } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { HermesGateway, setApiRequestConnection } from '@/hermes'
-import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
-import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import { isTimeoutError, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
@@ -1238,7 +1236,7 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
   }
 
   entry.relayRetainCount += 1
-  entry.wantOpen = true
+  rearmSecondary(entry)
 
   let released = false
 
@@ -1305,7 +1303,7 @@ export async function retainGatewayForAgent(connectionId: null | string, profile
     entry.retained = true
   }
 
-  entry.wantOpen = true
+  rearmSecondary(entry)
   entry.activeRequests += 1
 
   let released = false
@@ -1581,7 +1579,7 @@ export async function ensureGatewayForAgent(
   }
 
   entry.retained = true
-  entry.wantOpen = true
+  rearmSecondary(entry)
   // Lease the entry against the live-work pruner for the whole dial: the
   // switch target is not yet active and has no live sessions, so a prune
   // recompute firing mid-spawn would otherwise dispose it and this
@@ -1659,7 +1657,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   }
 
   entry.retained = true
-  entry.wantOpen = true
+  rearmSecondary(entry)
   // Lease the entry against the live-work pruner for the whole dial — the
   // profile-door twin of the agent path's lease above (#89622).
   entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
@@ -1716,6 +1714,9 @@ export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
   }
 
   if (!isOpen(entry.gateway)) {
+    // The viewed scope is an explicit recovery target (Reconnect action,
+    // request retry): a parked entry must dial again here, not stay parked.
+    rearmSecondary(entry)
     // This is on the request path for the currently active bot/profile. It is
     // a real user action, not the automatic reconnect sweep, so it must be
     // allowed to claim the foreground pool slot immediately.
@@ -1750,9 +1751,10 @@ const ACTIVE_GATEWAY_OPEN_WAIT_MS = 8_000
 // signals can force sockets that still report open to retire before redialing.
 export function reconnectSecondaryGateways({ forceOpenSockets = false }: { forceOpenSockets?: boolean } = {}): void {
   for (const entry of g.secondaries.values()) {
-    if (!entry.wantOpen) {
-      continue
-    }
+    // A parked entry (stall budget spent) is still pinned by its surface, or
+    // the pruner would have removed it. This nudge is an explicit recovery
+    // signal (online / focus / wake), so it re-arms with a fresh budget.
+    rearmSecondary(entry)
 
     if (isOpen(entry.gateway)) {
       if (!forceOpenSockets) {

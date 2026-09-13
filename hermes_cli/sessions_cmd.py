@@ -266,10 +266,26 @@ def _cmd_import(args):
     has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
     has_titles = any(s.get("title") for s in sessions)
 
-        db = SessionDB()
-    except Exception as e:
-        print(f"Error: Could not open session database: {e}")
-        return 1
+    def _ws(s):  # repo/dir basename, "—" when unbound
+        key = _ws_key(s)
+        return ((os.path.basename(key.rstrip("/\\")) or key) if key else "—")[:16]
+    _title = lambda s, n: (s.get("title") or "—")[:n]  # noqa: E731
+    _preview = lambda s, n: s.get("preview", "")[:n]  # noqa: E731
+    _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])  # noqa: E731
+    layouts = {  # (has_ws, has_titles): header, rule width, row formatter
+        (True, True): (f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}", 110,
+                       lambda s: f"{_title(s, 26):<28} {_ws(s):<18} {_ago(s):<13} {s['id']}"),
+        (True, False): (f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}", 100,
+                        lambda s: f"{_preview(s, 36):<38} {_ws(s):<18} {_ago(s):<13} {s['source']:<6} {s['id']}"),
+        (False, True): (f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}", 110,
+                        lambda s: f"{_title(s, 30):<32} {_preview(s, 38):<40} {_ago(s):<13} {s['id']}"),
+        (False, False): (f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}", 95,
+                         lambda s: f"{_preview(s, 48):<50} {_ago(s):<13} {s['source']:<6} {s['id']}"),
+    }
+    header, rule, fmt = layouts[(has_ws, has_titles)]
+    print(header + "\n" + "─" * rule)
+    for s in sessions:
+        print(fmt(s))
 
 
     if action == "list":

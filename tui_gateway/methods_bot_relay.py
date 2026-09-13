@@ -24,10 +24,28 @@ rebound onto server.py's globals at install time (see method_ctx.py) and may
 reference server module globals (``_ok``, ``_err``) not imported here.
 """
 
+# Defined beside the sender-side waiter budget so the two Python sides cannot drift (#93911).
+from tools.bot_relay import TURN_ATTEMPT_TIMEOUT_SECONDS
+
 from .method_ctx import HandlerRegistry
 
 _registry = HandlerRegistry()
 method = _registry.method
+
+
+def _relay_root() -> Path:
+    """Install root shared by every profile (relay state is install-wide). Same formula as the
+    writers (``tools/bot_relay``, ``tools/bot_mode_dm``): both ends of the mailbox must agree for
+    every HERMES_HOME, including non-``profiles/`` subdirs of ``~/.hermes``."""
+    from tools.bot_mode_probe import _default_home, _hermes_root
+    return _hermes_root(Path(_default_home()))
+
+
+def _run_delivery(profile: str, tmp: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    from tools.bot_relay import local_delivery_command
+    return subprocess.run(
+        local_delivery_command(profile, tmp), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=TURN_ATTEMPT_TIMEOUT_SECONDS, env=env)
 
 
 @method("bot_relay.roster.sync")
@@ -109,40 +127,43 @@ def _(rid, params: dict) -> dict:
         if resolved not in known:
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")
 
-        # #100523: when THIS gateway already hosts the target's Bot Chat live
-        # (the Desktop has it open), the subprocess transport is fenced out by
-        # the single-owner lease ("already has a live owner") and the payload
-        # is dropped. Land the DM in the live session as a normal user turn
-        # via prompt.submit instead — same choke point the composer uses, so
-        # role alternation, persistence and streaming all behave as a typed
-        # message would. (Nested per method_ctx rebinding.)
-        def _live_bot_chat_sid(profile_name: str) -> str:
-            from tools.bot_mode_probe import BOT_CHAT_TITLE
-
-            live_home = _profile_home(profile_name)
-            want_home = str(live_home) if live_home is not None else None
-            for live_sid, record in list(_sessions.items()):
-                if not isinstance(record, dict):
-                    continue
-                if (record.get("profile_home") or None) != want_home:
-                    continue
-                key = _session_lookup_key(record, fallback=live_sid)
-                if _session_live_title(record, key) == BOT_CHAT_TITLE:
-                    return live_sid
-            return ""
-
-        live_sid = _live_bot_chat_sid(resolved)
+        # When THIS gateway already hosts the target's Bot Chat live, the subprocess transport is
+        # fenced out by the single-owner lease and the payload dropped. Land the DM in the live
+        # session via prompt.submit — the composer's choke point, so role alternation, persistence
+        # and streaming behave as a typed message would.
+        # (Nested per method_ctx rebinding.) See #100523.
+        from tools.bot_mode_probe import BOT_CHAT_TITLE
+        live_home = _profile_home(resolved)
+        want_home = str(live_home) if live_home is not None else None
+        live_sid = next((
+            live_sid for live_sid, record in list(_sessions.items())
+            if isinstance(record, dict) and (record.get("profile_home") or None) == want_home
+            and _session_live_title(
+                record, _session_lookup_key(record, fallback=live_sid)) == BOT_CHAT_TITLE), "")
+        # The sender fields are whatever the relaying client says. The author labels memory only and grants nothing.
+        from tools.bot_relay import DeliveryAuthor, delivery_env, delivery_turn_author
+        from tui_gateway.methods_browser_control import _is_authenticated_identity
+        sender_fields = ("from_profile", "from_handle", "from_connection")
+        # A logged-in browser never relays for another connection; only the Desktop and server-internal callers do.
+        if (any(params.get(k) for k in sender_fields)
+                and _is_authenticated_identity(getattr(current_transport(), "auth_identity", None))):
+            return _err(rid, 4095, "a logged-in client cannot name the sender of a relayed dm")
+        author = delivery_turn_author(*(params.get(k) for k in sender_fields))
         if live_sid:
-            # queued=True: a teammate's DM runs as the NEXT turn. It must never
-            # interrupt or steer a turn already in flight (the default busy
-            # mode does); hundreds of arrivals simply queue in arrival order.
-            submitted = _methods["prompt.submit"](rid, {"session_id": live_sid, "text": message, "queued": True})
+            # queued=True: a teammate's DM runs as the NEXT turn and never interrupts or steers a
+            # turn in flight (the default busy mode does); arrivals queue in order.
+            submit_params: dict = {"session_id": live_sid, "text": message, "queued": True}
+            if author:
+                submit_params["_turn_author"] = DeliveryAuthor(author)
+            submitted = _methods["prompt.submit"](rid, submit_params)
             if "error" in submitted:
                 return submitted
             return _ok(
                 rid,
                 {"reply": f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."},
             )
+
+        turn_env = delivery_env(author)
 
         fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
         try:
@@ -156,14 +177,7 @@ def _(rid, params: dict) -> dict:
             # policy grants one bounded re-run — so clients calling
             # bot_relay.deliver must tolerate ~1320s before assuming failure.
             with acquire_turn_lock(root, resolved):
-                proc = subprocess.run(
-                    local_delivery_command(resolved, tmp),
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=600,
-                )
+                proc = _run(resolved, tmp, turn_env)
                 if proc.returncode != 0:
                     # Retry session policy (#93091 item 5): transient classes
                     # re-run the SAME session once; context_overflow also
@@ -173,21 +187,9 @@ def _(rid, params: dict) -> dict:
                     # the sanctioned compression lever (no fresh session is
                     # ever minted). Auth/quota/config classes never retry.
                     from tools.bot_failure_reasons import (
-                        RETRY_NONE,
-                        classify_agent_error,
-                        retry_action,
-                    )
-
-                    first_detail = (proc.stderr or proc.stdout or "").strip()[-500:]
-                    if retry_action(classify_agent_error(first_detail)) != RETRY_NONE:
-                        proc = subprocess.run(
-                            local_delivery_command(resolved, tmp),
-                            capture_output=True,
-                            text=True,
-                            encoding="utf-8",
-                            errors="replace",
-                            timeout=600,
-                        )
+                        RETRY_NONE, classify_agent_error, retry_action)
+                    if retry_action(classify_agent_error(_detail(proc))) != RETRY_NONE:
+                        proc = _run(resolved, tmp, turn_env)
         finally:
             try:
                 os.unlink(tmp)

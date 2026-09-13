@@ -119,17 +119,16 @@ class TestNamedProfileMultiplexerGuard:
             "gateway:\n  multiplex_profiles: true\n",
             encoding="utf-8",
         )
-        import json
-        import os
-        (tmp_path / "gateway_state.json").write_text(json.dumps({
-            "pid": os.getpid(), "hermes_home": str(tmp_path), "gateway_state": "running",
-            "served_profiles": ["default", "worker"]}))
+        import gateway.status as status
+        monkeypatch.setattr(
+            status, "read_runtime_status",
+            lambda path=None: {"gateway_state": "running", "served_profiles": ["default", "worker"]},
+        )
 
         from hermes_cli import gateway as gw
 
-        with pytest.raises(SystemExit) as excinfo:
-            gw._guard_named_profile_under_multiplexer(force=False)
-        assert excinfo.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
+        gw._guard_named_profile_under_multiplexer(force=False)
+        assert gw.named_profile_served_by_running_multiplexer("worker") is True
 
     def test_non_multiplexing_default_gateway_lets_named_profile_run(self, monkeypatch, tmp_path):
         self._fake_running_default_gateway(monkeypatch, tmp_path)

@@ -67,7 +67,14 @@ def _sql_literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
-_SQL_WHITESPACE = "CHAR(9) || CHAR(10) || CHAR(13) || CHAR(32)"
+def _sql_json_extract(expression: str, path: str) -> str:
+    """Build a non-throwing JSON marker lookup for a JSON TEXT column."""
+
+    safe_json = (
+        f"(CASE WHEN json_valid({expression}) "
+        f"THEN {expression} ELSE json_object() END)"
+    )
+    return f"json_extract({safe_json}, {_sql_literal(path)})"
 
 
 def _sql_ltrim_whitespace(expression: str) -> str:
@@ -124,17 +131,14 @@ _PREVIEW_FORCE_USER_REMAINDER_SQL = (
     f" + {len(_SUMMARY_END_MARKER)})"
 )
 
-# Session preview subqueries select their first eligible user-authored content.
-# Pure compaction rows are ineligible; force-user-leading and merged carriers
-# remain eligible only when authentic content survives the wire boundary.
-_PREVIEW_ELIGIBLE_SQL = (
-    f"((NOT {_PREVIEW_STANDALONE_SUMMARY_SQL} AND NOT {_PREVIEW_MERGED_SUMMARY_SQL})"
-    f" OR ({_PREVIEW_STANDALONE_SUMMARY_SQL}"
-    f" AND INSTR(m.content, {_sql_literal(_SUMMARY_END_MARKER)}) > 0"
+# Pure compaction rows are ineligible; force-user-leading and merged carriers only when authentic content survives.
+# A display_kind="hidden" row is model-facing scaffolding the gateway never paints; the preview must not paint it either.
+_PREVIEW_ELIGIBLE_SQL = (f"(COALESCE(m.display_kind, '') <> 'hidden'"
+    f" AND ((NOT {_PREVIEW_STANDALONE_SUMMARY_SQL} AND NOT {_PREVIEW_MERGED_SUMMARY_SQL})"
+    f" OR ({_PREVIEW_STANDALONE_SUMMARY_SQL} AND INSTR(m.content, {_sql_literal(_SUMMARY_END_MARKER)}) > 0"
     f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_FORCE_USER_REMAINDER_SQL)}) > 0)"
     f" OR ({_PREVIEW_MERGED_SUMMARY_SQL}"
-    f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL)}) > 0))"
-)
+    f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL)}) > 0)))")
 
 
 # The shared ``_preview_raw`` SELECT expression, interpolated by every listing
@@ -686,14 +690,7 @@ END;
 DROP TRIGGER IF EXISTS messages_display_identity_update;
 CREATE TRIGGER IF NOT EXISTS messages_display_identity_update
 AFTER UPDATE OF role, content, timestamp, tool_call_id, tool_calls, tool_name,
-                display_kind ON messages
-WHEN new.role IS NOT old.role
-  OR new.content IS NOT old.content
-  OR new.timestamp IS NOT old.timestamp
-  OR new.tool_call_id IS NOT old.tool_call_id
-  OR new.tool_calls IS NOT old.tool_calls
-  OR new.tool_name IS NOT old.tool_name
-  OR new.display_kind IS NOT old.display_kind
+                display_kind, display_metadata ON messages
 BEGIN
     UPDATE messages SET display_identity = NULL, display_order = NULL
     WHERE id = new.id OR (
@@ -847,22 +844,20 @@ END;
 # ``parent_session_id`` but NOT the marker, so they stay trigram-indexed.
 FTS_TRIGRAM_EXCLUDED_SOURCES = ("cron", "subagent")
 
-# Predicate over a ``sessions`` row (unqualified column names) selecting
-# sessions whose rows belong in the trigram index. Shared by the view, the
-# sync triggers, and the deferred-backfill INSERT ... SELECTs so they can
-# never disagree about the index boundary.
-FTS_TRIGRAM_SESSION_SQL = (
-    "source NOT IN ("
-    + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
-    + ") AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL"
-)
-
-
-def fts_trigram_session_sql(alias: str) -> str:
-    """``FTS_TRIGRAM_SESSION_SQL`` with every column qualified by ``alias``."""
-    return FTS_TRIGRAM_SESSION_SQL.replace("source ", f"{alias}.source ").replace(
-        "COALESCE(model_config", f"COALESCE({alias}.model_config"
+def fts_trigram_session_sql(alias: str = "") -> str:
+    """Predicate over a ``sessions`` row selecting sessions whose rows belong in
+    the trigram index; ``alias`` qualifies every column for joins. Shared by the
+    view, the sync triggers, and the deferred-backfill INSERT ... SELECTs so they
+    can never disagree about the index boundary."""
+    q = f"{alias}." if alias else ""
+    return (
+        f"{q}source NOT IN ("
+        + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
+        + f") AND {_sql_json_extract(q + 'model_config', '$._delegate_from')} IS NULL"
     )
+
+
+FTS_TRIGRAM_SESSION_SQL = fts_trigram_session_sql()
 
 
 FTS_TRIGRAM_SQL = f"""

@@ -190,9 +190,7 @@ class CronScheduler(ABC):
         attempt (even if the job failed); False if the claim was lost or the job is gone.
         ``manual`` marks an off-tick run-now (dashboard trigger): the claim must not stamp
         ``next_run_at`` as the occurrence, or that slot is skipped when it arrives. Webhook and
-        misfire fires arriving at/after the due instant run that slot and keep the stamp; a fire
-        arriving BEFORE the stored instant is off-tick like ``manual`` and stays occurrence-free
-        (it cannot be the tick that owns a future slot)."""
+        misfire fires run the slot that is due and keep the stamp."""
         claimed_job = self.claim_fire(job_id, force=force, manual=manual)
         if claimed_job is None:
             return False
@@ -587,15 +585,22 @@ class InProcessCronScheduler(CronScheduler):
             " (re-enumerated every cycle)" if callable(profile_homes) else "",
         )
 
-        # Recovery + initial heartbeat for every profile.
-        # A profile may have been deleted since this snapshot was taken;
-        # never recreate a deleted home's cron workspace via the heartbeat
-        # below (#47368).
-        # One profile's broken store (corrupt executions.db, unreadable
-        # cron dir) must not abort startup for every other profile (#74878).
-        for entry in _existing_profile_homes(profile_homes):
-            home = entry[1] if isinstance(entry, tuple) else entry
-            home_token = set_hermes_home_override(str(home))
+        def tick_adapters_for(profile_name):
+            # Deliver via the profile's OWN adapters; NEVER fall back to the default profile's
+            # (wrong bot). A credentialless satellite may ride the PRIMARY adapter only for targets
+            # an exact enabled route maps here; else fail closed (delivery skipped this tick).
+            if profile_name is None or profile_name == default_profile:
+                return adapters
+            tick_adapters = (profile_adapters or {}).get(profile_name) or {}
+            if not tick_adapters and adapters:
+                return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+            return tick_adapters
+
+        # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
+        # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's
+        # cron workspace via the heartbeat below (#47368).
+        for entry in initial_homes:
+            _, home = _profile_entry(entry)
             try:
                 with _profile_cron_scope(home):
                     recovered = self.recover_interrupted()

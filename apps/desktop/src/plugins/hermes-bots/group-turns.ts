@@ -599,98 +599,69 @@ export async function runGroupChatMemberTurn(
   }
 }
 
-async function runGroupChatMemberTurnLeased(
-  group: string,
-  member: GroupMember,
-  prompt: string,
-  thread: string,
-  images?: Attachment[]
-): Promise<null | string> {
-  const { runtime, stored } = await ensureGroupChatSession(group, member)
+function groupTurnAttachmentSuffix(fileRefs: string[], failed: string[]) {
+  const extras: string[] = []
 
-  if (!runtime) {
-    return null
+  if (fileRefs.length) {
+    extras.push(`Attached files staged in your session workspace:\n${fileRefs.join('\n')}`)
   }
 
-  // #91868/#94569: remember the epoch this turn was dispatched under so the
-  // poll loop below can tell an explicit stop from ordinary room churn.
-  const dispatchEpoch = ($groupChats.get()[group] || {}).epoch || 0
-  const memberKey = groupMemberKey(member)
-  recordGroupActivity(group, {
-    kind: 'working',
-    member: member.name,
-    thread
-  })
-
-  // Baseline: how many messages exist before our submit.
-  let before = 0
-  // Every runtime id this turn has seen for the member's session. Terminal
-  // frames are keyed by runtime id, and a resume can hand back a fresh one.
-  const runtimeIds = new Set<string>([runtime])
-
-  try {
-    const pre = (await requestForBot(member, 'session.resume', {
-      session_id: stored || runtime,
-      profile: member.name
-    })) as GroupSessionSnapshot
-
-    before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
-
-    if (pre?.session_id) {
-      runtimeIds.add(pre.session_id)
-    }
-  } catch {
-    /* lazy session — zero messages */
+  if (failed.length) {
+    extras.push(
+      `These attachments could not be staged into your session (filename only; the file is not available to your tools):\n${failed.join('\n')}`
+    )
   }
 
+  return extras.join('\n\n')
+}
+
+async function stageGroupTurnAttachments(member: GroupMember, runtime: string, images?: Attachment[]) {
   // Stage this delta's attachments into the member's session so the model
   // receives the actual payload with the prompt — the same attach RPCs the
   // 1:1 chat uses (they also work cross-connection, where the member's
-  // gateway can't see this machine's files). Images queue as vision tiles,
-  // PDFs render per-page via pdf.attach, and other files materialize in the
-  // session workspace (their @file: refs are appended to the prompt so the
-  // member's file tools can read them). A failed attach degrades that
-  // member to text-only; the transcript line still names the attachment so
-  // the member knows something was shared.
+  // gateway can't see this machine's files). Images queue as vision tiles.
+  // PDFs and other files materialize in the session workspace via file.attach
+  // so file tools can read them; pdf.attach only rasterizes pages and needs
+  // pdftoppm, so a swallowed miss left the member with a filename and no file.
   const fileRefs: string[] = []
+  const failed: string[] = []
 
   for (const img of Array.isArray(images) ? images : []) {
     if (!img || typeof img.data !== 'string' || !img.data) {
       continue
     }
 
+    const label =
+      img.name || (img.kind === 'pdf' ? 'attachment.pdf' : img.kind === 'file' ? 'attachment' : 'attachment.png')
+
     try {
-      if (img.kind === 'pdf') {
-        await requestForBot(member, 'pdf.attach', {
-          session_id: runtime,
-          content_base64: img.data,
-          filename: img.name || 'attachment.pdf'
-        })
-      } else if (img.kind === 'file') {
+      if (img.kind === 'pdf' || img.kind === 'file') {
         const res = (await requestForBot(member, 'file.attach', {
           session_id: runtime,
           data_url: img.data,
-          name: img.name || 'attachment'
+          name: label
         })) as { ref_text?: string }
 
         if (res?.ref_text) {
-          fileRefs.push(`${img.name || 'attachment'} → ${res.ref_text}`)
+          fileRefs.push(`${label} → ${res.ref_text}`)
+        } else {
+          failed.push(label)
         }
       } else {
         await requestForBot(member, 'image.attach_bytes', {
           session_id: runtime,
           content_base64: img.data,
-          filename: img.name || 'attachment.png'
+          filename: label
         })
       }
-    } catch {
-      /* text-only fallback for this member */
+    } catch (error) {
+      failed.push(label)
+      host.notifyError?.(error, `Could not attach ${label} for ${member.title || member.name}`)
     }
   }
 
-  const turnText = fileRefs.length
-    ? `${prompt}\n\nAttached files staged in your session workspace:\n${fileRefs.join('\n')}`
-    : prompt
+  return { failed, fileRefs }
+}
 
   // #93602: one-shot recovery when the runtime session was reaped between
   // minting and submitting. Tracks the runtime id the submit landed on so
@@ -799,6 +770,102 @@ async function runGroupChatMemberTurnLeased(
   })
 
   return null
+}
+
+async function prepareGroupTurnBaseline(
+  member: GroupMember,
+  runtime: string,
+  stored: GroupMemberSessionHandle['stored']
+) {
+  // Baseline: how many messages exist before our submit.
+  let before = 0
+  // Every runtime id this turn has seen for the member's session. Terminal
+  // frames are keyed by runtime id, and a resume can hand back a fresh one.
+  const runtimeIds = new Set<string>([runtime])
+
+  try {
+    const pre = (await requestForBot(member, 'session.resume', {
+      session_id: stored || runtime,
+      profile: member.name
+    })) as GroupSessionSnapshot
+
+    before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
+
+    if (pre?.session_id) {
+      runtimeIds.add(pre.session_id)
+    }
+  } catch {
+    /* lazy session — zero messages */
+  }
+
+  return { before, runtimeIds }
+}
+
+async function runGroupChatMemberTurnLeased(
+  group: string,
+  member: GroupMember,
+  prompt: string,
+  thread: string,
+  images?: Attachment[]
+): Promise<null | string> {
+  const binding = followGroupChat(group, name => {
+    group = name
+  })
+
+  try {
+    const { runtime, stored } = await ensureGroupChatSession(group, member)
+
+    if (!runtime || !binding.isLive()) {
+      return null
+    }
+
+    // #91868/#94569: remember the epoch this turn was dispatched under so the
+    // poll loop below can tell an explicit stop from ordinary room churn.
+    const dispatchEpoch = ($groupChats.get()[group] || {}).epoch || 0
+    recordGroupActivity(group, {
+      kind: 'working',
+      member: member.name,
+      thread
+    })
+
+    const { before, runtimeIds } = await prepareGroupTurnBaseline(member, runtime, stored)
+
+    const { failed, fileRefs } = await stageGroupTurnAttachments(member, runtime, images)
+
+    if (!binding.isLive()) {
+      return null
+    }
+
+    const staged = groupTurnAttachmentSuffix(fileRefs, failed)
+    const turnText = staged ? `${prompt}\n\n${staged}` : prompt
+
+    // #93602: one-shot recovery when the runtime session was reaped between
+    // minting and submitting. Tracks the runtime id the submit landed on so
+    // the poll fallback below targets a live session.
+    const liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText)
+
+    if (!binding.isLive()) {
+      return null
+    }
+
+    runtimeIds.add(liveRuntime)
+
+    return await pollGroupMemberTurn({
+      get group() {
+        return group
+      },
+      member,
+      thread,
+      dispatchEpoch,
+      stored,
+      liveRuntime,
+      runtimeIds,
+      before,
+      binding
+    })
+  } finally {
+    binding.dispose()
+  }
 }
 
 /** Post a timed-out member's finished reply into the room, if it landed

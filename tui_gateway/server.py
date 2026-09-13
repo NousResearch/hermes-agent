@@ -26,13 +26,13 @@ from hermes_constants import (
     get_hermes_home, get_hermes_home_override, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import file_signature, is_truthy_value
+from utils import is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
-from agent.replay_cleanup import sanitize_replay_history
-from agent.compaction_display import project_compaction_message_for_display
-from agent.skill_commands import describe_skill_invocation
-from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+from agent.replay_cleanup import canonicalize_replay_history
+from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
+from agent.skill_commands import describe_skill_invocation  # noqa: F401
+from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
@@ -417,10 +417,11 @@ class _SlashWorker:
         from tools.environments.local import served_profile_child_env
 
         # The worker runs the agent → needs provider credentials; tier-1 secrets (gateway/GitHub/
-        # infra) are still stripped. A served profile's worker gets THAT profile's home + secrets and
-        # none of the launch profile's .env / TERMINAL_* residue, exactly what a standalone
-        # `hermes -p X` would load itself.
-        env = _prepend_tool_paths(served_profile_child_env(target_home=profile_home, inherit_credentials=True))
+        # infra) are still stripped. Multi-profile sessions resolve against the session's profile
+        # home via `extra` (applied last, always wins); the base already carries the HOME contract.
+        env = _prepend_tool_paths(build_subprocess_env(
+            hermes_subprocess_env(inherit_credentials=True), scrub_secrets=False,
+            inherit_profile_home=False, extra={"HERMES_HOME": str(profile_home)} if profile_home else None))
         # Internal slash workers must import the same checkout as their parent.
         module_root = str(Path(__file__).resolve().parent.parent)
         env["PYTHONPATH"] = os.pathsep.join(
@@ -2232,8 +2233,11 @@ def _get_db():
         from hermes_state import get_shared_session_db
 
         try:
-            _db = get_shared_session_db()
-            _db_error = None
+            # Pin to import-time launch home (#102526). A bare acquire() follows
+            # get_hermes_home(), which the desktop multiplex cron ticker temporarily
+            # overrides per profile at startup — first touch inside a foreign window
+            # permanently binds this process-wide handle to the wrong state.db.
+            _db, _db_error = acquire(Path(_hermes_home) / "state.db"), None
         except Exception as exc:
             _db_error = str(exc)
             logger.warning("TUI session store unavailable — continuing without state.db features: %s", exc)
@@ -2377,9 +2381,7 @@ def _canonical_profile_request(name: str) -> str:
     """
     if name.casefold() in {".hermes", "hermes"}:
         from hermes_cli import profiles as profiles_mod
-        # Check the profiles root directly: get_profile_dir rejects "hermes" as a
-        # reserved name, but a pre-reserved-list install may still carry that dir.
-        if not (profiles_mod._get_profiles_root() / profiles_mod.normalize_profile_name(name)).is_dir():
+        if not Path(profiles_mod.get_profile_dir(name)).is_dir():
             return "default"
     return name
 
@@ -2387,12 +2389,7 @@ def _canonical_profile_request(name: str) -> str:
 def _response_profile_name(profile: str | None = None) -> str:
     """Profile name for session.* payloads: the requested real non-launch profile, else the launch one."""
     name = _canonical_profile_request((profile or "").strip())
-    if not name:
-        return _current_profile_name()
-    try:
-        return name if _profile_home(name) is not None else _current_profile_name()
-    except ProfileUnavailableError:
-        return _current_profile_name()
+    return name if name and _profile_home(name) is not None else _current_profile_name()
 
 
 def _db_unavailable_error(rid, *, code: int):
@@ -2443,10 +2440,12 @@ _served_profile_homes: set[Path] = set()
 def _profile_scoped(handler):
     """Bind ``params['profile']``'s HERMES_HOME around a handler.
 
-    Pets (config + sprites) and projects (projects.db, discovery policy) both
-    resolve via ``get_hermes_home``. The desktop sends ``profile`` so a single
-    backend serving every profile in app-global remote mode still hits the
-    focused profile's home. No-op for the launch profile.
+    Secondary-profile adapters are constructed inside ``_profile_runtime_scope`` (secret scope installed +
+    multiplex active) — the same discriminator the Buzz/SimpleX adapters use for this bug class (#98738).
+    Once multiplexing is active, launch-profile *turns* bind their own terminal scope
+    (``prompt_turn._prepare_turn_input``) so they never depend on ambient ``os.environ``
+    that a secondary context might have poisoned (#107422). Single-profile processes stay
+    unscoped and keep legacy ``os.environ`` precedence.
     """
     def wrapper(rid, params):
         home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
@@ -2503,24 +2502,16 @@ def _default_session_cwd() -> str:
 
 
 def write_json(obj: dict) -> bool:
-    """Emit one JSON frame. Routes via the most-specific transport available.
-
-    Precedence:
-
-    1. Event frames with a session id → the transport stored on that session,
-       so async events land with the client that owns the session even if
-       the emitting thread has no contextvar binding.
-    2. Otherwise the transport bound on the current context (set by
-       :func:`dispatch` for the lifetime of a request).
-    3. Otherwise the module-level stdio transport, matching the historical
-       behaviour and keeping tests that monkey-patch ``_real_stdout`` green.
-
-    Every routed event frame is stamped with a per-session monotonic
-    ``seq`` and recorded in the bounded replay ring (tui_gateway.event_replay)
-    so a WS client can resume losslessly after a reconnect via
-    ``session.events.since``.
-    """
+    """Emit one JSON frame via the most-specific transport: (1) event frames with a session id → that
+    session's transport (async events reach the owner even from threads with no contextvar binding);
+    (2) the context-bound transport (:func:`dispatch`); (3) module stdio (tests monkey-patch ``_real_stdout``).
+    Every event frame gets a per-session monotonic ``seq`` + replay-ring entry so ``session.events.since`` can resume."""
+    from tui_gateway.event_replay import _stamp_event
+    from tui_gateway.hosted_room_member_activity import project_room_member_activity
+    _stamp_event(obj)
     if obj.get("method") == "event":
+        # A room member's hidden session has no transport: its frames would die at stdio below.
+        project_room_member_activity(obj, _sessions)
         params = obj.get("params")
         sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
         if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
@@ -2545,11 +2536,6 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     return write_json(_event_frame(event, sid, payload))
 
 
-from tui_gateway import server_requests as _server_requests  # noqa: E402
-
-_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload))
-
-
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
 # events, which write_json would otherwise drop on stdio (see _broadcast_global_event).
 _live_transports: set[Transport] = set()
@@ -2567,6 +2553,7 @@ def unregister_live_transport(transport: Transport | None) -> None:
     """Stop tracking a transport (call on disconnect). Idempotent."""
     with _live_transports_lock:
         _live_transports.discard(transport)
+    _release_vault_transport_owner(transport)
 
 
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
@@ -4710,13 +4697,17 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
-def _block(
-    event: str,
-    sid: str,
-    payload: dict,
-    timeout: float | None = 300,
-    batch_qids: list[str] | None = None,
-) -> str:
+# Blocking bridges whose `*.respond` tolerates a late reply (allow_expired=True): on timeout the tool
+# returns empty, but a slow renderer could still answer and hit a raw 4009 — `.expire` tears the card down.
+_EXPIRING_REQUESTS = frozenset({
+    "secret.request", "sudo.request", "vault.unlock.request", "vault.save_login.request", "vault.code.request", "clarify.request",
+    "terminal.read.request",
+    "preview.read.request", "preview.act.request", "window.read.request", "mcp.setup.request",
+    "tour.request",
+})
+
+
+def _block(event: str, sid: str, payload: dict, timeout: float | None = 300, batch_qids: list[str] | None = None) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
     with _prompt_lock:
@@ -10436,41 +10427,10 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
                 return
             _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
             db.reopen_session(stored_id)
-            from hermes_state import SessionResumeTooLargeError
-
-            # The deferred resume is guarded tip-only (session.resume): the
-            # display transcript is REST-paginated, so the ancestor prefix is
-            # an in-memory convenience (rewind ordinal translation, branch
-            # snapshots), not a requirement. Materialize the full lineage only
-            # while it fits sessions.max_resume_messages; past that, hydrate
-            # the tip alone instead of loading the runaway lineage the guard
-            # exists to keep out of memory (the omit_messages resume already
-            # runs with an empty prefix, so this is an existing shape).
-            prefix_fits = True
-            guard = getattr(db, "assert_resume_safe", None)
-            if callable(guard):
-                try:
-                    guard(stored_id)
-                except SessionResumeTooLargeError as exc:
-                    prefix_fits = False
-                    logger.info(
-                        "resume %s: compression lineage exceeds the resume "
-                        "limit (%s); hydrating the tip segment only",
-                        stored_id, exc,
-                    )
-                except Exception:
-                    logger.debug("resume lineage guard failed; loading full lineage", exc_info=True)
-            if prefix_fits:
-                raw_history, display_history = db.get_resume_conversations(stored_id)
-                prefix = db.get_ancestor_display_prefix(stored_id)
-            else:
-                raw_history = db.get_messages_as_conversation(
-                    stored_id, repair_alternation=True, include_row_ids=True
-                )
-                display_history = raw_history
-                prefix = []
-            history = sanitize_replay_history(raw_history)
-
+            raw_history, display_history, prefix = _load_resume_transcript(db, stored_id)
+            # Display keeps the full transcript; the model-fed history uses the
+            # same canonicalization as gateway resume and the send path.
+            history = canonicalize_replay_history(raw_history)
             if _sessions.get(sid) is not session:
                 return
             with session["history_lock"]:
@@ -17054,27 +17014,33 @@ def _mcp_summarize_server(name, cfg):  # noqa: E402
 # Imported at the end of this module so every global the handlers close
 # over already exists; register() rebinds them onto this namespace.
 from . import (  # noqa: E402
-    methods_browser_control as _methods_browser_control,
-    methods_bot_relay as _methods_bot_relay,
-    methods_complete as _methods_complete,
-    methods_config as _methods_config,
-    methods_images as _methods_images,
-    methods_profiles as _methods_profiles,
-    methods_prompt as _methods_prompt,
-    methods_session as _methods_session,
-    methods_tools as _methods_tools,
-)
+    methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
+    methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
+    agent_callbacks as _agent_callbacks, session_history as _session_history,
+    prompt_attachments as _prompt_attachments, session_notifications as _session_notifications,
+    tool_progress as _tool_progress, change_watcher as _change_watcher,
+    session_compression as _session_compression, model_switch as _model_switch,
+    compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
+    session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
+    session_transports as _session_transports,
+    methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
+    methods_complete as _methods_complete, methods_config as _methods_config,
+    methods_config_set as _methods_config_set, methods_images as _methods_images,
+    methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
+    methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
+    methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
+    methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
+    methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
+    methods_connectors as _methods_connectors)
 
 for _m in (
-    _methods_browser_control,
-    _methods_session,
-    _methods_prompt,
-    _methods_config,
-    _methods_complete,
-    _methods_tools,
-    _methods_profiles,
-    _methods_images,
-    _methods_bot_relay,
-):
+    _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
+    _session_compression, _change_watcher, _tool_progress, _session_notifications,
+    _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue,
+    _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
+    _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
+    _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
+    _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
+    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors):
     _m.register(sys.modules[__name__])
 del _m

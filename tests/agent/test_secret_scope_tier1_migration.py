@@ -95,7 +95,7 @@ class TestAuthzPlatformGateEnv:
 
 
 class TestAuthzAuthEnv:
-    """_auth_env must follow _platform_gate_env isolation (no os.environ
+    """_auth_env must follow platform_gate_env isolation (no os.environ
     fallthrough on a scoped miss under multiplex)."""
 
     def test_scoped_value_wins(self, monkeypatch):

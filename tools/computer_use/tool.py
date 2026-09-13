@@ -207,8 +207,7 @@ def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
     Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace. Approval
     grants are not touched here: they live in the shared store and die with ``tools.approval.clear_session``."""
-    sid = _scoped_sid(session_id)
-    _reset_screenshot_dedup(sid)  # the next capture of a re-created session must deliver pixels
+    sid = str(session_id or "")
     with _backend_lock:
         backend, call_lock = _detach_locked(sid)
     if backend is None:
@@ -274,40 +273,13 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     action = (args.get("action") or "").strip().lower()
     if not action:
         return json.dumps({"error": "missing `action`"})
-    # Per-run key for approval-state and daemon-mode isolation across
-    # concurrent sessions.
-    session_id = str(kwargs.get("session_id") or "")
-
-    # Safety: validate actions before approval prompt.
-    if action == "type":
-        text = args.get("text", "")
-        pat = _is_blocked_type(text)
-        if pat:
-            return json.dumps({
-                "error": f"blocked pattern in type text: {pat!r}",
-                "hint": "Dangerous shell patterns cannot be typed via computer_use.",
-            })
-
-    if action == "key":
-        keys = args.get("keys", "")
-        combo = _canon_key_combo(keys)
-        for blocked in _BLOCKED_KEY_COMBOS:
-            if blocked.issubset(combo) and len(blocked) <= len(combo):
-                return json.dumps({
-                    "error": f"blocked key combo: {sorted(blocked)}",
-                    "hint": "Destructive system shortcuts are hard-blocked.",
-                })
-
-    if args.get("bring_to_front") and args.get("delivery_mode") != "foreground":
-        return json.dumps({
-            "error": "bring_to_front requires delivery_mode='foreground'",
-            "code": "bring_to_front_requires_foreground",
-        })
-
-    # Approval gate (destructive actions only).
-    if action in _DESTRUCTIVE_ACTIONS:
-        err = _request_approval(action, args, session_id)
-        if err is not None:
+    session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
+    if (err := _reject_unsafe(action, args)) is not None:
+        return err
+    scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
+        ["bring_to_front"] if args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window")) else [])
+    for scope in scopes:
+        if (err := _request_approval(scope, args)) is not None:
             return err
     try:
         backend = _get_backend(session_id=session_id)

@@ -1546,14 +1546,17 @@ class TestBuildSafeEnv:
         with patch.dict("os.environ", fake_env, clear=True):
             result = _build_safe_env(None)
 
-        assert result["ProgramFiles"] == r"C:\Program Files"
-        assert result["ProgramData"] == r"C:\ProgramData"
-        assert result["ProgramW6432"] == r"C:\Program Files"
-        assert result["LOCALAPPDATA"].endswith("Local")
-        assert result["APPDATA"].endswith("Roaming")
-        assert result["USERPROFILE"] == r"C:\Users\alice"
-        assert "GITHUB_TOKEN" not in result
-        assert "OPENAI_API_KEY" not in result
+        # Windows environment keys are case-insensitive, and Python may
+        # canonicalize them while applying the mocked mapping.
+        normalized = {key.upper(): value for key, value in result.items()}
+        assert normalized["PROGRAMFILES"] == r"C:\Program Files"
+        assert normalized["PROGRAMDATA"] == r"C:\ProgramData"
+        assert normalized["PROGRAMW6432"] == r"C:\Program Files"
+        assert normalized["LOCALAPPDATA"].endswith("Local")
+        assert normalized["APPDATA"].endswith("Roaming")
+        assert normalized["USERPROFILE"] == r"C:\Users\alice"
+        assert "GITHUB_TOKEN" not in normalized
+        assert "OPENAI_API_KEY" not in normalized
 
 
 # ---------------------------------------------------------------------------
@@ -2044,7 +2047,7 @@ try:
 except ImportError:
     ToolUseContent = _CompatType
 
-from tools.mcp_tool import CreateMessageResultWithTools, SamplingHandler, SamplingToolsCapability, ToolUseContent
+from tools.mcp_tool_sampling import SamplingHandler
 from tools.mcp_tool_common import _safe_numeric
 from tools import mcp_tool_config as _mcp_config
 from tools import mcp_tool_discovery as _mcp_discovery

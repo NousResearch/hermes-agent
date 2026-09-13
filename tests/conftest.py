@@ -627,56 +627,6 @@ def _neutralize_git_safe_directory_read(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _close_leaked_session_dbs():
-    """Close every SessionDB a test constructed but forgot to close.
-
-    Root cause of OOM incident 20260816: ~40 files under tests/hermes_cli/
-    build ``SessionDB(...)`` directly and never call ``close()``. Each open
-    instance holds the writer connection (state.db + -wal fds), up to
-    ``_READ_POOL_MAX`` pooled read connections, per-connection SQLite page
-    caches, and — once token accounting has run — an ``atexit`` registration
-    that pins the instance alive until interpreter exit. Under the sanctioned
-    per-file-process runner this is invisible, but a raw single-process
-    ``pytest tests/hermes_cli/`` accumulated 16-25 GB RSS and had to be
-    OOM-killed three times in one day.
-
-    Rather than editing every test file, ``SessionDB.__init__`` registers each
-    instance in ``hermes_state_guard._test_instance_registry`` (a WeakSet,
-    populated only when the ``HERMES_TEST_ISOLATION`` marker is set — i.e.
-    only under this suite). This teardown closes whatever the test left open.
-    ``close()`` is idempotent (``self._conn`` is None afterwards) and also
-    unregisters the pinning atexit hook, so instances become collectable.
-
-    Snapshotting the registry BEFORE the test and closing only NEW instances
-    is deliberately avoided: closing pre-existing instances is harmless (they
-    were leaked by an earlier test in the same process) and the simpler
-    close-everything sweep is what actually bounds the process.
-
-    Instances opened through ``hermes_state_registry.acquire()`` are skipped:
-    on those ``close()`` releases a refcount rather than closing, so a sweep
-    would silently retire a shared generation that a wider-scoped fixture
-    still holds. The registry owns that lifecycle (``close_all()``).
-    """
-    yield
-    try:
-        from hermes_state_guard import _test_instance_registry as registry
-    except Exception:
-        return
-    if not registry:
-        return
-    for db in list(registry):
-        if getattr(db, "_shared_registry_owned", False):
-            continue
-        try:
-            db.close()
-        except Exception:
-            # Teardown must never fail a passing test; a close that raises
-            # (cross-thread ProgrammingError, already-closed) leaves at most
-            # the one connection for the next sweep / process exit.
-            pass
-
-
-@pytest.fixture(autouse=True)
 def _neutralize_webbrowser(monkeypatch):
     """Record browser-open attempts instead of opening real browser windows."""
     import webbrowser as _webbrowser

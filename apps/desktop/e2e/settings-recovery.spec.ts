@@ -1,12 +1,15 @@
-import { type ChildProcess, execFileSync } from 'node:child_process'
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
 import type { TestInfo } from '@playwright/test'
 
+import { startMockServer } from '../../../tests-js/scripts/mock-server'
+
 import {
   buildAppEnv,
   createSandbox,
+  findElectron,
   launchDesktop,
   type MockBackendFixture,
   type Sandbox,
@@ -14,7 +17,6 @@ import {
   writeEnvFile,
   writeMockProviderConfig
 } from './fixtures'
-import { startMockServer } from '../../../tests-js/scripts/mock-server'
 import { cleanupAfterOwnedElectron, finishOwnedElectronShutdown } from './owned-electron-cleanup'
 import { collectErrorBanners, expect, type Page, test } from './test'
 
@@ -62,17 +64,30 @@ function seedUpdateRepository(sandbox: Sandbox): { root: string; sha: string } {
   const root = path.join(sandbox.root, 'update-repository')
   const origin = path.join(sandbox.root, 'update-origin.git')
 
-  const git = (...args: string[]) => execFileSync('git', args, {
-    cwd: sandbox.root,
-    encoding: 'utf8',
-    windowsHide: true,
-    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(sandbox.root, 'no-global-config') }
-  }).trim()
+  const git = (...args: string[]) =>
+    execFileSync('git', args, {
+      cwd: sandbox.root,
+      encoding: 'utf8',
+      windowsHide: true,
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(sandbox.root, 'no-global-config') }
+    }).trim()
 
   git('init', '--bare', '--initial-branch=main', origin)
   git('init', '--initial-branch=main', root)
-  git('-C', root, '-c', 'user.name=Acceptance Fixture', '-c', 'user.email=acceptance@example.invalid',
-    '-c', 'commit.gpgSign=false', 'commit', '--allow-empty', '-m', 'Synthetic update acceptance fixture')
+  git(
+    '-C',
+    root,
+    '-c',
+    'user.name=Acceptance Fixture',
+    '-c',
+    'user.email=acceptance@example.invalid',
+    '-c',
+    'commit.gpgSign=false',
+    'commit',
+    '--allow-empty',
+    '-m',
+    'Synthetic update acceptance fixture'
+  )
   git('-C', root, 'remote', 'add', 'origin', origin)
   git('-C', root, 'push', '--set-upstream', 'origin', 'main')
   fs.writeFileSync(path.join(sandbox.userDataDir, 'updates.json'), JSON.stringify({ branch: 'main' }))
@@ -90,12 +105,15 @@ function seedSettingsFiles(sandbox: Sandbox): void {
   fs.mkdirSync(logs, { recursive: true })
 
   for (const file of ['agent', 'errors', 'gateway']) {
-    fs.writeFileSync(path.join(logs, `${file}.log`), [
-      `2026-01-01 00:00:00 INFO acceptance: ${file}-info-sentinel`,
-      `2026-01-01 00:00:01 WARNING acceptance: ${file}-warning-sentinel`,
-      `2026-01-01 00:00:02 ERROR acceptance: ${file}-error-sentinel`,
-      ''
-    ].join('\n'))
+    fs.writeFileSync(
+      path.join(logs, `${file}.log`),
+      [
+        `2026-01-01 00:00:00 INFO acceptance: ${file}-info-sentinel`,
+        `2026-01-01 00:00:01 WARNING acceptance: ${file}-warning-sentinel`,
+        `2026-01-01 00:00:02 ERROR acceptance: ${file}-error-sentinel`,
+        ''
+      ].join('\n')
+    )
   }
 
   const skills = path.join(sandbox.hermesHome, 'skills')
@@ -103,19 +121,29 @@ function seedSettingsFiles(sandbox: Sandbox): void {
   for (const name of FIXTURE_SKILLS) {
     const dir = path.join(skills, name)
     fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, 'SKILL.md'),
-      `---\nname: ${name}\ndescription: Synthetic acceptance skill.\n---\n# ${name}\nSynthetic fixture only.\n`)
+    fs.writeFileSync(
+      path.join(dir, 'SKILL.md'),
+      `---\nname: ${name}\ndescription: Synthetic acceptance skill.\n---\n# ${name}\nSynthetic fixture only.\n`
+    )
   }
 
   fs.mkdirSync(path.join(skills, '.hub'), { recursive: true })
-  fs.writeFileSync(path.join(skills, '.hub', 'lock.json'), JSON.stringify({
-    installed: { 'acceptance-hub': { install_path: 'acceptance-hub' } }
-  }))
+  fs.writeFileSync(
+    path.join(skills, '.hub', 'lock.json'),
+    JSON.stringify({
+      installed: { 'acceptance-hub': { install_path: 'acceptance-hub' } }
+    })
+  )
 }
 
 function findBundledSkill(sandbox: Sandbox, listedSkills: Skill[]): { name: string; sourcePath: string } {
-  const names = new Set(fs.readFileSync(path.join(sandbox.hermesHome, 'skills', '.bundled_manifest'), 'utf8')
-    .split('\n').map(line => line.split(':')[0]!.trim()).filter(Boolean))
+  const names = new Set(
+    fs
+      .readFileSync(path.join(sandbox.hermesHome, 'skills', '.bundled_manifest'), 'utf8')
+      .split('\n')
+      .map(line => line.split(':')[0]!.trim())
+      .filter(Boolean)
+  )
 
   const listedNames = new Set(listedSkills.map(skill => skill.name))
   const bundledRoot = path.resolve(import.meta.dirname, '../../../skills')
@@ -131,7 +159,12 @@ function findBundledSkill(sandbox: Sandbox, listedSkills: Skill[]): { name: stri
       const skillDir = path.join(directory, entry.name)
       const sourcePath = path.join(skillDir, 'SKILL.md')
 
-      if (names.has(entry.name) && listedNames.has(entry.name) && fs.existsSync(sourcePath) && fs.lstatSync(sourcePath).isFile()) {
+      if (
+        names.has(entry.name) &&
+        listedNames.has(entry.name) &&
+        fs.existsSync(sourcePath) &&
+        fs.lstatSync(sourcePath).isFile()
+      ) {
         return { name: entry.name, sourcePath }
       }
 
@@ -164,7 +197,9 @@ async function navigate(page: Page, route: string): Promise<void> {
   // A menu appearing during a feature or navigation is never auto-dismissed.
   const menus = page.getByRole('menu').filter({ visible: true })
   await expect(menus, 'Feature navigation must start without a modal menu').toHaveCount(0)
-  await page.evaluate(next => { window.location.hash = next }, route)
+  await page.evaluate(next => {
+    window.location.hash = next
+  }, route)
   await expect(menus, 'Feature navigation must not open a modal menu').toHaveCount(0)
 }
 
@@ -176,22 +211,28 @@ async function captureMenuCheckpoint(page: Page, testInfo: TestInfo, label: stri
       allMenus: await page.getByRole('menu', { includeHidden: true }).count(),
       observer: await page.evaluate(() => (window as ObservedWindow).__hermesE2EContextMenus ?? null),
       earlierEventOrigin: 'unknown; observer cannot recover events before installation'
-    }), contentType: 'application/json'
+    }),
+    contentType: 'application/json'
   })
 }
 
 async function selectLogControl(page: Page, group: string, name: string): Promise<void> {
-  await page.getByRole('group', { name: group, exact: true })
-    .getByRole('button', { name, exact: true }).filter({ visible: true }).click()
+  await page
+    .getByRole('group', { name: group, exact: true })
+    .getByRole('button', { name, exact: true })
+    .filter({ visible: true })
+    .click()
 }
 
 function redactDiagnostics(text: string): string {
   return text
     .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g, '[redacted private key]')
     .split('\n')
-    .map(line => /authorization|cookie|password|credential|secret|token|ticket|api[_ -]?key|bearer|https?:\/\/[^\s/]+@/i.test(line)
-      ? '[redacted sensitive diagnostic line]'
-      : line.replace(/\b[A-Za-z0-9_+/=-]{32,}\b/g, '[redacted opaque value]'))
+    .map(line =>
+      /authorization|cookie|password|credential|secret|token|ticket|api[_ -]?key|bearer|https?:\/\/[^\s/]+@/i.test(line)
+        ? '[redacted sensitive diagnostic line]'
+        : line.replace(/\b[A-Za-z0-9_+/=-]{32,}\b/g, '[redacted opaque value]')
+    )
     .join('\n')
 }
 
@@ -218,7 +259,11 @@ async function captureSandboxDiagnostics(sandbox: Sandbox, testInfo: TestInfo, l
         continue
       }
 
-      if (fs.realpathSync(hermesHome) !== hermesHome || fs.realpathSync(file) !== file || !fs.lstatSync(file).isFile()) {
+      if (
+        fs.realpathSync(hermesHome) !== hermesHome ||
+        fs.realpathSync(file) !== file ||
+        !fs.lstatSync(file).isFile()
+      ) {
         throw new Error(`Refusing redirected or non-regular synthetic diagnostic file: ${name}`)
       }
 
@@ -240,7 +285,8 @@ async function captureSandboxDiagnostics(sandbox: Sandbox, testInfo: TestInfo, l
       }
 
       await testInfo.attach(`${label}-redacted-${name}`, {
-        body: redactDiagnostics(tail), contentType: 'text/plain'
+        body: redactDiagnostics(tail),
+        contentType: 'text/plain'
       })
     } catch (error) {
       failures.push(error)
@@ -252,10 +298,7 @@ async function captureSandboxDiagnostics(sandbox: Sandbox, testInfo: TestInfo, l
   }
 }
 
-async function closeOwnedElectron(
-  app: MockBackendFixture['app'],
-  child: ChildProcess
-): Promise<void> {
+async function closeOwnedElectron(app: MockBackendFixture['app'], child: ChildProcess): Promise<void> {
   await finishOwnedElectronShutdown({
     close: async () => {
       let closeTimer: ReturnType<typeof setTimeout> | undefined
@@ -278,9 +321,12 @@ async function closeOwnedElectron(
       }
     },
     waitForExit: async () => {
-      await expect.poll(() => child.exitCode !== null || child.signalCode !== null, {
-        timeout: 5_000, message: 'The owned test Electron process must exit after the close attempt'
-      }).toBe(true)
+      await expect
+        .poll(() => child.exitCode !== null || child.signalCode !== null, {
+          timeout: 5_000,
+          message: 'The owned test Electron process must exit after the close attempt'
+        })
+        .toBe(true)
     }
   })
 }
@@ -293,17 +339,25 @@ async function closeLifecycle(fixture: OwnedFixture, testInfo: TestInfo, label: 
     // Collect BEFORE closing/reopening; installing the next page's guard clears
     // its shared buffer. Explicit assertions preserve each lifecycle's errors.
     const errors = await collectErrorBanners(fixture.page)
-    await testInfo.attach(`${label}-error-banners`, {
-      body: JSON.stringify(errors.map(redactDiagnostics)), contentType: 'application/json'
-    }).catch(error => failures.push(error))
+    await testInfo
+      .attach(`${label}-error-banners`, {
+        body: JSON.stringify(errors.map(redactDiagnostics)),
+        contentType: 'application/json'
+      })
+      .catch(error => failures.push(error))
 
     await fixture.page.screenshot({ path: testInfo.outputPath(`${label}.png`) }).catch(error => failures.push(error))
 
     const tracePath = testInfo.outputPath(`${label}-trace.zip`)
-    await fixture.app.context().tracing.stopChunk({ path: tracePath }).catch(error => failures.push(error))
+    await fixture.app
+      .context()
+      .tracing.stopChunk({ path: tracePath })
+      .catch(error => failures.push(error))
 
     if (fs.existsSync(tracePath)) {
-      await testInfo.attach(`${label}-trace`, { path: tracePath, contentType: 'application/zip' }).catch(error => failures.push(error))
+      await testInfo
+        .attach(`${label}-trace`, { path: tracePath, contentType: 'application/zip' })
+        .catch(error => failures.push(error))
     }
 
     expect(errors, `${label} must not show error banners`).toEqual([])
@@ -336,14 +390,25 @@ test('settings retain backend truth across reopen, log filters, memory paths and
 
   try {
     mock = await startMockServer()
-    writeMockProviderConfig(sandbox.hermesHome, mock.url, '  language: en',
-      'desktop:\n  automatic_update_checks: false\ncurator:\n  enabled: false')
+    writeMockProviderConfig(
+      sandbox.hermesHome,
+      mock.url,
+      '  language: en',
+      'desktop:\n  automatic_update_checks: false\ncurator:\n  enabled: false'
+    )
     writeEnvFile(sandbox.hermesHome)
     seedSettingsFiles(sandbox)
 
-    for (const relativePath of ['memories/MEMORY.md', 'memories/USER.md', 'logs/agent.log', 'logs/errors.log', 'logs/gateway.log']) {
+    for (const relativePath of [
+      'memories/MEMORY.md',
+      'memories/USER.md',
+      'logs/agent.log',
+      'logs/errors.log',
+      'logs/gateway.log'
+    ]) {
       await testInfo.attach(`synthetic-${relativePath.replace('/', '-')}`, {
-        body: fs.readFileSync(path.join(sandbox.hermesHome, relativePath)), contentType: 'text/plain'
+        body: fs.readFileSync(path.join(sandbox.hermesHome, relativePath)),
+        contentType: 'text/plain'
       })
     }
 
@@ -358,38 +423,107 @@ test('settings retain backend truth across reopen, log filters, memory paths and
       // Retain evidence after any launch attempt; backend exit is not proven.
       launchAttempted = true
 
-      const launched = await launchDesktop(env, app => {
-        ownedApp = app
-        // Playwright disposes the application's dispatcher during close().
-        // Its process() accessor is no longer usable afterward; retain the
-        // actual child handle now for both lifecycle and final cleanup.
-        ownedChild = app.process()
-      })
+      const minimizedBoot = process.platform === 'win32' && lifecycle === 'english'
 
-      const next = { ...launched, child: ownedChild!, mock: mock!, mockUrl: mock!.url, sandbox, cleanup: async () => {} }
+      if (minimizedBoot) {
+        fs.writeFileSync(
+          path.join(sandbox.userDataDir, 'window-state.json'),
+          JSON.stringify({ x: 0, y: 0, width: 1220, height: 800, isMaximized: true })
+        )
+      }
+
+      const launched = await launchDesktop(
+        env,
+        app => {
+          ownedApp = app
+          // Playwright disposes the application's dispatcher during close().
+          // Its process() accessor is no longer usable afterward; retain the
+          // actual child handle now for both lifecycle and final cleanup.
+          ownedChild = app.process()
+        },
+        minimizedBoot ? ['--start-minimized'] : []
+      )
+
+      const next = {
+        ...launched,
+        child: ownedChild!,
+        mock: mock!,
+        mockUrl: mock!.url,
+        sandbox,
+        cleanup: async () => {}
+      }
 
       // Assign before waiting so boot failures still close the app and mock.
       fixture = next
+
+      if (minimizedBoot) {
+        await test.step('native login launch stays minimized and a manual second launch restores one maximized window', async () => {
+          const window = await next.app.browserWindow(next.page)
+
+          try {
+            await expect.poll(() => window.evaluate(win => win.isMinimized()), { timeout: 30_000 }).toBe(true)
+            expect(
+              JSON.parse(fs.readFileSync(path.join(sandbox.userDataDir, 'window-state.json'), 'utf8')).isMaximized
+            ).toBe(true)
+
+            // Exercise the real single-instance handoff, not a synthetic event.
+            // This process shares ONLY the fixture's isolated user data/name.
+            const manual = spawn(
+              findElectron(),
+              [path.resolve(import.meta.dirname, '..'), '--disable-gpu', '--no-sandbox'],
+              { env, windowsHide: true, stdio: 'ignore' }
+            )
+
+            try {
+              await expect.poll(() => manual.exitCode, { timeout: 30_000 }).toBe(0)
+            } finally {
+              if (manual.exitCode === null && manual.signalCode === null) {
+                manual.kill()
+              }
+            }
+
+            await expect.poll(() => window.evaluate(win => !win.isMinimized() && win.isMaximized())).toBe(true)
+            expect(await next.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1)
+            await testInfo.attach('native-startup-handoff', {
+              body: JSON.stringify({
+                minimizedBoot: true,
+                manualExit: manual.exitCode,
+                restoredMaximized: true,
+                windows: 1
+              }),
+              contentType: 'application/json'
+            })
+          } finally {
+            await window.dispose()
+          }
+        })
+      }
+
       await next.page.evaluate(() => {
         const diagnostics: ContextMenuDiagnostics = { observerStartedAt: Date.now(), events: [] }
         const observedWindow = window as ObservedWindow
 
         observedWindow.__hermesE2EContextMenus = diagnostics
-        window.addEventListener('contextmenu', event => {
-          // isTrusted is technical metadata, not proof of human input.
-          diagnostics.events.push({ at: Date.now(), trusted: event.isTrusted, button: event.button })
+        window.addEventListener(
+          'contextmenu',
+          event => {
+            // isTrusted is technical metadata, not proof of human input.
+            diagnostics.events.push({ at: Date.now(), trusted: event.isTrusted, button: event.button })
 
-          if (diagnostics.events.length > 20) {
-            diagnostics.events.shift()
-          }
-        }, true)
+            if (diagnostics.events.length > 20) {
+              diagnostics.events.shift()
+            }
+          },
+          true
+        )
       })
       await waitForAppReady(next, 120_000)
       expect(await next.app.evaluate(({ app }) => app.getPath('userData'))).toBe(sandbox.userDataDir)
       const nativeTitle = await next.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getTitle())
       expect(nativeTitle).toMatch(/^\[E2E\] /)
       await testInfo.attach(`${lifecycle}-window-title`, {
-        body: JSON.stringify({ nativeTitle, documentTitle: await next.page.title() }), contentType: 'application/json'
+        body: JSON.stringify({ nativeTitle, documentTitle: await next.page.title() }),
+        contentType: 'application/json'
       })
 
       await test.step(`${lifecycle}: establish neutral UI before feature navigation`, async () => {
@@ -399,7 +533,7 @@ test('settings retain backend truth across reopen, log filters, memory paths and
         try {
           await captureMenuCheckpoint(next.page, testInfo, `${lifecycle}-before-neutral-setup`)
 
-          if (await menus.count() > 0) {
+          if ((await menus.count()) > 0) {
             await next.page.keyboard.press('Escape')
           }
 
@@ -407,8 +541,9 @@ test('settings retain backend truth across reopen, log filters, memory paths and
         } catch (error) {
           neutralFailures.push(error)
         } finally {
-          await captureMenuCheckpoint(next.page, testInfo, `${lifecycle}-after-neutral-setup`)
-            .catch(error => neutralFailures.push(error))
+          await captureMenuCheckpoint(next.page, testInfo, `${lifecycle}-after-neutral-setup`).catch(error =>
+            neutralFailures.push(error)
+          )
         }
 
         if (neutralFailures.length > 0) {
@@ -431,15 +566,22 @@ test('settings retain backend truth across reopen, log filters, memory paths and
 
       await expect(check).toBeEnabled()
       await check.click()
-      await expect(page.getByText("You're on the latest version.", { exact: true })).toBeVisible({ timeout: 30_000 })
+      await expect(page.getByText('Your configured update source is up to date.', { exact: true })).toBeVisible({
+        timeout: 30_000
+      })
       await expect(check).toBeEnabled()
       await expect(page.getByRole('button', { name: 'Checking…', exact: true })).toHaveCount(0)
 
       const native = await page.evaluate(() =>
-        (window as unknown as { hermesDesktop: DesktopBridge }).hermesDesktop.updates.check())
+        (window as unknown as { hermesDesktop: DesktopBridge }).hermesDesktop.updates.check()
+      )
 
       expect(native).toMatchObject({
-        supported: true, hermesRoot: updateRepo.root, currentSha: updateRepo.sha, targetSha: updateRepo.sha, behind: 0
+        supported: true,
+        hermesRoot: updateRepo.root,
+        currentSha: updateRepo.sha,
+        targetSha: updateRepo.sha,
+        behind: 0
       })
       expect(native.error).toBeUndefined()
 
@@ -450,8 +592,13 @@ test('settings retain backend truth across reopen, log filters, memory paths and
       await testInfo.attach('native-local-git-check', { body: JSON.stringify(native), contentType: 'application/json' })
       await automatic.click()
       await expect(automatic).toBeChecked()
-      await expect.poll(async () => (await backend<{ desktop: { automatic_update_checks: boolean } }>(page, '/api/config'))
-        .desktop.automatic_update_checks).toBe(true)
+      await expect
+        .poll(
+          async () =>
+            (await backend<{ desktop: { automatic_update_checks: boolean } }>(page, '/api/config')).desktop
+              .automatic_update_checks
+        )
+        .toBe(true)
     })
 
     await test.step('file and severity stay independent, including All levels and search empty state', async () => {
@@ -461,22 +608,34 @@ test('settings retain backend truth across reopen, log filters, memory paths and
 
       // System loads status and logs together. Observe its real content rather
       // than prewarming either API; the first status import can exceed 5s.
-      await expect(page.getByText(/agent-warning-sentinel/)).toBeVisible({ timeout: 30_000 })
+      await expect(page.getByText(/agent-warning-sentinel/))
+        .toBeVisible({ timeout: 30_000 })
         .catch(error => loadFailures.push(error))
       const visibleElapsedMs = Date.now() - loadStart
       const uiVisible = loadFailures.length === 0
-      await testInfo.attach('first-system-log-timing', {
-        body: JSON.stringify({ visibleElapsedMs, uiVisible }), contentType: 'application/json'
-      }).catch(error => loadFailures.push(error))
+      await testInfo
+        .attach('first-system-log-timing', {
+          body: JSON.stringify({ visibleElapsedMs, uiVisible }),
+          contentType: 'application/json'
+        })
+        .catch(error => loadFailures.push(error))
       const apiStart = Date.now()
 
       try {
-        const logResponse = await backend<{ file: string; lines: string[] }>(page, '/api/logs?file=agent&level=WARNING&lines=100')
+        const logResponse = await backend<{ file: string; lines: string[] }>(
+          page,
+          '/api/logs?file=agent&level=WARNING&lines=100'
+        )
+
         await testInfo.attach('first-system-log-readback', {
           body: JSON.stringify({
-            visibleElapsedMs, uiVisible, apiElapsedMs: Date.now() - apiStart,
-            file: logResponse.file, lines: logResponse.lines.map(redactDiagnostics)
-          }), contentType: 'application/json'
+            visibleElapsedMs,
+            uiVisible,
+            apiElapsedMs: Date.now() - apiStart,
+            file: logResponse.file,
+            lines: logResponse.lines.map(redactDiagnostics)
+          }),
+          contentType: 'application/json'
         })
       } catch (error) {
         loadFailures.push(error)
@@ -492,8 +651,12 @@ test('settings retain backend truth across reopen, log filters, memory paths and
       await expect(page.getByText(/agent-warning-sentinel/)).toHaveCount(0)
       await selectLogControl(page, 'Level', 'All levels')
       await expect(page.getByText(/errors-info-sentinel/)).toBeVisible()
-      await expect(page.getByRole('group', { name: 'Log file', exact: true })
-        .getByRole('button', { name: 'errors.log', exact: true }).filter({ visible: true })).toHaveAttribute('data-active', 'true')
+      await expect(
+        page
+          .getByRole('group', { name: 'Log file', exact: true })
+          .getByRole('button', { name: 'errors.log', exact: true })
+          .filter({ visible: true })
+      ).toHaveAttribute('data-active', 'true')
       await selectLogControl(page, 'Level', 'error')
       await expect(page.getByText(/errors-error-sentinel/)).toBeVisible()
       await expect(page.getByText(/errors-warning-sentinel/)).toHaveCount(0)
@@ -502,7 +665,9 @@ test('settings retain backend truth across reopen, log filters, memory paths and
       await expect(page.getByText(/gateway-warning-sentinel/)).toHaveCount(0)
       await selectLogControl(page, 'Level', 'All levels')
       await expect(page.getByText(/gateway-info-sentinel/)).toBeVisible()
-      await expect(page.getByText('Showing up to 100 recent lines from the selected file and level.', { exact: true })).toBeVisible()
+      await expect(
+        page.getByText('Showing up to 100 recent lines from the selected file and level.', { exact: true })
+      ).toBeVisible()
       const search = page.getByPlaceholder('Filter log lines...')
       await search.fill('no-such-acceptance-entry')
       await expect(page.getByText('No log lines match the search.', { exact: true })).toBeVisible()
@@ -544,7 +709,10 @@ test('settings retain backend truth across reopen, log filters, memory paths and
       await expect(openFiles).toHaveCount(2, { timeout: 30_000 })
       await expect(openFiles.nth(0)).toBeEnabled({ timeout: 30_000 })
       await expect(openFiles.nth(1)).toBeEnabled({ timeout: 30_000 })
-      await testInfo.attach('synthetic-memory-paths', { body: JSON.stringify(memory.builtin_paths), contentType: 'application/json' })
+      await testInfo.attach('synthetic-memory-paths', {
+        body: JSON.stringify(memory.builtin_paths),
+        contentType: 'application/json'
+      })
     })
 
     await test.step('only agent provenance is labelled learned', async () => {
@@ -558,7 +726,8 @@ test('settings retain backend truth across reopen, log filters, memory paths and
       ] as const
 
       await testInfo.attach('bundled-skill-source-metadata', {
-        body: JSON.stringify(bundled), contentType: 'application/json'
+        body: JSON.stringify(bundled),
+        contentType: 'application/json'
       })
 
       for (const { name, provenance } of cases) {
@@ -583,7 +752,11 @@ test('settings retain backend truth across reopen, log filters, memory paths and
       await expect(page.getByText(summaryPattern).filter({ visible: true }).first()).toBeVisible({ timeout: 30_000 })
 
       for (const { name, provenance, label } of cases) {
-        const row = page.getByRole('button').filter({ has: page.getByText(name, { exact: true }) }).first()
+        const row = page
+          .getByRole('button')
+          .filter({ has: page.getByText(name, { exact: true }) })
+          .first()
+
         await expect(row).toBeVisible({ timeout: 30_000 })
         await expect(row).toContainText(label, { timeout: 30_000 })
 
@@ -595,12 +768,42 @@ test('settings retain backend truth across reopen, log filters, memory paths and
       await page.screenshot({ path: testInfo.outputPath('skill-provenance.png') })
     })
 
+    await test.step('Hub is a separate full-height tab that preserves its frame across tab switches', async () => {
+      // Test local tab/layout behavior without relying on the external site's
+      // uptime or installing any skills. This is not a live Hub service check.
+      await page.route('https://hermes-agent.nousresearch.com/docs/skills?embed=picker', route =>
+        route.fulfill({ contentType: 'text/html', body: '<title>Synthetic Hub</title><p>Hub fixture</p>' })
+      )
+      const frame = page.locator('iframe[title="Skills Hub"]')
+      await expect(frame).toHaveCount(0)
+      await page.getByRole('button', { name: 'Browse Hub', exact: true }).click()
+      await expect(frame).toBeVisible()
+      const original = await frame.elementHandle()
+      expect((await frame.boundingBox())!.height).toBeGreaterThan(300)
+      await page
+        .getByRole('button', { name: /^Skills(?:\s|$)/ })
+        .filter({ visible: true })
+        .first()
+        .click()
+      await expect(frame).toBeHidden()
+      await page.getByRole('button', { name: 'Browse Hub', exact: true }).click()
+      await expect(frame).toBeVisible()
+      expect(await frame.evaluate((node, previous) => node === previous, original)).toBe(true)
+      expect(await current.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1)
+      await page.screenshot({ path: testInfo.outputPath('standalone-skills-hub.png') })
+      await original?.dispose()
+    })
+
     await page.evaluate(async () => {
       const desktop = (window as unknown as { hermesDesktop: DesktopBridge }).hermesDesktop
       const config = await desktop.api<{ display?: Record<string, unknown> }>({ path: '/api/config' })
-      await desktop.api({ path: '/api/config', method: 'PUT', body: {
-        config: { ...config, display: { ...config.display, language: 'ar' } }
-      } })
+      await desktop.api({
+        path: '/api/config',
+        method: 'PUT',
+        body: {
+          config: { ...config, display: { ...config.display, language: 'ar' } }
+        }
+      })
     })
     fixture = undefined
     await closeLifecycle(current, testInfo, lifecycle)
@@ -613,15 +816,19 @@ test('settings retain backend truth across reopen, log filters, memory paths and
       await expect(page.locator('html')).toHaveAttribute('dir', 'rtl')
       await navigate(page, '/settings?tab=about')
       await expect(page.getByRole('switch', { name: 'التحقق التلقائي من التحديثات', exact: true })).toBeChecked()
-      expect((await backend<{ desktop: { automatic_update_checks: boolean } }>(page, '/api/config'))
-        .desktop.automatic_update_checks).toBe(true)
+      expect(
+        (await backend<{ desktop: { automatic_update_checks: boolean } }>(page, '/api/config')).desktop
+          .automatic_update_checks
+      ).toBe(true)
       await expect(page.getByRole('button', { name: 'التحقق الآن', exact: true })).toBeEnabled()
       await page.screenshot({ path: testInfo.outputPath('arabic-about-persisted.png') })
       await navigate(page, '/command-center?section=system')
       await selectLogControl(page, 'ملف السجل', 'errors.log')
       await selectLogControl(page, 'مستوى السجل', 'كل المستويات')
       await expect(page.getByText(/errors-info-sentinel/)).toBeVisible()
-      await expect(page.getByText('يُعرض آخر 100 سطر كحد أقصى من الملف والمستوى المحددين.', { exact: true })).toBeVisible()
+      await expect(
+        page.getByText('يُعرض آخر 100 سطر كحد أقصى من الملف والمستوى المحددين.', { exact: true })
+      ).toBeVisible()
       await page.getByPlaceholder('البحث في سطور السجل...').fill('no-such-acceptance-entry')
       await expect(page.getByText('لا توجد سطور تطابق البحث.', { exact: true })).toBeVisible()
     })
@@ -661,7 +868,9 @@ test('settings retain backend truth across reopen, log filters, memory paths and
   if (failures.length > 0) {
     // Some reporters print only AggregateError.message, not its .errors.
     // Keep the original failure first and include the redacted cleanup chain.
-    throw new AggregateError(failures,
-      `Settings acceptance failed; original and cleanup errors:\n${failures.map(describeFailure).join('\n\n')}`)
+    throw new AggregateError(
+      failures,
+      `Settings acceptance failed; original and cleanup errors:\n${failures.map(describeFailure).join('\n\n')}`
+    )
   }
 })

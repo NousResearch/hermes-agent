@@ -12,13 +12,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
-from hermes_state_common import (
-    SCHEMA_SQL,
-    _PREVIEW_ELIGIBLE_SQL,
-    _PREVIEW_RAW_SELECT,
-    _shape_preview,
-    _sql_session_last_active,
-)
+from utils import safe_json_loads
+from hermes_cli.timefmt import coerce_epoch
+from hermes_state_ids import new_session_id
+from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -404,8 +401,7 @@ class SessionPortabilityMixin:
                 messages_by_session[row["session_id"]].append(
                     self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True)
                 )
-        return [{**session, "messages": messages_by_session[session["id"]],
-                 "timings": _export_timings(messages_by_session[session["id"]], session["id"])} for session in sessions]
+        return [{**session, "messages": messages_by_session[session["id"]]} for session in sessions]
 
     def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> Dict[str, Any]:
         """Adopt *session_id*'s full compression lineage from *donor_db* (stranded-bot-session

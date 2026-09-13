@@ -532,23 +532,7 @@ _DB_BOOTSTRAP_INIT_WAIT_S = 1.5
 def _bootstrap_session_db(home: str, done: threading.Event) -> None:
     """Construct SessionDB off-loop and populate the cache (worker thread)."""
     try:
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
-        )
-        from hermes_state import SessionDB
-
-        # Bind the caller's home for this thread. The cache key is the
-        # caller's scoped home, so the constructed SessionDB must point at
-        # that home's state.db too. Without the override, a multiplexed
-        # worker thread resolves the process env (the default profile's
-        # HERMES_HOME). It then caches the wrong profile's DB under this
-        # profile's key.
-        token = set_hermes_home_override(home)
-        try:
-            db = SessionDB()
-        finally:
-            reset_hermes_home_override(token)
+        db = _acquire_session_db(home)
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: background SessionDB() raised (%s)", exc)
         db = None
@@ -657,6 +641,22 @@ def _get_session_db() -> Optional[Any]:
             return existing
         _DB_CACHE[home] = db
     return db
+
+
+def _acquire_session_db(home: str):
+    """The registry's shared handle for ``home/state.db``. A bare ``SessionDB()`` here was a SECOND
+    writer per profile beside the gateway's registry handle — its own token-writer thread and
+    close-time checkpoint (the #90837 corruption shape), doubled under multiplexing."""
+    from hermes_state_registry import acquire
+    return acquire(Path(home) / "state.db")
+
+
+def _release_session_db(db) -> None:
+    from hermes_state_registry import release_or_close
+    try:
+        release_or_close(db)
+    except Exception:
+        pass
 
 
 def _warn_dropped_write(manager: str, kind: str, session_id: str) -> None:

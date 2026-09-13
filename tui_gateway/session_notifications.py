@@ -580,6 +580,10 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
+        try:
+            _poll_bot_live_delivery_once(sid, session)
+        except Exception:
+            logger.warning("Bot live-owner delivery poll failed", exc_info=True)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
@@ -591,10 +595,6 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
                     _notif_log_failure(f"{what} poll failed", tick_exc)
         if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
             last_kanban_poll = now
-            try:
-                _poll_bot_live_delivery_once(sid, session)
-            except Exception:
-                logger.warning("Bot live-owner delivery poll failed", exc_info=True)
             _notif_poll_kanban(sid, session)
         try:
             evt = queue.get(timeout=0.5)

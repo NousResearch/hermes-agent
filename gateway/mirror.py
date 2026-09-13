@@ -173,16 +173,6 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
 
     db = acquire()
     try:
-        from hermes_state import get_shared_session_db
-        db = get_shared_session_db()
-        db.append_message(
-            session_id=session_id,
-            role=message.get("role", "assistant"),
-            content=message.get("content"),
-        )
-    except Exception as e:
-        logger.debug("Mirror SQLite write failed: %s", e)
+        db.append_message(session_id=session_id, role=message.get("role", "assistant"), content=message.get("content"))
     finally:
-        if db is not None:
-            from hermes_state import release_or_close
-            release_or_close(db)
+        release_or_close(db)

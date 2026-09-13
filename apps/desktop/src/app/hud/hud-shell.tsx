@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { chatMessageText } from '@/lib/chat-messages'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $busy, $messages } from '@/store/session'
@@ -273,8 +274,6 @@ export function HudShell() {
       window.removeEventListener('resize', measureEdge)
     }
   }, [measureEdge])
-
-  const rootRef = useRef<HTMLDivElement | null>(null)
 
   const rootRef = useRef<HTMLDivElement | null>(null)
 

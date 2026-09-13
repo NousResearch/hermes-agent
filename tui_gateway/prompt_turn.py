@@ -556,14 +556,19 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     scopes = st.scopes
     scopes.approval = set_current_session_key(session["session_key"])
     scopes.session_tokens = _set_session_context(session["session_key"], ui_session_id=sid)
-    # Profile turn: that profile's home + secrets + terminal policy. Launch-profile turn: unscoped in a
-    # single-profile process; once multiplexing is active (#68559 / #107422 residual) its OWN scope,
-    # built from the env frozen at activation — get_secret() fails closed then, so an unscoped default
-    # member's hosted-room turn otherwise died with UnscopedSecretError, and ambient TERMINAL_* a
-    # secondary context poisoned must never become the launch turn's authority.
-    bound = _profile_runtime_scope_tokens(session.get("profile_home"))
-    if bound is not None:
-        scopes.home, scopes.secret, scopes.terminal = bound.home, bound.secret, bound.terminal
+    profile_home = session.get("profile_home")
+    if profile_home:
+        scopes.home = set_hermes_home_override(profile_home)
+        scopes.secret = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+        from tools.terminal_scope import install_profile_terminal_scope
+        scopes.terminal = install_profile_terminal_scope(Path(profile_home))
+    elif _served_profile_homes:
+        # Multiplex residual of #68559 / #107422: the launch profile used to run
+        # unscoped and fall back to ambient os.environ. Once any secondary home
+        # has been served, bind the launch home's own terminal policy so a
+        # poisoned ambient bridge can never become the launch turn's authority.
+        from tools.terminal_scope import install_profile_terminal_scope
+        scopes.terminal = install_profile_terminal_scope(Path(_hermes_home))
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)
@@ -913,7 +918,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    hosted_task: dict | None = None) -> bool:
+    hosted_task: dict | None = None, turn_author: dict | None = None) -> bool:
     if terminal_callback is not None:
         with session["history_lock"]:
             proof = hosted_task if hosted_task is not None else session.get("_hosted_room_task")

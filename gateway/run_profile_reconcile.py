@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from gateway.run_shutdown import _log_suppressed
-from utils import file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +30,12 @@ _PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
 
 
 def profile_serve_signature(home: "Path") -> tuple:
-    """Cheap change detector for a served profile's credentials/config: file signature per file."""
+    """Cheap change detector for a served profile's credentials/config: (mtime_ns, size) per file."""
     sig = []
     for name in _PROFILE_SIGNATURE_FILES:
         try:
             st = os.stat(Path(home) / name)
-            sig.append(file_signature(st))
+            sig.append((st.st_mtime_ns, st.st_size))
         except OSError:
             sig.append(None)
     return tuple(sig)
@@ -117,9 +116,6 @@ class GatewayProfileReconcileMixin:
                 result["removed"].append(name)
             claimed = self._live_resource_claims(active)
             for name in added + changed:
-                # Only acknowledge the configuration observed before connecting;
-                # a setup save during an awaited handshake needs another scan.
-                scan_signature = profile_serve_signature(current[name])
                 try:
                     connected = await self._start_one_profile_adapters(name, current[name], claimed)
                 except MultiplexConfigError as exc:
@@ -129,7 +125,7 @@ class GatewayProfileReconcileMixin:
                 except Exception:
                     logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
                     connected = 0
-                sigs[name] = scan_signature
+                sigs[name] = profile_serve_signature(current[name])
                 if name in added:
                     logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
                     result["added"].append(name)
@@ -202,8 +198,7 @@ class GatewayProfileReconcileMixin:
             self._served_profile_homes.pop(name, None)
         if isinstance(self._served_profile_signatures, dict):
             self._served_profile_signatures.pop(name, None)
-        from gateway.session import _session_key_namespace
-        prefix = _session_key_namespace(name) + ":"
+        prefix = f"agent:{name}:"
         cache = getattr(self, "_agent_cache", None)
         for key in [k for k in list(cache or {}) if str(k).startswith(prefix)]:
             with _log_suppressed(logging.DEBUG, "agent eviction failed for %s", key, exc_info=True):
@@ -221,7 +216,7 @@ def _mcp_config_reconciler(runner=None):
     """Housekeeping chore keeping live MCP servers in step with ``mcp_servers`` on disk: an entry
     the user removed (or disabled) after boot must stop — a parked one otherwise self-probes every
     ``_PARKED_RETRY_INTERVAL`` for the life of the process. One ``stat`` per profile per tick; the
-    reconcile runs when ``config.yaml``'s signature changed, and again on the next tick while a
+    reconcile runs when ``config.yaml``'s (mtime, size) changed, and again on the next tick while a
     dropped server was still mid-connect (``pending``) and could not be torn down yet. Interactive
     OAuth is suppressed — this runs on a housekeeping thread nobody is watching."""
     from hermes_cli.config import get_config_path
@@ -231,9 +226,9 @@ def _mcp_config_reconciler(runner=None):
     def _sig(path) -> tuple:
         try:
             st = os.stat(path)
-            return file_signature(st)
+            return (st.st_mtime_ns, st.st_size)
         except OSError:
-            return (None, None, None, None)
+            return (None, None)
 
     def _reconcile_current(label: str) -> None:
         from tools.mcp_oauth import suppress_interactive_oauth

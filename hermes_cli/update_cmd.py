@@ -7651,6 +7651,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
         swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
         if swept:
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
+        # Shallow installer checkouts collect one `.git/shallow` graft per past depth-1 fetch
+        # (#105951); stale grafts break merge-base and push this run into the divergence path.
+        from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts
+        repaired = repair_broken_shallow_boundaries(_m().PROJECT_ROOT)
+        if repaired:
+            print(f"  (restored {repaired} broken shallow boundary(ies))")
+        pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
+        if pruned:
+            print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
 
         # Surface autostash entries left behind by earlier updates (#63717
         # problem 6) — parked --keep-stash runs and failed restores preserve

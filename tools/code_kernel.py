@@ -279,20 +279,14 @@ class CellAuthority:
         self.task_id = task_id
         self.ctx = contextvars.copy_context()
         self.active = True
-        self._approval_cb = None
-        self._sudo_cb = None
-        self._callback_setters = None
+        # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
+        self._callbacks: list = []
         try:
             from tools.thread_context import _callback_api
-
-            get_approval, get_sudo, set_approval, set_sudo = _callback_api()
-            self._approval_cb = get_approval()
-            self._sudo_cb = get_sudo()
-            self._callback_setters = (set_approval, set_sudo)
+            self._callbacks = [(pair, pair[0]()) for pair in _callback_api()]
         except Exception:
-            # Fail-closed, mirroring propagate_context_to_thread: with no
-            # callbacks installed, dangerous approvals deny.
-            self._callback_setters = None
+            # Fail-closed like propagate_context_to_thread: no callbacks → dangerous approvals deny.
+            self._callbacks = []
 
     def retire(self) -> None:
         self.active = False
@@ -312,14 +306,11 @@ class CellAuthority:
         from model_tools import handle_function_call
 
         previous = None
-        if self._callback_setters is not None:
+        if self._callbacks:
             try:
-                from tools.thread_context import _callback_api
-
-                get_approval, get_sudo, set_approval, set_sudo = _callback_api()
-                previous = (get_approval(), get_sudo())
-                set_approval(self._approval_cb)
-                set_sudo(self._sudo_cb)
+                previous = [(setter, getter()) for (getter, setter), _cb in self._callbacks]
+                for (_getter, setter), cb in self._callbacks:
+                    setter(cb)
             except Exception:
                 previous = None
         try:
@@ -328,8 +319,8 @@ class CellAuthority:
             if previous is not None and self._callback_setters is not None:
                 set_approval, set_sudo = self._callback_setters
                 try:
-                    set_approval(previous[0])
-                    set_sudo(previous[1])
+                    for setter, cb in previous:
+                        setter(cb)
                 except Exception:
                     pass
 

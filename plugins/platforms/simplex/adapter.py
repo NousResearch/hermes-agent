@@ -25,34 +25,8 @@ from typing import Any, Dict, List, Optional
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
 
-
-def _get_scoped_secret(name, default=None):
-    """Scope-aware env read with the default-profile startup fallback.
-
-    Secondary profiles construct their adapters under a profile secret
-    scope -- the scope is authoritative and a scoped miss returns ``default``
-    (no cross-profile borrow from ``os.environ``, which holds the DEFAULT
-    profile's YAML-to-env bridge output under multiplexing). The default
-    profile's adapter constructs *unscoped*, where a bare ``get_secret``
-    would raise ``UnscopedSecretError``; there ``os.environ`` is that
-    profile's own value, so fall back to it. Same helper as the IRC/ntfy/
-    Mattermost plugins.
-    """
-    try:
-        val = _scoped_get_secret(name, default)
-    except _UnscopedSecretError:
-        val = os.getenv(name)
-    return val if val is not None else default
-
-# Lazy import: BasePlatformAdapter and friends live in the main repo.
-# Imported at module top because they're stdlib-only inside Hermes — no
-# external dependency that would block the plugin from loading.
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    SendResult,
+from gateway.platforms._shared import (
+    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url
@@ -629,17 +603,8 @@ def is_connected(config) -> bool:
 
 
 def _env_enablement() -> Optional[dict]:
-    """Seed ``PlatformConfig.extra`` from env vars during gateway config load.
-
-    Called by the platform registry's env-enablement hook BEFORE adapter
-    construction, so ``gateway status`` and ``get_connected_platforms()``
-    reflect env-only configuration without instantiating the WebSocket
-    client. Returns ``None`` when SimpleX isn't minimally configured.
-
-    The special ``home_channel`` key is handled by the core hook — it
-    becomes a proper ``HomeChannel`` dataclass on the ``PlatformConfig``
-    rather than being merged into ``extra``.
-    """
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env BEFORE adapter
+    construction; ``None`` when ``SIMPLEX_WS_URL`` is unset."""
     ws_url = _get_scoped_secret("SIMPLEX_WS_URL", "").strip()
     if not ws_url:
         return None
@@ -649,21 +614,6 @@ def _env_enablement() -> Optional[dict]:
     ), home_env="SIMPLEX_HOME_CHANNEL")
     return {"ws_url": ws_url, **seed}
 
-    auto_accept = _get_scoped_secret("SIMPLEX_AUTO_ACCEPT", "").strip().lower()
-    if auto_accept:
-        seed["auto_accept"] = auto_accept not in {"0", "false", "no"}
-
-    group_allowed = _get_scoped_secret("SIMPLEX_GROUP_ALLOWED", "").strip()
-    if group_allowed:
-        seed["group_allowed"] = group_allowed
-
-    home = _get_scoped_secret("SIMPLEX_HOME_CHANNEL", "").strip()
-    if home:
-        seed["home_channel"] = {
-            "chat_id": home,
-            "name": _get_scoped_secret("SIMPLEX_HOME_CHANNEL_NAME", "").strip() or home,
-        }
-    return seed
 
 
 async def _standalone_send(

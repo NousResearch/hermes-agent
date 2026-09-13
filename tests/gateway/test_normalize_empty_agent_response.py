@@ -142,8 +142,8 @@ class TestGenericFailureRegression:
 
         response = _normalize_empty_agent_response(agent_result, "", history_len=60)
 
-        assert "too long" in response
-        assert "/compress" in response and "/new" in response
+        assert "context window" in response
+        assert "/compact" in response
 
 
 class TestNonempty400EnvelopeOverflowReply:
@@ -160,8 +160,8 @@ class TestNonempty400EnvelopeOverflowReply:
         response = _normalize_empty_agent_response(
             self._failed(self._ENVELOPE), self._ENVELOPE, history_len=138,
         )
-        assert "too long" in response.lower()
-        assert "/compress" in response
+        assert "context window" in response.lower()
+        assert "/compact" in response
         assert self._ENVELOPE not in response
 
     @pytest.mark.parametrize("text", [

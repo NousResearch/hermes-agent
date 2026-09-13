@@ -357,7 +357,7 @@ class GitHubSource(SkillSource):
         """List skill directories in a GitHub repo path, using cached index. ``bucket`` labels every
         skill from a tap whose repo ships no ``skills.sh.json`` grouping, so several repos can share one
         hub category (e.g. "science"); a sidecar grouping still wins when present."""
-        cache_key = _tap_cache_key(repo, path, bucket)
+        cache_key = f"{repo}_{path}_{bucket or ''}".replace("/", "_").replace(" ", "_")
         cached = _cached_metas(cache_key)
         if cached is not None:
             return cached

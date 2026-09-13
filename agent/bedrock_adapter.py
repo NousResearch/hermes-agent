@@ -46,25 +46,6 @@ _AWS_SCOPED_CREDENTIAL_VARS: Tuple[Tuple[str, str], ...] = (
     ("aws_session_token", "AWS_SESSION_TOKEN"), ("profile_name", "AWS_PROFILE"),
 )
 
-# Bedrock-hosted OpenAI GPT-5.5 is not exposed through the native Converse
-# runtime. AWS serves it from the Bedrock Mantle OpenAI-compatible Responses
-# endpoint instead (https://bedrock-mantle.<region>.api.aws/openai/v1).
-# Keep the allowlist intentionally narrow so OpenAI GPT-OSS models that are
-# Converse-capable continue to use the native Bedrock path.
-BEDROCK_OPENAI_RESPONSES_MODEL_IDS: Tuple[str, ...] = (
-    "openai.gpt-5.5",
-    # GPT-5.6 family (GA on Bedrock 2026-07-13): Sol (frontier), Terra
-    # (balanced), Luna (fast/affordable). All are Mantle-only — the model
-    # cards list bedrock-runtime/Converse as unsupported.
-    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
-    "openai.gpt-5.6-sol",
-    "openai.gpt-5.6-terra",
-    "openai.gpt-5.6-luna",
-)
-_BEDROCK_OPENAI_HOST_RE = re.compile(
-    r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE
-)
-
 
 def scoped_aws_session_kwargs() -> Dict[str, str]:
     """``boto3.session.Session`` kwargs from the routed profile's secret scope, ``{}`` when unscoped.
@@ -155,161 +136,6 @@ def invalidate_runtime_client(region: str) -> bool:
     return _bedrock_runtime_client_cache.pop(region, None) is not None
 
 
-# ---------------------------------------------------------------------------
-# Bedrock Mantle / OpenAI Responses support
-# ---------------------------------------------------------------------------
-
-
-def is_openai_bedrock_model(model_id: str) -> bool:
-    """Return True for Bedrock-hosted OpenAI models that require Mantle.
-
-    Bedrock's GPT-OSS models are Converse-capable and intentionally do not
-    match this helper. The allowlist tracks models served by the OpenAI
-    Responses-compatible ``bedrock-mantle`` route.
-    """
-    normalized = str(model_id or "").strip().lower()
-    return normalized in {m.lower() for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS}
-
-
-def merge_bedrock_openai_model_ids(model_ids: List[str]) -> List[str]:
-    """Append Bedrock OpenAI Responses models to a discovered Bedrock list.
-
-    The Bedrock control plane's ListFoundationModels/ListInferenceProfiles
-    discovery covers Converse models but does not enumerate Mantle-only
-    OpenAI Responses models. The picker needs both surfaces under AWS Bedrock.
-    """
-    merged = list(model_ids or [])
-    seen = {str(m).lower() for m in merged}
-    for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
-        if model_id.lower() not in seen:
-            merged.append(model_id)
-            seen.add(model_id.lower())
-    return merged
-
-
-def bedrock_openai_base_url(region: str) -> str:
-    """Return Bedrock Mantle's OpenAI-compatible base URL for *region*."""
-    resolved = (region or "").strip() or resolve_bedrock_runtime_region()
-    return f"https://bedrock-mantle.{resolved}.api.aws/openai/v1"
-
-
-def bedrock_openai_region_from_base_url(base_url: str) -> Optional[str]:
-    """Extract the AWS region from a Bedrock Mantle OpenAI base URL."""
-    host = urlparse(str(base_url or "")).hostname or ""
-    match = _BEDROCK_OPENAI_HOST_RE.match(host)
-    return match.group(1) if match else None
-
-
-def is_bedrock_openai_base_url(base_url: str) -> bool:
-    """Return True for Bedrock Mantle OpenAI-compatible endpoints."""
-    parsed = urlparse(str(base_url or ""))
-    host = parsed.hostname or ""
-    if not _BEDROCK_OPENAI_HOST_RE.match(host):
-        return False
-    # The OpenAI GPT-5.5 Bedrock route lives under /openai/v1. Accept a bare
-    # host too so callers can normalize before appending the path.
-    path = (parsed.path or "").rstrip("/").lower()
-    return path in {"", "/openai", "/openai/v1"}
-
-
-def resolve_bedrock_bearer_token(env: Optional[Dict[str, str]] = None) -> str:
-    """Return AWS_BEARER_TOKEN_BEDROCK when Bedrock API-key auth is configured."""
-    env = env if env is not None else os.environ
-    return (env.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
-
-
-class BedrockOpenAISigV4Auth(httpx.Auth):
-    """httpx auth hook that SigV4-signs Bedrock Mantle OpenAI requests."""
-
-    requires_request_body = True
-
-    def __init__(self, region: str, service: str = "bedrock"):
-        self.region = (region or "").strip() or resolve_bedrock_runtime_region()
-        self.service = service
-
-    def auth_flow(self, request):  # pragma: no cover - exercised by live call
-        import botocore.session
-        from botocore.auth import SigV4Auth
-        from botocore.awsrequest import AWSRequest
-
-        credentials = botocore.session.get_session().get_credentials()
-        if credentials is None:
-            raise RuntimeError(
-                "No AWS credentials available for Bedrock OpenAI Responses. "
-                "Configure AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, "
-                "SSO, or an instance/task role."
-            )
-        frozen = credentials.get_frozen_credentials()
-        # Drop the OpenAI SDK's placeholder bearer header before signing; SigV4
-        # must own Authorization. Keep all other SDK headers so AWS receives
-        # content-type, accept, request IDs, etc.
-        headers = {
-            str(k): str(v)
-            for k, v in request.headers.items()
-            if str(k).lower() not in {"authorization", "x-amz-date", "x-amz-security-token"}
-        }
-        aws_request = AWSRequest(
-            method=request.method,
-            url=str(request.url),
-            data=request.content or b"",
-            headers=headers,
-        )
-        SigV4Auth(frozen, self.service, self.region).add_auth(aws_request)
-        request.headers.update(dict(aws_request.headers.items()))
-        yield request
-
-
-def build_bedrock_openai_http_client(region: str, *, timeout: Optional[float] = None):
-    """Build an httpx client that SigV4-signs Bedrock OpenAI requests."""
-    import httpx
-
-    kwargs: Dict[str, Any] = {"auth": BedrockOpenAISigV4Auth(region)}
-    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
-        kwargs["timeout"] = timeout
-    return httpx.Client(**kwargs)
-
-
-def configure_bedrock_openai_client_kwargs(
-    client_kwargs: Dict[str, Any],
-    *,
-    timeout: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Install SigV4 auth on OpenAI SDK kwargs for Bedrock Mantle.
-
-    ``AWS_BEARER_TOKEN_BEDROCK``/explicit Bedrock API keys continue to use the
-    SDK's normal bearer auth. The special ``aws-sdk`` placeholder means IAM
-    credential-chain auth, so we attach a per-request SigV4 httpx client.
-    """
-    base_url = str(client_kwargs.get("base_url") or "")
-    if not is_bedrock_openai_base_url(base_url):
-        return client_kwargs
-    api_key = client_kwargs.get("api_key")
-    if isinstance(api_key, str) and api_key.strip() and api_key not in {"aws-sdk", "no-key-required"}:
-        return client_kwargs
-    region = bedrock_openai_region_from_base_url(base_url) or resolve_bedrock_runtime_region()
-    client_kwargs["api_key"] = "aws-sdk"
-    client_kwargs["http_client"] = build_bedrock_openai_http_client(region, timeout=timeout)
-    return client_kwargs
-
-
-# ---------------------------------------------------------------------------
-# Stale-connection detection
-# ---------------------------------------------------------------------------
-#
-# boto3 caches its HTTPS connection pool inside the client object. When a
-# pooled connection is killed out from under us (NAT timeout, VPN flap,
-# server-side TCP RST, proxy idle cull, etc.), the next use surfaces as
-# one of a handful of low-level exceptions — most commonly
-# ``botocore.exceptions.ConnectionClosedError`` or
-# ``urllib3.exceptions.ProtocolError``. urllib3 also trips an internal
-# ``assert`` in a couple of paths (connection pool state checks, chunked
-# response readers) which bubbles up as a bare ``AssertionError`` with an
-# empty ``str(exc)``.
-#
-# In all of these cases the client is the problem, not the request: retrying
-# with the same cached client reproduces the failure until the process
-# restarts. The fix is to evict the region's cached client so the next
-# attempt builds a new one.
 
 # --- Bedrock Mantle / OpenAI Responses support ---
 
@@ -530,6 +356,76 @@ def resolve_bedrock_runtime_region(config: Optional[Dict[str, Any]] = None) -> s
     if cfg_region:
         return cfg_region
     return resolve_bedrock_region()
+
+
+def bedrock_region_from_runtime_url(base_url: str) -> str:
+    """AWS region from a ``bedrock-runtime.<region>.amazonaws.com`` URL (default us-east-1)."""
+    m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
+    return m.group(1) if m else "us-east-1"
+
+
+def bedrock_guardrail_config(config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Converse ``guardrailConfig`` from ``bedrock.guardrail`` in config.yaml (None when unset)."""
+    if config is None:
+        config = {}
+        with suppress(Exception):
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+    gr = ((config or {}).get("bedrock") or {}).get("guardrail") or {}
+    if not (gr.get("guardrail_identifier") and gr.get("guardrail_version")):
+        return None
+    out = {"guardrailIdentifier": gr["guardrail_identifier"], "guardrailVersion": gr["guardrail_version"]}
+    for src, dst in (("stream_processing_mode", "streamProcessingMode"), ("trace", "trace")):
+        if gr.get(src):
+            out[dst] = gr[src]
+    return out
+
+
+def bedrock_guardrail_headers(config: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """InvokeModel/Messages-wire form of the configured guardrail. The AnthropicBedrock SDK speaks
+    InvokeModel, which has no ``guardrailConfig`` body field; Bedrock reads the guardrail from these
+    headers instead (same enforcement, keeps prompt caching / thinking / 1M context)."""
+    gr = bedrock_guardrail_config(config)
+    if not gr:
+        return {}
+    headers = {
+        "X-Amzn-Bedrock-GuardrailIdentifier": str(gr["guardrailIdentifier"]),
+        "X-Amzn-Bedrock-GuardrailVersion": str(gr["guardrailVersion"]),
+    }
+    if str(gr.get("trace", "")).lower() in {"enabled", "enabled_full", "true"}:
+        headers["X-Amzn-Bedrock-Trace"] = "ENABLED"
+    return headers
+
+
+GUARDRAIL_ACTION_FIELD = "amazon-bedrock-guardrailAction"
+
+
+def anthropic_response_guardrail_intervened(response: Any) -> bool:
+    """True when Bedrock substituted the InvokeModel reply with guardrail messaging. Unlike Converse
+    (``stopReason=guardrail_intervened``), InvokeModel keeps ``stop_reason=end_turn`` and signals the
+    block only via an unmodelled body field the Anthropic SDK keeps in ``model_extra``."""
+    extra = getattr(response, "model_extra", None) or {}
+    return str(extra.get(GUARDRAIL_ACTION_FIELD, "")).upper() == "INTERVENED"
+
+
+def bind_bedrock_runtime(agent, base_url: str, api_mode: str) -> None:
+    """Point *agent* at a non-Mantle Bedrock wire: ``bedrock_converse`` (boto3 direct, no SDK client) or
+    ``anthropic_messages`` (AnthropicBedrock SDK, SigV4 via the boto3 chain). ``aws-sdk`` is a sentinel,
+    never a credential, so the generic Anthropic/OpenAI client builders must not see it. Startup and every
+    later rebuild (/model switch, fallback restore, fallback-to-Bedrock) share this so region and guardrail
+    state never lag the active endpoint."""
+    agent._bedrock_region = bedrock_region_from_runtime_url(base_url)
+    agent._bedrock_guardrail_config = bedrock_guardrail_config()
+    agent.client = None
+    agent._client_kwargs = {}
+    agent.api_key = agent._anthropic_api_key = "aws-sdk"
+    agent._anthropic_base_url = base_url
+    agent._is_anthropic_oauth = False
+    if api_mode == "anthropic_messages":
+        from agent.anthropic_adapter import build_anthropic_bedrock_client
+        agent._anthropic_client = build_anthropic_bedrock_client(agent._bedrock_region)
+    else:
+        agent._anthropic_client = None
 
 
 def bedrock_model_ids_or_none() -> Optional[List[str]]:

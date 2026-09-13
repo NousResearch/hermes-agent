@@ -508,6 +508,53 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
         logger.debug("real-profile backend resolution unavailable: %s", e)
         return None
 
+
+def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
+    """Attach the per-task CDP supervisor to the browser this exec drives so ``browser_vault_fill`` has
+    a secret-capable WebSocket (never argv) into the SAME browser. Only CDP-routed backends expose an
+    endpoint; BU direct-cloud (BU_AUTOSPAWN) does not, and the vault tools report ``supervisor_required``."""
+    cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
+    if not cdp:
+        return
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
+        policy, timeout_s = _get_dialog_policy_config()
+        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=_resolve_cdp_override(cdp),
+                                         dialog_policy=policy, dialog_timeout_s=timeout_s)
+    except Exception as exc:
+        logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
+
+
+def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool) -> Optional[str]:
+    """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
+    BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
+    sessions compose with the backend: BU_NAME namespaces the harness daemon (IPC socket, log, pid) and on
+    provider backends additionally keys its own cloud browser."""
+    rp_err = _resolve_real_profile_cdp(env, force_local=local)
+    if rp_err:
+        return rp_err
+    # local=True is only served by the real-profile route; consent off must not pretend.
+    if local and not _has_cdp_env(env) and not _real_profile_consented():
+        return ("local=true was requested but browser.use_real_profile is off. Enable it in config.yaml "
+                "(browser.use_real_profile: true) or the desktop Settings → Browser section, then retry.")
+    return _resolve_backend_cdp(env, task_id, session_name=session)
+
+
+def _group_popen_kwargs() -> dict:
+    """Popen kwargs starting the CLI in its own process group (a new session on POSIX) so a
+    timeout can take down every process that inherited the capture pipes, not just the CLI
+    child. Windows also hides the console the .cmd shim would flash (as browser_tool does)."""
+    def _flags() -> dict:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        return {"creationflags": windows_hide_flags() | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                "startupinfo": si}
+    return _quiet(_flags, {}, "Windows hide-flags unavailable") if os.name == "nt" else {"start_new_session": True}
+
+
+def _clamp_timeout(timeout_s: Any) -> int:
     try:
         if _get_cdp_override_raw():
             return None
@@ -534,13 +581,49 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     return None
 
 
-def browser_exec(
-    code: str,
-    session: str = "",
-    timeout_s: int = _DEFAULT_TIMEOUT_S,
-    task_id: Optional[str] = None,
-    local: bool = False,
-):
+# After a whole-group SIGKILL, every pipe holder is dead, so the drain below is normally
+# instant; the deadline only guards against a process outside the group still holding a pipe.
+_POST_KILL_DRAIN_S = 10.0
+
+
+def _kill_cli_process_group(proc) -> None:
+    """SIGKILL the CLI's whole process group (POSIX; ``start_new_session`` made pgid == pid) or,
+    on Windows, its process tree via ``taskkill /T /F`` — the only group-wide kill it offers."""
+    if os.name == "nt":
+        from hermes_cli._subprocess_compat import windows_hide_flags
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                           check=False, creationflags=windows_hide_flags())
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX only, the nt branch returned above
+
+
+def _run_cli_killing_process_group(cmd, code, env, timeout):
+    """Run the CLI in its own process group and kill the whole group on timeout.
+
+    ``subprocess.run`` only kills the direct child on ``TimeoutExpired``; a grandchild that
+    inherited the stdout/stderr pipes (browser_harness daemon / Chrome helper) is orphaned
+    still holding them, and on Windows ``run()``'s unbounded post-kill ``communicate()`` then
+    blocks on pipe EOF forever — so the tool call, plus its activity heartbeat, wedges (#106244).
+    """
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", env=env, **_group_popen_kwargs(),
+    )
+    try:
+        stdout, stderr = proc.communicate(input=code, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_cli_process_group(proc)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.communicate(timeout=_POST_KILL_DRAIN_S)
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
+                 task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
     from tools.registry import tool_error, tool_result
     if not code or not code.strip():
@@ -562,35 +645,10 @@ def browser_exec(
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    # Real-profile consent: on a local backend this upgrades the attach to
-    # the user's default browser (profile snapshot, logins included); with
-    # local=True it forces that even under a cloud backend. Runs BEFORE
-    # provider resolution so a real-profile hit short-circuits the cloud
-    # path via the BU_CDP_* env contract.
-    rp_err = _resolve_real_profile_cdp(env, force_local=bool(local))
-    if rp_err:
-        return tool_error(rp_err)
-    if local and not (env.get("BU_CDP_URL") or env.get("BU_CDP_WS")):
-        # local=True is only served by the real-profile route; anything else
-        # (consent off — schema normally hidden, but be explicit; or an
-        # operator CDP override owning the session) must not pretend.
-        if not _real_profile_consented():
-            return tool_error(
-                "local=true was requested but browser.use_real_profile is off. "
-                "Enable it in config.yaml (browser.use_real_profile: true) or "
-                "the desktop Settings → Browser section, then retry."
-            )
-    # Route through the configured browser backend (Browserbase, Firecrawl,
-    # Nous gateway, CDP override, local Chrome, …). Named sessions compose
-    # with the backend: BU_NAME namespaces the harness daemon (its IPC
-    # socket, log, and pid), and on provider backends the name additionally
-    # keys its own cloud browser — so concurrent sessions stop clobbering
-    # each other's daemon (#86894). Browser Use direct-API cloud configs
-    # are the one exception: the CLI manages named cloud browsers natively,
-    # and _resolve_backend_cdp skips provider resolution for them.
-    backend_err = _resolve_backend_cdp(env, task_id, session_name=session)
-    if backend_err:
-        return tool_error(backend_err)
+    route_err = _route_backend(env, session, task_id, bool(local))
+    if route_err:
+        return tool_error(route_err)
+    _attach_vault_supervisor(env, task_id)
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.

@@ -1,8 +1,6 @@
 import babel from '@rolldown/plugin-babel'
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
-import babel from '@rolldown/plugin-babel'
-import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 
 /** React Compiler preset scoped to modules that can actually contain
  *  components/hooks (JSX syntax or a react-ish import). The preset's default
@@ -12,10 +10,10 @@ import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 function compilerPreset() {
   const preset = reactCompilerPreset()
   preset.rolldown.filter.code = /\/>|<\/|from\s*['"][^'"]*react/
+
   return preset
 }
-import tailwindcss from '@tailwindcss/vite'
-import path from 'path'
+
 import fs from 'fs'
 import { createRequire } from 'module'
 import path from 'path'

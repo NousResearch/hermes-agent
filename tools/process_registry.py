@@ -49,6 +49,14 @@ def _checkpoint_path() -> Path:
     checkpoint to the launch home."""
     return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
 
+
+def _checkpoint_path() -> Path:
+    """Active profile's checkpoint file at call time: the patched ``CHECKPOINT_PATH`` when a test
+    changed it, else live profile-scoped HERMES_HOME — the multiplexed gateway serves every
+    profile from one process, so the import-time constant would pin every profile's process
+    checkpoint to the launch home."""
+    return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
+
 # Lifetime cap — independent of the strike counter above. A process whose
 # pattern recurs at a cadence just above WATCH_MIN_INTERVAL_SECONDS (e.g. a
 # service restarted repeatedly over a day) never trips the consecutive-strike
@@ -314,27 +322,6 @@ class GatewayChildDispatch(NamedTuple):
     argv: List[str]
 
 
-def scoped_spawn_lost_user_bus(spawn_env: Dict[str, str]) -> bool:
-    """After a ``systemd-run --user --scope`` wrapper exits before its child could start: True
-    when the user bus is gone (:func:`systemd_user_bus_env` derives nothing), in which case the
-    cached True verdict is replaced so the next dispatch re-probes and degrades instead of
-    consuming another occurrence on the same dead wrapper (#110803).
-
-    *spawn_env* is the environment the wrapper was launched with: re-deriving from it (minus the
-    bus address it carried) honours a configured ``XDG_RUNTIME_DIR`` exactly as the spawn did, so
-    an unrelated wrapper exit on a host whose bus lives outside ``/run/user/<uid>`` is not
-    misread as a lost bus."""
-    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
-    base_env = dict(spawn_env)
-    base_env.pop("DBUS_SESSION_BUS_ADDRESS", None)
-    if "DBUS_SESSION_BUS_ADDRESS" in systemd_user_bus_env(base_env):
-        return False
-    with _SYSTEMD_SCOPE_PROBE_LOCK:
-        _SYSTEMD_SCOPE_AVAILABLE = False
-        _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
-    return True
-
-
 def restart_safe_gateway_child_argv(
     command: List[str], *, unit_suffix: str, require_restart_safe_scope: bool,
 ) -> GatewayChildDispatch:
@@ -370,35 +357,6 @@ def restart_safe_gateway_child_argv(
     if scoped == command:
         return _degrade("systemd-run disappeared after the availability probe")
     return GatewayChildDispatch("scoped", scoped)
-
-
-def restart_safe_gateway_child_argv(
-    command: List[str], *, unit_suffix: str
-) -> List[str]:
-    """Place a managed-systemd gateway child outside the gateway cgroup.
-
-    Children that must survive an intentional gateway restart cannot rely on
-    ``start_new_session`` alone: systemd still kills every process in the
-    service cgroup.  In that topology, require a transient user scope and fail
-    closed if it cannot be established.  Standalone processes, non-systemd
-    supervisors, and non-Linux hosts retain the direct command.
-    """
-    if not _IS_LINUX:
-        return command
-    if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
-        return command
-    if not _systemd_run_user_scope_available():
-        raise RuntimeError(
-            "cannot create restart-safe systemd scope for gateway child: "
-            "systemd-run --user --scope is unavailable"
-        )
-    scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
-    if scoped == command:
-        raise RuntimeError(
-            "cannot create restart-safe systemd scope for gateway child: "
-            "systemd-run disappeared after the availability probe"
-        )
-    return scoped
 
 
 def _stop_systemd_unit(unit_name: str) -> bool:

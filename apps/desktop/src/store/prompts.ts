@@ -112,8 +112,8 @@ export interface SecretRequest extends KeyedPrompt {
   requestId: string
 }
 
-// External password-manager unlock (agent/vault_backends): `vault.unlock_prompt`
-// server request, answered `{value: password}`; "" keeps the manager locked.
+// External password-manager unlock (agent/vault_backends). Resolved via
+// vault.unlock.respond {request_id, password}; "" keeps the manager locked.
 export interface VaultUnlockRequest extends KeyedPrompt {
   backend: string
   displayName: string
@@ -125,8 +125,8 @@ const sudo = keyedPromptStore<SudoRequest>()
 const secret = keyedPromptStore<SecretRequest>()
 const vaultUnlock = keyedPromptStore<VaultUnlockRequest>()
 
-// "Save this login" for the page the agent is on (tools/browser_vault_tool): `vault.save_login`
-// server request, answered `{value: JSON {identifier, password}}`; "" declines.
+// "Save this login" for the page the agent is on (tools/browser_vault_tool). Resolved via
+// vault.save_login.respond {request_id, login: JSON {identifier, password}}; "" declines.
 export interface VaultSaveLoginRequest extends KeyedPrompt {
   origin: string
   site: string
@@ -135,8 +135,8 @@ export interface VaultSaveLoginRequest extends KeyedPrompt {
 
 const vaultSave = keyedPromptStore<VaultSaveLoginRequest>()
 
-// Second-factor code for the page the agent is on: `vault.code` server request,
-// answered `{value: code}`; "" skips.
+// Second-factor code for the page the agent is on. Resolved via vault.code.respond
+// {request_id, code}; "" skips.
 export interface VaultCodeRequest extends KeyedPrompt {
   site: string
   hint: string
@@ -188,6 +188,7 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
     return
   }
 
+  const previous = approval.$all.get()[keyFor(sessionId)]
   let rawResult: unknown
 
   try {
@@ -221,10 +222,6 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
   }
 
   if (typeof pending.request_id !== 'string') {
-    return
-  }
-
-  if (previous?.requestId === pending.request_id) {
     return
   }
 

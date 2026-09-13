@@ -355,94 +355,27 @@ def _(rid, params: dict) -> dict:
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}
         _register_session_cwd(_sessions[sid])
-
-    # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
-    # launch (and every "New agent" / draft) opens a session here just to paint
-    # the composer, so eagerly creating a row left an "Untitled" empty session
-    # behind for every launch the user never typed into. The row is now created
-    # lazily on the first prompt (see _ensure_session_db_row + prompt.submit),
-    # and the AIAgent's own INSERT-OR-IGNORE persists it on the first turn too.
-    #
-    # EXCEPTION — seeded branch children (#93959): a desktop branch carries
-    # parent_session_id AND a seeded transcript, which is explicit user intent,
-    # not an abandoned draft. The row MUST exist immediately: the renderer's
-    # post-create resume re-fetches the child through REST + defer_history
-    # hydration, both of which read the DB — an unpersisted child 404s, the
-    # fail-latch then refuses to bind a "transcript-less" session, and the user
-    # sees an infinite spinner whose optimistic row vanishes on restart.
-    # Persisting up front also means a restart keeps the branch (both reports
-    # lost it) and the title lands in the parent's lineage instead of falling
-    # back to a message-preview name. Title mirrors the TUI /branch naming.
+    # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
+    # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
+    # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"
+    # empty session behind for every launch the user never typed into. The row is now created lazily on the
+    # first prompt (see _ensure_session_db_row + prompt.submit), and the AIAgent's own INSERT-OR-IGNORE
+    # persists it on the first turn too. EXCEPTION — seeded branch children (#93959): a desktop branch
+    # carries parent_session_id AND a seeded transcript, which is explicit user intent, not an abandoned
+    # draft. The row MUST exist immediately: the renderer's post-create resume re-fetches the child through
+    # REST + defer_history hydration, both of which read the DB — an unpersisted child 404s, the fail-latch
+    # then refuses to bind a "transcript-less" session, and the user sees an infinite spinner whose
+    # optimistic row vanishes on restart. Persisting up front also means a restart keeps the branch (both
+    # reports lost it) and the title lands in the parent's lineage instead of falling back to a
+    # message-preview name. Title mirrors the TUI /branch naming.
+    # The same holds for a seeded session WITHOUT a parent (a client opening a chat with its first turns
+    # already written): the transcript exists only in memory, so a restart before the first prompt lost it
+    # and the post-create resume 404'd. Persist it up front too; only empty drafts stay lazy.
     if parent_session_id and history:
-        try:
-            with _session_db(_sessions[sid]) as db:
-                if db is not None:
-                    parent_key = parent_session_id
-                    current = db.get_session_title(parent_key) or "branch"
-                    branch_title = (
-                        db.get_next_title_in_lineage(current)
-                        if hasattr(db, "get_next_title_in_lineage")
-                        else f"{current} (branch)"
-                    )
-                    db.create_session(
-                        key,
-                        source=source,
-                        model=_resolve_model(),
-                        model_config={"_branched_from": parent_key},
-                        parent_session_id=parent_key,
-                        cwd=_sessions[sid]["cwd"],
-                        profile_name=(
-                            Path(profile_home).name if profile_home else None
-                        ),
-                    )
-                    # Compensation guard (#93959 review): if the transcript
-                    # copy or title write fails AFTER the row committed, the
-                    # durable-but-empty row would defeat the lazy first-prompt
-                    # fallback (_ensure_session_db_row is INSERT OR IGNORE —
-                    # the row exists, so the seed never lands and the renderer
-                    # fail-latches on a "transcript-less" session again).
-                    # Roll back just this child so the seed path can retry
-                    # cleanly on first submit.
-                    try:
-                        db.append_messages_batch(
-                            key,
-                            [
-                                {"role": m.get("role", "user"), "content": m.get("content")}
-                                for m in history
-                            ],
-                            chunk_rows=500,
-                        )
-                        db.set_session_title(key, branch_title)
-                    except Exception as exc:
-                        from hermes_state import is_disk_full_error
-
-                        if is_disk_full_error(exc):
-                            raise
-                        try:
-                            db.delete_session(key)
-                        except Exception:
-                            logger.debug(
-                                "branch seed compensation delete failed for %s",
-                                key,
-                                exc_info=True,
-                            )
-                        raise
-                    _sessions[sid]["pending_title"] = None
-        except Exception:
-            # Persistence is best-effort here: a failed write must not break
-            # session.create itself — the lazy first-prompt path remains as the
-            # fallback, exactly as for plain drafts.
-            logger.warning(
-                "seeded-branch persistence failed for %s; falling back to "
-                "lazy row creation",
-                key,
-                exc_info=True,
-            )
-
-    # Return the lightweight session immediately so Ink can paint the composer
-    # + skeleton panel, then build the real AIAgent just after this response is
-    # flushed.  This keeps startup responsive while still hydrating tools/skills
-    # without requiring the user to submit a first prompt.
+        _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+    elif history:
+        _seed_row(_sessions[sid])
+    # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     cwd = _sessions[sid]["cwd"]
@@ -1216,136 +1149,179 @@ class _Resume:
         """The child's OWN conversation (no ancestors), row ids included."""
         return self.db.get_messages_as_conversation(self.target, repair_alternation=repair, include_row_ids=True)
 
-        # Double-checked locking: another concurrent resume may have created the
-        # live session while we were building. Re-check under the lock; if it won,
-        # discard our just-built agent and reuse theirs (no worker/poller wired yet).
-        with _session_resume_lock:
-            live = _find_live_session_by_key(target, profile_home)
-            if live is not None:
-                try:
-                    if hasattr(agent, "close"):
-                        agent.close()
-                except Exception:
-                    pass
-                if lease is not None:
-                    lease.release()
-                return _reuse_live_response(*live)
-            try:
-                init_home_token = (
-                    set_hermes_home_override(str(profile_home))
-                    if profile_home is not None
-                    else None
-                )
-                init_secret_token = (
-                    set_secret_scope(build_profile_secret_scope(Path(str(profile_home))))
-                    if profile_home is not None
-                    else None
-                )
-                try:
-                    _init_session(
-                        sid,
-                        target,
-                        agent,
-                        history,
-                        cols=cols,
-                        cwd=profile_resume_cwd,
-                        session_db=db,
-                        source=source,
-                    )
-                    # Ownership TRANSFER — the registered session's agent now
-                    # holds this handle for its whole life, and _init_session
-                    # never closes a caller-supplied session_db (its
-                    # _init_owns_db stays False). Closing it in the finally
-                    # below would fault every later turn on this session with
-                    # "Cannot operate on a closed database".
-                    #
-                    # Ownership moves ONTO the agent rather than just being
-                    # dropped: AIAgent.close() (reached from _teardown_session
-                    # on session.close and the orphaned-session reaper) closes
-                    # a handle it owns, so the dedicated fds and the token
-                    # writer are released at teardown instead of living as
-                    # long as the gateway process.
-                    #
-                    # The drop is UNCONDITIONAL and the transfer is best-effort
-                    # on top of it, deliberately. Past this line the session is
-                    # registered and holding this handle, so the finally must
-                    # not close it even if the transfer was refused — a refusal
-                    # leaves the old leak, which is survivable; closing under a
-                    # live session is the permanent "Cannot operate on a closed
-                    # database" break this patch exists to avoid.
-                    #
-                    # The transfer itself is gated on owns_db: with no
-                    # non-launch profile selected this path resolved db to the
-                    # SHARED launch handle (_get_db()), and transferring it
-                    # made session.close() tear down the process-wide
-                    # database under every unrelated session (#91610).
-                    if owns_db:
-                        _transfer_db_to_agent(agent, db)
-                    owns_db = False
-                finally:
-                    if init_home_token is not None:
-                        reset_hermes_home_override(init_home_token)
-                    if init_secret_token is not None:
-                        reset_secret_scope(init_secret_token)
-                if sid in _sessions:
-                    if stored_runtime_overrides.get("model_override") is not None:
-                        _sessions[sid]["model_override"] = stored_runtime_overrides[
-                            "model_override"
-                        ]
-                    _sessions[sid]["display_history_prefix"] = display_history_prefix
-                    # Remember the profile home so each turn re-binds HERMES_HOME (the
-                    # agent persists to its own db, but mid-turn home reads — memory,
-                    # skills — must resolve to the resumed profile too).
-                    if profile_home is not None:
-                        _sessions[sid]["profile_home"] = str(profile_home)
-                    _sessions[sid]["active_session_lease"] = lease
-            except Exception as e:
-                # _init_session registers _sessions[sid] BEFORE its first read
-                # through this handle. If it raised in between — "database is
-                # locked" is the realistic trigger — the half-built session is
-                # still registered while the finally below closes the handle it
-                # holds, and the live-session fast path above would then serve
-                # that dead session on every later resume of this id
-                # ("'NoneType' object has no attribute 'execute'", permanently).
-                # owns_db still True means ownership never transferred, so the
-                # registration is ours to undo.
-                if owns_db:
-                    with _sessions_lock:
-                        _sessions.pop(sid, None)
-                if lease is not None:
-                    lease.release()
-                return _err(rid, 5000, f"resume failed: {e}")
-            session = _sessions.get(sid) or {}
-    finally:
-        # Every return that does NOT reach the transfer above abandons this
-        # handle — session-not-found, both "resume failed" paths, the live-session
-        # fast path (the hot one: reconnects re-resume live chats through it), the
-        # deferred cold/lazy returns, and the double-checked-locking discard.
-        # Dropping it merely relied on refcounting to release the sqlite fds; that
-        # stops being true the moment anything pins the instance — SessionDB pins
-        # ITSELF once its background token writer starts, via
-        # atexit.register(_drain_token_queue_at_exit) (hermes_state.py), which only
-        # close() unregisters. A pinned handle keeps its db/-wal/-shm fds and its
-        # writer thread for the life of the process.
-        if owns_db and db is not None:
-            with contextlib.suppress(Exception):
-                db.close()
-    auto_continue = (
-        _maybe_schedule_auto_continue(sid, session, target) if session else None
-    )
-    payload = {
-        "session_id": sid,
-        "resumed": target,
-        "message_count": len(raw_history) if omit_messages else len(messages),
-        "messages": messages,
-        "messages_omitted": omit_messages,
-        "info": _session_info(agent, session),
-        "inflight": None,
-        "running": False,
-        "session_key": target,
-        "started_at": float(session.get("created_at") or time.time()),
-        "status": "idle",
-    }
+    def messages(self, display: list) -> list:
+        return [] if self.omit_messages else _history_to_messages(display)
+
+    def read_history(self) -> tuple:
+        """One lineage SELECT, two projections: model-fed copy alternation-repaired (healed once
+        here instead of every turn's pre-request repair), display copy verbatim."""
+        self.db.reopen_session(self.target)
+        if self.omit_messages:
+            return self.child_history(repair=True), []
+        return self.db.get_resume_conversations(self.target)
+
+    def display_prefix(self) -> list:
+        """Ancestor display rows (model-fed history drops a dangling tool-call tail — display keeps it)."""
+        return [] if self.omit_messages else self.db.get_ancestor_display_prefix(self.target)
+
+
+def _find_live_unpersisted(needle: str, home) -> str:
+    """Runtime sid of a live, not-yet-persisted session matched by stored key or pending title."""
+    want_home = str(home) if home is not None else None
+    return next((
+        live_sid for live_sid, record in list(_sessions.items())
+        if isinstance(record, dict) and (record.get("profile_home") or None) == want_home
+        and (str(record.get("session_key") or "") == needle or (record.get("pending_title") or "") == needle)), "")
+
+
+def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
+    """Reattach a LIVE lazy session with no state.db row yet (every fresh Bot Chat; a 404 here killed messaging
+    for never-spoken bots). Attach the transport and cancel the armed orphan-reap Timer (a WS drop may have
+    sentinel-parked the record) or it fires against this client."""
+    if ctx.owns_db:
+        _release_db(ctx.db)
+    with _session_resume_lock:
+        if (refusal := _reattach_refusal(ctx.rid, live_sid, live)) is not None:
+            return refusal
+        live["last_active"] = time.time()
+        if (transport := current_transport()) is not None:
+            with live.setdefault("history_lock", threading.Lock()):
+                _rebind_live_transport(live_sid, live, transport)
+        else:
+            _cancel_ws_orphan_reap(live_sid)
+    messages = ctx.messages(live.get("history") or [])  # count the wire, as every other resume path does
+    return _ok(ctx.rid, _attach_todo_state({
+        "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
+        "message_count": len(messages), "messages": messages,
+        "info": {"model": _resolve_model(), "lazy": True, "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
+
+
+def _resume_adopt_stranded(ctx: _Resume) -> None:
+    """Adopt a lineage stranded in the DEFAULT store (older builds ran a profile bot's turns on the focused
+    tile's backend; unadopted it 4001s forever). Exact-id ONLY — bot titles collide; never a retired donor."""
+    try:
+        # Stranded-session adoption (#93296 follow-up): before session RPCs routed by their TARGET session,
+        # a profile bot's turns executed on the focused tile's backend — usually default — so its canonical
+        # session accumulated in the DEFAULT profile's state.db. Now that routing is correct, this
+        # profile-scoped resume is the first place the fix and the stranded data collide: the id exists in
+        # the default store but not here, and without adoption the same chat 4001s forever (the fix made it
+        # unreachable instead of misrouted). Adopt the full lineage from the default store into this
+        # profile's db, then retry the lookup. Only profile-scoped resumes reach here (owns_db); unknown ids
+        # in the default store still 4007 exactly as before.
+        default_db = _get_db()
+        donor_row = default_db.get_session(ctx.target) if default_db is not None else None
+        if not donor_row or donor_row.get("archived"):
+            return
+        adoption = ctx.db.adopt_session_lineage_from(default_db, donor_row["id"])
+        if adoption.get("adopted"):
+            logger.info("adopted stranded session %s (lineage of %s segment(s)) from default store into profile %s",
+                        donor_row["id"],
+                        len(adoption.get("imported_ids") or []) + len(adoption.get("skipped_ids") or []),
+                        ctx.profile or "?")
+            ctx.found = ctx.db.get_session(donor_row["id"])
+            if ctx.found:
+                ctx.target = ctx.found["id"]
+    except Exception:
+        logger.exception("stranded-session adoption failed for %s", ctx.target)
+
+
+def _resume_locate(ctx: _Resume) -> dict | None:
+    """Resolve ``ctx.target`` to a stored row (``ctx.found``); a dict is an early response."""
+    ctx.found = ctx.db.get_session(ctx.target)
+    if ctx.found:
+        return None
+    ctx.found = ctx.db.get_session_by_title(ctx.target)
+    if ctx.found:
+        ctx.target = ctx.found["id"]
+        return None
+    if ctx.lazy and _child_run_active(ctx.target):
+        # Fresh subagent watch window: `subagent.start` relays BEFORE the child's first DB flush. Proceed lazily
+        # with empty history — the live mirror streams the turn and the row exists by upgrade time.
+        ctx.found = {}
+        return None
+    live_sid = _find_live_unpersisted(ctx.target, ctx.profile_home)
+    if (live := _sessions.get(live_sid) if live_sid else None) is not None:
+        return _resume_live_unpersisted(ctx, live_sid, live)
+    if ctx.owns_db:
+        _resume_adopt_stranded(ctx)
+    return None if ctx.found else _err(ctx.rid, 4007, "session not found")
+
+
+def _resume_follow_tip(ctx: _Resume) -> None:
+    """Rebind a rotated-out parent id to its compression tip (resuming the original reloads the parent
+    transcript and loses the post-compression reply). Skipped for lazy watch windows (exact child); Bot Chat
+    follows proven compression edges only."""
+    if not ctx.found or ctx.lazy:
+        return
+    tip = ctx.target
+    with contextlib.suppress(Exception):
+        from tools.bot_mode_probe import BOT_CHAT_TITLE
+        if (ctx.found.get("title") or "").strip() == BOT_CHAT_TITLE:
+            tip = ctx.db.get_compression_tip(ctx.target) or ctx.target
+        else:
+            tip = ctx.db.resolve_resume_session_id(ctx.target)
+    if tip and tip != ctx.target:
+        ctx.target = tip
+        ctx.found = ctx.db.get_session(tip) or ctx.found
+
+
+def _resume_guard(ctx: _Resume) -> dict | None:
+    """Refuse a runaway transcript before any history read (sessions.max_resume_messages). Deferred /
+    omit_messages / lazy paths load the TIP segment only and are guarded tip-only (a lineage count rejected
+    exactly the well-compressed chats). Metadata fallback for lightweight adaptor DBs; fails OPEN on errors."""
+    from hermes_state import SessionResumeTooLargeError, resolved_max_resume_messages
+    tip_only = ctx.lazy or ctx.omit_messages or (ctx.defer_history and not ctx.eager_build)
+    try:
+        if callable(safety_check := getattr(ctx.db, "assert_resume_safe", None)):
+            safety_check(ctx.target, **({"tip_only": True} if tip_only else {}))
+        elif (limit := resolved_max_resume_messages()) and (n := int(ctx.found.get("message_count") or 0)) > limit:
+            raise SessionResumeTooLargeError(n, limit)
+    except SessionResumeTooLargeError as exc:
+        return _err(ctx.rid, 4130, str(exc))
+    except Exception as exc:
+        logger.warning("resume safety check failed for %s (proceeding without guard): %s", ctx.target, exc)
+    return None
+
+
+def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
+    """Reattach an already-live session under the resume lock (held across the client-gone check,
+    transport attach and reap cancel so grace expiry is atomic). _live_session_payload ATTACHES this
+    caller alongside the client(s) already streaming instead of taking the slot from them."""
+    with _session_resume_lock:
+        return _resume_reuse_live_locked(ctx, sid, session)
+
+
+def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
+    """Reuse with _session_resume_lock already held (including the eager double-check)."""
+    if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
+        return refusal
+    _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
+    payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
+                                    transport=current_transport() or _stdio_transport)
+    payload["resumed"] = ctx.target
+    if ctx.defer_history:
+        payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),
+                       message_count=int(session.get("resume_message_count") or payload["message_count"]))
+    # A lazy watch session never owns a run loop — overlay the child-run registry.
+    if session.get("agent") is None and _child_run_active(ctx.target):
+        payload.update(running=True, status="streaming")
+    return _ok(ctx.rid, payload)
+
+
+def _resume_response(
+    ctx: _Resume, sid: str, record: dict, *, info: dict, display: list = (), count_source: list | None = None,
+    messages: list | None = None, message_count: int | None = None, running: bool = False,
+    status: str = "idle", hydrating: bool | None = None, started_at=None, auto_continue=None,
+) -> dict:
+    """Common resume payload; omit_messages counts ``count_source`` (client still learns the stored size)."""
+    if messages is None:
+        messages = ctx.messages(display)
+    if message_count is None:
+        message_count = len(count_source) if ctx.omit_messages else len(messages)
+    payload = {"session_id": sid, "resumed": ctx.target, "message_count": message_count, "messages": messages,
+               **({"messages_omitted": ctx.omit_messages} if hydrating is None else {"hydrating": hydrating}),
+               "info": info, "inflight": None, "running": running, "session_key": ctx.target,
+               "started_at": record["created_at"] if started_at is None else started_at, "status": status}
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue
     return _ok(rid, _attach_todo_state(payload, session))
@@ -2338,15 +2314,9 @@ def _(rid, params: dict, session: dict) -> dict:
     from hermes_cli.status_report import build_status_fields, status_lines
     key = session.get("session_key") or params.get("session_id") or ""
     mirror = _metadata_mirror(session)
-    # Under turn isolation the compute host owns the live route: a stale in-process agent object
-    # must not outrank the host's mirrored model/provider. Before the first host frame fills the
-    # mirror, the in-process agent is still the only route we know (same order as _session_info).
-    live_agent = session.get("agent")
-    agent = None if session.get("_compute_host_active") else live_agent
     fields = build_status_fields(
-        key, agent, _status_row(session, params, key),
-        model=mirror.get("model") or getattr(live_agent, "model", None),
-        provider=mirror.get("provider") or getattr(live_agent, "provider", None),
+        key, session.get("agent"), _status_row(session, params, key),
+        model=mirror.get("model"), provider=mirror.get("provider"),
         tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")),
     )
     project = _project_info_for_cwd(_display_session_cwd(session))

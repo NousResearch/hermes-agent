@@ -21,7 +21,7 @@ import httpx
 
 from agent.bounded_response import read_streaming_error_body
 from agent.retry_utils import parse_retry_after_seconds
-from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_tool_parameters
+from agent.gemini_schema import sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 
@@ -652,31 +652,6 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
         payload = _parse_sse_line(buffer)
         if payload is not None and payload is not _SSE_DONE:
             yield payload
-
-
-def _tool_call_slot(fc: Dict[str, Any], part: Dict[str, Any], part_index: int, args_str: str,
-                    tool_call_indices: Dict[str, Dict[str, Any]]) -> tuple[str, Optional[Dict[str, Any]]]:
-    """``(key, existing slot or None)`` for a streamed functionCall.
-
-    Gemini 3 ids each tool call, so the id is the slot identity (``part_index`` and the thought
-    signature drift across events of one call). Gemini 2.5 sends no id and ``part_index`` restarts
-    at 0 per event, so two different calls to one tool in separate events would share a slot and
-    have their arguments concatenated into unparseable JSON: Gemini re-sends full arguments, so a
-    payload that is not a prefix-extension (or resend) of the slot's accumulated arguments is a
-    different call and gets its own ``key#N`` slot, kept reachable so its own resend lands on it.
-    """
-    if fc_id := _provider_call_id(fc):
-        key = json.dumps({"provider_call_id": fc_id}, sort_keys=True)
-        return key, tool_call_indices.get(key)
-    thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
-    key = json.dumps({"part_index": part_index, "name": fc["name"], "thought_signature": thought_signature}, sort_keys=True)
-    slot = tool_call_indices.get(key)
-    if slot is None or args_str.startswith(slot["last_arguments"]):
-        return key, slot
-    for other_key, other in tool_call_indices.items():
-        if other_key.startswith(f"{key}#") and args_str.startswith(other["last_arguments"]):
-            return other_key, other
-    return f"{key}#{len(tool_call_indices)}", None
 
 
 def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:

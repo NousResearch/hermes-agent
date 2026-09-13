@@ -1897,22 +1897,6 @@ def _print_served_ingress_urls(profile: str | None = None) -> None:
             print(line)
 
 
-def _print_unserved_shared_ingress(profile: str | None) -> None:
-    """Shared-ingress platforms (WhatsApp/Relay) this served profile enabled that the multiplexer runs
-    only on the default profile — the ``whatsapp: not served under multiplex`` line."""
-    try:
-        from hermes_cli.gateway_multiplex_served import served_profile_unserved_platforms
-        unserved = served_profile_unserved_platforms(profile or "")
-    except Exception:
-        return
-    if not unserved:
-        return
-    print()
-    for platform, reason in sorted(unserved.items()):
-        print(f"  ⚠ {platform}: {reason}")
-    print("  Enable it on the default profile (shared ingress serves every profile), or disable it here.")
-
-
 def _print_other_profiles_gateway_status() -> None:
     """Print other profiles' running gateways at the bottom of ``hermes gateway status``."""
     try:
@@ -4909,38 +4893,24 @@ def launchd_restart():
             # updater's live output most of all, where a silent stop here
             # reads as "update stuck" (#44515).
             wait_budget = _get_restart_exit_wait_budget()
-            print(
-                f"→ Stopping gateway (PID {pid}) — draining in-flight runs "
-                f"(up to {wait_budget:.0f}s)..."
-            )
-            if _graceful_restart_via_sigusr1(pid, wait_budget):
-                # The gateway exited with the planned-restart code. When
-                # launchd is actually supervising this label, KeepAlive
-                # revives it — do NOT kickstart (the replacement may already
-                # be up, and ``-k`` would kill it and restart a second time).
-                # But a graceful exit alone doesn't prove supervision:
-                # detached-fallback gateways and unloaded jobs also exit
-                # cleanly with nobody to revive them (and the SIGUSR1 helper
-                # returns True for an already-gone PID). Verify a replacement
-                # PID appears before trusting KeepAlive — mirrors the systemd
-                # branch's replacement observation.
-                if _wait_for_launchd_service_pid(
-                    label, pid, timeout=15.0, domain=domain
-                ):
-                    print("✓ Service restart requested")
-                    _clear_launchd_unsupported_marker()
+            print(f"→ Stopping gateway (PID {pid}) — draining in-flight runs (up to {wait_budget:.0f}s)...")
+            from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+            if _graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
+                # KeepAlive revives a planned exit, so do NOT kickstart (-k would kill the replacement) —
+                # but a clean exit doesn't prove supervision, so verify a replacement PID appears first.
+                if _wait_for_launchd_service_pid(label, pid, timeout=15.0, domain=domain):
+                    _launchd_ok("✓ Service restart requested")
                     return
                 print(
                     "⚠ launchd did not revive the gateway after its graceful "
                     "exit — forcing restart"
                 )
             else:
-                print(
-                    f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart"
-                )
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
-        print("✓ Service restarted")
-        _clear_launchd_unsupported_marker()
+                print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
+        # Captured: an unloaded job (3/113/125) is the expected case below, which
+        # prints its own ↻ line — and e.stderr feeds the update_cmd failure diagnostic.
+        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90, **_CAPTURE_TEXT)
+        _launchd_ok("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
             _launchd_degrade_or_raise(e, "launchctl kickstart")
@@ -5137,7 +5107,7 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
     platforms. ``profile_name`` defaults to the current HERMES_HOME profile.
     """
     try:
-        suffix = profile_name if profile_name is not None else _profile_suffix()
+        suffix = profile_name if profile_name is not None else _current_profile_name()
     except Exception:
         return False
     if not suffix or suffix == "default":
@@ -5215,17 +5185,25 @@ def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
     print()
     print("  Pass --force to start a separate profile gateway anyway (not")
     print("  recommended while the multiplexer is running).")
-    # EX_CONFIG, not a generic failure. This refusal is decided entirely by
-    # configuration (multiplex_profiles plus the allowlist), so it is permanent:
-    # no number of retries can change the answer. Exiting 1 made it look
-    # transient to a service manager -- and the systemd unit this module
-    # generates pairs Restart=always/RestartSec=5 with StartLimitIntervalSec=0,
-    # deliberately trading systemd's generic start-rate limiter for the specific
-    # RestartPreventExitStatus=GATEWAY_FATAL_CONFIG_EXIT_CODE backstop declared
-    # beside it. Returning 1 left that backstop unarmed with the limiter already
-    # off, so a correct refusal became an unbounded restart loop. 78 also reaches
-    # the s6 finish script's 125 "permanent failure" translation (see #51228),
-    # the same path the other fatal-config exits take.
+    return True
+
+
+def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
+    """Exit-78 form of ``_named_profile_refused_under_multiplexer`` for the CLI entry points."""
+    if not _named_profile_refused_under_multiplexer(force=force):
+        return
+    # EX_CONFIG, not 1: the refusal is decided purely by config, so it is permanent. The systemd unit
+    # (Restart=always, StartLimitIntervalSec=0) relies on RestartPreventExitStatus=78 as its only
+    # backstop — exit 1 turned a correct refusal into an unbounded restart loop; s6 maps 78 to
+    # "permanent failure" too.
+    # This refusal is decided entirely by configuration (multiplex_profiles plus the allowlist), so it is
+    # permanent: no number of retries can change the answer. Exiting 1 made it look transient to a service
+    # manager -- and the systemd unit this module generates pairs Restart=always/RestartSec=5 with
+    # StartLimitIntervalSec=0, deliberately trading systemd's generic start-rate limiter for the specific
+    # RestartPreventExitStatus=GATEWAY_FATAL_CONFIG_EXIT_CODE backstop declared beside it. Returning 1 left
+    # that backstop unarmed with the limiter already off, so a correct refusal became an unbounded restart
+    # loop. 78 also reaches the s6 finish script's 125 "permanent failure" translation (see #51228), the
+    # same path the other fatal-config exits take.
     sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
 
@@ -7135,368 +7113,16 @@ def _cmd_uninstall(args):
             else:
                 start_now = True
 
-            _sol = getattr(args, "start_on_login", None)
-            if _sol is not None:
-                start_on_login = _sol
-            elif not non_interactive:
-                start_on_login = prompt_yes_no("Start the gateway automatically on login/boot with systemd?", True)
-            else:
-                start_on_login = True
-            systemd_install(
-                force=force,
-                system=system,
-                run_as_user=run_as_user,
-                enable_on_startup=start_on_login,
-                non_interactive=non_interactive,
-            )
-            if start_now:
-                systemd_start(system=system)
-        elif is_macos():
-            launchd_install(force)
-        elif is_windows():
-            from hermes_cli import gateway_windows
-
-            gateway_windows.install(
-                force=force,
-                start_now=getattr(args, 'start_now', None),
-                start_on_login=getattr(args, 'start_on_login', None),
-                elevated_handoff=getattr(args, 'elevated_handoff', False),
-            )
-        elif is_wsl():
-            print("WSL detected but systemd is not running.")
-            print(
-                "Either enable systemd (add systemd=true to /etc/wsl.conf and restart WSL)"
-            )
-            print("or run the gateway in foreground mode:")
-            print()
-            print(
-                "  hermes gateway run                              # direct foreground"
-            )
-            print(
-                "  tmux new -s hermes 'hermes gateway run'         # persistent via tmux"
-            )
-            print(
-                "  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background"
-            )
-            sys.exit(1)
-        elif is_container():
-            # Phase 4: inside a container with s6 the gateway service is
-            # auto-registered when the profile is created (and reconciled
-            # at every container boot). `install` is therefore informational.
-            from hermes_cli.service_manager import detect_service_manager
-            if detect_service_manager() == "s6":
-                print("Per-profile gateways are auto-registered when you create a profile.")
-                print()
-                print("  hermes profile create <name>     # creates the s6 service slot")
-                print("  hermes -p <name> gateway start   # bring it up via s6")
-                print("  hermes status                    # see currently-supervised gateways")
-                return
-            # Fallback for pre-s6 containers or other container runtimes
-            # we haven't taught about supervision (Podman without our
-            # /init, k8s plain runs, etc.) — the historical guidance still
-            # applies.
-            print("Service installation is not needed inside a Docker container.")
-            print(
-                "The container runtime is your service manager — use Docker restart policies instead:"
-            )
-            print()
-            print(
-                "  docker run --restart unless-stopped ...   # auto-restart on crash/reboot"
-            )
-            print("  docker restart <container>                # manual restart")
-            print()
-            print("To run the gateway: hermes gateway run")
-            sys.exit(0)
-        else:
-            print("Service installation not supported on this platform.")
-            print("Run manually: hermes gateway run")
-            sys.exit(1)
-
-    elif subcmd == "uninstall":
-        # Uninstall stops the managed service before removing it. Gate on
-        # PID-file ownership like stop/restart (#92560): the env marker is
-        # inherited by every descendant, and CLI sessions spawned under the
-        # gateway tree must stay able to manage it.
-        from tools.process_registry import _is_supervised_gateway_process
-
-        if _is_supervised_gateway_process():
-            print_error(
-                "Refusing to uninstall the gateway from inside the gateway process.\n"
-                "This command was blocked to prevent the gateway from terminating itself.\n"
-                "Use `hermes gateway uninstall` from a shell outside the running gateway."
-            )
-            sys.exit(1)
-
-        if is_managed():
-            managed_error("uninstall gateway service")
-            return
-        system = getattr(args, "system", False)
-        if is_termux():
-            print(
-                "Gateway service uninstall is not supported on Termux because there is no managed service to remove."
-            )
-            print("Stop manual runs with: hermes gateway stop")
-            sys.exit(1)
-        if supports_systemd_services():
-            systemd_uninstall(system=system)
-        elif is_macos():
-            launchd_uninstall()
-        elif is_windows():
-            from hermes_cli import gateway_windows
-
-            gateway_windows.uninstall()
-        elif is_container():
-            from hermes_cli.service_manager import detect_service_manager
-            if detect_service_manager() == "s6":
-                print("Per-profile gateways are auto-unregistered when you delete the profile.")
-                print()
-                print("  hermes profile delete <name>     # tears down the s6 service slot")
-                print("  hermes -p <name> gateway stop    # stop without deleting the profile")
-                return
-            print("Service uninstall is not applicable inside a Docker container.")
-            print("To stop the gateway, stop or remove the container:")
-            print()
-            print("  docker stop <container>")
-            print("  docker rm <container>")
-            sys.exit(0)
-        else:
-            print("Not supported on this platform.")
-            sys.exit(1)
-
-    elif subcmd == "start":
-        system = getattr(args, "system", False)
-        start_all = getattr(args, "all", False)
-
-        # Phase 4: inside a container with s6, dispatch via the service
-        # manager instead of falling through to systemd/launchd/windows.
-        # `--all` isn't meaningful here (each profile has its own service
-        # slot — start them individually via `hermes -p <name> gateway
-        # start`), so just bring up the current profile's slot.
-        if not start_all and _dispatch_via_service_manager_if_s6("start"):
-            return
-
-        if start_all:
-            # Kill all stale gateway processes across all profiles before starting
-            killed = kill_gateway_processes(all_profiles=True)
-            if killed:
-                print(
-                    f"✓ Killed {killed} stale gateway process(es) across all profiles"
-                )
-                _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
-
-        if is_termux():
-            print(
-                "Gateway service start is not supported on Termux because there is no system service manager."
-            )
-            print("Run manually: hermes gateway")
-            sys.exit(1)
-        if supports_systemd_services():
-            systemd_start(system=system)
-        elif is_macos():
-            launchd_start()
-        elif is_windows():
-            from hermes_cli import gateway_windows
-
-            gateway_windows.start()
-        elif is_wsl():
-            print("WSL detected but systemd is not available.")
-            print("Run the gateway in foreground mode instead:")
-            print()
-            print(
-                "  hermes gateway run                              # direct foreground"
-            )
-            print(
-                "  tmux new -s hermes 'hermes gateway run'         # persistent via tmux"
-            )
-            print(
-                "  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background"
-            )
-            print()
-            print(
-                "To enable systemd: add systemd=true to /etc/wsl.conf and run 'wsl --shutdown' from PowerShell."
-            )
-            sys.exit(1)
-        elif is_container():
-            # Reached only when s6 ISN'T running (the early dispatch
-            # above handles the s6 case). Pre-s6 containers or other
-            # container runtimes that don't ship our /init get the
-            # historical guidance: the gateway is the container's main
-            # process, so use docker lifecycle commands.
-            print("Service start is not applicable inside a Docker container.")
-            print("The gateway runs as the container's main process.")
-            print()
-            print("  docker start <container>     # start a stopped container")
-            print("  docker restart <container>   # restart a running container")
-            print()
-            print("Or run the gateway directly: hermes gateway run")
-            sys.exit(0)
-        else:
-            print("Not supported on this platform.")
-            sys.exit(1)
-
-    elif subcmd == "stop":
-        # Defense: refuse self-targeting gateway stop from inside the gateway.
-        # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
-        # The supervised probe also PASSES a plain foreground `hermes gateway run`
-        # (env set, PID owned, but no supervisor): that is intentional and
-        # harmless — with no supervisor there is no KeepAlive, so a self-stop is
-        # a one-shot exit rather than a respawn loop.
-        from tools.process_registry import _is_supervised_gateway_process
-
-        if _is_supervised_gateway_process():
-            print_error(
-                "Refusing to stop the gateway from inside the gateway process.\n"
-                "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway stop` from a shell outside the running gateway."
-            )
-            sys.exit(1)
-
-        stop_all = getattr(args, "all", False)
-        system = getattr(args, "system", False)
-
-        # Phase 4: inside a container with s6, dispatch via the service
-        # manager. ``--all`` iterates every registered profile gateway
-        # through s6 (otherwise it would fall through to ``pkill``,
-        # which s6-supervise observes as a crash and immediately restarts).
-        if stop_all and _dispatch_all_via_service_manager_if_s6("stop"):
-            return
-        if not stop_all and _dispatch_via_service_manager_if_s6("stop"):
-            return
-
-        if stop_all:
-            # --all: kill every gateway process on the machine
-            service_available = False
-            if supports_systemd_services() and (
-                get_systemd_unit_path(system=False).exists()
-                or get_systemd_unit_path(system=True).exists()
-            ):
-                try:
-                    systemd_stop(system=system)
-                    service_available = True
-                except subprocess.CalledProcessError:
-                    pass
-            elif is_macos() and get_launchd_plist_path().exists():
-                try:
-                    launchd_stop()
-                    service_available = True
-                except subprocess.CalledProcessError:
-                    pass
-            elif is_windows():
-                from hermes_cli import gateway_windows
-
-                if gateway_windows.is_installed():
-                    try:
-                        gateway_windows.stop()
-                        service_available = True
-                    except (subprocess.CalledProcessError, RuntimeError):
-                        pass
-            killed = kill_gateway_processes(all_profiles=True)
-            total = killed + (1 if service_available else 0)
-            if total:
-                print(f"✓ Stopped {total} gateway process(es) across all profiles")
-            else:
-                print("✗ No gateway processes found")
-        else:
-            # Default: stop only the current profile's gateway
-            service_available = False
-            if supports_systemd_services() and (
-                get_systemd_unit_path(system=False).exists()
-                or get_systemd_unit_path(system=True).exists()
-            ):
-                try:
-                    systemd_stop(system=system)
-                    service_available = True
-                except subprocess.CalledProcessError:
-                    pass
-            elif is_macos() and get_launchd_plist_path().exists():
-                try:
-                    launchd_stop()
-                    service_available = True
-                except subprocess.CalledProcessError:
-                    pass
-            elif is_windows():
-                from hermes_cli import gateway_windows
-
-                if gateway_windows.is_installed():
-                    try:
-                        gateway_windows.stop()
-                        service_available = True
-                    except (subprocess.CalledProcessError, RuntimeError):
-                        pass
-
-            if not service_available:
-                # No systemd/launchd/schtasks service — use profile-scoped PID file
-                if stop_profile_gateway():
-                    print("✓ Stopped gateway for this profile")
-                else:
-                    print("✗ No gateway running for this profile")
-            else:
-                print(f"✓ Stopped {get_service_name()} service")
-
-    elif subcmd == "restart":
-        # Defense: refuse self-targeting gateway restart from inside the gateway.
-        # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
-        # The supervised probe also PASSES a plain foreground `hermes gateway run`
-        # (env set, PID owned, but no supervisor): that is intentional and
-        # harmless — with no supervisor there is no KeepAlive, so a self-restart
-        # is a single relaunch rather than a respawn loop.
-        from tools.process_registry import _is_supervised_gateway_process
-
-        if _is_supervised_gateway_process():
-            print_error(
-                "Refusing to restart the gateway from inside the gateway process.\n"
-                "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway restart` from a shell outside the running gateway."
-            )
-            sys.exit(1)
-
-        # Try service first, fall back to killing and restarting
-        service_available = False
-        system = getattr(args, "system", False)
-        restart_all = getattr(args, "all", False)
-        service_configured = False
-
-        # Phase 4: inside a container with s6, dispatch via the service
-        # manager (s6-svc -t restarts the supervised process). ``--all``
-        # iterates every registered profile gateway through s6; without
-        # this it would fall through to ``pkill``, which s6-supervise
-        # would observe as a crash and immediately restart anyway.
-        if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
-            return
-        if not restart_all and _dispatch_via_service_manager_if_s6("restart"):
-            return
-
-        if restart_all:
-            # --all: stop every gateway process across all profiles, then start fresh
-            service_stopped = False
-            if supports_systemd_services() and (
-                get_systemd_unit_path(system=False).exists()
-                or get_systemd_unit_path(system=True).exists()
-            ):
-                try:
-                    systemd_stop(system=system)
-                    service_stopped = True
-                except subprocess.CalledProcessError:
-                    pass
-            elif is_macos() and get_launchd_plist_path().exists():
-                try:
-                    launchd_stop()
-                    service_stopped = True
-                except subprocess.CalledProcessError:
-                    pass
-            elif is_windows():
-                from hermes_cli import gateway_windows
-
-                if gateway_windows.is_installed():
-                    try:
-                        gateway_windows.stop()
-                        service_stopped = True
-                    except (subprocess.CalledProcessError, RuntimeError):
-                        pass
-            killed = kill_gateway_processes(all_profiles=True)
-            total = killed + (1 if service_stopped else 0)
-            if total:
-                print(f"✓ Stopped {total} gateway process(es) across all profiles")
+def _cmd_start(args):
+    system = getattr(args, "system", False)
+    start_all = getattr(args, "all", False)
+    _guard_named_profile_under_multiplexer(force=getattr(args, "force", False))
+    if not start_all and _dispatch_via_service_manager_if_s6("start"):
+        return
+    if start_all:
+        killed = kill_gateway_processes(all_profiles=True)
+        if killed:
+            print(f"✓ Killed {killed} stale gateway process(es) across all profiles")
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
 
     if is_termux():
@@ -7760,7 +7386,6 @@ def _cmd_status(args):
         print("✓ Gateway is running via the default-profile multiplexer")
         print("  Manage it from the default profile: hermes gateway status")
         _print_served_ingress_urls(get_active_profile_name())
-        _print_unserved_shared_ingress(get_active_profile_name())
     elif (kind := _installed_service_kind_for(lambda: _windows_service_installed)) is not None:
         if kind == "systemd":
             systemd_status(deep, system=system, full=full)

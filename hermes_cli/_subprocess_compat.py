@@ -389,20 +389,21 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     env["GIT_PAGER"] = "cat"
     env["PAGER"] = "cat"
     env["GIT_EDITOR"] = "true"
-
-    config_overrides = {
-        "credential.helper": "",
-        "core.askPass": "",
-        "core.fsmonitor": "false",
-        "core.untrackedCache": "false",
-        "core.hooksPath": devnull,
-        "core.pager": "cat",
-        "core.editor": "true",
-        "sequence.editor": "true",
-        "diff.external": "",
-    }
-    env["GIT_CONFIG_COUNT"] = str(len(config_overrides))
-    for idx, (key, value) in enumerate(config_overrides.items()):
+    overrides = list(_GIT_CONFIG_OVERRIDES.items())
+    # safe.directory is honoured ONLY from global/system config (git rejects it from repo-level
+    # config so a hostile repo cannot self-authorise), and both are blanked just above. Without
+    # re-injection every internal git call fails "detected dubious ownership" on any repo whose
+    # st_uid != geteuid() -- NFS/CIFS mounts without idmapping, shared checkouts, containers with
+    # a remapped uid -- even though the user's own `git config --global --add safe.directory` is
+    # correctly set and their interactive git works fine. Carried over the GIT_CONFIG_KEY_n
+    # channel, which survives GIT_CONFIG_GLOBAL=/dev/null. Read-only and non-widening: the values
+    # are replayed in git's own effective order, empty reset markers included (see
+    # _user_safe_directories), so a global reset still revokes a system-wide wildcard exactly as it
+    # does for the user's interactive git. Appended last, but the hardening overrides above are
+    # distinct keys, so they are unaffected by ordering within safe.directory.
+    overrides.extend(("safe.directory", value) for value in safe_directories)
+    env["GIT_CONFIG_COUNT"] = str(len(overrides))
+    for idx, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{idx}"] = key
         env[f"GIT_CONFIG_VALUE_{idx}"] = value
 

@@ -39,8 +39,7 @@ from typing import Any, Dict, Optional, Set
 
 from agent.secret_scope import get_secret
 from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
-    get_scoped_secret as _get_scoped_secret, send_error
+    apply_yaml_bridge as _apply_yaml_bridge, get_scoped_secret as _get_scoped_secret, send_error
 )
 
 try:
@@ -63,15 +62,8 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
-    gateway_trust_env,
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    ProcessingOutcome,
-    SendResult,
-    resolve_proxy_url,
-    proxy_kwargs_for_aiohttp,
-    _ssrf_redirect_guard,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
+    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -378,8 +370,10 @@ MATRIX_MAX_MESSAGE_LENGTH_CEILING = 65535
 
 def _resolve_max_message_length(config) -> int:
     """Resolve outbound chunk size from config, env, or plugin registry."""
-    raw = _extra_or_secret(getattr(config, "extra", None), "max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", None)
-    if raw is None or not str(raw).strip():
+    raw = (getattr(config, "extra", {}) or {}).get("max_message_length")
+    if raw is None:
+        raw = _get_scoped_secret("MATRIX_MAX_MESSAGE_LENGTH")
+    if raw is None:
         with suppress(Exception):
             from gateway.platform_registry import platform_registry
             entry = platform_registry.get("matrix")
@@ -543,8 +537,12 @@ def _csv_set(raw: Any) -> Set[str]:
 
 
 def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
-    """Resolve a room/user list: scoped env var → config.extra[key] → empty."""
-    return _csv_set(_extra_or_secret(config.extra, key, env_name, "", blank_is_unset=False))
+    """Resolve a room/user list from config.extra[key], else the env var."""
+    raw = config.extra.get(key)
+    if raw is None:
+        # Scoped read: under multiplex os.environ is the DEFAULT profile's room/user list.
+        raw = _get_scoped_secret(env_name, "").strip()
+    return _csv_set(raw)
 
 
 def _recovery_key_output_path() -> Optional[Path]:
@@ -718,19 +716,10 @@ def matrix_deps_present() -> bool:
 
 
 def check_matrix_requirements() -> bool:
-    """Return True if the Matrix adapter can be used.
-
-    Combined credentials + deps answer for setup/status callers.  The
-    registry's ``ensure_deps_fn`` is the deps-only
-    :func:`ensure_matrix_deps` below — credentials must NOT gate the
-    installer (they're handled by ``is_connected``, which also accepts
-    ``PlatformConfig.extra``-configured setups that these env checks
-    would wrongly veto).
-    """
-    token = _startup_env_secret("MATRIX_ACCESS_TOKEN")
-    password = _startup_env_secret("MATRIX_PASSWORD")
-    homeserver = _startup_env_secret("MATRIX_HOMESERVER")
-
+    """Credentials + deps answer for setup/status callers (credentials must NOT gate the installer)."""
+    token = _get_scoped_secret("MATRIX_ACCESS_TOKEN", "").strip()
+    password = _get_scoped_secret("MATRIX_PASSWORD", "").strip()
+    homeserver = _get_scoped_secret("MATRIX_HOMESERVER", "").strip()
     if not token and not password:
         logger.debug("Matrix: neither MATRIX_ACCESS_TOKEN nor MATRIX_PASSWORD set")
         return False
@@ -911,10 +900,10 @@ class MatrixAdapter(BasePlatformAdapter):
         self._auto_thread: bool = self._extra_truthy(config, "auto_thread", "MATRIX_AUTO_THREAD", "true")
         self._dm_auto_thread: bool = _env_truthy("MATRIX_DM_AUTO_THREAD", "false")
         self._dm_mention_threads: bool = self._extra_truthy(config, "dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "false")
-        raw_session_scope = str(_extra_or_secret(config.extra, "session_scope", "MATRIX_SESSION_SCOPE", "auto")).strip().lower()
+        raw_session_scope = str(config.extra.get("session_scope") or _get_scoped_secret("MATRIX_SESSION_SCOPE", "auto")).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
-        self._reactions_enabled: bool = str(_extra_or_secret(config.extra, "reactions", "MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
+        self._reactions_enabled: bool = str(_get_scoped_secret("MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Let the final message land before redacting reactions ("missing event" in some
         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
@@ -936,13 +925,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
-        # Authz lists: scoped env → this profile's YAML (``allowed_users`` / ``ignore_user_patterns``,
-        # seeded by the bridge) → empty. Under multiplex os.environ is the DEFAULT profile's allowlist,
-        # which must not decide who approves tool calls on a secondary bot.
-        self._allowed_user_ids: Set[str] = _extra_csv_set(config, "allowed_users", "MATRIX_ALLOWED_USERS")
+        # Authz lists via the scoped reader: under multiplex os.environ is the DEFAULT profile's
+        # allowlist, which must not decide who approves tool calls on a secondary bot.
+        self._allowed_user_ids: Set[str] = _csv_set(_get_scoped_secret("MATRIX_ALLOWED_USERS", "").strip())
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
-        for pattern in _csv_set(_extra_or_secret(config.extra, "ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "")):
+        for pattern in (p.strip() for p in _get_scoped_secret("MATRIX_IGNORE_USER_PATTERNS", "").strip().split(",") if p.strip()):
             try:
                 self._ignored_user_patterns.append(re.compile(pattern))
             except re.error as exc:
@@ -962,8 +950,10 @@ class MatrixAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _extra_truthy(config, key: str, env_name: str, default: str) -> bool:
-        """Scoped env var → ``config.extra[key]`` (YAML, per profile) → ``default``; true/1/yes semantics."""
-        configured = _extra_or_secret(config.extra, key, env_name, default)
+        """``config.extra[key]`` (YAML-bridged, per profile) else the env var, true/1/yes semantics."""
+        configured = config.extra.get(key)
+        if configured is None:
+            return _env_truthy(env_name, default)
         return configured if isinstance(configured, bool) else str(configured).lower() in ("true", "1", "yes")
 
     @staticmethod
@@ -980,15 +970,19 @@ class MatrixAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _parse_require_mention(config) -> bool:
-        """MATRIX_REQUIRE_MENTION (scoped) → ``require_mention`` in config.extra → true."""
-        configured = _extra_or_secret(config.extra, "require_mention", "MATRIX_REQUIRE_MENTION", True)
-        return configured if isinstance(configured, bool) else str(configured).lower() not in {"false", "0", "no", "off"}
+        """require_mention from config.extra, else MATRIX_REQUIRE_MENTION (default true)."""
+        configured = MatrixAdapter._configured_bool(config, "require_mention")
+        if configured is not None:
+            return configured
+        return str(_get_scoped_secret("MATRIX_REQUIRE_MENTION", "true")).lower() not in {"false", "0", "no", "off"}
 
     @staticmethod
     def _parse_thread_require_mention(config) -> bool:
-        """MATRIX_THREAD_REQUIRE_MENTION (scoped) → ``thread_require_mention`` in config.extra → false."""
-        configured = _extra_or_secret(config.extra, "thread_require_mention", "MATRIX_THREAD_REQUIRE_MENTION", False)
-        return configured if isinstance(configured, bool) else str(configured).lower() not in {"false", "0", "no", "off"}
+        """thread_require_mention from config.extra, else MATRIX_THREAD_REQUIRE_MENTION (default false)."""
+        configured = MatrixAdapter._configured_bool(config, "thread_require_mention")
+        if configured is not None:
+            return configured
+        return str(_get_scoped_secret("MATRIX_THREAD_REQUIRE_MENTION", "false")).lower() in {"true", "1", "yes", "on"}
 
     @staticmethod
     def _extract_server_ed25519(device_keys_obj: Any) -> Optional[str]:
@@ -2811,78 +2805,6 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: redacted model picker reaction %s (%s)", emoji, evt_id)
             except Exception as exc:
                 logger.debug("Matrix: failed to redact model picker reaction %s: %s", emoji, exc)
-
-    # ------------------------------------------------------------------
-    # Text message aggregation (handles Matrix client-side splits)
-    # ------------------------------------------------------------------
-
-    def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
-        from gateway.session import build_session_key
-
-        return build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get(
-                "group_sessions_per_user", True
-            ),
-            thread_sessions_per_user=self.config.extra.get(
-                "thread_sessions_per_user", False
-            ),
-            profile=self._session_key_profile(event.source),
-        )
-
-    def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text event and reset the flush timer."""
-        key = self._text_batch_key(event)
-        existing = self._pending_text_batches.get(key)
-        chunk_len = len(event.text or "")
-        if existing is None:
-            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            self._pending_text_batches[key] = event
-        else:
-            if event.text:
-                existing.text = (
-                    f"{existing.text}\n{event.text}" if existing.text else event.text
-                )
-            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
-
-        prior_task = self._pending_text_batch_tasks.get(key)
-        if prior_task and not prior_task.done():
-            prior_task.cancel()
-        self._pending_text_batch_tasks[key] = asyncio.create_task(
-            self._flush_text_batch(key)
-        )
-
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text."""
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            if last_len >= self._split_threshold:
-                delay = self._text_batch_split_delay_seconds
-            else:
-                delay = self._text_batch_delay_seconds
-            await asyncio.sleep(delay)
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            logger.info(
-                "[Matrix] Flushing text batch %s (%d chars)",
-                key,
-                len(event.text or ""),
-            )
-            await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
-
-    # ------------------------------------------------------------------
-    # Read receipts
-    # ------------------------------------------------------------------
 
     def _background_read_receipt(self, room_id: str, event_id: str) -> None:
 

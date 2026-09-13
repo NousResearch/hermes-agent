@@ -654,6 +654,18 @@ def format_steer_marker(steer_text: str) -> str:
     return f"\n\n{STEER_MARKER_OPEN}\n{steer_text}\n{STEER_MARKER_CLOSE}"
 
 
+STEER_DISPLAY_KIND = "steer"
+
+
+def steer_user_row(steer_text: str) -> Dict[str, Any]:
+    """The standalone ``role:user`` row a mid-turn /steer is delivered as (after the newest tool
+    result). Its own row — never smeared onto the already-persisted tool row, which append-only
+    persistence would leave divergent from the live request — and typed so the alternation repair
+    never merges the next real prompt into it and history renderers can label it."""
+    return {"role": "user", "content": format_steer_marker(steer_text).lstrip(),
+            "display_kind": STEER_DISPLAY_KIND}
+
+
 STEER_CHANNEL_NOTE = (
     # Dieted (#95681, maintainer-directed). History: #40240 added this note
     # when the marker was bare and models refused steers as prompt injection
@@ -1105,43 +1117,16 @@ def _tenv_read(name: str, default: str = "") -> str:
 
 
 def _probe_remote_backend(env_type: str) -> str | None:
-    """Run a tiny introspection command inside the active terminal backend.
-
-    Returns a pre-formatted multi-line string describing the backend's OS,
-    $HOME, cwd, and user — or None if the probe failed. Result is cached
-    per process. Used only for non-local backends where the agent's tools
-    operate on a different machine than the host Hermes runs on.
-    """
-    cwd_hint = _tenv_read("TERMINAL_CWD", "")
-    cache_key = (env_type, cwd_hint)
-    cached = _BACKEND_PROBE_CACHE.get(cache_key)
-    if cached is not None:
-        return cached or None
-
-    try:
-        # Import locally: tools/ imports are heavy and only relevant when a
-        # non-local backend is actually configured.
-        from tools.terminal_tool import _create_environment, _get_env_config  # type: ignore
-    except Exception as e:
-        logger.debug("Backend probe unavailable (import failed): %s", e)
-        _BACKEND_PROBE_CACHE[cache_key] = ""
-        return None
-
-    env = None
-    try:
-        config = _get_env_config()
-        # Build the environment the same way tools/terminal_tool.py does for a
-        # live command: select the backend image, then assemble ssh/container
-        # config from the env-derived dict. (There is no `get_environment`
-        # factory — the real entry point is `_create_environment`.)
-        if env_type == "docker":
-            image = config.get("docker_image", "")
-        elif env_type == "singularity":
-            image = config.get("singularity_image", "")
-        elif env_type == "modal":
-            image = config.get("modal_image", "")
-        elif env_type == "daytona":
-            image = config.get("daytona_image", "")
+    """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
+    from hermes_constants import hermes_home_key
+    cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
+    formatted = _BACKEND_PROBE_CACHE.get(cache_key)
+    if formatted is None:
+        formatted = ""
+        try:
+            import tools.terminal_tool as terminal_tool  # heavy; only needed for non-local backends
+        except Exception as e:
+            logger.debug("Backend probe unavailable (import failed): %s", e)
         else:
             image = ""
 

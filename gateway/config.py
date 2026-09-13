@@ -567,27 +567,20 @@ class GatewayConfig:
     # Opt-in: the default profile's gateway serves every profile on the host (profiles stamped into
     # session keys, per-profile adapters/credentials).
     multiplex_profiles: bool = False
-    # Optional named-profile allowlist for multiplex mode. None preserves the
-    # historical serve-all behavior; [] serves only the default profile.
-    multiplex_profile_allowlist: Optional[List[str]] = None
-
-    # Opt-in systemd event-loop watchdog. Zero preserves Type=simple and
-    # disables sd_notify at runtime.
-    systemd_watchdog_seconds: int = 0
-
-    # In-process event-loop liveness watchdog (#69089). A daemon OS thread
-    # probes the gateway loop with call_soon_threadsafe; after consecutive
-    # missed probes it dumps all-thread stacks and hard-exits with the
-    # service-restart code so the supervisor can revive the process. On by
-    # default; set gateway.loop_watchdog: false in config.yaml to disable.
-    #
-    # Tuning knobs (all seconds unless noted) make the watchdog tolerate
-    # *transient, self-recovering* event-loop stalls — e.g. Telegram/Discord
-    # reconnect doing synchronous socket I/O during a network blip — so a
-    # short block does not force exit code 75 and trigger a restart churn
-    # that stalls cron dispatch (recurring fleet incidents on 2026-08-17,
-    # kanban t_0f76430f/t_70483f23). A genuine wedge (event loop frozen for
-    # the full tolerance window) still escalates to a supervised restart.
+    # Public HTTPS endpoint for scoped RoomLink calls (an API key alone must never advertise a
+    # route); HERMES_ROOM_LINK_URL overrides.
+    room_link_url: Optional[str] = None
+    systemd_watchdog_seconds: int = 0  # opt-in; zero keeps Type=simple and disables sd_notify
+    # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+    # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+    # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+    # max_strikes ~= 90-120s sustained block; the heartbeat-fsync false positive is fixed at the root
+    # (off-loop write + two-witness probe), so raising it would only delay recovery.
+    # On by default; set gateway.loop_watchdog: false in config.yaml to disable. Telegram/Discord reconnect
+    # doing synchronous socket I/O during a network blip — so a short block does not force exit code 75 and
+    # trigger a restart churn that stalls cron dispatch (recurring fleet incidents on 2026-08-17, kanban
+    # t_0f76430f/t_70483f23). A genuine wedge (event loop frozen for the full tolerance window) still
+    # escalates to a supervised restart. See #69089.
     loop_watchdog: bool = True
     # Seconds the watchdog waits between liveness probes.
     loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S

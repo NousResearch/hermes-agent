@@ -37,28 +37,15 @@ _STDIO_DIED_AGAIN_MSG = (
 _STDIO_OUTCOME_UNCERTAIN_MSG = (
     "MCP server '{s}' lost its stdio subprocess after the tool call began. The operation may have completed, so "
     "Hermes did not replay it. Do NOT retry automatically; inspect the external state first.")
-_SESSION_OUTCOME_UNCERTAIN_MSG = (
-    "The MCP transport session to '{s}' expired while this write-capable call was in flight, so the outcome is "
-    "UNKNOWN — the operation may or may not have taken effect server-side. It was NOT automatically retried to "
-    "avoid a duplicate side effect. The connection has {state}. Verify whether the operation took effect (e.g. "
-    "with a read-only tool) before re-invoking it.")
-
-
-def _tool_is_read_only(server_name: str, tool_name: str) -> bool:
-    """True only when discovery captured ``readOnlyHint=True`` for the tool. Missing or malformed
-    metadata fails safe to False (treated as write-capable). readOnlyHint is a property of the
-    connection's tools, so it lives under the connection key."""
-    from tools.mcp_tool_scope import _resolve_server_key
-    return _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True
 
 
 def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
     else a ``tool_error``. Fail-closed: approval-system errors block."""
-    from tools.mcp_tool_scope import _server_key
-    # Trust is the calling profile's own policy (an adopter of a shared connection keeps its own tier).
-    trust = _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL)
-    if trust != _core._TRUST_UNTRUSTED or _tool_is_read_only(server_name, tool_name):
+    from tools.mcp_tool_scope import _resolve_server_key
+    key = _resolve_server_key(server_name)
+    if (_core._server_trust_levels.get(key, _core._TRUST_FULL) != _core._TRUST_UNTRUSTED
+            or _core._tool_read_only_hints.get(key, {}).get(tool_name) is True):
         return None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent

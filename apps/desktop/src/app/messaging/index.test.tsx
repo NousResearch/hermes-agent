@@ -26,6 +26,12 @@ vi.mock('@/hermes', () => ({
   revokePairing: (platformId: string, userId: string, profile?: null | string) =>
     revokePairing(platformId, userId, profile),
   setApiRequestProfile: vi.fn(),
+  applyTelegramOnboarding: (pairingId: string, ids: string[], profile?: null | string) =>
+    applyTelegramOnboarding(pairingId, ids, profile),
+  cancelTelegramOnboarding: vi.fn(async () => ({ ok: true })),
+  getTelegramOnboardingStatus: (pairingId: string, profile?: null | string) =>
+    getTelegramOnboardingStatus(pairingId, profile),
+  startTelegramOnboarding: (botName?: string, profile?: null | string) => startTelegramOnboarding(botName, profile),
   updateMessagingPlatform: (id: string, body: unknown, profile?: null | string) =>
     updateMessagingPlatform(id, body, profile)
 }))
@@ -97,7 +103,6 @@ afterEach(() => {
 const { MessagingView } = await import('./index')
 
 async function renderMessaging() {
-  const { MessagingView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(

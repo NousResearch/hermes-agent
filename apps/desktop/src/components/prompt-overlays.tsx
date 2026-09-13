@@ -35,7 +35,8 @@ import {
   sessionVaultSaveLoginRequest,
   sessionVaultUnlockRequest
 } from '@/store/prompts'
-import { respondToServerRequest } from '@/store/server-requests'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { requestForOwnedSession } from '@/store/session-states'
 
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
 // password and skill secret capture. Dangerous-command / execute_code approval
@@ -289,7 +290,7 @@ function VaultUnlockDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.vaultUnlockSendFailed, { action: reconnectAction() })
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultUnlockSendFailed)
 
         return
       }
@@ -297,9 +298,14 @@ function VaultUnlockDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        // The response frame goes back over the socket the request arrived on — the
-        // backend that raised the prompt, never whatever gateway is foreground.
-        respondToServerRequest(request.requestId, { value: password })
+        // A master password must reach the backend that raised the prompt, not whatever
+        // gateway is foreground right now (background profile tiles have their own socket).
+        await requestForOwnedSession<{ status?: string }>(
+          request.sessionId,
+          ambientRequestFor(gateway),
+          'vault.unlock.respond',
+          { request_id: request.requestId, password }
+        )
         triggerHaptic('submit')
         clearVaultUnlockRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -386,7 +392,7 @@ function VaultSaveLoginDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.vaultSaveSendFailed, { action: reconnectAction() })
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultSaveSendFailed)
 
         return
       }
@@ -394,7 +400,12 @@ function VaultSaveLoginDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        respondToServerRequest(request.requestId, { value: login })
+        await requestForOwnedSession<{ status?: string }>(
+          request.sessionId,
+          ambientRequestFor(gateway),
+          'vault.save_login.respond',
+          { login, request_id: request.requestId }
+        )
         triggerHaptic('submit')
         clearVaultSaveLoginRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -498,7 +509,7 @@ function VaultCodeDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.vaultCodeSendFailed, { action: reconnectAction() })
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultCodeSendFailed)
 
         return
       }
@@ -506,7 +517,12 @@ function VaultCodeDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        respondToServerRequest(request.requestId, { value })
+        await requestForOwnedSession<{ status?: string }>(
+          request.sessionId,
+          ambientRequestFor(gateway),
+          'vault.code.respond',
+          { code: value, request_id: request.requestId }
+        )
         triggerHaptic('submit')
         clearVaultCodeRequest(request.sessionId, request.requestId)
       } catch (error) {

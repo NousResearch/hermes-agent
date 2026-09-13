@@ -60,40 +60,16 @@ from tools.tool_search_catalog import (
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
     build_catalog, build_catalog_listing_with_form, search_catalog)
 from tools.tool_search_validation import normalize_tool_call_entries, validate_deferred_call_args
-from tools.connectors import CONNECTOR_BATCH_SENTINEL, is_connector_name
-from tools.connectors.search import connections_in_scope, connector_entries_by_group, remote_schemas_for
+from tools.connector_search import connections_in_scope, connector_entries_by_group, remote_schemas_for
+from tools.tool_gateway.names import CONNECTOR_BATCH_SENTINEL, is_connector_name
 
 logger = logging.getLogger("tools.tool_search")
-
-_SCHEMA_LITERAL_KEYS = frozenset({"const", "default", "enum", "example", "examples"})
-
-
-# Bridge tool names. These names are reserved and may not collide with a
-# user/plugin/MCP tool — registration of any tool with these names is
-# rejected by the registry's existing override-protection logic.
-TOOL_SEARCH_NAME = "tool_search"
-TOOL_DESCRIBE_NAME = "tool_describe"
-TOOL_CALL_NAME = "tool_call"
-
-BRIDGE_TOOL_NAMES = frozenset({TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME, TOOL_CALL_NAME})
-
-# When estimating tokens from char count without a real tokenizer, this is
-# the cheap rule of thumb that's stable across providers. Roughly 4 chars
-# per token for English+JSON. Underestimating leads to false negatives
-# (tool search not activated when it should); overestimating leads to false
-# positives (activated when not needed). 4.0 errs slightly toward
-# underestimating, which is the safer default.
-CHARS_PER_TOKEN = 4.0
-
-# Bound the work one tool_search bridge call can request.
-_MAX_QUERIES_PER_CALL = 10
-# Bound the work one tool_describe bridge call can request.
+# Bound the work one bridge call requests. Search is capped at the gateway's
+# own limit: the connector search route answers 7 use_cases per request and
+# returns HTTP 502 for 8 or more (measured 2026-09-09), and one local call
+# maps to one gateway request. Describe has no such remote limit.
+_MAX_QUERIES_PER_CALL = 7
 _MAX_DESCRIBE_NAMES_PER_CALL = 10
-
-
-# ---------------------------------------------------------------------------
-# Configuration plumbing
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -393,29 +369,11 @@ def estimate_tokens_from_schemas(tool_defs: Iterable[Dict[str, Any]]) -> int:
     return int(math.ceil(sum(map(_chars, tool_defs)) / CHARS_PER_TOKEN))
 
 
-def should_activate(
-    config: ToolSearchConfig,
-    deferrable_tokens: int,
-    context_length: Optional[int],
-) -> bool:
-    """Decide whether tool search should activate for the current assembly.
-
-    ``"off"`` skips unconditionally. ``"on"`` and ``"auto"`` activate whenever
-    at least one deferrable tool exists (there's no point swapping a no-op).
-
-    ``"auto"`` is an ALIAS of ``"on"`` under tiered disclosure — it is kept
-    as the shipped default so that a future budget-gated mode ("inline the
-    schemas when they fit, defer only when they don't") can change ``auto``'s
-    behavior without breaking users who explicitly pinned ``on`` or ``off``.
-    Do not add behavior that distinguishes them without that design; see the
-    config reference for the user-facing statement of this contract.
-
-    Tiered-disclosure semantics (July 2026): the presence of ANY MCP/plugin
-    tool activates the bridge — schemas always defer. What the threshold now
-    controls is the *listing budget* (see :func:`listing_token_budget`), not
-    activation. ``context_length`` is retained in the signature for
-    backward compatibility with existing callers.
-    """
+def should_activate(config: ToolSearchConfig, deferrable_tokens: int,
+                    context_length: Optional[int], *, connections_granted: bool = False) -> bool:
+    """``"off"`` never activates; ``"on"``/``"auto"`` activate whenever any deferrable tool
+    exists ("auto" is reserved for a future budget-gated mode — do not distinguish them
+    without that design). ``context_length`` is kept for caller compatibility."""
     if config.enabled == "off":
         return False
     if deferrable_tokens > 0:
@@ -661,6 +619,17 @@ def _entry_search_text(td: Dict[str, Any], source_label: str = "") -> str:
     return f"{name_words} {extra} {desc} {param_names}"
 
 
+def _clip_description(text: str, cap: int = 500) -> str:
+    """Cap a record description, marking the cut so it reads as deliberate.
+
+    A bare slice ends mid-word ("apply exponential bac") and looks like
+    corruption; the ellipsis says "there is more — tool_describe has it".
+    500 keeps 9 in 10 vendor connector descriptions whole and every first
+    sentence (measured p90 575, first-sentence max 329 over 353 tools).
+    """
+    return text if len(text) <= cap else text[:cap] + "…"
+
+
 def _shared_tool_record(entry: CatalogEntry) -> Dict[str, Any]:
     """One record for the shared ``tools`` map (per-query groups carry names only);
     ``required`` lets the model attempt a trivial call without a ``tool_describe`` round-trip."""
@@ -818,25 +787,13 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
 
     On parse error, returns ``(None, {}, error_message)``.
     """
-    catalog: List[CatalogEntry] = []
-    for td in tool_defs:
-        fn = td.get("function") or {}
-        name = fn.get("name", "")
-        if not name:
-            continue
-        desc = fn.get("description", "") or ""
-        source, source_name = _classify_source(name)
-        # Index the human-facing group label ("linear", not "mcp-linear") so
-        # a service-name query matches tools from that source even when the
-        # tool's own name omits the service.
-        source_label = _listing_group_label(source_name) if source_name else ""
-        entry = CatalogEntry(
-            name=name,
-            description=desc,
-            schema=td,
-            source=source,
-            source_name=source_name,
-            _tokens=_tokenize(_entry_search_text(td, source_label)),
+    entries, err = normalize_tool_call_entries(args)
+    if err:
+        return None, {}, err
+
+    if len(entries) > 1 and any(not is_connector_name(e["name"]) for e in entries):
+        return None, {}, (
+            "Local tools require one entry per tool_call; mixed and multi-local batches are not supported."
         )
     if is_connector_name(entries[0]["name"]):
         return CONNECTOR_BATCH_SENTINEL, {"calls": entries}, None

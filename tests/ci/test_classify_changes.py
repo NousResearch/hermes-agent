@@ -95,6 +95,16 @@ CASES = {
         _lanes(python=True, site=True),
     ),
     "frontend → no uv_lock": (["apps/desktop/src/store/profile.ts"], _lanes(frontend=True)),
+    # Cross-language contract JSON under apps/: the pytest that pins it against
+    # the Python side must run even when nothing else in the PR is Python.
+    "gateway-events contract JSON → python + frontend": (
+        ["apps/shared/src/gateway-events.json"],
+        _lanes(python=True, frontend=True),
+    ),
+    "desktop slash-registry JSON → python + frontend": (
+        ["apps/desktop/src/lib/desktop-slash-registry.json"],
+        _lanes(python=True, frontend=True),
+    ),
     # The published CIMD document is asserted about by the Python suite, so a
     # lone edit there must not skip the lane that would catch a bad edit.
     "cimd document → python + site": (
@@ -150,7 +160,7 @@ CASES = {
         _lanes(python=True, desktop_updater=True),
     ),
     "desktop-update test → desktop_updater": (
-        ["tests/test_desktop_update_windows_progress.py"],
+        ["tests/scripts/desktop_update/test_desktop_update_windows_progress.py"],
         _lanes(python=True, python_prod=False, scan=True, desktop_updater=True),
     ),
     "updater-process.ts → desktop_updater": (

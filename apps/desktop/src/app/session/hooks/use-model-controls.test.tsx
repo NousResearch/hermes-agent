@@ -532,8 +532,10 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('custom:local')
   })
 
-  it('reseeds a sticky manual pick that was removed from the catalog', async () => {
-    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+  it('keeps a sticky manual pick even when its provider row does not list the model', async () => {
+    // Rows are hints: a custom endpoint serves ids the picker row lacks. The
+    // pick is the user's selection and must not be reseeded to the default.
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'deepseek-v4-flash-0731', provider: 'custom:hyper' })
 
     const queryClient = new QueryClient()
     queryClient.setQueryData(modelOptionsQueryKey('default'), {

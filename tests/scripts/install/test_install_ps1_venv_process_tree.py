@@ -20,7 +20,6 @@ import pytest
 from tests.install_ps1_fake_uv import compile_fake_uv
 
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
 POWERSHELL = next(

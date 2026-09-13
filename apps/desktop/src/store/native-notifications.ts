@@ -9,7 +9,7 @@ import { $approvalRequests, answerApproval } from './prompts'
 import { clearApprovalRequest } from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { $activeSessionId } from './session'
-import { requestForOwnedSession } from './session-states'
+import { requestForOwnedSession, storedSessionIdForRuntimeId } from './session-states'
 
 export type { HermesOpenTarget }
 
@@ -213,6 +213,7 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     actions: input.actions,
     activate: input.activate,
     body: input.body,
+    focusSessionId: input.sessionId ? (storedSessionIdForRuntimeId(input.sessionId) ?? undefined) : undefined,
     icon: input.icon,
     kind: input.kind,
     notifyId: input.notifyId,

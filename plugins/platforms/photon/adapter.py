@@ -291,14 +291,9 @@ def _env_enablement() -> Optional[dict]:
     project_id, project_secret = load_project_credentials()
     if not (project_id and project_secret):
         return None
-    seed: dict = {"project_id": project_id, "project_secret": project_secret}
-    home = _get_scoped_secret("PHOTON_HOME_CHANNEL", "").strip()
-    if home:
-        seed["home_channel"] = {
-            "chat_id": home,
-            "name": _get_scoped_secret("PHOTON_HOME_CHANNEL_NAME", "Home"),
-        }
-    return seed
+    return {"project_id": project_id, "project_secret": project_secret,
+            **_seed_extra_from_env((), home_env="PHOTON_HOME_CHANNEL")}
+
 
 
 def _markdown_enabled() -> bool:
@@ -503,47 +498,17 @@ class PhotonAdapter(BasePlatformAdapter):
             _get_scoped_secret("PHOTON_SIDECAR_AUTOSTART", "true")
         ).lower() not in ("0", "false", "no")
         self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or shutil.which("node") or "node"
-
-        # Presence watchdog. spectrum-ts only reconnects when its inbound
-        # iterator throws or ends; a half-open ("zombie") gRPC socket makes the
-        # iterator hang forever (no error, no end), so inbound silently dies
-        # until the sidecar is restarted. The sidecar owns primary zombie
-        # detection (stream-staleness + upstream probe -> degraded -> exit 75;
-        # surfaced here via /healthz in _monitor_sidecar_health). This adapter-
-        # side watchdog is a conservative second layer that only respawns the
-        # sidecar when the sidecar's own HTTP loop stops responding (probe
-        # HTTP call hangs) — an "inconclusive" probe (sidecar answered but
-        # could not prove upstream liveness) NEVER counts toward a respawn:
-        # the network may simply be down, and restarting cannot fix that.
-        # Thresholds are deliberately conservative (10 min interval) — shared
-        # lines can be legitimately quiet for hours, so we never restart on
-        # silence alone.
-        # Behavioural settings -> config.yaml (extra), bridged to env.
-        # Use _first_set (not ``or``) so an explicit 0 is honored — ``0 or X``
-        # would silently fall through to the default and you could never
-        # disable the watchdog with probe_interval_seconds: 0.
-        self._probe_interval = _coerce_float(
-            _first_set(
-                extra.get("probe_interval_seconds"),
-                _get_scoped_secret("PHOTON_PROBE_INTERVAL_SECONDS"),
-            ),
-            600.0,
-        )
-        self._probe_timeout = _coerce_float(
-            _first_set(
-                extra.get("probe_timeout_seconds"),
-                _get_scoped_secret("PHOTON_PROBE_TIMEOUT_SECONDS"),
-            ),
-            10.0,
-        )
-        self._probe_max_failures = _coerce_int(
-            _first_set(
-                extra.get("probe_max_failures"),
-                _get_scoped_secret("PHOTON_PROBE_MAX_FAILURES"),
-            ),
-            3,
-        )
-        # A non-positive interval disables the watchdog entirely (escape hatch).
+        # Presence watchdog (second layer behind the sidecar's own zombie-stream detection):
+        # respawns only when the sidecar's HTTP loop hangs; 10-min interval because shared
+        # lines are quiet for hours. Config key wins, then env; None-aware so 0 disables it.
+        def _setting(key: str, env: str, default: Any, cast: Callable[[Any], Any]) -> Any:
+            try:
+                return cast(_extra_or_secret(extra, key, env, None))
+            except (TypeError, ValueError):
+                return default
+        self._probe_interval = _setting("probe_interval_seconds", "PHOTON_PROBE_INTERVAL_SECONDS", 600.0, float)
+        self._probe_timeout = _setting("probe_timeout_seconds", "PHOTON_PROBE_TIMEOUT_SECONDS", 10.0, float)
+        self._probe_max_failures = _setting("probe_max_failures", "PHOTON_PROBE_MAX_FAILURES", 3, int)
         self._probe_enabled = self._probe_interval > 0
         self.supports_code_blocks = _markdown_enabled()  # markdown on => fences pass through
         self._sidecar_proc: Optional[subprocess.Popen] = None
@@ -793,69 +758,13 @@ class PhotonAdapter(BasePlatformAdapter):
         chat_type = "group" if space.get("type") == "group" else "dm"
         sender_id = sender.get("id") or space.get("phone") or space_id
 
-        ts_str = event.get("timestamp") or ""
-        try:
-            timestamp = (
-                datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                if ts_str
-                else datetime.now(tz=timezone.utc)
-            )
-        except ValueError:
-            timestamp = datetime.now(tz=timezone.utc)
-
-        # Media attachments (local cached paths) handed to the agent via the
-        # gateway's image-routing path, exactly like the BlueBubbles channel.
-        media_urls: List[str] = []
-        media_types: List[str] = []
-
-        async def _normalize_binary_payload(
-            payload: Dict[str, Any]
-        ) -> tuple[str, MessageType, List[str], List[str]]:
-            is_voice = payload.get("type") == "voice"
-            name = payload.get("name") or ("voice" if is_voice else "(unnamed)")
-            mime = payload.get("mimeType") or ""
-            # Promote CAF attachments to VOICE (iMessage voice notes use CAF).
-            # Check both filename and MIME: the sidecar may send "(unnamed)"
-            # when no name is supplied, so the MIME type is the reliable signal.
-            if not is_voice and (name.lower().endswith(".caf") or mime == "audio/x-caf"):
-                is_voice = True
-            mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
-            # Base64 decode + media-cache write (fsync-free but still disk
-            # I/O on possibly multi-MB payloads) — keep it off the event loop.
-            cached = await asyncio.to_thread(
-                _cache_inbound_attachment, payload, name, mime, force_audio=is_voice
-            )
-            if cached:
-                return (
-                    "(voice)" if is_voice else "(attachment)",
-                    mtype,
-                    [cached],
-                    [mime or ("audio/mp4" if is_voice else "application/octet-stream")],
-                )
-            label = "voice" if is_voice else "attachment"
-            duration = payload.get("duration")
-            duration_text = (
-                f", duration: {duration}s"
-                if isinstance(duration, (int, float))
-                else ""
-            )
-            return (
-                f"[Photon {label} received: {name} "
-                f"({mime or 'unknown MIME'}{duration_text})]",
-                mtype,
-                [],
-                [],
-            )
-
-        ctype = content.get("type")
-        if ctype in {"read", "read_receipt"}:
-            # Read receipts are presence signals, not a user turn. The sidecar
-            # only forwards receipts for messages we sent, so logging the
-            # target is enough for observability without waking the agent.
-            logger.debug(
-                "[photon] outbound message read: %s",
-                content.get("targetMessageId") or "unknown",
-            )
+        def _event(text: str, mtype: MessageType = MessageType.TEXT, **kwargs: Any) -> MessageEvent:
+            source = self.build_source(chat_id=space_id, chat_name=space_id, chat_type=chat_type,
+                                       user_id=sender_id, user_name=sender_id or None, message_id=message_id)
+            return MessageEvent(text=text, message_type=mtype, source=source, message_id=message_id,
+                                raw_message=event, timestamp=timestamp, **kwargs)
+        if ctype in {"read", "read_receipt"}:  # presence signal, not a user turn (receipts for our sends)
+            logger.debug("[photon] outbound message read: %s", content.get("targetMessageId") or "unknown")
             return
         if ctype == "reaction":
             # Only tapbacks on messages WE sent are addressed to the bot. Checked before the

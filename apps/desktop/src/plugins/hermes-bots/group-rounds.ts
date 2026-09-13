@@ -21,8 +21,10 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
-import { durableGroupChatMembers, groupMemberKey } from './group-membership'
-import { harvestStrandedGroupReply, isGroupPassText, runGroupChatMemberTurn } from './group-turns'
+import { durableGroupChatMembers, followGroupChat, groupMemberKey } from './group-membership'
+import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
+import { rejectGroupSlashCommand } from './group-slash'
+import { harvestStrandedGroupReply } from './group-turns'
 import { requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
@@ -426,7 +428,7 @@ export function unaddressedGroupMentions(group: string, members: GroupMember[], 
 export async function stopGroupThread(group: string, thread: null | string, members: GroupMember[] | null = null) {
   const room = $groupChats.get()[group] || {}
   const roster = Array.isArray(members) && members.length ? members : room.members || []
-  const turnName = room.turn || null
+  const onTurn = room.turn || null
 
   const stamp: GroupHoldStamp = {
     at: Date.now(),
@@ -470,9 +472,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
     thread: thread || null
   })
 
-  // Interrupt the member actually mid-turn. room.turn is runtime-only and
-  // names exactly one member (the loop is serial); a settled room has none.
-  const onTurn = turnName ? roster.find((member: GroupMember) => member?.name === turnName) : null
+  // The captured descriptor owns routing even if the roster has changed.
   const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
 
   if (onTurn && sessionId) {
@@ -967,6 +967,11 @@ export function sendToGroupChat(
   images?: Attachment[]
 ): null | string {
   const trimmed = String(text || '').trim()
+
+  if (rejectGroupSlashCommand(trimmed)) {
+    return null
+  }
+
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
 
   if ((!trimmed && !attached.length) || !members.length) {

@@ -1,7 +1,7 @@
 import {
   buildHermesWebSocketUrl,
   type ModelOptionProvider,
-  type ModelOptionsResult,
+  type ModelOptionsResponse,
 } from "@hermes/shared";
 
 // The dashboard can be served either at the root of its host (e.g.
@@ -2455,7 +2455,7 @@ export interface ModelInfoResponse {
 
 // ── Model options / assignment types ──────────────────────────────────
 
-export type { ModelOptionProvider, ModelOptionsResult };
+export type { ModelOptionProvider, ModelOptionsResponse };
 
 export interface AuxiliaryTaskAssignment {
   task: string;

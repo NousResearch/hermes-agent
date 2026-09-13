@@ -28,7 +28,6 @@ import type {
 import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
-import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
 import { notifyError, readableError } from '@/store/notifications'
@@ -166,9 +165,7 @@ export function staleAuxAssignments(
     .filter(entry => {
       const p = (entry.provider ?? '').toLowerCase()
 
-      // 'main' is a backend alias meaning "follow the current main provider"
-      // (auxiliary_client._normalize_aux_provider), so it can never be a stale pin.
-      return p && p !== 'auto' && p !== 'main' && p !== main && !entry.local_endpoint
+      return p && p !== 'auto' && p !== main && !entry.local_endpoint
     })
     .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
 }
@@ -1125,15 +1122,6 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                       {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
                       {!isAuto && current.base_url && (
                         <span className="text-muted-foreground"> · {current.base_url}</span>
-                      )}
-                      {current?.reasoning_effort && (
-                        <span className="text-muted-foreground">
-                          {' · '}
-                          {current.reasoning_effort === 'none'
-                            ? `${m.reasoning} ${m.reasoningOff}`
-                            : (t.shell.modelOptions[current.reasoning_effort as keyof typeof t.shell.modelOptions] ??
-                              current.reasoning_effort)}
-                        </span>
                       )}
                     </span>
                   }

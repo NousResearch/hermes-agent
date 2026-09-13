@@ -528,7 +528,6 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "discord": _discord_rewriter("get_dynamic_schema_core"),
     "discord_admin": _discord_rewriter("get_dynamic_schema_admin"),
     "browser_navigate": _rewrite_browser_navigate,
-    "browser_cdp": _rewrite_browser_cdp,
     "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
     "browser_type": _rewrite_input_tool_for_vault,
     "browser_vault_list": _rewrite_browser_vault,
@@ -919,8 +918,9 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
         dispatch_kwargs["user_task"] = user_task
 
     def _dispatch(next_args: Dict[str, Any]) -> Any:
-        from tools.connectors import dispatch_connector_call, is_connector_name
+        from tools.tool_gateway.names import is_connector_name
         if is_connector_name(function_name):
+            from model_tools_connectors import dispatch_connector_call
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
         return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
@@ -1017,8 +1017,9 @@ def handle_function_call(
         result, underlying = bridged
         if underlying is None:
             return _emit(result, duration_ms=_elapsed_ms(start))
-        from tools.connectors import CONNECTOR_BATCH_SENTINEL, dispatch_connector_batch
+        from tools.tool_gateway.names import CONNECTOR_BATCH_SENTINEL
         if underlying[0] == CONNECTOR_BATCH_SENTINEL:
+            from model_tools_connectors import dispatch_connector_batch
             return _emit(dispatch_connector_batch(
                 underlying[1]["calls"], ids, user_task=user_task,
                 enabled_tools=enabled_tools, middleware_trace=trace,
@@ -1031,87 +1032,12 @@ def handle_function_call(
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         )
 
-    if _ts_mod is not None and _ts_mod.is_bridge_tool(function_name):
-        try:
-            # Use skip_tool_search_assembly=True so we see the real catalog,
-            # not the already-collapsed bridge-only list (the bridge would
-            # otherwise be searching only itself).
-            #
-            # Scope the catalog to the session's toolsets so the bridge can
-            # only surface and invoke tools the session was actually granted.
-            # Without this, a restricted-toolset session (subagent, kanban
-            # worker, curated gateway session) would see and be able to call
-            # the entire process registry via the bridge. Passing the same
-            # enabled/disabled toolsets the session was assembled with keeps
-            # the deferred catalog identical to the deferrable subset of the
-            # session's own tool list, and avoids polluting the process-global
-            # _last_resolved_tool_names with out-of-scope tools.
-            current_defs = get_tool_definitions(
-                enabled_toolsets=enabled_toolsets,
-                disabled_toolsets=disabled_toolsets,
-                quiet_mode=True, skip_tool_search_assembly=True,
-            ) or []
-        except Exception:
-            current_defs = []
-        if function_name == _ts_mod.TOOL_SEARCH_NAME:
-            return _return_bridge_result(
-                _ts_mod.dispatch_tool_search(
-                    function_args or {},
-                    current_tool_defs=current_defs,
-                )
-            )
-        if function_name == _ts_mod.TOOL_DESCRIBE_NAME:
-            return _return_bridge_result(
-                _ts_mod.dispatch_tool_describe(
-                    function_args or {},
-                    current_tool_defs=current_defs,
-                )
-            )
-        if function_name == _ts_mod.TOOL_CALL_NAME:
-            underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
-            if err or not underlying_name:
-                return _return_bridge_result(
-                    tool_error(err or "tool_call could not be resolved")
-                )
-            # Defense in depth: the underlying tool MUST be in the session's
-            # scoped deferrable catalog. resolve_underlying_call() only checks
-            # that the name is deferrable in the global registry; this gate
-            # additionally rejects any tool the session was not granted, so a
-            # restricted session can never invoke an out-of-scope tool through
-            # the bridge even if the catalog scoping above regressed.
-            _scoped_deferrable = _ts_mod.scoped_deferrable_names(current_defs)
-            if underlying_name not in _scoped_deferrable:
-                return _return_bridge_result(
-                    tool_error(
-                        f"'{underlying_name}' is not available in this session. "
-                        "Use tool_search to find tools you can call."
-                    )
-                )
-            # Validate against the deferred tool's concrete schema before
-            # dispatch. This covers constraints the provider cannot enforce
-            # through the generic tool_call ``arguments: object`` bridge.
-            _probe_err = _ts_mod.validate_deferred_call_args(underlying_name, underlying_args)
-            if _probe_err is not None:
-                return _return_bridge_result(_probe_err)
-            # Recurse with the underlying tool. All hooks fire against the
-            # real tool name. The bridge is invisible to hooks by design.
-            return handle_function_call(
-                function_name=underlying_name,
-                function_args=underlying_args,
-                task_id=task_id,
-                tool_call_id=tool_call_id,
-                session_id=session_id,
-                turn_id=turn_id,
-                api_request_id=api_request_id,
-                user_task=user_task,
-                enabled_tools=enabled_tools,
-                skip_pre_tool_call_hook=skip_pre_tool_call_hook,
-                skip_tool_request_middleware=skip_tool_request_middleware,
-                skip_tool_execution_middleware=skip_tool_execution_middleware,
-                tool_request_middleware_trace=list(_tool_middleware_trace),
-                enabled_toolsets=enabled_toolsets,
-                disabled_toolsets=disabled_toolsets,
-            )
+    from tools.tool_gateway.names import is_connector_name, parse_connector_name
+    if function_name == "manage_connections" or is_connector_name(function_name):
+        if "manage_connections" not in _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode=True):
+            return _emit(tool_error("Connectors are not available in this session."))
+        if is_connector_name(function_name) and parse_connector_name(function_name) is None:
+            return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__<tool>."))
 
     original_args = dict(function_args)
     if not skip_tool_request_middleware:

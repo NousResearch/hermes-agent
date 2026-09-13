@@ -435,61 +435,34 @@ def init_agent(
     Initialize the AI Agent.
 
 
-    agent.model = model
-    agent.max_iterations = max_iterations
-    # Shared iteration budget — parent creates, children inherit.
-    # Consumed by every LLM turn across parent + all subagents.
-    agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
-    agent.save_trajectories = save_trajectories
-    agent.verbose_logging = verbose_logging
-    agent.quiet_mode = quiet_mode
-    agent.tool_progress_mode = tool_progress_mode
-    agent.ephemeral_system_prompt = ephemeral_system_prompt
-    agent.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
-    agent._user_id = user_id  # Platform user identifier (gateway sessions)
-    agent._user_id_alt = user_id_alt  # Optional stable alternate platform identifier
-    agent._user_name = user_name
-    agent._chat_id = chat_id
-    agent._chat_name = chat_name
-    agent._chat_type = chat_type
-    agent._thread_id = thread_id
-    agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
-    # Pluggable print function — CLI replaces this with _cprint so that
-    # raw ANSI status lines are routed through prompt_toolkit's renderer
-    # instead of going directly to stdout where patch_stdout's StdoutProxy
-    # would mangle the escape sequences.  None = use builtins.print.
-    agent._print_fn = None
-    agent.background_review_callback = None  # Optional sync callback for gateway delivery
-    agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
-    agent.skip_context_files = skip_context_files
-    agent.load_soul_identity = load_soul_identity
-    # Background review (memory/skill) opt-out switch. When True, skips the
-    # _spawn_background_review fork at end-of-turn -- avoids ~30K tokens /
-    # event of extra LLM cost on cron-style sessions where review forks
-    # provide no value (no human in the loop, no skill-creation pressure).
-    # skip_memory=True already disables the memory-review trigger; this
-    # flag is the explicit single-switch off for both review paths.
-    agent.skip_background_review = bool(skip_background_review)
-    agent.pass_session_id = pass_session_id
-    agent.log_prefix_chars = log_prefix_chars
-    agent.log_prefix = f"{log_prefix} " if log_prefix else ""
-    # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
-    agent.base_url = base_url or ""
-    provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
-    agent.provider = provider_name or ""
-    agent.requested_provider = (
-        requested_provider.strip().lower()
-        if isinstance(requested_provider, str) and requested_provider.strip()
-        else agent.provider
-    )
-    agent.capabilities = {
-        key: value for key, value in (capabilities or {}).items()
-        if isinstance(key, str) and isinstance(value, bool)
-    }
-    agent._credential_pool = credential_pool
-    agent.acp_command = acp_command or command
-    agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+def _cfg_flag(cfg: Dict[str, Any], key: str, default: bool) -> bool:
+    """Legacy string-set truthiness used by the ``compression`` section."""
+    return str(cfg.get(key, default)).lower() in {"true", "1", "yes"}
+
+
+def _cfg_dict(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
+    """``cfg[key]`` if it is a mapping, else ``{}`` (malformed sections are ignored)."""
+    section = cfg.get(key, {})
+    return section if isinstance(section, dict) else {}
+
+
+class CompressionSettings(SimpleNamespace):
+    """Parsed ``compression`` config section (see ``_parse_compression_config``)."""
+
+
+_EXPLICIT_API_MODES = {
+    "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
+    "codex_app_server",
+}
+
+
+def _resolve_api_mode(agent, api_mode, provider_name, base_url):
+    """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
+    from hermes_cli.providers import is_actual_route
+    host, url = agent._base_url_hostname, agent._base_url_lower
+    if is_actual_route(agent.provider, base_url):
+        agent.api_mode = "chat_completions"
+    elif api_mode in _EXPLICIT_API_MODES:
         agent.api_mode = api_mode
     elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
         agent.api_mode = "codex_responses"
@@ -570,19 +543,16 @@ def _finalize_routing(agent, api_mode, credential_pool):
         if agent.provider not in _AGGREGATOR_PROVIDERS:
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
 
-    # GPT-5.x models usually require the Responses API path, but some
-    # providers have exceptions (for example Copilot's gpt-5-mini still
-    # uses chat completions). Also auto-upgrade for direct OpenAI URLs
-    # (api.openai.com) since all newer tool-calling models prefer
-    # Responses there. ACP runtimes are excluded: an ACP client handles
-    # its own routing and does not implement the Responses API surface.
-    # Keyed on the `acp://` scheme, not one vendor, so every ACP client
-    # is covered.
-    # When api_mode was explicitly provided, respect it — the user
-    # knows what their endpoint supports (#10473).
-    # Exception: Azure OpenAI serves gpt-5.x on /chat/completions and
-    # does NOT support the Responses API — skip the upgrade for Azure
-    # (openai.azure.com), even though it looks OpenAI-compatible.
+    # Nous model policy follows the ROUTE (the welcome host serves one model); a credential-pool
+    # swap can change the route later, so ``_swap_credential`` applies the same helper again.
+    from hermes_cli.anon_auth import pin_model_for_route
+    agent.model = pin_model_for_route(agent.provider, agent.base_url, agent.model)
+
+    # Auto-upgrade to Responses for GPT-5.x-style models and direct OpenAI URLs, unless
+    # api_mode was explicit, the runtime is ACP (`acp://` clients route themselves, no
+    # Responses surface) or Azure OpenAI (gpt-5.x on /chat/completions only). Provider
+    # exceptions live in _provider_model_requires_responses_api.
+    _base_lower = str(agent.base_url or "").lower()
     if (
         # GPT-5.x models usually require the Responses API path, but some providers have exceptions (for
         # example Copilot's gpt-5-mini still uses chat completions). ACP runtimes are excluded: an ACP
@@ -753,13 +723,32 @@ _SESSION_STATE: Dict[str, Any] = {
     "_persist_disabled": False,
 }
 
-    # Background memory/skill review state (agent/background_review.py).
-    # ``_background_review_run`` is installed before the worker starts and
-    # fences its first provider-capable phase; the direct agent pointer keeps
-    # normal interrupt propagation available once the fork is constructed.
-    agent._background_review_agent = None
-    agent._background_review_run = None
-    agent._background_review_lock = threading.Lock()
+# Streaming delivery state.
+_STREAM_STATE: Dict[str, Any] = {
+    "_stream_callback": None,  # streaming TTS; set early so _vprint can reference it
+    "_stream_needs_break": False,  # one "\n\n" before the next real text delta after tools
+    # Stateful scrubbers: <memory-context> / thinking spans split across deltas defeat
+    # per-delta regexes (both tags must be in one string).
+    "_stream_context_scrubber": StreamingContextScrubber,
+    "_stream_think_scrubber": StreamingThinkScrubber,
+    "_current_streamed_assistant_text": "",  # so a later completed interim isn't re-sent
+    "_delivered_interim_texts": set,  # interims this user turn (spans Codex continuations)
+    # Single-writer guard for the delta sink: each attempt claims a monotonic writer token and
+    # the sink drops chunks from threads holding a stale one, so a superseded stream can't
+    # interleave with the retry's. Threads that never claimed are never fenced.
+    "_stream_writer_lock": threading.Lock,
+    "_stream_writer_token": 0,
+    "_stream_writer_tls": threading.local,
+    "_stream_writer_dropped": 0,
+    # Set once a strict endpoint 400/422s on ``stream_options``; later streams omit it (#9705).
+    "_stream_options_unsupported": False,
+    # API-facing user message override when it differs from the persisted transcript (voice).
+    "_persist_user_message_idx": None,
+    "_persist_user_message_override": None,
+    "_persist_user_message_timestamp": None,
+    # Image-to-text fallbacks cached per payload/URL so one tool loop doesn't re-run vision.
+    "_anthropic_image_fallback_cache": dict,
+}
 
 
     # Store toolset filtering options

@@ -83,9 +83,7 @@ def _get_real_hermes_home() -> str | None:
     """Realpath of the authoritative Hermes home for the ACTIVE profile.
 
     Resolved per call so it tracks the per-turn ``HERMES_HOME`` scope (#107327);
-    a test may pin it via ``_real_hermes_home_cached`` + ``_real_hermes_home_loaded``.
-    Consumers exempting a whole TREE want ``_hermes_exempt_homes()``: under a named
-    profile this home is ``<root>/profiles/<name>`` and the root is exempt too."""
+    a test may pin it via ``_real_hermes_home_cached`` + ``_real_hermes_home_loaded``."""
     if _real_hermes_home_loaded:
         return _real_hermes_home_cached
     try:
@@ -103,30 +101,6 @@ def _get_real_hermes_home() -> str | None:
             return os.path.realpath(str(get_hermes_home()))
         except Exception:
             return None
-
-
-def _hermes_exempt_homes() -> tuple[str, ...]:
-    """Realpaths of the Hermes home tree(s) the protected-instruction gate must stay out of:
-    the ACTIVE profile's home, plus the Hermes ROOT when that home is a named profile
-    (``<root>/profiles/<name>``). Exempting only the profile dir left the root's DIRECT files
-    (LEDGER.md / MEMORY.md / SOUL.md / AGENTS.md ...) to the ``.hermes`` component rule, which
-    gated them like a project-local ``<repo>/.hermes/config.yaml`` — fail-closed headless
-    (#110630). They are the agent's own store, governed by their own guards, exactly like
-    ``~/.hermes`` under the default profile. The root is added only when the shape really is a
-    named profile (``named_profile_home``), so a coincidental ``profiles/`` dir elsewhere never
-    exempts its parent; the home comes from the ACTIVE scope, never ``HERMES_HOME`` alone."""
-    home = _get_real_hermes_home()
-    if not home:
-        return ()
-    try:
-        from hermes_constants import named_profile_home
-        profile_home = named_profile_home(home)
-    except Exception:
-        profile_home = None
-    if profile_home is None:
-        return (home,)
-    root = os.path.realpath(str(Path(str(profile_home)).parent.parent))
-    return (home, root) if root and root != home else (home,)
 
 
 def _resolved_or_raw(filepath: str, task_id: str) -> str:

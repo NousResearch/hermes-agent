@@ -469,30 +469,23 @@ def _persist_session_row_for_submit(rid, session):
     from hermes_state_user_copy import describe_storage_failure
     try:
         if _ensure_session_db_row(session) is False:
-            failure = describe_storage_failure(_db_error)
             error = _err(
                 rid, 5072,
-                f"Session storage is unavailable, so this message was not saved. Cause: {failure.gloss}. "
-                f"{failure.action} Then send your message again.",
-                data=_storage_error_data(failure, _db_error))
+                "session storage unavailable: "
+                f"{_db_error or 'state.db could not be opened'} — the message "
+                "was not saved; repair state.db and try again")
         else:
             _persist_branch_seed(session)
             return None
     except Exception as exc:
-        failure = describe_storage_failure(exc)
-        if failure.code == "disk_full":
+        from hermes_state_errors import is_disk_full_error
+        if is_disk_full_error(exc):
             error = _err(
                 rid, 5070,
-                "Session storage could not be written, so this message was not saved: the disk is full. "
-                "Free some disk space, then send your message again.",
-                data=_storage_error_data(failure, exc))
+                "disk full: session storage could not be written — free some disk space and try again")
         else:
             logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
-            error = _err(
-                rid, 5071,
-                f"Session storage could not be written, so this message was not saved. Cause: {failure.gloss}. "
-                f"{failure.action} Then send your message again.",
-                data=_storage_error_data(failure, exc))
+            error = _err(rid, 5071, f"session storage could not be written: {exc}")
     # No turn thread will start, so neither resume nor the busy queue may see
     # this rejected prompt as live. Release the slot a turn would normally own.
     with session["history_lock"]:
@@ -505,7 +498,7 @@ def _persist_session_row_for_submit(rid, session):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, hosted_terminal_callback, *, hosted_task=None):
+    rid, sid, session, text, display_kind, hosted_terminal_callback, *, hosted_task=None, turn_author=None):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -557,7 +550,7 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
-        terminal_callback=hosted_terminal_callback, hosted_task=hosted_task)
+        terminal_callback=hosted_terminal_callback, hosted_task=hosted_task, turn_author=turn_author)
 
 
 _TRUNCATION_PARAMS = (
@@ -617,6 +610,13 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    from tools.bot_relay import DeliveryAuthor
+
+    # Only the relay handler can build a DeliveryAuthor. A dict here is a client claiming a sender.
+    raw_author = params.get("_turn_author")
+    if raw_author is not None and not isinstance(raw_author, DeliveryAuthor):
+        return _err(rid, 4124, "turn author is stamped by the gateway, never by a client")
+    turn_author = raw_author.author if raw_author is not None else None
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
@@ -640,22 +640,15 @@ def _(rid, params: dict) -> dict:
         # and before _start_agent_build: no user row is persisted and no model turn
         # begins, so a refusal leaves the session exactly as it was.
         reason = getattr(limit_message, "reason", None)
-        return _err(
-            rid,
-            4090,
-            str(limit_message),
-            {"reason": reason} if reason else None,
-        )
-    # Which desktop window this message was typed into. Rewritten on every
-    # submit, because one session can be driven from the app window and the HUD
-    # in turn: a stale "hud" would tell the model the user is still floating
-    # over another app when they are back in Hermes.
-    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
-    has_truncation = (
-        truncate_user_ordinal is not None
-        or params.get("truncate_before_row_id") is not None
-        or params.get("truncate_before_message_id") is not None
-    )
+        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
+    # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
+    session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
+    # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
+    # user row stays the words the user said); anything else clears it.
+    voice_context = params.get("voice_context")
+    session["voice_live_context"] = (
+        voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
+    has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind/regenerate replays a turn from what the transcript shows. A
         # skill turn shows its invocation, so re-expand it here — otherwise
@@ -1209,7 +1202,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback, hosted_task=hosted_task),
+            rid, sid, session, text, display_kind, hosted_terminal_callback,
+            hosted_task=hosted_task, turn_author=turn_author),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
@@ -1681,20 +1675,14 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "ok", "remaining": remaining})
 
 
-@method("request.answer")
-def _(rid, params: dict) -> dict:
-    """Answer an open server→client request from a client that did not receive it (a Bot Mode room
-    window answering a member's prompt mirrored from its resume snapshot). The response-frame path is
-    the norm; this is the proxy for it. ``expired`` when the request already ended."""
-    request_id = str(params.get("id") or "")
-    result = params.get("result")
-    if not request_id or not isinstance(result, dict):
-        return _err(rid, 4002, "id and an object result required")
-    from tui_gateway import server_requests
-    frame = {"jsonrpc": "2.0", "id": request_id, "result": result}
-    if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
-        return _ok(rid, {"status": "ok"})
-    return _ok(rid, {"status": "expired"})
+_LATE_RESPOND_KEYS = {
+    "terminal.read.respond": "text", "preview.read.respond": "text", "preview.act.respond": "text",
+    "window.read.respond": "text", "tour.respond": "text", "mcp.setup.respond": "result",
+    "sudo.respond": "password", "secret.respond": "value", "vault.unlock.respond": "password",
+    "vault.save_login.respond": "login", "vault.code.respond": "code"}
+for _name, _key in _LATE_RESPOND_KEYS.items():
+    method(_name)(lambda rid, params, _k=_key: _respond(rid, params, _k, allow_expired=True))
+del _name, _key
 
 
 # ── approvals ───────────────────────────────────────────────────────────────

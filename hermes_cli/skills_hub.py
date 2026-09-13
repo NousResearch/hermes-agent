@@ -652,7 +652,7 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
         c.print("[dim]Stale index entry: the skill was likely renamed or removed by "
                 "its author. Try `hermes skills search` for an alternative.[/]\n")
         return
-    c.print(f"[bold red]Error:[/] Could not download '{identifier}'.")
+    c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.")
     if rate_limited:
         c.print("[yellow]Hint:[/] GitHub API rate limit exhausted "
                 "(unauthenticated: 60 requests/hour).\n"

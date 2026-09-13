@@ -25,7 +25,7 @@ export interface CachedUpdateCheck {
   fetchedAt: number
   currentSha: string
   branch: string
-  status: Record<string, unknown> & { error?: string }
+  status: Record<string, unknown> & { error?: string; repository?: string }
 }
 
 /** `owner/repo` for any GitHub remote form; null for non-GitHub origins. */
@@ -46,15 +46,26 @@ export function compareApiUrl(slug: string, currentSha: string, targetSha: strin
 
 /**
  * Whether a cached result still answers a passive check. The cache is keyed on
- * the local HEAD and branch: applying an update or switching branches changes
- * HEAD and invalidates it immediately, so a 24h TTL never shows a stale
- * "update available" after the user just updated.
+ * the source repository, local HEAD and branch. Changing origin must not
+ * relabel another repository's result, even when HEAD and branch stay put.
+ * Legacy or unidentified sources are refreshed rather than attributed by guess.
  */
 export function cacheIsFresh(
   cached: CachedUpdateCheck | null | undefined,
-  { branch, currentSha, now }: { branch: string; currentSha: string; now: number }
+  {
+    branch,
+    currentSha,
+    now,
+    repository
+  }: { branch: string; currentSha: string; now: number; repository: string | null }
 ): boolean {
-  if (!cached || cached.branch !== branch || cached.currentSha !== currentSha) {
+  if (
+    !cached ||
+    !repository ||
+    cached.status.repository !== repository ||
+    cached.branch !== branch ||
+    cached.currentSha !== currentSha
+  ) {
     return false
   }
 

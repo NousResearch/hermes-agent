@@ -827,7 +827,6 @@ class GatewayAdapterLifecycleMixin:
         Each profile connects under its own HERMES_HOME + secret scope; credential/listener collisions
         are refused here — the only point seeing every profile's credentials together."""
         from gateway.run import MultiplexConfigError, _multiplex_profile_homes
-        from gateway.run_profile_reconcile import profile_serve_signature
         if not self._multiplex_on():
             # ``write_runtime_status`` re-stamps the previous writer's record in place, so a multiplexer's
             # ``served_profiles`` would outlive it into this single-profile run and `hermes -p X ...`
@@ -1022,6 +1021,14 @@ class GatewayAdapterLifecycleMixin:
             # Say so: four profiles with WHATSAPP_ENABLED=true and nothing in the log is a silent dead channel.
             if multiplex and platform in (Platform.RELAY, Platform.WHATSAPP):
                 self._note_unserved_secondary_platform(profile_name, platform)
+                continue
+            # api_server / webhook: the default's listener already mirrors them at /p/<profile>/; a second
+            # instance here would fight the default for the port (#100397).
+            if multiplex and platform.value in SHARED_LISTENER_MIRROR_PLATFORMS:
+                logger.info(
+                    "[MULTIPLEX] Profile '%s': %s is served by the default profile's listener at /p/%s/ — "
+                    "not starting a second listener", profile_name, platform.value, profile_name,
+                )
                 continue
             # api_server / webhook: the default's listener already mirrors them at /p/<profile>/; a second
             # instance here would fight the default for the port (#100397).

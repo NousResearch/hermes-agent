@@ -18,28 +18,31 @@ path per process, refcounted, with generation-aware retirement when the
 underlying file is replaced (snapshot restore, recovery swap).
 
 Lifecycle rules:
-
-- ``acquire(path)`` returns the current generation for *path*,
-  incrementing its refcount.  Same path ⇒ same instance ⇒ same writer
-  connection.
-- ``close()`` on a shared instance is a NO-OP.  The registry — not any
-  individual caller — owns the connection lifecycle, so one caller's
-  ``close()`` can never tear down a writer other callers still hold.
-- ``release(db)`` decrements the generation *db was acquired from*
-  (object-keyed, not pathname-keyed, so an inode replacement cannot
-  strand a still-owned generation).  The final release of a retired
-  generation tears it down.
-- On inode change, the old generation is RETIRED — never lent again —
-  but stays alive until its existing holders release.  If a replacement
-  open fails, the registry is left WITHOUT a path entry (never a closed
-  stale object), so the next acquire retries fresh.
-- All teardown happens OUTSIDE the registry lock: a final release's
-  WAL checkpoint must never stall acquisition for every state.db.
+- ``acquire(path)`` returns the current generation for *path* and bumps its refcount.
+- ``close()`` on a shared instance RELEASES one refcount instead of tearing the
+  connection down: the registry owns the physical lifecycle and only closes on the
+  final release, so legacy call sites return their reference instead of leaking it.
+- ``release(db)`` decrements the generation *db was acquired from* (object-keyed, so an
+  inode replacement cannot strand a still-owned generation); the final release of a
+  retired generation tears it down.
+- On inode change the old generation is RETIRED (never lent again) but stays alive until
+  its holders release. If the replacement open fails the registry keeps NO path entry.
+- All teardown happens OUTSIDE the registry lock: a final release's WAL checkpoint must
+  never stall acquisition for every state.db.
+- A final close/checkpoint is serialized with the next open for the same path; no new
+  generation is published while the previous generation is still tearing down.
+- A path can have SEVERAL closes admitted at once (the current generation's final release
+  plus a retired generation's drain). The path barrier COUNTS them and is lifted only by
+  the last one to settle, so neither ``acquire`` nor ``close_all`` / ``close_all_under``
+  can escape while any handle for that path is still inside checkpoint/WAL-unlink.
+- Maintenance callers borrow handles with a temporary registry reference instead of
+  iterating an unpinned snapshot.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
@@ -109,12 +112,20 @@ def _teardown(db: "SessionDB") -> None:
     """Close a shared instance, clearing its registry-owned flag first."""
     try:
         db._shared_registry_owned = False
-    except Exception:
-        pass
+    _close_quietly(db, "Error closing shared SessionDB")
+
+
+def _close_quietly(db: "SessionDB", debug_message: str) -> None:
+    """close() that never propagates. A lost WAL generation whose capture failed is data at risk,
+    not teardown noise: the handle stays open and the operator has to act, so that one surfaces."""
     try:
         db.close()
-    except Exception:
-        logger.debug("Error closing shared SessionDB", exc_info=True)
+    except Exception as exc:
+        from hermes_state_dbfile import RetiredGenerationCaptureError
+        if isinstance(exc, RetiredGenerationCaptureError):
+            logger.error("SessionDB for %s did not settle at close: %s", _db_path_of(db), exc)
+        else:
+            logger.debug(debug_message, exc_info=True)
 
 
 def acquire(db_path: Optional[Path] = None) -> "SessionDB":
@@ -267,6 +278,40 @@ def release(db: "SessionDB") -> bool:
     return True
 
 
+def _path_is_under(path: Path, root: Path) -> bool:
+    """True when *path* is *root* or a file inside it (normcase, resolved)."""
+    try:
+        path_key = os.path.normcase(str(path.resolve()))
+        root_key = os.path.normcase(str(root.resolve()))
+    except OSError:
+        path_key = os.path.normcase(str(path))
+        root_key = os.path.normcase(str(root))
+    return path_key == root_key or path_key.startswith(root_key + os.sep)
+
+
+def _teardown_swept_generations(
+    generations: List[_Generation],
+    teardown_barriers: Dict[Path, _TeardownBarrier],
+    active_teardowns: List[_TeardownBarrier],
+) -> int:
+    """Close *generations* outside the registry lock; wait for already-admitted teardowns."""
+    by_path: Dict[Path, List[_Generation]] = {}
+    for generation in generations:
+        by_path.setdefault(generation.path, []).append(generation)
+    for path, path_generations in by_path.items():
+        with _lock:
+            lifecycle_lock = _path_lifecycle_lock_locked(path)
+        try:
+            with lifecycle_lock:
+                for generation in path_generations:
+                    _teardown(generation.db)
+        finally:
+            _finish_teardown(path, teardown_barriers[path])
+    for barrier in active_teardowns:
+        barrier.event.wait()
+    return len(generations)
+
+
 def close_all() -> int:
     """Close every shared SessionDB in this process, regardless of refcount.
 
@@ -282,11 +327,46 @@ def close_all() -> int:
         _retired.clear()
         for generation in generations:
             generation.retired = True
-    # Teardown outside the lock, one generation at a time.
-    for generation in generations:
-        _teardown(generation.db)
-        closed += 1
-    return closed
+    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
+
+
+def close_all_under(directory: str | Path) -> int:
+    """Force-close every shared SessionDB whose file lives under *directory*; returns the count.
+
+    Profile delete rmtree (and a same-name recreate) fails while this process still holds
+    ``state.db``. Same contract as ``MemoryStore.release_all_under``: a live holder is
+    expected to fail afterward; a process that holds none is a no-op returning 0.
+
+    A final ``release()`` can drop the generation and admit teardown before the physical
+    close finishes. Wait for those directory-matching barriers even when no generation
+    remains, otherwise rmtree still sees the open handle.
+    """
+    try:
+        root = Path(directory).expanduser().resolve()
+    except OSError:
+        root = Path(directory).expanduser()
+    teardown_barriers: Dict[Path, _TeardownBarrier] = {}
+    with _lock:
+        generations = [
+            generation
+            for generation in list(_generations.values()) + list(_retired.values())
+            if _path_is_under(generation.path, root)
+        ]
+        # Collect by directory, not by remaining generations: a last release already
+        # popped the generation and left only ``_tearing_down``.
+        active_teardowns = [
+            barrier for path, barrier in _tearing_down.items()
+            if _path_is_under(path, root)
+        ]
+        selected_paths = {generation.path for generation in generations}
+        for path in selected_paths:
+            teardown_barriers[path] = _admit_teardown_locked(path)
+        for generation in generations:
+            generation.retired = True
+            if _generations.get(generation.path) is generation:
+                _generations.pop(generation.path, None)
+            _retired.pop(id(generation.db), None)
+    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
 
 
 def live_shared_session_dbs() -> List["SessionDB"]:
@@ -339,7 +419,20 @@ def release_or_close(db: "SessionDB") -> None:
     opens, CLI one-shots, test fakes — falls back to a direct close.
     """
     if not release(db):
-        try:
-            db.close()
-        except Exception:
-            logger.debug("release_or_close fallback close failed", exc_info=True)
+        _close_quietly(db, "release_or_close fallback close failed")
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+def close_shared_session_dbs() -> int:
+    return close_all()
+
+def get_shared_session_db(db_path: Optional[Path] = None) -> "SessionDB":
+    return acquire(db_path)
+
+def release_shared_session_db(db: "SessionDB") -> bool:
+    return release(db)
+# ---- END PLUGIN-COMPAT ----

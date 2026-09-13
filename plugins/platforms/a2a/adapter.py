@@ -89,12 +89,8 @@ def _profile_scoped() -> bool:
 
 
 def _default_agent_name() -> str:
-    # Scope-aware: inside a secondary multiplex profile, os.environ holds the
-    # DEFAULT profile's bridged A2A_AGENT_NAME — borrowing it would brand a
-    # secondary profile's Agent Card with another profile's identity. There
-    # is no per-profile config.yaml equivalent yet, so a scoped profile just
-    # falls through to the hostname-based default below instead.
-    name = "" if _profile_scoped() else os.getenv("A2A_AGENT_NAME", "").strip()
+    # Scope-aware: a secondary multiplex profile must not borrow the default profile's A2A_AGENT_NAME.
+    name = _get_scoped_secret("A2A_AGENT_NAME", "").strip()
     if name:
         return name
     try:
@@ -325,7 +321,7 @@ class A2AAdapter(BasePlatformAdapter):
         # fix's PR description: open PR #98937 is actively rewriting this
         # field's None-vs-empty-list semantics.)
         self._security_context = security.A2ASecurityContext.capture()
-        _port_env = None if _profile_scoped() else os.getenv("A2A_PORT")
+        _port_env = _get_scoped_secret("A2A_PORT")
         self.port = int(_port_env or extra.get("port", _DEFAULT_PORT))
         self.host = self._security_context.resolve_bind_host()
         self.agent_name = _default_agent_name()
@@ -445,29 +441,12 @@ class A2AAdapter(BasePlatformAdapter):
                 cfg = {}
             cfg = cfg if isinstance(cfg, dict) else {}
             raw = cfg.get("a2a_served_agents") or (cfg.get("a2a") or {}).get("served_agents")
-
-        agents: dict[str, dict] = {}
-        # Scope-aware for the same reason as port/toolsets above: a secondary
-        # profile must not inherit the default profile's A2A_AGENT_DESCRIPTION.
-        default_desc = (
-            "Hermes Agent — a general-purpose agent reachable over A2A."
-            if _profile_scoped()
-            else os.getenv(
-                "A2A_AGENT_DESCRIPTION",
-                "Hermes Agent — a general-purpose agent reachable over A2A.",
-            )
-        )
-        agents[""] = {
-            "slug": "",
-            "path": "",
-            "tenant": "",
-            "profile": self._active_profile,
-            "local": True,
-            "name": self.agent_name,
-            "description": default_desc,
-            "advertised_toolsets": self._advertised_toolsets,
-        }
-
+        # Scope-aware like port: a secondary profile must not inherit A2A_AGENT_DESCRIPTION.
+        default_desc = _get_scoped_secret("A2A_AGENT_DESCRIPTION", _DEFAULT_DESCRIPTION)
+        agents: dict[str, dict] = {"": {
+            "slug": "", "path": "", "tenant": "", "profile": self._active_profile, "local": True,
+            "name": self.agent_name, "description": default_desc, "advertised_toolsets": self._advertised_toolsets,
+        }}
         reserved = {"health", "metrics", ".well-known"}
         tenants: dict[str, str] = {}
         items = raw.items() if isinstance(raw, dict) else enumerate(raw or []) if isinstance(raw, list) else []

@@ -245,6 +245,11 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
+    # no_agent jobs never reach a model, so provider errors are structurally impossible for them.
+    # Gate on job MODE before substring matching, or a script's own wording ("timed out", "429")
+    # would blame the wrong subsystem; the generic cleaner below reports what actually happened.
+    provider_reachable = not job.get("no_agent")
+
     # Script runner contract ("Script timed out after {n}s: {path}") — also for agent jobs with a
     # context script. Must precede provider classification so it never claims a model failure.
     # See #78503, #82460.
@@ -584,6 +589,9 @@ _running_fire_owners: dict[str, dict[object, tuple[Optional[str], Path]]] = {}
 # Shutdown must not misclassify these as ownerless in-process runs: the tool
 # process sweep cannot reach the worker's transient scope.
 _restart_safe_waiter_job_ids: set[str] = set()
+# job_id -> pid of the restart-safe external worker executing it (absent for in-process runs), so a
+# drain observer can name the process holding the gateway open.
+_running_worker_pids: dict[str, int] = {}
 _running_lock = threading.Lock()
 
 # Per in-flight id: time.time() claim instant + the future owning its release (``_FUTURE_PENDING``
@@ -5552,12 +5560,305 @@ def _run_no_agent_job(
     return None, extra_prompt
 
 
-    # NOTE: the SQLite session store used to be initialized here, BEFORE the
-    # wake-gate and prompt-validation early returns below. Every gated run
-    # (``wakeAgent: false``, blocked prompt) opened state.db and returned
-    # without reaching the finally that closes it, relying on GC to release
-    # the handle. Init now happens inside the main try, right before the
-    # agent is constructed — after every early-return path (#96290).
+@dataclass
+class _CronJobConfig:
+    """Config-derived inputs for one agent-backed cron run."""
+
+    cfg: dict
+    model: str
+    model_cfg: Any
+    cron_default_provider: str
+
+
+def _snapshot_pin(job: dict, axis: str, current: str, job_id: str) -> str:
+    """The creation snapshot is an unpinned axis's effective pin: return it, logging once when it
+    differs from *current* (the live global default); ``""`` for legacy jobs without one, which keep
+    following the global default. A global model/provider change must never stop a cron job; a job
+    keeps running on what it was created under until the operator pins it or sets a cron.* fleet
+    default (#44585)."""
+    snapshot = str(job.get(f"{axis}_snapshot") or "").strip()
+    if snapshot and current and snapshot.lower() != current.lower():
+        logger.info(
+            "Job '%s': running on creation-snapshot %s %r (global default is now %r); "
+            "`hermes cron resnap %s` adopts the new default (stays unpinned), "
+            "`hermes cron edit %s --%s <value>` or cron.%s in config.yaml pins it.",
+            job_id, axis, snapshot, current, job_id, job_id, axis,
+            "model" if axis == "model" else "model_provider")
+    return snapshot
+
+
+def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
+    """Load config.yaml and resolve the run's model: per-job override > cron.model (fleet default) >
+    creation snapshot > HERMES_MODEL > config ``model:``. Re-read every tick (no cache) so
+    ``hermes cron edit --model`` applies next tick."""
+    model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
+    _cron_default_provider = ""
+    _cfg: dict = {}
+    _model_cfg: Any = {}
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+        _cfg_path = str(_get_hermes_home() / "config.yaml")
+        if os.path.exists(_cfg_path):
+            _cfg = load_user_config_effective(Path(_cfg_path))
+            # Coerce null to {} so a falsy default never clobbers a resolved env value.
+            _model_cfg = _cfg.get("model") or {}
+            _cron_cfg_for_model = _cfg.get("cron") or {}
+            _cron_default_model = ""
+            if isinstance(_cron_cfg_for_model, dict):
+                _cron_default_model = str(_cron_cfg_for_model.get("model") or "").strip()
+                _cron_default_provider = str(_cron_cfg_for_model.get("model_provider") or "").strip()
+            if not job.get("model"):
+                if _cron_default_model:
+                    model = _cron_default_model
+                else:
+                    _, _global_model = resolve_cron_model_drift_defaults(
+                        _cfg, environ={"HERMES_MODEL": cron_env_setting("HERMES_MODEL")})
+                    model = _snapshot_pin(job, "model", _global_model, job_id) or _global_model or model
+    except Exception as e:
+        logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+
+    # Fail fast: an empty model otherwise reaches the provider as an opaque 400.
+    # See #23979.
+    if not (isinstance(model, str) and model.strip()):
+        raise RuntimeError(
+            f"Cron job '{job_name}' has no model configured "
+            f"(job.model={job.get('model')!r}, "
+            f"HERMES_MODEL={cron_env_setting('HERMES_MODEL')!r}, "
+            "config.yaml model.default missing or empty). "
+            f"Set a per-job model via "
+            f"`hermes cron edit {job_id} --model <name>` or set a "
+            "default with `hermes model <name>`."
+        )
+
+    with contextlib.suppress(Exception):
+        from hermes_constants import apply_ipv4_preference
+        _net_cfg = _cfg.get("network", {})
+        if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
+            apply_ipv4_preference(force=True)
+    return _CronJobConfig(_cfg, model, _model_cfg, _cron_default_provider)
+
+
+def _load_prefill_messages(cfg: dict, job_id: str) -> Optional[list]:
+    """Prefill messages from env or config.yaml (top-level key canonical; agent.* is legacy)."""
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg.get("agent", {}), dict) else {}
+    prefill_file = (
+        cron_env_setting("HERMES_PREFILL_MESSAGES_FILE")
+        or cfg.get("prefill_messages_file", "")
+        or agent_cfg.get("prefill_messages_file", "")
+    )
+    if not prefill_file:
+        return None
+    pfpath = Path(prefill_file).expanduser()
+    if not pfpath.is_absolute():
+        pfpath = _get_hermes_home() / pfpath
+    if not pfpath.exists():
+        return None
+    try:
+        with open(pfpath, "r", encoding="utf-8") as _pf:
+            prefill_messages = json.load(_pf)
+        return prefill_messages if isinstance(prefill_messages, list) else None
+    except Exception as e:
+        logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
+        return None
+
+
+def _preflight_or_block(job: dict, job_id: str, job_name: str, cfg: dict) -> Optional[tuple]:
+    """Pre-dispatch config validation: refuse unrunnable jobs (missing key, unready skill,
+    unconfigured delivery) BEFORE AIAgent is built. run_one_job keys off BLOCKED_CONFIG_MARKER to
+    record blocked_config and alert once (`preflight_alerted` bit). Must run after the wake gate so
+    silent ticks stay silent. Opt-out: `cron.preflight: false`. Returns failure tuple or None.
+    """
+    # --------------------------------------------------------------- Pre-dispatch configuration validation
+    # (T1-26). A job whose configuration cannot possibly produce a successful run — missing provider API key
+    # (no fallback chain), unready attached skill, unconfigured delivery platform — is refused HERE, before
+    # AIAgent is constructed and before the resolution below can feed a doomed runtime into it, so a
+    # misconfigured job never burns an LLM call. run_one_job keys off the BLOCKED_CONFIG_MARKER in the
+    # returned error to record last_status='blocked_config' and alert exactly once (dedup persisted via the
+    # job's `preflight_alerted` bit — the #73506 alert-once shape).
+    _pf_reason = None
+    try:
+        if _cron_preflight_enabled(cfg):
+            _pf_reason = _preflight_job_config(job, cfg)
+            if not _pf_reason and job.get("preflight_alerted"):
+                # Config healthy again: clear alert-once marker so a future break re-alerts.
+                with contextlib.suppress(Exception):
+                    from cron.jobs import clear_preflight_alerted
+                    clear_preflight_alerted(job_id)
+    except Exception:
+        # Fail open: the validator must never take down a runnable job.
+        logger.debug("Job '%s': preflight validation errored — failing open", job_id, exc_info=True)
+        _pf_reason = None
+    if not _pf_reason:
+        return None
+
+    logger.warning(
+        "Job '%s' (ID: %s): BLOCKED by pre-dispatch config validation — %s (no LLM call was made)",
+        job_name, job_id, _pf_reason)
+    already_alerted = False
+    try:
+        from cron.jobs import mark_preflight_alerted
+        already_alerted = mark_preflight_alerted(job_id)
+    except Exception:
+        logger.debug("Job '%s': could not persist preflight alert marker", job_id, exc_info=True)
+    marker = BLOCKED_CONFIG_SILENT_MARKER if already_alerted else BLOCKED_CONFIG_MARKER
+    blocked_doc = (
+        f"# Cron Job: {job_name}\n\n"
+        f"**Job ID:** {job_id}\n"
+        f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"**Status:** BLOCKED (configuration)\n\n"
+        "Pre-dispatch validation found a configuration problem and "
+        "the agent was NOT run (no tokens spent).\n\n"
+        f"**Reason:** {_pf_reason}\n\n"
+        "The job will stay blocked (without re-alerting) until the "
+        "configuration is fixed; the next healthy run clears this "
+        "state. Set `cron.preflight: false` in config.yaml to disable this validation."
+    )
+    return False, blocked_doc, "", f"{marker} {_pf_reason}"
+
+
+def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[dict, str]:
+    """Resolve the runtime, walking the fallback chain on auth/transient-network errors. Returns
+    ``(runtime, model)``; provider+model swap atomically (never swap only the provider while keeping
+    a paid primary model). Provider precedence: per-job pin > cron.model_provider > creation
+    snapshot > persisted global config."""
+    from hermes_cli.runtime_provider import (
+        resolve_runtime_provider, format_runtime_provider_error)
+    from hermes_cli.auth import AuthError
+
+    model = jc.model
+    requested = job.get("provider") or jc.cron_default_provider or None
+    if not requested:
+        global_provider = (
+            str(jc.model_cfg.get("provider") or "").strip() if isinstance(jc.model_cfg, dict) else "")
+        # None (not the config provider) keeps the legacy no-snapshot path resolving from persisted
+        # config exactly as before.
+        requested = _snapshot_pin(job, "provider", global_provider, job_id) or None
+    try:
+        # Do NOT pass HERMES_INFERENCE_PROVIDER as `requested`: it would override persisted config
+        # and resurrect stale providers for unpinned jobs.
+        runtime_kwargs = {
+            "requested": requested,
+            # api_mode must derive from the model actually run, not the stale persisted default.
+            "target_model": model,
+        }
+        if job.get("base_url"):
+            runtime_kwargs["explicit_base_url"] = job.get("base_url")
+        return resolve_runtime_provider(**runtime_kwargs), model
+    except Exception as resolve_exc:
+        # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
+        # OAuth refresh); anything else re-raises.
+        is_auth = isinstance(resolve_exc, AuthError)
+        is_transient_net = _is_transient_provider_resolve_error(resolve_exc)
+        if not (is_auth or is_transient_net):
+            raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
+
+        logger.warning(
+            "Job '%s': primary provider resolve failed (%s: %s), trying fallback",
+            job_id, "auth" if is_auth else "transient network", resolve_exc)
+        for entry in get_fallback_chain(jc.cfg):
+            if not isinstance(entry, dict):
+                continue
+            fb_provider = str(entry.get("provider") or "").strip()
+            fb_model = str(entry.get("model") or "").strip()
+            if not fb_provider or not fb_model:
+                continue
+            try:
+                from hermes_cli.fallback_config import resolve_entry_api_key
+
+                fb_kwargs = {"requested": fb_provider, "target_model": fb_model}
+                if entry.get("base_url"):
+                    fb_kwargs["explicit_base_url"] = entry["base_url"]
+                fb_api_key = resolve_entry_api_key(entry)
+                if fb_api_key:
+                    fb_kwargs["explicit_api_key"] = fb_api_key
+                runtime = resolve_runtime_provider(**fb_kwargs)
+                logger.info(
+                    "Job '%s': fallback resolved to %s model %s",
+                    job_id, runtime.get("provider"), fb_model)
+                return runtime, fb_model
+            except Exception as fb_exc:
+                logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
+        raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
+
+
+def _load_credential_pool(runtime: dict, job_id: str):
+    runtime_provider = str(runtime.get("provider") or "").strip().lower()
+    if not runtime_provider:
+        return None
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(runtime_provider)
+        if pool.has_credentials():
+            logger.info(
+                "Job '%s': loaded credential pool for provider %s with %d entries",
+                job_id, runtime_provider, len(pool.entries()))
+            return pool
+    except Exception as e:
+        logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
+    return None
+
+
+def _init_cron_mcp_tools(job_id: str) -> None:
+    """Register MCP servers for the agent's tool registry. Idempotent across ticks; non-fatal so a
+    broken MCP server never kills a working job."""
+    try:
+        # Initialize MCP servers so configured mcp_servers are available to the agent's tool registry before
+        # AIAgent is constructed. Without this, cron jobs never saw any MCP tools — only the gateway / CLI
+        # paths called discover_mcp_tools() at startup. Idempotent: subsequent ticks short-circuit on
+        # already-connected servers inside register_mcp_servers(). Non-fatal on failure: a broken MCP server
+        # shouldn't kill an otherwise-working cron job. See #4219.
+        from tools.mcp_tool_discovery import discover_mcp_tools
+        _mcp_tools = discover_mcp_tools()
+        if _mcp_tools:
+            logger.info("Job '%s': %d MCP tool(s) available", job_id, len(_mcp_tools))
+    except Exception as _mcp_exc:
+        logger.warning("Job '%s': MCP initialization failed (non-fatal): %s", job_id, _mcp_exc)
+
+
+def _open_cron_session_db(job: dict):
+    """Open the SQLite session store under its own timeout (HERMES_CRON_TIMEOUT only watches
+    run_conversation). A wedged sqlite3.connect returns None (no session store) instead of
+    wedging the worker thread."""
+    # Initialize the SQLite session store so cron job messages are persisted and discoverable via
+    # session_search (same pattern as gateway/run.py) — only now, after every early-return path (wake-gate,
+    # prompt validation, drift skip) has passed, so a gated run never opens state.db just to abandon the
+    # handle (#96290). Bounded with its own timeout (separate from HERMES_CRON_TIMEOUT, which only watches
+    # the agent's run_conversation below): SessionDB.__init__ opens/migrates state.db synchronously and has
+    # no timeout of its own against a wedged sqlite3.connect (e.g. a stale flock left by a crashed sibling
+    # process). An unbounded hang here would wedge the job's worker thread, so the init is bounded and a
+    # timeout proceeds without a session store instead of blocking the run forever.
+    _session_db_timeout = _get_session_db_timeout()
+    try:
+        from hermes_state_registry import acquire
+
+        if _session_db_timeout <= 0:
+            return acquire()
+        _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        # Copy the context so a profile run resolves ITS OWN home/state.db on the worker thread
+        # instead of the process-global default.
+        _session_db_context = contextvars.copy_context()
+        _session_db_future = _session_db_pool.submit(_session_db_context.run, acquire)
+        try:
+            return _session_db_future.result(timeout=_session_db_timeout)
+        except concurrent.futures.TimeoutError:
+            # The abandoned worker may still finish; close its late result or its SQLite FDs leak.
+            # The worker is abandoned (shutdown below doesn't wait for it). If SessionDB() later completes
+            # inside it, the future's result would be orphaned and its SQLite FDs (.db, WAL, SHM) leak until
+            # process exit. Register a done-callback that retrieves and closes any eventual late result
+            # (#72782).
+            _session_db_future.add_done_callback(_close_late_session_db_result)
+            raise
+        finally:
+            # Abandon a wedged connect() rather than blocking shutdown on it.
+            _session_db_pool.shutdown(wait=False)
+    except concurrent.futures.TimeoutError:
+        logger.error(
+            "Job '%s': SessionDB init did not return within %.0fs — proceeding "
+            "without a session store for this run instead of blocking it forever",
+            job.get("id", "?"), _session_db_timeout)
+    except Exception as e:
+        logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+    return None
 
 
 def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
@@ -8405,12 +8706,13 @@ def _wait_for_external_cron_worker(
 
 
 def _launch_external_cron_worker(job: dict) -> bool:
-    """Launch *job* outside a managed gateway cgroup when required.
+    """Launch *job* outside the managed gateway process when required.
 
-    Returns ``False`` when the caller is not a managed systemd gateway and the
-    existing in-process path should be used.  In managed topology, failure to
-    establish the transient scope raises: falling back would recreate the
-    restart interruption this handoff exists to prevent.
+    Returns ``False`` outside a managed systemd gateway (in-process path).  In
+    managed topology the job always goes to an external worker with the #101940
+    ownership handoff: in a transient user scope, or — when no user D-Bus
+    session exists and ``cron.require_restart_safe_scope`` is false — as a
+    direct subprocess (process separation kept, cgroup isolation lost).
     """
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
@@ -8427,16 +8729,32 @@ def _launch_external_cron_worker(job: dict) -> bool:
         str(ack_path),
     ]
 
-    from agent.secret_scope import is_multiplex_active
-    from tools.environments.local import build_subprocess_env
-    from tools.process_registry import restart_safe_gateway_child_argv
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        is_multiplex_active,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from tools.process_registry import (
+        restart_safe_gateway_child_argv,
+        systemd_user_bus_env,
+    )
 
+    try:
+        require_restart_safe_scope = bool(
+            (load_config_readonly().get("cron") or {}).get("require_restart_safe_scope", False)
+        )
+    except Exception:
+        require_restart_safe_scope = False
     multiplex_active = is_multiplex_active()
-    scoped_command = restart_safe_gateway_child_argv(
+    dispatch = restart_safe_gateway_child_argv(
         command,
         unit_suffix=f"cron-{job_id}-exec-{execution_id}",
+        require_restart_safe_scope=require_restart_safe_scope,
     )
-    if scoped_command == command:
+    if dispatch.mode == "in_process":
         return False
 
     if mark_execution_handoff_pending(execution_id) is None:
@@ -8466,14 +8784,21 @@ def _launch_external_cron_worker(job: dict) -> bool:
         payload_path.unlink(missing_ok=True)
         raise
 
-    worker_env = build_subprocess_env(
-        scrub_secrets=multiplex_active,
-        inherit_profile_home=True,
-        extra={"HERMES_HOME": str(_get_hermes_home().resolve())},
-    )
+    profile_home = _get_hermes_home().resolve()
+    hydrate_profile_secret_sources(profile_home)
+    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    try:
+        worker_env = strip_launch_profile_env(build_subprocess_env(
+            scrub_secrets=multiplex_active,
+            inherit_profile_home=True,
+            extra={"HERMES_HOME": str(profile_home)},
+        ))
+    finally:
+        reset_secret_scope(secret_token)
+    worker_env = systemd_user_bus_env(worker_env)
     try:
         process = subprocess.Popen(
-            scoped_command,
+            dispatch.argv,
             cwd=str(Path(__file__).resolve().parent.parent),
             env=worker_env,
             stdin=subprocess.DEVNULL,
@@ -8529,6 +8854,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 acknowledgement.get("pid"),
                 execution_id,
             )
+            with _running_lock, contextlib.suppress(TypeError, ValueError):
+                _running_worker_pids[job_id] = int(acknowledgement.get("pid") or process.pid)
             return _wait_for_external_cron_worker(
                 process,
                 execution_id=execution_id,
@@ -9142,7 +9469,7 @@ from cron.scheduler_prompt import (  # noqa: E402
 )
 from cron.scheduler_preflight import (  # noqa: E402
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,
-    _empty_requested_mcp_toolsets, _is_transient_provider_resolve_error, _preflight_job_config,
+    _is_transient_provider_resolve_error, _preflight_job_config,
 )
 
 

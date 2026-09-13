@@ -746,6 +746,12 @@ def auth_status_command(args) -> None:
         load_pool(provider)
     status = auth_mod.get_auth_status(provider)
     _print_oauth_heal_notices()
+    if status.get("free_tier"):
+        # Free tier: not an account login, so no account fields; point at the upgrade path.
+        label, hint = _free_tier_lines()
+        print(f"{provider}: {label}")
+        print(f"  {hint}")
+        return
     if not status.get("logged_in"):
         reason = status.get("error")
         print(f"{provider}: logged out" + (f" ({reason})" if reason else ""))

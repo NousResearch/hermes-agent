@@ -79,25 +79,8 @@ def _load_raw() -> Dict[str, Any]:
 
 def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
     _ensure_dir()
-    suggestions_file = _current_suggestions_file()
-    fd, tmp_path = tempfile.mkstemp(dir=str(suggestions_file.parent), suffix=".tmp", prefix=".sugg_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(
-                {"suggestions": suggestions, "updated_at": _hermes_now().isoformat()},
-                f,
-                indent=2,
-            )
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, suggestions_file)
-        _secure_file(suggestions_file)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    payload = {"suggestions": suggestions, "updated_at": _hermes_now().isoformat()}
+    atomic_json_write(_current_suggestions_file(), payload, mode=0o600)
 
 
 def load_suggestions() -> List[Dict[str, Any]]:

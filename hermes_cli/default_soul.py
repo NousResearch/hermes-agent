@@ -53,28 +53,8 @@ _LEGACY_TEMPLATE_SOULS = (
         "being verbose unless otherwise directed below. Be targeted and efficient in your exploration and "
         "investigations."
     ),
-    # The pre-#95681 DEFAULT_SOUL_MD text: every install between that text's
-    # introduction and this fix got it auto-seeded on first run, so it also
-    # carries zero user intent (it's the same auto-seed mechanism, just an
-    # older generation of the same non-customized string) and is safe to
-    # upgrade in place, same as the comment-only scaffolds above.
-    (
-        "You are Hermes Agent, an intelligent AI assistant created by Nous "
-        "Research. You are helpful, knowledgeable, and direct. You assist "
-        "users with a wide range of tasks including answering questions, "
-        "writing and editing code, analyzing information, creative work, "
-        "and executing actions via your tools. You communicate clearly, "
-        "admit uncertainty when appropriate, and prioritize being "
-        "genuinely useful over being verbose unless otherwise directed "
-        "below. Be targeted and efficient in your exploration and "
-        "investigations."
-    ),
-    # ASCII-dashed variant of the current DEFAULT_SOUL_MD, as seeded by
-    # scripts/install.ps1 (which must stay pure ASCII -- see
-    # tests/test_install_ps1_ascii_only.py -- so it writes "--" where the
-    # canonical text has an em-dash). Still pure auto-seed, zero user intent;
-    # upgrading it in place converges Windows installs onto the canonical
-    # em-dash text on first run.
+    # ASCII-dashed variant seeded by scripts/install.ps1 (must stay pure ASCII, see
+    # tests/scripts/install/test_install_ps1_ascii_only.py); upgrading converges Windows installs on the em-dash text.
     DEFAULT_SOUL_MD.replace("\u2014", "--"),
 )
 

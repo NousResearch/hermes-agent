@@ -59,17 +59,9 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
 from hermes_cli.local_runtime.context_policy import (
-    FLOOR,
-    RUNTIME_OVERHEAD_BYTES,
-    TARGET_WINDOW,
-    ub_logits_bytes,
-)
-from hermes_cli.local_runtime.estimator import (
-    HardwareBudget,
-    LayerKind,
-    ModelProfile,
-    ctx_bytes,
-)
+    FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, LaunchPlan, plan_launch)
+from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal
+from hermes_cli.local_runtime.gguf import model_id_from_stem
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +172,12 @@ class CatalogEntry:
             n_vocab=self.n_vocab,
             kv_scale=1.2 if self.mtp else 1.0)
 
+    def launch_plan(self, variant: QuantVariant, budget: HardwareBudget) -> LaunchPlan:
+        # Optional external drafts may use spare memory after download, never reduce this grant.
+        return plan_launch(self.profile(variant), budget, mtp_capable=self.mtp,
+                           fixed_overhead=RUNTIME_OVERHEAD_BYTES
+                           + (self.mmproj.size_bytes if self.mmproj else 0))
+
     def download_files(self, variant: QuantVariant) -> tuple:
         """Everything a download job fetches for this variant, in order."""
         extras = tuple(a for a in (self.mmproj, self.draft) if a is not None)
@@ -211,25 +209,14 @@ def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice
     - "smallest-fits-spilled": weights spill to host RAM, priced honestly
     - None: even spilled, physics refuses (the machine can't run it)
     """
-    overhead = (RUNTIME_OVERHEAD_BYTES
-                + (entry.mmproj.size_bytes if entry.mmproj else 0)
-                + ub_logits_bytes(entry.n_vocab, mtp_capable=entry.mtp))
-    native = entry.n_ctx_train or FLOOR
     variant = entry.variants[-1]
-    profile = entry.profile(variant)
-    need = variant.weights_bytes + overhead
-    if (need + ctx_bytes(profile, min(TARGET_WINDOW, native))
-            <= budget.usable_vram_bytes):
-        return VariantChoice(variant=variant, zero_spill=True,
-                             reason_key="best-large-window")
-    floor_kv = ctx_bytes(profile, min(FLOOR, native))
-    if need + floor_kv <= budget.usable_vram_bytes:
-        return VariantChoice(variant=variant, zero_spill=True,
-                             reason_key="best-fits")
-    if need + floor_kv <= budget.usable_vram_bytes + budget.ram_available_bytes:
-        return VariantChoice(variant=variant, zero_spill=False,
-                             reason_key="smallest-fits-spilled")
-    return None
+    decision = entry.launch_plan(variant, budget).decision
+    if isinstance(decision, PhysicsRefusal):
+        return None
+    if decision.spilled:
+        return VariantChoice(variant, zero_spill=False, reason_key="smallest-fits-spilled")
+    reason = "best-large-window" if decision.window >= min(TARGET_WINDOW, entry.n_ctx_train or FLOOR) else "best-fits"
+    return VariantChoice(variant, zero_spill=True, reason_key=reason)
 
 
 # ── recommendation: best quality that fits and isn't miserably slow ──
@@ -277,24 +264,11 @@ def recommended_entry(budget: HardwareBudget,
                       ) -> "tuple[CatalogEntry, str] | None":
     """The catalog's default pick for THIS machine, with its reason.
 
-    Callers pass pre-filtered entries when some are ineligible for
-    reasons the catalog can't know (engine too old); default is the full
-    catalog. Returns (entry, reason) — the reason is a key the UI turns
-    into the Recommended badge's tooltip, so the rationale shown to the
-    user is the branch that actually fired, never a parallel explanation
-    that can drift:
-
-      best-quality-resident   quality won among resident entries that
-                              clear the pleasant floor
-      speed-gated-quality     same, but the floor eliminated a HIGHER
-                              quality candidate — the exact 'why not the
-                              big model?' a unified-memory owner asks
-      fastest-resident        nothing resident clears the floor; the
-                              quickest resident entry wins
-      least-painful-spilled   nothing runs resident; fastest from host
-                              memory (MoE by construction)
-
-    Returns None only when nothing fits at all.
+    Callers pass pre-filtered entries when some are ineligible for reasons the catalog can't know
+    (engine too old). Reasons: best-quality-resident (quality won among resident entries clearing
+    the pleasant floor); speed-gated-quality (same, but the floor eliminated a HIGHER quality
+    candidate); fastest-resident (nothing resident clears the floor). Returns None when no
+    eligible entry runs resident; spilled models remain available for explicit selection.
     """
     pool = CATALOG if entries is None else entries
     fitting: list[tuple[CatalogEntry, VariantChoice]] = []
@@ -316,22 +290,10 @@ def recommended_entry(budget: HardwareBudget,
         return (pick, "speed-gated-quality" if floor_gated
                 else "best-quality-resident")
     if resident:
-        pick = max(resident,
-                   key=lambda t: predicted_decode_tok_s(t[0], t[1].variant, budget))[0]
-        return (pick, "fastest-resident")
-    # Everything spills: take the least painful — fastest predicted decode
-    # from host memory (MoE wins here by construction; a dense spill
-    # streams every weight over the host bus).
-    pick = max(fitting,
-               key=lambda t: predicted_decode_tok_s(t[0], t[1].variant, budget,
-                                                    spilled=True))[0]
-    return (pick, "least-painful-spilled")
-
-
-def recommended_id(budget: HardwareBudget,
-                   entries: "tuple[CatalogEntry, ...] | None" = None) -> str | None:
-    picked = recommended_entry(budget, entries)
-    return picked[0].id if picked is not None else None
+        return (max(resident, key=speed)[0], "fastest-resident")
+    # A spilled model may be usable, but it is not a recommendation. Keep it
+    # discoverable through Browse so the user can opt in with the degradation visible.
+    return None
 
 
 # ── catalog data: packaged JSON, refreshed from GitHub in memory ─

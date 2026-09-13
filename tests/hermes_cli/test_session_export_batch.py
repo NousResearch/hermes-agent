@@ -35,11 +35,7 @@ def test_export_all_batches_message_reads_without_changing_export_rows(tmp_path,
 
         monkeypatch.setattr(db, "_read_all", counted_read_all)
 
-        exported = db.export_all(source="cli")
-        # Export rows carry a derived `timings` block on top of the session +
-        # messages; strip it so the batching contract compares like with like.
-        assert [{k: v for k, v in row.items() if k != "timings"} for row in exported] == expected
-        assert all("timings" in row for row in exported)
+        assert db.export_all(source="cli") == expected
         assert read_calls <= 2
     finally:
         db.close()

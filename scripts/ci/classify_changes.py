@@ -91,6 +91,16 @@ _PY_RELEVANT_SITE = (
     "website/docs/",
     "website/scripts/",
 )
+# Cross-language contract files: data committed under a frontend tree that a
+# pytest pins against the Python side (emitter inventory, command registry).
+# Editing only the JSON in an apps/-only PR would otherwise skip the one test
+# that can catch the drift, so these force the Python lane too.
+_PY_RELEVANT_CONTRACT_FILES = {
+    # tests/tui_gateway/test_gateway_event_contract.py
+    "apps/shared/src/gateway-events.json",
+    # tests/hermes_cli/test_desktop_slash_registry.py
+    "apps/desktop/src/lib/desktop-slash-registry.json",
+}
 
 # CI-sensitive files: eslint config, workflow files, composite actions.
 # Changes here can influence what code the autofix job executes and pushes to
@@ -121,7 +131,7 @@ _INSTALLER_FILES = {"scripts/install.ps1", "scripts/install.cmd"}
 # Windows desktop-update hand-off (scripts/desktop-update/windows.ps1 + the
 # Electron side that launches it) and the pytest files that spawn it.
 _DESKTOP_UPDATER_PATHS = ("scripts/desktop-update/",)
-_DESKTOP_UPDATER_TEST_PREFIX = "tests/test_desktop_update_"
+_DESKTOP_UPDATER_TEST_PREFIX = "tests/scripts/desktop_update/"
 _DESKTOP_UPDATER_FILES = {
     "apps/desktop/electron/updater-process.ts",
     "apps/desktop/electron/managed-ssh-update.ts",
@@ -147,7 +157,7 @@ def _is_nix(p: str) -> bool:
 
 
 def _py_irrelevant(p: str) -> bool:
-    if p.startswith(_PY_RELEVANT_SITE):
+    if p.startswith(_PY_RELEVANT_SITE) or p in _PY_RELEVANT_CONTRACT_FILES:
         return False
     return (
         _is_docs(p)

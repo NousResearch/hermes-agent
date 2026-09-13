@@ -262,9 +262,7 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
             _core._server_connecting.add(keys[srv_name])
             _core._server_scope_keys[keys[srv_name]] = current_scope
             _core._server_connect_errors.pop(keys[srv_name], None)
-        # Track which servers opt-in to parallel tool calls (idempotent). Keyed by THIS profile's own
-        # key: the opt-in is the calling profile's policy, so B's parallel-safe `x` never makes A's
-        # same-named serial `x` (own connection or adopted) run two calls at once.
+        # Track which servers opt-in to parallel tool calls (idempotent).
         for srv_name, srv_cfg in servers.items():
             own_key = _server_key(srv_name, current_scope, current=False)
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):

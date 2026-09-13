@@ -2,20 +2,26 @@
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { capabilityScoped } from '@/api/client'
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
-import { Button } from '@/components/ui/button'
-import { ConnectorCard, ConnectorRow, type ConnectorRowMark, ConnectorSummary } from '@/components/ui/connector-card'
-import { getActionStatus, getMcpCatalog, installMcpCatalogEntry, type McpCatalogEntry, setMcpServerEnabled } from '@/hermes'
+import { ConnectorCard, type ConnectorCardCopy, ConnectorSummary } from '@/components/ui/connector-card'
+import {
+  addMcpServer,
+  getActionStatus,
+  getMcpCatalog,
+  installMcpCatalogEntry,
+  type McpCatalogEntry,
+  removeMcpServer,
+  setMcpServerEnabled
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { connectorText, type McpTarget, mcpTargets } from '@/lib/connector-tools'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
-import { isSubmitEnter } from '@/lib/ime'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -42,51 +48,33 @@ const CATALOG_INSTALL_POLL_MS = 1500
 
 const SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
 
-const TITLE = {
-  authorize: (copy: SetupCopy) => copy.authorizeTitle,
-  enable: (copy: SetupCopy) => copy.enableTitle,
-  install: (copy: SetupCopy) => copy.installTitle
-} satisfies Record<SetupAction, (copy: SetupCopy) => string>
-
-const VERB = {
-  authorize: (copy: SetupCopy) => copy.authorizeAction,
-  enable: (copy: SetupCopy) => copy.enableAction,
-  install: (copy: SetupCopy) => copy.installAction
-} satisfies Record<SetupAction, (copy: SetupCopy) => string>
-
-const DONE = {
-  authorize: (copy: SetupCopy, server: string) => copy.authorized(server),
-  enable: (copy: SetupCopy, server: string) => copy.enabled(server),
-  install: (copy: SetupCopy, server: string) => copy.installed(server)
-} satisfies Record<SetupAction, (copy: SetupCopy, server: string) => string>
-
-// Mirrors `RESOLVED_STATES` in tools/connectors/contract.py.
-const resolved = (target: ConnectionTarget): boolean =>
-  target.state === 'connected' || target.state === 'skipped' || target.state === 'unavailable'
-
-function readSetupAction(args: unknown): SetupAction {
-  const [target] = mcpTargets('manage_connections', parseMaybeObject(args))
-
-  return target?.action ?? 'install'
-}
-
-interface SettledTarget {
-  name: string
-  state: string
-  tools: number
-}
-
-function readSetupResult(result: unknown): SettledTarget[] {
-  const row = parseMaybeObject(result)
-  const targets = Array.isArray(row.targets) ? row.targets.map(parseMaybeObject) : []
-
-  return targets.flatMap(target => {
-    const name = connectorText(target.name)
-
-    return name
-      ? [{ name, state: connectorText(target.state) ?? '', tools: Array.isArray(target.tools) ? target.tools.length : 0 }]
-      : []
-  })
+/** The card's strings, from this tool's own copy. The verb changes with the
+ *  action (Install / Enable / Authorize); the rest is the shared consent
+ *  vocabulary every connector card speaks. */
+function cardCopy(
+  copy: ReturnType<typeof useI18n>['t']['assistant']['mcpSetup'],
+  action: SetupAction
+): ConnectorCardCopy {
+  return {
+    connectAction:
+      action === 'enable' ? copy.enableAction : action === 'authorize' ? copy.authorizeAction : copy.installAction,
+    connectTitle:
+      action === 'enable' ? copy.enableTitle : action === 'authorize' ? copy.authorizeTitle : copy.installTitle,
+    decline: copy.decline,
+    envRequired: copy.envRequired,
+    grantAction: copy.authorizeAction,
+    retryAction: copy.installAction,
+    stateConnected: '',
+    stateDeclined: copy.declined,
+    stateDisabled: '',
+    stateFailed: '',
+    stateNeedsAuth: '',
+    toolCount: copy.toolCount,
+    trustCommunity: '',
+    trustCommunityTip: () => '',
+    trustVerified: () => '',
+    trustVerifiedTip: () => ''
+  }
 }
 
 export const McpSetupTool = (props: ToolCallMessagePartProps) => {
@@ -110,31 +98,44 @@ const McpSetupLive = (props: ToolCallMessagePartProps) => {
 function McpSetupSettled({ args, result }: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const copy = t.assistant.mcpSetup
-  const action = useMemo(() => readSetupAction(args), [args])
-  const targets = useMemo(() => readSetupResult(result), [result])
+  const fromArgs = useMemo(() => readSetupArgs(args), [args])
+  const fromResult = useMemo(() => readSetupResult(result), [result])
 
+  const server = fromResult.server || fromArgs.server
+  const status = fromResult.status ?? 'error'
+  const displayName = prettyName(server)
+
+  const line =
+    status === 'installed'
+      ? copy.installed(displayName)
+      : status === 'enabled'
+        ? copy.enabled(displayName)
+        : status === 'authorized'
+          ? copy.authorized(displayName)
+          : status === 'declined'
+            ? copy.declined
+            : status === 'unanswered'
+              ? copy.unanswered
+              : copy.failed(displayName)
+
+  const ok = status === 'installed' || status === 'enabled' || status === 'authorized'
+  const neutral = status === 'declined' || status === 'unanswered'
+  const toolCount = Array.isArray(fromResult.tools) ? fromResult.tools.length : 0
+
+  // Settled is scaffolding, the same line a spent connector offer collapses
+  // to: the name, then the verdict as meta. A failure keeps its reason.
   return (
-    <div className="my-2 grid min-w-0 max-w-lg gap-1">
-      {targets.map(target => {
-        const title = prettyName(target.name)
-        const connected = target.state === 'connected'
-
-        const line = connected
-          ? DONE[action](copy, title)
-          : target.state === 'skipped'
-            ? t.connectors.skipped
-            : t.connectors.notConnected
-
-        return (
-          <ConnectorSummary
-            connector={{ name: target.name, title }}
-            key={target.name}
-            meta={connected && target.tools > 0 ? `${line} · ${copy.toolCount(target.tools)}` : line}
-            tone={connected ? 'ok' : undefined}
-          />
-        )
-      })}
-    </div>
+    <ConnectorSummary
+      connector={{ name: server, title: displayName }}
+      meta={
+        ok && toolCount > 0
+          ? `${line} · ${copy.toolCount(toolCount)}`
+          : !ok && !neutral && fromResult.detail
+            ? `${line} — ${fromResult.detail}`
+            : line
+      }
+      tone={ok ? 'ok' : neutral ? undefined : 'error'}
+    />
   )
 }
 
@@ -305,7 +306,21 @@ function McpSetupRow({ action, copy, request, single, target }: McpSetupRowProps
     }
   }
 
-  // Do not capture the shortcut while a focusable control owns typed input.
+  const displayName = prettyName(server)
+  const card = cardCopy(copy, action)
+
+  // What connecting actually means — the endpoint that will be contacted.
+  // Catalog entries carry their transport URL in the API response; the
+  // static directory remains a fallback rung for older backends.
+  const known = directoryEntry(server)
+  const sourceLine = action === 'install' ? (entry?.url ?? known?.url ?? copy.catalogSource) : null
+
+  // ⌘/Ctrl+Enter → approve, Esc → decline/cancel. Same accelerators, same
+  // guard shape as the approval bar (tool/approval.tsx). Unlike approve, Esc
+  // stays live while a flow is in flight — that's the cancel path. Stands
+  // down whenever a focusable control has focus (clarify's rule): a keystroke
+  // meant for the composer, a popover, or the card's own credential fields
+  // must never silently approve an install or throw away typed input.
   useEffect(() => {
     if (!single || done) {
       return
@@ -336,21 +351,37 @@ function McpSetupRow({ action, copy, request, single, target }: McpSetupRowProps
     return () => window.removeEventListener('keydown', onKeyDown, true)
   })
 
-  const waiting = working && action === 'authorize'
-  const mark: ConnectorRowMark = done ? 'connected' : waiting ? 'waiting' : 'idle'
+  if (!ready) {
+    return (
+      <div className={cn(SHELL_CLASS, 'my-1.5 flex items-center gap-2')} data-slot="connector-card">
+        <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
+        <span className="text-(--ui-text-tertiary)">{card.connectTitle?.(displayName)}</span>
+      </div>
+    )
+  }
 
+  // The same consent card the connector offer renders: one shape for every
+  // "connect this?" in the transcript. `phase` is what flips the card into
+  // its working state (spinner on the action, decline becomes cancel).
   return (
-    <ConnectorRow
-      action={done ? undefined : { busy: working, label: VERB[action](copy), onClick: () => void approve() }}
-      connector={{ name: server, title: displayName }}
-      cue={waiting ? t.connectors.waiting : undefined}
+    <ConnectorCard
+      accelerators
+      connector={{
+        description: reason || undefined,
+        name: server,
+        requiredEnv: entry?.required_env,
+        title: displayName
+      }}
+      copy={{ ...card, decline: working ? t.common.cancel : card.decline }}
       envDraft={envDraft}
-      envFields={entry?.required_env}
       envOpen={envOpen && !!entry && entry.required_env.length > 0}
-      envRequired={copy.envRequired}
-      mark={mark}
-      markLabel={mark === 'connected' ? t.connectors.connected : waiting ? t.connectors.waiting : t.connectors.notConnected}
+      onConnect={() => void approve()}
+      onDismiss={decline}
       onEnvChange={(key, value) => setEnvDraft(prev => ({ ...prev, [key]: value }))}
+      phase={working ? '' : undefined}
+      source={sourceLine ? { text: sourceLine } : undefined}
+      state="not_configured"
+      variant="avatar"
     />
   )
 }

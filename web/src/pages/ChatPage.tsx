@@ -1189,18 +1189,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (reconnectTimerRef.current) {
         return;
       }
-      if (ptyReconnectExhausted(reconnectAttemptRef.current, PTY_RECONNECT_MAX_ATTEMPTS)) {
-        // The last automatic attempt also failed: stop chasing a dead
-        // backend and tell the user so, with the manual affordances.
-        console.warn(`[chat] PTY reconnect gave up after ${PTY_RECONNECT_MAX_ATTEMPTS} attempts (last code=${code ?? "none"})`);
-        setBanner(null);
-        setBannerAction(null);
-        reconnectGaveUpRef.current = true;
-        setReconnectGaveUp(true);
-        setPtyState("closed");
-        return;
-      }
-      const attempt = reconnectAttemptRef.current + 1;
+      const attempt = Math.min(reconnectAttemptRef.current + 1, PTY_RECONNECT_MAX_ATTEMPTS);
       reconnectAttemptRef.current = attempt;
       const delayMs = ptyReconnectDelayMs(attempt);
       setBanner(null);

@@ -49,17 +49,12 @@ _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 
 
-def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k") -> "str | None":
-    """Best-effort ffmpeg transcode of any audio file to Ogg/Opus (voip-tuned).
-
-    The shared engine behind native voice-bubble delivery for platforms whose
-    voice channel only accepts Opus/OGG (Telegram sendVoice, Feishu opus
-    audio, Matrix MSC3245, WhatsApp voice notes). Returns the path of a NEW
-    temp ``.ogg`` file (caller owns cleanup), or ``None`` when ffmpeg is
-    missing or the conversion fails — callers keep their previous fallback
-    (document/attachment delivery). Blocking; call via ``asyncio.to_thread``
-    from async code.
-    """
+def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k", timeout: int = 60,
+                          output_path: "str | None" = None) -> "str | None":
+    """Best-effort ffmpeg transcode to Ogg/Opus (voip-tuned) for native voice bubbles: the written
+    ``.ogg`` path (a NEW temp file unless ``output_path`` is given; caller cleans up), or None when
+    ffmpeg is missing/fails. ``output_path`` may equal ``path`` (in-place container repair) — the
+    encode goes through a sidecar so a failed run never truncates the source. Blocking (to_thread)."""
     import shutil as _shutil
     import subprocess as _subprocess
     import tempfile as _tempfile
@@ -67,24 +62,29 @@ def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k") -> "str | None":
     ffmpeg = _shutil.which("ffmpeg")
     if not ffmpeg:
         return None
-
-    fd, ogg_path = _tempfile.mkstemp(prefix="voice_transcode_", suffix=".ogg")
-    os.close(fd)
+    if output_path is None:
+        fd, ogg_path = tempfile.mkstemp(prefix="voice_transcode_", suffix=".ogg")
+        os.close(fd)
+    else:
+        ogg_path = output_path
+    in_place = os.path.abspath(str(path)) == os.path.abspath(ogg_path)
+    work_path = ogg_path + ".tmp.ogg" if in_place else ogg_path
     try:
         result = _subprocess.run(
             [ffmpeg, "-v", "error", "-y", "-i", str(path),
              "-acodec", "libopus", "-ac", "1", "-b:a", bitrate, "-vbr", "on",
-             "-application", "voip", "-compression_level", "10", ogg_path],
-            capture_output=True, timeout=60, stdin=_subprocess.DEVNULL,
-        )
-        if result.returncode == 0 and os.path.getsize(ogg_path) > 0:
+             "-application", "voip", "-compression_level", "10", "-f", "ogg", work_path],
+            capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        if result.returncode == 0 and os.path.getsize(work_path) > 0:
+            if in_place:
+                os.replace(work_path, ogg_path)
             return ogg_path
+        logger.warning("ffmpeg Ogg/Opus transcode of %s failed (returncode=%s): %s", path, result.returncode,
+                       (result.stderr or b"").decode("utf-8", errors="replace")[:500])
     except Exception:
-        logger.debug("voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
-    try:
-        os.unlink(ogg_path)
-    except OSError:
-        pass
+        logger.warning("voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
+    with contextlib.suppress(OSError):
+        os.unlink(work_path)
     return None
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 # History dedup is best-effort: stay well below the Discord heartbeat watchdog and fail open.
@@ -297,24 +297,19 @@ def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[st
 
 def resolve_proxy_url(
     platform_env_var: str | None = None, *,
-    target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
-    configured: str | None = None) -> str | None:
-    """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then the adapter's own YAML
-    value *configured* (``telegram.proxy_url``), then HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (any
-    case), then the macOS system proxy — the latter two only when ``gateway.trust_env`` is true.
-    None when nothing is found or NO_PROXY matches a target.
+    target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None) -> str | None:
+    """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then HTTPS_PROXY /
+    HTTP_PROXY / ALL_PROXY (any case), then the macOS system proxy — the latter two only when
+    ``gateway.trust_env`` is true. None when nothing is found or NO_PROXY matches a target.
 
     *platform_env_var* is a per-adapter, per-profile-configurable setting (each proxy URL can
     embed credentials, e.g. ``http://user:pass@host``) so it is read scope-aware: under a
     secondary multiplex profile it comes from that profile's own ``.env``, not the shared
-    process env another profile's ``TELEGRAM_PROXY``/``DISCORD_PROXY``/etc. may hold; the YAML
-    value is the same profile's, so a secondary keeps its configured route without any env
-    bridge (#108440). The generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw
-    process-env read — those are OS/system-level network settings, not a per-profile Hermes concept."""
+    process env another profile's ``TELEGRAM_PROXY``/``DISCORD_PROXY``/etc. may hold. The
+    generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw process-env read —
+    those are OS/system-level network settings, not a per-profile Hermes concept."""
     from gateway.platforms._shared import get_scoped_secret as _get_scoped_proxy_var
     value = (_get_scoped_proxy_var(platform_env_var, "") or "").strip() if platform_env_var else ""
-    if not value:
-        value = str(configured or "").strip()
     if not value:
         if not gateway_trust_env():  # only the explicit per-platform var is honored
             return None
@@ -2358,11 +2353,10 @@ class BasePlatformAdapter(ABC):
         # same ``agent:main:`` key (see ``_session_key_profile``). ``None`` on a
         # primary/single-profile adapter, which keeps the legacy namespace.
         self._owner_profile: Optional[str] = None
-        # Optional authorization check, registered by GatewayRunner. Used by
-        # adapters that fetch external context (e.g. Slack thread history) to
-        # mark senders not on the allowlist as unverified in LLM context,
-        # mitigating indirect prompt injection from third parties in a shared
-        # thread/channel.
+        # Set by the runner on a secondary's port-binding adapter: serve via the default profile's
+        # shared listener (/p/<profile>/...) instead of binding a port (gateway/platforms/shared_ingress.py).
+        self._shared_listener_profile: Optional[str] = None
+        # Registered by GatewayRunner (see set_authorization_check).
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``voice.auto_tts`` default plus per-chat /voice on|tts / off.
         self._auto_tts_default: bool = False
@@ -2533,14 +2527,19 @@ class BasePlatformAdapter(ABC):
         """
         return False
 
-    def _mark_connected(self) -> None:
+    def _mark_connected(self, *, listener_base: Optional[str] = None) -> None:
+        """``listener_base`` (``http://host:port``) is stamped by port-binders after a REAL bind: under the
+        multiplexer it is the shared listener a served profile's ``/p/<profile>/`` mirror hangs off, and
+        what the dashboard/Desktop report as that profile's api_server/webhook URL."""
         self._running = True
         self._fatal_error_code = self._fatal_error_message = None
         self._fatal_error_retryable = True
         if self.send_path_degraded:
             self._mark_degraded()
         else:
-            self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
+            extra = {"listener_base": listener_base} if listener_base else {}
+            self._write_runtime_status_safe(
+                "connected", platform_state="connected", error_code=None, error_message=None, **extra)
 
     def _mark_degraded(self) -> None:
         """Publish ``retrying`` for a running adapter whose delivery path is unproven."""
@@ -3169,15 +3168,10 @@ class BasePlatformAdapter(ABC):
         """Chars of command preview that fit; platforms with a hard message cap compute it."""
         return self._EA_CMD_BUDGET
 
-    def _ea_deadline_line(self) -> str:
-        """The "doing nothing means it will NOT run" line, with the configured approvals.timeout."""
-        return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
-
     def _format_exec_approval(
         self, command: str, description: str = "dangerous command", smart_denied: bool = False) -> str:
-        """Shared exec-approval prompt text: header + fenced (truncated) command + why it was
-        flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
-        platform-local."""
+        """Shared exec-approval prompt text: header + fenced (truncated) command + reason,
+        plus the smart-deny line. Buttons/trailing instructions stay platform-local."""
         if self._EA_REASON_BUDGET:
             description = self._truncate_preview(str(description or ""), self._EA_REASON_BUDGET)
         cmd_preview = self._truncate_preview(
@@ -4886,284 +4880,13 @@ class BasePlatformAdapter(ABC):
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
                 if text_content and not _tts_caption_delivered:
-                    delivery_adapter = self._final_delivery_adapter(event.source)
-                    logger.info(
-                        "[%s] Sending response (%d chars) to %s",
-                        delivery_adapter.name,
-                        len(text_content),
-                        event.source.chat_id,
-                    )
-                    _reply_anchor = _reply_anchor_for_event(event)
-                    # Delivery-obligation ledger: durably record the final
-                    # response BEFORE the send attempt so a gateway crash
-                    # between finalize and platform ACK can redeliver it on
-                    # the next boot instead of silently losing the turn's
-                    # output (#58818). Best-effort at every step — ledger
-                    # trouble must never block or delay the actual send.
-                    # Slash-command and ephemeral replies are cheap to
-                    # regenerate and are not recorded.
-                    _obligation_id = None
-                    if not is_ephemeral_response and not str(
-                        event.text or ""
-                    ).lstrip().startswith(("/", self.typed_command_prefix or "!")):
-                        try:
-                            from gateway.delivery_ledger import (
-                                compute_obligation_id,
-                                ledger_enabled,
-                                mark_attempting,
-                                record_obligation,
-                            )
-
-                            if await asyncio.to_thread(ledger_enabled):
-                                _obligation_id = compute_obligation_id(
-                                    session_key,
-                                    str(getattr(event, "message_id", "") or ""),
-                                    text_content,
-                                )
-                                await asyncio.to_thread(
-                                    record_obligation,
-                                    obligation_id=_obligation_id,
-                                    session_key=session_key,
-                                    platform=str(
-                                        getattr(event.source.platform, "value",
-                                                event.source.platform)
-                                    ),
-                                    chat_id=event.source.chat_id,
-                                    thread_id=getattr(event.source, "thread_id", None),
-                                    content=text_content,
-                                    adapter_profile=getattr(
-                                        delivery_adapter, "_owner_profile", None
-                                    ),
-                                )
-                                await asyncio.to_thread(mark_attempting, _obligation_id)
-                        except Exception:
-                            logger.debug("delivery ledger record failed", exc_info=True)
-                            _obligation_id = None
-                    result = await delivery_adapter._send_with_retry(
-                        chat_id=event.source.chat_id,
-                        content=text_content,
-                        reply_to=_reply_anchor,
-                        metadata=_final_thread_metadata,
-                    )
-                    _record_delivery(result)
-                    if _obligation_id is not None:
-                        try:
-                            from gateway.delivery_ledger import (
-                                mark_delivered,
-                                mark_failed,
-                            )
-
-                            if getattr(result, "success", False):
-                                await asyncio.to_thread(mark_delivered, _obligation_id)
-                            else:
-                                _delivery_error = str(
-                                    getattr(result, "error", "") or ""
-                                )
-                                await asyncio.to_thread(
-                                    mark_failed,
-                                    _obligation_id,
-                                    _delivery_error,
-                                )
-                                # A replacement can finish reconnecting before
-                                # this in-flight failure reaches mark_failed. In
-                                # that ordering the watcher's sweep found no row.
-                                # Signal a second transactional sweep only when a
-                                # new live adapter is already installed; atomic
-                                # claiming makes concurrent signals idempotent.
-                                if _delivery_error == "send_path_degraded":
-                                    _live_adapter = self._final_delivery_adapter(
-                                        event.source
-                                    )
-                                    _runtime_redeliver = getattr(
-                                        getattr(self, "gateway_runner", None),
-                                        "_redeliver_failed_obligations_for_platform",
-                                        None,
-                                    )
-                                    if (
-                                        _live_adapter is not delivery_adapter
-                                        and callable(_runtime_redeliver)
-                                    ):
-                                        await _runtime_redeliver(
-                                            event.source.platform,
-                                            profile=getattr(
-                                                delivery_adapter,
-                                                "_owner_profile",
-                                                None,
-                                            ),
-                                        )
-                        except Exception:
-                            logger.debug(
-                                "delivery ledger update failed", exc_info=True
-                            )
-
-                    # Schedule auto-deletion on the adapter that owns the new
-                    # message ID, which may be the reconnect replacement.
-                    if (
-                        _ephemeral_ttl
-                        and _ephemeral_ttl > 0
-                        and result.success
-                        and result.message_id
-                    ):
-                        delivery_adapter._schedule_ephemeral_delete(
-                            chat_id=event.source.chat_id,
-                            message_id=result.message_id,
-                            ttl_seconds=_ephemeral_ttl,
-                        )
-
-                # Human-like pacing delay between text and media
-                human_delay = self._get_human_delay()
-
-                # Send extracted images as native attachments
-                if images:
-                    logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-                    try:
-                        await self.send_multiple_images(
-                            chat_id=event.source.chat_id,
-                            images=images,
-                            metadata=_final_thread_metadata,
-                            human_delay=human_delay,
-                        )
-                    except Exception as batch_err:
-                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
-
-
-                # Send extracted media files — route by file type
-                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
-                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
-
-                # Partition images out of media_files + local_files so they
-                # can be sent as a single batch (Signal RPC). When
-                # ``[[as_document]]`` was set on the original response, image
-                # files skip the photo path and route to send_document below
-                # so they're delivered with original bytes (no Telegram
-                # sendPhoto recompression).
-                from urllib.parse import quote as _quote
-                _image_paths: list = []
-                _non_image_media: list = []
-                for media_path, is_voice in media_files:
-                    _ext = Path(media_path).suffix.lower()
-                    if (_ext in _IMAGE_EXTS
-                            and not is_voice
-                            and not force_document_attachments):
-                        _image_paths.append(media_path)
-                    else:
-                        _non_image_media.append((media_path, is_voice))
-                _non_image_local: list = []
-                for file_path in local_files:
-                    if (Path(file_path).suffix.lower() in _IMAGE_EXTS
-                            and not force_document_attachments):
-                        _image_paths.append(file_path)
-                    else:
-                        _non_image_local.append(file_path)
-
-                if _image_paths:
-                    try:
-                        _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
-                        await self.send_multiple_images(
-                            chat_id=event.source.chat_id,
-                            images=_batch,
-                            metadata=_final_thread_metadata,
-                            human_delay=human_delay,
-                        )
-                    except Exception as batch_err:
-                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
-
-                if _non_image_media:
-                    logger.info(
-                        "[%s] Delivering %d non-image MEDIA attachment(s)",
-                        self.name,
-                        len(_non_image_media),
-                    )
-                for media_path, is_voice in _non_image_media:
-                    if human_delay > 0:
-                        await asyncio.sleep(human_delay)
-                    try:
-                        ext = Path(media_path).suffix.lower()
-                        if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-                            media_result = await self.send_voice(
-                                chat_id=event.source.chat_id,
-                                audio_path=media_path,
-                                metadata=_final_thread_metadata,
-                                is_voice=is_voice,
-                            )
-                        elif ext in _VIDEO_EXTS:
-                            logger.info(
-                                "[%s] Sending video attachment (%s) to %s",
-                                self.name,
-                                ext,
-                                event.source.chat_id,
-                            )
-                            media_result = await self.send_video(
-                                chat_id=event.source.chat_id,
-                                video_path=media_path,
-                                metadata=_final_thread_metadata,
-                            )
-                        else:
-                            media_result = await self.send_document(
-                                chat_id=event.source.chat_id,
-                                file_path=media_path,
-                                metadata=_final_thread_metadata,
-                            )
-
-                        if not media_result.success:
-                            logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
-                            await self._notify_media_delivery_failure(
-                                event.source.chat_id,
-                                media_path,
-                                is_voice=is_voice,
-                                metadata=_final_thread_metadata,
-                            )
-                    except Exception as media_err:
-                        logger.warning("[%s] Error sending media: %s", self.name, media_err)
-
-                # Send auto-detected local non-image files as native attachments
-                for file_path in _non_image_local:
-                    if human_delay > 0:
-                        await asyncio.sleep(human_delay)
-                    try:
-                        ext = Path(file_path).suffix.lower()
-                        if ext in _VIDEO_EXTS:
-                            file_result = await self.send_video(
-                                chat_id=event.source.chat_id,
-                                video_path=file_path,
-                                metadata=_final_thread_metadata,
-                            )
-                        else:
-                            file_result = await self.send_document(
-                                chat_id=event.source.chat_id,
-                                file_path=file_path,
-                                metadata=_final_thread_metadata,
-                            )
-                        if not file_result.success:
-                            logger.warning(
-                                "[%s] Failed to send local file (%s): %s",
-                                self.name,
-                                ext,
-                                file_result.error,
-                            )
-                            await self._notify_media_delivery_failure(
-                                event.source.chat_id,
-                                file_path,
-                                metadata=_final_thread_metadata,
-                            )
-                    except Exception as file_err:
-                        logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
-
-                # A3 (#29346): if a non-empty response produced nothing
-                # deliverable, fail loudly rather than dropping it in silence.
-                _anything_delivered = (
-                    delivery_attempted or _tts_caption_delivered
-                    or images or local_files or media_files
-                )
-                if not _anything_delivered and _response_pre_extract.strip():
-                    logger.error(
-                        "[%s] response_delivery_dropped: non-empty response "
-                        "(%d chars) produced no delivered message or attachment "
-                        "for %s (empty after extract, recovery yielded nothing).",
-                        self.name, len(_response_pre_extract), event.source.chat_id,
-                    )
-
-            # Determine overall success for the processing hook
+                    await self._send_final_text(
+                        event, session_key, text_content, _final_thread_metadata,
+                        is_ephemeral_response, _ephemeral_ttl, _record_delivery)
+                await self._deliver_attachments(
+                    event, extracted, _final_thread_metadata,
+                    anything_sent=delivery_attempted or _tts_caption_delivered,
+                    record_delivery=_record_delivery)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(

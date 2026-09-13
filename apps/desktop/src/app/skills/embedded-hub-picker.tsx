@@ -49,6 +49,10 @@ interface EmbeddedHubPickerProps {
    *  this to preserve the loaded hub iframe across tab switches — a plain
    *  unmount would reload the whole docs site on every return to Skills. */
   hidden?: boolean
+  /** Render as the dedicated Skills Hub tab. In this layout the picker fills
+   *  the content area instead of reserving room for the installed-skills list
+   *  above it, and the persisted inline collapse state is ignored. */
+  standalone?: boolean
   /** Names of skills already installed in the scoped profile — a pick that
    *  matches is refused with a toast instead of re-running the install. */
   installedNames: ReadonlySet<string>
@@ -65,7 +69,8 @@ interface EmbeddedHubPickerProps {
 export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
   hidden = false,
   installedNames,
-  profile
+  profile,
+  standalone = false
 }: EmbeddedHubPickerProps) {
   const { t } = useI18n()
   const h = t.skills.hub
@@ -78,7 +83,9 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
   // site — on every visit. Same contract as DetailPane.
   const heightOverride = useStore($paneHeightOverride(HUB_PANE_ID))
   const height = heightOverride ?? HUB_DEFAULT_PX
-  const open = height > HUB_COLLAPSED_PX
+  // A previously collapsed inline pane must not make the dedicated tab blank:
+  // the tab itself is the durable way back to the Hub, so it is always open.
+  const open = standalone || height > HUB_COLLAPSED_PX
   const [dragging, setDragging] = useState(false)
   const sectionRef = useRef<HTMLElement>(null)
 
@@ -87,6 +94,10 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
   // bottom panes; double-click resets to the default height. The iframe gets
   // pointer-events disabled for the duration or it swallows the pointermoves.
   const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (standalone) {
+      return
+    }
+
     if (event.button !== 0) {
       return
     }
@@ -172,24 +183,27 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
         // the list's strip/footer painted straight over this header. Now the
         // section clips its own content and gives height back to the list;
         // min-h keeps the header row itself always visible.
-        'relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)',
+        standalone
+          ? 'relative flex min-h-0 flex-1 flex-col overflow-hidden'
+          : 'relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)',
         hidden && 'hidden'
       )}
       ref={sectionRef}
     >
-      {/* Top-edge drag sash — pull the whole hub section up/down. */}
-      <div
-        className="group/hubsash absolute inset-x-0 top-0 z-10 h-1 -translate-y-1/2 cursor-row-resize"
-        onDoubleClick={() => setPaneHeightOverride(HUB_PANE_ID, undefined)}
-        onPointerDown={startDrag}
-      >
+      {!standalone && (
         <div
-          className={cn(
-            'absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors',
-            dragging ? 'bg-(--ui-stroke-secondary)' : 'group-hover/hubsash:bg-(--ui-stroke-secondary)'
-          )}
-        />
-      </div>
+          className="group/hubsash absolute inset-x-0 top-0 z-10 h-1 -translate-y-1/2 cursor-row-resize"
+          onDoubleClick={() => setPaneHeightOverride(HUB_PANE_ID, undefined)}
+          onPointerDown={startDrag}
+        >
+          <div
+            className={cn(
+              'absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors',
+              dragging ? 'bg-(--ui-stroke-secondary)' : 'group-hover/hubsash:bg-(--ui-stroke-secondary)'
+            )}
+          />
+        </div>
+      )}
       <div className="flex shrink-0 items-center justify-between px-3 py-1.5">
         <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{h.pickerTitle}</span>
         <div className="flex items-center gap-1">
@@ -197,13 +211,15 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
             {updating && <Loader2 className="size-3 animate-spin" />}
             {updating ? h.updating : h.updateAll}
           </Button>
-          <Button onClick={() => setPaneHeightOverride(HUB_PANE_ID, open ? 0 : undefined)} size="xs" variant="text">
-            {open ? h.pickerHide : h.pickerBrowse}
-          </Button>
+          {!standalone && (
+            <Button onClick={() => setPaneHeightOverride(HUB_PANE_ID, open ? 0 : undefined)} size="xs" variant="text">
+              {open ? h.pickerHide : h.pickerBrowse}
+            </Button>
+          )}
         </div>
       </div>
       {open && (
-        <div className="flex min-h-0 flex-col gap-1 px-3 pb-2">
+        <div className={cn('flex min-h-0 flex-col gap-1 px-3 pb-2', standalone && 'flex-1')}>
           {/* Resizable viewport: height comes from the top-edge drag sash
               above (persisted; double-click resets). flex-basis instead of a
               hard height so a short window shrinks the hub viewport rather
@@ -211,10 +227,11 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
               at its natural scale: shrinking it made the hub choose a wider
               desktop layout, leaving a large empty strip on the right. */}
           <div
+            className={cn(standalone && 'flex-1')}
             style={{
               border: '1px solid var(--ui-stroke-secondary)',
               borderRadius: 8,
-              flex: `0 1 ${height}px`,
+              flex: standalone ? '1 1 auto' : `0 1 ${height}px`,
               maxWidth: '100%',
               minHeight: 0,
               minWidth: 320,

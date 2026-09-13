@@ -213,18 +213,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             adapter_profile TEXT
         )"""
     )
-    columns = {
-        row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")
-    }
-    if "adapter_profile" not in columns:
-        try:
-            conn.execute(
-                "ALTER TABLE delivery_obligations ADD COLUMN adapter_profile TEXT"
-            )
-        except sqlite3.OperationalError as exc:
-            # Concurrent first-use connections can both observe the old schema.
-            if "duplicate column" not in str(exc).lower():
-                raise
+    if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
+        add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
 
 
 def _transaction():

@@ -116,9 +116,13 @@ export function removeMcpServer(name: string): Promise<{ ok: boolean }> {
   })
 }
 
-export function setMcpServerEnabled(name: string, enabled: boolean): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
-    ...profileScoped(),
+export function setMcpServerEnabled(
+  name: string,
+  enabled: boolean,
+  profile?: ProfileScope
+): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...capabilityScoped(profile),
     path: `/api/mcp/servers/${encodeURIComponent(name)}/enabled`,
     method: 'PUT',
     body: { enabled }

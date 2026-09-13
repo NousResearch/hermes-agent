@@ -21,20 +21,17 @@ from typing import Optional, Union
 
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
-from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
-from gateway.session import (
-    AsyncSessionStore,
-    SessionSource,
-    TranscriptReadError,
-    build_session_key,
-    is_shared_multi_user_session,
-)
-from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
-from utils import (
-    atomic_json_write,
-    base_url_host_matches,
-    is_truthy_value,
-)
+from gateway.platforms.base import EphemeralReply
+from gateway.platforms.event import MessageEvent
+from gateway.session import AsyncSessionStore
+from gateway.session_transcript import TranscriptReadError
+from gateway.slash_commands_goals import GatewayGoalCommandsMixin
+from gateway.slash_commands_model import GatewayModelCommandsMixin
+from gateway.slash_commands_session import GatewaySessionCommandsMixin
+from gateway.slash_commands_login import GatewayLoginCommandsMixin
+from gateway.slash_commands_status import HISTORY_UNREADABLE, GatewayStatusCommandsMixin
+from hermes_cli.config import atomic_config_write, cfg_get
+from utils import atomic_json_write, is_truthy_value
 
 logger = logging.getLogger("gateway.run")
 

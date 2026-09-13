@@ -8,6 +8,8 @@
  * rather than inside either one.
  */
 
+import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
+
 const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
 
 /** Renders a diff — the deliverable of the turn, and the one card whose cost scales. */
@@ -24,7 +26,8 @@ export function isFileEditTool(toolName: string): boolean {
 //   - `clarify`, `image_generate` and `delegate_task` bypass ToolEntry to
 //     render their own markup: a question the user has to answer, an image
 //     they asked for, the several agents a fan-out is running.
-//   - `manage_connections` is a consent card; its controls must stay visible.
+//   - `setup_mcp` and `manage_connections` are inline consent cards the user has to
+//     act on. Folding it into a "Using 2 tools" summary hides the buttons.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
@@ -36,9 +39,8 @@ export const CONNECTION_CARD_KEY = 'manage_connections:card'
 export function isCardTool(toolName: string): boolean {
   return (
     CARD_TOOL_NAMES.has(toolName) ||
-    toolName === CONNECTION_CARD_KEY ||
     isFileEditTool(toolName) ||
-    toolName === 'manage_connections'
+    (toolName === 'manage_connections' && isOnboardingEnabled())
   )
 }
 

@@ -152,7 +152,7 @@ export async function loadRuntimePlugin(
     // is skipped — but VISIBLY: a silent skip left the stale folder
     // undiscoverable while (on shells without the bundled twin) the same
     // folder actively breaks the feature it shadows. The inventory row
-    // carries the file path so Settings → Plugins can reveal it for deletion.
+    // carries the file path so Capabilities → Plugins can reveal it for deletion.
     if ($pluginRecords.get()[plugin.id]?.kind === 'bundled') {
       console.info(`[plugins] ${origin} skipped — "${plugin.id}" already ships bundled with the app`)
       publishPlugin({
@@ -238,9 +238,7 @@ const DISK_POLL_MS = 5_000
 
 interface DiskRoot {
   dir: string
-  /** Path segments below each scanned package folder. Discovery walks
-   *  directory metadata to this file instead of throwing a content read for
-   *  every ordinary package that has no Desktop half. */
+  /** Path segments below each scanned folder to the entry file. */
   entrySegments: readonly string[]
 }
 
@@ -292,25 +290,6 @@ async function readPackageMarker(desktop: Window['hermesDesktop'], folder: strin
   } catch {
     return null
   }
-
-  const roots: DiskRoot[] = []
-  const standalone = await desktop.desktopPluginsRoot?.()
-
-  if (standalone) {
-    roots.push({ dir: standalone, entrySegments: ['plugin.js'] })
-  }
-
-  const unified = await desktop.agentPluginsRoot?.()
-
-  if (unified) {
-    // Opt-in by default: `~/.hermes/plugins` is installed-but-inert until the
-    // user allowlists the Python half (plugins.enabled), so the desktop half
-    // matches that posture — inventoried in Settings → Plugins, off until
-    // toggled. The standalone desktop-plugins door keeps its default-on trust.
-    roots.push({ defaultEnabled: false, dir: unified, entrySegments: ['desktop', 'plugin.js'] })
-  }
-
-  return roots
 }
 
 interface DiskPlugin {
@@ -508,6 +487,8 @@ async function scanDiskPlugins(): Promise<void> {
         if (disk.has(file)) {
           continue
         }
+
+        const marker = await readPackageMarker(desktop, dir.path)
 
         const record: DiskPlugin = {
           // A unified package's desktop half ships opt-in, like its agent half.

@@ -239,7 +239,7 @@ def nous_rate_limit_guard(
                 if anon_auth.route_is_welcome_host(getattr(agent, "base_url", "")):
                     _nous_msg = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(reset=reset)
                 else:
-                    _nous_msg = f"Your Nous account has hit its rate limit; it resets in {reset}."
+                    _nous_msg = f"Nous Portal rate limit active — resets in {reset}."
                 agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
                 agent._buffer_status(f"⏳ {_nous_msg}")
                 if agent._try_activate_fallback():

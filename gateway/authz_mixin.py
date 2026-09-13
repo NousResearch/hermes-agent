@@ -29,22 +29,27 @@ _TRUTHY = frozenset({"true", "1", "yes"})
 _BOT_LOOP_GUARD_INIT_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
-def _platform_gate_env(name: str, default: str = "") -> str:
-    """Read a platform allow/deny gate env var with per-profile isolation.
+# Platform -> ``<PLATFORM>_ALLOWED_USERS`` / ``<PLATFORM>_ALLOW_ALL_USERS``. Shared with the pairing
+# store's allowlist mirror (single source of truth); plugin platforms are added per-call from the registry.
+_ALLOWED_USERS_ENV = {Platform(k): v for k, v in _PLATFORM_ALLOWLIST_ENV.items()}
+_ALLOW_ALL_ENV = {p: v.replace("_ALLOWED_USERS", "_ALLOW_ALL_USERS") for p, v in _ALLOWED_USERS_ENV.items()}
+_GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
+_GROUP_CHAT_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS", Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS"}
+_ALLOW_BOTS_ENV = {
+    # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466). Checked before the
+    # no-user-id guard below: some platforms deliver bot/automation traffic with no user_id at all -- e.g.
+    # Slack Workflow Builder posts arrive as subtype=bot_message with user=None -- so deferring past the
+    # guard would reject them outright (the same reason the chat-scoped allowlist above runs early).
+    Platform.DISCORD: "DISCORD_ALLOW_BOTS",
+    Platform.FEISHU: "FEISHU_ALLOW_BOTS",
+    Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
+    Platform.SLACK: "SLACK_ALLOW_BOTS",
+}
 
-    When a profile secret scope is installed AND multiplexing is active, a
-    key absent from the scope returns ``default`` instead of falling through
-    to ``os.environ``. Under multiplex the process env may hold ANOTHER
-    profile's first-writer-bridged value (the YAML→env bridges in the
-    Discord/Telegram adapters' ``_apply_yaml_config`` are first-writer-wins),
-    so falling through would leak profile A's allowlist into profile B
-    (issue #72348). Single-profile deployments — no scope installed, or
-    multiplex off — behave exactly like the legacy ``os.getenv`` read.
-    """
-    if not name:
-        return default
-    try:
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+# Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
+from gateway.platforms._shared import platform_gate_env as _auth_env  # noqa: E402
+
 
 def _env_truthy(name: str) -> bool:
     return _auth_env(name).lower() in _TRUTHY
@@ -205,13 +210,12 @@ class GatewayAuthorizationMixin:
         When a stamped profile has its own adapter registry entry, the default
         profile's same-platform adapter must not be consulted as a fallback.
 
-        Consult ``_profile_adapters`` *before* comparing against
-        ``_active_profile_name()``. Multiplex turns wrap authz in
-        ``_profile_runtime_scope``, which overrides ``HERMES_HOME`` so
-        ``get_active_profile_name()`` returns the secondary profile for the
-        duration of the turn. Treating that scoped name as "primary" would
-        look up ``self.adapters`` (empty for secondary-only platforms like
-        A2A) and default-deny an already-authenticated peer.
+    def _profile_adapters_map(self) -> dict:
+        return getattr(self, "_profile_adapters", None) or {}
+
+    def _authorization_adapter(self, platform: Optional[Platform], profile: Optional[str] = None):
+        """Live adapter whose intake policy gates authorization (``_adapters_for_profile`` for the
+        profile rule). ``None`` when the profile has no adapter for *platform*.
         """
         if not platform:
             return None
@@ -226,33 +230,42 @@ class GatewayAuthorizationMixin:
         secondary whose adapter failed to connect must NOT fall back to the default profile's adapter
         (replies, tool sends, marker-file notices out the wrong bot)."""
         profile_name = (profile or "").strip() or None
-        if profile_name and profile_name != "default":
-            profile_adapters = getattr(self, "_profile_adapters", None) or {}
-            if profile_name in profile_adapters:
-                return profile_adapters[profile_name].get(platform)
-            # Adapter ownership is process-wide: only the profile the gateway
-            # was LAUNCHED as owns ``self.adapters``. ``_active_profile_name()``
-            # reads the per-turn HERMES_HOME override, so inside a secondary
-            # profile's ``_profile_runtime_scope`` it reports that secondary
-            # and would hand it the default bot. Compare against the identity
-            # captured at construction instead.
-            primary_profile = getattr(self, "_primary_profile_name", None)
-            if not primary_profile:
-                active_profile_fn = getattr(self, "_active_profile_name", None)
-                if callable(active_profile_fn):
-                    try:
-                        primary_profile = active_profile_fn()
-                    except Exception:
-                        primary_profile = None
-            if profile_name == primary_profile:
-                adapters = getattr(self, "adapters", None) or {}
-                return adapters.get(platform)
-            # Fail closed: a stamped secondary profile with no registry entry
-            # (e.g. its adapter failed to connect) must NOT fall back to the
-            # default profile's adapter — that sends replies out the wrong bot.
-            return None
-        adapters = getattr(self, "adapters", None) or {}
-        return adapters.get(platform)
+        if not profile_name or profile_name == "default":
+            return self._primary_adapters()
+        profile_adapters = self._profile_adapters_map()
+        if profile_name in profile_adapters:
+            adapters = profile_adapters[profile_name]
+            if adapters or not self._is_shared_bot_satellite(profile_name):
+                return adapters
+            return self._primary_adapters()
+        # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
+        primary_profile = getattr(self, "_primary_profile_name", None)
+        if not primary_profile:
+            with contextlib.suppress(Exception):
+                primary_profile = self._active_profile_name()
+        return self._primary_adapters() if profile_name == primary_profile else {}
+
+    def _is_shared_bot_satellite(self, profile_name: str) -> bool:
+        """A served profile with NO adapter of its own that a ``profile_routes`` entry targets through the
+        default profile's bot: it drains through the primary's adapters (gateway/AGENTS.md). Its
+        ``_profile_adapters`` entry is the ``{}`` startup placeholder; a secondary connected on ANY
+        platform is its own credential boundary and never borrows the primary. Restored/cached sources
+        carry no transport ref, so this is what keeps heartbeats, completions and goal notices for such a
+        profile deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
+        config = getattr(self, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            return False
+        # A bot that failed to connect is queued for reconnect: that profile owns a credential.
+        if (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name):
+            return False
+        routes = getattr(config, "profile_routes", None) or []
+        if not any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes):
+            return False
+        from gateway.run import _multiplex_profile_homes
+        try:
+            return profile_name in {name for name, _home in _multiplex_profile_homes(config)}
+        except Exception:
+            return False
 
     def _adapter_for_source(self, source: Optional[SessionSource]):
         """Resolve the live adapter for an inbound ``SessionSource``."""
@@ -487,13 +500,8 @@ class GatewayAuthorizationMixin:
         # rung is what a secondary profile has: its config is never bridged into the process env.
         if getattr(source, "is_bot", False):
             allow_bots_var = _ALLOW_BOTS_ENV.get(source.platform)
-            if allow_bots_var:
-                extra = {}
-                with contextlib.suppress(Exception):
-                    extra = self._adapter_extra_for_source(source)
-                mode = str(_extra_or_secret(extra, "allow_bots", allow_bots_var, "none")).lower().strip()
-                if mode in {"mentions", "all"}:
-                    return True
+            if allow_bots_var and _auth_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+                return True
         return False
 
     def _legacy_telegram_chat_grant(self, source, group_user_allowlist: str) -> bool:

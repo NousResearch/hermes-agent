@@ -104,36 +104,22 @@ def _redact_cdp_output(
     from agent.redact import redact_sensitive_text
     if isinstance(value, str):
         return redact_sensitive_text(value, force=True)
-    if isinstance(value, list):
-        return [_redact_cdp_output(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_redact_cdp_output(item) for item in value)
-    if isinstance(value, dict):
-        base64_flagged = value.get("base64Encoded") is True
-        redacted: Dict[str, Any] = {}
-        for key, item in value.items():
-            terminal_always = any(
-                len(p) == 1 and p[0] == key for p in always_paths
-            )
-            terminal_flagged = any(
-                len(p) == 1 and p[0] == key for p in flagged_paths
-            )
-            if isinstance(item, str) and (
-                terminal_always or (terminal_flagged and base64_flagged)
-            ):
-                redacted[key] = item
-            else:
-                redacted[key] = _redact_cdp_output(
-                    item,
-                    always_paths=tuple(
-                        p[1:] for p in always_paths if len(p) > 1 and p[0] == key
-                    ),
-                    flagged_paths=tuple(
-                        p[1:] for p in flagged_paths if len(p) > 1 and p[0] == key
-                    ),
-                )
-        return redacted
-    return value
+    if isinstance(value, (list, tuple)):
+        return type(value)(_redact_cdp_output(item) for item in value)
+    if not isinstance(value, dict):
+        return value
+    base64_flagged = value.get("base64Encoded") is True
+    def leaf(paths: tuple, key: str) -> bool:
+        return any(len(p) == 1 and p[0] == key for p in paths)
+    def descend(paths: tuple, key: str) -> tuple:
+        return tuple(p[1:] for p in paths if len(p) > 1 and p[0] == key)
+    redacted: Dict[str, Any] = {}
+    for key, item in value.items():
+        opaque = leaf(always_paths, key) or (leaf(flagged_paths, key) and base64_flagged)
+        out_key = redact_sensitive_text(key, force=True) if isinstance(key, str) else key  # by-value objects can carry a secret as a KEY
+        redacted[out_key] = item if isinstance(item, str) and opaque else _redact_cdp_output(
+            item, always_paths=descend(always_paths, key), flagged_paths=descend(flagged_paths, key))
+    return redacted
 
 
 # ``websockets`` is a direct dependency; wrap so a stale env yields a clean error.

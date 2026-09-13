@@ -389,9 +389,10 @@ class LSPService:
         srv = find_server_for_file(file_path)
         if not (ws and gated and srv):
             return []
-        with self._state_lock:
-            client = self._clients.get(_client_key(srv, ws))
-        if client is None:
+        # Same key _get_or_spawn() stored under: single-root servers live under their
+        # resolved project root (a nested package.json), not the enclosing workspace.
+        root = srv.resolve_root(file_path, ws)
+        if root is None:
             return []
         with self._state_lock:
             client = self._clients.get(_client_key(srv, root))

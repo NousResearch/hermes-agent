@@ -253,7 +253,12 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
     return
   }
 
-  if (options.native || hudForcesNativeLinks() || !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')) {
+  if (
+    options.native ||
+    isConnectorAuthorizationLink(target) ||
+    hudForcesNativeLinks() ||
+    !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')
+  ) {
     openExternalLink(target)
 
     return

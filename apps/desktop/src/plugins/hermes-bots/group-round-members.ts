@@ -142,13 +142,11 @@ export async function runGroupRoundMember(
   }
 
   const { room, markKey, prompt, deltaImages } = prepared
-  const anchorId = room.log.at(-1)?.id ?? null
   let reply: null | string = null
   let accepted = false
 
   try {
     reply = await runVisibleMemberTurn(context, member, prompt, deltaImages)
-    accepted = true
 
     // Needs-attention hook (#93091 item 3): a turn that produced a real
     // reply (or an explicit pass) is a good turn — clear the badge.
@@ -248,9 +246,105 @@ export async function runGroupRoundMember(
     )
     // A reply cannot acknowledge user entries that arrived during inference.
     updateGroupChat(context.group, (r: GroupChatRoom) => {
-      if (r.watermarks[markKey] === r.log.length - 1) {
-        r.watermarks[markKey] = r.log.length
-      }
+      r.watermarks[markKey] = r.log.length
+
+      return r
+    })
+
+    return true
+  }
+
+  return false
+}
+
+async function runGroupContinuationMember(
+  context: GroupRoundMemberContext,
+  member: GroupMember
+): Promise<boolean | null> {
+  const { members, thread, binding, isCurrent } = context
+
+  const room = $groupChats.get()[context.group] || {
+    log: [],
+    watermarks: {}
+  }
+
+  const memberKey = groupMemberKey(member)
+  const markKey = `${thread}::${memberKey}`
+  const seen = room.watermarks[markKey] || 0
+  const delta = room.log.slice(seen).filter((e: GroupMessage) => groupThreadOf(e) === thread)
+
+  // A cited member always has delta here (the citing reply IS in
+  // its tail); skip defensively anyway so an empty prompt never
+  // fires.
+  if (!delta.length) {
+    return false
+  }
+
+  const heldEntry = (room.holds || {})[memberKey]
+
+  if (heldEntry) {
+    return false // holds still apply to continuation turns (#93129)
+  }
+
+  const prompt = buildGroupChatTurnPrompt({
+    groupName: context.group,
+    members,
+    viewer: member,
+    // The continuation prompt centers on what the member missed:
+    // everything since its watermark, which includes the reply
+    // that cites it.
+    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member))
+  })
+
+  let continuationReply: null | string = null
+
+  try {
+    continuationReply = await runVisibleMemberTurn(context, member, prompt)
+
+    if (continuationReply !== null) {
+      clearBotAttention(memberKey)
+    }
+  } catch (error: any) {
+    if (!binding.isLive()) {
+      return null
+    }
+
+    recordGroupActivity(context.group, {
+      kind: 'failed',
+      member: member.name,
+      thread
+    })
+    noteBotAttention(memberKey, error?.message || error)
+    continuationReply = null
+  }
+
+  if (!isCurrent()) {
+    return null
+  }
+
+  updateGroupChat(context.group, (r: GroupChatRoom) => {
+    r.watermarks[markKey] = r.log.length
+
+    return r
+  })
+
+  if (continuationReply !== null && !isGroupPassText(continuationReply)) {
+    appendGroupChatEntry(
+      context.group,
+      {
+        kind: 'member',
+        name: member.name,
+        ...(member.remoteSource
+          ? {
+              source: member.connectionLabel || member.connectionId
+            }
+          : {})
+      },
+      continuationReply,
+      thread
+    )
+    updateGroupChat(context.group, (r: GroupChatRoom) => {
+      r.watermarks[markKey] = r.log.length
 
       return r
     })

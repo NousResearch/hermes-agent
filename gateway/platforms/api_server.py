@@ -388,6 +388,16 @@ def _request_agent_overrides(
     return overrides
 
 
+def _request_relay_metadata(body: Any) -> Dict[str, Any]:
+    """Extract Relay metadata from an OpenAI request body."""
+    if not isinstance(body, dict):
+        return {}
+    metadata = body.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    return dict(metadata)
+
+
 def _is_compressed_summary_message(message: Any) -> bool:
     """Recognize every model-side compaction carrier shape.
 
@@ -6272,14 +6282,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @staticmethod
     def _bind_api_server_session(
-        *,
-        chat_id: str = "",
-        session_key: str = "",
-        session_id: str = "",
-        browser_control_principal: str = "",
-        browser_control_transport_family: str = "",
-    ) -> list:
-        """Bind session contextvars for an API-server agent run.
+        *, chat_id: str = "", session_key: str = "", session_id: str = "", profile: str = "",
+        browser_control_principal: str = "", browser_control_transport_family: str = "",
+        session_history_delivery: str = "") -> list:
+        """Bind an API turn with push disabled and history delivery default-denied.
 
         Only routes whose continuation reads SessionDB may pass "1". An omitted
         declaration or fingerprint-derived identity keeps delegation synchronous.
@@ -6289,68 +6295,94 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         unbound profile collapses every profile's turns onto the default sandbox (#96370)."""
         from gateway.session_context import set_session_vars
         return set_session_vars(
-            platform="api_server",
-            chat_id=chat_id,
-            session_key=session_key,
-            session_id=session_id,
-            browser_control_principal=browser_control_principal,
+            platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
+            profile=profile, browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
-            async_delivery=False,
-            cron_session="",
-        )
+            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
+
+    def _turn_runtime_metadata(
+        self, agent: Any, *, route: Optional[Dict[str, Any]], requested_runtime: Optional[Dict[str, Any]],
+        route_source: str, confirmed_runtime_lock: bool) -> Dict[str, Any]:
+        """Sanitized actual-vs-requested runtime for a finished turn; raises RuntimeError when a
+        confirmed model lock's provider/model differs from what the agent actually ran with."""
+        runtime = dict(getattr(agent, "_hermes_api_runtime", {}) or {})
+        raw_provider = getattr(agent, "provider", "")
+        raw_model = getattr(agent, "model", "")
+        actual_provider = self._clean_runtime_id(raw_provider, max_len=80) if isinstance(raw_provider, str) else ""
+        actual_model = self._clean_runtime_id(raw_model) if isinstance(raw_model, str) else ""
+        for key, actual in (("provider", actual_provider), ("model", actual_model)):
+            if actual:
+                runtime[key] = actual
+            else:
+                runtime.setdefault(key, "")
+        route = route or {}
+        requested_runtime = requested_runtime or {}
+        if confirmed_runtime_lock:
+            expected_provider = self._clean_runtime_id(
+                route.get("provider") or requested_runtime.get("provider"), max_len=80)
+            expected_model = self._clean_runtime_id(route.get("model") or requested_runtime.get("model"))
+            if (expected_provider and actual_provider != expected_provider) or (
+                expected_model and actual_model != expected_model):
+                raise RuntimeError(
+                    "confirmed model lock runtime mismatch: "
+                    f"expected provider={expected_provider or '<unspecified>'} "
+                    f"model={expected_model or '<unspecified>'}; "
+                    f"actual provider={actual_provider or '<unknown>'} "
+                    f"model={actual_model or '<unknown>'}")
+        if requested_runtime:
+            model, provider = self._requested_ids(requested_runtime)
+            runtime["requested"] = {"provider": provider, "model": model}
+        runtime["route_source"] = route_source or runtime.get("route_source") or "global"
+        return self._sanitize_runtime_metadata(
+            runtime=runtime, requested_runtime=requested_runtime or None, route_source=route_source or "global",
+            model_lock=("confirmed" if confirmed_runtime_lock else ""))
+
+    def _finish_turn_result(
+        self, agent: Any, result: Any, session_id: Optional[str], *, route, requested_runtime, route_source,
+        confirmed_runtime_lock: bool) -> tuple:
+        """Attach usage, effective session id, ``_compressed`` and runtime metadata to a finished turn."""
+        usage = {"input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                 "total_tokens": getattr(agent, "session_total_tokens", 0) or 0}
+        # Effective session id lets callers track compression-triggered rotations.
+        # (#16938)
+        _eff_sid = getattr(agent, "session_id", session_id)
+        if isinstance(_eff_sid, str) and _eff_sid:
+            result["session_id"] = _eff_sid
+        # _compressed tells _build_response_conversation_history to store the compacted
+        # transcript as-is (rotation changes session_id; in-place compaction sets a flag).
+        _session_rotated = isinstance(_eff_sid, str) and isinstance(session_id, str) and _eff_sid != session_id
+        if getattr(agent, "_last_compaction_in_place", False) or _session_rotated:
+            result["_compressed"] = True
+        if requested_runtime or route or confirmed_runtime_lock or (route_source and route_source != "global"):
+            runtime = self._turn_runtime_metadata(
+                agent, route=route, requested_runtime=requested_runtime,
+                route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock)
+            if isinstance(result, dict):
+                result["runtime"] = runtime
+            usage["runtime"] = runtime
+        return result, usage
 
     async def _run_agent(
-        self,
-        user_message: str,
-        conversation_history: List[Dict[str, str]],
-        ephemeral_system_prompt: Optional[str] = None,
-        session_id: Optional[str] = None,
-        stream_delta_callback=None,
-        tool_progress_callback=None,
-        tool_start_callback=None,
-        tool_complete_callback=None,
-        agent_ref: Optional[list] = None,
-        active_run_id: Optional[str] = None,
-        gateway_session_key: Optional[str] = None,
-        requested_model: Optional[str] = None,
-        requested_provider: Optional[str] = None,
-        model_options: Optional[Dict[str, Any]] = None,
-        route: Optional[Dict[str, Any]] = None,
-        session_model: Optional[str] = None,
-        requested_runtime: Optional[Dict[str, Any]] = None,
-        route_source: str = "global",
-        confirmed_runtime_lock: bool = False,
-        bind_declared_conversation: bool = False,
-    ) -> tuple:
-        """
-        Create an agent and run a conversation in a thread executor.
-
-        Returns ``(result_dict, usage_dict)`` where *usage_dict* contains
-        ``input_tokens``, ``output_tokens`` and ``total_tokens``.
-
-        *route* is an optional ``model_routes`` entry (resolved from the
-        request's ``model`` field) that overrides the global model/provider
-        for this specific request.
-
-        *session_model* is a raw model persisted on a native API session
-        row.  It is used only when the persisted value did not resolve to a
-        ``model_routes`` alias — see ``_create_agent`` for precedence.
-
-        *requested_runtime* / *route_source* / *confirmed_runtime_lock*
-        carry the Browser model-lock contract: when a confirmed lock is
-        active the completed agent's actual provider/model must match the
-        locked selection or the turn fails, and the response carries
-        sanitized ``runtime`` metadata reporting actual vs requested.
-
-        If *agent_ref* is a one-element list, the AIAgent instance is stored
-        at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
-        callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
-        another thread to stop in-progress LLM calls.
-
-        If *active_run_id* is supplied, the same live agent is registered in
-        ``_active_run_agents`` while the turn is running so API clients can
-        call run-scoped control endpoints such as ``/v1/runs/{run_id}/steer``.
-        """
+        self, user_message: str, conversation_history: List[Dict[str, str]],
+        ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
+        stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
+        tool_complete_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
+        gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
+        requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
+        route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
+        requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
+        confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
+        session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
+        relay_metadata: Optional[Dict[str, Any]] = None) -> tuple:
+        """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
+        ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
+        registers it in ``_active_run_agents``. Under a confirmed model lock the actual
+        provider/model must match or the turn fails; ``runtime`` metadata is attached.
+        ``session_history_delivery`` declares #98619 session-id provenance and default-denies: only audited
+        producers whose client can address the id again pass "1" (see
+        ``_bind_api_server_session``).
+        ``turn_author`` only labels the turn for memory attribution. It grants nothing."""
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
@@ -6365,14 +6397,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from gateway.session_context import clear_session_vars
             with self._profile_scope(request_profile):
                 tokens = self._bind_api_server_session(
-                    chat_id=session_id or "",
-                    session_key=gateway_session_key or session_id or "",
-                    session_id=session_id or "",
+                    chat_id=session_id or "", session_key=gateway_session_key or session_id or "",
+                    session_id=session_id or "", profile=request_profile or "",
                     browser_control_principal=request_browser_control_principal,
-                    browser_control_transport_family=(
-                        request_browser_control_transport_family
-                    ),
-                )
+                    browser_control_transport_family=request_browser_control_transport_family,
+                    session_history_delivery=session_history_delivery)
                 agent = None
                 try:
                     agent = self._create_agent(

@@ -2655,6 +2655,78 @@ def resnapshot_all_unpinned() -> List[Dict[str, Any]]:
     return updated
 
 
+def resnapshot_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Refresh provider/model snapshots for a job's UNPINNED axes to the
+    current global resolution.
+
+    This is the "adopt the current global default" companion to pinning
+    (#44585). Where pinning a job (``provider=... model=...``) makes it stop
+    tracking the global default forever, ``resnapshot_job`` re-captures the
+    current resolution so an unpinned job follows the user's deliberately
+    changed default — while remaining unpinned and tracking future changes.
+
+    Semantics:
+      - Pinned axes (job has an explicit provider/model) keep their snapshot
+        None and are left untouched.
+      - no_agent script jobs carry no snapshot and are left untouched.
+      - If the current resolution fails, the previous snapshot is left in
+        place (fail-open, matching create_job semantics).
+
+    Makes no inference call — it only recomputes the snapshot string from
+    config. Returns the normalized updated job, or None if not found.
+    """
+    job = resolve_job_ref(job_id)
+    if not job:
+        return None
+    provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
+        provider=job.get("provider"),
+        model=job.get("model"),
+        base_url=job.get("base_url"),
+        no_agent=job.get("no_agent"),
+    )
+    jobs = load_jobs()
+    for i, stored in enumerate(jobs):
+        if stored["id"] != job["id"]:
+            continue
+        jobs[i]["provider_snapshot"] = provider_snapshot
+        jobs[i]["model_snapshot"] = model_snapshot
+        save_jobs(jobs)
+        return _normalize_job_record(jobs[i])
+    return None
+
+
+def resnapshot_all_unpinned() -> List[Dict[str, Any]]:
+    """Refresh provider/model snapshots for every job that has any unpinned
+    axis, adopting the current global resolution for each.
+
+    Skips no_agent jobs and jobs pinned on all inference axes (nothing
+    unpinned to refresh). Equivalent to calling ``resnapshot_job`` for each
+    eligible job. Returns the list of updated jobs.
+    """
+    updated: List[Dict[str, Any]] = []
+    jobs = load_jobs()
+    changed = False
+    for job in jobs:
+        if bool(job.get("no_agent")):
+            continue
+        if job.get("provider") and job.get("model"):
+            # Pinned on every axis — nothing unpinned to refresh.
+            continue
+        provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
+            provider=job.get("provider"),
+            model=job.get("model"),
+            base_url=job.get("base_url"),
+            no_agent=job.get("no_agent"),
+        )
+        job["provider_snapshot"] = provider_snapshot
+        job["model_snapshot"] = model_snapshot
+        changed = True
+        updated.append(_normalize_job_record(job))
+    if changed:
+        save_jobs(jobs)
+    return updated
+
+
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Pause a job without deleting it. Accepts a job ID or name."""
     job = resolve_job_ref(job_id)
@@ -2730,14 +2802,40 @@ def trigger_job(
     )
 
 
-def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
-    if not isinstance(claim, dict) or not claim.get("at"):
+def _claim_owner_is_dead(claim: Dict[str, Any]) -> bool:
+    """True when the claim's ``by`` names a process on THIS host that provably no longer exists.
+    ``_machine_id()`` stamps ``host:pid[:token]``; a foreign host, an explicit HERMES_MACHINE_ID,
+    or any liveness-probe failure returns False (fail safe: only a proven death shortens the TTL)."""
+    parts = str(claim.get("by") or "").split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
         return False
     try:
-        age = (now - _ensure_aware(datetime.fromisoformat(claim["at"]))).total_seconds()
-    except (TypeError, ValueError):
+        import socket
+        if parts[0] != socket.gethostname():
+            return False
+        from gateway.status import _pid_exists
+        return not _pid_exists(int(parts[1]))
+    except Exception:
         return False
-    return 0 <= age < ttl_seconds
+
+
+def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
+    """True for a well-formed claim aged within ``[0, ttl)`` whose owner is not provably dead:
+    future-dated (clock/TZ skew) or malformed claims count as stale so they can never wedge a
+    job, and a same-host owner pid that has exited releases the claim immediately instead of
+    after the TTL (a killed ``hermes cron run`` otherwise blocks the next manual run for the
+    full window with "already being fired")."""
+    if not isinstance(claim, dict) or not claim.get("at"):
+        return False
+    claimed_at = _parse_aware(claim["at"])
+    if claimed_at is None or not (0 <= (now - claimed_at).total_seconds() < ttl_seconds):
+        return False
+    return not _claim_owner_is_dead(claim)
+
+
+_REARM_RECURRING_ERROR = (
+    "Cannot re-arm recurring jobs: re-arm is one-shot-only; use plain resume or cron run."
+)
 
 
 def rearm_oneshot(job_id: str, run_at: Any) -> Optional[Dict[str, Any]]:
@@ -3521,78 +3619,13 @@ def claim_job_for_fire(
             return False  # someone holds a fresh claim
         from cron.occurrences import completed_occurrence, scheduled_instant
 
-
-def _claim_job_for_fire_locked(
-    job_id: str,
-    *,
-    claim_ttl_seconds: int = 300,
-    force: bool = False,
-    return_job: bool = False,
-) -> Union[bool, Dict[str, Any]]:
-    """Atomically claim a job for a single external 'fire' (multi-machine
-    at-most-once). Returns True iff THIS caller won the claim.
-
-    Used by the external-provider fire path (``CronScheduler.fire_due``) when an
-    external scheduler (Chronos) signals a job is due across N gateway replicas:
-    exactly one wins. Single-machine deployments always win.
-
-    Under the file lock: reject if the job is missing/disabled/paused. An
-    explicit manual fire may pass ``force=True`` to atomically enable and
-    resume the job as part of the claim; external scheduler callbacks must
-    leave it false so a stale callback cannot resurrect a paused job. If a
-    fresh claim (younger than ``claim_ttl_seconds``) already exists, lose.
-    Otherwise stamp a ``fire_claim`` and, for recurring jobs, advance
-    ``next_run_at`` (mirrors ``advance_next_run``'s at-most-once bump so a stale
-    re-delivery for the old time can't re-fire). One-shots keep ``next_run_at``
-    but the fresh ``fire_claim`` blocks a duplicate retry for the same fire.
-    ``mark_job_run`` clears the claim on completion so a re-armed recurring job
-    is claimable again next fire.
-
-    The stale-claim TTL means a machine that crashed after claiming but before
-    completing doesn't wedge the job forever — after the TTL another fire can
-    reclaim it.
-    """
-    with _jobs_lock():
-        jobs = load_jobs()
-        for job in jobs:
-            if job["id"] != job_id:
-                continue
-            if is_terminal_job(job) and not _is_recoverable_error_job(job):
-                return False
-            # enabled + pause markers must both clear — a half-paused record
-            # (enabled=true, state=paused/paused_at set) must not claim. An
-            # explicit ``force`` (Trigger-now on a paused job) bypasses the
-            # gate and atomically resumes the job below.
-            if not force and not is_job_runnable(job):
-                return False
-            now = _hermes_now()
-            existing = job.get("fire_claim")
-            if existing:
-                try:
-                    claimed_at = _ensure_aware(datetime.fromisoformat(existing["at"]))
-                    # Bounded on BOTH sides (#60703): a claim stamped in the
-                    # future (clock/TZ skew across a restart, or a corrupted
-                    # timestamp) would otherwise have a negative age and stay
-                    # "fresh" forever — the job becomes permanently unfireable
-                    # and every manual `cron run` reports "already being
-                    # fired". Treat future-dated claims as stale/overwritable.
-                    _age = (now - claimed_at).total_seconds()
-                    if 0 <= _age < claim_ttl_seconds:
-                        return False  # someone holds a fresh claim
-                except Exception:
-                    pass  # malformed claim → overwrite
-            if force:
-                job["enabled"] = True
-                job["state"] = "scheduled"
-                job["paused_at"] = None
-                job["paused_reason"] = None
-            # Per-acquisition token: a process may legitimately reclaim its own
-            # stale lease, and the previous runner must not heartbeat the new
-            # claim merely because hostname + PID are unchanged.
-            owner = f"{_machine_id()}:{uuid.uuid4().hex}"
-            job["fire_claim"] = {"at": now.isoformat(), "by": owner}
-            kind = job.get("schedule", {}).get("kind")
-            if kind in {"cron", "interval"}:
+        # ``manual`` (an off-tick run-now) must NOT stamp an occurrence identity: outside a
+        # scheduler tick ``next_run_at`` is the NEXT occurrence, not the one being run, so
+        # stamping it would make completed_occurrence() skip that slot when it arrives.
+        manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
+        instant = None if manual_fire else scheduled_instant(job.get("next_run_at"))
+        if instant and completed_occurrence(job, instant):
+            if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt

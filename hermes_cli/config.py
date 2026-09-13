@@ -52,15 +52,16 @@ class InvalidUserConfigError(RuntimeError):
     """Raised when a run that cannot repair config finds invalid user YAML."""
 
 
-
-class InvalidUserConfigError(RuntimeError):
-    """Raised when a run that cannot repair config finds invalid user YAML."""
-
-
 _PARSE_FAILURE_FALLBACK_MSG = {
-    "last-known-good": "Hermes is running on the settings it loaded before the edit until it is fixed, so recent changes are not applied.",
-    "last-known-good-backup": "Hermes is running on your last good settings until it is fixed, so recent changes are not applied.",
-    "refuse-write": "Nothing was written, so the existing file is preserved."}
+    "last-known-good": (
+        "Keeping the previously loaded config for this process — "
+        "edits to config.yaml are being IGNORED until the YAML is fixed."),
+    "last-known-good-backup": (
+        "Loading the LAST KNOWN GOOD copy from backups/config/ instead — edits to config.yaml "
+        "since that copy are being IGNORED until the YAML is fixed."),
+    "refuse-write": (
+        "REFUSING to write config.yaml so the existing file is preserved. "
+        "Fix the YAML (hermes config edit) and retry.")}
 _PARSE_FAILURE_DEFAULTS_MSG = (
     "Hermes is running on default settings until it is fixed, so none of your saved settings are applied.")
 _PARSE_FAILURE_REPAIR_MSG = "Open it with `hermes config edit`, fix {where}, then run `hermes config check`."
@@ -112,28 +113,10 @@ def _warn_config_parse_failure(
     if key in _CONFIG_PARSE_WARNED:
         return
     _CONFIG_PARSE_WARNED.add(key)
-
-    backup_path = _backup_corrupt_config(config_path)
-
-    if fallback == "last-known-good":
-        msg = (
-            f"Failed to parse {config_path}: {exc}. "
-            f"Keeping the previously loaded config for this process — "
-            f"edits to config.yaml are being IGNORED until the YAML is fixed."
-        )
-    elif fallback == "refuse-write":
-        msg = (
-            f"Failed to parse {config_path}: {exc}. "
-            f"REFUSING to write config.yaml so the existing file is preserved. "
-            f"Fix the YAML (hermes config edit) and retry."
-        )
-    else:
-        msg = (
-            f"Failed to parse {config_path}: {exc}. "
-            f"Falling back to default config — every user override "
-            f"(auxiliary providers, fallback chain, model settings) is being IGNORED. "
-            f"Fix the YAML and restart."
-        )
+    from hermes_cli.config_backups import backup_config
+    backup_path = backup_config(config_path, "corrupt")
+    msg = f"Failed to parse {config_path}: {exc}. " + _PARSE_FAILURE_FALLBACK_MSG.get(
+        fallback, _PARSE_FAILURE_DEFAULTS_MSG)
     if backup_path is not None:
         msg += f" A copy of the broken file was saved to {backup_path}."
     logger.warning("%s Details: %s", msg, _yaml_error_details(exc))
@@ -366,23 +349,17 @@ _MANAGED_FALSE_VALUES = frozenset({"false", "0", "no", "off"})
 
 
 def get_managed_system() -> Optional[str]:
-    """Return the package manager owning this install, if any."""
-    raw = os.getenv("HERMES_MANAGED", "").strip()
-    marker = None
-    if raw:
-        marker = raw.lower()
-    else:
-        managed_marker = get_hermes_home() / ".managed"
-        # An interactive shell reads the marker, because it does not see the
-        # HERMES_MANAGED variable of the service. A marker with content
-        # names the system that manages the install.
-        if managed_marker.exists():
-            try:
-                marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
-            except OSError:
-                marker = ""
-
-    if marker is None:
+    """Return the package manager owning this install, if any.
+    Signals: HERMES_MANAGED env var (systemd service) or a ``.managed`` marker file in
+    HERMES_HOME (NixOS activation script — interactive shells don't see the service env)."""
+    marker = os.getenv("HERMES_MANAGED", "").strip().lower() or None
+    managed_marker = get_hermes_home() / ".managed"
+    if marker is None and managed_marker.exists():
+        try:
+            marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
+        except OSError:
+            marker = ""
+    if marker is None or marker in _IGNORED_MANAGED_VALUES or marker in _MANAGED_FALSE_VALUES:
         return None
 
     if marker in _IGNORED_MANAGED_VALUES:
@@ -641,7 +618,8 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
             f"top-level YAML value must be a mapping, got {type(data).__name__}"
         )
 
-    backup_path = _backup_corrupt_config(config_path)
+    from hermes_cli.config_backups import backup_config
+    backup_path = backup_config(config_path, "corrupt")
     message = (
         f"Refusing non-interactive startup because {config_path} is invalid: "
         f"{parse_error}. Repair the file or pass --ignore-user-config to "
@@ -3112,11 +3090,8 @@ def require_readable_config_before_write(
     Guards two collapse-to-empty failure modes that would otherwise let a
     read-then-write caller silently wipe user overrides:
 
-    1. **Unreadable** (permissions / broken mount) - byte open fails.
-    2. **Unparseable or non-mapping** - YAML load raises, or the root is a
-       list/scalar. ``read_user_config_raw()`` / bare ``except`` loaders treat
-       both as ``{}``, so a subsequent write would replace the recoverable
-       file with only the caller's partial dict.
+_FIX_PERMS = "Fix the file permissions or move it aside first."
+_FIX_YAML = "Fix the file or restore a copy from backups/config/ first."
 
     Returns the loaded mapping (or ``{}`` for a missing / empty / null
     document) so mutation callers can skip a second parse. A valid empty
@@ -3171,26 +3146,8 @@ def _load_user_config_for_mutation(config_path: Path) -> Dict[str, Any]:
             loaded = fast_safe_load(f)
     except OSError as exc:
         raise RuntimeError(
-            f"Refusing to overwrite {config_path}: existing config.yaml cannot be read "
-            f"({exc}). Fix the file permissions or move it aside first."
-        ) from exc
-    except Exception as exc:
-        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
-        raise RuntimeError(
-            f"Refusing to overwrite {config_path}: existing config.yaml is not valid YAML "
-            f"({exc}). Fix the file or restore from a .corrupt.*.bak backup first."
-        ) from exc
-    if loaded is None:
-        return {}
-    if not isinstance(loaded, dict):
-        exc = TypeError(
-            f"top-level YAML must be a mapping, got {type(loaded).__name__}"
-        )
-        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
-        raise RuntimeError(
-            f"Refusing to overwrite {config_path}: top-level YAML must be a mapping, "
-            f"got {type(loaded).__name__}. Fix the file or restore from a "
-            f".corrupt.*.bak backup first."
+            f"Refusing to overwrite {config_path}: top-level YAML must be a mapping, got "
+            f"{type(loaded).__name__}. Fix the file or restore a copy from backups/config/ first."
         ) from exc
     return loaded
 
@@ -3641,7 +3598,7 @@ def save_config(
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 
-# load_env() memo keyed on (path, *file_signature). Editing .env bumps mtime/inode -> rebuild;
+# load_env() memo keyed on (path, mtime, size). Editing .env bumps mtime -> rebuild;
 # invalidate_env_cache() is the explicit knob for writers on coarse-mtime filesystems.
 _env_cache: Optional[Tuple[Tuple[str, Optional[Tuple[int, int, int, int]]], Dict[str, str]]] = None
 

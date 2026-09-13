@@ -29,12 +29,13 @@ Disable with ``web.cache_enabled: false``; both TTLs come from
 import hashlib
 import json
 import logging
-import os
 import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
+from urllib.parse import urlparse
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -229,20 +230,11 @@ def _save_index(index: dict) -> None:
         return
     try:
         if len(index) > _INDEX_MAX_ENTRIES:
-            newest = sorted(
-                index.items(),
-                key=lambda kv: kv[1].get("fetched_at", 0),
-                reverse=True,
-            )[:_INDEX_MAX_ENTRIES]
-            index = dict(newest)
-        # Per-process tmp name: CLI, gateway, cron, and subagent processes
-        # all write this index; a shared fixed tmp filename would let two
-        # concurrent writers truncate each other mid-write. os.replace is
-        # atomic per writer, so the worst cross-process outcome is one
-        # writer's entry winning — a lost cache insert, never a torn file.
-        tmp = path.with_suffix(f".tmp.{os.getpid()}")
-        tmp.write_text(json.dumps(index), encoding="utf-8")
-        tmp.replace(path)
+            newest = sorted(index.items(), key=lambda kv: kv[1].get("fetched_at", 0), reverse=True)
+            index = dict(newest[:_INDEX_MAX_ENTRIES])
+        # CLI, gateway, cron, and subagents all write this index; the replace is atomic, so the worst case
+        # under concurrent writers is a lost insert, never a truncated index.
+        atomic_json_write(path, index, indent=None)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to save web extract cache index: %s", exc)
 

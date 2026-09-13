@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import copy
-import hashlib
 import importlib.metadata
 import inspect
 import json

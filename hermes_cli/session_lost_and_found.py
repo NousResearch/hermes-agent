@@ -13,11 +13,15 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-logger = logging.getLogger(__name__)
+from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical_layouts
 
-# Hermes session ids are timestamps: 20260812_135332_ab12cd. This is the
-# strongest sentinel available for classifying schema-less rows.
-SESSION_ID_PATTERN = re.compile(r"^\d{8}_\d{6}_")
+from hermes_state_ids import SESSION_ID_PATTERN  # timestamp prefix: strongest sentinel for schema-less rows
+from hermes_cli.session_recovery import (
+    _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _count_rows, _immediate_transaction,
+    _placeholder_titles, _quoted_columns, _table_columns,
+)
+
+logger = logging.getLogger(__name__)
 
 MESSAGE_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
@@ -765,60 +769,66 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
             for lf_table in lf_tables:
                 if _table_columns(lf_conn, lf_table)[:3] != ["rootpgno", "pgno", "nfield"]:
                     continue
-                lf_rowid = row[3]
-                cells = tuple(row[4 : 4 + max(nfield, 0)])
-                kind = classify_lost_and_found_row(nfield, cells)
-                if kind is None:
-                    report["unmapped_rows"] += 1
-                    continue
-                try:
-                    if kind == "messages":
-                        values = [lf_rowid, *cells[1 : min(nfield, len(messages_columns))]]
-                        inserted = _insert_prefix_row(
-                            dest, "messages", messages_columns, values,
-                            messages_defaults,
-                        )
-                    elif kind == "session_model_usage":
-                        values = list(cells[: len(usage_columns)])
-                        inserted = _insert_prefix_row(
-                            dest, "session_model_usage", usage_columns, values,
-                            usage_defaults,
-                        )
-                    elif nfield == SESSIONS_LEGACY_MINIMAL_NFIELD:
-                        # A pre-modern layout whose column order is unknown:
-                        # salvage identity + timing rather than guessing 14
-                        # positional meanings.
-                        inserted = bool(
-                            dest.execute(
-                                "INSERT OR IGNORE INTO sessions "
-                                "(id, source, started_at, title) "
-                                "VALUES (?, ?, ?, ?)",
-                                (
-                                    cells[0],
-                                    cells[1] if _looks_like_source(cells[1])
-                                    else "recovered",
-                                    _heuristic_started_at(cells),
-                                    f"{STUB_TITLE_PREFIX}] legacy session "
-                                    "row (layout unknown)",
-                                ),
-                            ).rowcount
-                            == 1
-                        )
-                        if inserted:
-                            report["legacy_minimal_sessions"] += 1
-                    else:
-                        values = list(cells[: min(nfield, len(sessions_columns))])
-                        inserted = _insert_prefix_row(
-                            dest, "sessions", sessions_columns, values,
-                            sessions_defaults,
-                        )
-                except sqlite3.DatabaseError:
-                    report["unmapped_rows"] += 1
-                    continue
-                if inserted:
-                    report["mapped"][
-                        "sessions" if kind == "sessions" else kind
-                    ] += 1
+                for row in lf_conn.execute(f'SELECT * FROM "{lf_table}"'):
+                    try:
+                        nfield = int(row[2]) if row[2] is not None else 0
+                    except (TypeError, ValueError):
+                        yield None, None, 0, ()
+                        continue
+                    cells = tuple(row[4 : 4 + max(nfield, 0)])
+                    yield classify_lost_and_found_row(nfield, cells), row[3], nfield, cells
+
+        # Pass 1: stream the population once, keeping only what layout inference needs. The physical
+        # layout is a property of the whole population (one store wrote all of them), so it is inferred
+        # once per kind, not per row.
+        evidence = {kind: LayoutEvidence(kind) for kind in targets}
+        for kind, _, _, cells in records():
+            if kind is None:
+                report["unmapped_rows"] += 1
+            else:
+                evidence[kind].add(cells)
+        layouts = {kind: infer_physical_layouts(evidence[kind], dest_types[kind]) for kind in targets}
+        # Per kind and record width, the column each position resolved to (None where the surviving
+        # layouts disagreed and the cell was left to the destination default).
+        report["inferred_layouts"] = {
+            kind: {str(width): list(layout) for width, layout in by_width.items()}
+            for kind, by_width in layouts.items() if by_width
+        }
+
+        # Pass 2: insert. Records whose width resolved to a layout are mapped by column name (#101409);
+        # the rest take the historical positional prefix, audited by the recovery verifier's plausibility gate.
+        for kind, lf_rowid, nfield, cells in records():
+            if kind is None:
+                continue  # counted in pass 1
+            columns, defaults = targets[kind]
+            layout = layouts[kind].get(len(cells))
+            legacy_minimal = kind == "sessions" and nfield == SESSIONS_LEGACY_MINIMAL_NFIELD
+            if layout is None and not legacy_minimal:
+                report["unrecognized_layout_rows"] += 1
+                widths = report["unrecognized_layout_widths"].setdefault(kind, [])
+                if len(cells) not in widths:
+                    widths.append(len(cells))
+            try:
+                if layout is not None:
+                    # messages.id is a rowid alias: NULL in the record, carried by the lost_and_found row id.
+                    inserted = _insert_named_row(
+                        dest, kind, layout, cells, columns, defaults,
+                        {"id": lf_rowid} if kind == "messages" else None,
+                    )
+                    report["mapped_by_layout"] += int(inserted)
+                elif legacy_minimal:
+                    # A 14-field record matching no known layout (torn cells, or a pre-history store):
+                    # salvage identity + timing rather than guessing 14 positional meanings.
+                    row_values = (
+                        cells[0], cells[1] if _looks_like_source(cells[1]) else "recovered",
+                        _heuristic_started_at(cells),
+                        f"{STUB_TITLE_PREFIX}] legacy session row (layout unknown)",
+                    )
+                    inserted = dest.execute(
+                        "INSERT OR IGNORE INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)",
+                        row_values,
+                    ).rowcount == 1
+                    report["legacy_minimal_sessions"] += int(inserted)
                 else:
                     values = list(cells[:len(columns)])
                     if kind == "messages":

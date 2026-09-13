@@ -196,7 +196,18 @@ export interface AgentPluginInstallResult {
 
 export async function installAgentPlugin(
   request: GatewayRequest,
-  opts: { identifier: string; force?: boolean; enable?: boolean }
+  opts: {
+    identifier: string
+    force?: boolean
+    enable?: boolean
+    /** Curated-catalog install: the backend resolves repo + pinned SHA from
+     *  its own plugin-catalog and records provenance in the sidecar. */
+    catalogName?: string
+    /** Pin a custom source to one full commit SHA (team-wide reproducible install). */
+    ref?: string
+    /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
+    profile?: string | null
+  }
 ): Promise<AgentPluginInstallResult> {
   try {
     const result = await request<{
@@ -205,12 +216,20 @@ export async function installAgentPlugin(
       warnings?: string[]
       missing_env?: string[]
       error?: string
-    }>('plugins.manage', {
-      action: 'install',
-      identifier: opts.identifier,
-      force: Boolean(opts.force),
-      enable: opts.enable ?? true
-    })
+    }>(
+      'plugins.manage',
+      withProfile(
+        {
+          action: 'install',
+          identifier: opts.identifier,
+          force: Boolean(opts.force),
+          enable: opts.enable ?? true,
+          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
+          ...(opts.ref ? { ref: opts.ref } : {})
+        },
+        opts.profile
+      )
+    )
 
     if (!result?.ok) {
       return { ok: false, error: result?.error || 'Install failed' }
@@ -224,5 +243,38 @@ export async function installAgentPlugin(
     }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** Re-pin a catalog-installed plugin to the current catalog SHA (backend
+ *  `plugins.manage update`; catalog installs only). Refreshes the list on
+ *  success. Returns whether the update applied. */
+export async function updateAgentPlugin(
+  request: GatewayRequest,
+  name: string,
+  failMessage: string,
+  profile?: string | null
+): Promise<boolean> {
+  $agentPluginBusy.set(name)
+
+  try {
+    const result = await request<{ ok?: boolean; unchanged?: boolean }>(
+      'plugins.manage',
+      withProfile({ action: 'update', name }, profile)
+    )
+
+    if (!result?.ok) {
+      throw new Error(failMessage)
+    }
+
+    await loadAgentPlugins(request, profile)
+
+    return !result.unchanged
+  } catch (e) {
+    notifyError(e, failMessage)
+
+    return false
+  } finally {
+    $agentPluginBusy.set(null)
   }
 }

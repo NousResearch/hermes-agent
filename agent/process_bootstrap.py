@@ -33,7 +33,6 @@ import socket
 import sys
 import threading
 import time
-import urllib.request
 from typing import Any, Optional
 
 from utils import base_url_hostname, normalize_proxy_url

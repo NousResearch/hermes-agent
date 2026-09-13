@@ -29,7 +29,6 @@ import logging
 import os
 import platform
 import secrets
-import stat
 import subprocess
 import threading
 from collections import OrderedDict
@@ -37,6 +36,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 from agent.secret_scope import get_secret as _get_secret
 
 logger = logging.getLogger(__name__)
@@ -105,28 +105,35 @@ class CredentialPersistError(RuntimeError):
         self.path = path
 
 
-# Fingerprints of Anthropic secrets whose refresh POST succeeded (so the
-# server-side pair was rotated and the old refresh token is spent) but whose
-# replacement never reached its authoritative store.  The pre-rotation pair
-# survives on disk and is re-seeded on the next ``load_pool()``, so without an
-# explicit verdict the resolver happily hands that already-consumed credential
-# back from a later source and the caller reads a silent success.
-#
-# Kept as non-reversible digests and bounded: a spent secret is spent forever,
-# so entries never need clearing (a re-auth mints new tokens with new
-# fingerprints).
-#
-# The registry has TWO scopes, because the credential it protects does:
-#   * process-local (this OrderedDict) — fast path, always recorded;
-#   * durable sidecar file next to the shared credential source — the
-#     authority boundary of ``claude_code``/``hermes_pkce`` is the shared
-#     singleton file, which other Hermes processes/profiles read with fresh
-#     interpreters.  A process-local verdict only stops the process that
-#     lost the commit from lying to itself; the sidecar stops every OTHER
-#     process from leasing the stale pair or re-POSTing the spent refresh
-#     token.  The sidecar stores only one-way fingerprints (never secrets)
-#     and is written under the same path-keyed cross-process lock that
-#     serializes refreshes of that source.
+def _load_json_if_exists(path: Path, what: str) -> Optional[Any]:
+    """Parsed JSON from *path*, or None when missing/unreadable/corrupt (debug-logged)."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.debug("Failed to read %s: %s", what, e)
+        return None
+
+
+def _atomic_write_private_json(path: Path, payload: Any) -> None:
+    """0600-from-creation temp file + fsync + atomic replace (the token is never briefly umask-readable).
+    The parent dir's mode is left alone (~/.claude/ is owned by Claude Code)."""
+    atomic_json_write(path, payload, mode=0o600)
+
+
+def _commit_private_json(path: Path, payload: Any, what: str) -> None:
+    """Atomic private write; any failure becomes ``CredentialPersistError`` (the commit step of a rotation)."""
+    try:
+        _atomic_write_private_json(path, payload)
+    except (OSError, ValueError) as e:
+        logger.error("Failed to write refreshed %s to %s: %s", what, path, e)
+        raise CredentialPersistError(path, e) from e
+
+
+# ── Spent-rotation registry: fingerprints of secrets whose refresh POST succeeded but whose replacement never
+# reached its store. Two scopes: process-local (OrderedDict) and a durable sidecar next to the shared singleton
+# file so OTHER processes fail closed too. Non-reversible digests; never cleared.
 _SPENT_ROTATION_LOCK = threading.Lock()
 _SPENT_ROTATION_FINGERPRINTS: "OrderedDict[str, None]" = OrderedDict()
 _SPENT_ROTATION_MAX_TRACKED = 64

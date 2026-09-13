@@ -58,6 +58,7 @@ class _FakeRPC:
         task,
         execution_generation,
         on_terminal,
+        member_id="",
     ):
         on_terminal({"status": "settled", "text": f"reply from {profile}"})
         return {"accepted": True}
@@ -68,8 +69,191 @@ class _FakeRPC:
     def info(self, *, profile, session_id, source):
         return {"active": False, "task_id": None}
 
-    def interrupt_admitted(self, *, task, execution_generation, source):
-        return {"found": False, "active": False, "interrupted": False}
+    def interrupt(self, *, profile, session_id, source, expected_task_id,
+                  expected_task=None, expected_execution_generation=None, expected_member_id=None):
+        return {"interrupted": True}
+
+    def approve(self, **kwargs):
+        self.approvals.append(dict(kwargs))
+        return {"resolved": 1}
+
+
+class _FakePeerClient:
+    def __init__(self) -> None:
+        self.dispatches = []
+        self.revoked = []
+        self.session = {"session_id": "peer-group-session"}
+
+    def prepare(self, **kwargs):
+        return (
+            self.session
+            if kwargs["create"] or kwargs.get("expected_session_id")
+            else None
+        )
+
+    def dispatch(self, **kwargs):
+        self.dispatches.append(kwargs["dispatch"])
+        return {"status": "accepted", "task_id": kwargs["dispatch"]["task_id"]}
+
+    def history(self, **kwargs):
+        if not self.dispatches:
+            return []
+        dispatch = self.dispatches[-1]
+        return [
+            {
+                "role": "assistant",
+                "task_id": dispatch["task_id"],
+                "execution_generation": dispatch["execution_generation"],
+                "status": "settled",
+                "message_id": f"peer:{dispatch['task_id']}",
+                "content": "Remote review complete.",
+            }
+        ]
+
+    def status(self, **kwargs):
+        task_id = self.dispatches[-1]["task_id"] if self.dispatches else None
+        return {"active": False, "task_id": task_id}
+
+    def stop(self, **kwargs):
+        return {"status": "cancelled"}
+
+    def revoke_grant(self, **kwargs):
+        self.revoked.append(kwargs["grant"])
+        return {"revoked": True}
+
+
+class _UnavailablePeerClient(_FakePeerClient):
+    def prepare(self, **kwargs):
+        raise RuntimeError("peer is offline before admission")
+
+
+class _NotAdmittedPeerClient(_FakePeerClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.offline = True
+
+    def dispatch(self, **kwargs):
+        if self.offline:
+            raise PeerRunsHTTPError(
+                "peer refused the connection",
+                retryable=True,
+                not_admitted=True,
+            )
+        return super().dispatch(**kwargs)
+
+
+class _ExpiredGrantPeerClient(_FakePeerClient):
+    def prepare(self, **kwargs):
+        raise PeerRunsHTTPError(
+            "peer room authorization needs renewal",
+            status_code=401,
+            error_code="invalid_room_grant",
+        )
+
+
+class _UnavailableRevokePeerClient(_FakePeerClient):
+    def revoke_grant(self, **kwargs):
+        raise RuntimeError("peer is offline during revocation")
+
+
+class _ExpiredRevokePeerClient(_FakePeerClient):
+    def revoke_grant(self, **kwargs):
+        raise PeerRunsHTTPError(
+            "peer room authorization needs renewal",
+            status_code=401,
+            error_code="invalid_room_grant",
+        )
+
+
+class _RefreshingPeerClient(_FakePeerClient):
+    def __init__(self, replacement: str, catalog=None) -> None:
+        super().__init__()
+        self.replacement = replacement
+        self.catalog = catalog
+        self.refreshed = []
+        self.refresh_arguments = []
+        self.dispatched_grants = []
+
+    def refresh_grant(self, **kwargs):
+        self.refreshed.append(kwargs["grant"])
+        self.refresh_arguments.append(dict(kwargs))
+        return {
+            "grant": self.replacement,
+            **({"catalog": self.catalog} if self.catalog is not None else {}),
+        }
+
+    def dispatch(self, **kwargs):
+        self.dispatched_grants.append(kwargs["grant"])
+        return super().dispatch(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_code", "terminal"),
+    [
+        (401, "invalid_room_grant", True),
+        (403, "invalid_room_grant", True),
+        (403, "room_reauthorization_required", True),
+        (400, "invalid_room_grant", False),
+        (403, "room_execution_policy_changed", False),
+        (500, "invalid_room_grant", False),
+    ],
+)
+def test_grant_revoke_terminal_classification_uses_structured_fields(
+    status_code,
+    error_code,
+    terminal,
+):
+    exc = PeerRunsHTTPError(
+        "opaque peer error",
+        status_code=status_code,
+        error_code=error_code,
+    )
+
+    assert _grant_revoke_is_terminal(exc) is terminal
+
+
+class _ApprovalPeerClient(_FakePeerClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.approvals = []
+
+    def status(self, **kwargs):
+        task_id = self.dispatches[-1]["task_id"] if self.dispatches else "task-1"
+        return {
+            "status": "waiting_for_approval",
+            "active": True,
+            "task_id": task_id,
+                "execution_generation": 2,
+                "run_id": "run-peer-1",
+                "session_id": "peer-group-session",
+                "request_id": "req-peer-1",
+                "approval": {
+                "description": "Run the focused tests",
+                "command": "pytest -q tests/focused",
+                "choices": ["once", "deny"],
+            },
+        }
+
+    def approve_receipt(self, **kwargs):
+        self.approvals.append(dict(kwargs))
+        return {"resolved": 1}
+
+
+class _RecoveringPeerClient(_FakePeerClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.recoveries = []
+
+    def recover_dispatch(self, **kwargs):
+        dispatch = dict(kwargs["dispatch"])
+        self.recoveries.append({**kwargs, "dispatch": dispatch})
+        self.dispatches.append(dispatch)
+        return {
+            "status": "accepted",
+            "task_id": dispatch["task_id"],
+            "execution_generation": dispatch["execution_generation"],
+            "run_id": "run-recovered",
+        }
 
 
 class _PromptRecordingRPC(_FakeRPC):
@@ -87,6 +271,7 @@ class _PromptRecordingRPC(_FakeRPC):
         task,
         execution_generation,
         on_terminal,
+        member_id="",
     ):
         self.prompts.append((profile, prompt))
         on_terminal({"status": "settled", "text": f"reply from {profile}"})
@@ -148,6 +333,8 @@ class _InterruptibleRPC(_FakeRPC):
 
     def submit(self, **kwargs):
         self.active_task_id = kwargs["task"].task_id
+        self.active_proof = {**asdict(kwargs["task"]), "execution_generation": kwargs["execution_generation"],
+                             "member_id": kwargs["member_id"]}
         self.started.set()
         return {"accepted": True}
 
@@ -157,8 +344,12 @@ class _InterruptibleRPC(_FakeRPC):
             "task_id": self.active_task_id,
         }
 
-    def interrupt(self, *, profile, session_id, source, expected_task_id):
-        if self.active_task_id != expected_task_id:
+    def interrupt(self, *, profile, session_id, source, expected_task_id,
+                  expected_task=None, expected_execution_generation=None, expected_member_id=None):
+        if self.active_task_id != expected_task_id or (
+                expected_task is not None and self.active_proof != {
+                    **asdict(expected_task), "execution_generation": expected_execution_generation,
+                    "member_id": expected_member_id}):
             return {"interrupted": False}
         if not self.acknowledge_interrupt:
             return {"interrupted": False}
@@ -1344,7 +1535,8 @@ def test_acknowledged_stop_refuses_to_disband_while_exact_turn_is_still_running(
         def info(self, *, profile, session_id, source):
             return {"active": True, "task_id": self.active_task_id}
 
-        def interrupt_admitted(self, *, task, execution_generation, source):
+        def interrupt(self, *, profile, session_id, source, expected_task_id,
+                      expected_task=None, expected_execution_generation=None, expected_member_id=None):
             return None
 
     db = tmp_path / "state.db"
@@ -1386,6 +1578,8 @@ def test_acknowledged_stop_refuses_to_disband_while_exact_turn_is_still_running(
     )
     rpc.sessions[("ops", "Group: room-1")] = {"session_id": "ops-session"}
     rpc.active_task_id = task["identity"].task_id
+    rpc.active_proof = {**asdict(task["identity"]), "execution_generation": 1,
+                        "member_id": task["payload"]["target_member_id"]}
 
     with pytest.raises(RuntimeError, match="still stopping"):
         service.stop_room(
@@ -1415,7 +1609,8 @@ def test_demote_waits_for_exact_turn_stop_ack_before_authority_transfer(
         def info(self, *, profile, session_id, source):
             return {"active": True, "task_id": self.active_task_id}
 
-        def interrupt(self, *, profile, session_id, source, expected_task_id):
+        def interrupt(self, *, profile, session_id, source, expected_task_id,
+                      expected_task=None, expected_execution_generation=None, expected_member_id=None):
             self.expected_task_ids.append(expected_task_id)
             if not self.acknowledge:
                 return None
@@ -1462,6 +1657,8 @@ def test_demote_waits_for_exact_turn_stop_ack_before_authority_transfer(
     )
     rpc.sessions[("ops", "Group: room-1")] = {"session_id": "ops-session"}
     rpc.active_task_id = task["identity"].task_id
+    rpc.active_proof = {**asdict(task["identity"]), "execution_generation": 1,
+                        "member_id": task["payload"]["target_member_id"]}
     observed_gateway = "install:" + "b" * 32
     remote_db = tmp_path / "remote-state.db"
     replicas.ingest_page(
@@ -2364,26 +2561,24 @@ def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):
         info={"pending_approval": approval},
     )
 
-    with sqlite3.connect(db) as conn:
-        rows = conn.execute(
-            """SELECT member_id, choice, consumed_at
-                 FROM hosted_room_approval_requests
-                WHERE room_id=? AND task_id=? AND execution_generation=?""",
-            ("room-1", task["identity"].task_id, 1),
-        ).fetchall()
-    assert len(rows) == 1
-    assert rows[0][0] == "member-ops"
-    assert rows[0][1] == "once"
-    assert rows[0][2] is not None
-    assert rpc.approvals == [("ops-session", "approval-1", "once")]
-    assert service.status("room-1")["pending_actions"] == []
-    with pytest.raises(driver.StaleTaskError, match="no longer pending"):
-        driver.decide_approval_request(
-            db,
-            task["identity"],
-            execution_generation=1,
-            member_id="ops",
-            request_id="approval-1",
-            choice="once",
-            clock=time.time,
-        )
+    assert len(peer.recoveries) == 1
+    recovered = peer.recoveries[0]["dispatch"]
+    assert recovered["task_id"] == "task-1"
+    assert recovered["execution_generation"] == 1
+    assert recovered["prompt"] == "Recover the accepted review."
+
+
+def test_local_profiles_skips_delete_tombstones_and_dot_dirs(tmp_path: Path):
+    """`hermes profile delete` leaves ``profiles/.deleted/<name>``; neither the tombstone dir nor a
+    tombstoned profile is a roster member (#106847: ``.deleted`` failed validate_roster every cycle)."""
+    from hermes_constants import mark_named_profile_deleted
+
+    profiles = tmp_path / "profiles"
+    (profiles / "ops").mkdir(parents=True)
+    (profiles / "gone").mkdir()
+    mark_named_profile_deleted(profiles / "gone")
+    assert (profiles / ".deleted").is_dir()
+
+    service = HostedRoomService(_server(), db_path=tmp_path / "shared-state.db")
+
+    assert service.local_profiles() == ("default", "ops")

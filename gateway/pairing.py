@@ -322,8 +322,18 @@ def _migrate_split_pairing_dirs(*, home: Optional[Path] = None, active: Optional
     old_dir = home / "pairing"
     new_dir = home / "platforms" / "pairing"
     active = active if active is not None else _default_pairing_dir()
-    alternate = new_dir if active.resolve() == old_dir.resolve() else old_dir
-    _merge_pairing_dir(active, alternate)
+    alternate = home / "platforms" / "pairing" if active.resolve() == old_dir.resolve() else old_dir
+    if not alternate.exists() or active.resolve() == alternate.resolve():
+        return
+    active.mkdir(parents=True, exist_ok=True)
+    for src in alternate.glob("*.json"):
+        merged = _load_json_file(src) if src.is_file() else {}
+        if not merged:
+            continue
+        current = _load_json_file(active / src.name)
+        merged.update(current)
+        if merged != current:
+            _save_json_file(active / src.name, merged)
 
 
 def _is_hashed_entry(entry) -> bool:

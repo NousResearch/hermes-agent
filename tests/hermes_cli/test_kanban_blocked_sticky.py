@@ -174,4 +174,3 @@ def test_created_with_initial_status_blocked_is_not_promoted_by_recompute_ready(
         promoted = kb.recompute_ready(conn)
         assert promoted == 0
         assert kb.get_task(conn, child_id).status == "blocked"
-

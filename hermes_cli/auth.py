@@ -32,7 +32,7 @@ from hermes_cli.config import (
     get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_json_write, atomic_yaml_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
+from utils import atomic_json_write, atomic_yaml_write, env_float, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -519,21 +519,26 @@ def _secret_matches_declared_prefix(provider_id: str, value: str) -> bool:
     return any(value.startswith(p) for p in prefixes)
 
 
-def _warn_malformed_secret(provider_id: str, source: str) -> None:
-    prefixes = KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id, ())
-    logger.warning(
-        "Ignoring %s for provider %r: value does not match the expected key "
-        "prefix (%s). Falling back to the next credential source. Fix or "
-        "remove the malformed key to silence this warning.",
-        source,
-        provider_id,
-        " or ".join(prefixes),
-    )
+def _model_level_key_env(provider_id: str) -> str:
+    """``model.key_env`` when config.yaml's main model targets *provider_id*, else ``""``.
+
+    The Desktop settings UI saves registry-provider keys as a credential pointer
+    (``model.key_env`` → ``$HERMES_HOME/.env``) instead of the registry's canonical env var,
+    so credential resolution must consult it (#106336).
+    """
+    try:
+        from hermes_cli.config import load_config
+        model_cfg = (load_config() or {}).get("model")
+    except Exception:
+        return ""
+    if not isinstance(model_cfg, dict):
+        return ""
+    if str(model_cfg.get("provider") or "").strip().lower() != provider_id:
+        return ""
+    return str(model_cfg.get("key_env") or model_cfg.get("api_key_env") or "").strip()
 
 
-def _resolve_api_key_provider_secret(
-    provider_id: str, pconfig: ProviderConfig
-) -> tuple[str, str]:
+def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
         # The dedicated copilot auth module does proper token validation/exchange.
@@ -560,6 +565,11 @@ def _resolve_api_key_provider_secret(
     key_env = _model_level_key_env(provider_id)
     if key_env:
         val = _usable_declared_secret(provider_id, get_env_value_prefer_dotenv(key_env), key_env)
+        if val:
+            return val, key_env
+
+    for env_var in pconfig.api_key_env_vars:
+        val = _usable_declared_secret(provider_id, get_env_value_prefer_dotenv(env_var), env_var)
         if val:
             return val, key_env
 
@@ -1139,12 +1149,6 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     """Atomically persist *auth_store* (0o600, parent tightened to 0o700) to the active store, or to
     an explicit *target_path* (e.g. the global-root write-through for rotating xAI OAuth grants)."""
     auth_file = target_path if target_path is not None else _auth_file_path()
-    auth_file.parent.mkdir(parents=True, exist_ok=True)
-    # Tighten parent dir to 0o700 so siblings can't traverse to creds.
-    # No-op on Windows (POSIX mode bits not enforced); ignore failures.
-    # secure_parent_dir refuses to chmod /, top-level dirs, or the
-    # hermes-agent install tree (#25821, #93050).
-    secure_parent_dir(auth_file)
     auth_store["version"] = AUTH_STORE_VERSION
     auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
     _save_private_json(auth_file, auth_store, fsync_dir=True)

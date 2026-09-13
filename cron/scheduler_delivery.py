@@ -757,13 +757,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.environments.local import strip_launch_profile_env
     env = strip_launch_profile_env(delegated_child_subprocess_env(os.environ))
-    if not home.is_dir():
-        return _fail(f"bot-chat delivery target no longer exists: {home}; do not resend")
-    # Discovery (or deferred admission) owns the destination, not HOME or a
-    # subsequently changed active_profile. Do not resolve the name a second time.
-    env["HERMES_HOME"] = str(home)
-    if home.parent.name != "profiles":
-        argv += ["-p", "default"]
+    if profile:
+        argv += ["-p", profile]
+        # -p owns profile resolution; this scheduler's HERMES_HOME must not shadow it.
+        env.pop("HERMES_HOME", None)
+    else:
+        # Multiplex workers carry the profile in a ContextVar, not os.environ.
+        env["HERMES_HOME"] = str(source_home)
 
     query_file = None
     try:

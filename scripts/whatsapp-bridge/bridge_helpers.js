@@ -38,6 +38,22 @@ function unwrapMessageEnvelopes(content) {
   return cur;
 }
 
+function unwrapMessageEnvelopes(content) {
+  let cur = content;
+  // Envelopes nest (ephemeral wrapping viewOnce wrapping the payload); peel
+  // until an inner message is reached so nested quotes resolve too.
+  for (let i = 0; i < 8 && cur; i++) {
+    const next =
+      cur.ephemeralMessage?.message ??
+      cur.viewOnceMessage?.message ??
+      cur.viewOnceMessageV2?.message ??
+      cur.documentWithCaptionMessage?.message;
+    if (next === undefined) break;
+    cur = next;
+  }
+  return cur;
+}
+
 export function getMessageContent(msg) {
   const raw = msg?.message || {};
   const content = unwrapMessageEnvelopes(raw);

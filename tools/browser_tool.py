@@ -22,16 +22,8 @@ import time
 from typing import Dict, Any, Optional, Union
 from pathlib import Path
 from agent.redact import redact_cdp_url
-from hermes_constants import (
-    agent_browser_runnable,
-    get_hermes_home,
-    get_hermes_home_override,
-    hermes_home_key,
-    node_tool_runnable,
-    reset_hermes_home_override,
-    set_hermes_home_override,
-)
-from utils import env_int, is_truthy_value
+from hermes_constants import get_hermes_home, hermes_home_key
+from utils import env_int
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 
 
@@ -164,7 +156,7 @@ _cached_command_timeout: Optional[Dict[str, int]] = None
 # Flip the resolved flag BEFORE nulling the cache so a concurrent reader never sees ``resolved=True`` with
 # ``cache=None`` (#14331).
 _command_timeout_resolved = False
-_cached_snapshot_threshold: Optional[int] = None
+_cached_snapshot_threshold: Optional[Dict[str, int]] = None
 _snapshot_threshold_resolved = False
 
 

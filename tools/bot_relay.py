@@ -40,11 +40,13 @@ import re
 import shlex
 import shutil
 import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterator, Optional
+
+from tools.bot_mode_probe import _default_home, _hermes_root
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +60,18 @@ LOCKS_DIR = "locks"
 # Fallback wait budget for a queued delivery turn when config is unreadable.
 # The real knob is ``bot_mode.turn_wait_seconds`` in config.yaml.
 TURN_WAIT_SECONDS_FALLBACK = 120
-
-# A reply must arrive before the waiter gives up. Cross-connection turns can
-# be slow (remote model, cold gateway) — generous, but bounded.
-REPLY_WAIT_SECONDS = 900
-
-# Envelopes and replies older than this are stale artifacts (Desktop was
-# closed, connection died) and are swept opportunistically.
+DEFAULT_ENVELOPE_TTL_SECONDS = 900  # older envelopes are refused at drain with 'queued_expired'
+# Per-attempt turn timeout and attempt ceiling for bot_relay.deliver (tui_gateway/methods_bot_relay.py).
+TURN_ATTEMPT_TIMEOUT_SECONDS = 600
+TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
+# Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay.ts; both test suites pin it.
+DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS = 180
+DESKTOP_DELIVER_TIMEOUT_SECONDS = (
+    TURN_WAIT_SECONDS_FALLBACK + TURN_ATTEMPT_TIMEOUT_SECONDS * TURN_MAX_ATTEMPTS + DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
+)
+# The Desktop posts its own timeout reply at that deadline, so the waiter must still be watching then.
+REPLY_WAIT_SECONDS = DESKTOP_DELIVER_TIMEOUT_SECONDS + 60
+# Envelopes/replies older than this are stale artifacts (Desktop closed) and are swept.
 STALE_AFTER_SECONDS = 6 * 3600
 
 # Fallback envelope TTL when config is unreachable — mirrors the
@@ -105,7 +112,21 @@ def _ensure_dirs(root: Path | str) -> Path:
     return base
 
 
-# ── remote roster ────────────────────────────────────────────────────────────
+def _atomic_write_json(target: Path, payload: Any, *, sort_keys: bool = False) -> None:
+    atomic_json_write(target, payload, indent=None, sort_keys=sort_keys, mode=0o600)
+
+
+def _bot_mode_cfg(key: str, *, loader: str) -> Any:
+    """``bot_mode.<key>`` from config, read lazily (tools/ must not import CLI
+    config at import time); None when absent or the config is unreadable."""
+    try:
+        import hermes_cli.config as cfgmod
+
+        cfg = getattr(cfgmod, loader)() or {}
+        return (cfg.get("bot_mode") or {}).get(key)
+    except Exception:
+        logger.debug("bot_mode.%s config read failed", key, exc_info=True)
+        return None
 
 
 def _normalize_roster_row(row: Any) -> Optional[dict]:
@@ -150,31 +171,11 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
 def write_remote_roster(root: Path | str, rows: Any) -> int:
     """Atomically persist the Desktop-pushed remote roster. Returns count."""
     base = _ensure_dirs(root)
-    cleaned: list[dict] = []
-    seen: set[tuple[str, str]] = set()
-    for row in rows if isinstance(rows, list) else []:
-        norm = _normalize_roster_row(row)
-        if not norm:
-            continue
-        key = (norm["connection_id"], norm["profile"])
-        if key in seen:
-            continue
-        seen.add(key)
-        cleaned.append(norm)
-    cleaned.sort(key=lambda r: (r["connection_id"], r["profile"]))
-    payload = {"updated_at": int(time.time()), "agents": cleaned}
-    target = base / ROSTER_FILE
-    fd, tmp = tempfile.mkstemp(dir=str(base), prefix=".roster-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, sort_keys=True)
-        os.replace(tmp, target)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    by_key: dict[tuple[str, str], dict] = {}
+    for norm in filter(None, map(_normalize_roster_row, rows if isinstance(rows, list) else [])):
+        by_key.setdefault((norm["connection_id"], norm["profile"]), norm)
+    cleaned = [by_key[k] for k in sorted(by_key)]
+    _atomic_write_json(base / ROSTER_FILE, {"updated_at": int(time.time()), "agents": cleaned}, sort_keys=True)
     return len(cleaned)
 
 
@@ -341,11 +342,7 @@ def enqueue_envelope(
         "target_handle": target["handle"],
         "message": message,
     }
-    path = base / OUTBOX_DIR / f"{envelope['id']}.json"
-    fd, tmp = tempfile.mkstemp(dir=str(base / OUTBOX_DIR), prefix=".env-", suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(envelope, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    _atomic_write_json(base / OUTBOX_DIR / f"{envelope['id']}.json", envelope)
     return envelope
 
 
@@ -425,17 +422,7 @@ def write_reply(
 
         code = classify_agent_error(err)
     path = base / REPLIES_DIR / f"{safe}.json"
-    payload = {
-        "id": safe,
-        "at": int(time.time()),
-        "reply": str(reply or ""),
-        "error": err,
-        "reason": code,
-    }
-    fd, tmp = tempfile.mkstemp(dir=str(base / REPLIES_DIR), prefix=".rep-", suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code})
     return path
 
 
@@ -579,17 +566,54 @@ def local_delivery_command(profile: str, query_file: str) -> list[str]:
     ]
 
 
-# ── per-profile turn lock (#93091) ───────────────────────────────────────────
-#
-# Two deliveries into the SAME target profile must never run their Bot Chat
-# turns concurrently: deliveries spawn separate ``hermes`` subprocesses, so
-# an in-memory mutex is useless — the lock is a per-profile lockfile under
-# ``<root>/bot_relay/locks/`` held with ``fcntl.flock`` for exactly the turn
-# execution window. flock is released by the kernel when the holder's fd
-# closes (including process death), so a crashed turn can never wedge the
-# profile. A queued delivery waits up to ``bot_mode.turn_wait_seconds`` and
-# then fails with a structured 'target_busy' refusal instead of blocking
-# forever.
+class DeliveryAuthor:
+    """A relayed turn's author as an in-process object. ``bot_relay.deliver`` builds it from the sender fields
+    an admitted gateway client relays for another connection; nothing verifies the sender itself. A JSON
+    client cannot build one, so ``prompt.submit`` accepts the object and refuses a dict."""
+
+    __slots__ = ("author",)
+
+    def __init__(self, author: dict) -> None:
+        self.author = dict(author)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, DeliveryAuthor) and other.author == self.author
+
+    def __repr__(self) -> str:
+        return f"DeliveryAuthor({self.author!r})"
+
+
+def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: Any = None) -> Optional[dict]:
+    """The author of a relayed DM's recipient turn, built from the sender fields as the relaying client reports
+    them. A relayed DM always comes from another gateway, so the id carries the Desktop's id for the sender's
+    connection (``local`` included) and only the recipient's own profiles are bare ``bot:<profile>``. None when
+    the envelope names no sender."""
+    from agent.turn_author import bot_author_id
+
+    profile = str(from_profile or "").strip()
+    if not profile:
+        return None
+    return {"id": bot_author_id(profile, str(from_connection or "")), "name": str(from_handle or "").strip() or profile,
+            "is_bot": True}
+
+
+def delivery_env(author: Optional[dict]) -> dict[str, str]:
+    """Environment for one delivery turn's ``hermes`` child. The dispatcher's own HERMES_TURN_AUTHOR is
+    dropped first so a delivery without an author never inherits the author of the turn that sent it."""
+    from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+
+    env = dict(os.environ)
+    env.pop(TURN_AUTHOR_ENV, None)
+    if author:
+        env.update(turn_author_env(author))
+    return env
+
+
+# Two deliveries into the SAME profile must never run Bot Chat turns concurrently.
+# Deliveries are separate ``hermes`` subprocesses, so the lock is a per-profile
+# lockfile under ``<root>/bot_relay/locks/`` held with ``fcntl.flock`` for exactly
+# the turn window; the kernel releases it on fd close (incl. process death), so a
+# crashed turn can never wedge the profile.
 
 
 class TurnBusyError(RuntimeError):

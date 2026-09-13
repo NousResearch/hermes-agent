@@ -47,9 +47,6 @@ import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import {
-  gatewayStateNeedsLogs,
-  gatewayStateDescription,
-  gatewayActionFailedMessage,
   servedProfileRefusal,
   sharedGatewayProfiles,
   sharedGatewayRestartDescription,
@@ -328,7 +325,7 @@ export default function SystemPage() {
         setServedNotice(refusal);
         return false;
       }
-      showToast(gatewayActionFailedMessage(verb, errorMessage(e), e), "error");
+      showToast(`Gateway ${verb} failed: ${e}`, "error");
       return false;
     }
   };
@@ -364,7 +361,7 @@ export default function SystemPage() {
       showToast("Migrating to a single multiplexed gateway", "success");
       setTimeout(loadAll, 5000);
     } catch (e) {
-      showToast(`Gateway migration failed: ${errorMessage(e)}`, "error");
+      showToast(`Gateway migration failed: ${e}`, "error");
     }
   };
 

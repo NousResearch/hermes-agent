@@ -53,7 +53,7 @@ def loop_agent():
 
 
 def _thinking_only_response():
-    """Reasoning tokens, no visible text, no clean stop — what triggers the prefill retry."""
+    """Reasoning tokens, no visible text — what triggers the prefill retry."""
     from tests.agent.test_run_agent import _mock_response
     return _mock_response(
         content="",

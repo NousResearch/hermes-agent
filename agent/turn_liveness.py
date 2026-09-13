@@ -157,8 +157,8 @@ def resolve_turn_liveness_settings(
 
 
 class TurnLivenessWatchdog:
-    """Sampled-idle watchdog bound to one conversation turn (polls on the
-    shared periodic scheduler thread).
+    """Sampled-idle watchdog bound to one conversation turn (via the shared
+    periodic scheduler; timer thread orders, body runs on its own worker).
 
     ``run_agent.py`` owns the turn-lease state (stop event, turn-active
     flag, interrupt plumbing); this class only reads the activity clock
@@ -191,12 +191,8 @@ class TurnLivenessWatchdog:
         self._deactivate_turn = deactivate_turn
 
     def schedule(self):
-        """Start polling on the shared periodic scheduler thread.
-
-        ``run_agent.py`` creates the watchdog before the turn begins but
-        schedules it at turn entry, right after the turn-active flag and
-        the activity clock are stamped.  Returns the cancel handle.
-        """
+        """Start polling via the shared periodic scheduler; returns the cancel handle.
+        Scheduled at turn entry, after the turn-active flag and activity clock are stamped."""
         from agent.periodic_scheduler import schedule
 
         return schedule(self._tick, self._poll_s)

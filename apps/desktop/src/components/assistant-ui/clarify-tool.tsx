@@ -1131,7 +1131,12 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
   }
 
   return (
-    <form className="my-1.5 grid gap-4" data-clarify-batch={questions.length} onSubmit={handleSubmit}>
+    <form
+      className="my-1.5 grid gap-4"
+      data-clarify-batch={questions.length}
+      onKeyDownCapture={handleClarifySubmitShortcut}
+      onSubmit={handleSubmit}
+    >
       <ClarifyShell className="grid gap-3">
         <div className="flex items-start gap-2">
           <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">

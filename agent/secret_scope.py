@@ -173,7 +173,7 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
             f"set_secret_scope(...) block (the per-turn / per-adapter profile "
             f"scope). Reading os.environ here would risk leaking another "
             f"profile's value. See website/docs/developer-guide/multiplexing-gateway.md "
-            f"(Workstream A).",
+            f"(Workstream A)."
         )
     return _environ_or(name, default)
 

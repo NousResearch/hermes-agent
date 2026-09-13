@@ -21,12 +21,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms.base import (
-    gateway_trust_env,
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    SendResult,
+from gateway.platforms.helpers import cancel_task
+from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    send_error
 )
 
 logger = logging.getLogger(__name__)
@@ -852,62 +853,10 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge; allowed_cha
     ("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", "csv"))
 
 
-def _profile_scoped_config_load() -> bool:
-    """True when running inside a multiplexed secondary profile's scope.
-
-    Secondary-profile adapters are constructed and connected inside
-    ``_profile_runtime_scope`` (secret scope installed + multiplex active) --
-    the same discriminator the Buzz/Discord/Telegram/WhatsApp/LINE/DingTalk
-    adapters use for this bug class (#98738 / #72348 / #80099). The DEFAULT
-    profile under multiplexing runs unscoped: ``os.environ`` holds its own
-    bridge output there and keeps its legacy precedence.
-    """
-    try:
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
-
-        return bool(is_multiplex_active() and current_secret_scope() is not None)
-    except Exception:
-        return False
-
-
 def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
-    """Translate ``config.yaml`` ``mattermost:`` keys into env vars and
-    ``PlatformConfig.extra`` entries.
-
-    Implements the ``apply_yaml_config_fn`` contract (#24836 / #25443).
-    Mirrors the legacy ``mattermost_cfg`` block that used to live in
-    ``gateway/config.py::load_gateway_config()`` before this migration.
-
-    Env vars take precedence over YAML for single-profile deployments --
-    each env write is guarded by ``not os.getenv(...)`` so an explicit env
-    var survives a config.yaml update. Under a multiplexed secondary
-    profile's scope, the env write is skipped entirely (it would otherwise
-    leak into the process-global ``os.environ`` and be inherited by every
-    other profile); instead the values are returned so the caller merges
-    them into this profile's own ``PlatformConfig.extra``, which the
-    require_mention/free_response_channels/allowed_channels read sites now
-    check first.
-    """
-    _skip_env_bridge = _profile_scoped_config_load()
-    seeded: dict = {}
-    if "require_mention" in mattermost_cfg:
-        seeded["require_mention"] = mattermost_cfg["require_mention"]
-        if not _skip_env_bridge and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
-            os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
-    frc = mattermost_cfg.get("free_response_channels")
-    if frc is not None:
-        seeded["free_response_channels"] = frc
-        if not _skip_env_bridge and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
-            _frc = ",".join(str(v) for v in frc) if isinstance(frc, list) else str(frc)
-            os.environ["MATTERMOST_FREE_RESPONSE_CHANNELS"] = _frc
-    # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
-    ac = mattermost_cfg.get("allowed_channels")
-    if ac is not None:
-        seeded["allowed_channels"] = ac
-        if not _skip_env_bridge and not os.getenv("MATTERMOST_ALLOWED_CHANNELS"):
-            _ac = ",".join(str(v) for v in ac) if isinstance(ac, list) else str(ac)
-            os.environ["MATTERMOST_ALLOWED_CHANNELS"] = _ac
-    return seeded or None
+    """``apply_yaml_config_fn`` (#24836 / #25443): ``config.yaml`` ``mattermost:`` keys → env vars (env wins;
+    skipped under a multiplexed secondary profile) + ``PlatformConfig.extra`` (extra-first readers)."""
+    return _apply_yaml_bridge(mattermost_cfg, _YAML_BRIDGE)
 
 
 

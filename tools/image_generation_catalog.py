@@ -350,21 +350,6 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         max_reference_images=3,
     ),
-    # 1K and 2K cost the same ($0.028/img) so 2K is the default. The i2i endpoint takes a SINGULAR
-    # `image_url` (one reference image), unlike every other FAL edit endpoint's `image_urls` list.
-    "fal-ai/kling-image/v3/text-to-image": _model(
-        "Kling Image v3", "~10s", "Kuaishou. Realistic detail, cheap native 2K, wide AR set", "$0.028/image",
-        style="aspect_ratio",
-        defaults={"num_images": 1, "output_format": "png", "resolution": "2K"},
-        supports={
-            "prompt", "aspect_ratio", "num_images", "output_format", "resolution", "negative_prompt", "sync_mode",
-        },
-        edit_endpoint="fal-ai/kling-image/v3/image-to-image",
-        edit_supports={
-            "prompt", "image_url", "aspect_ratio", "num_images", "output_format", "resolution", "sync_mode",
-        },
-        max_reference_images=1, edit_image_param="image_url",
-    ),
     "meta/muse-image/text-to-image": _model(
         "Meta Muse Image", "~5s", "Meta. Realism + typography at commodity price", "$0.01/image",
         style="aspect_ratio",

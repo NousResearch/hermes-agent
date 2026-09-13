@@ -2724,14 +2724,8 @@ def _is_real_user_message(message: Any) -> bool:
 
 def _message_contains_busy_steer(message: Any) -> bool:
     """Return whether *message* carries a busy-steer marker.
-
-    With ``display.busy_input_mode: steer`` the follow-up is embedded as an
-    out-of-band marker inside a ``role=tool`` result (see
-    ``agent_runtime_helpers.apply_pending_steer_to_tool_results``). That marker
-    carries real user intent but lives outside ``role=user``, so the
-    ``_is_real_user_message`` / ``_transcript_has_real_user_turn`` checks
-    alone would miss it.
-    """
+    Steer follow-ups are now their own ``role=user`` rows (caught by ``_is_real_user_message``); in
+    transcripts persisted before that they ride inside ``role=tool`` results, so those still count."""
     text = _message_text(message)
     if not text:
         return False

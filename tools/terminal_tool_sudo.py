@@ -14,7 +14,6 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from contextvars import ContextVar
 
 from utils import env_var_enabled
 
@@ -474,7 +473,7 @@ def _transform_sudo_command(
         # way. Re-probed every call so an expired sudo timestamp cannot silently block.
         if sudo_nopasswd_check is not None and sudo_nopasswd_check():
             return command, None
-        sudo_password = _prompt_for_sudo_password(timeout_seconds=45, command=command)
+        sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
             _set_cached_sudo_password(sudo_password)
 

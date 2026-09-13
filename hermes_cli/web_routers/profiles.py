@@ -123,7 +123,7 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_
     with _hermes_home_scope(validate_in or profile_dir):
         provider, model = _normalize_main_model_assignment(provider, model)
         result = _validated_main_model_selection(load_config(), provider, model)
-    with _hermes_home_scope(profile_dir), _CONFIG_MUTATION_LOCK:  # RMW span
+    with _hermes_home_scope(profile_dir):
         cfg = load_config()
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
         save_config(cfg)
@@ -660,7 +660,7 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
 def _read_profiles():
     from hermes_cli import profiles as profiles_mod
     try:
-        profiles = await run_in_threadpool(profiles_mod.list_profiles)
+        profiles = profiles_mod.list_profiles()
         return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")

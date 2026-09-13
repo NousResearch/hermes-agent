@@ -84,16 +84,9 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
 from gateway.platforms.base import (
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    ProcessingOutcome,
-    SendResult,
-    SUPPORTED_DOCUMENT_TYPES,
-    cache_document_from_bytes_async,
-    cache_image_from_url,
-    cache_audio_from_bytes_async,
-    cache_image_from_bytes_async,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
+    SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
+    cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock, release_scoped_lock
@@ -1315,18 +1308,10 @@ class FeishuAdapter(BasePlatformAdapter):
                     require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
                 )
 
-        # Bot-level admins
-        raw_admins = extra.get("admins", [])
-        admins = frozenset(str(u).strip() for u in raw_admins if str(u).strip())
-
-        # Default group policy (for groups not in group_rules)
-        default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
-
-        # Env-only so adapter and gateway auth bypass share one source; yaml
-        # feishu.allow_bots is bridged to this env var at config load.
-        # Scope-aware read: under multiplex a secondary profile's .env must
-        # govern its own adapter (same pattern as app_secret below) — #86905.
-        allow_bots = _get_scoped_secret("FEISHU_ALLOW_BOTS", "none").strip().lower()
+        # Scoped read: under multiplex a secondary profile's .env must govern its own adapter; yaml
+        # feishu.allow_bots reaches it via ``extra`` (the env bridge is skipped under its scope).
+        # See #86905.
+        allow_bots = str(_get_scoped_secret("FEISHU_ALLOW_BOTS", "") or extra.get("allow_bots") or "none").strip().lower()
         if allow_bots not in {"none", "mentions", "all"}:
             logger.warning(
                 "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
@@ -1340,56 +1325,26 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
         return FeishuAdapterSettings(
-            app_id=str(extra.get("app_id") or _get_scoped_secret("FEISHU_APP_ID", "")).strip(),
-            app_secret=str(extra.get("app_secret") or _get_scoped_secret("FEISHU_APP_SECRET", "")).strip(),
-            domain_name=str(extra.get("domain") or os.getenv("FEISHU_DOMAIN", "feishu")).strip().lower(),
-            connection_mode=str(
-                extra.get("connection_mode") or os.getenv("FEISHU_CONNECTION_MODE", "websocket")
-            ).strip().lower(),
-            encrypt_key=str(extra.get("encrypt_key") or _get_scoped_secret("FEISHU_ENCRYPT_KEY", "")).strip(),
-            verification_token=str(
-                extra.get("verification_token") or _get_scoped_secret("FEISHU_VERIFICATION_TOKEN", "")
-            ).strip(),
-            group_policy=_get_scoped_secret("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
-            allowed_group_users=frozenset(
-                item.strip()
-                for item in _get_scoped_secret("FEISHU_ALLOWED_USERS", "").split(",")
-                if item.strip()
-            ),
-            bot_open_id=_get_scoped_secret("FEISHU_BOT_OPEN_ID", "").strip(),
-            bot_user_id=_get_scoped_secret("FEISHU_BOT_USER_ID", "").strip(),
-            bot_name=_get_scoped_secret("FEISHU_BOT_NAME", "").strip(),
-            dedup_cache_size=max(
-                32,
-                env_int("HERMES_FEISHU_DEDUP_CACHE_SIZE", _DEFAULT_DEDUP_CACHE_SIZE),
-            ),
-            text_batch_delay_seconds=env_float(
-                "HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS", _DEFAULT_TEXT_BATCH_DELAY_SECONDS
-            ),
-            text_batch_split_delay_seconds=env_float(
-                "HERMES_FEISHU_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0
-            ),
-            text_batch_max_messages=max(
-                1,
-                env_int("HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES", _DEFAULT_TEXT_BATCH_MAX_MESSAGES),
-            ),
-            text_batch_max_chars=max(
-                1,
-                env_int("HERMES_FEISHU_TEXT_BATCH_MAX_CHARS", _DEFAULT_TEXT_BATCH_MAX_CHARS),
-            ),
-            media_batch_delay_seconds=env_float(
-                "HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS", _DEFAULT_MEDIA_BATCH_DELAY_SECONDS
-            ),
-            webhook_host=str(
-                extra.get("webhook_host") or os.getenv("FEISHU_WEBHOOK_HOST", _DEFAULT_WEBHOOK_HOST)
-            ).strip(),
-            webhook_port=int(
-                extra.get("webhook_port") or os.getenv("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))
-            ),
-            webhook_path=(
-                str(extra.get("webhook_path") or os.getenv("FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH)).strip()
-                or _DEFAULT_WEBHOOK_PATH
-            ),
+            app_id=_extra_or_secret("app_id", "FEISHU_APP_ID"),
+            app_secret=_extra_or_secret("app_secret", "FEISHU_APP_SECRET"),
+            domain_name=_extra_or_env("domain", "FEISHU_DOMAIN", "feishu").lower(),
+            connection_mode=_extra_or_env("connection_mode", "FEISHU_CONNECTION_MODE", "websocket").lower(),
+            encrypt_key=_extra_or_secret("encrypt_key", "FEISHU_ENCRYPT_KEY"),
+            verification_token=_extra_or_secret("verification_token", "FEISHU_VERIFICATION_TOKEN"),
+            group_policy=_secret("FEISHU_GROUP_POLICY", "allowlist").lower(),
+            allowed_group_users=frozenset(_id_set(_get_scoped_secret("FEISHU_ALLOWED_USERS", "").split(","))),
+            bot_open_id=_secret("FEISHU_BOT_OPEN_ID"),
+            bot_user_id=_secret("FEISHU_BOT_USER_ID"),
+            bot_name=_secret("FEISHU_BOT_NAME"),
+            dedup_cache_size=max(32, env_int("HERMES_FEISHU_DEDUP_CACHE_SIZE", _DEFAULT_DEDUP_CACHE_SIZE)),
+            text_batch_delay_seconds=env_float("HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS", _DEFAULT_TEXT_BATCH_DELAY_SECONDS),
+            text_batch_split_delay_seconds=env_float("HERMES_FEISHU_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0),
+            text_batch_max_messages=max(1, env_int("HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES", _DEFAULT_TEXT_BATCH_MAX_MESSAGES)),
+            text_batch_max_chars=max(1, env_int("HERMES_FEISHU_TEXT_BATCH_MAX_CHARS", _DEFAULT_TEXT_BATCH_MAX_CHARS)),
+            media_batch_delay_seconds=env_float("HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS", _DEFAULT_MEDIA_BATCH_DELAY_SECONDS),
+            webhook_host=_extra_or_env("webhook_host", "FEISHU_WEBHOOK_HOST", _DEFAULT_WEBHOOK_HOST),
+            webhook_port=int(extra.get("webhook_port") or _get_scoped_secret("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))),
+            webhook_path=_extra_or_env("webhook_path", "FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH) or _DEFAULT_WEBHOOK_PATH,
             ws_reconnect_nonce=_coerce_required_int(extra.get("ws_reconnect_nonce"), default=30, min_value=0),
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
@@ -1760,7 +1715,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 _card_button(label, style or "default",
                              {"hermes_action": self._EA_CARD_ACTIONS[choice], "approval_id": approval_id})
                 for label, choice, style in prompt.actions]
-            card = _card(f"⚠️ {EA_HEADER_TEXT}", "orange", prompt.text, actions=actions)
+            card = _card("⚠️ Command Approval Required", "orange", prompt.text, actions=actions)
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
@@ -3883,7 +3838,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # thread has an empty context = launch profile. connect() runs inside the profile scope
         # under multiplex (and the supervisor task inherits it), so snapshot it here.
         self._ws_future = loop.run_in_executor(
-            self._get_sdk_executor(), contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
+            None, contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:

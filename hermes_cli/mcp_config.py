@@ -644,8 +644,7 @@ def cmd_mcp_add(args):
     try:
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
-        _error(f"Failed to connect: {_probe_failure_reason(exc)}")
-        _info(_probe_failure_next_step(name, exc))
+        _error(f"Failed to connect: {redact_mcp_probe_text(exc)}")
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
             if _save_mcp_server(name, server_config):
@@ -794,8 +793,7 @@ def cmd_mcp_test(args):
     try:
         tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        elapsed_ms = (time.monotonic() - start) * 1000
-        _error(f"Connection failed ({elapsed_ms:.0f}ms): {exc}")
+        _error(f"Connection failed ({(time.monotonic() - start) * 1000:.0f}ms): {redact_mcp_probe_text(exc)}")
         return 1
 
     _success(f"Connected ({elapsed_ms:.0f}ms)")
@@ -1022,8 +1020,6 @@ def cmd_mcp_configure(args):
     config = load_config()
     server_entry = cfg_get(config, "mcp_servers", name, default={})
     exclude_mode = bool(exclude) and include is None
-
-    exclude_mode = bool(exclude) and isinstance(exclude, list) and not include
 
     if len(chosen) == total and not exclude_mode:
         # All selected → remove include/exclude (register all)

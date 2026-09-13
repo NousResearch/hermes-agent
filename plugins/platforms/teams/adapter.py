@@ -70,13 +70,11 @@ HttpMethod = str  # type: ignore[assignment,misc]
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
-    gateway_trust_env,
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    SendResult,
-    cache_image_from_url,
-    cache_media_bytes_async,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
+)
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms._shared import (
+    coerce_port, get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 
 logger = logging.getLogger(__name__)
@@ -198,74 +196,6 @@ def _env_enablement() -> dict | None:
         return None
     return seed
 
-
-# Bot Framework default service URL for the global Teams endpoint.  Some
-# regional/government tenants need a different host (e.g.
-# ``https://smba.infra.gov.teams.microsoft.us/``) which can be supplied via
-# ``TEAMS_SERVICE_URL`` or ``extra['service_url']``.
-_DEFAULT_TEAMS_SERVICE_URL = "https://smba.trafficmanager.net/teams/"
-
-# Allowlist of Bot Framework service hosts that may receive a freshly
-# minted bearer token.  Operator-supplied URLs are matched against this
-# allowlist to block SSRF / token-exfiltration via a tampered env var.
-_ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({
-    "smba.trafficmanager.net",
-    "smba.infra.gov.teams.microsoft.us",
-})
-
-
-def _is_botframework_attachment_url(url: str) -> bool:
-    """True if ``url`` points at a Bot Framework connector attachment host.
-
-    Exact-match against ``_ALLOWED_TEAMS_SERVICE_HOSTS`` — the same allowlist
-    that gates where outbound sends may carry a freshly minted bearer token —
-    plus scheme/port sanity: only https on the default port qualifies. A
-    lookalike host must never receive the bot's bearer token: note that any
-    Azure customer can register ``<name>.trafficmanager.net`` Traffic Manager
-    profiles, so a suffix match would not be safe either. New Bot Framework
-    regions are allowlist additions, not predicate changes.
-    """
-    try:
-        from urllib.parse import urlparse
-
-        parsed = urlparse(url)
-        if parsed.scheme != "https":
-            return False
-        if parsed.port not in (None, 443):
-            return False
-        return parsed.hostname in _ALLOWED_TEAMS_SERVICE_HOSTS
-    except Exception:
-        return False
-
-# Conservative pattern for Bot Framework conversation IDs.  Real values
-# combine digits, colons, hyphens, dots, '@', and the ``thread.skype`` /
-# ``thread.tacv2`` suffixes; reject anything outside this set so a hostile
-# value cannot path-traverse out of ``/v3/conversations/<id>/activities``.
-import re as _re_teams
-_TEAMS_CONV_ID_RE = _re_teams.compile(r"^[A-Za-z0-9:@\-_.]+$")
-
-
-def _validate_teams_service_url(raw: str) -> Optional[str]:
-    """Return a normalized service URL or ``None`` if it is not allowed.
-
-    Requires ``https://`` and a host in ``_ALLOWED_TEAMS_SERVICE_HOSTS``.
-    The trailing slash is added if absent so callers can append
-    ``v3/conversations/...`` without double slashes.
-    """
-    if not raw:
-        return None
-    try:
-        from urllib.parse import urlparse
-
-        parsed = urlparse(raw)
-    except Exception:
-        return None
-    if parsed.scheme != "https":
-        return None
-    if parsed.hostname not in _ALLOWED_TEAMS_SERVICE_HOSTS:
-        return None
-    normalized = raw if raw.endswith("/") else raw + "/"
-    return normalized
 
 
 async def _standalone_send(
@@ -429,19 +359,13 @@ class TeamsAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
         extra = config.extra or {}
-        self._client_id = extra.get("client_id") or os.getenv("TEAMS_CLIENT_ID", "")
-        self._client_secret = extra.get("client_secret") or _get_scoped_secret("TEAMS_CLIENT_SECRET", "")
-        self._tenant_id = extra.get("tenant_id") or os.getenv("TEAMS_TENANT_ID", "")
-        # (token, expiry monotonic ts) for Bot Framework connector attachment
-        # auth; refreshed under _bf_token_lock so concurrent attachments
-        # can't stampede the token endpoint.
+        self._client_id, self._client_secret, self._tenant_id = _credentials(config)
+        # (token, expiry monotonic ts) for connector attachment auth; refreshed under
+        # _bf_token_lock so concurrent attachments can't stampede the STS.
         self._bf_token_cache: Optional[tuple] = None
         self._bf_token_lock: Optional[asyncio.Lock] = None
-        self._port = _coerce_port(
-            extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT))
-        )
-        # Falsy host (unset/"") collapses to the dual-stack default (None).
-        _raw_host = extra.get("host") or os.getenv("TEAMS_HOST", "") or _DEFAULT_HOST
+        self._port = coerce_port(extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
+        _raw_host = extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
         self._host: Optional[str] = str(_raw_host) if _raw_host else None
         self._app: Optional["App"] = None
         self._runner: Optional["web.AppRunner"] = None
@@ -861,7 +785,6 @@ class TeamsAdapter(BasePlatformAdapter):
                 title=label, verb="hermes_approve",
                 data={**btn_data_base, "hermes_action": self._EA_CARD_ACTIONS[choice]}, **kw))
         body = _approval_body(self._truncate_preview(prompt.command, self._EA_CMD_BUDGET), prompt.description, always=True)
-        body.append(TextBlock(text=format_approval_deadline_line(approval_timeout_seconds()), wrap=True))
         if prompt.smart_denied:
             body.append(TextBlock(text=self._EA_SMART_DENY_LINE.strip(), wrap=True))
         card = AdaptiveCard().with_version("1.4").with_body(body).with_actions(actions)

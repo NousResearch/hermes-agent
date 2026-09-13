@@ -1884,36 +1884,20 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             if tail_result.exit_code == 0:
                 file_ends_with_newline = tail_output.strip() != "0"
 
-        return self._assemble_read_result(
-            read_output,
-            offset=offset,
-            end_line=end_line,
-            total_lines=total_lines,
-            file_size=file_size,
-            file_ends_with_newline=file_ends_with_newline,
-        )
-
-    def _assemble_read_result(
-        self,
-        read_output: str,
-        *,
-        offset: int,
-        end_line: int,
-        total_lines: int,
-        file_size: int,
-        file_ends_with_newline: Optional[bool],
-    ) -> ReadResult:
-        """Turn a raw ``sed | cut`` page into the final ``ReadResult``.
-
-        Shared by every read path so the BOM strip, pagination hint, the
-        ``cut`` newline artifact fix and the ambiguous-silence guards can
-        never drift apart. ``file_ends_with_newline`` is ``None`` when the
-        caller could not tell (the artifact is then left alone, as before).
-        """
-        # Strip a leading UTF-8 BOM so the model never sees a phantom U+FEFF
-        # before the first real character. Only meaningful on the first
-        # chunk (the marker lives at byte 0); later pages can't carry it.
-        if offset == 1:
+    def _assemble_read_result(self, read_output: str, *, offset: int, end_line: int,
+                              total_lines: int, file_size: int,
+                              file_ends_with_newline: Optional[bool]) -> ReadResult:
+        """Turn a raw ``sed | cut`` page into the final ``ReadResult``. Shared by every
+        read path so the BOM strip, pagination hint, ``cut`` newline-artifact fix and
+        the ambiguous-silence guards never drift apart. ``file_ends_with_newline`` is
+        None when the caller could not tell (artifact left alone, as before)."""
+        # ``wc -l`` counts newlines, not lines: a nonempty file whose last byte
+        # is not a newline holds one more line than the count (#3907). Adjust
+        # here — the single choke point — so total_lines, truncation, and the
+        # past-EOF guard agree on every read path (compound, sequential, native).
+        if file_size > 0 and file_ends_with_newline is False:
+            total_lines += 1
+        if offset == 1:  # only the first chunk can carry a BOM (byte 0)
             read_output, _ = _strip_bom(read_output)
 
         # Check if truncated

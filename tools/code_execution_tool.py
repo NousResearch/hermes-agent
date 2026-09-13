@@ -62,16 +62,19 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
     cache/web full-text store.
     """
     stdout_bytes = stdout_text.encode("utf-8", errors="replace")
-    if len(stdout_bytes) <= MAX_STDOUT_BYTES:
-        return _assemble_stdout_result(stdout_bytes)
-
-    head_bytes = int(MAX_STDOUT_BYTES * 0.4)
-    tail_bytes = MAX_STDOUT_BYTES - head_bytes
-    text, metadata = _assemble_stdout_result(
-        stdout_bytes[:head_bytes],
-        stdout_bytes[-tail_bytes:],
-        total_bytes=len(stdout_bytes),
-    )
+    total = len(stdout_bytes)
+    captured = min(total, MAX_STDOUT_BYTES)
+    metadata: Dict[str, Any] = {"stdout_truncated": total > captured, "stdout_bytes_captured": captured,
+                                "stdout_bytes_total": total, "stdout_bytes_omitted": total - captured}
+    if total <= MAX_STDOUT_BYTES:
+        return stdout_bytes.decode("utf-8", errors="replace"), metadata
+    head_bytes, tail_bytes = head_tail_split(MAX_STDOUT_BYTES)
+    text = (stdout_bytes[:head_bytes].decode("utf-8", errors="replace")
+            + truncation_notice(total - captured, total, unit="bytes")
+            + stdout_bytes[-tail_bytes:].decode("utf-8", errors="replace"))
+    metadata["warning"] = ("execute_code stdout was truncated; the script did run, but only "
+                           "the captured head/tail output is included. Re-run only with "
+                           "narrower output if the omitted data is required.")
     spill_path = _spill_full_stdout(stdout_text)
     if spill_path:
         metadata["stdout_spill_path"] = spill_path

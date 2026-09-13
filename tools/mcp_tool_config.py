@@ -23,14 +23,14 @@ _NPM_CONFIG_CACHE_TIMEOUT_S = 2.0
 
 
 def _get_mcp_stderr_log() -> Any:
-    """Shared append-mode handle for MCP subprocess stderr, cached until shutdown PER PROFILE HOME (a
+    """Shared append-mode handle for MCP subprocess stderr, opened once per process PER PROFILE HOME (a
     multiplexed gateway's secondary profile must log under ITS ``logs/``, not the launch profile's). Must
     expose a real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
-    from hermes_constants import get_hermes_home, hermes_home_key, mkdir_under_hermes_home
+    from hermes_constants import get_hermes_home, hermes_home_key
     home_key = hermes_home_key()
     with _mcp_stderr_log_lock:
         fh = _mcp_stderr_log_fh.get(home_key)
-        if fh is None or fh.closed:
+        if fh is None:
             try:
                 log_dir = get_hermes_home() / "logs"
                 mkdir_under_hermes_home(log_dir)
@@ -45,21 +45,6 @@ def _get_mcp_stderr_log() -> Any:
                     fh = sys.stderr
             _mcp_stderr_log_fh[home_key] = fh
         return fh
-
-
-def _close_mcp_stderr_logs(*, scope: Optional[str] = None) -> None:
-    """Release cached parent handles after the selected MCP transports have stopped."""
-    with _mcp_stderr_log_lock:
-        keys = list(_mcp_stderr_log_fh) if scope is None else [scope]
-        for key in keys:
-            fh = _mcp_stderr_log_fh.pop(key, None)
-            # The last-resort fallback is borrowed, not owned by MCP.
-            if fh is None or fh is sys.stderr or fh is sys.__stderr__:
-                continue
-            try:
-                fh.close()
-            except OSError:
-                logger.warning("Could not close MCP stderr log for %s", key, exc_info=True)
 
 
 def _write_stderr_log_header(server_name: str) -> None:
@@ -115,13 +100,8 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
     keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
     precisely so subprocesses can consume them), plus the server config's own ``env``."""
-    get_secret_source: Optional[Callable[[str], Optional[str]]]
-    try:
-        from hermes_cli.env_loader import get_secret_source as _get_secret_source
-    except Exception:  # pragma: no cover — early bootstrap/import fallback
-        get_secret_source = None
-    else:
-        get_secret_source = _get_secret_source
+    from agent.secret_scope import get_secret
+    from hermes_cli.env_loader import secret_source_names
     env = {
         key: value for key, value in os.environ.items()
         if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE or key.startswith("XDG_")}

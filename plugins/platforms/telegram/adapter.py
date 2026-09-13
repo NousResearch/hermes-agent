@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 from agent.deadline import run_bounded_async
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, platform_gate_env as _scoped_gate_env
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -178,22 +179,9 @@ from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    ProcessingOutcome,
-    SendResult,
-    classify_send_error,
-    cache_image_from_bytes_async,
-    cache_audio_from_bytes_async,
-    cache_video_from_bytes_async,
-    cache_document_from_bytes,
-    resolve_proxy_url,
-    SUPPORTED_VIDEO_TYPES,
-    SUPPORTED_DOCUMENT_TYPES,
-    SUPPORTED_IMAGE_DOCUMENT_TYPES,
-    _TEXT_INJECT_EXTENSIONS,
-    utf16_len,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error,
+    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
+    SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
 from plugins.platforms.telegram.telegram_ids import (
     normalize_telegram_chat_id,
@@ -456,12 +444,12 @@ _POLLING_PROGRESS_TIMEOUT = 60.0
 # can see it. ~3x the worst-case poll window leaves ample margin against false
 # positives while still recovering within a few heartbeat intervals.
 _POLLING_STALL_TIMEOUT = 150.0
-# Telegram transcodes an uploaded video before it answers sendVideo, so the
-# wait for the response is unrelated to how fast the bytes went out and can
-# outlast the 20s read timeout the rest of the Bot API is tuned for. Only
-# media sends take this longer budget; ordinary calls keep the short one so a
-# dead request is still noticed quickly. Kept modest deliberately — this is
-# also how long a user waits to be told the attachment failed.
+# Ingress dispatch stall (#102260): the transport probes prove getUpdates round-trips complete, not
+# that PTB's dispatcher ever handed the fetched updates to a handler. Two heartbeats (180s) with a
+# backlog and no dispatch progress: diagnostic only, never drives recovery (#71240 owns that).
+_INGRESS_DISPATCH_STALL_HEARTBEATS = 2
+# sendVideo transcodes before answering, outlasting the 20s read timeout; also how long a user waits
+# to hear the attachment failed, so kept modest.
 _MEDIA_SEND_READ_TIMEOUT = 60.0
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar("telegram_polling_generation", default=None)
 
@@ -1910,16 +1898,16 @@ class TelegramAdapter(BasePlatformAdapter):
         # proven getUpdates progress yet, and its age is measured from here.
         self._polling_generation_started_monotonic = time.monotonic()
         self._polling_last_progress_monotonic = None
+        # Re-base the backlog per generation. On an in-place updater restart PTB keeps the old
+        # update_queue, so old dispatches can briefly exceed received; the check treats that as no backlog.
+        self._updates_received_total = self._updates_dispatched_total = 0
+        self._ingress_dispatched_seen = self._ingress_stalled_heartbeats = 0
         return self._polling_generation, self._polling_progress_event
 
-    def _record_polling_progress(self, generation: int) -> None:
-        """Record successful getUpdates I/O for the current generation only."""
-        if getattr(self, "_polling_teardown_started", False):
-            return
-        if not self._polling_progress_accepting:
-            return
-        if generation != self._polling_generation:
-            return
+    def _record_polling_progress(self, generation: int) -> bool:
+        """Record successful getUpdates I/O for the current generation only; True when accepted."""
+        if self._teardown_started or not self._polling_progress_accepting or generation != self._polling_generation:
+            return False
         if not self._polling_progress_event.is_set():
             # The first confirmed getUpdates round-trip of this generation
             # resolves the "health pending getUpdates progress" line both
@@ -2466,6 +2454,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # successful round-trip past the stall threshold is dead
                 # (#92991). Pure local-state check — no Bot API call needed.
                 await self._check_polling_stall()
+                # Transport health is not dispatch health (#102260). Pure local-state check.
+                self._check_ingress_dispatch_stall()
             except asyncio.CancelledError:
                 return
             except (asyncio.TimeoutError, OSError) as probe_err:
@@ -2608,6 +2598,35 @@ class TelegramAdapter(BasePlatformAdapter):
         progress: Optional[asyncio.Event] = None,
     ) -> None:
         """Require getUpdates progress, using getMe only to classify failure.
+
+    def _check_ingress_dispatch_stall(self) -> None:
+        """Report fetched updates PTB's dispatcher is not handing to handlers (#102260).
+
+        ``received`` and ``dispatched`` count the same population (every fetched update reaches the
+        group-99 catch-all: no handler raises ApplicationHandlerStop, no error handler is registered),
+        so a backlog with no dispatch progress across ``_INGRESS_DISPATCH_STALL_HEARTBEATS`` heartbeats
+        is a wedged dispatcher at any traffic rate. Reports once per stall, re-arms on progress.
+        """
+        if self._webhook_mode or self._teardown_started or self.has_fatal_error:
+            return
+        received = getattr(self, "_updates_received_total", 0)
+        dispatched = getattr(self, "_updates_dispatched_total", 0)
+        if received <= dispatched or dispatched != getattr(self, "_ingress_dispatched_seen", 0):
+            self._ingress_dispatched_seen = dispatched
+            self._ingress_stalled_heartbeats = 0
+            return
+        stalled = getattr(self, "_ingress_stalled_heartbeats", 0)
+        if stalled >= _INGRESS_DISPATCH_STALL_HEARTBEATS:
+            return  # already reported this stall
+        self._ingress_stalled_heartbeats = stalled + 1
+        if stalled + 1 < _INGRESS_DISPATCH_STALL_HEARTBEATS:
+            return
+        logger.warning(
+            "[%s] Telegram ingress is healthy but deaf: %d update(s) fetched by getUpdates have not been "
+            "dispatched to any handler across %d heartbeats (%d received, %d dispatched, generation %d). "
+            "Polling is fine; PTB's dispatcher is not draining its queue.",
+            self.name, received - dispatched, _INGRESS_DISPATCH_STALL_HEARTBEATS, received, dispatched,
+            getattr(self, "_polling_generation", 0))
 
     def _check_ingress_dispatch_stall(self) -> None:
         """Report fetched updates PTB's dispatcher is not handing to handlers (#102260).
@@ -5725,9 +5744,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 for fh in opened_files:
                     with contextlib.suppress(Exception):
                         fh.close()
-                for tmp in temp_paths:
-                    with contextlib.suppress(OSError):
-                        os.remove(tmp)
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     async def send_image_file(
@@ -6050,11 +6066,11 @@ class TelegramAdapter(BasePlatformAdapter):
         for alt in fallback_keys:
             if configured is None:
                 configured = self.config.extra.get(alt)
-        if configured is None:
-            configured = default
-        if isinstance(configured, bool):
-            return configured
-        return str(configured).strip().lower() in {"true", "1", "yes", "on"}
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return _scoped_gate_env(env_name, default).lower() in {"true", "1", "yes", "on"}
 
     def _extra_str_set(self, key: str, env_name: str) -> set[str]:
         """Comma/list allowlist: scoped ``env_name`` → ``config.extra[key]`` → empty."""
@@ -6146,18 +6162,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
-        # Scoped env → the profile's YAML → none. Only the env rung is a serialized string (JSON list,
-        # newline- or comma-separated); a YAML string is one literal pattern and is left intact.
-        env_raw = _scoped_gate_env("TELEGRAM_MENTION_PATTERNS", "").strip()
-        if env_raw:
-            try:
-                patterns = json.loads(env_raw)
-            except Exception:
-                patterns = [part.strip() for part in env_raw.splitlines() if part.strip()]
-                if not patterns:
-                    patterns = [part.strip() for part in env_raw.split(",") if part.strip()]
-        else:
-            patterns = self.config.extra.get("mention_patterns")
+        patterns = self.config.extra.get("mention_patterns")
+        if patterns is None:
+            raw = _scoped_gate_env("TELEGRAM_MENTION_PATTERNS", "").strip()
+            if raw:
+                try:
+                    loaded = json.loads(raw)
+                except Exception:
+                    loaded = [part.strip() for part in raw.splitlines() if part.strip()]
+                    if not loaded:
+                        loaded = [part.strip() for part in raw.split(",") if part.strip()]
+                patterns = loaded
         if patterns is None:
             return []  # before touching ``self.name``: tests build bare adapters via object.__new__
         return compile_mention_patterns(patterns, log_prefix=self.name, platform_label="telegram", display_label="Telegram", logger_=logger)
@@ -7656,15 +7671,10 @@ class TelegramAdapter(BasePlatformAdapter):
     # -- Message reactions (processing lifecycle) --
 
     def _reactions_enabled(self) -> bool:
-        """Reactions: scoped ``TELEGRAM_REACTIONS`` → ``extra.reactions`` (YAML, per profile) → off.
-
-        An explicit env var wins over YAML, so the stock ``reactions: false`` every install
-        materializes cannot silently kill a documented ``TELEGRAM_REACTIONS=true`` (#109032). Under
-        multiplex a scoped miss falls to the profile's own YAML, never another profile's env (#72348).
-        """
-        configured = _extra_or_secret(self.config.extra, "reactions", "TELEGRAM_REACTIONS", None)
+        """Reactions enabled via ``extra.reactions`` (YAML, per profile) or TELEGRAM_REACTIONS."""
+        configured = self.config.extra.get("reactions")
         if configured is None:
-            return False
+            configured = _scoped_gate_env("TELEGRAM_REACTIONS", "false")
         return str(configured).lower() not in {"false", "0", "no"}
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: Optional[str]) -> bool:

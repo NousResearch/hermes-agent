@@ -784,7 +784,47 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (37, _migrate_to_37),
     (38, _migrate_to_38),
     (39, _migrate_to_39),
-    (40, _migrate_to_40),
+    # 39 → 40: model_catalog.ttl_hours → ttl_minutes (default 20). Only the OLD default
+    # (ttl_hours: 1, written by v25) is dropped; any other explicit ttl_hours is still honoured.
+    (40, _rewrite_stale_default(
+        section="model_catalog", key="ttl_hours", old=1, new=None,
+        added="model_catalog.ttl_hours 1 → ttl_minutes 20 (default)",
+        message="  ✓ Model catalog now refreshes every 20 minutes (model_catalog.ttl_minutes)",
+        extra_guard=lambda raw: "ttl_minutes" not in raw)),
+    (41, _migrate_to_41),
+    # 41 → 42: cron.model_drift_guard is gone. Unpinned jobs now run on their creation snapshot
+    # instead of failing closed when the global model changes, so the toggle has nothing to gate.
+    (42, functools.partial(
+        _rewrite_key, section="cron", key="model_drift_guard", new=None,
+        match=lambda cur: cur is not None,
+        added="removed cron.model_drift_guard",
+        message=(
+            "  ✓ Removed cron.model_drift_guard — unpinned cron jobs now keep running on the "
+            "model/provider they were created under when the global default changes, instead "
+            "of being skipped. Pin a job or set cron.model to move it."))),
+    # 42 → 43: gateway.multiplex_profile_allowlist is gone. A multiplexing default gateway serves
+    # every live profile under profiles/; a profile that must not be served is archived or deleted.
+    (43, functools.partial(
+        _rewrite_key, section="gateway", key="multiplex_profile_allowlist", new=None,
+        match=lambda _cur: True,
+        added="removed gateway.multiplex_profile_allowlist",
+        message=(
+            "  ✓ Removed gateway.multiplex_profile_allowlist — the multiplexing gateway now serves "
+            "every profile under profiles/. Delete or archive a profile you do not want served."),
+        extra_guard=lambda raw: "multiplex_profile_allowlist" in raw)),
+    # 43 → 44: curator prunes faster — stale 30→14 days, archive 90→30 days. A skill nobody has
+    # touched in a month is prompt weight, not knowledge; archival is recoverable. Only the OLD
+    # defaults are rewritten; an explicit user value is preserved.
+    (44, _rewrite_stale_default(
+        section="curator", key="stale_after_days", old=30, new=14,
+        added="curator.stale_after_days=14 (was: 30)",
+        message="  ✓ curator.stale_after_days 30→14 — unused skills are flagged stale after two weeks.")),
+    (44, _rewrite_stale_default(
+        section="curator", key="archive_after_days", old=90, new=30,
+        added="curator.archive_after_days=30 (was: 90)",
+        message=(
+            "  ✓ curator.archive_after_days 90→30 — skills unused for a month are archived to "
+            "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
 )
 
 

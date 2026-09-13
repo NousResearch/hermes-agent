@@ -13,7 +13,7 @@ export const en: Translations = {
     connected: 'Connected',
     checking: 'Checking your apps…',
     waitingSignIn: 'Waiting for you to finish signing in…',
-    notConnected: 'Not connected',
+    notConnected: "Didn't connect",
     notAvailable: 'Not available',
     startWith: count => `Start the task with ${count} ${count === 1 ? 'app' : 'apps'} connected`,
     startWithout: 'Start without connections',
@@ -22,17 +22,19 @@ export const en: Translations = {
     failed: 'Could not connect',
     needsAuth: 'Access expired',
     opening: 'Opening sign-in…',
-    waiting: 'Waiting for your browser…',
+    waiting: 'Finish connecting in your browser…',
     timeout: 'Still waiting for authorization.',
+    keepWaiting: 'Keep waiting',
     refresh: 'Refresh status',
     statusError: 'Could not check connections. Try refreshing.',
     connectError: 'Could not start authorization. Try again.',
-    connectErrorFor: (app: string) => `Could not start authorization for ${app}.`,
     unavailable: 'Connectors are unavailable for this session.',
     ownerMissing: 'Reopen this conversation to manage its connections.',
     search: 'Find an app',
     empty: 'No matching apps',
     disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
+    connectTitle: app => `Connect ${app}?`,
+    describe: app => `Hermes signs in to ${app} in your browser and asks before reading anything there.`,
     execution: 'Connector tools'
   },
 
@@ -501,9 +503,6 @@ export const en: Translations = {
       agentHalfMissingTip:
         'This is the desktop half of a bundled plugin, but its agent half is not installed on the currently connected backend/profile. Install it from Capabilities → Plugins.',
       installModal: {
-        installFromGit: 'Install from Git',
-        reviewRepository: 'Review repository',
-        repoPlaceholder: 'https://github.com/owner/repo',
         title: 'Install plugin',
         description: 'Review what this repository contains before installing anything.',
         repoLabel: 'Repository',
@@ -549,7 +548,7 @@ export const en: Translations = {
         desktopSuccess: name => `Desktop plugin ${name} installed`,
         agentFailed: 'Agent plugin install failed',
         desktopFailed: 'Desktop plugin install failed',
-        missingEnv: (name, vars) => `${name} is installed but needs a key before it can work: ${vars}. Add it now, or the plugin's tools will fail.`
+        missingEnv: vars => `Missing env vars: ${vars}. Add them in Settings → Keys.`
       }
     },
     vault: {
@@ -606,49 +605,26 @@ export const en: Translations = {
       sources: {
         title: 'Password managers',
         blurb:
-          'Plugins you installed into the Hermes backend — tools, skills, MCP servers, hooks, and slash commands. Portable ones are Agent Plugins packages (skills + MCP bundles that work in other agents too). Toggles apply to new sessions.',
-        appliesTo: 'Applies to:',
-        empty: 'No agent plugins installed yet.',
-        loadFailed: 'Could not load agent plugins',
-        portable: 'portable',
-        search: 'Search plugins…',
-        noMatches: 'No plugins match your search.',
-        toggleFailed: (name: string) => `Could not toggle ${name}`,
-        updateBackendToManage: 'Update the Hermes backend to manage this plugin from Desktop.',
-        sources: { bundled: 'bundled', user: 'user', git: 'git', project: 'project', entrypoint: 'pip' }
-      },
-      installModal: {
-        title: 'Install plugin',
-        description: 'Review what this repository contains before installing anything.',
-        repoLabel: 'Repository',
-        includesHeading: 'This package includes',
-        agentLabel: 'Agent plugin',
-        desktopLabel: 'Desktop UI',
-        agentTargetLocal: profile => `Installs into the ${profile} backend (~/.hermes/plugins/)`,
-        agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
-        desktopTarget: "Installs into this app's local desktop-plugins folder",
-        desktopOnlyNote: 'Desktop-only packages do not install a backend agent plugin.',
-        insecureWarning: 'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.',
-        securityHeading: 'Before you install',
-        securityIntro:
-          'Install only from sources you trust — review the repository below if you want to see what will be added.',
-        sourceHeading: 'Source code',
-        viewRepository: 'View repository',
-        viewPluginFiles: 'View plugin files',
-        gitCloneLabel: 'Git clone URL',
-        enableAgent: 'Enable agent plugin after install',
-        forceReinstall: 'Force reinstall (replace if already installed)',
-        install: 'Install',
-        installing: 'Installing…',
-        probing: 'Inspecting repository…',
-        probeUnavailable: 'Plugin inspection is unavailable in this environment.',
-        desktopUnavailable: 'Desktop plugin install is unavailable in this environment.',
-        selectComponent: 'Select at least one component to install.',
-        agentSuccess: name => `Agent plugin ${name} installed`,
-        desktopSuccess: name => `Desktop plugin ${name} installed`,
-        agentFailed: 'Agent plugin install failed',
-        desktopFailed: 'Desktop plugin install failed',
-        missingEnv: vars => `Missing env vars: ${vars}. Add them in Settings → Keys.`
+          'Installed password managers are picked up automatically. The agent asks you to unlock one the first time it needs a login from it (once per session); only a session token stays in memory, and the agent never sees your master password or any login.',
+        toggleFailed: 'Could not update password manager',
+        notInstalled: name =>
+          `Not detected. Install the ${name} command-line tool and sign in to it; Hermes picks it up automatically.`,
+        disabledDesc: 'Detected but turned off for Hermes.',
+        lockedDesc: 'Locked for this Settings connection. Unlock here to view saved logins; each chat asks separately.',
+        unlockedDesc:
+          'Unlocked for this Settings connection only. Locks after 30 minutes idle or when this connection disconnects. Chats unlock separately.',
+        statusLocked: 'Locked',
+        statusNotDetected: 'Not detected',
+        statusOff: 'Off',
+        statusUnlocked: 'Unlocked',
+        unlock: 'Unlock',
+        unlocking: 'Unlocking…',
+        lock: 'Lock',
+        unlocked: name => `${name} unlocked for this Settings connection only.`,
+        unlockTitle: name => `Unlock ${name}`,
+        unlockDescription:
+          'This unlock applies only to this Settings connection. Each chat asks separately. Your master password is handed to the password manager and discarded locally; it is never stored, logged, or shown to the agent.',
+        masterPasswordPlaceholder: 'Master password'
       }
     },
     notifications: {
@@ -741,6 +717,10 @@ export const en: Translations = {
       tabStripAuto: 'Auto',
       tabStripAlways: 'Always',
       tabStripNever: 'Never',
+      appActionsTitle: 'App Actions',
+      appActionsDesc: 'Where Settings, Layout, and HUD sit in the titlebar. Right leaves room for tabs on the left.',
+      appActionsLeft: 'Left',
+      appActionsRight: 'Right',
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',
@@ -782,10 +762,11 @@ export const en: Translations = {
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
       tipsDesc:
-        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Closing one retires it for good.',
-      tipsReset: (count: number) => `Bring back ${count} closed ${count === 1 ? 'tip' : 'tips'}`,
+        'Occasional hints from the app and Hermes. Each tip appears once. Turns off automatically after your first 30 days; you can turn it back on.',
+      tipsReset: (count: number) => `Show ${count} ${count === 1 ? 'tip' : 'tips'} again`,
       toursTitle: 'Guided Tours',
-      toursDesc: 'Let Hermes walk you through the app, dimming the screen and spotlighting each step.',
+      toursDesc:
+        'Let Hermes spotlight each step as it guides you through the app. Turns off automatically after your first 30 days; you can turn it back on.',
       composerPopoutTitle: 'Floating Composer',
       composerPopoutDesc: 'Allow dragging the composer out of its dock. Turn this off to keep it locked at the bottom.',
       vibeHeartsTitle: 'Vibe Hearts',
@@ -801,6 +782,9 @@ export const en: Translations = {
       resumeLastSessionTitle: 'Reopen Last Chat on Launch',
       resumeLastSessionDesc:
         'When enabled, the app reopens your most recent chat on cold start. Turn off to always start with a fresh new chat.',
+      loginStartupTitle: 'Start Hermes with Windows',
+      loginStartupDesc: 'Open the desktop app minimized when you sign in. Uses the saved primary profile.',
+      loginStartupFailed: 'Windows did not enable startup. Check Startup apps in Windows Settings.',
       product: 'Product',
       productDesc: 'Human-friendly tool activity with concise summaries.',
       technical: 'Technical',
@@ -902,8 +886,9 @@ export const en: Translations = {
       checking: 'Checking…',
       seeWhatsNew: "See what's new",
       updateNow: 'Update now',
+      updateSource: 'Update source',
       releaseNotes: 'Release notes',
-      onLatest: "You're on the latest version.",
+      onLatest: 'Your configured update source is up to date.',
       installing: 'An update is currently installing.',
       cantUpdate: "This build can't update itself from inside the app.",
       cantReach: "We couldn't reach the update server.",
@@ -913,8 +898,7 @@ export const en: Translations = {
       lastChecked: age => `Last checked ${age}`,
       justNowSuffix: ' · just now',
       automaticUpdates: 'Automatic update checks',
-      automaticUpdatesDesc:
-        'Check for updates and notify me in the background. Installing remains a manual action.',
+      automaticUpdatesDesc: 'Check for updates and notify me in the background. Installing remains a manual action.',
       updateParked: 'Update is waiting for a safe checkout.',
       updateParkedDesc:
         'Your local repair changes are preserved. Review or move them before installing the upstream update.',
@@ -1383,9 +1367,12 @@ export const en: Translations = {
         'speed-gated-quality':
           'A higher-quality model fits this machine but would respond too slowly on its memory bandwidth — this is the best model that stays fast.',
         'fastest-resident':
-          'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.',
-        'least-painful-spilled': 'No model fits entirely in GPU memory here — this one runs best from system RAM.'
+          'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.'
       } as Record<string, string>,
+      noRecommendationTitle: 'No automatic recommendation for this machine',
+      noRecommendationDetail:
+        'Automatic setup requires a curated model that fits entirely in GPU or unified memory. You can still choose a model below or browse more models.',
+      noRecommendationAction: 'Browse models',
       downloaded: 'Downloaded',
       downloadAction: size => `Download · ${size}`,
       downloadProgress: (done, total) => `Downloading ${done} of ${total}`,
@@ -1397,7 +1384,7 @@ export const en: Translations = {
       quickstartDetailReady: model =>
         `One click makes ${model} your default for new chats. Everything runs on this machine.`,
       quickstartAction: 'Set up for me',
-      quickstartConfigure: 'Configure…',
+      quickstartConfigure: 'Let me choose',
       quickstartDoneToast: model => `${model} is set up — new chats run on this machine.`,
       quickstartFailed: 'Local model setup failed',
       quickstartStageEngine: 'Engine',
@@ -1639,6 +1626,7 @@ export const en: Translations = {
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
+    tabHub: 'Browse Hub',
     configuringProfile: 'Configuring:',
     tabMcp: 'MCP',
     all: 'All',
@@ -1693,6 +1681,51 @@ export const en: Translations = {
     archive: 'Archive',
     skillArchivedTitle: 'Skill archived',
     skillArchivedMessage: 'Restorable via hermes curator restore.',
+    tabPlugins: 'Plugins',
+    plugins: {
+      agentTitle: 'Agent plugins',
+      agentBlurb:
+        'Extend the agent for the selected profile — tools, hooks, providers. Take effect after a gateway restart.',
+      pageBlurb: 'One row per plugin. A plugin can extend this app, the agent, or both — each half has its own switch.',
+      halfDesktop: 'Desktop',
+      halfDesktopHint: 'this app, same for every profile',
+      halfAgent: 'Agent',
+      halfAgentIn: (profile: string) => `Agent in ${profile}`,
+      defaultProfile: 'Hermes (default)',
+      kindAgent: 'Agent',
+      kindDesktop: 'Desktop',
+      kindBoth: 'Agent + Desktop',
+      installAgentHere: 'Install here',
+      installAgentHereTip: (profile: string) =>
+        `The desktop half is loaded in this app, but the agent half is not installed in ${profile}. Install it there.`,
+      installAgentHereNoOrigin:
+        'The agent half is not installed in this profile, and this package was copied in by hand (no catalog entry or git remote), so it cannot be installed from here. Copy its folder into the profile or reinstall from Git.',
+      desktopHalfPending: 'copying…',
+      desktopHalfPendingTip:
+        'This package ships a desktop half that has not been copied into the app yet. Use Rescan, or restart the app.',
+      emptyAll: 'No plugins yet.',
+      empty: 'No agent plugins installed for this profile.',
+      emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
+      loadFailed: 'Could not load agent plugins',
+      toggleFailed: (name: string) => `Could not toggle ${name}`,
+      legacyBackend: 'This backend predates key-addressed plugin toggles — update Hermes to manage it here.',
+      portableBadge: 'portable',
+      catalogTitle: 'Plugin catalog',
+      catalogBrowse: 'Browse',
+      catalogHide: 'Hide the catalog browser',
+      catalogHint:
+        'Hit "+ Add to this Agent" on any plugin — reviewed entries install at their pinned commit into the selected profile. Bundled agent+desktop plugins offer both halves.',
+      alreadyInstalled: (name: string) => `${name} is already installed in this profile.`,
+      catalogProvenance: (sha: string) => `Installed from the Hermes catalog${sha ? ` at pin ${sha}` : ''}.`,
+      pinnedProvenance: (sha: string) =>
+        `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
+      pinnedBadge: (sha: string) => `pinned @ ${sha}`,
+      tierOfficial: 'official',
+      tierCommunity: 'community',
+      updateToPin: (sha: string) => `Update to ${sha}`,
+      updateFailed: (name: string) => `Could not update ${name}`,
+      updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`
+    },
     officialCatalog: 'Available to install',
     officialPill: 'Official',
     hub: {
@@ -2096,10 +2129,7 @@ export const en: Translations = {
     restartNeeded: 'Saved. Restart the messaging gateway so the new settings take effect.',
     restartNow: 'Restart now',
     restarting: 'Restarting…',
-    restartFailedManual: "Hermes couldn't restart to apply your messaging settings",
-    restartFailedManualDetail: 'Try Restart again; if it still fails, open the logs and send diagnostics.',
-    restartAgain: 'Restart again',
-    openLogs: 'Open logs',
+    restartFailedManual: 'Gateway restart failed — restart it manually and check the gateway logs.',
     telegramQr: {
       title: 'Choose how to connect your Telegram bot',
       subtitle: 'Both options connect a bot you control and save its credentials only to this Hermes installation.',
@@ -2842,6 +2872,13 @@ export const en: Translations = {
     stopDictation: 'Stop dictation',
     transcribingDictation: 'Transcribing dictation',
     voiceControls: 'Voice',
+    voiceEngine: 'Voice chat engine',
+    voiceEngineChained: 'Speech-to-text + Hermes voice',
+    voiceEngineLive: 'GPT-Live (full-duplex, delegates to Hermes)',
+    voiceEngineLiveNeedsKey: 'Needs an OpenAI API key',
+    voiceEngineChangeFailed: 'Could not change the voice chat engine',
+    voiceEngineChainedShort: 'speech-to-text',
+    voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: 'Voice dictation',
     speakReplies: 'Read replies aloud',
     stopSpeakingReplies: 'Stop reading replies aloud',
@@ -3863,7 +3900,11 @@ export const en: Translations = {
         streaming: 'Streaming connection error'
       },
       errorRetry: 'Retry',
+      errorStartNewSession: 'Start new session',
       errorSwitchProvider: 'Switch provider',
+      errorSignInAgain: provider => `Sign in to ${provider} again`,
+      errorOauthExpired: provider =>
+        `Your ${provider} sign-in has expired or was revoked. Sign in again to keep chatting.`,
       errorOpenLogs: 'Open logs',
       errorOpenLogsFailed: 'Could not open the logs folder',
       errorOpenDesktopLogs: 'Open Desktop logs',
@@ -4123,7 +4164,7 @@ export const en: Translations = {
     resumeStrandedBody:
       'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
     poolSlotTimeoutBody:
-      "Too many bots are running at once for this computer's limit. Raise the limit in Settings → Advanced, or wait for one to finish and retry.",
+      'All local profile backend slots are busy. Increase Warm Bot Backends in Settings → Advanced, or retry after an idle backend is evicted.',
     poolSlotTimeoutOpenSettings: 'Open Advanced Settings',
     resumeRetry: 'Retry',
     nothingToBranch: 'Nothing to branch',

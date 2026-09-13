@@ -284,6 +284,13 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       setSystemError('')
       let actionSucceeded = false
 
+      // A profile served by the shared multiplexer restarts every bot on this device: ask first.
+      const shared = kind === 'restart' ? await confirmSharedGatewayRestart() : null
+
+      if (shared === false) {
+        return
+      }
+
       try {
         const started = kind === 'restart' ? await restartGateway() : await updateHermes()
         let nextStatus: ActionStatusResponse | null = null

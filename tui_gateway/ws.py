@@ -113,13 +113,9 @@ class WSTransport:
         self._ws = ws
         self._loop = loop
         self._peer = peer
-        #: Server-verified identity carried from the WS-upgrade credential
-        #: (dashboard ticket / internal credential) — stamped by
-        #: ``hermes_cli.web_server._ws_auth_reason`` onto the WS object and
-        #: passed through ``handle_ws``. None for transports that
-        #: authenticated via the legacy token path or stdio. RPC params can
-        #: never populate this: it is the only identity authority for
-        #: browser-controller registration.
+        #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server_chat._ws_auth_reason``; None
+        #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
+        #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
         self._closed = False
         self._last_inbound_at = time.monotonic()
@@ -238,7 +234,17 @@ class WSTransport:
                     return
                 payload = _sanitize_ws_text(line)
                 try:
-                    await self._ws.send_text(payload)
+                    await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
+                except asyncio.TimeoutError:
+                    # The loop is responsive (the timer fired) but the socket never drained: unlike the
+                    # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
+                    # batches bail, and close the socket so handle_ws's read loop ends and its teardown
+                    # (session detach/reap, client reconnect) runs. See #106369.
+                    self._closed = True
+                    _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
+                                 self._peer, _WS_SEND_DEADLINE_S)
+                    self._loop.create_task(self._close_stalled_socket())
+                    return
                 except UnicodeEncodeError as exc:
                     # A single illegal UTF-8 frame (lone surrogate in a
                     # status/ready payload) must not tear down the socket.

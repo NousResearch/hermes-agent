@@ -679,8 +679,8 @@ class CheckpointManager:
         entry carries the extra ``workdir`` key so callers can label which
         project a checkpoint belongs to.
         """
-        store = _store_path(CHECKPOINT_BASE)
-        if not (store / "HEAD").exists():
+        store = _store_path()
+        if not _store_has_head(store):
             return []
         results: List[Dict] = []
         for meta in _list_projects(store):

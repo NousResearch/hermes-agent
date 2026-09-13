@@ -102,8 +102,16 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
     section = stt_config.get(provider) if isinstance(stt_config, dict) else None
     section = section if isinstance(section, dict) else {}
 
-    if provider == "groq":
-        api_key = tt._resolve_provider_key("GROQ_API_KEY", "groq")
+    def direct(wire: str, base_url: Any, api_key: str, model: Any) -> Dict[str, Any]:
+        return _direct(wire, provider, base_url, api_key, model, language=language)
+
+    def env_base_url(env_var: str, default: str) -> str:
+        from hermes_cli.config import get_env_value
+        return str(section.get("base_url") or get_env_value(env_var) or default).strip().rstrip("/")
+
+    if provider in _STT_KEYED:
+        env_var, default_model, base = _STT_KEYED[provider]
+        api_key = tt._resolve_provider_key(env_var, provider)
         if not api_key:
             return _relay("no credentials")
         return {
@@ -149,9 +157,10 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
         }
 
     if provider == "xai":
-        # API key only. An xAI OAuth bearer refreshes server-side mid-session;
-        # handing it out strands the client on the first 401. Relay instead.
-        api_key = str(tt.get_env_value("XAI_API_KEY") or "").strip()
+        # API key only: an xAI OAuth bearer refreshes server-side mid-session and
+        # would strand the client on the first 401.
+        from hermes_cli.config import get_env_value
+        api_key = str(get_env_value("XAI_API_KEY") or "").strip()
         if not api_key:
             return _relay("xai oauth (server-managed) or no credentials")
         base_url = str(

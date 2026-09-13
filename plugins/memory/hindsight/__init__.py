@@ -12,8 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import contextvars
-import importlib
+import contextlib
 import json
 import logging
 import os
@@ -25,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.memory_provider import MemoryProvider, RecallStatus, spawn_context_thread
 from agent.secret_scope import get_secret
 
 from agent.memory_provider import MemoryProvider, RecallStatus
@@ -283,9 +283,9 @@ def _load_config() -> dict:
         "idle_timeout": _parse_int_setting(os.environ.get("HINDSIGHT_IDLE_TIMEOUT"), _DEFAULT_IDLE_TIMEOUT),
         "retain_tags": get_secret("HINDSIGHT_RETAIN_TAGS", "") or "",
         "observation_scopes": get_secret("HINDSIGHT_RETAIN_OBSERVATION_SCOPES", "") or "",
-        "retain_source": _scoped_setting("HINDSIGHT_RETAIN_SOURCE", _DEFAULT_RETAIN_SOURCE),
-        "retain_user_prefix": _scoped_setting("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
-        "retain_assistant_prefix": _scoped_setting("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
+        "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", _DEFAULT_RETAIN_SOURCE),
+        "retain_user_prefix": os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
+        "retain_assistant_prefix": os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
         "banks": {"hermes": {"bankId": get_secret("HINDSIGHT_BANK_ID", "") or "hermes",
                              "budget": os.environ.get("HINDSIGHT_BUDGET", "mid"), "enabled": True}},
     }
@@ -780,24 +780,8 @@ class HindsightMemoryProvider(MemoryProvider):
             return
         # A previous writer may have exited after shutdown(); allow the fresh one to drain.
         self._shutting_down.clear()
-        # Per-provider background threads start with an EMPTY contextvars
-        # Context. Under multiplex_profiles the spawning thread carries the
-        # profile's secret scope + HERMES_HOME override (gateway/run.py wraps
-        # the agent turn in copy_context().run), and get_secret fails closed
-        # without it (#92608). Snapshot the spawner's context into the thread.
-        # (The shared ``hindsight-loop`` thread needs no wrap: coroutines
-        # scheduled via run_coroutine_threadsafe inherit the submitter's
-        # context per call, so one loop can serve every profile.)
-        thread = threading.Thread(
-            target=contextvars.copy_context().run,
-            args=(self._writer_loop,),
-            daemon=True,
-            name="hindsight-writer",
-        )
-        self._writer_thread = thread
-        # Keep the legacy _sync_thread alias pointing at the writer so any
-        # external code that joins _sync_thread keeps working.
-        self._sync_thread = thread
+        thread = spawn_context_thread(self._writer_loop, name="hindsight-writer")
+        self._writer_thread = self._sync_thread = thread
         thread.start()
 
     def _register_atexit(self) -> None:
@@ -1046,13 +1030,86 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_waits_for_retain = cfg.get("prefetch_waits_for_retain", True)
         self._prefetch_retain_drain_timeout = float(cfg.get("prefetch_retain_drain_timeout", 10.0))
 
-            t = threading.Thread(
-                target=contextvars.copy_context().run,
-                args=(_start_daemon,),
-                daemon=True,
-                name="hindsight-daemon-start",
-            )
-            t.start()
+    def _apply_recall_settings(self, cfg: dict) -> None:
+        """Recall knobs are pure config too (``{}`` yields the defaults)."""
+        self._recall_tags = cfg.get("recall_tags") or None
+        self._recall_tags_match = cfg.get("recall_tags_match", "any")
+        self._auto_recall = cfg.get("auto_recall", True)
+        self._recall_sync = bool(cfg.get("recall_sync", False))
+        self._recall_max_tokens = int(cfg.get("recall_max_tokens", 4096))
+        self._recall_max_input_chars = int(cfg.get("recall_max_input_chars", 800))
+        # None -> observation-only (Hindsight's consolidated, deduplicated layer; raw
+        # world/experience facts re-ship the evidence they summarize and burn the
+        # recall_max_tokens budget); a comma-separated string is accepted for parity
+        # with recall_tags; an explicit list broadens or disables the filter.
+        configured_types = cfg.get("recall_types")
+        if isinstance(configured_types, str):
+            self._recall_types = [t.strip() for t in configured_types.split(",") if t.strip()]
+        else:
+            self._recall_types = list([] if configured_types is None else configured_types) or ["observation"]
+        self._recall_prompt_preamble = cfg.get("recall_prompt_preamble", "")
+        self._recall_indicator = bool(cfg.get("recall_indicator", True))
+
+    def _start_embedded_daemon(self) -> None:
+        """Start the embedded daemon on a background thread (Rich output -> log file)."""
+        # PostgreSQL's initdb refuses root; without this guard the start thread
+        # retries forever, reloading embedding models (~958MB RAM, ~33% CPU)
+        # with no user-visible error.
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            msg = ("Hindsight local_embedded mode cannot run as root "
+                   "(PostgreSQL initdb refuses root). Skipping the embedded "
+                   "memory daemon. Run Hermes as a non-root user, or switch "
+                   "to cloud / local_external mode via 'hermes memory setup'.")
+            logger.warning(msg)
+            # Also print: otherwise the user would only see Hermes get sluggish.
+            with contextlib.suppress(Exception):
+                # Surface to the terminal too — a daemon that never starts would otherwise fail silently and
+                # the user would only see Hermes get sluggish. (issue #13125)
+                print(f"  ⚠ {msg}", file=sys.stderr, flush=True)
+            self._mode = "disabled"
+            return
+        spawn_context_thread(self._daemon_start_worker, name="hindsight-daemon-start").start()
+
+    def _daemon_start_worker(self) -> None:
+        import traceback
+        log_path = get_hermes_home() / "logs" / "hindsight-embed.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _log(text: str) -> None:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(text)
+
+        try:
+            # Rich console -> our log file (redirecting global fds would capture other threads).
+            import hindsight_embed.daemon_embed_manager as dem
+            from rich.console import Console
+            dem.console = Console(file=open(log_path, "a", encoding="utf-8"), force_terminal=False)
+
+            client = self._get_client()
+            profile = self._config.get("profile", "hermes")
+            # Profile .env out of sync with config -> rewrite and restart a running daemon.
+            # Fail-closed on key material: when this process holds no key (no secret
+            # scope on this thread) but the file does, a rewrite would destroy the
+            # only key copy the daemon subprocess can read. Skip the write AND the
+            # stop: restarting the daemon now would boot it keyless, which is the
+            # exact outage this guards against. _get_client() above already passed
+            # whatever key WAS available into the in-process client kwargs.
+            if _load_simple_env(_embedded_profile_env_path(self._config)) != _build_embedded_profile_env(self._config):
+                if _may_rewrite_profile_env(self._config):
+                    _materialize_embedded_profile_env(self._config)
+                    if client._manager.is_running(profile):
+                        _log("\n=== Config changed, restarting daemon ===\n")
+                        client._manager.stop(profile)
+                else:
+                    logger.warning(
+                        "Hindsight profile env for %r holds an LLM API key this process cannot see "
+                        "(no secret scope); leaving the file untouched so the daemon keeps its key.",
+                        profile)
+                    _log("\n=== Profile env has a key this process cannot see; left untouched ===\n")
+            client._ensure_started()
+            _log("\n=== Daemon started successfully ===\n")
+        except Exception as e:
+            _log(f"\n=== Daemon startup failed: {e} ===\n" + traceback.format_exc())
 
     def system_prompt_block(self) -> str:
         mode = self._memory_mode if self._memory_mode in _SYSTEM_PROMPT_TAILS else "hybrid"
@@ -1157,12 +1214,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 with self._prefetch_lock:
                     self._prefetch_result, self._prefetch_count = text, count
 
-        self._prefetch_thread = threading.Thread(
-            target=contextvars.copy_context().run,
-            args=(_run,),
-            daemon=True,
-            name="hindsight-prefetch",
-        )
+        self._prefetch_thread = spawn_context_thread(_run, name="hindsight-prefetch")
         self._prefetch_thread.start()
 
     # -- retain ------------------------------------------------------------------

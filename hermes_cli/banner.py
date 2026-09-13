@@ -207,24 +207,7 @@ def _is_full_sha(value: Optional[str]) -> bool:
     return isinstance(value, str) and len(value) == 40 and all(c in "0123456789abcdefABCDEF" for c in value)
 
 
-def _upstream_main_sha() -> Optional[str]:
-    """Tip SHA of upstream main via HTTPS ls-remote (no auth, no prompts)."""
-    from hermes_cli._subprocess_compat import noninteractive_git_env
-
-    try:
-        result = subprocess.run(
-            ["git", "ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=10,
-            stdin=subprocess.DEVNULL,
-            env=noninteractive_git_env(),
-        )
-    except Exception:
-        return None
-    if result.returncode != 0 or not result.stdout:
-        return None
-    upstream_rev = result.stdout.split()[0]
-    return upstream_rev or None
+_compare_payload_cache: Dict[tuple, dict] = {}
 
 
 def _github_compare(current_rev: str, target_rev: str) -> Optional[dict]:
@@ -344,142 +327,33 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
-    from hermes_cli._subprocess_compat import noninteractive_git_env
+    """Count commits behind origin/main in a local checkout.
 
-    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
-    if _is_official_ssh_remote(origin_url):
-        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        if not head_rev:
-            return None
-        # Passive probe via HTTPS ls-remote (never SSH — no hardware-key
-        # prompts). Tip SHAs alone can't distinguish "behind" from a local
-        # carried commit sitting AHEAD of origin/main, and misreporting an
-        # ahead checkout as behind nudges the user into `hermes update`,
-        # which can wipe their carried work.
-        upstream_rev = _upstream_main_sha()
-        if upstream_rev is None:
-            return None
-        if upstream_rev == head_rev:
-            return 0
-        # Local-ahead: the remote tip is an ancestor of HEAD. Checked against
-        # the FRESH upstream SHA (not the possibly stale origin/main tracking
-        # ref) so a stale ref can't fake an up-to-date report.
-        ancestor = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", upstream_rev, "HEAD"],
-            capture_output=True, timeout=5, cwd=str(repo_dir),
-        )
-        if ancestor.returncode == 0:
-            return 0
-        # Genuinely behind (or diverged). Recover the exact count via the
-        # GitHub compare API; a local-only HEAD 404s there, which safely
-        # degrades to the honest no-count sentinel — never a fabricated 1.
-        counted = _github_compare_behind(head_rev, upstream_rev)
-        return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
-
-    # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
-    # clone the history stops at a single commit, so a plain `git fetch` would
-    # unshallow the repo (dragging in the whole history) and
-    # `rev-list --count HEAD..origin/main` would report a huge bogus "behind"
-    # number (e.g. "12492 commits behind"). Detect shallow up front: fetch with
-    # --depth 1 to preserve the boundary and compare tip SHAs instead of
-    # counting. Full clones (developers, Docker dev images) keep the exact
-    # count path unchanged. Mirrors the desktop fix in apps/desktop/electron/main.cjs.
-    shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
-    is_shallow = shallow == "true"
-
-    try:
-        # Self-heal abandoned git lock files before fetching. A stale
-        # .git/shallow.lock from a crashed fetch makes the fetch fail, the
-        # exception below is swallowed, and stale refs get compared against
-        # HEAD — silently degrading the passive check until a human removes
-        # the lock (git never self-heals these).
-        from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
-
-        clear_stale_git_locks(repo_dir)
-        # The passive check is the main tmp_pack GENERATOR on flaky lines
-        # (several aborted fetches per day) — it must also be the janitor,
-        # or debris accumulates unbounded between manual updates (#93732).
-        clear_stale_tmp_packs(repo_dir)
-
-        # Scope the fetch to the one branch the behind-count compares against.
-        # An unscoped ``git fetch origin`` transfers every remote head (~1,400
-        # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full
-        # 10 s timeout on slow links. ``cmd_update`` already scopes its fetch
-        # for the same reason. Modern git updates the ``origin/main`` tracking
-        # ref on a scoped fetch, so the ``HEAD..origin/main`` count below is
-        # unaffected; the shallow path compares against FETCH_HEAD, which a
-        # scoped fetch also updates.
-        fetch_args = ["git", "fetch", "origin", "main"]
-        if is_shallow:
-            fetch_args += ["--depth", "1"]
-        fetch_args.append("--quiet")
-        fetch_proc = subprocess.run(
-            fetch_args,
-            capture_output=True, timeout=10,
-            cwd=str(repo_dir),
-            stdin=subprocess.DEVNULL,
-            env=noninteractive_git_env(),
-        )
-        fetch_ok = fetch_proc.returncode == 0
-    except Exception:
-        fetch_ok = False  # Offline or timeout — don't use stale refs
-
-    # When the fetch fails, the local origin/main tracking ref is stale. It
-    # cannot prove *currentness* (a 0 behind-count may just mean the stale ref
-    # hasn't caught up), but if it already shows HEAD behind, that is sound
-    # evidence an update exists — the ref was good at some point in the past.
-    # Return the positive stale count; return None (inconclusive) otherwise so
-    # the caller doesn't cache a false "up to date". (#82166, review #92578)
-    if not fetch_ok:
-        if not is_shallow:
-            try:
-                result = subprocess.run(
-                    ["git", "rev-list", "--count", "HEAD..origin/main"],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace",
-                    timeout=5,
-                    cwd=str(repo_dir),
-                )
-                if result.returncode == 0:
-                    behind = int(result.stdout.strip())
-                    if behind > 0:
-                        return behind
-            except Exception:
-                pass
+    Passive checks never run ``git fetch``: every CLI/TUI/gateway start used to negotiate a pack
+    with GitHub, and across the install base that was tens of millions of fetch requests a day
+    (GitHub asked us to poll the API instead). Two tip SHAs are enough — the remote one from the
+    API, the local one from ``rev-parse`` — and ``_tips_behind`` recovers the exact count through
+    the compare API when they differ. ``git fetch`` happens only inside ``hermes update``.
+    """
+    # Probe the origin URL under the config-isolated env: a global url.<https>.insteadOf rewrite
+    # otherwise makes an SSH origin masquerade as HTTPS (#104591).
+    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir, network=True)
+    head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+    if not head_rev:
         return None
-
-    if is_shallow:
-        # No history to count across the shallow boundary. `origin/main` may not
-        # be a tracking ref in a `clone --depth 1`, so prefer FETCH_HEAD (just
-        # updated by the fetch above) and fall back to origin/main.
-        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        target_rev = (
-            _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
-            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
-        )
-        if not head_rev or not target_rev:
-            return None
-        if head_rev == target_rev:
-            return 0
-        # Tips differ but the shallow boundary hides the history between them.
-        # Recover the exact count from the GitHub compare API when possible
-        # (ahead_by == 0 means local-ahead ⇒ up to date); otherwise report the
-        # honest "update available, count unknown" sentinel.
-        counted = _github_compare_behind(head_rev, target_rev)
-        return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=5,
-            cwd=str(repo_dir),
-        )
-        if result.returncode == 0:
-            return int(result.stdout.strip())
-    except Exception:
-        pass
-    return None
+    canonical = _canonical_github_remote(origin_url)
+    if canonical.startswith("github.com/"):
+        target_rev = _github_branch_tip(canonical.removeprefix("github.com/"), "main")
+    else:
+        # Non-GitHub origin: one ls-remote for the tip (ref advertisement only, no pack transfer).
+        result = _git_run(["ls-remote", "origin", "refs/heads/main"], cwd=repo_dir, timeout=10, network=True)
+        target_rev = result.stdout.split()[0] if result is not None and result.returncode == 0 and result.stdout else None
+    global _last_target_rev
+    _last_target_rev = target_rev
+    # Tip SHAs alone can't distinguish "behind" from a local commit AHEAD of origin/main, and
+    # misreporting an ahead checkout nudges the user into `hermes update`, which can wipe carried
+    # work — hence the ancestor check inside _tips_behind, against the FRESH upstream SHA.
+    return _tips_behind(head_rev, target_rev, repo_dir)
 
 
 def _read_json(path: Path) -> Optional[dict]:
@@ -521,49 +395,23 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     # For a git checkout the local HEAD is part of the key too: `hermes update` moves HEAD, and a
     # stale "3 behind" must not survive the update it just prompted.
     now = time.time()
-    try:
-        if cache_file.exists():
-            cached = json.loads(cache_file.read_text(encoding="utf-8"))
-            if (
-                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
-                and cached.get("ver") == VERSION
-            ):
-                return cached.get("behind")
-    except Exception:
-        pass
-
+    repo_dir = None if embedded_rev else _resolve_repo_dir()
+    head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir) if repo_dir is not None else None
+    cached = _read_json(cache_file)
+    if cached is not None and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION \
+            and cached.get("head") == head_rev:
+        ttl = _UPDATE_CHECK_CACHE_SECONDS if cached.get("behind") is not None else _UPDATE_CHECK_FAILURE_CACHE_SECONDS
+        if now - cached.get("ts", 0) < ttl:
+            return cached.get("behind")
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
-            # No git checkout and no embedded revision — can't determine
-            # update status. This is the Docker path (already short-circuited
-            # above) or an unsupported install without a source tree.
-            behind = None
-        else:
-            behind = _check_via_local_git(repo_dir)
-
-    try:
-        # Don't cache inconclusive results (None). A None means the check
-        # could not run — typically a failed git fetch. Caching None would
-        # suppress retries for the full 6-hour cache window, leaving the
-        # user with a stale "up to date" or no information for hours after
-        # connectivity is restored (#82166).
-        if behind is not None:
-            cache_file.write_text(
-                json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
-                encoding="utf-8",
-            )
-    except Exception:
-        pass
-
+        # No checkout and no embedded revision — status can't be determined.
+        behind = _check_via_local_git(repo_dir) if repo_dir is not None else None
+    _quiet(lambda: cache_file.write_text(
+        json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION,
+                    "head": head_rev or embedded_rev, "target": _last_target_rev}),
+        encoding="utf-8"))
     return behind
 
 

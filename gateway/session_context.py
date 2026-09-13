@@ -59,6 +59,10 @@ _BROWSER_CONTROL_TRANSPORT_FAMILY: ContextVar = ContextVar(
 # or child-process export: a bound id alone cannot authorize detached delivery.
 _SESSION_HISTORY_DELIVERY = ContextVar("HERMES_SESSION_HISTORY_DELIVERY", default=_UNSET)
 
+# Request-local proof that the client resumes SessionDB history. No env fallback
+# or child-process export: a bound id alone cannot authorize detached delivery.
+_SESSION_HISTORY_DELIVERY = ContextVar("HERMES_SESSION_HISTORY_DELIVERY", default=_UNSET)
+
 # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
 _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
 _CRON_AUTO_DELIVER_CHAT_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
@@ -131,26 +135,13 @@ def source_route_metadata(source: Any, metadata: dict | None) -> dict | None:
 
 
 def set_session_vars(
-    platform: str = "",
-    source: str = "",
-    chat_id: str = "",
-    chat_type: str = "",
-    chat_name: str = "",
-    thread_id: str = "",
-    user_id: str = "",
-    user_id_alt: str = "",
-    user_name: str = "",
-    scope_id: str = "",
-    session_key: str = "",
-    session_id: str = "",
-    message_id: str = "",
-    profile: str = "",
-    browser_control_principal: str = "",
-    browser_control_transport_family: str = "",
-    cwd: str = "",
-    async_delivery: bool = True,
-    ui_session_id: str = "",
-    cron_session: Any = _UNSET,
+    platform: str = "", source: str = "", chat_id: str = "", chat_type: str = "",
+    chat_name: str = "", thread_id: str = "", user_id: str = "", user_id_alt: str = "",
+    user_name: str = "", scope_id: str = "", session_key: str = "", session_id: str = "",
+    message_id: str = "", profile: str = "", browser_control_principal: str = "",
+    browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
+    ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
+    session_history_delivery: str | None = None,
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -163,67 +154,25 @@ def set_session_vars(
     cannot grant wake authority."""
     global _session_context_engaged
     _session_context_engaged = True
-    tokens = [
-        _SESSION_PLATFORM.set(platform),
-        _SESSION_SOURCE.set(source),
-        _SESSION_CHAT_ID.set(chat_id),
-        _SESSION_CHAT_TYPE.set(chat_type),
-        _SESSION_CHAT_NAME.set(chat_name),
-        _SESSION_THREAD_ID.set(thread_id),
-        _SESSION_USER_ID.set(user_id),
-        _SESSION_USER_ID_ALT.set(user_id_alt),
-        _SESSION_USER_NAME.set(user_name),
-        _SESSION_SCOPE_ID.set(scope_id),
-        _SESSION_KEY.set(session_key),
-        _SESSION_ID.set(session_id),
-        _SESSION_UI_SESSION_ID.set(ui_session_id),
-        _SESSION_MESSAGE_ID.set(message_id),
-        _SESSION_PROFILE.set(profile),
-        _BROWSER_CONTROL_PRINCIPAL.set(browser_control_principal),
-        _BROWSER_CONTROL_TRANSPORT_FAMILY.set(browser_control_transport_family),
-        _CRON_SESSION.set(cron_session),
-        _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
-    ]
-    try:
-        from agent.runtime_cwd import set_session_cwd
-
-        set_session_cwd(cwd)
-    except Exception:
-        pass
+    values = (
+        platform, source, chat_id, chat_type, chat_name, thread_id, user_id, user_id_alt,
+        user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,
+        browser_control_principal, browser_control_transport_family, cron_session, parent_chat_id,
+    )
+    tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
+    tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
+    tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
+    _runtime_cwd("set_session_cwd", cwd)
     return tokens
 
 
 def clear_session_vars(tokens: list) -> None:
-    """Mark session context variables as explicitly cleared.
-
-    Sets all variables to ``""`` so that ``get_session_env`` returns an empty
-    string instead of falling back to (potentially stale) ``os.environ``
-    values.  The *tokens* argument is accepted for API compatibility with
-    callers that saved the return value of ``set_session_vars``, but the
-    actual clearing uses ``var.set("")`` rather than ``var.reset(token)``
-    to ensure the "explicitly cleared" state is distinguishable from
-    "never set" (which holds the ``_UNSET`` sentinel).
-    """
-    for var in (
-        _SESSION_PLATFORM,
-        _SESSION_SOURCE,
-        _SESSION_CHAT_ID,
-        _SESSION_CHAT_TYPE,
-        _SESSION_CHAT_NAME,
-        _SESSION_THREAD_ID,
-        _SESSION_USER_ID,
-        _SESSION_USER_ID_ALT,
-        _SESSION_USER_NAME,
-        _SESSION_SCOPE_ID,
-        _SESSION_KEY,
-        _SESSION_ID,
-        _SESSION_UI_SESSION_ID,
-        _SESSION_MESSAGE_ID,
-        _SESSION_PROFILE,
-        _BROWSER_CONTROL_PRINCIPAL,
-        _BROWSER_CONTROL_TRANSPORT_FAMILY,
-        _CRON_SESSION,
-    ):
+    """Mark session context variables as explicitly cleared (``""``, not ``_UNSET``), so
+    ``get_session_env`` returns empty instead of stale ``os.environ`` values.  Async-delivery
+    goes back to ``_UNSET``: a cleared context is default-supported, not opted-out.  Wake
+    capability goes back to ``_UNSET`` too — but for the opposite reason: a cleared context has
+    declared nothing, and an undeclared capability FAILS CLOSED (#98619)."""
+    for var in _SESSION_VARS:
         var.set("")
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)

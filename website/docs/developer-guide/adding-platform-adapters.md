@@ -101,8 +101,7 @@ from gateway.config import Platform, PlatformConfig
 class MyPlatformAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("my_platform"))
-        # Explicit env (profile-scoped) → this profile's config.extra (YAML) → default. Under multiplexing a
-        # scoped miss falls to the profile's own YAML, never to another profile's process env.
+        # config.extra first (the per-profile truth under multiplexing), then the profile-scoped env var.
         self.token = extra_or_secret(config.extra, "token", "MY_PLATFORM_TOKEN")
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:

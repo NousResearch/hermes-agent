@@ -539,49 +539,7 @@ class CopilotACPClient:
             session = _request("session/new", {"cwd": self._acp_cwd, "mcpServers": []}) or {}
             if not str(session.get("sessionId") or "").strip():
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
-
-            # Select the model Hermes asked for. Prefer the stable ACP v1
-            # session-config API: session/new advertises a category="model"
-            # select option and session/set_config_option updates it. Copilot
-            # still exposes the older models/session/set_model extension too,
-            # so retain that only as compatibility fallback for older agents.
-            if requested_model and requested_model != "copilot-acp":
-                try:
-                    selection = _model_selection_request(session, requested_model)
-                    if selection is not None:
-                        method, params = selection
-                        _request(method, params)
-                    else:
-                        logger.warning(
-                            "Copilot ACP does not offer model %r; using the "
-                            "session default.",
-                            requested_model,
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "Copilot ACP model selection for %r failed; continuing "
-                        "with the session default: %s",
-                        requested_model,
-                        exc,
-                    )
-
-            text_parts: list[str] = []
-            reasoning_parts: list[str] = []
-            _request(
-                "session/prompt",
-                {
-                    "sessionId": session_id,
-                    "prompt": [
-                        {
-                            "type": "text",
-                            "text": prompt_text,
-                        }
-                    ],
-                },
-                text_parts=text_parts,
-                reasoning_parts=reasoning_parts,
-            )
-            return "".join(text_parts), "".join(reasoning_parts)
+            yield session, _request
         finally:
             self.close()
 

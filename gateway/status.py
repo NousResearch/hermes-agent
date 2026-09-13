@@ -420,11 +420,9 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     home_lc = str(profile_home).lower().replace("\\", "/")
     if profile_name is not None and profile_name != "default":
         return profile_flag_value(command_lc) == profile_name.lower() or f"hermes_home={home_lc}" in command_lc
-    # Default profile: accept unless argv names another profile (any spelling the CLI pre-parser
-    # accepts, ``--profile=ops`` included -- a substring test let that gateway pass as the default's)
-    # or a conflicting explicit HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually
-    # arrives via the env).
-    if profile_flag_value(command_lc) is not None:
+    # Default profile: accept unless argv names another profile or a conflicting explicit
+    # HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually arrives via the env).
+    if "--profile " in command_lc or " -p " in command_lc:
         return False
     return not ("hermes_home=" in command_lc and f"hermes_home={home_lc}" not in command_lc)
 
@@ -885,20 +883,12 @@ def _coerce_session_store(session_store: Any) -> dict[str, str]:
 
 
 def write_runtime_status(
-    *,
-    gateway_state: Any = _UNSET,
-    exit_reason: Any = _UNSET,
-    restart_requested: Any = _UNSET,
-    active_agents: Any = _UNSET,
-    platform: Any = _UNSET,
-    platform_state: Any = _UNSET,
-    error_code: Any = _UNSET,
-    error_message: Any = _UNSET,
-    needs_attention: Any = _UNSET,
-    retrying_since: Any = _UNSET,
-    served_profiles: Any = _UNSET,
-    session_store: Any = _UNSET,
-    clear_profile_platforms: bool = False,
+    *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
+    active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
+    error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
+    retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
+    ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
+    drop_profile_platforms: Optional[str] = None,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status. ``drop_profile_platforms``
     removes one deleted profile's ``<profile>:<platform>`` entries (hot unroute)."""
@@ -924,28 +914,16 @@ def write_runtime_status(
     # that created it, and the top-level record must always describe the
     # CURRENT writer's code (per-process cached, so this is a dict copy).
     payload.update(_get_code_identity_fields())
-
-    if gateway_state is not _UNSET:
-        payload["gateway_state"] = gateway_state
-    if exit_reason is not _UNSET:
-        payload["exit_reason"] = exit_reason
-    if restart_requested is not _UNSET:
-        payload["restart_requested"] = bool(restart_requested)
-    if active_agents is not _UNSET:
-        payload["active_agents"] = parse_active_agents(active_agents)
-    if served_profiles is not _UNSET:
-        # Profiles this gateway multiplexes (multi-profile mode). Absent/empty
-        # for a single-profile gateway. Lets `hermes status` show per-profile
-        # coverage without a second probe.
-        payload["served_profiles"] = list(served_profiles or [])
-    if session_store is not _UNSET:
-        state = "unknown"
-        if isinstance(session_store, dict):
-            candidate = str(session_store.get("status") or "unknown")
-            if candidate in {"ok", "unavailable", "retrying", "unknown"}:
-                state = candidate
-        payload["session_store"] = {"status": state}
-
+    _apply_set_fields(payload, (
+        ("gateway_state", gateway_state, None), ("exit_reason", exit_reason, None),
+        ("restart_requested", restart_requested, bool),
+        ("active_agents", active_agents, parse_active_agents),
+        # Named in-flight units (see GatewayShutdownMixin._describe_active_work); None clears.
+        ("active_work", active_work, lambda v: list(v) if v else None),
+        # Multiplexed profiles; absent/empty for a single-profile gateway.
+        ("served_profiles", served_profiles, lambda v: list(v or [])),
+        ("session_store", session_store, _coerce_session_store),
+    ))
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
         if platform_state == "connected":

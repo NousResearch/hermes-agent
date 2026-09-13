@@ -64,10 +64,162 @@ def _job(kind: str, target: str, model_id: str | None = None) -> Dict[str, Any]:
 
 # ── fast download: ranged parallel streams ───────────────────
 
-# One TCP stream to a CDN rarely fills a fast line; 8 ranged connections
-# writing into a preallocated file saturate consumer gigabit.
-_DOWNLOAD_CONNECTIONS = 8
-_CHUNK = 4 << 20
+
+def _step(job: Dict[str, Any], phase: str, detail: str) -> None:
+    job["phase"] = phase
+    job["detail"] = detail
+
+
+def _finish(job: Dict[str, Any], detail: str) -> None:
+    _step(job, "done", detail)
+    job["status"] = "done"
+
+
+def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail_msg: str | None = None,
+               on_exit: Callable[[], None] | None = None, download_label: str | None = None) -> None:
+    """Run ``body`` on a daemon thread; an exception marks the job errored (warning ``fail_msg`` when
+    given); ``on_exit`` always runs last. ``download_label`` = download job: finishes as "<label> ready"
+    and bounces the router to pick the file up."""
+    def _run():
+        try:
+            body()
+            if download_label is not None:
+                _finish(job, f"{download_label} ready")
+                _refresh_runtime("post-download runtime refresh skipped")
+        except Exception as exc:  # noqa: BLE001
+            if fail_msg:
+                logger.warning(fail_msg, exc)
+            job["status"] = "error"
+            job["error"] = str(exc)
+        finally:
+            if on_exit is not None:
+                on_exit()
+
+    threading.Thread(target=_run, daemon=True, name=name).start()
+
+
+# ── runtime / router plumbing ────────────────────────────────
+def _refresh_runtime(skip_msg: str) -> None:
+    """Bounce a running router so it rescans the models dir (it only scans at spawn).
+    Never raises — the file operation already succeeded."""
+    _quiet(bootstrap.refresh_local_runtime, None, debug=skip_msg)
+
+
+def _router_request(endpoint: Dict[str, Any], path: str, *, timeout: float, payload: dict | None = None) -> Any:
+    """Call the local router (base_url minus ``/v1``) with its bearer key; GET (no payload) -> parsed JSON, POST -> None."""
+    headers = {"Authorization": f"Bearer {endpoint.get('api_key', '')}"}
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode()
+    req = urllib.request.Request(endpoint["base_url"].rsplit("/v1", 1)[0] + path, data=data, headers=headers,
+                                 method="POST" if payload is not None else None)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return None if payload is not None else json.loads(r.read())
+
+
+def _load_config() -> dict:
+    """Read-only config for status/garnish paths that must render degraded, never 500."""
+    return _quiet(config_mod.load_config_readonly, {})
+
+
+def _runtime_section() -> dict:
+    return (_load_config() or {}).get("local_runtime") or {}
+
+
+def _set_runtime_enabled(enabled: bool) -> dict:
+    """Persist ``local_runtime.enabled`` and return the config written."""
+    config = config_mod.load_config()
+    config.setdefault("local_runtime", {})["enabled"] = enabled
+    config_mod.save_config(config)
+    return config
+
+
+def _runtime_target(requested: str | None = None) -> "tuple[str, str]":
+    """(tag, backend) the runtime routes act on: configured tag or release default; ``auto`` -> detected GPU vendor."""
+    section = _runtime_section()
+    tag = section.get("tag") or binaries.default_tag()
+    backend = requested or section.get("backend", "auto")
+    if backend == "auto":
+        backend = binaries.select_backend(bootstrap._detect_gpu_vendor())
+    return tag, backend
+
+
+def _resolve_assets_or_400(tag: str, backend: str):
+    """Resolve first so an impossible combination fails the POST, not the job."""
+    with _http_error(400):
+        return binaries.resolve_assets(tag, backend)
+
+
+def _engine_too_old(min_engine: str) -> bool:
+    """True when the installed llama.cpp predates a model's requirement. Tags are release numbers (b10362);
+    no engine installed compares as too old only when the model states a requirement."""
+    def newest_installed() -> int:
+        tags = binaries.installed_tags() or [binaries.default_tag()]
+        return max(int(t.lstrip("b")) for t in tags if t.lstrip("b").isdigit())
+
+    return bool(min_engine) and _quiet(lambda: newest_installed() < int(min_engine.lstrip("b")), False)
+
+
+def _eligible_entries():
+    """Catalog entries this engine can activate today (engine-gated ones can't be the recommendation either)."""
+    return tuple(e for e in catalog.CATALOG if not _engine_too_old(e.min_engine))
+
+
+def _entry_or_404(model_id: str):
+    entry = catalog.catalog_by_id().get(model_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"unknown model {model_id}")
+    return entry
+
+
+def _start_local_server(config: dict, fail_detail: str):
+    """Force-start the local server; raise ``fail_detail`` when neither we nor another process ended up serving."""
+    sup = bootstrap.ensure_local_runtime(config, force=True)
+    if sup is None and _state_endpoint() is None:
+        raise RuntimeError(fail_detail)
+    return sup
+
+
+def _ensure_server(job: Dict[str, Any], config: dict, model_id: str, *, fail_detail: str, skip_msg: str) -> None:
+    """Start the local server if needed and self-heal a stale router: the model list is spawn-only, so a
+    server started before ``model_id`` finished downloading can't serve it — bounce it when it doesn't know it."""
+    _step(job, "starting-server", "Starting the local server")
+    sup = _start_local_server(config, fail_detail)
+
+    def rescan_if_unknown() -> None:
+        if model_id not in sup.models():
+            job["detail"] = "Refreshing the local server"
+            bootstrap.refresh_local_runtime()
+
+    if sup is not None:
+        _quiet(rescan_if_unknown, None, debug=skip_msg)
+
+
+def _assign_default(job: Dict[str, Any], model_id: str) -> None:
+    """Make ``model_id`` the main model via the same machinery as /api/model/set."""
+    _step(job, "setting-default", "Making it your default")
+    web_deps.late("_apply_model_assignment_sync", "hermes_cli.web_server_config")("main", "llamacpp", model_id, "", "", "")
+
+
+# ── downloads: ranged parallel streams ───────────────────────
+def _hf_url(repo: str, path: str) -> str:
+    return f"https://huggingface.co/{repo}/resolve/main/{path}"
+
+
+def _model_id_for(gguf: Path) -> str:
+    """Variant model id for a staged file (strips split-part suffixes)."""
+    return re.sub(_SPLIT_PART_RE + "$", "", gguf.stem)
+
+
+def _variant_files_on_disk(model_id: str) -> "list[Path]":
+    """Every local file of a staged model: all split parts plus catalog-declared assets (mmproj/draft) when present."""
+    files = [p for p in bootstrap.models_dir().glob("*.gguf") if _model_id_for(p) == model_id]
+    hit = catalog.find_entry_for_model(model_id)
+    assets = (hit[0].mmproj, hit[0].draft) if hit is not None else ()
+    files += [bootstrap.assets_dir() / a.local_name for a in assets
+              if a is not None and (bootstrap.assets_dir() / a.local_name).exists()]
+    return files
 
 
 def _probe_range_support(url: str) -> int:
@@ -477,6 +629,61 @@ def local_models_hardware():
 
 
 # ── catalog: priced for THIS machine before download ─────────
+_QUANT_REASONS = {
+    "best-large-window": ("Recommended build ({quant}) — the quant class this engine is optimized for; "
+                          "runs fully on your GPU with a large context window"),
+    "best-fits": ("Recommended build ({quant}) — the quant class this engine is optimized for; "
+                  "runs fully on your GPU"),
+}
+_QUANT_REASON_COMPACT = "Compact build sized for this machine ({quant}) — larger than GPU memory, runs slower"
+
+
+def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> Dict[str, Any]:
+    choice = catalog.select_variant(entry, budget)
+    # Any variant of this family on disk counts as downloaded.
+    dl = next((v for v in entry.variants if v.model_id in staged_ids), None)
+    row: Dict[str, Any] = {
+        "id": entry.id, "display_name": entry.display_name, "description": entry.description,
+        "native_context": entry.n_ctx_train, "native_context_label": _k_label(entry.n_ctx_train),
+        "recommended": entry.id == recommended,
+        "recommended_reason": recommended_reason if entry.id == recommended else None,
+        "downloaded": dl is not None, "downloaded_model_id": dl.model_id if dl else None,
+        "downloaded_quant": dl.quant if dl else None, "mtp": entry.mtp, "vision": entry.mmproj is not None,
+        # Day-0 architectures need the llama.cpp release where their support landed: True gates
+        # download/activate until the engine updates, but the row still renders (visible + explained beats hidden).
+        "needs_engine": _engine_too_old(entry.min_engine),
+        "min_engine": entry.min_engine or None,
+    }
+    if choice is None:
+        smallest = min(entry.variants, key=lambda v: v.size_bytes)
+        smallest_total = entry.download_bytes(smallest)
+        row.update({
+            "fits": False, "size_bytes": smallest_total, "size_label": _human_gb(smallest_total),
+            "fit_summary": "Needs more memory than this machine has",
+            "fit_detail": (f"even the most compact build ({smallest.quant}, {_human_gb(smallest_total)}) "
+                           "exceeds GPU + system memory"),
+        })
+        return row
+
+    variant = choice.variant
+    decision = entry.launch_plan(variant, budget).decision
+    download_total = entry.download_bytes(variant)
+    row.update({
+        "fits": True, "model_id": variant.model_id, "quant": variant.quant,
+        "quant_validated": variant.validated, "size_bytes": download_total,
+        "size_label": _human_gb(download_total), "variant_count": len(entry.variants),
+        "quant_reason": _QUANT_REASONS.get(choice.reason_key, _QUANT_REASON_COMPACT).format(quant=variant.quant),
+    })
+    if isinstance(decision, estimator.PhysicsRefusal):
+        row["fit_summary"] = row["quant_reason"]
+        return row
+    row.update(start_window=decision.window, start_window_label=_k_label(decision.window), spilled=decision.spilled)
+    if decision.window >= entry.n_ctx_train:
+        shape = f"runs at its full {row['native_context_label']} context"
+    else:
+        shape = f"starts at {row['start_window_label']} and grows toward {row['native_context_label']} as you use it"
+    row["fit_summary"] = shape + (" (larger than your GPU memory — runs slower)" if decision.spilled else "")
+    return row
 
 
 @router.get("/api/local-models/catalog")
@@ -892,86 +1099,38 @@ class ServerActionBody(BaseModel):
 
 
 # ── quickstart: one click from nothing to a working default ──
+def _quickstart_target(body: QuickstartBody, budget):
+    """Resolve an explicit model, or start with the machine's automatic recommendation.
 
-
-class QuickstartBody(BaseModel):
-    model_id: str | None = None   # default: the catalog's recommended entry
-
-
-# One quickstart at a time: the job sequences installs, downloads, a
-# server bounce, and a config write — two racing runs would interleave
-# all four. Held for the job's lifetime, released in the worker.
-_QUICKSTART_LOCK = threading.Lock()
+    With no recommendation, require an explicit choice before starting setup.
+    """
+    if body.model_id:
+        candidates = [_entry_or_404(body.model_id)]
+    else:
+        picked = catalog.recommended_entry(budget, _eligible_entries())
+        if picked is None:
+            raise HTTPException(
+                status_code=409,
+                detail="No automatic recommendation for this machine — open Local Models to browse or choose a model explicitly",
+            )
+        candidates = [picked[0]] + [e for e in catalog.CATALOG if e.id != picked[0].id]
+    for candidate in candidates:
+        choice = catalog.select_variant(candidate, budget)
+        if choice is not None and not _engine_too_old(candidate.min_engine):
+            return candidate, choice.variant
+    raise HTTPException(status_code=409, detail=(
+        "no catalog model fits this machine — open Local Models to browse for a smaller build"))
 
 
 @router.post("/api/local-models/quickstart")
 async def local_models_quickstart(body: QuickstartBody):
-    """The dummy-proof path: one job that installs the runtime (if
-    missing), downloads this machine's build of the recommended model
-    (if missing), and makes it the default for new chats. Each leg is
-    the same code the individual routes run — this route only sequences
-    them, so 'Configure' (the existing pane) and quickstart can never
-    disagree about what gets installed.
-
-    Preflight rejects (no servable entry, engine too old) fail the POST
-    synchronously so the button can explain itself; everything slow runs
-    in the job with the usual phase/byte progress.
-    """
-    from hermes_cli.local_runtime.binaries import (
-        default_tag,
-        installed_tags,
-        resolve_assets,
-        select_backend,
-    )
-    from hermes_cli.local_runtime.bootstrap import (
-        _detect_gpu_vendor,
-        assets_dir,
-        staged_model_ids,
-    )
-    from hermes_cli.local_runtime.catalog import (
-        CATALOG,
-        catalog_by_id,
-        recommended_entry,
-        select_variant,
-    )
-    from hermes_cli.local_runtime.hardware import probe_budget
-
-    # Resolve the target entry: explicit id, else this machine's
-    # recommendation (quality-ranked, fit- and speed-gated), else the
-    # first catalog entry this machine can serve.
-    budget = probe_budget(planning=True)
-    entry = None
-    if body.model_id:
-        entry = catalog_by_id().get(body.model_id)
-        if entry is None:
-            raise HTTPException(status_code=404,
-                                detail=f"unknown model {body.model_id}")
-        candidates = [entry]
-    else:
-        eligible = tuple(e for e in CATALOG if not _engine_too_old(e.min_engine))
-        picked = recommended_entry(budget, eligible)
-        best = picked[0] if picked is not None else None
-        candidates = ([best] if best is not None else []) + [
-            e for e in CATALOG if best is None or e.id != best.id]
-    chosen = None
-    for candidate in candidates:
-        choice = select_variant(candidate, budget)
-        if choice is not None and not _engine_too_old(candidate.min_engine):
-            chosen = (candidate, choice.variant)
-            break
-    if chosen is None:
-        raise HTTPException(
-            status_code=409,
-            detail="no catalog model fits this machine — open Local Models "
-                   "to browse for a smaller build")
-    entry, variant = chosen
-
-    section = _runtime_section()
-    tag = section.get("tag") or default_tag()
-    backend = section.get("backend", "auto")
-    if backend == "auto":
-        backend = select_backend(_detect_gpu_vendor())
-    need_runtime = not installed_tags()
+    """One job: install the runtime (if missing), download this machine's build of the recommended model (if
+    missing), make it the default. Each leg uses the same code as the individual setup routes.
+    Preflight rejects (no automatic recommendation or no servable choice) fail the POST
+    synchronously so the button can explain itself; everything slow runs in the job with phase/byte progress."""
+    entry, variant = _quickstart_target(body, hardware.probe_budget(planning=True))
+    tag, backend = _runtime_target()
+    need_runtime = not binaries.installed_tags()
     if need_runtime:
         # Same preflight as /runtime/install: impossible combos fail the POST.
         try:

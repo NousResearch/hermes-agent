@@ -233,17 +233,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._runner = await bind_listener(
             self, app, self.webhook_host, self.webhook_port, self.webhook_path, access_log=None)
         self._mark_connected()
-        logger.info(
-            "[bluebubbles] webhook listening on http://%s:%s%s",
-            self.webhook_host,
-            self.webhook_port,
-            self.webhook_path,
-        )
-
-        # Register webhook with BlueBubbles server
-        # This is required for the server to know where to send events
-        await self._register_webhook()
-
+        if self._runner is not None:
+            logger.info("[bluebubbles] webhook listening on http://%s:%s%s", self.webhook_host, self.webhook_port,
+                        self.webhook_path)
+        await self._register_webhook()  # the server only sends events to webhooks registered via its API
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
         return True

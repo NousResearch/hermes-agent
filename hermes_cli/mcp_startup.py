@@ -10,8 +10,12 @@ from typing import Dict, Optional, Set
 from hermes_constants import hermes_home_key
 
 _mcp_discovery_lock = threading.Lock()
-_mcp_discovery_started = False
-_mcp_discovery_thread: Optional[threading.Thread] = None
+# Discovery slot per profile home (``hermes_home_key()`` follows the context-local HERMES_HOME
+# override): a shared Desktop/dashboard backend serving several profiles runs one discovery per
+# profile instead of the first profile to build an agent claiming the slot for everybody (#67605).
+# A single-profile process has exactly one key, so behaviour is the old single-slot form.
+_mcp_discovery_started: Set[str] = set()
+_mcp_discovery_thread: Dict[str, threading.Thread] = {}
 _mcp_discovery_deferred: Optional[threading.Timer] = None
 # Process-wide MCP server-name allowlist derived from ``-t/--toolsets``.
 # ``None`` = no filter (spawn every configured server). Set once at CLI
@@ -244,7 +248,7 @@ def wait_for_mcp_discovery(timeout: "float | None" = None, *, single_query: bool
     (15s vs 1.5s) because one-shot sessions have no second turn to recover.
     """
     _start_deferred_mcp_discovery_now()
-    thread = _mcp_discovery_thread
+    thread = _current_home_thread()
     if thread is None or not thread.is_alive():
         return
     thread.join(timeout=_resolve_discovery_timeout(timeout, single_query=single_query))

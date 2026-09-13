@@ -725,61 +725,25 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._send_chunk_retries = int(_extra_or_secret(extra, "send_chunk_retries", "4"))
         self._send_chunk_retry_delay_seconds = float(_extra_or_secret(extra, "send_chunk_retry_delay_seconds", "1.0"))
         self._send_text_gate = asyncio.Lock()
-        self._rate_limit_circuit_threshold = max(
-            1,
-            int(
-                extra.get("rate_limit_circuit_threshold")
-                or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_THRESHOLD", "1")
-            ),
-        )
-        self._rate_limit_circuit_window_seconds = float(
-            extra.get("rate_limit_circuit_window_seconds")
-            or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_WINDOW_SECONDS", "30.0")
-        )
-        self._rate_limit_circuit_open_seconds = float(
-            extra.get("rate_limit_circuit_open_seconds")
-            or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_OPEN_SECONDS", "30.0")
-        )
-        self._rate_limit_circuit_until = 0.0
-        self._rate_limit_events: List[float] = []
-        self._dm_policy = str(extra.get("dm_policy") or _wx_secret("WEIXIN_DM_POLICY", "pairing")).strip().lower()
-        self._group_policy = str(extra.get("group_policy") or _wx_secret("WEIXIN_GROUP_POLICY", "disabled")).strip().lower()
-        allow_from = extra.get("allow_from")
-        if allow_from is None:
-            allow_from = _wx_secret("WEIXIN_ALLOWED_USERS", "")
-        group_allow_from = extra.get("group_allow_from")
-        if group_allow_from is None:
-            group_allow_from = _wx_secret("WEIXIN_GROUP_ALLOWED_USERS", "")
-        self._allow_from = self._coerce_list(allow_from)
-        self._group_allow_from = self._coerce_list(group_allow_from)
-        self._split_multiline_messages = _coerce_bool(
-            extra.get("split_multiline_messages")
-            or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"),
-            default=False,
-        )
-
-        # Text debounce batching (mirrors Telegram adapter pattern).
-        # iLink delivers messages individually, so rapid multi-message
-        # bursts (forwarded batches, paste-splits) each trigger a
-        # separate agent invocation.  Default 3s delay / 5s split delay
-        # are tuned for iLink's typical delivery cadence.  Tunable via
-        # config.yaml under
-        # ``gateway.platforms.weixin.extra.text_batch_delay_seconds`` /
-        # ``text_batch_split_delay_seconds``.
-        self._text_batch_delay_seconds = self._coerce_float_extra(
-            "text_batch_delay_seconds", 3.0
-        )
-        self._text_batch_split_delay_seconds = self._coerce_float_extra(
-            "text_batch_split_delay_seconds", 5.0
-        )
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
-
-        if self._account_id and not self._token:
-            persisted = load_weixin_account(hermes_home, self._account_id)
-            if persisted:
-                self._token = str(persisted.get("token") or "").strip()
-                self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
+        self._rate_limit_circuit_threshold = max(1, int(_extra_or_secret(extra, "rate_limit_circuit_threshold", "1")))
+        self._rate_limit_circuit_window_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_window_seconds", "30.0"))
+        self._rate_limit_circuit_open_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_open_seconds", "30.0"))
+        self._rate_limit_circuit_until, self._rate_limit_events = 0.0, []  # type: float, List[float]
+        self._dm_policy = _extra_or_secret(extra, "dm_policy", "pairing").lower()
+        self._group_policy = _extra_or_secret(extra, "group_policy", "disabled").lower()
+        # ``extra`` wins even when falsy (an explicit empty list disables the env allowlist).
+        allow_from, group_allow_from = extra.get("allow_from"), extra.get("group_allow_from")
+        self._allow_from = self._coerce_list(_wx_secret("WEIXIN_ALLOWED_USERS", "") if allow_from is None else allow_from)
+        self._group_allow_from = self._coerce_list(_wx_secret("WEIXIN_GROUP_ALLOWED_USERS", "") if group_allow_from is None else group_allow_from)
+        self._split_multiline_messages = _coerce_bool(extra.get("split_multiline_messages") or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"), default=False)
+        # Text debounce batching (Telegram pattern): iLink delivers messages individually, so rapid bursts would each
+        # trigger a separate agent run. 3s / 5s (after a ~2048-char split chunk) suit iLink's cadence.
+        self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 3.0)
+        self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 5.0)
+        persisted = load_weixin_account(hermes_home, self._account_id) if self._account_id and not self._token else None
+        if persisted:
+            self._token = str(persisted.get("token") or "").strip()
+            self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
 
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Float from ``config.extra``; fed to ``asyncio.sleep()``, so NaN/Inf/negative/unparseable → default."""
@@ -974,44 +938,6 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
-
-    def _open_dm_opted_in(self) -> bool:
-        # Scoped reads (#93522): the default profile's allow-all flag must
-        # not leak into a multiplexed secondary profile's admission gate.
-        if (_wx_secret("GATEWAY_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}:
-            return True
-        return (_wx_secret("WEIXIN_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}
-
-    def _is_dm_allowed(self, sender_id: str) -> bool:
-        if self._dm_policy == "disabled":
-            return False
-        if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
-        if self._dm_policy == "open":
-            return self._open_dm_opted_in()
-        return False
-
-    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
-        if self._dm_policy == "disabled":
-            return False
-        if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
-        if self._dm_policy == "pairing":
-            return True
-        if self._dm_policy == "open":
-            return self._open_dm_opted_in()
-        return False
-
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """Weixin gates DM/group access at intake via dm_policy/group_policy."""
-        return True
-
-    # ------------------------------------------------------------------
-    # Text debounce batching
-    # ------------------------------------------------------------------
-
-    _SPLIT_THRESHOLD = 1800  # iLink chunks at ~2048 chars
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         from gateway.session import build_session_key

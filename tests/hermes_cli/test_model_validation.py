@@ -531,35 +531,6 @@ class TestValidateCodex900kVariants:
         assert result["accepted"] is True
 
 
-class TestValidateCodex900kVariants:
-    """`-900k` is a Hermes picker convention: valid variants come from the
-    catalog; ineligible aliases are hard-rejected BEFORE the hidden-slug
-    soft-accept (#92797 review)."""
-
-    _CATALOG = ["gpt-5.6-sol", "gpt-5.6-sol-900k", "gpt-5.5", "gpt-5.4-mini"]
-
-    def test_catalog_listed_variant_accepted(self):
-        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
-            result = validate_requested_model("gpt-5.6-sol-900k", "openai-codex")
-        assert result["accepted"] is True
-        assert result["recognized"] is True
-
-    @pytest.mark.parametrize("alias", ["gpt-5.5-900k", "gpt-5.4-mini-900k", "gpt-5.6-sol-pro-900k"])
-    def test_ineligible_900k_alias_rejected_not_soft_accepted(self, alias):
-        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
-            result = validate_requested_model(alias, "openai-codex")
-        assert result["accepted"] is False
-        assert result["persist"] is False
-        assert "272K" in result["message"]
-
-    def test_valid_variant_missing_from_catalog_still_accepted(self):
-        """A verified variant not yet in the (possibly stale) catalog is
-        accepted via the eligibility predicate, not the soft-accept."""
-        with patch("hermes_cli.models.provider_model_ids", return_value=["gpt-5.6-sol"]):
-            result = validate_requested_model("gpt-5.6-sol-900k", "openai-codex")
-        assert result["accepted"] is True
-
-
 # -- probe_api_models — Cloudflare UA mitigation --------------------------------
 
 class TestProbeApiModelsUserAgent:
@@ -829,3 +800,30 @@ class TestValidateRequestedModelNousPortalRecommendations:
             result = validate_requested_model("inclusionai/ling-2.6-flash", "nous")
         mock_portal.assert_not_called()
         assert result["accepted"] is True
+
+
+# -- validate — custom endpoint fallback when /models is unreachable (#12220) --
+
+class TestValidateCustomUnreachableFallback:
+    """A custom proxy without GET /models must not brick `/model` switches (#12220)."""
+
+    def _validate(self, model, provider, models, **kw):
+        probe = {"models": models, "probed_url": "http://localhost:8000/v1/models",
+                 "resolved_base_url": "http://localhost:8000/v1", "suggested_base_url": None, "used_fallback": False}
+        with patch("hermes_cli.models.probe_api_models", return_value=probe):
+            return validate_requested_model(model, provider, api_key="k", base_url="http://localhost:8000/v1", **kw)
+
+    @pytest.mark.parametrize("provider", ["custom", "custom:myproxy"])
+    @pytest.mark.parametrize("api_mode", ["chat_completions", "anthropic_messages"])
+    def test_unreachable_catalog_persists_unverified_for_chat_modes(self, provider, api_mode):
+        result = self._validate("my-proxy-model", provider, models=None, api_mode=api_mode)
+        assert (result["accepted"], result["persist"], result["recognized"]) == (True, True, False)
+        assert "accepted without verification" in result["message"]
+
+    @pytest.mark.parametrize("api_mode", [None, "codex_responses"])
+    def test_unreachable_catalog_still_rejects_other_api_modes(self, api_mode):
+        result = self._validate("my-proxy-model", "custom", models=None, api_mode=api_mode)
+        assert result["accepted"] is False
+        assert "was not saved" in result["message"]
+        # A reachable catalog keeps authoritative validation regardless of mode.
+        assert self._validate("my-model", "custom", models=["my-model"], api_mode="chat_completions")["recognized"] is True

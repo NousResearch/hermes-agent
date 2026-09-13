@@ -103,36 +103,6 @@ def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
     bridge call stays a sequential barrier and fails at dispatch as before.
     """
     try:
-        from tools.tool_search import TOOL_CALL_NAME, resolve_underlying_call
-        if tool_name != TOOL_CALL_NAME:
-            return tool_name, function_args
-        underlying, underlying_args, err = resolve_underlying_call(function_args)
-        if err is not None or not underlying:
-            return tool_name, function_args
-        return underlying, underlying_args
-    except Exception:
-        return tool_name, function_args
-
-
-def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = None) -> List[tuple]:
-    """Split a tool-call batch into ordered ``(kind, calls)`` segments.
-
-
-def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
-    """Resolve a ``tool_call`` bridge invocation to its underlying tool.
-
-    The batch planner admits calls to a parallel run by tool NAME, but when
-    tool search is active the model emits the literal name ``tool_call`` for
-    every deferred tool — so a server opted in via
-    ``supports_parallel_tool_calls: true`` silently lost concurrency the
-    moment the bridge activated. Peel the wrapper here so admission is
-    decided on the underlying tool, exactly like the executors' unwrap.
-
-    Returns ``(underlying_name, underlying_args)`` when the wrapper parses
-    cleanly, else ``(tool_name, function_args)`` unchanged — an unparseable
-    bridge call stays a sequential barrier and fails at dispatch as before.
-    """
-    try:
         from tools.tool_search import (
             CONNECTOR_BATCH_SENTINEL,
             TOOL_CALL_NAME,

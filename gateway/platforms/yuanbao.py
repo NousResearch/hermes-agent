@@ -698,40 +698,15 @@ class ChatRoutingMiddleware(InboundMiddleware):
         await next_fn()
 
 
-def _yb_secret(name: str, default: Optional[str] = None) -> Optional[str]:
-    """Resolve a per-profile ``YUANBAO_*`` / gateway setting honoring the
-    active secret scope (#93522).
-
-    Under ``gateway.multiplex_profiles`` every secondary profile is
-    constructed inside ``_profile_runtime_scope`` (``gateway/run.py``) and
-    its ``.env`` lives in that scope — raw ``os.getenv`` misses it and
-    leaks the default profile's values instead. The primary/active profile
-    is constructed without a scope and legitimately owns ``os.environ``,
-    so fall back to it there (same canonical shape as QQ's
-    ``_resolve_qq_secret``).
-    """
-    from agent.secret_scope import UnscopedSecretError, get_secret
-
-    try:
-        val = get_secret(name, default)
-    except UnscopedSecretError:
-        val = os.getenv(name)
-    return val if val is not None else default
-
-
-class AccessPolicy:
-    """Platform-level DM / Group access control policy.
+class AccessPolicy(OwnAccessPolicyMixin):
+    """DM / group access rules shared by inbound middleware and outbound ``send_dm``."""
+    ALLOW_ALL_ENV_PREFIX = "YUANBAO"
 
     def __init__(self, dm_policy: str, dm_allow_from: list[str], group_policy: str, group_allow_from: list[str]) -> None:
         self._dm_policy = dm_policy
         self._allow_from = dm_allow_from
         self._group_policy = group_policy
         self._group_allow_from = group_allow_from
-
-    def _open_dm_opted_in(self) -> bool:
-        if (_yb_secret("GATEWAY_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}:
-            return True
-        return (_yb_secret("YUANBAO_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}
 
     def is_dm_allowed(self, sender_id: str) -> bool:
         """Strict DM authorization — pairing does not imply access."""
@@ -793,15 +768,16 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     @staticmethod
     def _persist_home(adapter, ctx: InboundContext) -> None:
         try:
-            from gateway.config import HomeChannel, persist_home_channel
-            home = HomeChannel(platform=Platform.YUANBAO, chat_id=str(ctx.chat_id), name=str(ctx.chat_name or "Home"))
-            # ``platforms.yuanbao.home_channel`` in the owning profile's config.yaml is the durable record
-            # ``load_gateway_config`` reads back; the live PlatformConfig is updated so cron/home-channel
-            # delivery in THIS process has a target without a restart.
-            persist_home_channel(home)
-            adapter.config.home_channel = home
-            # Under a multiplexed secondary's scope the process env is the DEFAULT profile's; writing there
-            # would make this tenant's chat the default profile's cron/notification home.
+            from hermes_constants import get_hermes_home
+            from hermes_cli.config import atomic_config_write, read_user_config_raw
+            config_path = get_hermes_home() / "config.yaml"
+            # Raw read: merged defaults must not be persisted to the user's file.
+            user_config: dict = read_user_config_raw(config_path)
+            user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
+            atomic_config_write(config_path, user_config)
+            # The profile's config.yaml (scoped home above) is the durable record. Under a multiplexed
+            # secondary's scope the process env is the DEFAULT profile's; writing there would make this
+            # tenant's chat the default profile's cron/notification home.
             if not _profile_scoped():
                 os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
             logger.info("[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel", adapter.name, ctx.chat_id, ctx.chat_name)

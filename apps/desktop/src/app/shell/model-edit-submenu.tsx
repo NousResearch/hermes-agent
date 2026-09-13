@@ -103,7 +103,9 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
   )
 }
 
-function ModelEditSubmenuBody({
+/** The options rows themselves, container-free: the catalog mounts them in a
+ *  per-row submenu, the composer's reasoning pill in its own top-level menu. */
+export function ModelOptionsContent({
   canDisableReasoning,
   defaultEffort,
   effort,

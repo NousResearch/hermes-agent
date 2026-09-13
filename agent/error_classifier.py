@@ -115,11 +115,6 @@ _BILLING_ERROR_CODES = frozenset({
     "insufficient_quota", "billing_not_active", "payment_required", "insufficient_credits",
     "no_usable_credits", "balance_depleted", "model_not_supported_on_free_tier",
     "member_spend_cap_exceeded", "terminal_quota_exhausted", _XAI_SPENDING_LIMIT_ERROR_CODE,
-    # OpenAI (and OpenAI-compatible aggregators) spend/usage-limit family:
-    # a credit balance or an org/project spend or usage cap is exhausted —
-    # terminal for this credential until limits are raised.
-    "credit_balance_exhausted", "organization_spend_limit_exceeded",
-    "organization_usage_limit_exceeded", "project_spend_limit_exceeded",
 })
 
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
@@ -182,32 +177,18 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
     "request exceeds the maximum size",
 )
 
-# Image-size patterns.  Matched against 400 bodies (not 413) because most
-# providers return a 400 with a specific image-too-big message before the
-# whole request hits the 413 size limit.  Anthropic's wording is the most
-# important here (hard 5 MB per image, returned as
-# "messages.N.content.K.image.source.base64: image exceeds 5 MB maximum").
-_IMAGE_TOO_LARGE_PATTERNS = [
-    "image exceeds",        # Anthropic: "image exceeds 5 MB maximum"
-    "image too large",      # generic
-    "image_too_large",      # error_code variant
-    "image size exceeds",   # variant
-    "image dimensions exceed",  # Anthropic: "image dimensions exceed max allowed size: 8000 pixels"
-    "dimensions exceed max allowed size",  # Anthropic dimension-cap (wording variant)
-    "max allowed size: 8000",  # Anthropic dimension-cap (explicit pixel ceiling)
-    # Vendors that reject the same oversized image without using the word
-    # "image".  MiniMax's Anthropic-compatible endpoint returns
-    # "media exceeds size limit: max 10485760 bytes (2013)" for a native
-    # image part above its 10 MB ceiling (#76039).  Matched on the "media"
-    # fragment to mirror "image exceeds" above and catch reworded variants.
-    # A non-image media rejection (audio/video) that lands here is safe: the
-    # shrink pass finds no image parts, returns False, and the caller
-    # surfaces the original error unchanged.
-    "media exceeds",
-    "media too large",
-    # "request_too_large" on a request known to contain an image → image is
-    # the likely culprit; we still try the shrink path before giving up.
-]
+# Per-image size/dimension 400s (Anthropic 5 MB / 8000 px; MiniMax "media
+# exceeds size limit" #76039) — a specific 400 before the request hits 413. A
+# non-image media hit is harmless: the shrink pass finds no image parts.
+# "patches after processing": OpenAI Codex Responses rejects an image whose
+# tile-patch budget (ceil(w/32)×ceil(h/32)) exceeds its 30000-patch ceiling
+# with wording that names no image-size vocabulary — without this pattern it
+# fell to format_error (non-retryable), bypassing the shrink recovery (#106337).
+_IMAGE_TOO_LARGE_PATTERNS = (
+    "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
+    "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
+    "patches after processing",
+)
 
 # Image-corruption patterns — distinct from _IMAGE_TOO_LARGE_PATTERNS above.
 # These fire when the provider can decode the request but not the image
@@ -276,7 +257,6 @@ _MULTIMODAL_TOOL_CONTENT_PATTERNS = (
     "tool message must be a string", "expected string, got list", "expected string, got array",
     # Console Go / pydantic-v2 relays behind opencode-go (422, param ``messages.N.tool.content.str``, #104731).
     "tool_call.content must be string", "tool.content.str", "input should be a valid string",
-    "chatcompletionrequesttoolmessagecontent",
 )
 
 # Local-inference memory/resource-ceiling rejections (oMLX/MLX memory guard,
@@ -879,12 +859,6 @@ def _classify_400(c: _Ctx) -> Verdict:
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (
         "encrypted content for item" in msg and "could not be verified" in msg
     ) or "could not decrypt the provided encrypted_content" in msg or (
-        # Custom Responses endpoints wrap a replay rejection in a generic bad_request (#95834).
-        "encrypted content could not be decrypted or parsed" in msg
-    ) or (
-        # OpenCode Zen wraps this OpenAI replay rejection in ``invalid_request_error`` (#111309).
-        "encrypted_content" in msg and "was not issued to this caller" in msg
-    ) or (
         # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
         "conflicting authenticated continuation identities" in msg
     ):

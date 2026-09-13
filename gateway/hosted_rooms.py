@@ -464,9 +464,40 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
     return index is not None
 
 
-def _connect(db_path: Path | str) -> sqlite3.Connection:
-    from hermes_state import apply_wal_with_fallback
+def default_db_path() -> Path:
+    """Return the hosted-room coordination database for the active install.
 
+    Profile gateways (``~/.hermes/profiles/<name>/``) resolve to the shared
+    ROOT ``shared-state.db`` instead of the master ``state.db``: hosted-room
+    coordination is the only thing this module owns, and pointing profile
+    gateways at the master session store makes every profile process a
+    long-lived writer on state.db — the recurring multi-writer corruption
+    vector observed across a 6-gateway fleet (state.db WAL/FTS collisions
+    during bot-gateway restart storms, 2026-09-03). Keeping the hosted_room*
+    tables in a dedicated file means profile gateways never open the master
+    session store writable.
+    """
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    return (home.parent.parent if home.parent.name == "profiles" else home) / "shared-state.db"
+
+
+def local_authority_gateway_id() -> str:
+    """Return the stable server-owned identity for hosted-room authority."""
+    from hermes_cli.install_identity import get_install_id
+    install_id = get_install_id()
+    if not install_id:
+        raise HostedRoomError("stable gateway install identity is unavailable")
+    return _actor_id(f"install:{install_id}", "authority_gateway_id")
+
+
+_connect = partial(
+    connect, db_label="shared-state.db (hosted_rooms)", ready=_schema_is_current,
+    initialize=lambda conn: _initialize_schema(conn), lock_retries=_JOURNAL_MODE_LOCK_RETRIES)
+
+
+def _read_connection(db_path: DbPath) -> sqlite3.Connection:
+    """Open the room store without steady-state journal or migration writes."""
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)

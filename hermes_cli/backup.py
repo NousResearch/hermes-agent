@@ -22,6 +22,7 @@ from hermes_constants import (
     get_hermes_home,
     display_hermes_home,
 )
+from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
     default_new_file_mode,
@@ -105,17 +106,23 @@ _EXCLUDED_ROOT_DIRS = {
     "node",
 }
 
+# ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
+# profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
+# the gateway delivered to or received from the user (``gateway.platforms.base``'s media-delivery
+# subdirs) and the grounded-citations evidence ledger. Only these subdirs are archived.
+_KEPT_CACHE_SUBDIRS = {"images", "audio", "videos", "documents", "screenshots", "citations"}
+
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
-    """True when *rel_path* (relative to HERMES_HOME) is, or sits inside, a
-    Hermes-managed runtime tree at the top of a profile home."""
+    """True when *rel_path* is inside a regenerable tree at a profile-home root."""
     parts = rel_path.parts
+    if len(parts) >= 3 and parts[0] == "profiles":
+        parts = parts[2:]
     if not parts:
         return False
     if parts[0] in _EXCLUDED_ROOT_DIRS:
         return True
-    # Named profiles are profile homes too: profiles/<name>/models etc.
-    return len(parts) >= 3 and parts[0] == "profiles" and parts[2] in _EXCLUDED_ROOT_DIRS
+    return parts[0] == "cache" and len(parts) >= 2 and parts[1] not in _KEPT_CACHE_SUBDIRS
 
 
 # File-name suffixes to skip
@@ -135,14 +142,16 @@ _EXCLUDED_SUFFIXES = (
 # File names to skip (runtime state that's meaningless on another machine)
 _EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
 
-# File-name prefixes to skip. The desktop updater's pre-flight drops
-# ``state.db.pre-update-emergency-<timestamp>.bak`` at the HERMES_HOME root
-# (apps/desktop/electron/main.ts preflightStateDb) — a backup artifact in
-# the same class as ``backups/`` and ``state-snapshots/``, so a full backup
-# must not re-ship it. Matched by prefix because the name carries a
-# timestamp; a plain ``.bak`` suffix rule would drop user files.
+# The desktop updater's pre-flight drops ``state.db.pre-update-emergency-<ts>.bak`` at the root
+# — a backup artifact like ``backups/``. Prefix-matched because the name carries a timestamp;
+# a plain ``.bak`` suffix rule would drop user files.
+# Retired-WAL capture dirs (``<name>.retired-wal-<ts>-<pid>/``) are excluded whole: a
+# ``sqlite3.backup()`` snapshot of the live db paired with the captured ``-wal`` is exactly the
+# torn-restore hazard the sidecar exclusion below exists to prevent, and the capture is an
+# operator-recovery artifact that must move as a unit (manifest + image + WAL), never partially.
 _EXCLUDED_PREFIXES = (
     "state.db.pre-update-emergency-",
+    f"state.db{RETIRED_GENERATION_DIR_SUFFIX}",
 )
 
 # File names that ``hermes import`` must never overwrite, matched by basename so

@@ -166,13 +166,6 @@ jobs:
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
 
-      # Star counts drive the catalog ranking. Same rule as the skills index: GitHub is only
-      # probed by the scheduled skills-index run; deploys reuse its artifact (downloaded above
-      # into website/static/api/ when SKILLS_INDEX_RUN_ID is set) or the live site's copy.
-      # Never calls the GitHub API.
-      - name: Reuse plugin GitHub stars (no API calls)
-        run: python3 website/scripts/fetch-plugin-stars.py
-
       - name: Extract plugin catalog for the Plugins page
         run: python3 website/scripts/extract-plugins.py
 

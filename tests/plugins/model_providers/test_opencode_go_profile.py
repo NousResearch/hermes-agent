@@ -267,7 +267,6 @@ class TestOpenCodeGoFullKwargsIntegration:
         )
         assert "extra_body" not in kwargs
         assert kwargs["reasoning_effort"] == "high"
-
     def test_deepseek_thinking_reaches_extra_body_and_top_level(
         self, opencode_go_profile
     ):

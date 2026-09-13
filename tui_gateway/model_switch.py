@@ -287,8 +287,6 @@ def _apply_model_switch(
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)
-    if reasoning_effort:
-        _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
     return {
         "value": result.new_model, "warning": result.warning_message or "",
         "confirm_required": False,

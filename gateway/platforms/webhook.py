@@ -244,16 +244,10 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Could not bind %s:%d: %s. Set a different host or port in config.yaml under "
                          "platforms.webhook.extra.", self._host or "all IPv4+IPv6 interfaces", self._port, exc)
             return False
-        self._mark_connected()
-
-        route_names = ", ".join(self._routes.keys()) or "(none configured)"
-        logger.info(
-            "[webhook] Listening on %s:%d — routes: %s",
-            self._host or "* (all interfaces, IPv4+IPv6)",
-            self._port,
-            route_names,
-        )
-        # Plugin-registered native handlers (ctx.register_platform_handler).
+        from gateway.platforms.shared_ingress import listener_base_url
+        self._mark_connected(listener_base=listener_base_url(self._host, self._port))
+        logger.info("[webhook] Listening on %s:%d — routes: %s", self._host or "* (all interfaces, IPv4+IPv6)",
+                    self._port, ", ".join(self._routes.keys()) or "(none configured)")
         self._wire_plugin_handlers(None)
         return True
 
@@ -408,16 +402,10 @@ class WebhookAdapter(BasePlatformAdapter):
         return await dispatch_profile_ingress(
             self.gateway_runner, profile, request.match_info.get("tail", ""), request)
 
-        Returns:
-          - ``None`` when no profile prefix is present, or when multiplexing
-            is off and the prefix names this gateway's own profile (the
-            request is handled as the serving profile).
-          - the profile name (str) when present, multiplexing is on, and the
-            profile is one this gateway serves.
-          - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
-            unknown/unconfigured, or names a profile this single-profile
-            gateway does not serve (handler returns 404).
-        """
+    def _resolve_request_profile(self, request: "web.Request"):
+        """Resolve + validate the /p/<profile>/ URL prefix: None (no prefix, or multiplexing off and the
+        prefix names this gateway's own profile), the profile name (served under multiplexing), or
+        ``_PROFILE_REJECTED`` (unknown / not served → 404)."""
         profile = (request.match_info.get("profile") or "").strip()
         if not profile:
             return None
@@ -735,12 +723,6 @@ class WebhookAdapter(BasePlatformAdapter):
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
                                                    profile)
-        coalesce = route_config.get("coalesce")
-        if isinstance(coalesce, dict) and self._coalescer.enqueue(
-                route_name=route_name, coalesce=coalesce, payload=payload, event_type=event_type, prompt=prompt,
-                delivery_id=delivery_id, now=now, route_config=route_config, profile=profile):
-            return web.json_response({"status": "coalesced", "route": route_name, "event": event_type,
-                                      "delivery_id": delivery_id}, status=202)
         return self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
                                         delivery_id, now)
 
@@ -928,21 +910,9 @@ class WebhookAdapter(BasePlatformAdapter):
             # subprocess runs; the worker thread is bounded by the
             # subprocess timeout below.
             result = await asyncio.to_thread(
-                subprocess.run,
-                [
-                    "gh",
-                    "pr",
-                    "comment",
-                    str(pr_int),
-                    "--repo",
-                    repo,
-                    "--body",
-                    content,
-                ],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=30,
-            )
+                subprocess.run, ["gh", "pr", "comment", str(pr_int), "--repo", repo, "--body", content],
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
+                env=self._github_env(delivery.get("profile")))
             if result.returncode == 0:
                 logger.info("[webhook] Posted comment on %s#%s", repo, pr_number)
                 return SendResult(success=True)

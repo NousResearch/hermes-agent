@@ -163,7 +163,6 @@ class LlamaServerSupervisor:
             "--host", "127.0.0.1",
             "--port", str(self.port),
             "--api-key", self.api_key,
-            "--models-dir", str(self.models_dir),
             "--models-max", str(self.models_max),
             # The residency contract at the layer that sees every message:
             # a chat request to a staged-but-unloaded model loads it (slow
@@ -182,9 +181,9 @@ class LlamaServerSupervisor:
         ]
         if self.preset_path and self.preset_path.exists():
             cmd += ["--models-preset", str(self.preset_path)]
-        cmd += [
-            *self.extra_args,
-        ]
+        else:
+            cmd += ["--models-dir", str(self.models_dir)]
+        cmd += self.extra_args
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         if self._log_handle is not None:
             # The crash-restart loop calls _spawn repeatedly; without

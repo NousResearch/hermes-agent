@@ -1,7 +1,7 @@
 """Nous free-tier identity: the ``anonymous`` auth method of the ``nous`` provider.
 
 The identity is created in exactly one place, at boot (``hermes_cli.free_tier_bootstrap``), and only
-while ``HERMES_GUEST_ONBOARDING=1`` (see ``guest_enabled``). The bootstrap mints an anonymous Nous
+while the profile opts into ``nous.guest`` (see ``guest_enabled``). The bootstrap mints an anonymous Nous
 account (``POST /api/anonymous/create``); its ``anon_`` credential is later exchanged for short-lived
 JWTs (``POST /api/anonymous/token``). The result is persisted as the singleton ``providers.nous``; it
 becomes ``active_provider`` only when the bootstrap's inventory found nothing else usable, so an
@@ -45,10 +45,8 @@ ANON_SECRET_HEADER = "x-anonymous-api-secret"
 # The shared secret gates the anonymous surface during its integration phase. It is a deployment
 # secret (Sid's), read from the environment only.
 ANON_SECRET_ENV = "HERMES_ANON_API_SECRET"
-# Launch gate for the whole free tier while it is pre-GA: exactly "1" turns it on for this process
-# (CLI, gateway, serve backend alike); anything else leaves every surface behaving as if the free
-# tier did not exist. ``guest_enabled`` is the only reader. Not a user preference: never written to
-# config.yaml or .env, never shown in setup. Deleted at GA together with this comment.
+# Compatibility hint for older launchers only when nous.guest is unset. An explicit
+# profile choice is authoritative across CLI, gateway and Desktop launch topologies.
 GUEST_ONBOARDING_ENV = "HERMES_GUEST_ONBOARDING"
 GUEST_MINT_TIMEOUT_SECONDS = 5.0
 # Copy shared by every surface that names the free tier (R-USR-1): never guest / anonymous / account.
@@ -71,19 +69,24 @@ def _anon_err(message: str, code: str) -> AuthError:
 
 
 def guest_enabled() -> bool:
-    """The free tier is on for this process: the launch gate is set AND ``nous.guest`` (default
-    True) has not switched it off. The only place either is read."""
-    if (os.environ.get(GUEST_ONBOARDING_ENV) or "").strip() != "1":
-        return False
+    """Read the profile's explicit opt-in; retain the legacy hint only for unset profiles.
+
+    The nullable default preserves older launchers without opting new profiles in.
+    No setting and no legacy hint stays off. Invalid explicit values fail closed,
+    so a string such as ``"false"`` cannot unexpectedly provision an identity.
+    """
     try:
         from hermes_cli.config import load_config_readonly
         nous_cfg = load_config_readonly().get("nous")
     except Exception as exc:  # config unreadable: keep today's behaviour (no guest) rather than mint
         logger.debug("guest: config unreadable, treating nous.guest as false: %s", exc)
         return False
-    if not isinstance(nous_cfg, dict):
-        return True
-    return bool(nous_cfg.get("guest", True))
+    if nous_cfg is not None and not isinstance(nous_cfg, dict):
+        return False
+    choice = nous_cfg.get("guest") if isinstance(nous_cfg, dict) else None
+    if choice is not None:
+        return choice is True
+    return (os.environ.get(GUEST_ONBOARDING_ENV) or "").strip() == "1"
 
 
 def is_guest_state(state: Any) -> bool:

@@ -5163,23 +5163,58 @@ class _StreamingCall(StreamingWaitMonitor):
             return
         self._stream_stale_timeout = _cloud_stale_timeout(base, self.api_kwargs)
 
-    # Delegated children and gateway cron turns run the streaming request
-    # INLINE on the conversation thread: spawning the interrupt worker inside
-    # their nested thread pools wedges before the socket opens (#62151,
-    # #60203). They used to be routed to the non-streaming wire for that
-    # reason — but streaming is also the transport keepalive and the
-    # liveness signal: a non-streaming POST that stays silent through a
-    # reasoning model's thinking phase is killed by edge proxies (z.ai 524,
-    # #90202) and by our own stale watchdog, which cannot tell thinking from
-    # a hang when no bytes ever arrive (#100260). Inline mode keeps the
-    # stream (per-token liveness) and moves ONLY the lightweight poll loop
-    # below — heartbeat, stale detector, interrupt abort — onto a monitor
-    # thread. The monitor never issues a request, so the no-worker property
-    # that fixes the deadlock class is preserved (same shape as the
-    # direct_api_call watchdog timer).
-    _inline = should_use_direct_api_call(agent)
-    _call_done = threading.Event()
-    _monitor_interrupted = {"yes": False}
+    def _partial_stream_stub(self):
+        """Tokens already reached the platform: a finish_reason="length" stub fires the
+        continuation machinery; tool_calls=None blocks executing incomplete calls.
+        Content may be EMPTY on purpose — the loop skips appending an empty stub and
+        only sends the nudge (placeholder text leaked into the stitched response)."""
+        error = self.result["error"]
+        _partial_text = (getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip() or None
+        _partial_names = list(self.result.get("partial_tool_names") or [])
+        if _partial_names:
+            # User-visible warning so the user and model both know what was attempted.
+            _name_str = ", ".join(_partial_names[:3])
+            if len(_partial_names) > 3:
+                _name_str += f", +{len(_partial_names) - 3} more"
+            _warn = (f"\n\n⚠ Stream stalled mid tool-call ({_name_str}); the action was not executed. "
+                     f"Ask me to retry if you want to continue.")
+            _partial_text = (_partial_text or "") + _warn
+            self._quiet(self.agent._fire_stream_delta, _warn)  # visible immediately
+            logger.warning(
+                "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user: %s",
+                _partial_names, len(_partial_text or ""), error)
+        # Classify the error before it is swallowed into the stub: the loop reads the
+        # content-filter tag and falls back; a context overflow must not be continued at all.
+        _cls = None
+        with contextlib.suppress(Exception):
+            from agent.error_classifier import classify_api_error
+            _cls = classify_api_error(
+                error, provider=str(getattr(self.agent, "provider", "") or ""), model=str(getattr(self.agent, "model", "") or ""))
+        _reset_stale_streak(self.agent)  # deltas fired => provider responsive: clear the breaker
+        # #106260: continuing after a context-overflow error re-sends a larger request into the
+        # same overflow. Return an EMPTY stub marked terminal so the loop ends the turn instead.
+        # Scope is context_overflow ONLY: payload_too_large (413) has its own byte-scored recovery
+        # owner (turn_overflow._recover_payload_too_large, #88960/#47339) that must not be bypassed.
+        if _cls is not None and _cls.reason == FailoverReason.context_overflow:
+            logger.warning(
+                "Partial stream ended on a context-overflow error after %s chars; "
+                "NOT seeding a continuation stub (transcript is already over budget): %s",
+                len(_partial_text or ""), error,
+            )
+            return _build_partial_stream_stub(
+                "assistant", None, None, getattr(self.agent, "model", "unknown"), None,
+                dropped_tool_names=_partial_names, overflow_terminal=True,
+            )
+        if not _partial_names:
+            logger.warning(
+                "Partial stream delivered before error; returning length-truncated stub with %s chars of "
+                "recovered content so the loop can continue from where the stream died: %s",
+                len(_partial_text or ""), error)
+        _stub = _build_partial_stream_stub("assistant", _partial_text, None,
+            getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names)
+        if _cls is not None and _cls.reason == FailoverReason.content_policy_blocked:
+            _stub._content_filter_terminated = True
+        return _stub
 
     def _run_call():
         try:

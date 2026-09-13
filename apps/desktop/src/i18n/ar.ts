@@ -413,8 +413,10 @@ export const ar = defineLocale({
         toggleFailed: 'تعذر تحديث مدير كلمات المرور',
         notInstalled: name => `غير مكتشف. ثبّت أداة سطر الأوامر ${name} وسجّل الدخول إليها؛ سيكتشفها Hermes تلقائيًا.`,
         disabledDesc: 'مكتشف لكنه معطّل لـ Hermes.',
-        lockedDesc: 'مكتشف. سيطلب منك الوكيل فتحه عند الحاجة إلى بيانات دخول، أو افتحه الآن.',
-        unlockedDesc: 'مفتوح لهذه الجلسة. يُقفل تلقائيًا بعد 30 دقيقة من الخمول أو عند إغلاق Hermes.',
+        lockedDesc:
+          'مقفل لاتصال الإعدادات هذا. افتحه هنا لعرض بيانات الدخول المحفوظة؛ تطلب كل محادثة فتح القفل بشكل مستقل.',
+        unlockedDesc:
+          'مفتوح لاتصال الإعدادات هذا فقط. يُقفل بعد 30 دقيقة من الخمول أو عند انقطاع هذا الاتصال. يُفتح القفل لكل محادثة بشكل مستقل.',
         statusLocked: 'مقفل',
         statusNotDetected: 'غير مكتشف',
         statusOff: 'متوقف',
@@ -422,10 +424,10 @@ export const ar = defineLocale({
         unlock: 'فتح القفل',
         unlocking: 'جارٍ فتح القفل…',
         lock: 'قفل',
-        unlocked: name => `تم فتح قفل ${name} لهذه الجلسة.`,
+        unlocked: name => `تم فتح قفل ${name} لاتصال الإعدادات هذا فقط.`,
         unlockTitle: name => `فتح قفل ${name}`,
         unlockDescription:
-          'أدخل كلمة المرور الرئيسية. تُسلَّم إلى مدير كلمات المرور على هذا الجهاز ثم تُهمل — لا تُخزَّن ولا تُسجَّل ولا تُعرض على الوكيل أبدًا.',
+          'يسري فتح القفل على اتصال الإعدادات هذا فقط. تطلب كل محادثة فتحه بشكل مستقل. تُسلَّم كلمة المرور الرئيسية إلى مدير كلمات المرور ثم تُهمل محليًا؛ لا تُخزَّن ولا تُسجَّل ولا تُعرض على الوكيل أبدًا.',
         masterPasswordPlaceholder: 'كلمة المرور الرئيسية'
       }
     },
@@ -549,10 +551,11 @@ export const ar = defineLocale({
       reactionsDesc: 'تفاعلات إيموجي بأسلوب iMessage — تفاعل مع الرسائل، ويمكن لـ Hermes التفاعل مع رسائلك.',
       tipsTitle: 'نصائح داخل التطبيق',
       tipsDesc:
-        'فقاعة صغيرة تشير إلى جزء من التطبيق، تظهر أحيانًا أثناء الخمول ومن Hermes عند الحاجة. إغلاق نصيحة يزيلها نهائيًا.',
-      tipsReset: count => `استعادة ${count} نصيحة مغلقة`,
+        'نصائح تظهر أحيانًا من التطبيق وHermes. تظهر كل نصيحة مرة واحدة. تُعطّل تلقائيًا بعد أول 30 يومًا من الاستخدام، ويمكنك تفعيلها مجددًا.',
+      tipsReset: count => `إظهار ${count} نصيحة مرة أخرى`,
       toursTitle: 'جولات إرشادية',
-      toursDesc: 'دع Hermes يرشدك في التطبيق، مع تعتيم الشاشة وإبراز كل خطوة.',
+      toursDesc:
+        'دع Hermes يرشدك في التطبيق مع إبراز كل خطوة. تُعطّل الجولات تلقائيًا بعد أول 30 يومًا من الاستخدام، ويمكنك تفعيلها مجددًا.',
       composerPopoutTitle: 'محرر عائم',
       composerPopoutDesc: 'السماح بسحب محرر الرسائل خارج موضعه. عطّل هذا الخيار لإبقائه مثبتًا في الأسفل.',
       vibeHeartsTitle: 'قلوب المزاج',
@@ -566,6 +569,9 @@ export const ar = defineLocale({
       embedsReset: count => `إعادة تعيين ${count} ${count === 1 ? 'خدمة مسموح بها' : 'خدمة مسموح بها'}`,
       resumeLastSessionTitle: 'إعادة فتح آخر محادثة عند التشغيل',
       resumeLastSessionDesc: 'متابعة من حيث توقفت عند بدء التطبيق. أوقفه للبدء دائمًا بمحادثة جديدة.',
+      loginStartupTitle: 'تشغيل Hermes مع Windows',
+      loginStartupDesc: 'فتح تطبيق سطح المكتب مصغّرًا عند تسجيل الدخول. يستخدم الملف الشخصي الأساسي المحفوظ.',
+      loginStartupFailed: 'لم يتمكّن Windows من تفعيل بدء التشغيل. تحقّق من تطبيقات بدء التشغيل في إعدادات Windows.',
       product: 'مبسط',
       productDesc: 'عرض أنظف يركز على النتيجة.',
       technical: 'تقني',
@@ -762,8 +768,9 @@ export const ar = defineLocale({
       checking: 'جار التحقق...',
       seeWhatsNew: 'عرض الجديد',
       updateNow: 'تحديث الآن',
+      updateSource: 'مصدر التحديث',
       releaseNotes: 'ملاحظات الإصدار',
-      onLatest: 'أنت على أحدث إصدار',
+      onLatest: 'مصدر التحديث المحدد محدث',
       installing: 'جار التثبيت...',
       cantUpdate: 'تعذر التحديث',
       cantReach: 'تعذر الوصول لخدمة التحديث',
@@ -1090,6 +1097,7 @@ export const ar = defineLocale({
   skills: {
     tabSkills: 'المهارات',
     tabToolsets: 'مجموعات الأدوات',
+    tabHub: 'تصفّح مركز المهارات',
     all: 'الكل',
     searchSkills: 'البحث في المهارات',
     searchToolsets: 'البحث في مجموعات الأدوات',
@@ -2801,7 +2809,11 @@ export const ar = defineLocale({
         streaming: 'خطأ في اتصال البث'
       },
       errorRetry: 'إعادة المحاولة',
+      errorStartNewSession: 'بدء جلسة جديدة',
       errorSwitchProvider: 'تبديل المزوّد',
+      errorSignInAgain: provider => `تسجيل الدخول إلى ${provider} مجدداً`,
+      errorOauthExpired: provider =>
+        `انتهت صلاحية تسجيل دخولك إلى ${provider} أو تم إلغاؤه. سجّل الدخول مجدداً لمتابعة المحادثة.`,
       errorOpenLogs: 'فتح السجلات',
       errorOpenLogsFailed: 'تعذّر فتح مجلد السجلات',
       errorOpenDesktopLogs: 'فتح سجلات سطح المكتب',

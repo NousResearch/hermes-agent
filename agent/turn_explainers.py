@@ -127,6 +127,21 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "(`hermes gateway stop`), run `hermes doctor`, then start it again and send your "
         "message once more. Advanced recovery steps are in the log."
     ),
+    "deleted_wal": (
+        "the turn was stopped because a live Hermes process held a retired "
+        "state.db-wal generation after its pathname was deleted or "
+        "replaced. Stop the gateway, dashboard, and cron writers; "
+        "do not overwrite the current state.db or delete its sidecars. "
+        "Check the logs for whether Hermes captured the retired generation, "
+        "then read the adjacent state.db.retired-wal-*/manifest.json. If "
+        "manifest.main.mode is `copied`, inspect that artifact with `hermes "
+        "sessions recover --source <state.db.retired-wal-*/state.db> "
+        "--inspect-only` before deciding whether its committed frames belong "
+        "on the current database. A `header_only` artifact is forensic and "
+        "does not contain a copied state.db to inspect. Unwritten messages "
+        "were diverted to sessions/<session_id>.jsonl and, on the gateway, "
+        "pending_messages/pending-*.json."
+    ),
     "corrupt": (
         "the turn was stopped because the state database "
         "reported structural corruption (the transcript would "
@@ -297,7 +312,7 @@ class TurnExplainersMixin:
 
     @staticmethod
     def _format_turn_completion_explanation(
-        turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None, model: str = "",
+        turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None
     ) -> str:
         """User-facing explanation for an abnormal turn ending, or "" for normal / unknown reasons.
 
@@ -322,7 +337,7 @@ class TurnExplainersMixin:
 
             body = _PERSISTENCE_CAUSE_EXPLANATIONS.get(
                 persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
-            ).replace("{home}", display_hermes_home())
+            )
             if persistence_cause in ("corrupt", "fts_index"):
                 # Copy-pasteable, so name the store that actually failed and pin the profile:
                 # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT

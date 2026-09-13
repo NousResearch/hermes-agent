@@ -9073,20 +9073,6 @@ def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypat
         fb.reset_for_tests()
 
 
-def test_invalid_params_and_unknown_method_name_the_version_skew_fix():
-    """The only signal of a TUI/backend version mismatch; the lead phrases stay for clients."""
-    resp = server.handle_request({"id": "1", "method": "no.such.method", "params": {}})
-    assert resp["error"]["code"] == -32601
-    assert resp["error"]["message"].startswith("unknown method: no.such.method")
-    assert "hermes update" in resp["error"]["message"]
-
-    resp = server.handle_request(
-        {"id": "2", "method": "session.status", "params": {"session_id": "x", "turn_author": "y"}})
-    assert resp["error"]["code"] == 4000
-    assert resp["error"]["message"].startswith("invalid params for session.status: turn_author")
-    assert "hermes update" in resp["error"]["message"]
-
-
 def test_probe_credentials_emits_exact_empty_key_warning():
     agent = types.SimpleNamespace(api_key="", provider="openrouter")
 
@@ -16904,6 +16890,7 @@ def test_hosted_prompt_persists_terminal_receipt_before_callback_failure(
             task=identity,
             execution_generation=attempt.execution_generation,
             on_terminal=callback_failure,
+            member_id="ops",
         )
 
         receipt = driver_state.get_terminal_receipt(

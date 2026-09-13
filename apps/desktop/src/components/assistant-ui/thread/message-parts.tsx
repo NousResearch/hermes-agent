@@ -21,8 +21,9 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useI18n } from '@/i18n'
-import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
+import { connectorCalls } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
+import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -119,7 +120,15 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     )
   }
 
-  if (mcpTargets(props.toolName, props.args).length > 0) {
+  if (isOnboardingEnabled() && props.toolName === 'manage_connections') {
+    return <ConnectorTool {...props} />
+  }
+
+  if (isOnboardingEnabled() && connectorCalls(props.toolName, props.args).length > 0) {
+    return <ConnectorExecution {...props} />
+  }
+
+  if (props.toolName === 'setup_mcp') {
     return <McpSetupTool {...props} />
   }
 

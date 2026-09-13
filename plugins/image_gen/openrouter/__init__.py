@@ -543,16 +543,12 @@ def _image_api_model_meta(model_id: str) -> Dict[str, Any]:
 
 
 def _fetch_image_api_catalog(base_url: str, api_key: str) -> frozenset:
-    """Model ids served by ``GET {base_url}/images/models``, cached per base URL.
+    """Model ids from ``GET {base_url}/images/models``, cached per (base URL, key). Any failure caches
+    an empty set (→ chat-completions): guessing "images" would 404 a working chat setup."""
+    from agent.credential_persistence import fingerprint_secret_value
 
-    Best-effort by design: any failure caches and returns an empty set, which
-    routes the call to chat-completions. Guessing the other way would send a
-    chat-completions id to ``/images/generations`` and turn a working setup
-    into a 404.
-    """
-    import requests
-
-    cached = _CATALOG_CACHE.get(base_url)
+    cache_key = (base_url, fingerprint_secret_value(api_key))
+    cached = _CATALOG_CACHE.get(cache_key)
     if cached and (time.monotonic() - cached[0]) < _CATALOG_TTL_SECONDS:
         return cached[1]
 

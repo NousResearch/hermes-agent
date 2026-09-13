@@ -30,6 +30,7 @@ import { $titlebarAppActionsSide } from '@/store/titlebar-app-actions'
 import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
 import {
+  TITLEBAR_CHROME_CHANGED_EVENT,
   TITLEBAR_ICON_BADGE_SCALE,
   titlebarButtonClass,
   titlebarIconSizeCss,
@@ -249,20 +250,20 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const view = appViewForPath(location.pathname)
 
+  // Sessions tabs reserve the band from the measurable clusters
+  // (usePanelTitlebar); announce branch changes so the reservation
+  // re-measures instead of going stale under the page's switcher.
+  // Before every early return: hooks are unconditional.
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(TITLEBAR_CHROME_CHANGED_EVENT))
+  }, [view, pageOwnsTitlebar])
+
   // Overlays own the window. These clusters are `fixed` at a higher z-index
   // than the overlay card, so they'd otherwise bleed over it — hide them (and
   // the nested titleBar slots) and let the overlay's own chrome take over.
   if (isOverlayView(view)) {
     return null
   }
-
-  const titlebarSlots = (
-    <>
-      <Slot area="titleBar.left" />
-      <Slot area="titleBar.center" />
-      <Slot area="titleBar.right" />
-    </>
-  )
 
   const leftClusterClass = cn(
     titlebarToolClusterClass,
@@ -278,13 +279,26 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   if (hidesFixedTitlebarClusters(view) && pageOwnsTitlebar) {
     const pageTools = [...leftTools, ...tools].filter(tool => !tool.hidden)
 
+    // Both clusters keep their measurement hooks: usePanelTitlebar positions
+    // the sessions tab strip from [data-titlebar-cluster="left"/"right"], and
+    // without them it retains its stale chat-view reservation — sliding the
+    // tabs under the page's switcher (e.g. kanban's board switcher).
     return (
-      <div className={leftClusterClass}>
-        {pageTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-        ))}
-        {titlebarSlots}
-      </div>
+      <>
+        <div className={leftClusterClass} data-titlebar-cluster="left">
+          {pageTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          ))}
+          <Slot area="titleBar.left" />
+          <Slot area="titleBar.center" />
+        </div>
+        <div
+          className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
+          data-titlebar-cluster="right"
+        >
+          <Slot area="titleBar.right" />
+        </div>
+      </>
     )
   }
 

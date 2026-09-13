@@ -1,5 +1,6 @@
 import { type RefObject, useCallback, useLayoutEffect, useState } from 'react'
 
+import { TITLEBAR_CHROME_CHANGED_EVENT } from '@/app/shell/titlebar'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 
 /** Reserve actual chrome intersections, including after a neighbor becomes a rail. */
@@ -43,18 +44,31 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
       return
     }
 
-    measure()
     const observer = new ResizeObserver(measure)
+    const observe = () => {
+      // Re-query on every chrome change: route switches mount a different
+      // cluster set (app clusters vs a page-owned band), and observing the
+      // unmounted set would measure nothing.
+      observer.disconnect()
 
-    for (const element of document.querySelectorAll('[data-titlebar-cluster], [data-tree-group]')) {
-      observer.observe(element)
+      for (const element of document.querySelectorAll('[data-titlebar-cluster], [data-tree-group]')) {
+        observer.observe(element)
+      }
+    }
+    const onChromeChanged = () => {
+      observe()
+      measure()
     }
 
+    observe()
+    measure()
     window.addEventListener('resize', measure)
+    window.addEventListener(TITLEBAR_CHROME_CHANGED_EVENT, onChromeChanged)
 
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', measure)
+      window.removeEventListener(TITLEBAR_CHROME_CHANGED_EVENT, onChromeChanged)
     }
   }, [enabled, measure])
 

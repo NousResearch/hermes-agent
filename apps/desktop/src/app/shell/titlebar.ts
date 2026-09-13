@@ -107,3 +107,13 @@ export function titlebarControlsPosition(
     top
   }
 }
+
+/**
+ * Cross-component event: the titlebar band's chrome changed (route switch
+ * between the app clusters and a page-owned band, or vice versa). Dispatched
+ * by TitlebarControls; the layout tree's usePanelTitlebar listens and
+ * re-measures the sessions tab reservation — otherwise the tabs keep their
+ * stale offset and slide under the page's switcher. Same pattern as the
+ * pane-shell's PANE_TOGGLE_REVEAL_EVENT.
+ */
+export const TITLEBAR_CHROME_CHANGED_EVENT = 'hermes:titlebar-chrome-changed'

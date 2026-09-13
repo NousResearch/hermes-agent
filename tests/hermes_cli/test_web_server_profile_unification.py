@@ -7,7 +7,6 @@ reads/writes land in the REQUESTED profile, the dashboard's own profile
 stays untouched, and the chat PTY env is scoped via HERMES_HOME.
 """
 import json
-import os
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -249,7 +248,7 @@ class TestProfileScopedMcp:
         )
         # The shared dashboard process carries the DEFAULT profile's value of the
         # same env name — the probe must not use it.
-        os.environ["GITHUB_PERSONAL_ACCESS_TOKEN"] = "default-profile-token"
+        monkeypatch.setenv("GITHUB_PERSONAL_ACCESS_TOKEN", "default-profile-token")
 
         def _worker_sources(hermes_home):
             if Path(hermes_home).resolve() == worker_home.resolve():
@@ -267,16 +266,33 @@ class TestProfileScopedMcp:
 
         monkeypatch.setattr(mcp_config, "_probe_single_server", fake_probe)
 
-        try:
-            resp = client.post(
-                "/api/mcp/servers/bw-srv/test", params={"profile": "worker_beta"}
-            )
-        finally:
-            os.environ.pop("GITHUB_PERSONAL_ACCESS_TOKEN", None)
+        resp = client.post("/api/mcp/servers/bw-srv/test", params={"profile": "worker_beta"})
 
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
         assert resolved_headers["Authorization"] == "Bearer bw-worker-token"
+
+    def test_mcp_list_expands_url_ref_from_profile_secret_scope(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """Same class for the read endpoint: a ``${VAR}`` in a secondary profile's server
+        ``url`` must expand from THAT profile's secret scope, never the dashboard process env."""
+        import hermes_cli.env_loader as env_loader
+
+        worker_home = isolated_profiles["worker_beta"]
+        (worker_home / "config.yaml").write_text(
+            "mcp_servers:\n  bw-srv:\n    url: ${MCP_GH_URL}\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("MCP_GH_URL", "http://default-profile/mcp")
+        monkeypatch.setattr(
+            env_loader, "get_secret_source_values",
+            lambda hermes_home: {"MCP_GH_URL": "http://worker/mcp"}
+            if Path(hermes_home).resolve() == worker_home.resolve() else {},
+        )
+
+        resp = client.get("/api/mcp/servers", params={"profile": "worker_beta"})
+        assert resp.status_code == 200
+        assert [s["url"] for s in resp.json()["servers"]] == ["http://worker/mcp"]
 
 
 class TestProfileScopedModel:

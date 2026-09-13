@@ -462,19 +462,34 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     # recognized as a global name and left alone.
     # Current file AND every key any dotenv load put into os.environ this process lifetime: a key
     # removed or renamed in the launch .env after boot is still in os.environ with the old value, and
-    # a re-parse of the file alone no longer names it (#107695 review).
-    from hermes_cli.env_loader import launch_dotenv_keys
+    # a re-parse of the file alone no longer names it (#107695 review). The administrator-managed .env
+    # is NOT residue: its values are policy for every profile (``_apply_managed_env`` applies it last,
+    # with override, so it beats the user's own .env) — leave them in place.
+    from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys
+    managed_names = {key.upper() for key in managed_dotenv_keys()}
     residue_names = {
         key.upper() for key in
         set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())
         | set(TERMINAL_CONFIG_ENV_MAP.values())
-        if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")}
+        if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")} - managed_names
     for key in [k for k in env if k.upper() in residue_names]:
         del env[key]
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
     # or an operator export never appears in the launch ``.env``, the secret scrub ignores
     # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).
     return strip_profile_gate_env(env)
+
+
+def restore_managed_env(env: dict) -> dict:
+    """Re-apply the administrator-managed ``.env`` values over *env* — call AFTER a routed profile's scope
+    has been overlaid. ``_apply_managed_env`` gives those keys precedence over the user's own ``.env`` in
+    the launch process; a routed child must see the same precedence, or the routed user's value for a
+    managed key (``ORG_POLICY_FLAG=user-value``) silently wins over policy."""
+    from hermes_cli.env_loader import managed_dotenv_keys
+    for key in managed_dotenv_keys():
+        if key in os.environ:
+            env[key] = os.environ[key]
+    return env
 
 
 # --- Shell discovery ---

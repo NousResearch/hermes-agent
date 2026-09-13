@@ -245,6 +245,9 @@ def run_dump(args):
     except Exception:
         profile = "(default)"
     toolsets = config.get("toolsets", ["hermes-cli"])
+    # hermes_cli.mcp_config owns the ``mcp_servers`` accessor every MCP surface reads; importing it
+    # here rather than at module scope keeps `hermes dump` off the MCP security/asyncio import cost.
+    from hermes_cli.mcp_config import _get_mcp_servers
     platforms = [name for name, env in _PLATFORM_ENV_VARS.items() if os.getenv(env)]
     lines = [
         "--- hermes dump ---",
@@ -260,7 +263,7 @@ def run_dump(args):
         "", "api_keys:", *_api_key_lines(show_keys),
         "", "features:",
         f"  toolsets:           {', '.join(toolsets) if toolsets else '(default)'}",
-        f"  mcp_servers:        {len(config.get('mcp', {}).get('servers', {}))}",
+        f"  mcp_servers:        {len(_get_mcp_servers(config))}",
         f"  memory_provider:    {config.get('memory', {}).get('provider', '') or 'built-in'}",
         f"  gateway:            {_gateway_status()}",
         f"  platforms:          {', '.join(platforms) if platforms else 'none'}",

@@ -71,6 +71,48 @@ def test_multiplex_terminal_env_excludes_other_profiles_undeclared_secret(
     )
 
 
+def test_profile_carrier_ownership_survives_terminal_composition(tmp_path, monkeypatch):
+    """A transport wrapper cannot hide source ownership or create a target grant."""
+    import json
+    import subprocess
+    import sys
+    from agent import secret_scope
+    from tools.env_passthrough import clear_env_passthrough
+    from tools.environments.local import _make_run_env
+
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    (source / ".env").write_text("APPTAINERENV_SOURCE_ONLY=alpha\n", encoding="utf-8")
+    (target / ".env").write_text("APPTAINERENV_TARGET_ONLY=beta\n", encoding="utf-8")
+    (target / "config.yaml").write_text(
+        "terminal:\n  env_passthrough: [APPTAINERENV_TARGET_ONLY]\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(source))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    names = ["SOURCE_ONLY", "APPTAINERENV_SOURCE_ONLY",
+             "SINGULARITYENV_APPTAINERENV_SOURCE_ONLY", "APPTAINERENV_TARGET_ONLY", "TARGET_ONLY"]
+    for name in names:
+        monkeypatch.setenv(name, "ambient-residue")
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    scope_token = secret_scope.set_secret_scope(None)
+    home_token = set_hermes_home_override(target)
+    clear_env_passthrough()
+    try:
+        child = subprocess.run(
+            [sys.executable, "-c", "import os,json,sys;print(json.dumps({k:os.getenv(k) for k in sys.argv[1:]}))", *names],
+            env=_make_run_env({}), capture_output=True, text=True, encoding="utf-8",
+            check=True, timeout=10,
+        )
+    finally:
+        clear_env_passthrough()
+        reset_hermes_home_override(home_token)
+        secret_scope.reset_secret_scope(scope_token)
+    expected = dict.fromkeys(names)
+    expected["APPTAINERENV_TARGET_ONLY"] = "beta"
+    assert json.loads(child.stdout) == expected
+
+
 # ---------------------------------------------------------------------------
 # Member 2 — #81952: corrupt profile config.yaml silently falls back to
 # DEFAULT_CONFIG (and from there to a paid default model) instead of failing

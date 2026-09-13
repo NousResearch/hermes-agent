@@ -6,6 +6,7 @@ import type { ProjectInfo, SessionInfo } from '@/types/hermes'
 
 import {
   baseName,
+  enteredProjectOverlayRows,
   excludeProjectSessions,
   kanbanWorktreeDir,
   liveSessionProjectId,
@@ -1246,5 +1247,39 @@ describe('project filter row rule (#97762)', () => {
   it('a live id still narrows', () => {
     expect(sessionMatchesProjectFilter(appRow, ['p_app'], projects)).toBe(true)
     expect(sessionMatchesProjectFilter(homeRow, ['p_app'], projects)).toBe(false)
+  })
+})
+
+describe('enteredProjectOverlayRows', () => {
+  // A project nested INSIDE another project's folder (gpresearch/复盘 under
+  // gpresearch) shares a path prefix with its parent, but path-prefix is not
+  // membership: the entered view must not pull the child's rows into the
+  // parent's lanes.
+  const parent = makeProject('p_research', ['/work/gpresearch'])
+  const child = makeProject('p_review', ['/work/gpresearch/review'])
+  const node = projectNode({ id: 'p_research', path: '/work/gpresearch' })
+  const parentRow = makeCwdSession('/work/gpresearch', { id: 'parent-row' })
+  const childRow = makeCwdSession('/work/gpresearch/review', { id: 'child-row' })
+
+  it("keeps the parent's own rows and drops a NESTED project's rows", () => {
+    const rows = enteredProjectOverlayRows([parentRow, childRow], node, [parent, child])
+
+    expect(rows.map(session => session.id)).toEqual(['parent-row'])
+  })
+
+  it('still carries the overview preview rows belonging to the entered project', () => {
+    const preview = makeCwdSession('/work/gpresearch', { id: 'preview-row' })
+    const rows = enteredProjectOverlayRows([parentRow], { ...node, previewSessions: [preview] }, [parent, child])
+
+    expect(rows.map(session => session.id)).toEqual(['parent-row', 'preview-row'])
+  })
+
+  it('keeps detached rows for Home (the rows it owns)', () => {
+    const rows = enteredProjectOverlayRows([parentRow, makeCwdSession(null, { id: 'homeless' })], homeNode([]), [
+      parent,
+      child
+    ])
+
+    expect(rows.map(session => session.id)).toEqual(['homeless'])
   })
 })

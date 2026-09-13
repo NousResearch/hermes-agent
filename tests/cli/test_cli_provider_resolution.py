@@ -153,6 +153,43 @@ def test_provider_flag_uses_named_custom_default_model(monkeypatch):
     assert shell.requested_provider == "gmk-lan"
 
 
+def test_model_aliases_base_url_reaches_explicit_base_url(monkeypatch):
+    """A `model_aliases:` entry's own base_url must reach
+    self._explicit_base_url (what _ensure_runtime_credentials() passes as
+    explicit_base_url into resolve_runtime_provider()), not just
+    self.base_url -- issue #107191: it was silently dropped at CLI startup,
+    so the request fell through to the OpenRouter/default runtime instead
+    of the alias's own endpoint."""
+    import hermes_cli.model_switch as ms
+    ms.DIRECT_ALIASES.clear()
+
+    cli = _import_cli()
+    config = {
+        "model_aliases": {
+            "qwen-local": {
+                "model": "Qwen3.6-35B-A3B-UD-IQ2_M.gguf",
+                "provider": "custom",
+                "base_url": "http://localhost:8080/v1",
+                "api_key": None,
+            }
+        },
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+
+    shell = cli.HermesCLI(model="qwen-local", compact=True, max_turns=1)
+
+    assert shell.model == "Qwen3.6-35B-A3B-UD-IQ2_M.gguf"
+    assert shell._explicit_base_url == "http://localhost:8080/v1"
+    # The CLI flag must still win when both are present (existing precedence:
+    # CLI args > env vars > config file).
+    ms.DIRECT_ALIASES.clear()
+    shell2 = cli.HermesCLI(
+        model="qwen-local", base_url="http://cli-flag-wins:9999/v1", compact=True, max_turns=1
+    )
+    assert shell2._explicit_base_url == "http://cli-flag-wins:9999/v1"
+
+
 def test_explicit_model_wins_over_provider_default_model(monkeypatch):
     """`-m` still wins when `--provider` also names a custom default_model."""
     cli = _import_cli()

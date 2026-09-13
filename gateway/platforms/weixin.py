@@ -32,6 +32,7 @@ from gateway.platforms.helpers import MessageDeduplicator, greedy_pack_blocks
 from gateway.platforms.base import (
     _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
+    looks_like_slash_command,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
@@ -561,7 +562,10 @@ def _message_type_from_media(media_types: List[str], text: str) -> MessageType:
     for prefix, message_type in _MIME_PREFIX_TYPES:
         if any(m.startswith(prefix) for m in media_types):
             return message_type
-    return MessageType.DOCUMENT if media_types else MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
+    # Invisible-padded commands must classify as COMMAND too, or they fall
+    # into _enqueue_text_event and the debounce window merges them with the
+    # user's next message.
+    return MessageType.DOCUMENT if media_types else MessageType.COMMAND if looks_like_slash_command(text) else MessageType.TEXT
 
 
 def _load_sync_buf(hermes_home: str, account_id: str) -> str:

@@ -29,7 +29,7 @@ HTTPX_AVAILABLE = httpx is not None
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, looks_like_slash_command
 from utils import env_float
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
@@ -551,6 +551,12 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
             return MessageType.TEXT if text else MessageType.PHOTO
         if str(body.get("msgtype") or "").lower() == "voice":
             return MessageType.VOICE
+        # Commands must not classify as TEXT: the caller sends TEXT through
+        # _enqueue_text_event, whose debounce window merges a pending command
+        # with the user's next message ("/deny" + "never mind" becomes a deny
+        # reason). The dispatch comment there always assumed this branch.
+        if looks_like_slash_command(text):
+            return MessageType.COMMAND
         return MessageType.TEXT
 
     @property

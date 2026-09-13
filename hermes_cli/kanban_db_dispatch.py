@@ -1366,15 +1366,45 @@ _PREV_WORKER_CROSS_HOST_REASON = "prev_worker_cross_host_unknown"
 """Fail-closed cross-host guard reason (Ask 2): the closing run's recorded
 worker host differs from this host, so its liveness cannot be verified from
 here (no ``/proc`` route to a remote pid). Originally this case fell through
-to ``None`` (fail-open — a legitimate host migration must not be blocked
-forever by a pid number meaningless on a NEW host), but that same fail-open
-path also covered the case where the recorded worker is the SAME process
-that simply hasn't been reassigned, still running on its original host,
-which dispatch could then duplicate. Conservative choice: hold the card
-(this reason) rather than silently spawn a second worker; a human takeover
-(unblocking the card, which clears ``worker_pid``/host bookkeeping on
-reclaim) is required when the operator has confirmed the remote worker is
-in fact gone."""
+to ``None`` unconditionally (fail-open — a legitimate host migration must
+not be blocked forever by a pid number meaningless on a NEW host), but that
+same fail-open path also covered the case where the recorded worker is the
+SAME process that simply hasn't been reassigned, still running on its
+original host, which dispatch could then duplicate.
+
+Scope (F-3, PR 109491 QA revision): the hold applies ONLY when the closing
+run's ``outcome`` is one where a live remote worker is actually plausible —
+see :data:`_CROSS_HOST_HOLD_OUTCOMES`. A run that closed CLEANLY on another
+host (``completed``, ``review_requested``, an operator ``blocked``/
+``changes_requested``/``gave_up`` re-queue) is the ordinary
+implementer-to-reviewer handoff or an intentional stop: the remote worker
+process is known to have exited on purpose, so it keeps the original
+fail-open ``None`` regardless of host. Narrowing this way avoids holding
+every cross-host lifecycle (a real regression for any multi-host board)
+while still catching the crash/timeout/reclaim/stale cases the review asked
+for.
+
+Card recovery: a human unblocking the card clears ``status`` back to
+``ready``/``review`` and, on the reclaim path, also clears the stamped
+``worker_pid``/host bookkeeping — but this module does not independently
+verify that the unblock action itself clears the closing run's recorded
+``prev_worker_host``/claim-lock evidence this guard reads; that would need
+to be proven by a test exercising the actual unblock code path, not
+asserted here."""
+
+_CROSS_HOST_HOLD_OUTCOMES = frozenset({
+    "crashed", "timed_out", "reclaimed", "stale", "rate_limited", "protocol_violation",
+})
+"""Run outcomes for which the cross-host fail-closed hold
+(:data:`_PREV_WORKER_CROSS_HOST_REASON`) applies. Each names a close that
+does NOT prove the remote worker process actually stopped: the run was
+misclassified as dead by another host's dispatcher (or hit a transient
+condition), so the process could genuinely still be running there. Every
+other outcome (``completed``, ``review_requested``, ``blocked``,
+``changes_requested``, ``gave_up``, ``spawn_failed``, ...) is a close where
+the remote worker is known to have stopped on purpose or never ran to begin
+with — those keep the pre-existing fail-open behaviour across a host
+mismatch."""
 
 _PREV_WORKER_GUARD_REASONS = (_PREV_WORKER_ALIVE_REASON, _PREV_WORKER_CROSS_HOST_REASON)
 """Both reasons ``_dispatch_lane_task`` treats identically: never spawn,
@@ -1389,10 +1419,14 @@ def _prev_worker_alive_guard_info(
     CLOSED run's worker pid either (a) is still alive on THIS host and
     plausibly identifies as that worker (see
     :func:`_prev_worker_identity_plausible`; ``reason="prev_worker_alive"``),
-    or (b) was recorded on a DIFFERENT host whose liveness this host cannot
-    verify (``reason="prev_worker_cross_host_unknown"`` — see
+    or (b) was recorded on a DIFFERENT host, that run closed with an outcome
+    where a live remote worker is plausible (crash/timeout/reclaim/stale —
+    see :data:`_CROSS_HOST_HOLD_OUTCOMES`), and this host cannot verify its
+    liveness (``reason="prev_worker_cross_host_unknown"`` — see
     :data:`_PREV_WORKER_CROSS_HOST_REASON`). ``None`` when neither applies —
-    spawn proceeds.
+    spawn proceeds. In particular, a cross-host run that closed CLEANLY
+    (``completed``, ``review_requested``, or any operator-driven re-queue)
+    is NOT held: the remote worker is known to have stopped on purpose.
 
     Pid source, in order:
     1. The closing run row's own ``metadata`` JSON (``prev_worker_pid`` /
@@ -1418,7 +1452,7 @@ def _prev_worker_alive_guard_info(
     process) does NOT block — spawn proceeds exactly as if the pid were dead.
     """
     run_row = conn.execute(
-        "SELECT id, metadata, started_at FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
+        "SELECT id, metadata, started_at, outcome FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
@@ -1426,6 +1460,8 @@ def _prev_worker_alive_guard_info(
         return None
     run_id = run_row["id"]
     run_started_at = _kb._row_get(run_row, "started_at")
+    run_outcome = _kb._row_get(run_row, "outcome")
+    cross_host_holds = run_outcome in _CROSS_HOST_HOLD_OUTCOMES
     host_prefix = _kb._host_prefix()
     task_row = conn.execute(
         "SELECT workspace_path FROM tasks WHERE id = ?", (task_id,),
@@ -1465,11 +1501,17 @@ def _prev_worker_alive_guard_info(
     if meta_pid:
         meta_host = run_metadata.get("prev_worker_host") or ""
         if meta_host and not f"{meta_host}:".startswith(host_prefix):
-            # Cross-host fail-closed (Ask 2): see _PREV_WORKER_CROSS_HOST_REASON.
-            return {
-                "pid": int(meta_pid), "host": meta_host, "run_id": run_id,
-                "reason": _PREV_WORKER_CROSS_HOST_REASON,
-            }
+            if cross_host_holds:
+                # Cross-host fail-closed (Ask 2, narrowed by F-3): see
+                # _PREV_WORKER_CROSS_HOST_REASON / _CROSS_HOST_HOLD_OUTCOMES.
+                return {
+                    "pid": int(meta_pid), "host": meta_host, "run_id": run_id,
+                    "reason": _PREV_WORKER_CROSS_HOST_REASON,
+                }
+            # Clean close (completed/review_requested/operator action) on a
+            # different host: the remote worker is known to be done, not
+            # merely unreachable. Fail open, as before this guard existed.
+            return None
         pid = int(meta_pid)
         if not _alive_and_identified(
             pid,
@@ -1505,14 +1547,14 @@ def _prev_worker_alive_guard_info(
     ).fetchone()
     lock = _kb._json_dict(claimed["payload"]).get("lock", "") if claimed else ""
     if not lock.startswith(host_prefix):
-        # Cross-host fail-closed (Ask 2): a claim lock naming another host is
-        # the fallback-source equivalent of a stamped ``prev_worker_host``
-        # mismatch above. An empty/missing lock means no host evidence at
-        # all (older data, or a lock cleared on close) — that genuinely
-        # cannot distinguish "this host" from "some other host", so it
-        # keeps the pre-existing fail-open ``None`` rather than holding on
-        # no evidence whatsoever.
-        if lock:
+        # Cross-host fail-closed (Ask 2, narrowed by F-3): a claim lock naming
+        # another host is the fallback-source equivalent of a stamped
+        # ``prev_worker_host`` mismatch above. An empty/missing lock means no
+        # host evidence at all (older data, or a lock cleared on close) —
+        # that genuinely cannot distinguish "this host" from "some other
+        # host", so it keeps the pre-existing fail-open ``None`` rather than
+        # holding on no evidence whatsoever.
+        if lock and cross_host_holds:
             return {
                 "pid": int(pid), "host": lock.split(":", 1)[0], "run_id": run_id,
                 "reason": _PREV_WORKER_CROSS_HOST_REASON,
@@ -1553,12 +1595,15 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
-    ``"prev_worker_alive"`` / ``"prev_worker_cross_host_unknown"`` (defence
-    in depth: the just-closed run's worker pid is either still alive on this
-    host, or was recorded on a different host whose liveness this host
-    cannot verify — see :func:`_prev_worker_alive_guard_info` — regardless of
-    why the run was closed; applies to BOTH lanes, unlike the two
-    duplicate-*work* guards below), then ``"rate_limit_cooldown"`` (latest
+    ``"prev_worker_alive"`` (defence in depth: the just-closed run's worker
+    pid is still alive on this host, regardless of why the run was closed)
+    / ``"prev_worker_cross_host_unknown"`` (the run was recorded on a
+    different host AND closed with an outcome where a live remote worker is
+    plausible — crash/timeout/reclaim/stale, see
+    :data:`_CROSS_HOST_HOLD_OUTCOMES` — so this host cannot verify its
+    liveness; a cross-host run that closed cleanly is NOT held) — see
+    :func:`_prev_worker_alive_guard_info`; applies to BOTH lanes, unlike the
+    two duplicate-*work* guards below), then ``"rate_limit_cooldown"`` (latest
     run ``rate_limited`` within the cooldown; checked BEFORE ``blocker_auth``
     because the requeue stamps a quota-flavored ``last_failure_error`` that
     would otherwise park the task forever — that path never increments

@@ -64,6 +64,27 @@ function joinPath(base: string, rel: string) {
   return `${base.replace(/\/+$/, '')}/${rel.replace(/^\.?\//, '')}`
 }
 
+function isRemotePosixPreviewTarget(rawTarget: string, cwd?: string | null) {
+  const raw = rawTarget.trim().replace(/^`|`$/g, '')
+
+  if (raw.startsWith('/')) {
+    return true
+  }
+
+  if (/^file:\/\//i.test(raw)) {
+    try {
+      const url = new URL(raw)
+      const path = decodeURIComponent(url.pathname)
+
+      return !url.host && path.startsWith('/') && !/^\/[a-z]:\//i.test(path)
+    } catch {
+      return false
+    }
+  }
+
+  return Boolean(cwd?.trim().startsWith('/')) && !/^[a-z][a-z\d+.-]*:/i.test(raw) && !raw.startsWith('\\')
+}
+
 function pathToFileUrl(path: string) {
   const isWindowsUnc = path.startsWith('\\\\')
   const normalized = isWindowsUnc || /^[a-z]:[\\/]/i.test(path) ? path.replace(/\\/g, '/') : path
@@ -261,6 +282,12 @@ export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
   cwd?: string | null
 ): Promise<PreviewTarget | null> {
+  // POSIX paths in remote mode belong to the gateway host. Resolve them in the
+  // renderer so the local Electron process cannot rewrite them as local paths.
+  if (isDesktopFsRemoteMode() && isRemotePosixPreviewTarget(rawTarget, cwd)) {
+    return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd))
+  }
+
   try {
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 

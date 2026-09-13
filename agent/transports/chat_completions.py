@@ -258,6 +258,17 @@ def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, param
             return
     if profile_max and max_tokens_fn:
         api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max)))
+        return
+    # Every explicit source unset: custom endpoints on OpenAI-compatible bases
+    # get a metadata-derived default (hosted gateways with hidden caps starve
+    # reasoning models otherwise; context-tight local servers need the headroom
+    # clamp). Unknown-context endpoints and native routes keep legacy behavior.
+    if max_tokens_fn:
+        from agent.output_token_default import context_aware_output_default_for_params
+
+        default_cap = context_aware_output_default_for_params(model, params)
+        if default_cap is not None:
+            api_kwargs.update(max_tokens_fn(default_cap))
 
 
 

@@ -96,6 +96,11 @@ _BROWSERS = (
         ("/usr/bin/brave-origin", "/opt/brave.com/brave-origin/brave-origin",
          "/opt/brave.com/brave-origin-nightly/brave-origin"),
         "BraveSoftware/Brave-Origin", linux_exec=("brave-origin",)),
+    # Dia (The Browser Company): Chromium core, macOS-only. Windows is announced but has no
+    # public build, so the Windows/Linux fields stay empty and resolution fails closed there.
+    _Browser(
+        "dia", "/Applications/Dia.app/Contents/MacOS/Dia",
+        ("Dia", "User Data"), (), (), (), (), (), ""),
     _Browser(
         "edge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
         ("Microsoft Edge",), ("msedge.exe", "msedge"),
@@ -160,7 +165,8 @@ _LINUX_SNAP_PROFILE_PARTS = {
 # must not be read as ``com.google.chrome``, nor ``com.brave.browser.origin`` (Homebrew
 # cask id for Brave Origin) as plain ``com.brave.browser``.
 _DARWIN_BUNDLE_MAP = (
-    ("com.google.chrome", "chrome"), ("com.microsoft.edgemac", "edge"),
+    ("com.google.chrome", "chrome"), ("company.thebrowser.dia", "dia"),
+    ("com.microsoft.edgemac", "edge"),
     ("com.brave.browser", "brave"), ("com.brave.browser.origin", "brave-origin"),
     ("org.chromium.chromium", "chromium"))
 
@@ -179,7 +185,8 @@ UNSUPPORTED_CHANNEL = "__unsupported_channel__"
 def real_profile_data_dir(browser: str, system: str | None = None) -> str | None:
     """Default user-data-dir for ``browser`` on ``system`` (None if unknown). Linux tries native
     ($XDG_CONFIG_HOME), snap and Flatpak — first existing wins, else native so the caller's
-    error names it. Darwin/Windows paths are not stat'ed."""
+    error names it. Darwin/Windows paths are not stat'ed. A browser with no build for
+    ``system`` (empty platform fields) is None, never a bare parent dir."""
     b = _BROWSER_BY_KEY.get(browser)
     if b is None:
         return None
@@ -188,8 +195,12 @@ def real_profile_data_dir(browser: str, system: str | None = None) -> str | None
     if system == "Darwin":
         return posixpath.join(home, "Library", "Application Support", *b.mac_support)
     if system == "Windows":
+        if not b.win_profile:
+            return None
         local = os.environ.get("LOCALAPPDATA") or ntpath.join(home, "AppData", "Local")
         return ntpath.join(local, *b.win_profile)
+    if not b.linux_config:
+        return None
     config = os.environ.get("XDG_CONFIG_HOME") or posixpath.join(home, ".config")
     linux_parts = b.linux_config.split("/")
     candidates = [posixpath.join(config, *linux_parts)]

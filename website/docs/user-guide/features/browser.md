@@ -242,8 +242,8 @@ losing unsaved tabs), then retries. If the profile is still locked after that
 to fully quit the browser — it won't loop or kill again on its own.
 :::
 
-- **Supported browsers:** Chrome, Edge, Brave, Brave Origin, Chromium (whichever is your OS
-  default). A non-Chromium default (e.g. Firefox) fails closed with a clear
+- **Supported browsers:** Chrome, Edge, Brave, Brave Origin, Chromium, and Dia on
+  macOS (whichever is your OS default). A non-Chromium default (e.g. Firefox) fails closed with a clear
   message rather than guessing.
 - **Works on any backend.** On a local backend it's automatic once the toggle
   is on. Under a **cloud** browser backend, the agent can still open a

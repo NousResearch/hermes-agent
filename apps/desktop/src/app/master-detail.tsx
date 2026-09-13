@@ -202,12 +202,14 @@ const DETAIL_PANE_COLLAPSED_PX = 4
 
 // Ghost icon-button on the kebab-trigger scale (pane headers, list-strip menu,
 // per-server MCP actions, JSON editor format button). MUST stay a class string
-// (not a CSS @utility): the leading `size-5` is what tailwind-merge uses to
+// (not a CSS @utility): the leading `size-6` is what tailwind-merge uses to
 // strip <Button size="icon">'s larger built-in size — a custom utility class
 // isn't size-merge-aware, so Button's icon size would leak and blow it up.
 // Compose extra state (data-[state=open], hover:text-destructive) with cn().
+// 24px meets the WCAG 2.5.8 Target Size (Minimum) floor (audit #38072, finding 6);
+// the 2.5.5 enhanced 44px target is deliberately not met here.
 export const ICON_BUTTON =
-  'size-5 cursor-pointer rounded-[4px] text-muted-foreground/70 hover:bg-(--ui-control-active-background) hover:text-foreground'
+  'size-6 cursor-pointer rounded-[4px] text-muted-foreground/70 hover:bg-(--ui-control-active-background) hover:text-foreground'
 
 export function DetailPane({
   actions,

@@ -763,21 +763,28 @@ class TestDuplicateDrivePrefixGuard:
     purpose here is to lock in the rule and fail loudly if it ever regresses.
     """
 
-    def test_clean_absolute_path_passes(self):
+    def test_clean_absolute_path_passes(self, tmp_path):
         # Bypass any stale .pyc that may have been written before the guard
-        # landed. Future-proof: the guard lives in write_file_tool itself, so
+        # landed. Future-proof: the guard lives in the shared path guard, so
         # reimporting is the only thing that gets the patched code.
         import importlib
         import tools.file_tools as _ft
         importlib.reload(_ft)
         write_file_tool = _ft.write_file_tool
-        # Single, well-formed absolute path: must not be flagged. The path is
-        # deliberately synthetic (no real user or CI directory): the guard is a
-        # pure string check that short-circuits before any I/O, so nothing needs
-        # to exist, and a contributor-specific path here would be meaningless on
-        # any other machine.
+        # Hermetic target under tmp_path rather than a fixed synthetic root: on
+        # Windows this is still a drive-rooted absolute path (so the check is
+        # exercised for real — asserted below) while never pointing at a path
+        # outside the test's own sandbox. On POSIX there is no drive prefix to
+        # match, so the assertion is trivially satisfied there; the Windows lane
+        # is where this guard has meaning.
+        target = tmp_path / "test-clean.py"
+        import os as _os
+        from tools.file_tools_write_guards import _DUPLICATED_DRIVE_PREFIX_RE
+        assert _DUPLICATED_DRIVE_PREFIX_RE.pattern
+        if _os.name == "nt":
+            assert str(target)[1:2] == ":", "expected a drive-rooted path on Windows"
         result = write_file_tool(
-            path=r"C:\hermes-ci\acceptance\test-clean.py",
+            path=str(target),
             content="x",
             cross_profile=True,
         )
@@ -786,6 +793,29 @@ class TestDuplicateDrivePrefixGuard:
         assert "duplicated drive prefix" not in (result or ""), (
             f"Clean absolute path was incorrectly flagged: {result!r}"
         )
+
+    def test_patch_path_is_covered_by_the_same_guard(self, tmp_path):
+        """patch must not be a bypass for the malformed path write_file refuses.
+
+        patch_tool reaches the shared guard through ``_write_precheck_error``, and the duplicated
+        drive-prefix check lives there (not in write_file_tool alone) precisely so this holds.
+        """
+        import importlib
+        import tools.file_tools as _ft
+        importlib.reload(_ft)
+        victim = tmp_path / "victim.py"
+        victim.write_text("original\n", encoding="utf-8")
+        mangled = (
+            str(tmp_path)
+            + f"\\{tmp_path}\\test-mangled.py"
+        )
+        result = _ft.patch_tool(
+            mode="replace", path=mangled, old_string="original", new_string="changed",
+        )
+        assert "duplicated drive prefix" in (result or ""), (
+            f"patch was not blocked by the shared guard: {result!r}"
+        )
+        assert victim.read_text(encoding="utf-8") == "original\n"
 
     def test_mangled_path_is_rejected(self):
         import importlib

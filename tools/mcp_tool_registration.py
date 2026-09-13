@@ -411,8 +411,11 @@ def _connection_identity(config: dict) -> tuple:
         return json.dumps(value or {}, sort_keys=True, default=str)
 
     return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
-            (config.get("auth") or "").lower().strip(), _frozen(config.get("client_cert")),
-            _frozen(config.get("client_key")))
+            _auth_type(config), _frozen(config.get("client_cert")), _frozen(config.get("client_key")))
+
+
+def _auth_type(config: dict) -> str:
+    return (config.get("auth") or "").lower().strip()
 
 
 def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False) -> bool:
@@ -421,11 +424,10 @@ def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False
     OAuth credentials live in the owning profile's token storage rather than the static config,
     so identical OAuth configs cannot prove that two profiles authenticate as the same account.
     """
-    ident = _connection_identity(getattr(server, "_config", {}) or {})
-    if ident != _connection_identity(config):
+    if _connection_identity(getattr(server, "_config", {}) or {}) != _connection_identity(config):
         return False
-    # The normalised auth type is the identity's last element, so one side suffices here.
-    return not (cross_profile and ident[-1] == "oauth")
+    # Identities match, so both sides carry the same normalised auth type.
+    return not (cross_profile and _auth_type(config) == "oauth")
 
 
 def register_connected_into_current_scope(servers: dict) -> int:

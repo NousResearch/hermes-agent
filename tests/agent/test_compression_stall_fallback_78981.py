@@ -107,7 +107,7 @@ def _run(worker, *, chain, timeouts, messages, idle=0.05, ceiling=0.2):
 # ---------------------------------------------------------------------------
 
 
-def test_stalled_summary_attempts_configured_fallback_chain():
+def test_fallback_recovers_inside_remaining_shared_ceiling():
     original = [{"role": "user", "content": "keep-me"}]
     compressed = [{"role": "user", "content": "summary of earlier turns"}]
     worker = _StalledSummaryWorker(compressed)
@@ -115,7 +115,11 @@ def test_stalled_summary_attempts_configured_fallback_chain():
 
     try:
         msgs, prompt = _run(
-            worker, chain=[CHAIN_ENTRY], timeouts=timeouts, messages=original
+            worker,
+            chain=[CHAIN_ENTRY],
+            timeouts=timeouts,
+            messages=original,
+            ceiling=2.0,
         )
     finally:
         worker.release.set()
@@ -126,6 +130,9 @@ def test_stalled_summary_attempts_configured_fallback_chain():
     assert pinned is not None, "the retry must carry the configured fallback route"
     assert pinned["provider"] == "custom"
     assert pinned["model"] == "backup-summarizer"
+    assert worker.fences[1].deadline_monotonic == worker.fences[0].deadline_monotonic, (
+        "primary and fallback must use the same absolute pre-commit deadline"
+    )
     assert msgs == compressed, "the fallback attempt's compression must be published"
     assert prompt == "summarized-prompt"
     assert not timeouts, "no continue-without-compression degrade after a recovery"
@@ -225,9 +232,35 @@ def test_fallback_that_also_stalls_degrades_after_one_attempt():
         worker.release.set()
 
     assert worker.attempts == 2, "the fallback is attempted once, not in a loop"
+    assert worker.fences[1].deadline_monotonic == worker.fences[0].deadline_monotonic, (
+        "the fallback must not mint a second total ceiling"
+    )
     assert msgs is original, "no messages may be dropped when both routes stall"
     assert prompt == "degraded-prompt"
     assert len(timeouts) == 1, "the degrade must be reported exactly once"
+
+
+def test_total_ceiling_exhaustion_does_not_start_fallback():
+    original = [{"role": "user", "content": "keep-me"}]
+    worker = _StalledSummaryWorker([{"role": "user", "content": "unused"}])
+    timeouts = []
+
+    try:
+        msgs, prompt = _run(
+            worker,
+            chain=[dict(CHAIN_ENTRY, timeout=0.05)],
+            timeouts=timeouts,
+            messages=original,
+            idle=0.05,
+            ceiling=0.05,
+        )
+    finally:
+        worker.release.set()
+
+    assert worker.attempts == 1, "an exhausted shared budget cannot fund a retry"
+    assert msgs is original
+    assert prompt == "degraded-prompt"
+    assert len(timeouts) == 1
 
 
 # ---------------------------------------------------------------------------

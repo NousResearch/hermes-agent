@@ -32,6 +32,16 @@ export function normalizeSvgSize(svg: string): string {
     return svg
   }
 
+  // Mermaid pins the intrinsic width with an inline max-width in pixels. An
+  // inline style beats the container's width caps (max-w-full and friends),
+  // so a wide diagram renders at full intrinsic width in the inline preview
+  // instead of shrinking to the pane. Relative values stay untouched.
+  const maxWidth = el.style.getPropertyValue('max-width')
+
+  if (maxWidth && !isPercentLength(maxWidth) && !maxWidth.trim().endsWith('vw')) {
+    el.style.setProperty('max-width', '100%')
+  }
+
   const box = viewBoxSize(el)
 
   if (!box) {

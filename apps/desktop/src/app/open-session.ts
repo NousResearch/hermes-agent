@@ -24,6 +24,7 @@ import {
   reuseBlankDraftTile,
   setSessionTileWorkspaceScope
 } from '@/store/session-states'
+import { clearUnreadOnOpen } from '@/store/session-unread-remote'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { $workspaceIsPage, sessionRoute } from './routes'
@@ -94,6 +95,10 @@ export function openSession(
   // already on screen (open tile, or the main session) would otherwise return
   // at focusOpenSession and never clear its unread dot.
   markSessionRead(storedSessionId)
+  // The list row also carries the backend's persisted unread watermark. Clear
+  // it on every explicit open, including focus-only paths where the selected
+  // stored id does not change and setSelectedStoredSessionId never runs.
+  void clearUnreadOnOpen(storedSessionId)
   setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
   const botWorkspaceScope = workspaceScope.workspaceMode === 'bots' ? workspaceScope : undefined
 

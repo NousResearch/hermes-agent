@@ -559,7 +559,11 @@ async function resolveConnectionForProfile(profile: string): Promise<HermesConne
 
   try {
     return await withTimeout(
-      getConnection(profile),
+      // Profile activation is a direct user navigation. Give the descriptor
+      // lookup the same foreground priority as the concurrently-started
+      // gateway activation, otherwise it can join a stale background claim
+      // and make the selected bot appear to have no access.
+      getConnection(profile, { priority: 'foreground' }),
       DESCRIPTOR_LOOKUP_TIMEOUT_MS,
       `Timed out resolving the connection descriptor for profile "${profile}"`
     )
@@ -659,7 +663,10 @@ async function resolveConnectionForAgent(connectionId: string, profile: string):
 
   try {
     return await withTimeout(
-      getConnectionFor({ connectionId, profile }),
+      // Same rule for a source-qualified bot: the user selected this exact
+      // route, so descriptor resolution must not be downgraded to a background
+      // spawn while the activation is foreground.
+      getConnectionFor({ connectionId, profile, priority: 'foreground' }),
       DESCRIPTOR_LOOKUP_TIMEOUT_MS,
       `Timed out resolving the connection descriptor for agent "${connectionId}:${profile}"`
     )

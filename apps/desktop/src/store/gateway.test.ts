@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { RECONNECT_ATTEMPT_TIMEOUT_MS } from '@/lib/with-timeout'
+
 // Connection lifecycle for registry-scoped secondary gateways:
 //
 //  1. Removing a connection must dispose its secondaries — remote/cloud
@@ -50,6 +52,7 @@ const {
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForProfile,
+  openGatewayForProfile,
   openGatewayForAgent,
   pruneSecondaryGateways,
   setPrimaryGateway
@@ -133,7 +136,10 @@ describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094
 
     let failFirst = true
 
-    const getConnection = vi.fn(async ({ profile }: { profile: string }) => ({
+    const getConnection = vi.fn(async (
+      { profile }: { profile: string },
+      _options?: { priority?: 'foreground'; speculative?: boolean }
+    ) => ({
       authMode: 'token',
       baseUrl: `https://${profile}.invalid`,
       mode: 'local',
@@ -160,6 +166,197 @@ describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094
     failFirst = false
     await vi.runAllTimersAsync()
     expect(gatewayMocks.instances[0].connectionState).toBe('open')
+    // This route never became active, so recovery remains speculative and
+    // cannot occupy a queued local-pool slot.
+    expect(getConnection.mock.calls.at(-1)?.[1]).toEqual({ speculative: true })
+  })
+
+  it('uses foreground recovery when the selected profile loses its socket', async () => {
+    vi.useFakeTimers()
+
+    let failReconnect = false
+
+    const getConnection = vi.fn(async (
+      { profile }: { profile: string },
+      _options?: { priority?: 'foreground'; speculative?: boolean }
+    ) => ({
+      authMode: 'token',
+      baseUrl: `https://${profile}.invalid`,
+      mode: 'local',
+      profile,
+      token: 'fake-test-token',
+      wsUrl: `wss://${profile}.invalid/ws`
+    }))
+
+    installDesktop({ getConnection })
+    await ensureGatewayForProfile('work')
+    ;(activeGateway() as unknown as { connectionState: string }).connectionState = 'closed'
+    gatewayMocks.connect.mockImplementation(async () => {
+      if (failReconnect) {
+        throw new Error('backend unreachable')
+      }
+    })
+    failReconnect = true
+
+    await expect(ensureGatewayForProfile('work')).rejects.toThrow('backend unreachable')
+    failReconnect = false
+    await vi.runAllTimersAsync()
+
+    expect(getConnection.mock.calls.at(-1)?.[1]).toEqual({ priority: 'foreground' })
+  })
+
+  it('retries foreground after it promotes a rejected speculative dial', async () => {
+    let rejectSpeculative!: (reason?: unknown) => void
+
+    const speculative = new Promise<never>((_resolve, reject) => {
+      rejectSpeculative = reject
+    })
+
+    const connection = {
+      authMode: 'token',
+      baseUrl: 'https://work.invalid',
+      mode: 'local',
+      profile: 'work',
+      token: 'fake-test-token',
+      wsUrl: 'wss://work.invalid/ws'
+    }
+
+    const getConnection = vi
+      .fn()
+      // Background route probe: this is a dedicated secondary, not shared primary.
+      .mockResolvedValueOnce({ ...connection, sharedPrimary: false })
+      // Its speculative secondary dial is rejected after the user clicks.
+      .mockImplementationOnce(() => speculative)
+      // The foreground route probe stays dedicated.
+      .mockResolvedValueOnce({ ...connection, sharedPrimary: false })
+      // Main promotes the pool spawn, then the renderer redials the socket.
+      .mockResolvedValueOnce(connection)
+      .mockResolvedValueOnce(connection)
+
+    installDesktop({ getConnection })
+
+    const warming = openGatewayForProfile('work', { speculative: true })
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledTimes(2))
+
+    const selecting = ensureGatewayForProfile('work')
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledTimes(4))
+    rejectSpeculative(new Error('local pool is full'))
+
+    await expect(warming).rejects.toThrow('local pool is full')
+    await expect(selecting).resolves.toBeUndefined()
+    expect(activeGateway()).toBe(gatewayMocks.instances[0])
+    expect(gatewayMocks.instances[0].connectionState).toBe('open')
+    expect(getConnection.mock.calls.slice(-2)).toEqual([
+      ['work', { priority: 'foreground' }],
+      ['work', { priority: 'foreground' }]
+    ])
+  })
+
+  it('bounds a foreground promotion after the speculative dial is rejected', async () => {
+    vi.useFakeTimers()
+
+    let rejectSpeculative!: (reason?: unknown) => void
+
+    const speculative = new Promise<never>((_resolve, reject) => {
+      rejectSpeculative = reject
+    })
+
+    const stalledPromotion = new Promise<never>(() => {})
+
+    const connection = {
+      authMode: 'token',
+      baseUrl: 'https://work.invalid',
+      mode: 'local',
+      profile: 'work',
+      token: 'fake-test-token',
+      wsUrl: 'wss://work.invalid/ws'
+    }
+
+    const getConnection = vi
+      .fn()
+      .mockResolvedValueOnce({ ...connection, sharedPrimary: false })
+      .mockImplementationOnce(() => speculative)
+      .mockResolvedValueOnce({ ...connection, sharedPrimary: false })
+      .mockImplementationOnce(() => stalledPromotion)
+
+    installDesktop({ getConnection })
+
+    const warming = openGatewayForProfile('work', { speculative: true })
+
+    const warmingFailure = warming.then(
+      () => undefined,
+      error => error
+    )
+
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledTimes(2))
+
+    const selecting = ensureGatewayForProfile('work')
+
+    const selectingFailure = selecting.then(
+      () => undefined,
+      error => error
+    )
+
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledTimes(4))
+    rejectSpeculative(new Error('local pool is full'))
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_ATTEMPT_TIMEOUT_MS)
+
+    await expect(warmingFailure).resolves.toMatchObject({ message: 'local pool is full' })
+    await expect(selectingFailure).resolves.toMatchObject({ message: 'local pool is full' })
+  })
+
+  it('handles a rejected foreground promotion before the speculative dial settles', async () => {
+    let rejectSpeculative!: (reason?: unknown) => void
+
+    const speculative = new Promise<never>((_resolve, reject) => {
+      rejectSpeculative = reject
+    })
+
+    const connection = {
+      authMode: 'token',
+      baseUrl: 'https://work.invalid',
+      mode: 'local',
+      profile: 'work',
+      token: 'fake-test-token',
+      wsUrl: 'wss://work.invalid/ws'
+    }
+
+    const getConnection = vi
+      .fn()
+      .mockResolvedValueOnce({ ...connection, sharedPrimary: false })
+      .mockImplementationOnce(() => speculative)
+      .mockResolvedValueOnce({ ...connection, sharedPrimary: false })
+      .mockRejectedValueOnce(new Error('foreground promotion refused'))
+
+    installDesktop({ getConnection })
+
+    const warming = openGatewayForProfile('work', { speculative: true })
+
+    const warmingFailure = warming.then(
+      () => undefined,
+      error => error
+    )
+
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledTimes(2))
+
+    const selecting = ensureGatewayForProfile('work')
+
+    const selectingFailure = selecting.then(
+      () => undefined,
+      error => error
+    )
+
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledTimes(4))
+
+    // The foreground request rejects before hydration gives up. Its rejection
+    // must already be observed; the later original failure remains the one
+    // surfaced to the user.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    rejectSpeculative(new Error('local pool is full'))
+
+    await expect(warmingFailure).resolves.toMatchObject({ message: 'local pool is full' })
+    await expect(selectingFailure).resolves.toMatchObject({ message: 'local pool is full' })
   })
 
   it('activates the secondary when connect succeeds', async () => {

@@ -219,7 +219,9 @@ describe('selectProfile startup preference (#79886)', () => {
     selectProfile('macmini-hermes')
 
     await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('macmini-hermes'))
-    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledWith('macmini-hermes'))
+    await vi.waitFor(() =>
+      expect(getConnection).toHaveBeenCalledWith('macmini-hermes', { priority: 'foreground' })
+    )
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(rememberProfile).not.toHaveBeenCalled()

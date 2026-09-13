@@ -352,8 +352,9 @@ describe('retireLocalProfileGateways', () => {
 
 describe('reconnectSecondaryGateways', () => {
   it('force-redials an open secondary whose transport may be half-open after wake', async () => {
-    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
-      descriptorFor(connectionId, profile)
+    const getConnectionFor = vi.fn(
+      async ({ connectionId, profile }: { connectionId: string; profile: string; priority?: 'foreground' }) =>
+        descriptorFor(connectionId, profile)
     )
 
     installDesktop({ getConnectionFor })
@@ -369,6 +370,11 @@ describe('reconnectSecondaryGateways', () => {
     })
     expect(gatewayMocks.instances[0].close).toHaveBeenCalledOnce()
     expect(getConnectionFor).toHaveBeenCalledTimes(2)
+    expect(getConnectionFor.mock.calls.at(-1)?.[0]).toMatchObject({
+      connectionId: 'homelab',
+      profile: 'default',
+      priority: 'foreground'
+    })
     expect(gatewayMocks.instances[0].connectionState).toBe('open')
   })
 })

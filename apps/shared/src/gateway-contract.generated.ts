@@ -606,6 +606,7 @@ export interface Usage {
   cost_usd?: number | null
   cost_status?: string | null
   plan_gauge?: PlanGauge | null
+  turn_timing?: TurnTiming | null
   [key: string]: unknown
 }
 /** ``gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar. */
@@ -614,6 +615,12 @@ export interface PlanGauge {
   label: string
   used_bp: number
   resets_at_ms?: number | null
+}
+/** Per-turn model-vs-tool split from ``_get_usage`` (``display.turn_timing``). Each key is present only when the turn actually measured it: a Codex app-server turn carries no ``api_duration``, so ``model_seconds`` is absent rather than 0. */
+export interface TurnTiming {
+  model_seconds?: number | null
+  started_at?: number | null
+  first_token_at?: number | null
 }
 export interface McpServerStatus {
   name?: string
@@ -3500,6 +3507,7 @@ export interface SessionUsageResult {
   cost_usd?: number | null
   cost_status?: string | null
   plan_gauge?: PlanGauge | null
+  turn_timing?: TurnTiming | null
   credits_lines?: string[] | null
   credits_usage_window?: boolean | null
   [key: string]: unknown

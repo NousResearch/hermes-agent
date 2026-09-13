@@ -8,6 +8,9 @@
  * rather than inside either one.
  */
 
+import type { ToolCallMessagePart } from '@assistant-ui/react'
+
+import { mcpTargets } from '@/lib/connector-tools'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 
 const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
@@ -26,18 +29,24 @@ export function isFileEditTool(toolName: string): boolean {
 //   - `clarify`, `image_generate` and `delegate_task` bypass ToolEntry to
 //     render their own markup: a question the user has to answer, an image
 //     they asked for, the several agents a fan-out is running.
-//   - `setup_mcp` and `manage_connections` are inline consent cards the user has to
-//     act on. Folding it into a "Using 2 tools" summary hides the buttons.
+//   - `manage_connections` is an inline consent card the user has to act on
+//     (MCP approvals always; managed connectors under the onboarding gate).
+//     Folding it into a "Using 2 tools" summary hides the buttons.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
-const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate', 'setup_mcp'])
+const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate'])
 
-export function isCardTool(toolName: string): boolean {
+// The run splitter keys by name only; a `manage_connections` part it has already
+// classified as a card arrives under this marker (see ToolGroupSlot).
+export const CONNECTION_CARD_KEY = 'manage_connections:card'
+
+export function isCardTool(toolName: string, args?: ToolCallMessagePart['result']): boolean {
   return (
     CARD_TOOL_NAMES.has(toolName) ||
+    toolName === CONNECTION_CARD_KEY ||
     isFileEditTool(toolName) ||
-    (toolName === 'manage_connections' && isOnboardingEnabled())
+    (toolName === 'manage_connections' && (isOnboardingEnabled() || mcpTargets(toolName, args).length > 0))
   )
 }
 

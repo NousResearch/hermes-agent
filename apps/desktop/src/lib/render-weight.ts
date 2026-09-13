@@ -1,3 +1,5 @@
+import type { ToolCallMessagePart } from '@assistant-ui/react'
+
 import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
 
 /**
@@ -167,7 +169,7 @@ function partPaintWeight(part: unknown, measure: (parts: readonly unknown[]) => 
     return 0
   }
 
-  if (!isCardTool(toolName)) {
+  if (!isCardTool(toolName, part.args as ToolCallMessagePart['result'])) {
     return COLLAPSED_ROW_WEIGHT
   }
 

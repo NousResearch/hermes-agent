@@ -771,6 +771,17 @@ export interface SessionResumeResponse {
     questions?: unknown
     request_id?: string
   }
+  // The connection operation (manage_connections MCP approval card) still
+  // blocking this session. The live `connection.request` payload verbatim:
+  // `deadline_at` is server-owned and a restored card keeps it.
+  pending_connection?: {
+    deadline_at?: number
+    op_id?: string
+    reason?: string
+    request_id?: string
+    targets?: unknown
+    timeout_seconds?: number
+  }
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]

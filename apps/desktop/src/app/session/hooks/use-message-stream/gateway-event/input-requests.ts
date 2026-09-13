@@ -1,4 +1,5 @@
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
+import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall, settlePendingClarifyToolCall } from '@/lib/chat-messages'
 import {
@@ -10,7 +11,12 @@ import {
   warnDroppedChoices
 } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
-import { setMcpSetupRequest } from '@/store/mcp-setup'
+import {
+  $connectionRequests,
+  clearConnectionRequest,
+  normalizeConnectionRequest,
+  setConnectionRequest
+} from '@/store/connection-request'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
   $vaultCodeRequests,
@@ -30,7 +36,7 @@ import { requestScrollToBottom } from '@/store/thread-scroll'
 
 import type { GatewayEventContext } from './types'
 
-/** The blocking-input family: clarify / MCP setup consent / approval / sudo /
+/** The blocking-input family: clarify / connection approval / approval / sudo /
  *  secret requests. The Python side is blocked on the matching *.respond, so
  *  each of these must be parked per-session and surfaced. */
 export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
@@ -237,36 +243,47 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (event.type === 'mcp.setup.request') {
-    // setup_mcp tool (desktop GUI): the agent proposed an MCP server and
-    // the Python side is blocked on mcp.setup.respond. Park the request
-    // per-session (like clarify) and upsert a stable pending tool row so
-    // the inline consent card has somewhere to render even when the
-    // tool.start event was missed (stream reconnect / hydration race).
-    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
-    const server = typeof payload?.server === 'string' ? payload.server : ''
-    const rawAction = typeof payload?.action === 'string' ? payload.action : 'install'
-    const action = rawAction === 'enable' || rawAction === 'authorize' ? rawAction : 'install'
-    const reason = typeof payload?.reason === 'string' ? payload.reason : ''
+  if (event.type === 'connection.request') {
+    // manage_connections with MCP targets (desktop GUI): the agent opened a
+    // connection operation and the Python side is blocked on
+    // connection.respond until it settles. Park the request per-session (like
+    // clarify) and upsert a stable pending tool row so the inline card has
+    // somewhere to render even when the tool.start event was missed (stream
+    // reconnect / hydration race).
+    const request = normalizeConnectionRequest(payload, sessionId ?? null)
 
-    if (requestId && server) {
-      setMcpSetupRequest({ action, reason, requestId, server, sessionId: sessionId ?? null })
+    if (request) {
+      setConnectionRequest(request)
 
       if (sessionId) {
-        upsertToolCall(
-          sessionId,
-          { args: { action, reason, server }, name: 'setup_mcp', tool_id: requestId },
-          'running'
-        )
+        upsertToolCall(sessionId, connectionRequestToolPayload(request), 'running')
         updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
       }
 
       dispatchNativeNotification({
-        body: reason || server,
+        body: request.reason || request.targets.map(target => target.name).join(', '),
         kind: 'input',
         sessionId,
         title: translateNow('notifications.native.inputTitle')
       })
+    }
+
+    return true
+  }
+
+  if (event.type === 'connection.expire') {
+    // The operation settled server-side (deadline or interrupt) with the card
+    // still open. Request-correlated: a late expire for an older operation
+    // must not erase a newer card raised by the same session.
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    const request = sessionId ? $connectionRequests.get()[sessionId] : undefined
+
+    if (requestId && request && request.requestId === requestId) {
+      clearConnectionRequest(requestId, sessionId ?? null)
+
+      if (sessionId) {
+        updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+      }
     }
 
     return true

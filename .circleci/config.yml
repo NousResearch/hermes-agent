@@ -10,7 +10,12 @@ jobs:
       - checkout
       - run:
           name: Install uv
-          command: python -m pip install --upgrade uv
+          command: |
+            set -euo pipefail
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASH_ENV"
+            source "$BASH_ENV"
+            uv --version
       - run:
           name: Sync locked development environment
           command: uv sync --extra dev --frozen

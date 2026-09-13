@@ -433,6 +433,15 @@ def _name_only_env_args(names) -> list[str]:
     return [arg for key in sorted(names) for arg in ("-e", key)]
 
 
+def _credential_file_mounts_for_boundary(profile_boundary) -> list[dict[str, str]]:
+    """Quarantine process-global credential mount config under multiplexing."""
+    if profile_boundary is not None:
+        return []
+    from tools.credential_files import get_credential_file_mounts
+
+    return get_credential_file_mounts()
+
+
 # Mount kinds declared by skills/credential_files: (getter, expects_file, log noun).
 _RO_MOUNT_SOURCES = (
     ("get_credential_file_mounts", True, "credential"),
@@ -440,7 +449,7 @@ _RO_MOUNT_SOURCES = (
     ("get_cache_directory_mounts", False, "cache dir"))
 
 
-def _readonly_skill_mount_args() -> list[str]:
+def _readonly_skill_mount_args(profile_boundary=None) -> list[str]:
     """``-v host:container:ro`` args for credential files, skill dirs and cache dirs. Read-only so the
     container can authenticate/read but never modify host state. Missing or wrong-kind sources are
     skipped with a warning (Docker-in-Docker auto-creates a missing file source as a directory,
@@ -449,7 +458,12 @@ def _readonly_skill_mount_args() -> list[str]:
     try:
         import tools.credential_files as cf
         for getter, expects_file, noun in _RO_MOUNT_SOURCES:
-            for entry in getattr(cf, getter)():
+            entries = (
+                _credential_file_mounts_for_boundary(profile_boundary)
+                if getter == "get_credential_file_mounts"
+                else getattr(cf, getter)()
+            )
+            for entry in entries:
                 src = Path(entry["host_path"])
                 if expects_file:
                     problem = ("source is a directory (likely Docker-in-Docker auto-creation)" if src.is_dir()
@@ -540,7 +554,7 @@ class DockerEnvironment(BaseEnvironment):
 
         resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
         volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
-        volume_args.extend(_readonly_skill_mount_args())
+        volume_args.extend(_readonly_skill_mount_args(self._profile_env_boundary))
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
         volume_args.extend(egress_volume_args)
@@ -826,8 +840,10 @@ class DockerEnvironment(BaseEnvironment):
         return _name_only_env_args(exec_env)
 
     def _resolve_passthrough_env(self) -> tuple[dict[str, str], set[str]]:
-        """See ``remote_common.resolve_passthrough_env``; explicit docker_forward_env bypasses the blocklist."""
-        return resolve_passthrough_env(self._forward_env, hermes_env_loader=_load_hermes_env_vars)
+        """Resolve through the shared owner; explicit grants never include internal secrets."""
+        return resolve_passthrough_env(
+            self._forward_env, hermes_env_loader=_load_hermes_env_vars,
+            profile_boundary=getattr(self, "_profile_env_boundary", None))
 
     def _build_runtime_env_args_with_unsets(self) -> tuple[list[str], tuple[str, ...], dict[str, str]]:
         """Runtime name-only forwarding args, names absent from scope, and the values
@@ -864,8 +880,18 @@ class DockerEnvironment(BaseEnvironment):
             cmd.extend(runtime_args)
         cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
 
-        client_env = self._docker_client_env(env_values)
-        return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
+        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_FORCE_PREFIX
+
+        # Only resolved operator grants enter the sanitizer's explicit-extra lane.
+        # Putting them in the base env loses Tier-2 grants; bypassing the sanitizer
+        # would instead expose ambient provider and Hermes-internal credentials.
+        boundary = getattr(self, "_profile_env_boundary", None)
+        return _popen_bash(
+            cmd, stdin_data, env=self._docker_client_env(env_values),
+            extra_env={f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}{k}": v for k, v in env_values.items()},
+            profile_home=boundary.target_home if boundary else None,
+            source_profile_home=boundary.source_home if boundary else None,
+            enforce_profile_boundary=boundary is not None)
 
     # --- "No such container" recovery ---
     _NO_CONTAINER_PATTERNS = ("No such container", "is not running", "no such container")

@@ -198,6 +198,41 @@ transport and its routing table to decide which profile an event belongs to.
 Request-level identity and per-user authorization above the profile layer are
 out of scope for this document.
 
+## Child-environment repair lineage
+
+The child-environment work in [#94878](https://github.com/NousResearch/hermes-agent/pull/94878)
+is a composite continuation. [#91293](https://github.com/NousResearch/hermes-agent/pull/91293)
+remains a source/provenance carrier; the recorded
+[supersession review](https://github.com/NousResearch/hermes-agent/pull/91293#pullrequestreview-5024436809)
+selected #94878 as the implementation survivor. That historical selection does not
+approve later heads or establish that every source change has been integrated.
+
+Credits carried forward from #91293:
+
+| Contributor | Contribution and source |
+| --- | --- |
+| @wz-heng | Authored [#83007](https://github.com/NousResearch/hermes-agent/pull/83007), the earliest fix on the subprocess surface of #82936, as credited in [@teknium1's September 10 comment](https://github.com/NousResearch/hermes-agent/pull/83007#issuecomment-5624529181). Its terminal/PTY and Kanban scoping work is a predecessor to the provenance-based continuation. Original source commit: [`22b395e824b7463b7e087b8ad0e89f08852fb244`](https://github.com/NousResearch/hermes-agent/commit/22b395e824b7463b7e087b8ad0e89f08852fb244). |
+| @neo-wanderer | Original report, [#82936](https://github.com/NousResearch/hermes-agent/issues/82936). |
+| @necoweb3 | Kanban hardening predecessor, [#55600](https://github.com/NousResearch/hermes-agent/pull/55600). |
+| @egilewski | Identified persistent-snapshot and standalone-Kanban residual gaps in the [#83007 review thread](https://github.com/NousResearch/hermes-agent/pull/83007#issuecomment-5256670464). |
+| @andrexibiza | Traced the four residual profile-boundary gaps in [#83007](https://github.com/NousResearch/hermes-agent/pull/83007#pullrequestreview-4951323038), reviewed lifecycle repairs, and documented the composite merge topology. |
+| @asimons81 | Proposed the [ownership/provenance-based closure approach](https://github.com/NousResearch/hermes-agent/pull/83007#issuecomment-5322947243). |
+| @RecursiveIntell | Implemented the provenance-based continuation, lifecycle regressions, and subsequent reconciliation work. |
+
+The composite also retains Andrex/Axl Ibiza's terminal/backend sanitization
+lineage from #77027, `srojk34`'s Singularity regression provenance from #57639,
+Ayush Nangia's executable profile-boundary class-map contribution from #83756,
+and Lester Liang's multiplex dotenv-isolation contribution from #77592.
+
+This record preserves [@wz-heng's September 11 attribution request](https://github.com/NousResearch/hermes-agent/pull/83007#issuecomment-5628234071).
+The original #83007 commit is linked as predecessor provenance; this attribution
+update does not import that commit or assign authorship of later repairs to its
+author. Named credit is distinct from GitHub's commit-derived contributor
+statistics. The contributor rules in `contributors/README.md` automatically
+resolve its GitHub noreply identity, so no redundant email mapping or invented
+co-author trailer is needed. Preserve these credits in eventual landing and
+closure records without treating this document as approval or issue closure.
+
 ## Related
 
 - `docs/profile-routing.md` — inbound routing schema and matching rules.

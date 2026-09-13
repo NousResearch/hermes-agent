@@ -19,19 +19,8 @@ change is backward-compatible with existing suites.
 
 from __future__ import annotations
 
-import sys
-import types
 from unittest.mock import MagicMock
 
-import pytest
-
-
-@pytest.fixture(autouse=True)
-def _mock_dotenv(monkeypatch):
-    """gateway.run imports dotenv at module load; stub so tests run bare."""
-    fake = types.ModuleType("dotenv")
-    fake.load_dotenv = lambda *a, **kw: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake)
 
 
 def _make_runner():

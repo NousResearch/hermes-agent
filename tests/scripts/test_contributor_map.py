@@ -179,3 +179,30 @@ def test_case_collision_uses_casefold(emails_dir):
     (emails_dir / "strasse@example.com").write_text("someone\n")
     assert add_contributor("STRASSE@example.com", "someone") == 1
     assert add_contributor("straße@example.com", "someone") == 1
+
+
+def test_pr_audit_honors_mailmap_and_still_rejects_unknown_authors(tmp_path, monkeypatch):
+    import audit_pr_attribution as audit
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-c", "user.name=Test Contributor", "-c", "user.email=test@example.com",
+             "-c", "commit.gpgsign=false", "-c", f"core.hooksPath={tmp_path / 'no-hooks'}",
+             *args], cwd=tmp_path, text=True, encoding="utf-8",
+        ).strip()
+
+    git("init")
+    git("commit", "--allow-empty", "-m", "base")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    raw_emails = {"Person@example.com", "person@example.com", "unknown@example.com"}
+    for email in sorted(raw_emails):
+        git("commit", "--allow-empty", "--author", f"Contributor <{email}>", "-m", "contribution")
+    (tmp_path / ".mailmap").write_text(
+        "Contributor <123+contributor@users.noreply.github.com> <person@example.com>\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(audit, "REPO_ROOT", tmp_path)
+
+    assert audit.new_emails() == ["123+contributor@users.noreply.github.com", "unknown@example.com"]
+    assert [email for email in audit.new_emails() if not audit.is_mapped(email)] == ["unknown@example.com"]
+    assert set(git("log", "origin/main..HEAD", "--format=%ae").splitlines()) == raw_emails

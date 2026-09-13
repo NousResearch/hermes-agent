@@ -208,13 +208,8 @@ def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
     assert not any("value_from_dotenv" in a for a in args)
 
 
-def test_init_env_args_uses_hermes_dotenv_for_empty_shell_env(monkeypatch):
-    """A transient empty-string in the live env must fall back to .env, not win.
-
-    Regression: the disk fallback used to fire only on `value is None`, so a
-    present-but-empty `MY_SECRET=""` skipped it and was forwarded as `-e
-    MY_SECRET=`, clobbering the correct value sitting in ~/.hermes/.env.
-    """
+def test_init_env_args_preserves_empty_shell_env_over_dotenv(monkeypatch):
+    """A present empty process value remains distinct from an absent value."""
     env = _make_execute_only_env(["MY_SECRET"])
 
     monkeypatch.setenv("MY_SECRET", "")
@@ -222,10 +217,9 @@ def test_init_env_args_uses_hermes_dotenv_for_empty_shell_env(monkeypatch):
 
     args = env._build_init_env_args()
 
-    # Assert on the resolved value, not the printed -e flag: the disk value
-    # must win and a blank value must never be forwarded.
+    # Assert on the resolved value, not the printed name-only -e flag.
     assert "MY_SECRET" in args
-    assert env._init_env_values["MY_SECRET"] == "value_from_dotenv"
+    assert env._init_env_values["MY_SECRET"] == ""
 
 
 def test_init_env_args_uses_active_profile_for_forwarded_env(monkeypatch):

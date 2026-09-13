@@ -3132,11 +3132,14 @@ def _launch_external_cron_worker(job: dict) -> bool:
     hydrate_profile_secret_sources(profile_home)
     secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
     try:
-        worker_env = strip_launch_profile_env(build_subprocess_env(
+        # Remove launch settings before projecting this worker's target values.
+        worker_env = build_subprocess_env(
+            strip_launch_profile_env(dict(os.environ), target_home=profile_home),
             scrub_secrets=multiplex_active,
             inherit_profile_home=True,
+            profile_home=profile_home,
             extra={"HERMES_HOME": str(profile_home)},
-        ))
+        )
     finally:
         reset_secret_scope(secret_token)
     worker_env = systemd_user_bus_env(worker_env)

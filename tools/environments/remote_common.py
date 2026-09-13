@@ -8,7 +8,7 @@ import subprocess
 from typing import Callable, Iterable
 
 from tools.environments.base_session_env import _SHELL_ENV_NAME_RE
-from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST, _is_hermes_internal_secret
+from tools.environments.local_env_policy import _is_blocked_provider_env, _is_hermes_internal_secret
 
 
 def load_hermes_env_vars() -> dict[str, str]:
@@ -22,39 +22,47 @@ def load_hermes_env_vars() -> dict[str, str]:
 
 def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
                             hermes_env_loader: Callable[[], dict[str, str]] = load_hermes_env_vars,
+                            *, profile_boundary=None,
                             ) -> tuple[dict[str, str], set[str]]:
-    """Values to forward into a remote shell plus the scoped names that must be unset there.
+    """Resolve names and values under the same profile authority.
 
-    Implicit passthrough (skill ``required_environment_variables`` + ``terminal.env_passthrough``)
-    is filtered through the Hermes provider-credential blocklist and the dynamic internal-secret
-    check; ``explicit_forward`` entries (docker_forward_env) are an operator opt-in that bypasses
-    both. Each value is the routed profile's secret when multiplex is active; a name the active
-    scope lacks is returned in the unset set so a shared sandbox cannot leak another profile's
-    value.
+    Explicit Docker grants may forward provider keys, never Hermes-internal
+    secrets. A missing scoped value must be unset remotely; an empty value is
+    still a value. Do not fall back to the launch profile on policy failures.
     """
-    passthrough_keys: set[str] = set()
-    resolve_passthrough_value = None
-    multiplex_active = False
-    is_global_env = lambda _name: False  # noqa: E731
-    try:
-        from tools.env_passthrough import get_all_passthrough, resolve_passthrough_value
-        from agent.secret_scope import _is_global_env as is_global_env, is_multiplex_active
-        multiplex_active = is_multiplex_active()
-        passthrough_keys = set(get_all_passthrough())
-    except Exception:
-        pass
-    implicit_forward = {k for k in passthrough_keys if not _is_hermes_internal_secret(k)}
-    forward_keys = set(explicit_forward) | (implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
-    hermes_env = hermes_env_loader() if forward_keys else {}
+    from tools.env_passthrough import get_all_passthrough, resolve_passthrough_value
+    from agent.secret_scope import (
+        _is_global_env, build_profile_env_boundary, current_secret_scope, is_multiplex_active)
+
+    boundary = profile_boundary
+    if boundary is not None:
+        # Refresh values and validate scope identity/generation at execution time.
+        boundary = build_profile_env_boundary(boundary.source_home, boundary.target_home)
+    multiplex_active = is_multiplex_active()
+    profile_home = boundary.target_home if boundary is not None else None
+    passthrough_keys = get_all_passthrough(profile_home=profile_home)
+    forward_keys = {
+        k for k in explicit_forward if not _is_hermes_internal_secret(k, profile_home=profile_home)
+    } | {k for k in passthrough_keys
+         if not _is_hermes_internal_secret(k, profile_home=profile_home) and not _is_blocked_provider_env(k)}
+    forward_keys = {k for k in forward_keys if _SHELL_ENV_NAME_RE.fullmatch(k)}
+    target_values = boundary.compiled_target_values() if boundary is not None else None
+    hermes_env = hermes_env_loader() if forward_keys and boundary is None else {}
     exec_env: dict[str, str] = {}
     unset_names: set[str] = set()
     for key in sorted(forward_keys):
-        value = os.getenv(key) or hermes_env.get(key)
-        if resolve_passthrough_value is not None:
+        if target_values is not None and not _is_global_env(key):
+            value = target_values.get(key)
+            if current_secret_scope() is not None:
+                value = resolve_passthrough_value(key, value)
+        else:
+            # Presence, not truthiness, selects the process value: an explicit
+            # empty value is authoritative and must not revive a stale .env value.
+            value = os.environ[key] if key in os.environ else hermes_env.get(key)
             value = resolve_passthrough_value(key, value)
         if value is not None:
             exec_env[key] = value
-        elif multiplex_active and not is_global_env(key) and _SHELL_ENV_NAME_RE.fullmatch(key):
+        elif (multiplex_active or boundary is not None) and not _is_global_env(key):
             unset_names.add(key)
     return exec_env, unset_names
 

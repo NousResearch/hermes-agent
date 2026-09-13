@@ -43,7 +43,7 @@ def test_checkpoint_and_snapshot_paths_follow_active_profile(two_profiles):
     _under(prof_a, pr._checkpoint_path)  # warm under A
     assert _under(prof_b, pr._checkpoint_path) == prof_b / "processes.json"
     assert _under(prof_b, modal._snapshot_store) == prof_b / "modal_snapshots.json"
-    assert _under(prof_b, singularity._snapshot_store) == prof_b / "singularity_snapshots.json"
+    assert _under(prof_b, singularity._snapshot_store_path) == prof_b / "singularity_snapshots.json"
     assert _under(prof_a, pr._checkpoint_path) == prof_a / "processes.json"
 
 

@@ -2428,6 +2428,170 @@ class TestWebServerEndpoints:
         assert payload["messages"][-1]["content"] == "msg 500"
         assert calls == [(500, 0), (500, 500)]
 
+    # ── 飞书扫码接入（面板里的第二步）─────────────────────────────
+    #
+    # 这几条盯的是**对外契约**：凭据只进不出（响应里永远没有 app_secret）、
+    # 轮询频率听平台的、终态用 410 表达、apply 之后 env 真的落盘并触发重启。
+
+    _FEISHU_FAKE_QR_URL = "https://open.feishu.cn/page/launcher?user_code=ABCD-1234&from=hermes&tp=hermes"
+
+    def _patch_feishu_adapter(self, monkeypatch, *, polls, begin_expire_in=3600):
+        """把适配器里的设备码原语换成可控的假实现，返回「被问了几次」的计数器。"""
+        from plugins.platforms.feishu import adapter
+
+        state = {"polls": 0}
+
+        def fake_begin(domain):
+            return {
+                "device_code": "dev-code-1", "qr_url": self._FEISHU_FAKE_QR_URL,
+                "user_code": "ABCD-1234", "interval": 5, "expire_in": begin_expire_in,
+            }
+
+        def fake_post(base_url, body):
+            assert body["action"] == "poll"
+            state["polls"] += 1
+            return polls[min(state["polls"], len(polls)) - 1]
+
+        monkeypatch.setattr(adapter, "_init_registration", lambda domain: None)
+        monkeypatch.setattr(adapter, "_begin_registration", fake_begin)
+        monkeypatch.setattr(adapter, "_post_registration", fake_post)
+        return state
+
+    @staticmethod
+    def _clear_feishu_sessions():
+        with _web_server_messaging._feishu_onboarding_lock:
+            _web_server_messaging._feishu_onboarding_sessions.clear()
+
+    def test_feishu_onboarding_start_returns_link_without_credentials(self, monkeypatch):
+        self._clear_feishu_sessions()
+        self._patch_feishu_adapter(monkeypatch, polls=[{"error": "authorization_pending"}])
+
+        resp = self.client.post("/api/messaging/feishu/onboarding/start", json={"domain": "feishu"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "pending"
+        assert data["qr_url"] == self._FEISHU_FAKE_QR_URL
+        assert data["user_code"] == "ABCD-1234"
+        assert data["domain"] == "feishu"
+        # 窗口来自适配器读到的 expires_in（3600），不是被砍过的 600。
+        assert data["expires_in"] > 600
+        # ★ 还没授权，凭据一个都不该出现；app_secret 更是任何响应里都不许有。
+        assert "app_secret" not in json.dumps(data)
+        assert not data.get("app_id")
+
+    def test_feishu_onboarding_unknown_domain_falls_back_to_feishu(self, monkeypatch):
+        self._clear_feishu_sessions()
+        self._patch_feishu_adapter(monkeypatch, polls=[{"error": "authorization_pending"}])
+
+        resp = self.client.post("/api/messaging/feishu/onboarding/start", json={"domain": "not-a-brand"})
+        assert resp.status_code == 200
+        assert resp.json()["domain"] == "feishu"
+
+    def test_feishu_onboarding_poll_is_throttled_by_platform_interval(self, monkeypatch):
+        """平台给的 interval 是对轮询频率的要求：连问两次也只该问平台一次。"""
+        self._clear_feishu_sessions()
+        state = self._patch_feishu_adapter(monkeypatch, polls=[{"error": "authorization_pending"}])
+
+        started = self.client.post("/api/messaging/feishu/onboarding/start", json={})
+        pairing_id = started.json()["pairing_id"]
+
+        first = self.client.get(f"/api/messaging/feishu/onboarding/{pairing_id}")
+        second = self.client.get(f"/api/messaging/feishu/onboarding/{pairing_id}")
+        assert first.status_code == 200 and second.status_code == 200
+        assert first.json()["status"] == "pending"
+        assert state["polls"] == 1, "间隔未到时不应再打平台接口"
+
+    def test_feishu_onboarding_becomes_ready_and_keeps_secret_off_the_wire(self, monkeypatch):
+        self._clear_feishu_sessions()
+        self._patch_feishu_adapter(monkeypatch, polls=[
+            {"error": "authorization_pending"},
+            {"client_id": "cli_from_scan", "client_secret": "sec_from_scan",
+             "user_info": {"open_id": "ou_scanner", "tenant_brand": "lark"}},
+        ])
+
+        started = self.client.post("/api/messaging/feishu/onboarding/start", json={})
+        pairing_id = started.json()["pairing_id"]
+
+        # 第一次轮询：还是 pending（并把它从 5s 节流里放出来）
+        self.client.get(f"/api/messaging/feishu/onboarding/{pairing_id}")
+        with _web_server_messaging._feishu_onboarding_lock:
+            _web_server_messaging._feishu_onboarding_sessions[pairing_id].last_poll_ts = 0
+
+        ready = self.client.get(f"/api/messaging/feishu/onboarding/{pairing_id}")
+        assert ready.status_code == 200
+        data = ready.json()
+        assert data["status"] == "ready"
+        assert data["app_id"] == "cli_from_scan"
+        # 平台说这是国际版企业 → 域名要跟着纠正，否则拿 lark 的凭据去连飞书域必然失败
+        assert data["domain"] == "lark"
+        assert "sec_from_scan" not in json.dumps(data)
+
+    def test_feishu_onboarding_apply_writes_env_and_restarts(self, monkeypatch):
+        self._clear_feishu_sessions()
+        self._patch_feishu_adapter(monkeypatch, polls=[
+            {"client_id": "cli_apply", "client_secret": "sec_apply", "user_info": {"open_id": "ou_x"}},
+        ])
+        from hermes_cli.config import load_config, load_env
+
+        restarts = []
+        monkeypatch.setattr(
+            _web_server_messaging, "_restart_gateway_after_feishu_onboarding",
+            lambda profile=None: restarts.append(profile) or {"restart_started": True, "restart_error": None},
+        )
+        # 未落盘任何 FEISHU_CONNECTION_MODE：apply 应补上 websocket（扫码建的应用只能走长连接）
+        import hermes_cli.config as config_mod
+        monkeypatch.setattr(config_mod, "get_env_value", lambda key: "")
+
+        started = self.client.post("/api/messaging/feishu/onboarding/start", json={})
+        pairing_id = started.json()["pairing_id"]
+        self.client.get(f"/api/messaging/feishu/onboarding/{pairing_id}")
+
+        applied = self.client.post(f"/api/messaging/feishu/onboarding/{pairing_id}/apply", json={})
+        assert applied.status_code == 200
+        body = applied.json()
+        assert body["ok"] is True and body["app_id"] == "cli_apply"
+        assert body["needs_restart"] is False
+        assert "sec_apply" not in json.dumps(body)
+        assert restarts == [None], "保存后必须触发一次重启（否则用户看到已开通、实际没生效）"
+
+        env = load_env()
+        assert env["FEISHU_APP_ID"] == "cli_apply"
+        assert env["FEISHU_APP_SECRET"] == "sec_apply"
+        assert env["FEISHU_DOMAIN"] == "feishu"
+        assert env["FEISHU_CONNECTION_MODE"] == "websocket"
+        assert load_config()["platforms"]["feishu"]["enabled"] is True
+
+        # 会话用完即弃：再查应是 404（凭据不该留在内存里）
+        assert self.client.get(f"/api/messaging/feishu/onboarding/{pairing_id}").status_code == 404
+
+    def test_feishu_onboarding_apply_requires_ready(self, monkeypatch):
+        self._clear_feishu_sessions()
+        self._patch_feishu_adapter(monkeypatch, polls=[{"error": "authorization_pending"}])
+
+        started = self.client.post("/api/messaging/feishu/onboarding/start", json={})
+        pairing_id = started.json()["pairing_id"]
+        resp = self.client.post(f"/api/messaging/feishu/onboarding/{pairing_id}/apply", json={})
+        assert resp.status_code == 409
+
+    def test_feishu_onboarding_denial_is_terminal_410(self, monkeypatch):
+        self._clear_feishu_sessions()
+        self._patch_feishu_adapter(monkeypatch, polls=[{"error": "access_denied"}])
+
+        started = self.client.post("/api/messaging/feishu/onboarding/start", json={})
+        pairing_id = started.json()["pairing_id"]
+        resp = self.client.get(f"/api/messaging/feishu/onboarding/{pairing_id}")
+        assert resp.status_code == 410
+        assert "denied" in resp.json()["detail"].lower()
+
+    def test_feishu_onboarding_cancel_drops_the_session(self, monkeypatch):
+        self._clear_feishu_sessions()
+        self._patch_feishu_adapter(monkeypatch, polls=[{"error": "authorization_pending"}])
+
+        started = self.client.post("/api/messaging/feishu/onboarding/start", json={})
+        pairing_id = started.json()["pairing_id"]
+        assert self.client.delete(f"/api/messaging/feishu/onboarding/{pairing_id}").status_code == 200
+        assert self.client.get(f"/api/messaging/feishu/onboarding/{pairing_id}").status_code == 404
+
 
 
 

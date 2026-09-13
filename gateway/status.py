@@ -402,9 +402,11 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     home_lc = str(profile_home).lower().replace("\\", "/")
     if profile_name is not None and profile_name != "default":
         return profile_flag_value(command_lc) == profile_name.lower() or f"hermes_home={home_lc}" in command_lc
-    # Default profile: accept unless argv names another profile or a conflicting explicit
-    # HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually arrives via the env).
-    if "--profile " in command_lc or " -p " in command_lc:
+    # Default profile: accept unless argv names another profile (any spelling the CLI pre-parser
+    # accepts, ``--profile=ops`` included -- a substring test let that gateway pass as the default's)
+    # or a conflicting explicit HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually
+    # arrives via the env).
+    if profile_flag_value(command_lc) is not None:
         return False
     return not ("hermes_home=" in command_lc and f"hermes_home={home_lc}" not in command_lc)
 

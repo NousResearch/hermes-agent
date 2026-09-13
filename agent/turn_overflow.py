@@ -276,19 +276,14 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
 
 def _clamp_output_cap(st: _Recovery, _retry: TurnRetryState, available_out: int, old_ctx: int) -> OverflowVerdict:
     """Output-cap error ("max_tokens too large": input fits but input + max_tokens >
-    window). The provider's available_tokens is the authoritative bound; also estimate
-    the real request shape (API-only content) and use the smaller minus a margin."""
+    window). The provider's available_tokens is the authoritative, request-specific
+    bound. Retry that exact value; local token estimates and safety margins are not
+    hard limits and must not reduce it."""
     agent = st.agent
     request_input_estimate = st.request_tokens()
-    local_available_out = old_ctx - request_input_estimate
-    if local_available_out > 0:
-        safe_out = max(1, min(available_out, local_available_out) - 64)
-    else:
-        # Local estimate can overshoot; fall back to the provider-reported budget.
-        safe_out = max(1, available_out - 64)
-    agent._ephemeral_max_output_tokens = safe_out
+    agent._ephemeral_max_output_tokens = available_out
     agent._buffer_vprint(
-        f"⚠️  Output cap too large for current prompt — retrying with max_tokens={safe_out:,} "
+        f"⚠️  Output cap too large for current prompt — retrying with max_tokens={available_out:,} "
         f"(provider_available={available_out:,}, estimated_request_tokens={request_input_estimate:,}; "
         f"context_length unchanged at {old_ctx:,})"
     )
@@ -296,17 +291,8 @@ def _clamp_output_cap(st: _Recovery, _retry: TurnRetryState, available_out: int,
     exhausted = st.count_attempt()
     if exhausted is not None:
         return exhausted
-    # Also compress history so the retry doesn't spin on max_tokens alone; dropping the
-    # middle window makes the total fit. Compression must never turn an output-cap error
-    # fatal — on error, fall through and retry on max_tokens alone.
-    try:
-        deferred, _shrank, _new_tokens = st.compress_scored_by_tokens(request_input_estimate)
-        if deferred is not None:
-            return deferred
-    except Exception:
-        logger.warning(
-            "%sOutput-cap compression hit an error; retrying on max_tokens only.", agent.log_prefix
-        )
+    # Input already fits. Compaction would discard usable conversation state and is
+    # unnecessary: the provider has supplied the exact completion remainder.
     _retry.restart_with_compressed_messages = True
     return st.done("break")
 

@@ -83,6 +83,21 @@ class TestParseMaximumOutputTokensCap:
             "max_tokens (98304) exceeds model's maximum output tokens (65536)"
         ) is True
 
+    def test_dispatcher_exact_available_output_format(self):
+        msg = (
+            "max_tokens=46380 exceeds available_tokens=46293 for "
+            "input_tokens=19243 and context_limit=65536"
+        )
+        assert parse_available_output_tokens_from_error(msg) == 46293
+
+    def test_dispatcher_zero_available_is_input_overflow(self):
+        msg = (
+            "estimated_input=80988, requested_output=None, max_tokens=None, "
+            "available_tokens=0, context_limit=65536"
+        )
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False
+
 
 class TestIsOutputCapError:
     """`is_output_cap_error` is the broader yes/no gate that keeps an
@@ -190,4 +205,3 @@ class TestParseVllmTokenBasedOutputCap:
             assert available < cap, "each retry must lower the cap"
             cap = available
         assert real_input + cap <= window, f"did not converge: cap={cap}"
-

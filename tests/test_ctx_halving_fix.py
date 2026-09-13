@@ -264,16 +264,16 @@ class TestContextNotHalvedOnOutputCapError:
         available_out = parse_available_output_tokens_from_error(error_msg)
         assert available_out == 20_000, "parser must detect the error"
 
-        # The fix: set ephemeral, skip context_length modification
-        agent._ephemeral_max_output_tokens = max(1, available_out - 64)
+        # The provider's request-specific remainder is authoritative.
+        agent._ephemeral_max_output_tokens = available_out
 
         # context_length must be untouched
         assert agent.context_compressor.context_length == old_ctx
-        assert agent._ephemeral_max_output_tokens == 19_936
+        assert agent._ephemeral_max_output_tokens == 20_000
 
 
-    def test_output_cap_error_safety_margin(self):
-        """The ephemeral value includes a 64-token safety margin below available_out."""
+    def test_output_cap_error_uses_exact_provider_remainder(self):
+        """The ephemeral value does not invent a margin below available_out."""
         from agent.model_metadata import parse_available_output_tokens_from_error
 
         error_msg = (
@@ -281,6 +281,4 @@ class TestContextNotHalvedOnOutputCapError:
             "- input_tokens: 190000 = available_tokens: 10000"
         )
         available_out = parse_available_output_tokens_from_error(error_msg)
-        safe_out = max(1, available_out - 64)
-        assert safe_out == 9_936
-
+        assert available_out == 10_000

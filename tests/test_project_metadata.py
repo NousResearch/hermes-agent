@@ -10,6 +10,16 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
+def test_project_version_matches_runtime_package_version():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        project_version = tomllib.load(handle)["project"]["version"]
+
+    from hermes_cli import __version__
+
+    assert project_version == __version__
+
+
 def _load_package_data():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:

@@ -21,7 +21,7 @@ class RewindTargetUnavailableError(ValueError):
 class RewindOutcome:
     prefix: List[Dict[str, Any]]  # history to install: the warm prefix when ``warm_history`` was given, else durable
     live_view: Dict[str, Any]  # canonical live projection of the rewound turn (prefill / retry source)
-    live_text: str
+    live_text: str  # lossless retry text when ``require_retryable``, else the display flattening (prefill)
     rewound_count: int
     turns_undone: int
 
@@ -85,8 +85,9 @@ class SessionRewindMixin:
             prefix, warm_live_view = history_before_user_originated_turn(warm, warm_user[user_ordinal])
             if _comparison_content(live_view) != _comparison_content(warm_live_view):
                 raise RuntimeError(_HISTORY_CHANGED)
-        if require_retryable:
-            retryable_user_text(live_view.get("content"))
+        # Retry re-sends the stored bytes: ``"".join`` of the text parts, never the "\n"-joined display
+        # flattening (wire bytes == stored bytes; ``"ab"`` must not come back as ``"a\nb"``).
+        live_text = retryable_user_text(live_view.get("content")) if require_retryable else None
         target_row_id = target.get("_row_id")
         if not isinstance(target_row_id, int):
             raise RuntimeError("rewind target has no durable row identity")
@@ -113,5 +114,6 @@ class SessionRewindMixin:
                 if isinstance(row_id := durable_message.get("_row_id"), int):
                     warm["_row_id"] = row_id
         return RewindOutcome(
-            prefix=prefix, live_view=live_view, live_text=flatten_message_text(live_view.get("content")),
+            prefix=prefix, live_view=live_view,
+            live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),
             rewound_count=int(result.get("rewound_count", 0)), turns_undone=len(durable_user) - user_ordinal)

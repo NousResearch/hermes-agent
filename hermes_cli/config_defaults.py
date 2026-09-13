@@ -40,6 +40,11 @@ DEFAULT_CONFIG = {
     # least-recently-active DETACHED sessions (no live client); reopening re-resumes from disk.
     # 0/null disables.
     "max_live_sessions": 16,
+    # Per-root-conversation Git worktree isolation. ``None`` is a deliberate
+    # default-only sentinel: deep merge replaces it with a user top-level
+    # mapping, while the policy resolver can still honor a legacy desktop
+    # block when no top-level policy was configured.
+    "conversation_worktree": None,
     "session": {
         # Per-terminal `hermes -c`: each CLI session writes a breadcrumb under
         # $HERMES_HOME/terminal-sessions/<terminal-id>, so bare -c/--continue resumes THIS

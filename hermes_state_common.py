@@ -8,11 +8,32 @@ import logging
 import os
 import sys
 import time
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Optional
 
 from agent.skill_commands import SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
+
+
+class ConversationWorktreeConflict(RuntimeError):
+    """A root session attempted to change its claimed Git identity."""
+
+
+@dataclass(frozen=True)
+class ConversationWorktreeRecord:
+    """Durable immutable Git identity plus the lifecycle state of one root."""
+
+    root_session_id: str
+    worktree_path: str
+    branch: str
+    base_commit: str
+    repo_common_dir: str
+    state: str
+    failure_phase: Optional[str]
+    failure_message: Optional[str]
+    created_at: float
+    updated_at: float
 
 
 # Session preview = head of the first user message (shown when a session has no title).  A /skill invocation
@@ -545,6 +566,21 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     -- ever run, breaking rebuild/replay pipelines that reconstruct state.db
     -- from the canonical schema (#94691).
     origin_session_id TEXT NOT NULL DEFAULT ''
+);
+
+-- Deliberately has no sessions(id) foreign key. A desktop or gateway root
+-- claims its Git identity before lazy session persistence creates the row.
+CREATE TABLE IF NOT EXISTS conversation_worktree_bindings (
+    root_session_id TEXT PRIMARY KEY,
+    worktree_path TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    base_commit TEXT NOT NULL,
+    repo_common_dir TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('creating', 'ready', 'creation_failed', 'retained', 'removed')),
+    failure_phase TEXT,
+    failure_message TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);

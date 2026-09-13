@@ -73,8 +73,8 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         bind_bedrock_runtime(agent, fb_base_url, fb_api_mode)
         return
     # The SDK exposes an empty/stale api_key when a rotating source is installed.
-    key_provider = vars(fb_client).get("_api_key_provider")
-    credential = key_provider if callable(key_provider) else fb_client.api_key
+    from agent.api_credential import client_credential
+    credential = client_credential(fb_client)
     if fb_api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
         from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token

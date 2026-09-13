@@ -415,6 +415,7 @@ def _reference_context_length(slot: dict[str, Any], runtime: dict[str, Any], cac
 
     Failures are cached too so a flaky metadata source is not re-probed per reference.
     """
+    from agent.api_credential import normalize_credential
     from agent.model_metadata import get_model_context_length
 
     model = str(slot.get("model") or "")
@@ -425,7 +426,7 @@ def _reference_context_length(slot: dict[str, Any], runtime: dict[str, Any], cac
         return cache[key]
     try:
         context_length = get_model_context_length(
-            model=model, base_url=str(runtime.get("base_url") or ""), api_key=str(runtime.get("api_key") or ""), provider=provider,
+            model=model, base_url=str(runtime.get("base_url") or ""), api_key=normalize_credential(runtime.get("api_key")), provider=provider,
         )
     except Exception:
         logger.debug("MoA reference context-length resolution failed for %s", _slot_label(slot))

@@ -179,10 +179,10 @@ def _resolve_inference_value(
     runtime = _runtime_main(key)
     # A declared source owns authentication even when its mint fails.
     if key == "api_key":
-        from agent.command_token_source import materialize_probe_api_key
+        from agent.api_credential import materialize_credential
         if callable(runtime):
-            return materialize_probe_api_key(runtime)
-        runtime = materialize_probe_api_key(runtime)
+            return materialize_credential(runtime)
+        runtime = materialize_credential(runtime)
     if runtime and runtime_ok(runtime):
         return runtime
     if not isinstance(cfg, dict):

@@ -2546,8 +2546,8 @@ def cached_fetch_api_models(
     def _live():
         if fetch_models is not None:
             return fetch_models()
-        from agent.command_token_source import materialize_probe_api_key
-        return fetch_api_models(materialize_probe_api_key(api_key), base_url, timeout=timeout, api_mode=api_mode, headers=headers)
+        from agent.api_credential import materialize_credential
+        return fetch_api_models(materialize_credential(api_key), base_url, timeout=timeout, api_mode=api_mode, headers=headers)
 
     normalized_url = str(base_url or "").strip().rstrip("/").lower()
     if not normalized_url:  # nothing to key the cache on

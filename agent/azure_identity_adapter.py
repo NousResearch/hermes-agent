@@ -260,9 +260,9 @@ def describe_active_credential(config: Optional[EntraIdentityConfig] = None, *, 
 
 
 # Consumer-side helpers — split by purpose so logging / cache-key / dashboard paths never mint tokens.
-def is_token_provider(value: Any) -> bool:
-    """True when ``value`` is a callable Entra token provider (vs. a string API key)."""
-    return callable(value) and not isinstance(value, str)
+# The shape predicate is shared with key_cmd providers and lives in agent.api_credential;
+# re-exported here for existing importers.
+from agent.api_credential import is_token_provider  # noqa: E402
 
 
 def materialize_bearer_for_http(value: Any) -> str:

@@ -1822,10 +1822,10 @@ def check_compression_model_feasibility(agent: Any) -> None:
             logger.warning("No auxiliary LLM provider for compression — summaries will be unavailable.")
             return
         aux_base_url = str(getattr(client, "base_url", ""))
-        # client.api_key may be a callable (Entra bearer); the resolver only needs a key
-        # for live catalogue probes, so pass "" rather than mint a JWT for a lookup.
-        _raw_aux_key = getattr(client, "api_key", "")
-        aux_api_key = "" if (callable(_raw_aux_key) and not isinstance(_raw_aux_key, str)) else str(_raw_aux_key or "")
+        # The resolver only needs a key for live catalogue probes: pass a static key,
+        # never mint a token (Entra JWT, key_cmd subprocess) for a lookup.
+        from agent.api_credential import client_credential, static_credential
+        aux_api_key = static_credential(client_credential(client))
         # Resolve each model with its own provider so provider-specific paths (Bedrock table, OpenRouter API)
         # hit the correct client, not the main model's.
         _aux_provider = (

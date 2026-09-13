@@ -199,7 +199,8 @@ class ApiErrorSummaryMixin:
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
         # Azure Foundry Entra ID bearer providers are callables — never invoke them in log
         # paths; identify the auth surface instead.
-        if callable(key) and not isinstance(key, str):
+        from agent.api_credential import is_token_provider
+        if is_token_provider(key):
             return "<entra-id-bearer>"
         if not key:
             return None

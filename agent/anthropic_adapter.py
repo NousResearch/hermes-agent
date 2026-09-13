@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from utils import normalize_proxy_env_vars
 
 from agent.anthropic_credentials import _is_oauth_token
+from agent.api_credential import is_token_provider
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
@@ -387,7 +388,7 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
     client-level beta header — the reactive OAuth retry in run_agent uses it after a subscription
     rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability."""
     sdk = _require_sdk("the Anthropic provider")
-    if callable(api_key) and not isinstance(api_key, str):
+    if is_token_provider(api_key):
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta
         )

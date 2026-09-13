@@ -206,9 +206,10 @@ class CLIAgentSetupMixin:
         resolved_routing = (
             resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),
             list(runtime.get("args") or []))
-        # A callable api_key is a bearer-token provider (Azure Entra ID): the OpenAI SDK
-        # invokes it per request, so skip string validation / placeholder substitution.
-        if not callable(api_key) and not (isinstance(api_key, str) and api_key):
+        # A token provider (key_cmd, Azure Entra ID) is a credential: the OpenAI SDK invokes it
+        # per request, so skip string validation / placeholder substitution.
+        from agent.api_credential import has_credential
+        if not has_credential(api_key):
             if _keyless_custom_base(base_url):
                 # Placeholder key so the SDK doesn't reject the keyless local endpoint.
                 api_key = "no-key-required"
@@ -337,7 +338,8 @@ class CLIAgentSetupMixin:
             return False
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
-        if callable(api_key) or (isinstance(api_key, str) and api_key):
+        from agent.api_credential import has_credential
+        if has_credential(api_key):
             return bool(base_url)
         return _keyless_custom_base(base_url)
 

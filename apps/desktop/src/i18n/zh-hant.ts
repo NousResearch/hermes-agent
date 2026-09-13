@@ -877,7 +877,7 @@ export const zhHant = defineLocale({
       deleteEndpoint: '刪除端點',
       emptyDescription: '在下方新增 OpenAI 相容端點。',
       emptyTitle: '尚無自訂端點',
-      namePlaceholder: '範例代理（預留位置）',
+      namePlaceholder: '我的代理',
       contextPlaceholder: '自動'
     },
     computerUse: {

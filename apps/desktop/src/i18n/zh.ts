@@ -1082,7 +1082,7 @@ export const zh = defineLocale({
       deleteEndpoint: '删除端点',
       emptyDescription: '在下方添加兼容 OpenAI 的端点。',
       emptyTitle: '暂无自定义端点',
-      namePlaceholder: '示例代理（占位符）',
+      namePlaceholder: '我的代理',
       contextPlaceholder: '自动'
     },
     computerUse: {

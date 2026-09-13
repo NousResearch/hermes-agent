@@ -29,6 +29,10 @@ from agent.error_classifier import (FailoverReason, PROVIDER_STREAM_NON_JSON_ERR
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.fast_mode import effective_request_overrides
+from agent.fallback_policy import (
+    activate_fallback_service_tier_override,
+    apply_fallback_service_tier_override,
+)
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
@@ -1386,7 +1390,10 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
         tools_for_api = agent.tools
     # The one place request_overrides are consumed: static /fast values are already pinned
     # in agent.request_overrides; auto/cold windows layer the fast override per request.
-    request_overrides = effective_request_overrides(agent)
+    request_overrides = apply_fallback_service_tier_override(
+        effective_request_overrides(agent),
+        getattr(agent, "_active_fallback_service_tier_override", None),
+    )
     if agent.api_mode == "anthropic_messages":
         return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
     if agent.api_mode == "bedrock_converse":
@@ -1925,6 +1932,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             from agent.native_compaction import resolve_native_compaction_capabilities
             agent.runtime_capabilities = resolve_native_compaction_capabilities(
                 model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+            activate_fallback_service_tier_override(agent, fb, log=logger)
             return True
         except Exception as e:
             if fb_provider == "nous":

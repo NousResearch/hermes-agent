@@ -158,6 +158,16 @@ def test_single_cleanup_step_raises_does_not_skip_others(step):
     assert len(result["cleanup_errors"]) == 1
 
 
+@pytest.mark.parametrize("policy, expected", [("normal", None), (None, "priority"), ("invalid", "priority")])
+def test_final_accounting_reports_effective_fallback_tier_without_mutating_settings(policy, expected):
+    agent = _StubAgent(raise_in=())
+    agent.request_overrides = {"extra_body": {"service_tier": "priority", "store": False}}
+    agent._active_fallback_service_tier_override = policy
+    result = _run(agent, final_response="done", api_call_count=1, turn_exit_reason="completed")
+    assert result["service_tier"] == expected
+    assert agent.request_overrides == {"extra_body": {"service_tier": "priority", "store": False}}
+
+
 def test_clean_turn_has_no_cleanup_errors_key():
     agent = _StubAgent(raise_in=())
     result = _run(agent)

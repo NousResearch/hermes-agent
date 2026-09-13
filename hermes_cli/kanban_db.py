@@ -2092,7 +2092,8 @@ def _claim_and_open_run(
            SET status        = 'running',
                claim_lock    = ?,
                claim_expires = ?,
-               started_at    = COALESCE(started_at, ?)
+               started_at    = COALESCE(started_at, ?),
+               last_failure_error = NULL
          WHERE id = ?
            AND status = '{source_status}'
            AND claim_lock IS NULL

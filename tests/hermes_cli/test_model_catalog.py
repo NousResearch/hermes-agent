@@ -89,6 +89,52 @@ class TestFetchSuccess:
             assert json.load(fh) == manifest
 
 
+class TestCheckoutRefresh:
+    @pytest.mark.parametrize("has_manifest", [True, False])
+    def test_seed_boundary_invalidates_every_profile_provider_cache(
+        self, isolated_home, tmp_path, has_manifest
+    ):
+        from hermes_cli import model_catalog
+
+        checkout = tmp_path / "checkout"
+        if has_manifest:
+            manifest = checkout / "website" / "static" / "api" / "model-catalog.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps(_valid_manifest()), encoding="utf-8")
+
+        provider_cache = isolated_home / "provider_models_cache.json"
+        provider_cache.write_text(
+            json.dumps({"openai-codex": {"models": ["gpt-5.6-sol"]}}),
+            encoding="utf-8",
+        )
+        sibling_cache = isolated_home / "profiles" / "work" / "provider_models_cache.json"
+        sibling_cache.parent.mkdir(parents=True)
+        sibling_cache.write_text(
+            json.dumps({"openai-codex": {"models": ["gpt-5.6-sol"]}}),
+            encoding="utf-8",
+        )
+
+        assert model_catalog.seed_cache_from_checkout(checkout) is has_manifest
+        assert not provider_cache.exists()
+        assert not sibling_cache.exists()
+
+    def test_default_invalidation_survives_profile_enumeration_failure(
+        self, isolated_home, tmp_path
+    ):
+        from hermes_cli import model_catalog
+
+        provider_cache = isolated_home / "provider_models_cache.json"
+        provider_cache.write_text("{}", encoding="utf-8")
+
+        with patch(
+            "hermes_cli.profiles._iter_named_profile_dirs",
+            side_effect=OSError("profiles directory is unreadable"),
+        ):
+            assert model_catalog.seed_cache_from_checkout(tmp_path / "missing-checkout") is False
+
+        assert not provider_cache.exists()
+
+
 class TestFetchFailure:
     def test_network_failure_returns_empty_when_no_cache(self, isolated_home):
         from hermes_cli import model_catalog

@@ -133,6 +133,30 @@ def test_wrap_passes_environment_file(monkeypatch, tmp_path):
     assert f"EnvironmentFile={env_file}" in wrapped
 
 
+@pytest.mark.linux_only
+def test_wrap_unsets_manager_only_names(monkeypatch):
+    monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
+    monkeypatch.setattr(terminal_tool, "_trusted_systemd_run_binary", lambda: "/usr/bin/systemd-run")
+    wrapped = terminal_tool._wrap_local_command_for_no_new_privs(
+        "sudo -n true", unset_names=["HERMES_NNP_SENTINEL"]
+    )
+    assert "--expand-environment=no" in wrapped
+    assert "HERMES_NNP_SENTINEL" in wrapped
+    assert "UnsetEnvironment=" in wrapped
+
+
+def test_manager_keys_to_unset_keeps_run_env_names(monkeypatch):
+    class _Completed:
+        returncode = 0
+        stdout = "HOME=/home/u\nHERMES_NNP_SENTINEL=from-manager\nPATH=/usr/bin\n"
+
+    monkeypatch.setattr(terminal_tool.subprocess, "run", lambda *a, **k: _Completed())
+    names = terminal_tool._nnp_manager_keys_to_unset({"HOME": "/tmp", "PATH": "/bin"})
+    assert "HERMES_NNP_SENTINEL" in names
+    assert "HOME" not in names
+    assert "PATH" not in names
+
+
 def test_write_nnp_env_file_is_owner_only(tmp_path):
     path = terminal_tool._write_nnp_env_file({"HERMES_NNP_PROBE": "xyz", "EMPTY": ""}, str(tmp_path))
     text = open(path, encoding="utf-8").read()

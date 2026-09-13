@@ -1148,6 +1148,7 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         from tools.terminal_tool_sudo import (
+            _nnp_manager_keys_to_unset,
             _nnp_sudo_unit_from_command,
             _wrap_local_command_for_no_new_privs,
             _write_nnp_env_file,
@@ -1161,25 +1162,33 @@ class LocalEnvironment(BaseEnvironment):
         if login:
             cmd_string = _append_dropped_path_entries(cmd_string, run_env.get("PATH", ""))
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
-        run_env = _make_run_env(self.env)
         env_file = None
         wrapped = _wrap_local_command_for_no_new_privs(cmd_string, cwd=self.cwd or None)
         if wrapped != cmd_string:
             env_file = _write_nnp_env_file(run_env)
             cmd_string = _wrap_local_command_for_no_new_privs(
-                cmd_string, cwd=self.cwd or None, env_file=env_file
+                cmd_string,
+                cwd=self.cwd or None,
+                env_file=env_file,
+                unset_names=_nnp_manager_keys_to_unset(run_env),
             )
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
         # its group to the owner-death supervisor and _wait_for_process releases it.
-        proc = subprocess.Popen(
-            args, text=True, env=run_env, encoding="utf-8", errors="replace",
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            # detached-spawn: ok — owned via own_process_groups right below
-            start_new_session=True, cwd=self.cwd,
-            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        try:
+            proc = subprocess.Popen(
+                args, text=True, env=run_env, encoding="utf-8", errors="replace",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                # detached-spawn: ok — owned via own_process_groups right below
+                start_new_session=True, cwd=self.cwd,
+                **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        except Exception:
+            if env_file:
+                with contextlib.suppress(OSError):
+                    os.unlink(env_file)
+            raise
         unit = _nnp_sudo_unit_from_command(cmd_string)
         if unit:
             proc._nnp_sudo_unit = unit
@@ -1202,18 +1211,6 @@ class LocalEnvironment(BaseEnvironment):
             _pipe_stdin(proc, stdin_data)
         return proc
 
-    def _wait_for_process(self, proc, *args, **kwargs) -> dict:
-        """Base wait, then hand the command's group back from the owner-death supervisor: once the
-        command returned, what it left running in the background (`server &`) is not ours to kill,
-        exactly as on a graceful exit. A command that yielded to background took the group with it
-        (``ProcessRegistry.adopt_local`` clears ``_hermes_owned_pgid``)."""
-        try:
-            return super()._wait_for_process(proc, *args, **kwargs)
-        finally:
-            if (owned_pgid := getattr(proc, "_hermes_owned_pgid", None)) is not None:
-                proc._hermes_owned_pgid = None
-                release_process_groups([owned_pgid])
-
     def _kill_process(self, proc):
         """Kill the entire process group (all children) and any NNP sudo unit."""
         from tools.terminal_tool_sudo import _nnp_sudo_unit_from_proc, _stop_nnp_sudo_unit
@@ -1231,11 +1228,20 @@ class LocalEnvironment(BaseEnvironment):
         from tools.terminal_tool_sudo import _release_nnp_sudo_env_file
         _release_nnp_sudo_env_file(proc)
 
-    def _wait_for_process(self, proc, timeout: int = 120, **kwargs):
-        """Base wait, then drop the EnvironmentFile once the unit has finished."""
+    def _wait_for_process(self, proc, *args, **kwargs) -> dict:
+        """Base wait, then release the owner-death group and any NNP EnvironmentFile.
+
+        Once the command returned, what it left running in the background (`server &`)
+        is not ours to kill. A command that yielded to background took the group with it
+        (``ProcessRegistry.adopt_local`` clears ``_hermes_owned_pgid``). The NNP
+        EnvironmentFile is dropped only after the unit has finished.
+        """
         try:
-            return super()._wait_for_process(proc, timeout, **kwargs)
+            return super()._wait_for_process(proc, *args, **kwargs)
         finally:
+            if (owned_pgid := getattr(proc, "_hermes_owned_pgid", None)) is not None:
+                proc._hermes_owned_pgid = None
+                release_process_groups([owned_pgid])
             if proc.poll() is not None:
                 from tools.terminal_tool_sudo import _release_nnp_sudo_env_file
                 _release_nnp_sudo_env_file(proc)

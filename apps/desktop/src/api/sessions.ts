@@ -561,7 +561,7 @@ export function getOlderSessionMessages(
 export async function getAllSessionMessages(
   id: string,
   profile?: ProfileScope,
-  options: { maxJsonChars?: number } = {}
+  options: { maxJsonChars?: number; signal?: AbortSignal } = {}
 ): Promise<SessionMessagesResponse> {
   const messages: SessionMessage[] = []
   const pageSize = 500
@@ -570,13 +570,23 @@ export async function getAllSessionMessages(
   let offset = 0
   let resolvedSessionId = id
 
+  const throwIfAborted = () => {
+    if (options.signal?.aborted) {
+      throw new DOMException('Transcript loading was aborted', 'AbortError')
+    }
+  }
+
   while (true) {
+    throwIfAborted()
+
     const page = await getSessionMessages(id, profile, {
       limit: pageSize,
       offset,
       order: 'oldest',
       includeCompacted: true
     })
+
+    throwIfAborted()
 
     resolvedSessionId = page.session_id
     jsonChars += (JSON.stringify(page.messages) ?? '').length

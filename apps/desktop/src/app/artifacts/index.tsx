@@ -50,6 +50,10 @@ import {
   loadArtifactsForSessions
 } from './artifact-utils'
 
+function yieldToMainThread(): Promise<void> {
+  return new Promise(resolve => window.requestAnimationFrame(() => resolve()))
+}
+
 function formatArtifactTime(timestamp: number): string {
   return fmtDayTime.format(new Date(timestamp))
 }
@@ -125,14 +129,12 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [filePage, setFilePage] = useState(1)
 
   const [refreshing, setRefreshing] = useState(false)
-  const refreshInFlightRef = useRef(false)
+  const refreshAbortRef = useRef<AbortController | null>(null)
 
   const refreshArtifacts = useCallback(async () => {
-    if (refreshInFlightRef.current) {
-      return
-    }
-
-    refreshInFlightRef.current = true
+    refreshAbortRef.current?.abort()
+    const controller = new AbortController()
+    refreshAbortRef.current = controller
     setRefreshing(true)
 
     try {
@@ -140,8 +142,22 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
       const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(
         sessions,
-        async session => (await getAllSessionMessages(session.id, session.profile)).messages
+        async session =>
+          (await getAllSessionMessages(session.id, session.profile, { signal: controller.signal })).messages,
+        {
+          onProgress: result => {
+            if (!controller.signal.aborted) {
+              setArtifacts([...result.artifacts].sort((left, right) => right.timestamp - left.timestamp))
+            }
+          },
+          signal: controller.signal,
+          yieldToMainThread
+        }
       )
+
+      if (controller.signal.aborted) {
+        return
+      }
 
       if (failures.length > 0) {
         const safeLimitFailures = failures.filter(({ error }) =>
@@ -169,11 +185,17 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
       setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
     } catch (err) {
+      if (controller.signal.aborted) {
+        return
+      }
+
       notifyError(err, a.failedLoad)
       setArtifacts([])
     } finally {
-      refreshInFlightRef.current = false
-      setRefreshing(false)
+      if (refreshAbortRef.current === controller) {
+        refreshAbortRef.current = null
+        setRefreshing(false)
+      }
     }
   }, [a])
 
@@ -181,6 +203,8 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   useEffect(() => {
     void refreshArtifacts()
+
+    return () => refreshAbortRef.current?.abort()
   }, [refreshArtifacts])
 
   useEffect(() => {

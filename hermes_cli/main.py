@@ -738,6 +738,7 @@ from hermes_cli.main_install_repair import (  # frozen updater surface: update_c
     _resolve_install_target_python,
     _resolve_node_runtime_npm,
     _resolve_update_branch,
+    _resolve_update_target,
     _run_install_with_heartbeat,
     _run_package_only_install,
     _update_marker_path,
@@ -2220,6 +2221,19 @@ def _update_preflight_handled(args) -> bool:
     # docker/nix/apt refusal gates: on an image/package-managed install the
     # plan itself reports "not updatable in place" plus the right mechanism.
     if getattr(args, "plan", False):
+        # Plan mode stays read-only and network-free, but a release target gets the same
+        # local CalVer syntax refusal as check/apply — a plan for a --version the updater
+        # would refuse outright is a lie. (Resolution needs a fetch, so it stays out.)
+        target_kind, target = _resolve_update_target(args)
+        if target_kind == "tag":
+            from hermes_cli.update_cmd_release import _official_release_tag
+
+            try:
+                _official_release_tag(target)
+            except ValueError as exc:
+                print(f"✗ Invalid Hermes release version '{target}': {exc}.")
+                sys.exit(1)
+
         # Read-only plan phase (#91277 Phase 2): inventory every running Hermes runtime across profiles, its
         # supervisor, and its running code version — without mutating anything. Safe on a live fleet.
         from hermes_cli.update_inventory import (
@@ -2251,13 +2265,15 @@ def _update_preflight_handled(args) -> bool:
         sys.exit(2)
 
     if getattr(args, "check", False):
-        # --check honors --branch so its answer matches what update would pull.
-        branch = _resolve_update_branch(args)
+        # --check honors the same branch-or-release target as apply mode, so its answer
+        # matches what a subsequent `hermes update` with the same flags would install.
+        target_kind, target = _resolve_update_target(args)
         from hermes_cli.update_cmd import _cmd_update_check
 
         _cmd_update_check(
-            branch=branch,
+            branch=target if target_kind == "branch" else "main",
             branch_explicit=bool(getattr(args, "branch", None)),
+            version=target if target_kind == "tag" else None,
         )
         return True
     return False

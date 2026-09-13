@@ -970,7 +970,7 @@ def _refresh_windows_gateway_launchers() -> None:
             print("  ✓ Refreshed Windows gateway launcher scripts")
 
 
-def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
+def _refresh_bootstrap_cache_scripts(branch: "str | None" = "main") -> None:
     """Overwrite ``$HERMES_HOME/bootstrap-cache/install-<ref>.{ps1,sh}`` for *branch* from the fresh checkout.
 
     Old ``hermes-setup.exe`` builds NEVER re-download a cached branch-ref script, so a stale one runs
@@ -989,6 +989,10 @@ def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
     The .ps1 copy gets a UTF-8 BOM to match the installer's cache format (#67193 encoding fix).
     """
     from hermes_cli.update_cmd import _m
+    if branch is None:
+        # Immutable release/commit targets must retain their cached bytes — and must not
+        # rewrite install-main.* either (a release checkout's scripts may predate main's).
+        return
     with _best_effort('Could not refresh bootstrap-cache scripts after update: %s'):
         cache_dir = Path(_m().get_hermes_home()) / "bootstrap-cache"
         if not cache_dir.is_dir():

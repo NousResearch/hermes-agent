@@ -853,7 +853,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
     return snapshot_id
 
 
-def _sweep_bytecode_after_update(branch: str) -> None:
+def _sweep_bytecode_after_update(branch: "str | None") -> None:
     """Clear stale ``__pycache__`` (else gateway restart ImportErrors on names absent from old
     bytecode), re-stamp the fingerprint, refresh the bootstrap cache scripts."""
     from hermes_cli.update_cmd import _m

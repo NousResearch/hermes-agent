@@ -1243,3 +1243,20 @@ def _resolve_node_runtime_npm() -> str | None:
 def _resolve_update_branch(args) -> str:
     """Normalize ``args.branch`` to a non-empty name (default ``main``; blank/whitespace = default)."""
     return (getattr(args, "branch", None) or "main").strip() or "main"
+
+
+def _resolve_update_target(args) -> tuple[str, str]:
+    """Resolve ``hermes update``'s branch-or-release target: ``("tag", <release>)`` when
+    --version was passed, else ``("branch", <name>)``. Only an OMITTED --version (``None``)
+    selects branch mode: an explicitly supplied blank/whitespace release stays in tag mode
+    (stripped to ``""``) so strict release validation refuses it instead of silently
+    updating against main."""
+    version = getattr(args, "update_version", None)
+    if version is None:
+        # Compatibility for direct/internal callers that predate the parser's distinct
+        # destination from the global ``hermes --version`` boolean.
+        legacy_version = getattr(args, "version", None)
+        version = legacy_version if isinstance(legacy_version, str) else None
+    if version is not None:
+        return "tag", version.strip()
+    return "branch", _resolve_update_branch(args)

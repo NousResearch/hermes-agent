@@ -96,6 +96,11 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
     _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
     _sync_with_upstream_if_needed)
+from hermes_cli.update_cmd_release import (  # noqa: F401
+    _OFFICIAL_RELEASE_TAG_RE, _fetch_official_release_tag, _official_release_tag,
+    _release_apply_git_state_block_reason, _release_checkout_required,
+    _release_overwrite_collision_paths, _resolve_release_commit, _restore_checkout_identity,
+    _update_peeled_tag_ref, _update_tag_ref, _update_tag_refspec)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
     _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, _STALE_PURGE_PREFIXES,
     _STALE_PURGE_PROTECTED, _UPDATE_RUNTIME_RELOAD_MODULES, _clear_stale_sqlite_sidecars,
@@ -478,9 +483,11 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
         proc.stdout.close()
 
 
-def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False,
+                      version: "str | None" = None):
     """``hermes update --check``: fetch and report without installing. ``branch_explicit`` is
-    True iff --branch was passed (Docker installs print a notice instead of dropping the flag)."""
+    True iff --branch was passed (Docker installs print a notice instead of dropping the flag).
+    ``version`` compares against an official release tag instead of a branch."""
     # Same marker-first admission gate as the apply path, so --check never reports git
     # state for an install whose real update mechanism is an image pull.
     from hermes_cli.update_contract import evaluate_update_admission, record_refusal_receipt
@@ -490,6 +497,16 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print(refusal.message)
         record_refusal_receipt(refusal)
         sys.exit(2)
+
+    # Same local validation as the apply path, before any network traffic. An explicitly
+    # supplied blank release must be refused here, never demoted to a branch check.
+    if version is not None:
+        version = version.strip()
+        try:
+            version = _official_release_tag(version)
+        except ValueError as exc:
+            print(f"✗ Invalid Hermes release version '{version}': {exc}.")
+            sys.exit(1)
 
     git_dir = _m().PROJECT_ROOT / ".git"
     if not git_dir.exists():
@@ -514,6 +531,40 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     # bogus huge "behind" count, so fetch --depth 1 and report presence-only.
     is_shallow = _is_shallow_checkout(git_cmd)
     depth_args = ["--depth", "1"] if is_shallow else []
+
+    if version is not None:
+        # Release check: same resolver as the apply path (exact canonical tag, peeled to a
+        # commit) and the same identity rule — an attached branch parked at the release commit
+        # still counts as "update available" because --version promises a detached checkout.
+        print("→ Fetching official release tag...")
+        fetch_result = _fetch_official_release_tag(
+            git_cmd, _m().PROJECT_ROOT, version, tuple(depth_args))
+        if fetch_result.returncode != 0:
+            _print_fetch_failure(fetch_result.stderr)
+            sys.exit(1)
+        if is_shallow:
+            from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts
+            repaired = repair_broken_shallow_boundaries(_m().PROJECT_ROOT)
+            if repaired:
+                print(f"  (restored {repaired} broken shallow boundary(ies))")
+            pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
+            if pruned:
+                print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
+
+        target_sha = _resolve_release_commit(git_cmd, _m().PROJECT_ROOT, version)
+        if target_sha is None:
+            print(f"✗ Official Hermes release '{version}' does not resolve to a commit.")
+            sys.exit(1)
+
+        head_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
+        current_branch = _current_branch_name(git_cmd)
+        if head_sha and not _release_checkout_required(
+                current_branch=current_branch, head_sha=head_sha, release_sha=target_sha):
+            print(f"✓ Already at version {version}.")
+        else:
+            print(f"☤ Update available: target version {version} differs from current checkout.")
+            print("  Run `hermes update --version <release>` to install it.")
+        return
 
     # Probe locally for an 'upstream' remote before a network fetch non-forks always fail.
     fetch_result = None
@@ -829,6 +880,94 @@ def _pull_updates(
     return pre_pull_sha
 
 
+def _rollback_failed_release_update(git_cmd, current_branch, start_sha) -> None:
+    """Release rollback under the clean-tree contract: restore and VERIFY only the starting
+    SHA and the attached/detached identity. The preflight guaranteed a settled clean tree,
+    so there is no stash to settle — and release rollback never deletes or cleans user
+    paths. A starting branch another git actor moved during the update is left untouched
+    (restoring would orphan those commits), and concurrent staged/tracked/untracked edits
+    make the rollback fail closed with HEAD still at the release rather than checking out
+    over them — either way this reports failure instead of claiming an exact restoration.
+    Guidance stays free of user-supplied targets by design."""
+    if _restore_checkout_identity(git_cmd, _m().PROJECT_ROOT, current_branch, start_sha):
+        print("  ✓ Original checkout restored.")
+        return
+    print("  Original state could not be restored automatically.")
+    print("  If files changed or another git process moved your starting branch while the")
+    print("  update ran, that concurrent work was left untouched so none of it is discarded;")
+    print("  HEAD may still be detached at the release commit.")
+    print("  Inspect `git status` and `git reflog`.")
+
+
+def _pull_release_update(git_cmd, target, release_sha, current_branch, start_sha, auto_stash_ref):
+    """Detached checkout of the already-fetched release tag onto a preflight-guaranteed
+    clean, settled tree — transactional through the post-checkout verification: HEAD must
+    sit detached exactly at *release_sha* and the critical files must compile BEFORE success
+    is claimed. Any failure (or exception) restores the starting SHA and the
+    attached/detached identity; under the clean-tree contract that IS the whole rollback.
+    Release mode never stashes and never deletes user paths. Returns *start_sha* (the
+    release path's pre-pull SHA)."""
+    # Release mode never autostashes; the clean-tree preflight is what guarantees it. A live
+    # autostash here means that contract broke upstream — fail closed before the checkout
+    # can orphan it, and do not touch the stash entry.
+    if auto_stash_ref is not None:
+        print("✗ Internal error: a release update observed an autostash despite the clean-tree preflight.")
+        print("  Refusing before checkout. Your stashed changes are untouched; inspect them with:")
+        print("  git stash list")
+        sys.exit(1)
+    # The preflight ran before the receipt/backup/pause phases; anything that unsettled the
+    # tree since then must refuse now, at the last read-only moment before the checkout.
+    block_reason = _release_apply_git_state_block_reason(git_cmd, _m().PROJECT_ROOT)
+    if block_reason is not None:
+        _refuse_release_apply_on_unclean_git_state(block_reason)
+    # Ignored user files the target would begin tracking: `git checkout` overwrites ignored
+    # files silently by default, so refuse while nothing has been touched yet.
+    collisions = _release_overwrite_collision_paths(
+        git_cmd, _m().PROJECT_ROOT, start_sha, release_sha)
+    if collisions is None or collisions:
+        _refuse_release_apply_on_ignored_collisions(collisions)
+    try:
+        # --no-overwrite-ignore backstops the collision probe: if an ignored file would
+        # still be clobbered, git itself refuses the checkout and nothing is written.
+        checkout = _git_run(
+            git_cmd, ["checkout", "--detach", "--no-overwrite-ignore", _update_tag_ref(target)])
+        if checkout.returncode != 0:
+            print(f"✗ Failed to checkout official release '{target}'.")
+            if checkout.stderr.strip():
+                print(f"  {checkout.stderr.strip().splitlines()[0]}")
+            _rollback_failed_release_update(git_cmd, current_branch, start_sha)
+            sys.exit(1)
+        # Post-checkout verification INSIDE the transaction: a zero-returncode checkout that
+        # still left HEAD attached or on another commit (ref mutated between resolve and
+        # checkout) must roll back before success is claimed.
+        if (_capture_head_sha(git_cmd, _m().PROJECT_ROOT) != release_sha
+                or _current_branch_name(git_cmd) != "HEAD"):
+            print("✗ Checkout is not detached at the requested release commit — not claiming success.")
+            _rollback_failed_release_update(git_cmd, current_branch, start_sha)
+            sys.exit(1)
+        syntax_ok, failing_path, syntax_error = _validate_critical_files_syntax(_m().PROJECT_ROOT)
+        if not syntax_ok:
+            print()
+            print("✗ Pulled code has a syntax error in a critical file:")
+            print(f"  {failing_path}")
+            for line in str(syntax_error).splitlines()[:6] if syntax_error else ():
+                print(f"    {line}")
+            print()
+            print(f"→ Rolling back to {start_sha[:10]}...")
+            _rollback_failed_release_update(git_cmd, current_branch, start_sha)
+            sys.exit(1)
+    except SystemExit:
+        raise  # the explicit failure paths above already rolled back
+    except BaseException as exc:
+        # Any exception inside the transaction — a git OSError, a TemporaryDirectory failure
+        # under the syntax validator, an interrupt — must not strand HEAD detached at the
+        # release. Roll back to the captured start, then let the error surface unchanged.
+        print(f"✗ Release update failed ({type(exc).__name__}) — rolling back...")
+        _rollback_failed_release_update(git_cmd, current_branch, start_sha)
+        raise
+    return start_sha
+
+
 @dataclass
 class _CheckoutPlan:
     """What the pre-pull checkout phase decided (see ``_prepare_checkout_for_update``)."""
@@ -1058,9 +1197,11 @@ def _begin_update_receipt_and_plan(args):
     return _pre_update_plan
 
 
-def _prepare_git_command() -> tuple[bool, list, bool]:
+def _prepare_git_command(*, announce_fork: bool = True) -> tuple[bool, list, bool]:
     """Return ``(use_zip_update, git_cmd, is_fork)``; ``sys.exit(1)`` when not a git repo
-    on a non-Windows host (Windows falls back to ZIP: broken git file I/O, AV, NTFS filters)."""
+    on a non-Windows host (Windows falls back to ZIP: broken git file I/O, AV, NTFS filters).
+    ``announce_fork=False`` suppresses the fork banner: release mode fetches the tag from the
+    canonical repo regardless of origin, so "Updating from fork" would be a lie there."""
     git_dir = _m().PROJECT_ROOT / ".git"
     use_zip_update = not git_dir.exists()
     if use_zip_update and sys.platform != "win32":
@@ -1084,7 +1225,7 @@ def _prepare_git_command() -> tuple[bool, list, bool]:
     origin_url = _m()._get_origin_url(git_cmd, _m().PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
 
-    if is_fork:
+    if is_fork and announce_fork:
         print("⚠ Updating from fork:")
         print(f"  {origin_url}")
         print()
@@ -1223,12 +1364,19 @@ def _finish_already_up_to_date(
 def _apply_pulled_update(
     git_cmd, branch, pre_pull_sha, _plan, opts, *, gateway_mode, is_fork, desktop_dir,
     had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
-    _windows_gateway_resume) -> None:
-    """Post-pull phase: verify HEAD, sync Python/Node/web/Desktop, maintenance, fleet restart."""
+    _windows_gateway_resume, release_sha=None) -> None:
+    """Post-pull phase: verify HEAD, sync Python/Node/web/Desktop, maintenance, fleet restart.
+    ``release_sha`` set means release mode: *branch* is None, so every branch-only step (fork
+    upstream sync, mutable bootstrap-cache refresh) is bypassed by construction."""
     _invalidate_update_cache()
-    post_pull_sha = _verify_head_after_pull(
-        git_cmd, branch, pre_pull_sha, in_place_update=_plan.in_place_update,
-        _windows_gateway_resume=_windows_gateway_resume)
+    if release_sha is not None:
+        # Detached-at-release was verified inside _pull_release_update's transaction (a
+        # failure there rolled back and exited), so the release commit IS the post-pull SHA.
+        post_pull_sha = release_sha
+    else:
+        post_pull_sha = _verify_head_after_pull(
+            git_cmd, branch, pre_pull_sha, in_place_update=_plan.in_place_update,
+            _windows_gateway_resume=_windows_gateway_resume)
 
     # Gateways still serve pre-pull modules until the restart phase; an interrupt before a
     # completed restart leaves this marker so the next update catches up even when git is
@@ -1277,10 +1425,77 @@ def _apply_pulled_update(
         node_failures=node_failures, update_complete=update_complete)
 
 
+def _refuse_release_without_git_checkout() -> None:
+    """Full-command-path refusal for ``--version`` on an install with no Git checkout: the
+    exact-release backend is git-only, and the ZIP/source-archive fallback cannot produce a
+    detached release checkout. Fires before the receipt, the pre-update backup, the gateway
+    pause, the venv-holder scan, and any download or subprocess — a pure no-op refusal."""
+    print("✗ --version requires a Git checkout; this install has none (.git is missing).")
+    print("  Exact official releases cannot be installed by the ZIP/source-archive path.")
+    print("  Reinstall via git:")
+    print("  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash")
+    sys.exit(1)
+
+
+def _refuse_release_apply_on_unclean_git_state(block_reason: str) -> None:
+    """Static, fail-closed refusal for the exact-release apply preflight. Guidance stays
+    free of user-supplied targets by design."""
+    print("✗ Exact release updates require a clean, settled Git state — refusing before any changes.")
+    print(f"  Blocked because {block_reason}.")
+    print("  Inspect uncommitted changes with: git status")
+    print("  Inspect parked stash entries with: git stash list")
+    print("  Commit, stash, drop, or finish the operation in progress, then re-run")
+    print("  `hermes update --version <release>`.")
+    sys.exit(1)
+
+
+def _refuse_release_apply_on_ignored_collisions(collision_paths: "list[str] | None") -> None:
+    """Static, fail-closed refusal for target-added paths that already exist locally as
+    ignored user files (None = the probe could not verify the repository state). The
+    checkout has not run; nothing was modified."""
+    print("✗ This release would overwrite existing local files that Git does not track for you.")
+    if collision_paths is None:
+        print("  The overwrite check could not verify the repository state.")
+    else:
+        for path in collision_paths[:10]:
+            print(f"  • {path}")
+        if len(collision_paths) > 10:
+            print(f"  … and {len(collision_paths) - 10} more")
+    print("  Move these files out of the checkout (or remove them), then re-run")
+    print("  `hermes update --version <release>`.")
+    sys.exit(1)
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always restore stdio even on
     ``sys.exit``. Self-lock deferral deliberately does NOT run here (pre-fetch it stranded users
     on the OLD checkout in an exit-2 loop); it runs right before the dependency sync."""
+    # Resolve the branch-or-release target and validate a release tag LOCALLY first — before
+    # the receipt, the pre-update backup, any network git, and the autostash. A malformed
+    # --version must be a pure no-op refusal.
+    target_kind, target = _m()._resolve_update_target(args)
+    if target_kind == "tag":
+        try:
+            target = _official_release_tag(target)
+        except ValueError as exc:
+            print(f"✗ Invalid Hermes release version '{target}': {exc}.")
+            sys.exit(1)
+        # A missing .git dir means the exact-release backend cannot exist here at all
+        # (non-Git install / the layout the Windows ZIP fallback serves): refuse the whole
+        # command while it is still a pure no-op. The ZIP path's own rejection remains only
+        # as the backstop for the mid-run git-breakage fallback, where earlier phases
+        # already ran.
+        if not (_m().PROJECT_ROOT / ".git").exists():
+            _refuse_release_without_git_checkout()
+        # Fail-closed Git-state preflight, APPLY path only (--check/--plan stay read-only
+        # reporters). Release mode never autostashes: an ambiguous checkout refuses here,
+        # before the receipt, the backup, the gateway pause, the churn cleanup, any network
+        # fetch, and the checkout (and again right before the checkout itself).
+        block_reason = _release_apply_git_state_block_reason(
+            _base_git_cmd(), _m().PROJECT_ROOT)
+        if block_reason is not None:
+            _refuse_release_apply_on_unclean_git_state(block_reason)
+
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 
@@ -1319,7 +1534,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
     had_desktop_app_before_update = _desktop_app_present(desktop_dir)
 
-    use_zip_update, git_cmd, is_fork = _prepare_git_command()
+    use_zip_update, git_cmd, is_fork = _prepare_git_command(announce_fork=target_kind != "tag")
 
     if use_zip_update:
         try:
@@ -1333,7 +1548,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     try:
         # Scoped fetch: a bare `git fetch origin` pulls thousands of branches and can stall.
-        branch = _m()._resolve_update_branch(args)
+        # Release mode fetches one canonical tag instead; branch is None so every branch-only
+        # step downstream (parked-branch guard, fork sync, bootstrap-cache refresh) is bypassed.
+        branch = _m()._resolve_update_branch(args) if target_kind == "branch" else None
 
         # Self-heal abandoned .git/*.lock files (crashed fetch) or the fetch fails "File exists".
         from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
@@ -1359,21 +1576,49 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
-        fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+        if target_kind == "tag":
+            fetch_result = _fetch_official_release_tag(git_cmd, _m().PROJECT_ROOT, target)
+        else:
+            fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             sys.exit(1)
 
         current_branch = _current_branch_name(git_cmd, check=True)
-        _plan = _prepare_checkout_for_update(
-            git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
-            gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
-            _windows_gateway_resume=_windows_gateway_resume)
+        release_sha = None
+        if target_kind == "tag":
+            # The tag must peel to a commit (annotated or lightweight); a tag of a tree/blob
+            # cannot be checked out and must refuse before any tree mutation.
+            release_sha = _resolve_release_commit(git_cmd, _m().PROJECT_ROOT, target)
+            if release_sha is None:
+                print(f"✗ Official Hermes release '{target}' does not resolve to a commit.")
+                sys.exit(1)
+            start_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+            if start_sha is None:
+                print("✗ Could not resolve the current checkout before updating.")
+                sys.exit(1)
+            # Release mode skips the parked-branch machinery entirely: the target is a detached
+            # checkout, so no branch is switched, merged into, or fast-forwarded. It also NEVER
+            # autostashes — the preflight refused anything but a settled clean tree, and
+            # _pull_release_update re-checks that right before the checkout. Attached-at-the-
+            # release-commit still counts as an update — --version promises detached identity,
+            # not just the right SHA.
+            _plan = _CheckoutPlan(
+                auto_stash_ref=None,
+                commit_count=int(_release_checkout_required(
+                    current_branch=current_branch, head_sha=start_sha, release_sha=release_sha)),
+                in_place_update=False, parked_branch_switched=False,
+                prompt_for_restore=False, switch_block_reason=None, upstream_checked=True)
+        else:
+            _plan = _prepare_checkout_for_update(
+                git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
+                gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
+                _windows_gateway_resume=_windows_gateway_resume)
         commit_count = _plan.commit_count
 
         if commit_count == 0:
             _finish_already_up_to_date(
-                git_cmd, branch, current_branch, _plan, assume_yes=assume_yes,
+                git_cmd, branch or target, current_branch, _plan, assume_yes=assume_yes,
                 gateway_mode=gateway_mode, gw_input_fn=gw_input_fn,
                 pre_update_snapshot_id=pre_update_snapshot_id,
                 had_desktop_app_before_update=had_desktop_app_before_update,
@@ -1382,23 +1627,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _windows_gateway_resume=_windows_gateway_resume)
             return
 
-        if commit_count > 0:
+        if target_kind == "tag":
+            print(f"→ Updating to official release {target}")
+        elif commit_count > 0:
             print(f"→ Found {commit_count} new commit(s)")
         else:
             # Shallow, exact count unrecoverable — but the tips differ, so there IS an update.
             print("→ Updates available (commit count unknown on this shallow checkout)")
 
         print("→ Pulling updates...")
-        pre_pull_sha = _pull_updates(
-            git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
-            gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-            keep_stash=opts.keep_stash)
+        if target_kind == "tag":
+            pre_pull_sha = _pull_release_update(
+                git_cmd, target, release_sha, current_branch, start_sha, _plan.auto_stash_ref)
+        else:
+            pre_pull_sha = _pull_updates(
+                git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
+                gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
+                keep_stash=opts.keep_stash)
         _apply_pulled_update(
             git_cmd, branch, pre_pull_sha, _plan, opts, gateway_mode=gateway_mode,
             is_fork=is_fork, desktop_dir=desktop_dir,
             had_desktop_app_before_update=had_desktop_app_before_update,
             pre_update_snapshot_id=pre_update_snapshot_id, _pre_update_plan=_pre_update_plan,
-            _windows_gateway_resume=_windows_gateway_resume)
+            _windows_gateway_resume=_windows_gateway_resume, release_sha=release_sha)
     except _shim_quarantine_error_type() as e:
         # Strict quarantine refused BEFORE any installer ran — defer via marker, exit 2, no ZIP.
         # See #87331.

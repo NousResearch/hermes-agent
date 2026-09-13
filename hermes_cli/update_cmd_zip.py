@@ -366,9 +366,19 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     )
     active_tool_dependencies = _m()._capture_active_tool_dependencies()
     pre_update_version = _read_project_version()  # snapshot before files are replaced, for the completion line
+    # A source archive cannot produce a coherent detached release checkout; refuse --version
+    # BEFORE any download or tree mutation rather than install something that only looks pinned.
+    target_kind, target = _m()._resolve_update_target(args)
+    if target_kind == "tag":
+        print("✗ --version is not supported on the Windows ZIP-fallback update path.")
+        print(
+            "  This path cannot produce a coherent detached release checkout. "
+            "Resolve the git-side breakage and rerun "
+            "`hermes update --version <release>`.")
+        _m().sys.exit(1)
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
-    branch = _m()._resolve_update_branch(args)
+    branch = target
     if branch != "main":
         print(f"✗ --branch={branch} is not supported on the Windows ZIP-fallback update path.")
         print(

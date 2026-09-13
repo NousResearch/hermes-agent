@@ -14,7 +14,14 @@ Update to the latest version with a single command:
 hermes update
 ```
 
-This pulls the latest code from `main`, updates dependencies, and prompts you to configure any new options that were added since your last update.
+This pulls the latest code from `main`, updates dependencies, and prompts you to configure any new options that were added since your last update. To install or roll back to an official release instead, pass its GitHub release tag:
+
+```bash
+hermes update --version v2026.8.31
+hermes update --check --version v2026.8.31
+```
+
+Release updates fetch that exact tag from the official NousResearch repository and leave the checkout detached at the release commit. `--version` and `--branch` cannot be combined.
 
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
@@ -35,7 +42,7 @@ This suppresses both cached update notices and passive update-check network requ
 When you run `hermes update`, the following steps occur:
 
 1. **Pre-update snapshot** — a lightweight state snapshot is saved by default (covers pairing data, cron jobs, `config.yaml`, `.env`, `auth.json`, and other state files that get modified at runtime; individual files over 1 GiB are skipped so a large sessions DB never slows the update down). Because the code swap and gateway restarts touch every profile, the same snapshot is taken for **every profile** on the install — each into its own `state-snapshots/` directory — and the post-update cron-jobs safety net checks each profile against its own snapshot. Controlled by `updates.pre_update_backup` (`quick` by default, `full` for a zip of all of `HERMES_HOME`, `off` to disable). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md). Quick snapshots are file-loss recovery, not code-rollback insurance — for a coherent point-in-time rollback use `--backup` (full mode).
-2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
+2. **Git update** — pulls the latest code from `main`, or checks out the exact official release requested with `--version`, and updates submodules
 3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the nine critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `hermes update` once the upstream fix lands.
 4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 5. **Config migration** — detects new config options added since your version and prompts you to set them
@@ -73,6 +80,18 @@ hermes update --check --branch experimental   # preview behindness only
 ```
 
 If your local checkout is on a different branch, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
+
+### Updating to an official release: `--version`
+
+Use `--version <release>` to install a specific official Hermes release, including an older release for rollback:
+
+```bash
+hermes update --version v2026.8.31
+```
+
+Hermes validates the release name locally (official releases are date-versioned, `vYYYY.M.D` with an optional `.N` respin), fetches only that exact tag from the canonical NousResearch repository, verifies that it resolves to a commit, and checks it out in detached-HEAD state — even if your branch already sits at the release commit. Because an exact release transition is an exceptional operation, the apply path requires a clean, settled worktree and — unlike branch updates — never auto-stashes: it refuses before touching anything when the checkout carries uncommitted tracked, staged, or untracked changes, an in-progress merge/rebase/cherry-pick/revert/bisect (including a pending cherry-pick/revert sequence), an unmerged index, or an unresolved Hermes update autostash left by an earlier update. Refusals come with guidance to inspect `git status` and `git stash list`; resolve the state (commit, stash, or restore/drop the old update autostash) and re-run. Ordinary stashes you created yourself never block — only entries matching the updater's exact generated stash name do — and `--check`/`--plan` stay read-only and keep answering on a dirty tree. Ignored files are protected too: if the target release would begin tracking a path that already exists locally as an ignored file (say a local `secrets.txt`), the update refuses before the checkout instead of letting git overwrite it; unrelated ignored directories like `venv/` or `node_modules/` don't block. If the checkout fails, does not land detached exactly at the release commit, or fails post-checkout syntax validation, Hermes restores the starting commit and its attached/detached state before exiting — with the clean-tree requirement, that restores everything.
+
+Release checkouts are immutable targets: the fork-upstream sync and the installer bootstrap-cache refresh (which track a mutable branch) are skipped. The Windows ZIP fallback rejects `--version` because copying a source archive cannot establish a coherent Git checkout — repair the Git installation and rerun the version update instead.
 
 ### Checkout parked on a feature branch
 
@@ -115,7 +134,7 @@ You can pass `--keep-stash` to a terminal `hermes update` too if you want the sa
 
 ### Preview-only: `hermes update --check`
 
-Want to know if an update is available before pulling? Run `hermes update --check` — it fetches and compares commits against `origin/main`. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+Want to know if an update is available before pulling? Run `hermes update --check` — it fetches and compares commits against `origin/main`. Add `--version <release>` to compare the current checkout with an official release tag instead (already-at-release means detached at that exact commit). No working-tree files are modified and no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
 
 ### Fleet preview: `hermes update --plan`
 

@@ -41,15 +41,62 @@ automatically.
 
 ## Prerequisites
 
-- A Photon account — sign up at [app.photon.codes][app]
-- **Node.js 18.17 or newer** on PATH (`node --version`)
-- A phone number that can receive iMessage (used to bind your account)
+- **Node.js 20 or newer** on PATH (`node --version`)
+- For managed cloud mode, a [Photon account][app] and a phone number that can
+  receive iMessage
+- For local mode, a Mac signed in to Messages with Full Disk Access granted to
+  the process that starts Hermes
 
-That's it — there is no public URL or tunnel to set up.
+There is no public URL or tunnel to set up in either mode.
 
 ## First-time setup
 
-Either run the unified gateway wizard and pick **Photon iMessage**:
+### Open-source local mode
+
+Use local mode when Hermes is running on a Mac signed in to your own
+Apple ID and you want messages to send through that local Messages.app
+account instead of Photon's managed/shared line pool:
+
+```bash
+PHOTON_ALLOWED_USERS=+15551234567
+```
+
+```yaml
+# ~/.hermes/config.yaml
+photon:
+  imessage_mode: local
+```
+
+Local mode uses Spectrum's dedicated open-source macOS provider
+(`@spectrum-ts/imessage-local`). It does not use Photon dashboard login,
+`PHOTON_PROJECT_ID`, or `PHOTON_PROJECT_SECRET`. The host must be signed into
+Messages. The process that starts Hermes may need Full Disk Access to read
+`~/Library/Messages/chat.db`.
+
+Spectrum local mode can start a DM from a bare E.164 number and rehydrate an
+existing DM or group from its chat GUID. That means cold cron delivery works
+with `PHOTON_HOME_CHANNEL=+1555...` for DMs. Creating a new group from a list
+of recipients still requires managed Photon mode.
+
+With the pinned Spectrum 12.7 local provider, text/markdown, inbound and
+outbound attachments, DMs, incoming reply context, and existing groups work.
+Local mode does not provide visible typing indicators, native outbound
+replies, editing/unsending, tapbacks, native polls or effects, read receipts,
+new-group creation, or group member/metadata changes. Hermes avoids the
+unsupported presence/status calls and falls back to numbered text for
+multiple-choice clarify prompts.
+
+Then install the sidecar dependencies and start the gateway:
+
+```bash
+hermes photon install-sidecar
+hermes gateway start
+```
+
+Cloud mode remains the default when `photon.imessage_mode` is unset.
+
+Either run the unified gateway wizard, pick **iMessage via Photon**, and
+choose **local** or **cloud**:
 
 ```bash
 hermes gateway setup
@@ -58,11 +105,18 @@ hermes gateway setup
 …or run the Photon setup directly (the wizard calls the same flow):
 
 ```bash
-# Device-code login + project + user + sidecar deps, all in one
-hermes photon setup --phone +15551234567
+# Local Mac: no Photon login or project credentials
+hermes photon setup --mode local --phone +15551234567
+
+# Managed cloud: device login + project + user + sidecar deps
+hermes photon setup --mode cloud --phone +15551234567
 ```
 
-The setup, in order:
+For local mode, setup saves `photon.imessage_mode: local`, configures the
+optional phone allowlist/home channel, explains the Messages and Full Disk
+Access requirements, and installs the sidecar dependencies.
+
+Managed cloud setup, in order:
 
 1. **Device login** (`client_id=photon-cli`) — opens
    `https://app.photon.codes/` for approval and stores the bearer token.
@@ -192,7 +246,7 @@ Common issues:
 - **`No iMessage line assigned yet`** — Spectrum is enabled but no line
   has been provisioned; re-run `hermes photon setup` or check the
   [dashboard][app].
-- **Sidecar won't start** — confirm `node --version` is 18.17+ and that
+- **Sidecar won't start** — confirm `node --version` is 20+ and that
   `hermes photon install-sidecar` completed without errors.
 
 ## Limits today
@@ -206,16 +260,18 @@ Common issues:
   `voice()` content builders via the sidecar's `/send-attachment`
   endpoint. Captions arrive as a separate iMessage bubble after the
   media.
-- **Native polls are supported.** Hermes sends poll content through
-  spectrum-ts' `poll()` builder via the sidecar's `/send-poll` endpoint.
-- **Read receipts are supported.** The sidecar marks an inbound iMessage
-  read after forwarding it to Hermes, so the sender sees `Read` without
-  waiting for a model/tool turn. Inbound receipts for Hermes-sent messages
-  are consumed as presence telemetry and never create an agent turn. Set
-  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`.
-- **Message effects are supported.** Hermes sends text with native iMessage
-  bubble/screen effects through spectrum-ts' iMessage `effect()` builder
-  via the sidecar's `/send-effect` endpoint.
+- **Native polls are supported in managed cloud mode.** Hermes sends poll
+  content through spectrum-ts' `poll()` builder via the sidecar's `/send-poll`
+  endpoint. Local mode falls back to a numbered-text clarify prompt.
+- **Read receipts are supported in managed cloud mode.** The sidecar marks an
+  inbound iMessage read after forwarding it to Hermes, so the sender sees
+  `Read` without waiting for a model/tool turn. Inbound receipts for Hermes-sent
+  messages are consumed as presence telemetry and never create an agent turn. Set
+  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`. The Spectrum
+  12.7 local provider does not implement this operation, so Hermes skips it.
+- **Message effects are supported in managed cloud mode.** Hermes sends text
+  with native iMessage bubble/screen effects through spectrum-ts' iMessage
+  `effect()` builder via the sidecar's `/send-effect` endpoint.
 - **Photon's free quotas:** 5,000 messages per server per day,
   50 new-conversation initiations per shared line per day. Increases
   available — email `help@photon.codes`.
@@ -250,6 +306,12 @@ Common issues:
 | `PHOTON_MENTION_PATTERNS` | Hermes wake words  | JSON list / comma / newline regex patterns for group mentions |
 | `PHOTON_DASHBOARD_HOST`   | `app.photon.codes` | Override the dashboard / device-login host |
 | `PHOTON_SPECTRUM_HOST`    | `spectrum.photon.codes` | Override the Spectrum API host |
+
+## Config.yaml
+
+| Key                    | Default | Notes                                      |
+|------------------------|---------|--------------------------------------------|
+| `photon.imessage_mode` | `cloud` | `cloud` for managed Photon, `local` for the open-source macOS Messages path. The adapter bridges this to `PHOTON_IMESSAGE_MODE` only for the local sidecar process. |
 
 [photon]: https://photon.codes/
 [app]: https://app.photon.codes/

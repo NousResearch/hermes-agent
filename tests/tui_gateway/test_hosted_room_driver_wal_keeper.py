@@ -383,12 +383,25 @@ def test_keeper_acquire_retries_after_transient_failure(tmp_path, monkeypatch):
 def test_failed_acquire_does_not_leak_connection(tmp_path, monkeypatch):
     """When the keeper's content probe fails, the opened connection must be
     closed, not leaked."""
-    # The leak path is the branch under test: on a WAL-reset-vulnerable
-    # interpreter the gate legitimately takes the inapplicable branch first
-    # (covered by test_indeterminate_mode_probe_drops_keeper), so pin the
-    # gate off to reach the acquire's failure handling.
+    # The leak path under test is the acquire's own failure handling after a
+    # successful policy call — the branch where the content probe raises and
+    # the half-opened connection must be closed. Pin the policy decided
+    # (apply returns "wal", header verifies "wal") so the probe is the ONLY
+    # failing step: upstream, the probe-failure route was reached by accident
+    # through the policy raising on an indeterminate header, and main's
+    # journal policy now returns "wal" without touching the file for an
+    # indeterminate header (current_mode is None branch) — with the old pins
+    # that upstream change reroutes this scenario to the inapplicable branch
+    # and the third assertion below fails. (The inapplicable branch itself is
+    # covered by test_indeterminate_mode_probe_drops_keeper.)
     monkeypatch.setattr(
         "hermes_state_wal.is_sqlite_wal_reset_vulnerable", lambda **kwargs: False
+    )
+    monkeypatch.setattr(
+        "hermes_state_wal.apply_wal_with_fallback", lambda conn, **kwargs: "wal"
+    )
+    monkeypatch.setattr(
+        "hermes_state_wal._on_disk_journal_mode", lambda conn: "wal"
     )
     db = tmp_path / "state.db"
     _set_wal_mode(db)

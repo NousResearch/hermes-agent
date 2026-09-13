@@ -101,9 +101,8 @@ async def recover_webhook_finalizations(authority):
     from hermes_state_runtime import RuntimeStoreError, get_session_admission
 
     rows = authority.db._read_all("""
-        SELECT a.admission_id FROM sessions AS s INDEXED BY idx_sessions_source
-        JOIN session_admissions AS a INDEXED BY session_admissions_pending
-          ON a.target_session_id=s.id
+        SELECT a.admission_id FROM sessions AS s
+        JOIN session_admissions AS a ON a.target_session_id=s.id
         WHERE s.source='webhook' AND s.ended_at IS NULL
           AND a.status='terminal' AND a.generation IS NOT NULL
           AND json_extract(a.payload_json, '$.native_text_v1.source.platform')='webhook'

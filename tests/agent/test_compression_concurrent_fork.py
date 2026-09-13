@@ -462,9 +462,11 @@ def test_compression_activity_heartbeat_nonfinite_interval_falls_back(tmp_path: 
 
     agent._touch_activity = _capture
 
+    from agent.conversation_compression import DEFAULT_COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL
+
     heartbeat = _CompressionActivityHeartbeat(agent, interval_seconds=float("inf"))
 
-    assert heartbeat._interval_seconds == 60.0
+    assert heartbeat._interval_seconds == DEFAULT_COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL
     heartbeat.start()
     heartbeat.stop()
     assert touch_calls == ["context compression started", "context compression completed"]

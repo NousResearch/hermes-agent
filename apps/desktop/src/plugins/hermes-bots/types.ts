@@ -152,6 +152,8 @@ export interface GroupHold {
 }
 
 export interface GroupChat {
+  /** Total posted bot replies per user send (not per bot or tool call), 1–100; legacy default 10. */
+  maxBotTurns?: number
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
   holds?: Record<string, GroupHold>

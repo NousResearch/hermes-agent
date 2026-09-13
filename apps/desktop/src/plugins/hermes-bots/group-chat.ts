@@ -12,6 +12,7 @@
 import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
+import { normalizeGroupMaxBotTurns } from './group-limits'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { getPluginCtx } from './shared'
 import type {
@@ -56,6 +57,7 @@ let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 /** One room inside the bounded ui_meta projection: a compacted log plus the
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
 interface GroupChatSyncRoom {
+  maxBotTurns?: number
   image?: null | string
   log: GroupMessage[]
   members?: GroupMember[]
@@ -246,6 +248,7 @@ export function groupChatSyncSnapshot(
           }
         : {}),
       log,
+      maxBotTurns: normalizeGroupMaxBotTurns(room.maxBotTurns),
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
         name: String(member?.name || '').slice(0, 128),
@@ -470,6 +473,10 @@ export function mergeGroupChatSyncSnapshots(
         return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
       }),
       members,
+      // Older clients omit this field; don't erase a configured budget on rename/sync.
+      maxBotTurns: normalizeGroupMaxBotTurns(
+        identity?.maxBotTurns ?? localRoom?.maxBotTurns ?? remoteRoom?.maxBotTurns
+      ),
       revision: Math.max(remoteRevision, localRevision),
       ...(typeof image === 'string' && image
         ? {
@@ -680,6 +687,11 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
         : remoteRevision >= localRevision && Object.prototype.hasOwnProperty.call(projected, 'image')
           ? projected.image || null
           : existing.image || null,
+      maxBotTurns: normalizeGroupMaxBotTurns(
+        !isPreserved && remoteRevision >= localRevision && projected.maxBotTurns !== undefined
+          ? projected.maxBotTurns
+          : existing.maxBotTurns
+      ),
       syncRevision: isPreserved ? localRevision : Math.max(remoteRevision, localRevision),
       epoch: Number(existing.epoch || 0),
       running: Boolean(existing.running)
@@ -749,6 +761,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       // already carries.
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
       image: room.image || null,
+      maxBotTurns: normalizeGroupMaxBotTurns(room.maxBotTurns),
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
   }
@@ -1197,19 +1210,7 @@ export function setGroupChatSyncDisposed(disposed: boolean) {
   groupChatSyncDisposed = disposed
 }
 
-// ── one room's budget ────────────────────────────────────────────────────────
-// Every ceiling a single user send can spend, in one block on purpose: making
-// them configurable (per room, or model-aware from config.yaml) is live
-// contributor work — #92213 (per-room limits) and #96842 (config + token
-// budget) — and both need exactly one seam to hook. Carried over at the same
-// values the old plugin.js shipped so neither rebase inherits a behavior
-// change on top of a rewrite; deciding the shape of the override belongs to
-// those PRs, not to a design-system pass.
-export const GROUP_CHAT_MAX_ROUNDS = 3
-
-// #94478 review: continuation rounds are bounded independently of the message cap so a pathological mention chain can't consume the room's whole budget on handoffs.
-export const GROUP_CHAT_MAX_MESSAGES = 10
-export const GROUP_CHAT_MAX_CONTINUATIONS = 2
+// Turn budgets live in group-limits.ts and are captured per user send.
 export const GROUP_CHAT_HISTORY_LIMIT = 24
 export const GROUP_CHAT_MAX_MEMBERS = 6
 
@@ -1313,6 +1314,7 @@ export function updateGroupChat(
   const bounded = trimGroupChatLog(next.log, next.watermarks)
   next.log = bounded.log
   next.watermarks = bounded.watermarks
+  next.maxBotTurns = normalizeGroupMaxBotTurns(next.maxBotTurns)
   all[group] = next
   $groupChats.set(all)
 
@@ -1348,6 +1350,7 @@ export function updateGroupChat(
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
         // Room picture (small data URL, same normalization as bot avatars).
         image: room.image || null,
+        maxBotTurns: normalizeGroupMaxBotTurns(room.maxBotTurns),
         syncRevision: Math.max(0, Number(room.syncRevision || 0))
       }
     }

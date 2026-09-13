@@ -134,6 +134,8 @@ type BotsMessages = {
     manageTitle: string
     settingsTitle: string
     settingsDesc: string
+    maxBotTurnsLabel: string
+    maxBotTurnsHint: string
     nameLabel: string
     searchToAdd: string
     searchToAddPlaceholder: string
@@ -334,7 +336,10 @@ const en: BotsMessages = {
     manageDesc: 'A bot can join multiple group chats. Memberships sync to every machine.',
     manageTitle: 'Manage groups',
     settingsTitle: 'Group settings',
-    settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
+    settingsDesc: 'Rename the group, set a room picture or adjust its reply limit. Members and history are kept.',
+    maxBotTurnsLabel: 'Max bot turns',
+    maxBotTurnsHint:
+      '1–100 (default 10). Total bot replies across this group per user send, not per bot. Passes and tool calls do not count. Applies to the next send. Bots may stop earlier; higher limits can cost more.',
     nameLabel: 'Group name',
     searchToAdd: 'Search bots to add',
     searchToAddPlaceholder: 'Search bots to add…',
@@ -528,7 +533,10 @@ const ja: BotsMessages = {
     manageDesc: 'ボットは複数のグループチャットに参加できます。メンバーシップはすべてのマシンに同期されます。',
     manageTitle: 'グループを管理',
     settingsTitle: 'グループ設定',
-    settingsDesc: 'グループ名の変更や部屋の画像の設定ができます。メンバーと履歴は保持されます。',
+    settingsDesc: 'グループ名、部屋の画像、返信上限を設定できます。メンバーと履歴は保持されます。',
+    maxBotTurnsLabel: 'ボットの最大ターン数',
+    maxBotTurnsHint:
+      '1〜100（既定値10）。ユーザーの送信1回に対するグループ全体のボット返信数です。ボットごとではなく、パスとツール呼び出しは含みません。次の送信から適用されます。早く終了する場合もあり、上限を増やすと費用が増える可能性があります。',
     nameLabel: 'グループ名',
     searchToAdd: '追加するボットを検索',
     searchToAddPlaceholder: '追加するボットを検索…',
@@ -721,7 +729,10 @@ const zh: BotsMessages = {
     manageDesc: '一个机器人可以加入多个群聊。成员关系会同步到每台设备。',
     manageTitle: '管理群组',
     settingsTitle: '群组设置',
-    settingsDesc: '重命名群组或设置房间图片。成员和历史都会保留。',
+    settingsDesc: '重命名群组、设置房间图片或调整回复上限。成员和历史都会保留。',
+    maxBotTurnsLabel: '机器人最大轮数',
+    maxBotTurnsHint:
+      '1–100（默认10）。每次用户发送后，整个群组的机器人回复总数，不是每个机器人的次数。跳过和工具调用不计入。从下次发送起生效。机器人可能提前停止；较高上限可能增加费用。',
     nameLabel: '群组名称',
     searchToAdd: '搜索要添加的机器人',
     searchToAddPlaceholder: '搜索要添加的机器人…',
@@ -914,7 +925,10 @@ const zhHant: BotsMessages = {
     manageDesc: '一個機器人可以加入多個群組聊天。成員關係會同步到每台裝置。',
     manageTitle: '管理群組',
     settingsTitle: '群組設定',
-    settingsDesc: '重新命名群組或設定房間圖片。成員和歷史都會保留。',
+    settingsDesc: '重新命名群組、設定房間圖片或調整回覆上限。成員和歷史都會保留。',
+    maxBotTurnsLabel: '機器人最大輪數',
+    maxBotTurnsHint:
+      '1–100（預設10）。每次使用者傳送後，整個群組的機器人回覆總數，不是每個機器人的次數。略過和工具呼叫不計入。從下次傳送起生效。機器人可能提早停止；較高上限可能增加費用。',
     nameLabel: '群組名稱',
     searchToAdd: '搜尋要加入的機器人',
     searchToAddPlaceholder: '搜尋要加入的機器人…',

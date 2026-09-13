@@ -74,6 +74,12 @@ import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group
 import type { GroupRoomPrompt } from './group-chat-parts'
 import { GroupHoldStatus } from './group-hold-status'
 import {
+  GROUP_CHAT_MAX_BOT_TURNS,
+  GROUP_CHAT_MIN_BOT_TURNS,
+  isValidGroupMaxBotTurns,
+  normalizeGroupMaxBotTurns
+} from './group-limits'
+import {
   botGroups,
   groupChatMemberBots,
   groupDisbandMetadataPlan,
@@ -193,6 +199,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
           members: Array.isArray(room.members) ? room.members : [],
           roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
           image: room.image || null,
+          maxBotTurns: normalizeGroupMaxBotTurns(room.maxBotTurns),
           syncRevision: Math.max(0, Number(room.syncRevision || 0))
         }
       }
@@ -360,25 +367,29 @@ interface GroupChatSettingsDialogProps {
   open: boolean
 }
 
-/** Edit an existing group chat's name and picture. Renames re-key the room
+/** Edit an existing group chat's name, picture and reply budget. Renames re-key the room
  *  and every local member's membership (renameGroupChat); the picture rides
  *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
-function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
+export function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const current = (rooms[group] || {}).image || null
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
+  const [maxBotTurns, setMaxBotTurns] = useState(String(normalizeGroupMaxBotTurns(rooms[group]?.maxBotTurns)))
+  const validBudget = maxBotTurns.trim() !== '' && isValidGroupMaxBotTurns(Number(maxBotTurns))
   useEffect(() => {
     if (open) {
       setName(group)
       setImage(current)
+      setMaxBotTurns(String(normalizeGroupMaxBotTurns(rooms[group]?.maxBotTurns)))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
 
   const save = async () => {
+    if (!name.trim() || !validBudget) {return}
     const finalName = await renameGroupChat(group, name, members)
 
     if (finalName === null) {
@@ -388,6 +399,8 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
     if (image !== current) {
       setGroupChatImage(finalName, image)
     }
+
+    updateGroupChat(finalName, room => ({ ...room, maxBotTurns: Number(maxBotTurns) }))
 
     onClose()
 
@@ -429,12 +442,32 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
             onChange={event => setName(event.target.value)}
             value={name}
           />
+          <div className="mt-4 space-y-2">
+            <label className="text-sm font-medium" htmlFor="group-max-bot-turns">
+              {b.group.maxBotTurnsLabel}
+            </label>
+            <Input
+              aria-describedby="group-max-bot-turns-help"
+              aria-invalid={!validBudget}
+              id="group-max-bot-turns"
+              max={GROUP_CHAT_MAX_BOT_TURNS}
+              min={GROUP_CHAT_MIN_BOT_TURNS}
+              onChange={event => setMaxBotTurns(event.target.value)}
+              required
+              step={1}
+              type="number"
+              value={maxBotTurns}
+            />
+            <p className="text-xs text-muted-foreground" id="group-max-bot-turns-help">
+              {b.group.maxBotTurnsHint}
+            </p>
+          </div>
         </form>
         <DialogFooter>
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
           </Button>
-          <Button disabled={!name.trim()} onClick={() => void save()}>
+          <Button disabled={!name.trim() || !validBudget} onClick={() => void save()}>
             {t.common.save}
           </Button>
         </DialogFooter>

@@ -64,6 +64,54 @@ beforeEach(() => {
   runTimersInline()
 })
 
+describe('per-room reply budget persistence and sync', () => {
+  it('keeps budgets in both durable writers and the published gateway mirror', async () => {
+    const room = await loadRoom()
+    room.chat.updateGroupChat('Count', current => ({ ...current, roomId: 'count-id', maxBotTurns: 20 }))
+    room.chat.appendGroupChatEntry('Count', { kind: 'user', name: 'You' }, 'hello')
+    room.chat.updateGroupChat('Other', current => ({ ...current, maxBotTurns: 2 }))
+    expect(durable(room).Count.maxBotTurns).toBe(20)
+    expect(durable(room).Other.maxBotTurns).toBe(2)
+    expect(room.chat.durableGroupChatRooms().Count.maxBotTurns).toBe(20)
+    await drain(() => !published(room))
+    const projection = room.chat.groupChatSyncSnapshot()
+    expect(projection.rooms['id:count-id'].maxBotTurns).toBe(20)
+    const reloaded = room.chat.mergeRemoteGroupChatSnapshotIntoRooms(JSON.parse(JSON.stringify(projection)), {})
+    expect(reloaded.Count.maxBotTurns).toBe(20)
+  })
+
+  it('revision-merges settings across remote rename, stale sync and older clients', async () => {
+    const { chat } = await loadRoom()
+
+    const local: Record<string, GroupChat> = {
+      Count: {
+        roomId: 'id',
+        log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'hello' }],
+        watermarks: {},
+        maxBotTurns: 20,
+        syncRevision: 4
+      },
+      Other: { log: [], watermarks: {}, maxBotTurns: 2 }
+    }
+
+    const remote = chat.groupChatSyncSnapshot({ Renamed: { ...local.Count, maxBotTurns: 30, syncRevision: 5 } })
+    expect(chat.mergeRemoteGroupChatSnapshotIntoRooms(remote, local).Renamed.maxBotTurns).toBe(30)
+    expect(chat.mergeRemoteGroupChatSnapshotIntoRooms(remote, local).Other.maxBotTurns).toBe(2)
+    expect(
+      chat.mergeRemoteGroupChatSnapshotIntoRooms(remote, local, { preserveRooms: ['Count'] }).Count.maxBotTurns
+    ).toBe(20)
+    remote.rooms['id:id'].revision = 3
+    expect(chat.mergeRemoteGroupChatSnapshotIntoRooms(remote, local).Count.maxBotTurns).toBe(20)
+    remote.rooms['id:id'].revision = 6
+    delete remote.rooms['id:id'].maxBotTurns
+    expect(chat.mergeRemoteGroupChatSnapshotIntoRooms(remote, local).Renamed.maxBotTurns).toBe(20)
+    const merged = chat.mergeGroupChatSyncSnapshots(remote, chat.groupChatSyncSnapshot(local))
+    expect(merged.rooms['id:id'].maxBotTurns).toBe(20)
+    remote.rooms['id:id'].maxBotTurns = 1000
+    expect(chat.mergeRemoteGroupChatSnapshotIntoRooms(remote, local).Renamed.maxBotTurns).toBe(10)
+  })
+})
+
 describe('log window', () => {
   it('trimming keeps watermarks consistent with the trimmed array', async () => {
     const { chat } = await loadRoom()

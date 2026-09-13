@@ -150,6 +150,31 @@ function paneStores() {
  *  tree store mid-mutation. */
 const settle = () => new Promise(resolve => setTimeout(resolve, 0))
 
+it('cold registration hydrates per-room budgets and defaults legacy or invalid storage safely', async () => {
+  paneStores()
+  const { $groupChats } = await import('./group-chat')
+  $groupChats.set({})
+  const harness = recordingContext()
+
+  const saved = {
+    Count: { log: [], watermarks: {}, maxBotTurns: 20 },
+    Other: { log: [], watermarks: {}, maxBotTurns: 2 },
+    Legacy: { log: [], watermarks: {} },
+    Invalid: { log: [], watermarks: {}, maxBotTurns: 1000 }
+  }
+
+  harness.ctx.storage.get = <T,>(key: string, fallback: T): T =>
+    key === 'group-chats' ? (JSON.parse(JSON.stringify(saved)) as T) : fallback
+  plugin.register(harness.ctx)
+  await settle()
+  expect($groupChats.get().Count.maxBotTurns).toBe(20)
+  expect($groupChats.get().Other.maxBotTurns).toBe(2)
+  expect($groupChats.get().Legacy.maxBotTurns).toBe(10)
+  expect($groupChats.get().Invalid.maxBotTurns).toBe(10)
+  harness.dispose()
+  $groupChats.set({})
+})
+
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.botChatOwnsWorkspace.mockReturnValue(false)

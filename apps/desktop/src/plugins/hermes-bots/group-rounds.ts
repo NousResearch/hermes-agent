@@ -11,9 +11,6 @@ import {
   $groupNeedsYou,
   appendGroupChatEntry,
   GROUP_CHAT_HISTORY_LIMIT,
-  GROUP_CHAT_MAX_CONTINUATIONS,
-  GROUP_CHAT_MAX_MESSAGES,
-  GROUP_CHAT_MAX_ROUNDS,
   groupSpeakerLabel,
   groupThreadOf,
   mintGroupThreadId,
@@ -21,6 +18,7 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
+import { normalizeGroupMaxBotTurns } from './group-limits'
 import { durableGroupChatMembers, groupMemberKey } from './group-membership'
 import { harvestStrandedGroupReply, isGroupPassText, runGroupChatMemberTurn } from './group-turns'
 import { requestForBot } from './routing'
@@ -29,7 +27,7 @@ import type { Attachment, GroupMember, GroupMessage } from './types'
 // ── group chats: bounded round-robin coordination over a shared room log ─────
 //
 // Behavioral model (clean-room): a group conversation is ONE ordered room log
-// owned by the plugin. A user send triggers at most GROUP_CHAT_MAX_ROUNDS
+// owned by the plugin. A user send triggers at most its room's reply budget in
 // serial round-robin rounds over the member roster — never parallel, no LLM
 // router. Who speaks each round is a deterministic @mention parse since the
 // last user message (mentioned members only, else everyone); whether a member
@@ -511,16 +509,20 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  topics never eat each other's deltas. */
 export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string) {
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
+  // Snapshot once: edits affect the next send, not an in-flight drive. Each
+  // productive round posts at least one reply; using this same ceiling for
+  // rounds/continuations avoids hidden 3-round / 2-handoff bottlenecks while
+  // keeping silent, failed and held turns bounded as before.
+  const maxBotTurns = normalizeGroupMaxBotTurns($groupChats.get()[group]?.maxBotTurns)
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
   let posted = 0
-  let continuations = 0
   // #94478: how this drive ended. 'settled' means quiet consensus (everyone
-  // passed with nothing pending); 'capped' means a round/message/continuation
+  // passed with nothing pending); 'capped' means the room's round/reply
   // cap forced the exit — the activity feed must tell those apart.
   let exitKind: 'capped' | 'settled' = 'settled'
 
   try {
-    for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
+    for (let round = 0; round < maxBotTurns; round++) {
       // Deliver any replies that finished after their turn timed out —
       // every member, not just this round's responders, so long work is
       // late, never lost.
@@ -563,7 +565,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
       let spokeThisRound = 0
 
       for (const member of responders) {
-        if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES) {
+        if (!isCurrent() || posted >= maxBotTurns) {
           if (!isCurrent()) {
             recordGroupActivity(group, {
               kind: 'cancelled',
@@ -766,15 +768,12 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         // settled.
         const pendingKeys = unaddressedGroupMentions(group, members, thread)
 
-        // #94478 review: bound continuation rounds independently of the
-        // message cap so a pathological mention chain can't consume the
-        // room's entire budget on back-and-forth handoffs.
-        continuations += 1
-
-        if (pendingKeys.length && continuations <= GROUP_CHAT_MAX_CONTINUATIONS) {
+        // Handoffs share the configured reply budget. Quiet continuations
+        // still settle immediately; there is no separate smaller handoff cap.
+        if (pendingKeys.length) {
           const citedMembers = members.filter((member: GroupMember) => pendingKeys.includes(groupMemberKey(member)))
 
-          if (citedMembers.length && posted < GROUP_CHAT_MAX_MESSAGES) {
+          if (citedMembers.length && posted < maxBotTurns) {
             const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
 
             const continuationResponders = citedMembers.filter(
@@ -782,7 +781,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
             )
 
             for (const member of continuationResponders) {
-              if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES || continuations > GROUP_CHAT_MAX_CONTINUATIONS) {
+              if (!isCurrent() || posted >= maxBotTurns) {
                 break
               }
 
@@ -895,13 +894,10 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         if (spokeThisRound === 0) {
           // Genuinely nothing left to say — including after the continuation
           // attempt above produced no spoken turns. Settle honestly, but if
-          // cited members are STILL owed a turn and only the continuation /
-          // message caps stopped us from driving them, this is a capped
+          // cited members are STILL owed a turn and only the reply budget
+          // stopped us from driving them, this is a capped
           // exit, not consensus. (#94478)
-          if (
-            pendingKeys.length &&
-            (continuations > GROUP_CHAT_MAX_CONTINUATIONS || posted >= GROUP_CHAT_MAX_MESSAGES)
-          ) {
+          if (pendingKeys.length && posted >= maxBotTurns) {
             exitKind = 'capped'
           }
 
@@ -910,7 +906,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
       }
     }
 
-    // All GROUP_CHAT_MAX_ROUNDS rounds ran with someone still speaking —
+    // All budgeted rounds ran with someone still speaking —
     // the round cap ended the drive, not consensus. (#94478)
     exitKind = 'capped'
   } finally {

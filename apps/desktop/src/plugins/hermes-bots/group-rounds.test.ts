@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as groupActivity from './group-activity'
 import type * as groupChat from './group-chat'
+import { GROUP_CHAT_DEFAULT_MAX_BOT_TURNS } from './group-limits'
 import type * as groupRounds from './group-rounds'
 import { createGroupGateway, drain, runTimersInline, scriptedStorage } from './group-test-utils'
 import type { GatewayOptions, ScriptedGateway } from './group-test-utils'
@@ -164,7 +165,7 @@ describe('round lifecycle', () => {
     expect(room.gateway.calls).toHaveLength(3)
   })
 
-  it('stops chatty members at GROUP_CHAT_MAX_MESSAGES', async () => {
+  it('stops chatty members at the default reply budget', async () => {
     const room = await loadRoom({ turn: ({ n }) => `message ${n} — @everyone keep going` })
 
     room.rounds.sendToGroupChat('Loud', MEMBERS, 'go wild')
@@ -172,7 +173,75 @@ describe('round lifecycle', () => {
 
     const posted = log(room, 'Loud').filter(entry => entry.from.kind === 'member')
 
-    expect(posted.length).toBeLessThanOrEqual(room.chat.GROUP_CHAT_MAX_MESSAGES)
+    expect(posted).toHaveLength(GROUP_CHAT_DEFAULT_MAX_BOT_TURNS)
+  })
+
+  it.each([1, 4, 10, 25])(
+    'allows exactly %i alternating replies, resets per send and isolates groups',
+    async budget => {
+      let now = Date.now()
+      vi.spyOn(Date, 'now').mockImplementation(() => ++now)
+
+      const room = await loadRoom({
+        turn: ({ profile }) => (profile === 'research' ? '@builder your turn' : '@research your turn')
+      })
+
+      const members = MEMBERS.slice(0, 2)
+      room.chat.updateGroupChat('Count', current => ({ ...current, maxBotTurns: budget }))
+      room.chat.updateGroupChat('Other', current => ({ ...current, maxBotTurns: 2 }))
+
+      for (let send = 0; send < 2; send++) {
+        room.rounds.sendToGroupChat('Count', members, '@research start counting')
+        await settle(room, 'Count')
+        const entries = log(room, 'Count')
+        const start = entries.findLastIndex(entry => entry.from.kind === 'user')
+        const replies = entries.slice(start + 1)
+        expect(replies).toHaveLength(budget)
+        expect(replies.map(entry => entry.from.name)).toEqual(
+          Array.from({ length: budget }, (_, index) => (index % 2 === 0 ? 'research' : 'builder'))
+        )
+      }
+
+      room.rounds.sendToGroupChat('Other', members, '@research start counting')
+      await settle(room, 'Other')
+      expect(log(room, 'Other').filter(entry => entry.from.kind === 'member')).toHaveLength(2)
+    }
+  )
+
+  it('uses the saved budget at send time and applies edits only to the next send', async () => {
+    let now = Date.now()
+    vi.spyOn(Date, 'now').mockImplementation(() => ++now)
+
+    const room = await loadRoom({
+      turn: ({ n, profile }) => {
+        if (n === 1) {room.chat.updateGroupChat('Count', current => ({ ...current, maxBotTurns: 1 }))}
+
+        return profile === 'research' ? '@builder your turn' : '@research your turn'
+      }
+    })
+
+    room.chat.updateGroupChat('Count', current => ({ ...current, maxBotTurns: 10 }))
+    room.rounds.sendToGroupChat('Count', MEMBERS.slice(0, 2), '@research start')
+    await settle(room, 'Count')
+    expect(room.gateway.calls).toHaveLength(10)
+    room.rounds.sendToGroupChat('Count', MEMBERS.slice(0, 2), '@research start')
+    await settle(room, 'Count')
+    expect(room.gateway.calls).toHaveLength(11)
+  })
+
+  it('supports the upper bound even when the retained transcript window trims older replies', async () => {
+    let now = Date.now()
+    vi.spyOn(Date, 'now').mockImplementation(() => ++now)
+
+    const room = await loadRoom({
+      turn: ({ n, profile }) => `${n}: ${profile === 'research' ? '@builder' : '@research'} your turn`
+    })
+
+    room.chat.updateGroupChat('Count', current => ({ ...current, maxBotTurns: 100 }))
+    room.rounds.sendToGroupChat('Count', MEMBERS.slice(0, 2), '@research start')
+    await settle(room, 'Count')
+    expect(room.chat.$groupChats.get().Count.running).toBe(false)
+    expect(room.gateway.calls).toHaveLength(100)
   })
 
   it('treats a failed member turn as a pass, not a room error', async () => {

@@ -54,6 +54,7 @@ import {
   sweepGroupChatMembersForRemovedConnection,
   updateGroupChat
 } from './group-chat'
+import { normalizeGroupMaxBotTurns } from './group-limits'
 import { groupWorkspaceOwnerKey } from './group-membership'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
@@ -241,6 +242,7 @@ export default {
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
+                  maxBotTurns: normalizeGroupMaxBotTurns(room.maxBotTurns),
                   syncRevision: Math.max(0, Number(room.syncRevision || 0)),
                   epoch: 0,
                   running: false

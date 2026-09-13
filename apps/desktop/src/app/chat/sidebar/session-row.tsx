@@ -58,7 +58,8 @@ import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
-  /** TUI-style tree stem for branched sessions (`└─ ` / `├─ `). */
+  /** Depth and TUI-style stem for a nested branch or spawned session. */
+  branchDepth?: number
   branchStem?: string
   isPinned: boolean
   isSelected: boolean
@@ -127,6 +128,7 @@ function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
 
 function SidebarSessionRowImpl({
   session,
+  branchDepth,
   branchStem,
   isPinned,
   isSelected,
@@ -452,12 +454,12 @@ function SidebarSessionRowImpl({
             // rule, a div doesn't.
             'z-0 w-full cursor-pointer',
             card && 'pr-0',
-            branchStem && 'pl-3.5',
             // The card is a grid with ONE spacing knob: --card-gap. Every row
             // gap is gap-y-(--card-gap); the title/preview group opts out
             // with its own tighter internal flex gap.
             card && 'flex-col items-stretch justify-center py-1.5 [--card-gap:0.4rem] gap-(--card-gap)'
           )}
+          style={branchDepth ? { paddingLeft: `${0.5 + branchDepth * 0.875}rem` } : undefined}
           // Middle-click = open in a new tab (browser muscle memory).
           {...middleClickHandlers(() => {
             triggerHaptic('selection')
@@ -696,6 +698,7 @@ function rowPropsEqual(a: SidebarSessionRowProps, b: SidebarSessionRowProps): bo
     a.isPinned === b.isPinned &&
     a.isSelected === b.isSelected &&
     a.unread === b.unread &&
+    a.branchDepth === b.branchDepth &&
     a.branchStem === b.branchStem &&
     a.reorderable === b.reorderable &&
     a.dragging === b.dragging &&

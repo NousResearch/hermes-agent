@@ -774,8 +774,7 @@ export function useSessionActions({
           options?.cwd === null ? '' : typeof options?.cwd === 'string' ? options.cwd.trim() : resolveNewSessionCwd()
 
         const params = {
-          ...(await desktopSessionCreateParams(cwd, capturedRoute)),
-          ...(workspaceScope.workspaceMode === 'bots' ? { hidden: true } : {})
+          ...(await desktopSessionCreateParams(cwd, capturedRoute))
         }
 
         // Same lease chain as createBackendSessionForSend: owner socket held

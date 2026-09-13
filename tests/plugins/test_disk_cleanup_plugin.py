@@ -14,7 +14,9 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 
 import importlib
 import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -82,9 +84,58 @@ class TestIsSafePath:
         p.write_text("x")
         assert dg.is_safe_path(p) is True
 
+    @pytest.mark.macos_only
+    def test_track_accepts_tmp_hermes_path_after_platform_resolution(self, _isolate_env):
+        dg = _load_lib()
+        temporary = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-", dir="/tmp"))
+        try:
+            assert dg.track(str(temporary), "temp", silent=True) is True
+        finally:
+            shutil.rmtree(temporary)
+
     def test_rejects_outside_hermes_home(self, _isolate_env):
         dg = _load_lib()
         assert dg.is_safe_path(Path("/etc/passwd")) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /tmp path contract")
+    def test_rejects_tmp_traversal_and_near_prefixes(self, _isolate_env):
+        dg = _load_lib()
+        assert dg.is_safe_path(Path("/tmp/hermes-safe/../not-hermes/file")) is False
+        assert dg.is_safe_path(Path("/tmp-near/hermes-safe/file")) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink contract")
+    def test_rejects_final_and_nested_symlink_escapes(self, _isolate_env):
+        dg = _load_lib()
+        temporary = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-", dir="/tmp"))
+        outside_dir = Path(tempfile.mkdtemp(prefix="disk-cleanup-outside-", dir="/tmp"))
+        outside_file = outside_dir / "file.txt"
+        outside_file.write_text("outside", encoding="utf-8")
+        try:
+            final_link = temporary / "final-link"
+            final_link.symlink_to(outside_file)
+            nested_link = temporary / "nested-link"
+            nested_link.symlink_to(outside_dir, target_is_directory=True)
+
+            assert dg.is_safe_path(final_link) is False
+            assert dg.is_safe_path(nested_link / outside_file.name) is False
+        finally:
+            shutil.rmtree(temporary)
+            shutil.rmtree(outside_dir)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink contract")
+    def test_symlink_loop_fails_closed(self, _isolate_env):
+        dg = _load_lib()
+        temporary = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-", dir="/tmp"))
+        try:
+            first = temporary / "first"
+            second = temporary / "second"
+            first.symlink_to(second)
+            second.symlink_to(first)
+
+            assert dg.is_safe_path(first) is False
+            assert dg.track(str(first), "temp", silent=True) is False
+        finally:
+            shutil.rmtree(temporary)
 
 
 class TestGuessCategory:

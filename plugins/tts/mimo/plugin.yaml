@@ -1,0 +1,7 @@
+name: mimo-tts
+version: 1.0.0
+description: "Xiaomi MiMo-V2.5 TTS backend via OpenAI-compatible /v1/chat/completions with the audio output parameter (base64 WAV). Preset voices for Chinese and English."
+author: SHT
+kind: backend
+requires_env:
+  - XIAOMI_API_KEY

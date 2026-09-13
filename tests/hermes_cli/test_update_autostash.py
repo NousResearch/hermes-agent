@@ -57,6 +57,14 @@ def _patch_gateway_discovery():
     phase's fresh ``from hermes_cli.gateway import ...`` then loads an
     UNPATCHED copy of the module — silently discarding every mock here and
     letting real gateway discovery (and real ``os.kill``) run on the dev box.
+
+    ``_cold_start_windows_gateway_after_update`` is stubbed for the same
+    reason on Windows: it re-reads the ``find_gateway_pids`` patched to ``[]``
+    above, interprets "no gateway running" as "cold-start one", and spawns a
+    REAL detached gateway. That trips the conftest live-system guard and fails
+    every success-path test in this file on a Windows box (it returns early on
+    POSIX, which is why CI never saw it). Returning ``True`` gives the
+    "already running, nothing to do" outcome the tests want.
     """
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
@@ -65,6 +73,7 @@ def _patch_gateway_discovery():
          patch("hermes_cli.update_inventory.report_unaccounted_runtimes", return_value=False), \
          patch.object(hermes_main, "_fleet_probe_expected_runtimes", lambda *a, **kw: False), \
          patch.object(hermes_main, "_purge_stale_hermes_modules", lambda *a, **kw: None), \
+         patch.object(hermes_main, "_cold_start_windows_gateway_after_update", lambda *a, **kw: True), \
          patch("hermes_cli.update_receipt.collect_fleet_versions", return_value=[]):
         yield
 

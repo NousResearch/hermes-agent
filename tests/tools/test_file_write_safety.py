@@ -846,18 +846,28 @@ class TestDuplicateDrivePrefixGuard:
             f"File was created at the wrong path: {mangled!r}"
         )
 
-    def test_relative_path_passes(self):
+    def test_relative_path_passes(self, tmp_path, monkeypatch):
         import importlib
         import tools.file_tools as _ft
         importlib.reload(_ft)
         write_file_tool = _ft.write_file_tool
         # Relative paths still resolve against cwd; they don't look duplicated.
+        # Run from a temp cwd: a relative write lands in the process cwd, so
+        # without this the test drops test-relative.py into whatever directory
+        # pytest was invoked from (the checkout), leaving an untracked file
+        # behind and making the suite depend on its execution directory.
+        monkeypatch.chdir(tmp_path)
         result = write_file_tool(
             path="test-relative.py",
             content="x",
             cross_profile=True,
         )
         assert "duplicated drive prefix" not in (result or "")
+        # Hermetic by construction now: the relative write must have landed in
+        # the sandbox we chdir'd into, not beside the repository.
+        assert (tmp_path / "test-relative.py").exists(), (
+            f"relative write did not land in the temp cwd: {result!r}"
+        )
 
 
 if __name__ == "__main__":

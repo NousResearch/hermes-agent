@@ -8,11 +8,13 @@ BOUNDED_IMPLEMENTATION = "bounded_implementation"
 ALLOWED_DELEGATION_PURPOSES = frozenset({RESEARCH_EVIDENCE, BOUNDED_IMPLEMENTATION})
 DEFAULT_DELEGATION_PURPOSE = RESEARCH_EVIDENCE
 
-# Direct mutation surfaces that a research-only child never needs. Terminal and
-# execute_code remain available for probes/calculation; existing approvals and
-# task scope still govern their commands.
-_RESEARCH_BLOCKED_TOOLS = frozenset({
-    "write_file", "patch", "skill_manage", "memory", "cronjob_manage", "send_message",
+# Exact names whose handlers are observational and cannot execute arbitrary
+# programs or mutate external/project state.  Research children are deny-all
+# outside this set, including late MCP/dynamic tools.  Additions require an
+# effect audit and a regression test; names are intentionally not inferred
+# from toolsets or prefixes.
+RESEARCH_EVIDENCE_TOOL_ALLOWLIST = frozenset({
+    "read_file", "search_files", "web_search", "web_extract", "vision_analyze",
 })
 
 
@@ -44,7 +46,7 @@ def purpose_tool_block_message(agent: Any, tool_name: str) -> str | None:
     if raw_purpose is None:
         return None
     purpose = normalize_delegation_purpose(raw_purpose)
-    if purpose == RESEARCH_EVIDENCE and str(tool_name or "") in _RESEARCH_BLOCKED_TOOLS:
+    if purpose == RESEARCH_EVIDENCE and str(tool_name or "") not in RESEARCH_EVIDENCE_TOOL_ALLOWLIST:
         return (
             f"Tool '{tool_name}' is unavailable for delegation purpose '{RESEARCH_EVIDENCE}'. "
             f"Spawn a '{BOUNDED_IMPLEMENTATION}' child for authorized artifact changes."

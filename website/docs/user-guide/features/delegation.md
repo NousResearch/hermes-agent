@@ -56,10 +56,10 @@ delegate_task(tasks=[
 
 Every advertised `tasks[]` item declares one of two purposes:
 
-- `research_evidence` — inspect, calculate, test, and report evidence. Direct artifact-mutation tools such as `write_file`, `patch`, and `skill_manage` are Runtime-blocked.
+- `research_evidence` — inspect and report evidence through an audited exact-name read-only tool allowlist. Shell/code execution and unlisted dynamic or MCP tools are Runtime-blocked.
 - `bounded_implementation` — implementation may modify only the files and systems explicitly named by the parent task.
 
-Old saved calls and internal Python callers that omit the field remain accepted and default to `research_evidence`. Purpose is a workflow fence, not an operating-system sandbox: inherited terminal and code-execution tools still follow the existing child toolsets, approvals, and runtime boundaries.
+Old saved calls and internal Python callers that omit the field remain accepted and default to `research_evidence`. Purpose is enforced both when the child tool surface is materialized/refreshed and again at dispatch; `bounded_implementation` still follows the inherited toolsets, approvals, and runtime boundaries.
 
 ## Structured Output (`output_schema`)
 
@@ -364,16 +364,16 @@ A child that exhausts its budget returns with `exit_reason: max_iterations` and 
 
 ## Child Timeout
 
-By default each subagent has a **900-second (15-minute) wall-clock timeout**. This leaves room for bounded reviews while ensuring abandoned work eventually returns an explicit timeout packet. API errors, tool errors, and the iteration budget can still stop a child earlier.
+By default there is **no wall-clock timeout** on subagents. The hard cap remains opt-in until timed-out child teardown is race-free. API errors, tool errors, the iteration budget, and the heartbeat staleness monitor still bound failed or genuinely wedged children.
 
 Genuinely stuck children are still detected: the heartbeat staleness monitor stops refreshing the parent's activity when a child makes no progress (no API calls, no tool starts, and no activity-timestamp ticks), letting the gateway inactivity timeout fire on a truly wedged worker. An in-flight model wait still counts as progress — subagents refresh the activity clock while waiting on the provider, so a slow local / long-prefill completion is not treated as stalled.
 
-Override or disable the cap per install when needed:
+Opt into a cap per install when needed:
 
 ```yaml
 delegation:
-  child_timeout_seconds: 900   # default; positive values have a 30-second floor
-  # child_timeout_seconds: 0   # explicit opt-out: no wall-clock cap
+  child_timeout_seconds: 1800  # opt-in; positive values have a 30-second floor
+  # child_timeout_seconds: 0   # default-equivalent: no wall-clock cap
 ```
 
 A positive value enforces a hard wall-clock limit on each child; `0` or a negative value disables it.
@@ -654,7 +654,7 @@ error.
 delegation:
   max_iterations: 10                        # Max turns per child (default: 10)
   # max_concurrent_children: 1              # Parallel children per batch (default: 1)
-  # child_timeout_seconds: 900              # Hard child timeout (default: 15 minutes; 0 disables)
+  # child_timeout_seconds: 1800             # Optional hard child timeout (default: disabled; 0 disables)
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.

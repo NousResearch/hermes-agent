@@ -112,6 +112,15 @@ def refresh_agent_mcp_tools(
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
     _reinject_authorized_dynamic_tools(agent, new_defs, new_names)
+    # A delegated research child is deny-all outside its audited exact-name
+    # capability set.  Reapply after every registry/MCP/post-build refresh so
+    # a late dynamic tool cannot reopen a mutation path.
+    purpose_allowlist = getattr(agent, "_delegation_purpose_tool_allowlist", None)
+    if purpose_allowlist is not None:
+        purpose_allowlist = frozenset(purpose_allowlist)
+        new_defs = [entry for entry in new_defs if _def_name(entry) in purpose_allowlist]
+        new_names = {_def_name(entry) for entry in new_defs if _def_name(entry)}
+        staged_engine_names.intersection_update(purpose_allowlist)
     # Registry membership is read OUTSIDE ``_agent_tools_lock``: taking ``registry._lock``
     # under the tools lock would be the first nesting of the two.
     prefix_registered: Optional[set] = None

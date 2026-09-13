@@ -49,7 +49,11 @@ def _safe_target(key: str, value: Any) -> Any:
             return None
         host = f"[{hostname}]" if ":" in hostname else hostname
         netloc = f"{host}:{parsed.port}" if parsed.port is not None else host
-        return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+        # URL paths routinely contain bearer material (Slack incoming-webhook
+        # secrets, Telegram bot tokens, signed object keys).  Receipts cross
+        # the child/parent boundary, so generic URLs retain authority only —
+        # path preservation must be an explicit future allowlisted exception.
+        return urlunsplit((parsed.scheme, netloc, "", "", ""))
     except (TypeError, ValueError):
         return None
 

@@ -159,6 +159,45 @@ def test_refreshed_tool_is_callable_through_valid_tool_names_guard(monkeypatch):
     assert any(t["function"]["name"] == "mcp_granola_list_meetings" for t in agent.tools)
 
 
+def test_research_purpose_allowlist_survives_dynamic_refresh(monkeypatch):
+    """A late MCP/dynamic mutation tool must not reopen a research child."""
+    agent = _agent(["read_file"])
+    agent._delegation_purpose_tool_allowlist = frozenset({"read_file", "web_search"})
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools, "get_tool_definitions",
+        lambda **kw: [
+            _tool("read_file"), _tool("web_search"),
+            _tool("mcp__vendor__update_record"), _tool("terminal"),
+        ],
+    )
+
+    added = _mcp_agent.refresh_agent_mcp_tools(agent)
+
+    assert added == {"web_search"}
+    assert agent.valid_tool_names == {"read_file", "web_search"}
+    assert [tool["function"]["name"] for tool in agent.tools] == ["read_file", "web_search"]
+
+
+def test_research_purpose_allowlist_intersects_context_engine_names(monkeypatch):
+    agent = _agent(["read_file", "lcm_grep"])
+    agent._delegation_purpose_tool_allowlist = frozenset({"read_file"})
+    agent._context_engine_tool_names = {"lcm_grep"}
+    agent.context_compressor = types.SimpleNamespace(
+        get_tool_schemas=lambda: [{"name": "lcm_grep", "description": "", "parameters": {}}]
+    )
+
+    import model_tools
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: [_tool("read_file")])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent)
+
+    assert agent._context_engine_tool_names == set()
+    assert agent.valid_tool_names == {"read_file"}
+    assert all(tool["function"]["name"] != "lcm_grep" for tool in agent.tools)
+
+
 def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
     """Concurrent refreshes keep tools / valid_tool_names coherent.
 

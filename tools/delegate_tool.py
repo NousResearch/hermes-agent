@@ -265,6 +265,22 @@ def _build_child_agent(
     from agent.delegation_purpose import normalize_delegation_purpose
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._delegate_purpose = normalize_delegation_purpose(purpose)
+    if child._delegate_purpose == "research_evidence":
+        from agent.delegation_purpose import RESEARCH_EVIDENCE_TOOL_ALLOWLIST
+
+        child._delegation_purpose_tool_allowlist = RESEARCH_EVIDENCE_TOOL_ALLOWLIST
+        child.tools = [
+            tool for tool in (getattr(child, "tools", None) or [])
+            if (tool.get("function") or {}).get("name") in RESEARCH_EVIDENCE_TOOL_ALLOWLIST
+        ]
+        child.valid_tool_names = {
+            (tool.get("function") or {}).get("name") for tool in child.tools
+            if (tool.get("function") or {}).get("name")
+        }
+        engine_names = getattr(child, "_context_engine_tool_names", None)
+        if isinstance(engine_names, set):
+            engine_names.intersection_update(RESEARCH_EVIDENCE_TOOL_ALLOWLIST)
+        child._tool_search_scope_cache = None
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent

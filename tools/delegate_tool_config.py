@@ -21,10 +21,10 @@ _HIGH_CONCURRENCY_WARNED = False
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); deeper needs max_spawn_depth
 _MIN_SPAWN_DEPTH = 1  # floor for the configurable cap; MAX_DEPTH stays the default
 _LEGACY_MAX_ASYNC_WARNED = False
-# A bounded child must eventually return evidence or an explicit timeout packet.
-# 15 minutes still permits bounded reviews while preventing abandoned work from
-# living forever behind a healthy heartbeat.
-DEFAULT_CHILD_TIMEOUT: Optional[float] = 900.0
+# Keep the hard cap opt-in until timed-out child teardown is race-free.  The
+# structured timeout evidence path remains available for explicit positive
+# values; heartbeat staleness still covers genuinely wedged children.
+DEFAULT_CHILD_TIMEOUT: Optional[float] = None
 
 def _cfg() -> dict:
     """The ``delegation`` section, read through the origin so tests can patch it."""
@@ -129,7 +129,7 @@ def _parse_timeout(raw: Any) -> Optional[float]:
     return None if parsed <= 0 else max(30.0, parsed)
 
 def _get_child_timeout() -> Optional[float]:
-    """Hard wall-clock cap for one child (default: 900 seconds). Explicit 0 or negative disables the cap; positive
+    """Optional hard wall-clock cap for one child (default: disabled). Explicit 0 or negative disables the cap; positive
     values have a 30-second floor. Stuck children are also caught by the heartbeat staleness monitor. Env fallback:
     DELEGATION_CHILD_TIMEOUT_SECONDS."""
     return _knob(

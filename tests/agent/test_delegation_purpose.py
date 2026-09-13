@@ -29,11 +29,13 @@ def test_parent_agent_without_purpose_is_not_restricted():
     assert purpose_tool_block_message(SimpleNamespace(), "write_file") is None
 
 
-def test_research_child_blocks_direct_mutation_but_bounded_child_does_not():
+def test_research_child_is_exact_allowlist_bounded_but_bounded_child_is_not():
     research = SimpleNamespace(_delegate_purpose=RESEARCH_EVIDENCE)
     bounded = SimpleNamespace(_delegate_purpose=BOUNDED_IMPLEMENTATION)
-    assert "unavailable" in purpose_tool_block_message(research, "write_file")
-    assert purpose_tool_block_message(research, "read_file") is None
+    for name in ("write_file", "terminal", "execute_code", "mcp__vendor__update_record"):
+        assert "unavailable" in purpose_tool_block_message(research, name)
+    for name in ("read_file", "search_files", "web_search", "web_extract", "vision_analyze"):
+        assert purpose_tool_block_message(research, name) is None
     assert purpose_tool_block_message(bounded, "write_file") is None
 
 

@@ -104,6 +104,42 @@ def test_receipt_digest_covers_full_pre_spill_output():
     assert "<persisted-output>stub</persisted-output>" in messages[0]["content"]
 
 
+def test_url_targets_drop_path_credentials_for_slack_and_telegram():
+    agent = _FakeAgent()
+    cases = {
+        "https://hooks.slack.com/services/T000/B000/SECRET": "https://hooks.slack.com",
+        "https://api.telegram.org/bot123456:ABCDEF/getMe": "https://api.telegram.org",
+    }
+    with delegated_child_context("child-session"):
+        for index, (url, expected) in enumerate(cases.items()):
+            receipt = prepare_runtime_receipt(
+                agent, tool_name="web_extract", tool_call_id=f"url-{index}",
+                arguments={"url": url}, result="ok", status="ok", effect_disposition="none",
+            )
+            assert receipt["input_summary"]["targets"]["url"] == expected
+            assert "SECRET" not in str(receipt)
+            assert "123456:ABCDEF" not in str(receipt)
+
+
+def test_url_targets_drop_userinfo_query_fragment_and_list_paths():
+    agent = _FakeAgent()
+    urls = [
+        "https://user:pass@example.test/private/path?token=query-secret#fragment-secret",
+        "https://hooks.slack.com/services/T000/B000/LIST-SECRET",
+    ]
+    with delegated_child_context("child-session"):
+        receipt = prepare_runtime_receipt(
+            agent, tool_name="web_extract", tool_call_id="url-list",
+            arguments={"urls": urls}, result="ok", status="ok", effect_disposition="none",
+        )
+    assert receipt["input_summary"]["targets"]["urls"] == [
+        "https://example.test", "https://hooks.slack.com",
+    ]
+    rendered = str(receipt)
+    for secret in ("user", "pass", "private", "query-secret", "fragment-secret", "LIST-SECRET"):
+        assert secret not in rendered
+
+
 def test_flush_failure_never_commits_pending_receipt():
     agent = _FakeAgent(flush_ok=False)
     messages = []

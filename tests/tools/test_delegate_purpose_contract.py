@@ -60,9 +60,9 @@ def test_phase3_runtime_defaults_are_bounded(monkeypatch):
     monkeypatch.setattr(delegate_tool_config, "_cfg", lambda: {})
     monkeypatch.delenv("DELEGATION_MAX_CONCURRENT_CHILDREN", raising=False)
     monkeypatch.delenv("DELEGATION_CHILD_TIMEOUT_SECONDS", raising=False)
-    assert DEFAULT_CHILD_TIMEOUT == 900.0
+    assert DEFAULT_CHILD_TIMEOUT is None
     assert DEFAULT_MAX_ITERATIONS == 10
     assert _get_max_concurrent_children() == 1
-    assert _get_child_timeout() == 900.0
+    assert _get_child_timeout() is None
     assert MAX_DEPTH == 1
     assert _get_max_spawn_depth() == 1

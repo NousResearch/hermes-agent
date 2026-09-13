@@ -127,9 +127,12 @@ def test_build_child_agent_strips_kanban_toolset_even_when_parent_is_worker(monk
         parent_agent=Parent(),
     )
 
-    assert child.valid_tool_names == {"terminal"}
+    # Omitted purpose defaults to research_evidence, whose deny-all boundary
+    # excludes terminal as well as Kanban mutation tools.
+    assert child.valid_tool_names == set()
     assert "kanban" not in captured["enabled_toolsets"]
     assert "kanban" in captured["disabled_toolsets"]
+    assert "kanban_complete" not in child.valid_tool_names
 
 
 def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(

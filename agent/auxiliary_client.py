@@ -6052,6 +6052,7 @@ class _ProfileProjection(NamedTuple):
     reasoning_extra: Dict[str, Any]
     top_level: Dict[str, Any]
     handles_reasoning: bool
+    messages_wire: bool = False
 
 
 def _project_provider_profile(
@@ -6062,11 +6063,13 @@ def _project_provider_profile(
     reasoning_extra: Dict[str, Any] = {}
     top_level: Dict[str, Any] = {}
     handles_reasoning = False
+    messages_wire = False
     try:
         from providers import get_provider_profile
         from providers.base import ProviderProfile
         profile = get_provider_profile(provider_norm)
         if profile is not None:
+            messages_wire = profile.api_mode == "anthropic_messages"
             body = profile.build_extra_body(model=model, base_url=effective_base, reasoning_config=reasoning_config) or {}
             reasoning_extra, top_level = profile.build_api_kwargs_extras(
                 reasoning_config=reasoning_config, supports_reasoning=reasoning_config is not None,
@@ -6082,7 +6085,7 @@ def _project_provider_profile(
             )
     except Exception as exc:
         logger.debug("_build_call_kwargs: provider profile projection failed for %s: %s", provider, exc)
-    return _ProfileProjection(body, reasoning_extra, top_level, handles_reasoning)
+    return _ProfileProjection(body, reasoning_extra, top_level, handles_reasoning, messages_wire)
 
 
 def _merge_aux_extra_body(
@@ -6148,11 +6151,13 @@ def _build_call_kwargs(
         kwargs["extra_body"] = merged_extra
     # Anthropic Messages adapters take reasoning via a private kwarg that plain OpenAI SDK clients
     # would reject; Portal Claude is dual-wire, so include it only when the catalog id selects
-    # /v1/messages.
+    # /v1/messages. A profile declaring api_mode=anthropic_messages (commandcode-anthropic) is on
+    # that wire regardless of URL shape — once it overrides build_api_kwargs_extras the generic
+    # ``extra_body.reasoning`` fallback the adapter used to read is gone, so this is its only path.
     if reasoning_config and isinstance(reasoning_config, dict):
         raw_base = base_url or ""
         if (
-            provider_norm == "anthropic" or _nous_on_messages_wire(provider_norm, model)
+            provider_norm == "anthropic" or projection.messages_wire or _nous_on_messages_wire(provider_norm, model)
             or _endpoint_speaks_anthropic_messages(raw_base) or _is_anthropic_compat_endpoint(provider_norm, raw_base)
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)

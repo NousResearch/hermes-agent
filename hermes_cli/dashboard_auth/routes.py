@@ -41,7 +41,7 @@ from hermes_cli.dashboard_auth.cookies import (
     set_session_cookies)
 from hermes_cli.dashboard_auth.login_page import (
     render_login_html, render_native_provider_choice_html)
-from hermes_cli.dashboard_auth.native_refresh import refresh_native_session
+from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age, client_ip as _client_ip, is_safe_next_path)
 
@@ -501,14 +501,15 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
     if not body.refresh_token:
         raise _http(400, "refresh_token required")
     try:
-        # Uvicorn validates trusted proxy peers before updating the ASGI client.
-        # Never split replay keys on caller-controlled X-Forwarded-For prefixes.
-        session = await run_in_threadpool(
-            refresh_native_session, body.refresh_token, body.provider,
-            request.client.host if request.client else "")
+        # Off the event loop: the provider call is synchronous network I/O and a slow IdP
+        # otherwise wedges every public endpoint (/api/status) behind it.
+        refreshed = await run_in_threadpool(
+            refresh_session_coalesced, body.refresh_token, body.provider,
+            phase="native refresh", log=_log)
     except ProviderError as e:
         raise _http(503, f"Auth provider {str(e)!r} unreachable")
-    if session is not None:
+    if refreshed is not None:
+        session = refreshed[0]
         _audit(request, AuditEvent.REFRESH_SUCCESS, provider=session.provider,
                user_id=session.user_id)
         return _bearer_payload(session)

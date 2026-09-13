@@ -1,4 +1,5 @@
 """Native HTTP replay boundaries and deterministic provider-level concurrency."""
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -8,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli.dashboard_auth import clear_providers, register_provider
-from hermes_cli.dashboard_auth import native_refresh as replay
+from hermes_cli.dashboard_auth import refresh_singleflight as replay
 from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError, Session
 from hermes_cli.dashboard_auth.routes import router
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
@@ -50,8 +51,8 @@ def isolated_registry():
         replay._cache.clear()
 
 
-@pytest.mark.parametrize("case", ["hint-fallback", "negative", "outage", "replacement", "client",
-                                      "ttl", "capacity", "independent", "xff"])
+@pytest.mark.parametrize("case", ["hint-fallback", "negative", "outage", "replacement",
+                                      "ttl", "capacity", "independent", "network-hop"])
 def test_native_http_refresh_boundaries(case, monkeypatch):
     owner = Provider("owner", "expired" if case == "negative" else "outage" if case == "outage" else "success")
     other = Provider("other", "success" if case == "independent" else "expired")
@@ -81,10 +82,6 @@ def test_native_http_refresh_boundaries(case, monkeypatch):
             register_provider(replacement)
             assert request().status_code == 200
             assert replacement.calls == 1
-        elif case == "client":
-            with TestClient(app, client=("192.0.2.12", 2345)) as another_client:
-                assert another_client.post("/auth/native/refresh", json={"refresh_token": "opaque-old-token"}).status_code == 200
-            assert owner.calls == 2
         elif case == "ttl":
             assert request().json() == first.json()
             now[0] += replay._SUCCESS_TTL
@@ -103,15 +100,20 @@ def test_native_http_refresh_boundaries(case, monkeypatch):
             assert first.json()["provider"] == "owner"
             assert owner.calls == other.calls == 1
         else:
-            for prefix in ("192.0.2.1", "192.0.2.2"):
-                assert request(headers={"x-forwarded-for": f"{prefix}, 192.0.2.100"}).status_code == 200
-            # Only the ASGI peer (validated by Uvicorn), never an arbitrary header, scopes replay.
+            # A burst that straddles a network change (laptop wakes on another Wi-Fi) still
+            # coalesces: the RT identifies the session, the peer address does not.
+            with TestClient(app, client=("192.0.2.12", 2345)) as another_client:
+                assert another_client.post("/auth/native/refresh", json={"refresh_token": "opaque-old-token"}).json() == first.json()
             assert owner.calls == 1
 
 
 @pytest.mark.parametrize("outcome, independent", [("success", False), ("expired", False),
                                                   ("outage", False), ("success", True)])
 def test_concurrent_refresh_uses_concrete_provider_identity(outcome, independent):
+    def coalesced(token, hint):
+        return replay.refresh_session_coalesced(
+            token, hint, phase="test", log=logging.getLogger(__name__))
+
     owner = Provider("owner", outcome)
     other = Provider("other", "success" if independent else "expired")
     owner.release.clear()
@@ -120,9 +122,9 @@ def test_concurrent_refresh_uses_concrete_provider_identity(outcome, independent
     register_provider(owner)
     register_provider(other)
     with ThreadPoolExecutor(max_workers=3) as pool:
-        first = pool.submit(replay.refresh_native_session, "same-token", "owner", "client")
+        first = pool.submit(coalesced, "same-token", "owner")
         assert owner.entered.wait(3)
-        second = pool.submit(replay.refresh_native_session, "same-token", "other", "client")
+        second = pool.submit(coalesced, "same-token", "other")
         try:
             if independent:
                 assert other.entered.wait(3), "unrelated providers must not share a lock"
@@ -149,6 +151,64 @@ def test_concurrent_refresh_uses_concrete_provider_identity(outcome, independent
             if outcome == "expired":
                 assert results == [None, None]
             else:
-                assert [result.provider for result in results] == ["owner", "other" if independent else "owner"]
+                assert [result[1] for result in results] == ["owner", "other" if independent else "owner"]
             assert owner.calls == 1
         assert not replay._flights
+
+
+class _RotatingReuseDetectingProvider(Provider):
+    """A rotating-RT IdP with reuse detection: replaying a rotated RT kills the session."""
+
+    def __init__(self):
+        super().__init__("stub")
+        self.rotated: set[str] = set()
+
+    def verify_session(self, *, access_token):
+        return None  # every AT presented is expired -> the gate must refresh
+
+    def refresh_session(self, *, refresh_token):
+        self.calls += 1
+        if refresh_token in self.rotated:
+            raise RefreshExpiredError("refresh token reuse detected")
+        self.rotated.add(refresh_token)
+        self.entered.set()
+        assert self.release.wait(5), "test provider timed out"
+        return Session(user_id="u", email="u@example.test", display_name="u", org_id="o",
+                       provider=self.name, expires_at=int(time.time()) + 900,
+                       access_token="fresh-at", refresh_token=f"rt-{self.calls}")
+
+
+@pytest.fixture
+def gated_web_app():
+    from hermes_cli import web_server
+
+    prev = {k: getattr(web_server.app.state, k, None) for k in ("bound_host", "bound_port", "auth_required")}
+    web_server.app.state.bound_host = "gw.example.test"
+    web_server.app.state.bound_port = 443
+    web_server.app.state.auth_required = True
+    yield web_server.app
+    for k, v in prev.items():
+        setattr(web_server.app.state, k, v)
+
+
+def test_cookie_gate_burst_with_stale_rt_rotates_once(gated_web_app):
+    """#55712: a browser burst after AT expiry carries one stale RT in N requests; exactly one
+    reaches the provider and every sibling is served under the rotated session."""
+    provider = _RotatingReuseDetectingProvider()
+    provider.release.clear()
+    register_provider(provider)
+    cookies = {"hermes_session_at": "expired-at", "hermes_session_rt": "stale-rt",
+               "hermes_session_provider": "stub"}
+
+    def call():
+        # One TestClient per request: a shared jar would hand later requests the rotated RT.
+        with TestClient(gated_web_app, base_url="http://gw.example.test") as client:
+            return client.get("/api/auth/me", cookies=cookies)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(call) for _ in range(4)]
+        assert provider.entered.wait(3)
+        provider.release.set()
+        statuses = sorted(f.result(timeout=10).status_code for f in futures)
+    assert statuses == [200, 200, 200, 200]
+    assert provider.calls == 1

@@ -430,6 +430,22 @@ _URL_USERINFO_RE = re.compile(r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@")
 # separately for classification. Values stop at ``&``/``;`` (both valid).
 _STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]*)")
 
+# Key-management URL path segments — provider dashboards return error text
+# containing a direct "manage/revoke this key" link, e.g. OpenRouter's
+# "https://openrouter.ai/workspaces/default/keys/<KEY_ID>". The trailing
+# segment is a key IDENTIFIER (not the secret itself), but it is sufficient
+# for anyone holding the link to view/revoke/manage the credential on the
+# provider dashboard — the same exposure class as a bearer token. Not caught
+# by _PREFIX_RE (these identifiers rarely carry a known sk-/ghp_- style
+# prefix) and intentionally NOT gated behind ``redact_url_credentials``
+# (unlike generic query-string tokens) because a key-management path segment
+# is never a legitimate round-trip workflow token — always redact it.
+# Issue #102700 (cron jobs.json persisting these unsanitized in last_error).
+_KEY_MANAGEMENT_URL_PATH_RE = re.compile(
+    r"(/(?:api[-_]?keys?|keys)/)([A-Za-z0-9_-]{4,})",
+    re.IGNORECASE,
+)
+
 # Userinfo in absolute and network-path (``//user:pass@host``) references; the
 # authority stops at path/query/fragment delimiters. Anchored on the mandatory
 # ``//`` — an optional-scheme prefix backtracked O(n²) on long alphanumeric runs
@@ -719,6 +735,15 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
+
+    # Key-management URL path segments (provider "manage/revoke this key"
+    # links, e.g. openrouter.ai/.../keys/<KEY_ID>). Unconditional — see
+    # _KEY_MANAGEMENT_URL_PATH_RE docstring for why this never gates behind
+    # redact_url_credentials like generic query-string tokens do.
+    if "key" in text.lower():
+        text = _KEY_MANAGEMENT_URL_PATH_RE.sub(
+            lambda m: f"{m.group(1)}{_mask_token(m.group(2))}", text
+        )
 
     if redact_url_credentials:  # opt-in; known credential shapes in URLs are caught above
         # NOTE: Web-URL redaction (query params + userinfo + HTTP access-log request targets) is

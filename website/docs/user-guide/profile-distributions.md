@@ -613,6 +613,21 @@ hermes profile delete research-bot-test --yes
 hermes profile install ~/.hermes/profiles/research-bot --name research-bot-test
 ```
 
+Local sources are copied into temporary staging before the install plan is built.
+Links or changes detected during that copy stop installation before it updates the
+target profile. Finish editing the source and retry. Staging must be outside both
+the source directory and the destination profile.
+
+Interactive installation applies the staged copy shown at confirmation. Later edits
+to the source or a moving Git branch do not change that approved installation.
+On POSIX systems, file and directory permission bits are preserved when copying.
+
+The installer verifies the complete payload before changing profile files. It keeps
+backups during publication and rolls back changes if publication fails. If recovery
+cannot finish, the error identifies the retained backup directory.
+Destination directory handles remain open during publication and rollback so a
+concurrent link replacement cannot redirect writes through that link.
+
 ---
 
 ## Export and import a profile file
@@ -744,7 +759,7 @@ The short version:
 - The manifest format is YAML with a tiny required schema (`name` only).
 - The installer uses your local `git` binary for cloning, so any auth your shell already handles (SSH keys, credential helpers) works transparently.
 - After clone, `.git/` is stripped — the installed profile isn't itself a git checkout, avoiding "oh my, I accidentally committed my `.env` to the distribution's git history" traps.
-- Reserved profile names (`hermes`, `test`, `tmp`, `root`, `sudo`) are rejected at install time to avoid collisions with common binaries.
+- Reserved profile names (`hermes`, `test`, `tmp`, `root`, `sudo`) are rejected at install time to avoid collisions with common binaries. `main` is reserved for new profiles; existing `main` profiles can still be updated.
 
 ## See also
 

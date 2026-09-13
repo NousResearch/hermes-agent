@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
+from hermes_cli.profiles_lifecycle import directory_identity, profile_lifecycle_lock
 from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted
 
 logger = logging.getLogger(__name__)
@@ -218,6 +219,15 @@ def _canon_valid(name: str) -> str:
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
     return canon
+
+
+def _validate_new_profile_target(canon: str) -> None:
+    """Reserve the historical default namespace without locking out legacy profiles."""
+    if canon == "main":
+        raise ValueError(
+            "Profile name 'main' is reserved for the default profile's session namespace. "
+            "Choose a different name."
+        )
 
 
 def _existing_profile_dir(name: str) -> Tuple[str, Path]:
@@ -818,70 +828,72 @@ def create_profile(
             "(cloning explicitly copies skills from the source profile)."
         )
     canon = _canon_valid(name)
+    _validate_new_profile_target(canon)
     if canon == "default":
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = get_profile_dir(canon)
-    if profile_dir.exists() and named_profile_is_deleted(profile_dir):
-        # Empty shells left by post-delete mkdir may be replaced. Identity files mean the
-        # leftover is not a shell — fail closed, no rmtree.
-        if (profile_dir / "config.yaml").exists() or (profile_dir / ".env").exists():
+    with profile_lifecycle_lock():
+        if profile_dir.exists() and named_profile_is_deleted(profile_dir):
+            # Empty shells left by post-delete mkdir may be replaced. Identity files mean the
+            # leftover is not a shell — fail closed, no rmtree.
+            if (profile_dir / "config.yaml").exists() or (profile_dir / ".env").exists():
+                raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+            shutil.rmtree(profile_dir)
+        if profile_dir.exists():
             raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
-        shutil.rmtree(profile_dir)
-    if profile_dir.exists():
-        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
-    clear_named_profile_deleted(profile_dir)
-    source_dir = None
-    if clone_from is not None or clone_all or clone_config:
-        source_dir = _resolve_clone_source(clone_from)
-    if clone_all and source_dir:
-        _clone_all_into(source_dir, profile_dir, canon)
-    else:
-        _bootstrap_profile_dir(profile_dir, source_dir)
-    if source_dir is not None and not clone_channels:
-        from hermes_cli.profile_channels import strip_channel_settings
-        stripped = strip_channel_settings(profile_dir, include_state=clone_all)
-        if stripped:
-            logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
+        clear_named_profile_deleted(profile_dir)
+        source_dir = None
+        if clone_from is not None or clone_all or clone_config:
+            source_dir = _resolve_clone_source(clone_from)
+        if clone_all and source_dir:
+            _clone_all_into(source_dir, profile_dir, canon)
+        else:
+            _bootstrap_profile_dir(profile_dir, source_dir)
+        if source_dir is not None and not clone_channels:
+            from hermes_cli.profile_channels import strip_channel_settings
+            stripped = strip_channel_settings(profile_dir, include_state=clone_all)
+            if stripped:
+                logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
 
-    # Seed an empty .env so the profile owns a credentials file from day one. Without it,
-    # profile-scoped env writes (dashboard Channels/Keys pages, `hermes -p <name> auth add`)
-    # had no file until first write and the profile silently inherited shell API keys —
-    # read by users as "the new profile reads the root .env". Skipped when a clone copied one.
-    _seed_file_if_missing(profile_dir / ".env", _PLACEHOLDER_ENV, 0o600)
+        # Seed an empty .env so the profile owns a credentials file from day one. Without it,
+        # profile-scoped env writes (dashboard Channels/Keys pages, `hermes -p <name> auth add`)
+        # had no file until first write and the profile silently inherited shell API keys —
+        # read by users as "the new profile reads the root .env". Skipped when a clone copied one.
+        _seed_file_if_missing(profile_dir / ".env", _PLACEHOLDER_ENV, 0o600)
 
-    # Default SOUL.md to customize immediately (skipped when a clone already provided one).
-    with contextlib.suppress(Exception):  # best-effort — don't fail profile creation over this
-        from hermes_cli.default_soul import DEFAULT_SOUL_MD
-        _seed_file_if_missing(profile_dir / "SOUL.md", DEFAULT_SOUL_MD)
+        # Default SOUL.md to customize immediately (skipped when a clone already provided one).
+        with contextlib.suppress(Exception):  # best-effort — don't fail profile creation over this
+            from hermes_cli.default_soul import DEFAULT_SOUL_MD
+            _seed_file_if_missing(profile_dir / "SOUL.md", DEFAULT_SOUL_MD)
 
-    # Opt-out marker read by seed_profile_skills() and `hermes update`'s all-profile sync
-    # (the feature still works via the empty skills/ dir if this fails).
-    if no_skills:
-        _seed_file_if_missing(
-            profile_dir / NO_BUNDLED_SKILLS_MARKER,
-            "This profile opted out of bundled-skill seeding (`hermes profile create --no-skills`).\n"
-            "Delete this file to re-enable sync on the next `hermes update`.\n",
-        )
+        # Opt-out marker read by seed_profile_skills() and `hermes update`'s all-profile sync
+        # (the feature still works via the empty skills/ dir if this fails).
+        if no_skills:
+            _seed_file_if_missing(
+                profile_dir / NO_BUNDLED_SKILLS_MARKER,
+                "This profile opted out of bundled-skill seeding (`hermes profile create --no-skills`).\n"
+                "Delete this file to re-enable sync on the next `hermes update`.\n",
+            )
 
-    # Migrate config-only clones now so desktop/status don't warn that a just-created
-    # profile is v0/outdated; --clone-all snapshots stay byte-for-byte apart from the
-    # explicit runtime/history stripping above.
-    if not clone_all:
-        _migrate_profile_config_if_outdated(profile_dir)
+        # Migrate config-only clones now so desktop/status don't warn that a just-created
+        # profile is v0/outdated; --clone-all snapshots stay byte-for-byte apart from the
+        # explicit runtime/history stripping above.
+        if not clone_all:
+            _migrate_profile_config_if_outdated(profile_dir)
 
-    # Description last, so a partial-create failure doesn't strand a description file.
-    if description and description.strip():
-        with contextlib.suppress(Exception):  # non-fatal — `hermes profile describe` works later
-            write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
+        # Description last, so a partial-create failure doesn't strand a description file.
+        if description and description.strip():
+            with contextlib.suppress(Exception):  # non-fatal — `hermes profile describe` works later
+                write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
 
-    # Inside a container under s6, register the gateway as a runtime s6 service so
-    # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
-    # process. No-op on host (systemd/launchd/windows unit generation handles lifecycle).
-    _maybe_register_gateway_service(canon)
-    # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
-    # rescans periodically, so a missed signal only delays serving).
-    _notify_multiplexer(canon)
-    return profile_dir
+        # Inside a container under s6, register the gateway as a runtime s6 service so
+        # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
+        # process. No-op on host (systemd/launchd/windows unit generation handles lifecycle).
+        _maybe_register_gateway_service(canon)
+        # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
+        # rescans periodically, so a missed signal only delays serving).
+        _notify_multiplexer(canon)
+        return profile_dir
 
 
 def _notify_multiplexer(canon: str) -> None:
@@ -1142,74 +1154,83 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     canon = normalize_profile_name(name)
     if canon == "default":
         raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
-    canon, profile_dir = _existing_profile_dir(canon)
-    gw_running = _check_gateway_running(profile_dir)
-    wrapper_path = _get_wrapper_dir() / canon
-    has_wrapper = wrapper_path.exists()
-    _print_delete_summary(canon, profile_dir, gw_running, wrapper_path if has_wrapper else None)
-    if not yes:
-        print()
-        try:
-            confirm = input(f"Type '{canon}' to confirm: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            confirm = None
+    with contextlib.ExitStack() as guards:
+        canon, profile_dir = _existing_profile_dir(canon)
+        original_identity = directory_identity(profile_dir, guards)
+        original_deleted = named_profile_is_deleted(profile_dir)
+        gw_running = _check_gateway_running(profile_dir)
+        wrapper_path = _get_wrapper_dir() / canon
+        has_wrapper = wrapper_path.exists()
+        _print_delete_summary(canon, profile_dir, gw_running, wrapper_path if has_wrapper else None)
+        if not yes:
             print()
-        if confirm != canon:
-            print("Cancelled.")
+            try:
+                confirm = input(f"Type '{canon}' to confirm: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                confirm = None
+                print()
+            if confirm != canon:
+                print("Cancelled.")
+                return profile_dir
+
+        with profile_lifecycle_lock():
+            if (
+                directory_identity(profile_dir) != original_identity
+                or named_profile_is_deleted(profile_dir) != original_deleted
+            ):
+                raise RuntimeError("Profile changed while waiting for deletion; retry the command.")
+            # 1. Disable service (prevents auto-restart); drop the s6 slot on container (host no-op).
+            _cleanup_gateway_service(canon, profile_dir)
+            _maybe_unregister_gateway_service(canon)
+
+            # 2. Stop the gateway, then other backends bound to this profile (Desktop-spawned
+            # serve/dashboard the pid file never names): they hold the SQLite connection open and
+            # keep writing, which made rmtree fail ENOTEMPTY and resurrected the deleted tree.
+            if gw_running:
+                _stop_gateway_process(profile_dir)
+            _stop_profile_backends(canon, profile_dir)
+
+            # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
+            mark_named_profile_deleted(profile_dir)
+            # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
+            # into the directory before we remove it.
+            _notify_multiplexer(canon)
+
+            # Release this process's holographic memory-store connections into the profile. The
+            # Desktop's main serve process opens memory_store.db for every profile and is
+            # deliberately not stopped above; on Windows its handles fail rmtree with WinError 32.
+            # Inside serve (DELETE /api/profiles/<name>) the handles live here; from the CLI no-op.
+            with contextlib.suppress(Exception):  # best-effort: never block the delete on the release path
+                # 2c. See #88347.
+                from plugins.memory.holographic.store import MemoryStore as _MemoryStore
+                _released = _MemoryStore.release_all_under(profile_dir)
+                if _released:
+                    print(f"✓ Released {_released} memory-store connection(s) held by this process")
+            with contextlib.suppress(Exception):
+                from hermes_state_registry import close_all_under as _close_session_dbs_under
+                _closed = _close_session_dbs_under(profile_dir)
+                if _closed:
+                    print(f"✓ Released {_closed} session database connection(s) held by this process")
+
+            # 3. Remove wrapper script
+            if has_wrapper and remove_wrapper_script(canon):
+                print(f"✓ Removed {wrapper_path}")
+
+            # 4. Remove profile directory
+            remove_error: Exception | None = None
+            try:
+                _rmtree_with_retry(profile_dir, _rmtree_make_writable)
+                print(f"✓ Removed {profile_dir}")
+            except Exception as e:
+                print(f"⚠ Could not remove {profile_dir}: {e}")
+                remove_error = e
+
+            # 5. Clear active_profile if it pointed to this profile
+            _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
+            if remove_error is not None:
+                raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
+            print(f"\nProfile '{canon}' deleted.")
             return profile_dir
-
-    # 1. Disable service (prevents auto-restart); drop the s6 slot on container (host no-op).
-    _cleanup_gateway_service(canon, profile_dir)
-    _maybe_unregister_gateway_service(canon)
-
-    # 2. Stop the gateway, then other backends bound to this profile (Desktop-spawned
-    # serve/dashboard the pid file never names): they hold the SQLite connection open and
-    # keep writing, which made rmtree fail ENOTEMPTY and resurrected the deleted tree.
-    if gw_running:
-        _stop_gateway_process(profile_dir)
-    _stop_profile_backends(canon, profile_dir)
-
-    # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
-    mark_named_profile_deleted(profile_dir)
-    # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
-    # into the directory before we remove it.
-    _notify_multiplexer(canon)
-
-    # Release this process's holographic memory-store connections into the profile. The
-    # Desktop's main serve process opens memory_store.db for every profile and is
-    # deliberately not stopped above; on Windows its handles fail rmtree with WinError 32.
-    # Inside serve (DELETE /api/profiles/<name>) the handles live here; from the CLI no-op.
-    with contextlib.suppress(Exception):  # best-effort: never block the delete on the release path
-        # 2c. See #88347.
-        from plugins.memory.holographic.store import MemoryStore as _MemoryStore
-        _released = _MemoryStore.release_all_under(profile_dir)
-        if _released:
-            print(f"✓ Released {_released} memory-store connection(s) held by this process")
-    with contextlib.suppress(Exception):
-        from hermes_state_registry import close_all_under as _close_session_dbs_under
-        _closed = _close_session_dbs_under(profile_dir)
-        if _closed:
-            print(f"✓ Released {_closed} session database connection(s) held by this process")
-
-    # 3. Remove wrapper script
-    if has_wrapper and remove_wrapper_script(canon):
-        print(f"✓ Removed {wrapper_path}")
-
-    # 4. Remove profile directory
-    remove_error: Exception | None = None
-    try:
-        _rmtree_with_retry(profile_dir, _rmtree_make_writable)
-        print(f"✓ Removed {profile_dir}")
-    except Exception as e:
-        print(f"⚠ Could not remove {profile_dir}: {e}")
-        remove_error = e
-
-    # 5. Clear active_profile if it pointed to this profile
-    _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
-    if remove_error is not None:
-        raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
-    print(f"\nProfile '{canon}' deleted.")
-    return profile_dir
 
 
 def _s6_runtime_manager():
@@ -1565,6 +1586,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     # Default-profile archives have "default/" at top level; importing as "default" would
     # target ~/.hermes itself.
     canon = _canon_valid(inferred_name)
+    _validate_new_profile_target(canon)
     if canon == "default":
         raise ValueError(
             "Cannot import as 'default' — that is the built-in root profile (~/.hermes). "
@@ -1584,7 +1606,10 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
-        shutil.move(str(final_source), str(profile_dir))
+        with profile_lifecycle_lock():
+            if profile_dir.exists():
+                raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+            shutil.move(str(final_source), str(profile_dir))
     return profile_dir
 
 
@@ -1653,39 +1678,41 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         print(f"✓ Display name set: {cleaned} (canonical id remains 'default')")
         return _get_default_hermes_home()
     new_canon = _canon_valid(new_name)
+    _validate_new_profile_target(new_canon)
     if new_canon == "default":
         raise ValueError("Cannot rename to 'default' — it is reserved.")
-    old_dir = get_profile_dir(old_canon)
-    new_dir = get_profile_dir(new_canon)
-    if not old_dir.is_dir():
-        raise FileNotFoundError(f"Profile '{old_canon}' does not exist.")
-    if new_dir.exists():
-        raise FileExistsError(f"Profile '{new_canon}' already exists.")
+    with profile_lifecycle_lock():
+        old_dir = get_profile_dir(old_canon)
+        new_dir = get_profile_dir(new_canon)
+        if not old_dir.is_dir():
+            raise FileNotFoundError(f"Profile '{old_canon}' does not exist.")
+        if new_dir.exists():
+            raise FileExistsError(f"Profile '{new_canon}' already exists.")
 
-    # 1. Stop gateway if running
-    if _check_gateway_running(old_dir):
-        _cleanup_gateway_service(old_canon, old_dir)
-        _stop_gateway_process(old_dir)
+        # 1. Stop gateway if running
+        if _check_gateway_running(old_dir):
+            _cleanup_gateway_service(old_canon, old_dir)
+            _stop_gateway_process(old_dir)
 
-    # 2. Rename directory
-    old_dir.rename(new_dir)
-    print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
+        # 2. Rename directory
+        old_dir.rename(new_dir)
+        print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
 
-    # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
-    _migrate_honcho_profile_host(old_canon, new_canon, new_dir)
+        # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
+        _migrate_honcho_profile_host(old_canon, new_canon, new_dir)
 
-    # 4. Update wrapper script
-    remove_wrapper_script(old_canon)
-    collision = check_alias_collision(new_canon)
-    if not collision:
-        create_wrapper_script(new_canon)
-        print(f"✓ Alias updated: {new_canon}")
-    else:
-        print(f"⚠ Cannot create alias '{new_canon}' — {collision}")
+        # 4. Update wrapper script
+        remove_wrapper_script(old_canon)
+        collision = check_alias_collision(new_canon)
+        if not collision:
+            create_wrapper_script(new_canon)
+            print(f"✓ Alias updated: {new_canon}")
+        else:
+            print(f"⚠ Cannot create alias '{new_canon}' — {collision}")
 
-    # 5. Update active_profile if it pointed to old name
-    _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
-    return new_dir
+        # 5. Update active_profile if it pointed to old name
+        _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
+        return new_dir
 
 
 # Profile env resolution (called from _apply_profile_override)

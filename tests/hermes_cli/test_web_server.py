@@ -566,6 +566,32 @@ class TestWebServerEndpoints:
             db.close()
         assert [r["id"] for r in rows] == ["eager-stale"]
 
+    def test_startup_eager_reconcile_is_read_only_on_a_healthy_store(self, monkeypatch):
+        """A current-schema store gets NO writable open from the dashboard (#107688).
+
+        The gateway owns the writer; a second writable SessionDB from the
+        dashboard (close-time checkpoint, possible FTS rebuild) is the
+        two-writer corruption vector. Only the stale-schema heal may write.
+        """
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        SessionDB(db_path=get_hermes_home() / "state.db").close()
+
+        writable_opens = []
+        real_init = SessionDB.__init__
+
+        def spy(self, *args, **kwargs):
+            if not kwargs.get("read_only"):
+                writable_opens.append(kwargs)
+            return real_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(hermes_state.SessionDB, "__init__", spy)
+        _web_server_lifecycle._eager_reconcile_own_session_db()
+
+        assert writable_opens == []
+
     def test_startup_eager_reconcile_never_raises(self, monkeypatch):
         """A store the eager reconcile cannot open must not break startup."""
         import sqlite3 as sqlite3_module
@@ -3259,8 +3285,9 @@ class TestDenormalizeProviderSwitch:
         model = result["model"]
         assert model["provider"] == "openrouter"
         assert model["default"] == "google/gemini-2.5-flash"
-        # The old ollama-local endpoint must not carry over to openrouter.
-        assert not model.get("base_url")
+        # The old ollama-local endpoint must not carry over to openrouter (the switch resolves
+        # the aggregator's own endpoint instead of leaving the field blank or stale).
+        assert model.get("base_url") != "http://localhost:11434/v1"
 
 
     def test_context_length_override_survives_provider_switch(self):
@@ -3280,6 +3307,38 @@ class TestDenormalizeProviderSwitch:
         model = result["model"]
         assert model["provider"] == "openrouter"
         assert model["context_length"] == 128000
+
+    def test_rejected_switch_is_400_and_leaves_the_model_block_byte_identical(self, monkeypatch):
+        """``switch_model`` rejecting the inferred provider must surface as 400 from
+        ``PUT /api/config`` — not fall back to the flat string, which the deep-merge would
+        write OVER the on-disk ``model:`` dict (provider/base_url/api_mode/slots destroyed)."""
+        from starlette.testclient import TestClient
+        from hermes_constants import get_hermes_home
+        from hermes_cli.model_switch import ModelSwitchResult
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        cfg_path = get_hermes_home() / "config.yaml"
+        cfg_path.write_text(
+            "model:\n"
+            "  default: llama3.2\n"
+            "  provider: ollama-local\n"
+            "  base_url: http://localhost:11434/v1\n"
+            "  api_mode: chat_completions\n"
+            "  context_length: 32000\n"
+            "  model_slots:\n"
+            "    fast: qwen3\n",
+            encoding="utf-8")
+        before = cfg_path.read_bytes()
+        monkeypatch.setattr("hermes_cli.models_detect.provider_has_credentials", lambda p: p == "openrouter")
+        monkeypatch.setattr("hermes_cli.model_switch.switch_model",
+                            lambda **_kw: ModelSwitchResult(success=False, error_message="models.dev offline"))
+
+        client = TestClient(app)
+        client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        resp = client.put("/api/config", json={"config": {"model": "openai/gpt-5.5-zzz"}})
+
+        assert resp.status_code == 400 and "models.dev offline" in resp.json()["detail"]
+        assert cfg_path.read_bytes() == before
 
 
 class TestModelContextLengthSchema:

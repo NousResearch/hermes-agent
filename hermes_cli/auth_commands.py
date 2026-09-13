@@ -24,7 +24,10 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "openrouter"}
+# ...and default to it when ``--type`` is omitted. OpenRouter stays API-key-first: the documented
+# ``hermes auth add openrouter --api-key sk-or-...`` must keep working with no ``--type``.
+_OAUTH_DEFAULT_PROVIDERS = _OAUTH_CAPABLE_PROVIDERS - {"openrouter"}
 
 
 def _get_custom_provider_entries() -> list[dict]:
@@ -203,6 +206,9 @@ class _OAuthAddSpec:
     source: str
     fields: Callable[[dict, str], dict]
     activate_first: bool = False
+    # OpenRouter's PKCE exchange mints a plain API key (no refresh pair), so its pool entry is an
+    # ``api_key`` row that happens to come from a browser login.
+    auth_type: str = AUTH_TYPE_OAUTH
 
 
 _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
@@ -247,6 +253,14 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
         source=f"{SOURCE_MANUAL}:minimax_oauth",
         fields=lambda creds, provider: {
             "refresh_token": creds.get("refresh_token"), "base_url": creds.get("inference_base_url")}),
+    "openrouter": _OAuthAddSpec(
+        login=lambda args: auth_mod._openrouter_pkce_login(
+            open_browser=not getattr(args, "no_browser", False),
+            timeout_seconds=float(getattr(args, "timeout", None) or 300.0)),
+        token=lambda creds: creds["api_key"],
+        source=f"{SOURCE_MANUAL}:openrouter_pkce",
+        fields=lambda creds, provider: {"base_url": _provider_base_url(provider)},
+        auth_type=AUTH_TYPE_API_KEY),
 }
 
 
@@ -343,7 +357,7 @@ def auth_add_command(args) -> None:
     if requested_type == "api-key":
         requested_type = AUTH_TYPE_API_KEY
     elif not requested_type:
-        oauth_default = provider in _OAUTH_CAPABLE_PROVIDERS and not is_custom
+        oauth_default = provider in _OAUTH_DEFAULT_PROVIDERS and not is_custom
         requested_type = AUTH_TYPE_OAUTH if oauth_default else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
@@ -376,7 +390,7 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCre
     # singleton save path (which collapsed every added account into the latest login).
     # ``manual:*`` entries refresh from their own token pair, so they need no singleton shadow.
     entry = PooledCredential(
-        provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=AUTH_TYPE_OAUTH, priority=0,
+        provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=spec.auth_type, priority=0,
         source=spec.source, access_token=token, **spec.fields(creds, provider))
     first_credential = not pool.entries()
     entry = pool.add_entry(entry)
@@ -420,6 +434,17 @@ def auth_priority_command(args) -> None:
     _report_priority(provider, pool, moved, requested, "Set", "to")
 
 
+def _free_tier_lines() -> tuple[str, str]:
+    """The two-line free-tier rendering shared by every auth display surface (R-USR-1)."""
+    from hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
+    return f"{FREE_TIER_LABEL} · {GUEST_MODEL}", UPGRADE_HINT
+
+
+def _is_free_tier_entry(entry) -> bool:
+    from hermes_cli.anon_auth import is_guest_state
+    return is_guest_state(getattr(entry, "extra", None))
+
+
 def auth_list_command(args) -> None:
     provider_filter = _normalize_provider(getattr(args, "provider", "") or "")
     if provider_filter:
@@ -436,6 +461,13 @@ def auth_list_command(args) -> None:
         if not entries:
             continue
         current = pool.peek()
+        if provider == "nous" and all(_is_free_tier_entry(e) for e in entries):
+            # The free tier is not a credential the user added; never list it as one.
+            label, hint = _free_tier_lines()
+            print(f"{provider}: {label}")
+            print(f"  {hint}")
+            print()
+            continue
         print(f"{provider} ({len(entries)} credentials):")
         for idx, entry in enumerate(entries, start=1):
             marker = "← " if current is not None and entry.id == current.id else "  "
@@ -562,6 +594,12 @@ def auth_status_command(args) -> None:
         load_pool(provider)  # runs the forked-grant heal first so the report reflects the consolidated grant
     status = auth_mod.get_auth_status(provider)
     _print_oauth_heal_notices()
+    if status.get("free_tier"):
+        # Free tier: not an account login, so no account fields; point at the upgrade path.
+        label, hint = _free_tier_lines()
+        print(f"{provider}: {label}")
+        print(f"  {hint}")
+        return
     if not status.get("logged_in"):
         reason = status.get("error")
         print(f"{provider}: logged out" + (f" ({reason})" if reason else ""))
@@ -756,10 +794,18 @@ def _interactive_strategy() -> None:
     print(f"Set {provider} strategy to: {strategy}")
 
 
+def auth_upgrade_command(args) -> None:
+    """``hermes auth upgrade``: sign the free tier into a Nous account, keeping its connectors."""
+    from hermes_cli.anon_auth import upgrade_guest
+    code = upgrade_guest(args)
+    if code:
+        raise SystemExit(code)
+
+
 _AUTH_ACTIONS = {
     "add": auth_add_command, "list": auth_list_command, "remove": auth_remove_command,
     "reset": auth_reset_command, "priority": auth_priority_command, "refresh": auth_refresh_command, "status": auth_status_command,
-    "logout": auth_logout_command,
+    "logout": auth_logout_command, "upgrade": auth_upgrade_command,
     "spotify": auth_spotify_command}
 
 

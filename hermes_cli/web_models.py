@@ -217,6 +217,12 @@ class DebugShareRequest(BaseModel):
 class TTSSpeakRequest(BaseModel):
     text: str
 
+class VoiceLiveSessionRequest(BaseModel):
+    """POST /api/audio/voice-live/session: the renderer's WebRTC SDP offer plus optional prior
+    text turns (``{"type":"message","role":..,"content":[..]}``) to seed the live voice model."""
+    sdp: str
+    history: Optional[List[Dict[str, Any]]] = None
+
 class TTSLeaseRequest(BaseModel):
     """POST /api/audio/tts-lease: ``lease`` names the toggle/surface holding the lease
     (``desktop:read-aloud``, ``desktop:conversation``); ``active`` True acquires + warms, False releases."""
@@ -401,6 +407,9 @@ class ProfileCreate(BaseModel):
     clone_from: Optional[str] = None
     clone_from_default: bool = False  # legacy clients; new ones send clone_from explicitly
     clone_all: bool = False
+    # Opt-in: also copy the source's messaging channels (bot tokens, allowlists, platform sections).
+    # Default False — a copied bot credential makes two profiles collide over one bot.
+    clone_channels: bool = False
     no_skills: bool = False
     description: Optional[str] = None
     provider: Optional[str] = None

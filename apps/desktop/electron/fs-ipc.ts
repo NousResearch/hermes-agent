@@ -141,7 +141,12 @@ export function registerFsIpc({
       return { ok: false, error: 'identifier is required' }
     }
 
-    return installDesktopPluginFromGit(resolveGitBinary(), identifier, await desktopPluginsRoot(), Boolean(payload?.force))
+    return installDesktopPluginFromGit(
+      resolveGitBinary(),
+      identifier,
+      await desktopPluginsRoot(),
+      Boolean(payload?.force)
+    )
   })
 
   // Rename a file/folder in place. The renderer passes the existing path + a new

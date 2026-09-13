@@ -33,7 +33,7 @@ async def test_gateway_boot_discovers_mcp_under_every_profile_home(
 
     monkeypatch.setattr(
         "hermes_cli.profiles.profiles_to_serve",
-        lambda multiplex, profile_allowlist=None: homes,
+        lambda multiplex: homes,
     )
     monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", fake_discover)
 

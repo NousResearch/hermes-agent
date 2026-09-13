@@ -249,7 +249,7 @@ class GatewayVoiceMixin:
         # before TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or before the owner was removed from
         # it, must not silently receive a full agent response on gateway restart just because it has a
         # resume-pending marker (issue #23778).
-        if not self._is_user_authorized(source):
+        if not self._is_user_authorized_for_source(source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return
         if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):

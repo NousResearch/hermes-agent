@@ -91,7 +91,8 @@ def _dirty_split(path: str) -> tuple[bool, List[str]]:
 def _archive_untracked(tree: Path, untracked: List[str]) -> Optional[Path]:
     """Copy untracked files out of a doomed tree; None on any failure (caller must then keep)."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    dest = Path.home() / ".hermes" / "archive" / "worktree-prune" / f"{tree.name}-{stamp}"
+    from hermes_constants import get_hermes_home
+    dest = get_hermes_home() / "archive" / "worktree-prune" / f"{tree.name}-{stamp}"
     try:
         for rel in untracked:
             src = tree / rel

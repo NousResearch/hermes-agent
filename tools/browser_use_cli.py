@@ -198,7 +198,9 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
     provider = str(browser_cfg.get("cloud_provider") or "").strip().lower()
     if provider not in {"browser-use", ""} or _use_gateway(browser_cfg) or _camofox_active(" during migration"):
         return False
-    return bool(os.getenv("BROWSER_USE_API_KEY"))
+    # Profile credential: a multiplexed secondary must not inherit the default's cloud mode.
+    from agent.secret_scope import get_secret
+    return bool(get_secret("BROWSER_USE_API_KEY", ""))
 
 
 def is_browser_use_cli_mode() -> bool:
@@ -485,6 +487,23 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     return err or None
 
 
+def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
+    """Attach the per-task CDP supervisor to the browser this exec drives so ``browser_vault_fill`` has
+    a secret-capable WebSocket (never argv) into the SAME browser. Only CDP-routed backends expose an
+    endpoint; BU direct-cloud (BU_AUTOSPAWN) does not, and the vault tools report ``supervisor_required``."""
+    cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
+    if not cdp:
+        return
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
+        policy, timeout_s = _get_dialog_policy_config()
+        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=_resolve_cdp_override(cdp),
+                                         dialog_policy=policy, dialog_timeout_s=timeout_s)
+    except Exception as exc:
+        logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
+
+
 def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool) -> Optional[str]:
     """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
     BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
@@ -587,6 +606,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     route_err = _route_backend(env, session, task_id, bool(local))
     if route_err:
         return tool_error(route_err)
+    _attach_vault_supervisor(env, task_id)
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
@@ -682,8 +702,8 @@ _HELPERS_DIGEST = (
     "capture_screenshot() saves and prints a screenshot path, cdp('Domain.method', **kwargs) is raw CDP — "
     "cdp('Accessibility.getFullAXTree')['nodes'] lists every element's role/name/backendDOMNodeId (filter "
     "in Python before printing; it is thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) "
-    "gives click coordinates. ensure_real_tab() recovers from a stale/internal tab. Login walls: stop and "
-    "ask the user; never guess credentials."
+    "gives click coordinates. ensure_real_tab() recovers from a stale/internal tab. Login walls: never guess "
+    "credentials; see the vault note below if present, otherwise stop and ask the user."
 )
 
 

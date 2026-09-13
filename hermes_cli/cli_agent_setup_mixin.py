@@ -198,6 +198,11 @@ class CLIAgentSetupMixin:
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
+        if resolved_provider != "nous":
+            # An explicit provider carries inference. The free-tier identity (for connectors) was
+            # created by the boot bootstrap before this point, never here; this prints the one-time
+            # "free tier is here" notice the first time an identity is seen beside an own key.
+            self._maybe_print_free_tier_available_notice()
         resolved_routing = (
             resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),
             list(runtime.get("args") or []))
@@ -264,6 +269,20 @@ class CLIAgentSetupMixin:
             self._active_agent_route_signature = None
         return True
 
+    def _maybe_print_free_tier_available_notice(self) -> None:
+        """One-time notice for installs whose inference is carried by an explicit provider: the free
+        tier (inference + connectors) now exists. Printed the first time an identity is present, then
+        flagged on that identity so it never repeats. Never blocks or raises."""
+        from cli import logger
+        try:
+            from hermes_cli import anon_auth
+            if not anon_auth.guest_notice_pending():
+                return
+            self._console_print(f"[dim]{anon_auth.FREE_TIER_AVAILABLE_NOTICE}[/]")
+            anon_auth.mark_guest_notice_shown()
+        except Exception as exc:
+            logger.debug("free tier availability notice skipped: %s", exc)
+
     def _resolve_fallback_runtime(self, primary_exc):
         """Primary provider resolution failed: on an AuthError try each fallback entry in
         order and switch the CLI's requested_provider/model to the first that resolves.
@@ -328,7 +347,7 @@ class CLIAgentSetupMixin:
         source of truth. True when a provider was configured."""
         from cli import _cprint, logger
         _cprint("")
-        _cprint("⚕ No inference provider is configured yet — let's fix that.")
+        _cprint("☤ No inference provider is configured yet — let's fix that.")
         _cprint("  You'll pick a provider (Nous Portal OAuth is the fastest; "
                 "no API key needed) and a model.")
         try:
@@ -494,8 +513,8 @@ class CLIAgentSetupMixin:
             logger=logger, single_query=getattr(self, "_single_query_mode", False))
         if self._session_db is None:
             try:
-                from hermes_state import SessionDB
-                self._session_db = SessionDB()
+                from hermes_state_registry import acquire
+                self._session_db = acquire()
             except Exception as e:
                 logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
         if (

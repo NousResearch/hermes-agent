@@ -1729,7 +1729,20 @@ export function closeSessionTile(storedSessionId: string) {
   const tile = $sessionTiles.get().find(t => t.storedSessionId === storedSessionId)
 
   if (tile) {
-    closedStack().push(toStored(tile))
+    const tree = $layoutTree.get()
+    const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
+    const group = tree ? findGroupOfPane(tree, paneId) : null
+    const siblings = group?.panes.filter(id => id !== paneId) ?? []
+    closedStack().push({
+      ...toStored(tile),
+      ...(group && siblings.length
+        ? {
+            anchor: siblings[0],
+            before: group.panes[group.panes.indexOf(paneId) + 1] ?? null,
+            dir: 'center'
+          }
+        : {})
+    })
   }
 
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
@@ -1905,7 +1918,9 @@ export function reopenLastClosedTile(): void {
     if (!$sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
       openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before, {
         workspaceMode: tile.workspaceMode ?? 'sessions',
-        workspaceOwnerKey: tile.workspaceOwnerKey
+        workspaceOwnerKey: tile.workspaceOwnerKey,
+        workspaceTabTitle: tile.workspaceTabTitle,
+        ownerRoute: tile.ownerRoute
       })
       focusOpenSession(storedSessionId)
 

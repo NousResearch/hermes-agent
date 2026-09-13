@@ -25,6 +25,8 @@ export interface DisplayLease {
   since: number
   reason: string
   pending_handoff: null | string
+  /** Monotonic per transition; a lower epoch is an older snapshot, never newer truth. */
+  epoch?: number
 }
 
 export interface DisplayStatus {

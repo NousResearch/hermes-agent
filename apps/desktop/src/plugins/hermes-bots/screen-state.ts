@@ -25,11 +25,19 @@ export function screenStateFor(all: Record<string, BotScreenState>, bot: RosterR
   return all[botSelectionKey(bot)] ?? null
 }
 
+/** A lease whose epoch is below the one we hold is a slower response about the
+ *  past (a `display.status` reply overtaken by a `display.lease` event). Payloads
+ *  without an epoch — older backends — are always applied. */
+function isOlderLease(prev: DisplayLease | null | undefined, next: DisplayLease): boolean {
+  return typeof next.epoch === 'number' && typeof prev?.epoch === 'number' && next.epoch < prev.epoch
+}
+
 export function setScreenStatus(bot: RosterRow, status: DisplayStatus): void {
   const key = botSelectionKey(bot)
   const current = $screenState.get()
   const prev = current[key]
-  $screenState.set({ ...current, [key]: { status, lease: status.lease ?? prev?.lease ?? null, viewer: prev?.viewer ?? null } })
+  const lease = status.lease && !isOlderLease(prev?.lease, status.lease) ? status.lease : (prev?.lease ?? null)
+  $screenState.set({ ...current, [key]: { status, lease, viewer: prev?.viewer ?? null } })
 }
 
 /** `display.status` answered method-not-found: remember it so no surface keeps "checking". */
@@ -49,6 +57,10 @@ export function setScreenLease(bot: RosterRow, lease: DisplayLease): void {
   const key = botSelectionKey(bot)
   const current = $screenState.get()
   const prev = current[key]
+
+  if (isOlderLease(prev?.lease, lease)) {
+    return
+  }
 
   if (
     prev?.lease &&

@@ -1,6 +1,7 @@
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { AutomationBlueprint, AutomationBlueprintField } from '@/hermes'
+import type { Translations } from '@/i18n'
 
 // The blueprint catalog is shared with the dashboard, so its deliver slot
 // defaults to "origin" (the chat/home-channel a dashboard or gateway job was
@@ -10,6 +11,25 @@ import type { AutomationBlueprint, AutomationBlueprintField } from '@/hermes'
 // the raw "origin" option never reaches the desktop UI.
 const DELIVER_FIELD = 'deliver'
 const DESKTOP_DELIVER_DEFAULT = 'local'
+
+export type BlueprintDisplayCopy = Pick<AutomationBlueprint, 'description' | 'title'>
+
+/**
+ * The backend owns the English blueprint catalog. Locale overlays can replace
+ * only its presentation copy while unknown and newly added blueprints retain
+ * their backend-provided title and description.
+ */
+export function blueprintDisplayCopy(
+  blueprint: Pick<AutomationBlueprint, 'description' | 'key' | 'title'>,
+  catalog: Translations['cron']['blueprints']['catalog']
+): BlueprintDisplayCopy {
+  const localized = catalog?.[blueprint.key]
+
+  return {
+    title: localized?.title ?? blueprint.title,
+    description: localized?.description ?? blueprint.description
+  }
+}
 
 function isDeliverField(field: AutomationBlueprintField): boolean {
   return field.name === DELIVER_FIELD

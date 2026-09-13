@@ -39,3 +39,14 @@ function mergeTranslations<T>(base: T, overrides: TranslationOverride<T> | undef
 export function defineLocale(overrides: TranslationOverrides): Translations {
   return mergeTranslations<Translations>(en, overrides)
 }
+
+/**
+ * Combine locale overlays before they are applied to English. This keeps an
+ * update-only overlay from replacing a whole sibling group in the base locale.
+ */
+export function mergeTranslationOverrides(
+  base: TranslationOverrides,
+  extra: TranslationOverrides
+): TranslationOverrides {
+  return mergeTranslations<TranslationOverrides>(base, extra as TranslationOverride<TranslationOverrides>)
+}

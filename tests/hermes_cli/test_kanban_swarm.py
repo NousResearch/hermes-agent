@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from hermes_cli import kanban_db as kb
@@ -8,6 +10,25 @@ from hermes_cli.kanban_swarm import (
     latest_blackboard,
     post_blackboard_update,
 )
+
+
+@pytest.fixture(autouse=True)
+def reviewer_skill(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    fixtures = (
+        ("reviewer", "requesting-code-review"),
+        ("writer", "humanizer"),
+    )
+    for profile, name in fixtures:
+        skill = home / "profiles" / profile / "skills" / name / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(
+            f"---\nname: {name}\ndescription: Test fixture.\n---\n\n# Skill\n",
+            encoding="utf-8",
+        )
 
 
 def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path):

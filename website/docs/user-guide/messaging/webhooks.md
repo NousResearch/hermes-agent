@@ -379,8 +379,9 @@ hermes webhook subscribe antenna-matches \
 
 | Status | Meaning |
 |--------|---------|
-| `200 OK` | Delivered successfully. Body: `{"status": "delivered", "route": "...", "target": "...", "delivery_id": "..."}` |
-| `200 OK` (status=duplicate) | Duplicate `X-GitHub-Delivery` ID within the idempotency TTL (1 hour). Not re-delivered. |
+| `200 OK` | Delivered successfully. Body includes `{"status": "delivered", "route": "...", "target": "...", "delivery_id": "...", "message_id": "..."}` when the target adapter returns a provider message ID. |
+| `200 OK` (status=duplicate) | Completed duplicate `X-GitHub-Delivery` ID within the idempotency TTL (1 hour). Not re-delivered; returns the cached `message_id` when available. |
+| `425 Too Early` | A duplicate direct-delivery request arrived while the original provider call is still in flight. Retry the same delivery ID later; Hermes does not re-deliver concurrently. |
 | `401 Unauthorized` | HMAC signature invalid or missing. |
 | `400 Bad Request` | Malformed JSON body. |
 | `404 Not Found` | Unknown route name. |

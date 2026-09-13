@@ -21,9 +21,10 @@ DEFAULT_SEARXNG_TIMEOUT = 15.0
 def _resolve_searxng_timeout() -> Tuple[Optional[float], Optional[str]]:
     """``web.searxng_timeout`` from config.yaml -> ``(timeout, None)`` or ``(None, error)``.
 
-    Unset falls back to :data:`DEFAULT_SEARXNG_TIMEOUT`, preserving the historical hardcoded
-    15-second behavior exactly. An explicitly configured value that is not a positive, finite
-    number (zero, negative, NaN, Inf, or non-numeric) is rejected outright rather than silently
+    Unset (or explicit YAML ``null``) falls back to :data:`DEFAULT_SEARXNG_TIMEOUT`, preserving
+    the historical hardcoded 15-second behavior exactly. An explicitly configured value that is
+    not a positive, finite number (zero, negative, NaN, Inf, a YAML boolean, an integer too large
+    to represent as a float, or non-numeric) is rejected outright rather than silently
     substituted — a bad timeout should surface immediately as a config error, not manifest later
     as unpredictable search failures or a hang.
     """
@@ -32,8 +33,14 @@ def _resolve_searxng_timeout() -> Tuple[Optional[float], Optional[str]]:
     raw = _load_web_config().get("searxng_timeout")
     if raw is None:
         return DEFAULT_SEARXNG_TIMEOUT, None
+    # bool is a subclass of int in Python, so `True`/`False` from YAML would otherwise pass
+    # straight through float() as 1.0/0.0 — reject explicitly rather than accept a nonsense value.
+    if isinstance(raw, bool):
+        return None, f"web.searxng_timeout must be a positive number of seconds, got {raw!r}"
     try:
         value = float(raw)
+    except OverflowError:
+        return None, f"web.searxng_timeout must be a positive, finite number of seconds, got {raw!r}"
     except (TypeError, ValueError):
         return None, f"web.searxng_timeout must be a positive number of seconds, got {raw!r}"
     if not math.isfinite(value) or value <= 0:

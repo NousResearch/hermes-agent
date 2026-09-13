@@ -1437,11 +1437,19 @@ class TurnRunner:
         """
         from gateway.run import (
             _auto_continue_freshness_window, _is_fresh_gateway_interruption,
-            _last_transcript_timestamp, _prepare_resume_pending_message, build_resume_recovery_note,
+            _last_transcript_timestamp,
+        )
+        from gateway.resume_recovery import (
+            build_resume_recovery_note,
+            prepare_resume_pending_message,
         )
         ctx = self._ctx
         persist_override: Optional[Any] = ctx.persist_user_message
-        self._prepend_pending_note("_pending_model_notes")
+        blank_turn = ctx.message is None or (isinstance(ctx.message, str) and not ctx.message.strip())
+        # Native images can have no caption. Only an internal empty event is a
+        # synthesized continuation; an empty human caption remains new input.
+        synthetic_resume = blank_turn and ctx.persist_user_display_kind == "internal_notification"
+        recovery_input = not blank_turn or synthetic_resume
         # Auto-continue: history ending with a tool result means the previous turn was cut off
         # (restart, crash, SIGTERM). Session-level resume_pending (drain-timeout shutdown) uses
         # stronger reason-aware wording that subsumes this case. Both gate on the age of
@@ -1460,26 +1468,25 @@ class TurnRunner:
         mark_is_fresh = resume_pending and _is_fresh_gateway_interruption(
             getattr(entry, "last_resume_marked_at", None), window_secs=window,
         )
-        if resume_pending and (interruption_is_fresh or mark_is_fresh):
-            # Empty message = the startup auto-resume turn; there is no NEW user message.
-            ctx.message, persist_override = _prepare_resume_pending_message(
+        if recovery_input and resume_pending and (interruption_is_fresh or mark_is_fresh):
+            ctx.message, persist_override = prepare_resume_pending_message(
                 resume_reason, ctx.message, interactive=self._resume_note_interactive(),
             )
-        elif agent_history and agent_history[-1].get("role") == "tool" and interruption_is_fresh:
-            persist_override = ctx.message
-            ctx.message = (
-                "[System note: A new message has arrived. The conversation "
-                "history contains pending tool outputs from an interrupted turn. "
-                "IGNORE those pending results. Address the user's NEW message "
-                "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
-                + ctx.message
+        elif recovery_input and agent_history and agent_history[-1].get("role") == "tool" and interruption_is_fresh:
+            ctx.message, persist_override = prepare_resume_pending_message(
+                None, ctx.message, interactive=self._resume_note_interactive(),
             )
-        self._prepend_pending_note("_pending_skills_reload_notes")
         # Safety net: a startup auto-resume event carries empty text; if the resume_pending branch
         # did not fire (freshness signals disagreed, marker cleared) we must NOT hand the model a blank
         # user turn. Restricted to resume_pending sessions so caption-less image turns are untouched.
-        if isinstance(ctx.message, str) and not ctx.message.strip() and resume_pending:
-            ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
+        if synthetic_resume and isinstance(ctx.message, str) and not ctx.message.strip() and resume_pending:
+            ctx.message, persist_override = prepare_resume_pending_message(
+                resume_reason, "", interactive=self._resume_note_interactive(),
+            )
+        # Classify the human input before adding operational notices: a model
+        # switch must not turn an empty startup-resume event into a NEW request.
+        self._prepend_pending_note("_pending_model_notes")
+        self._prepend_pending_note("_pending_skills_reload_notes")
         return persist_override, ctx.persist_user_timestamp
 
     def _native_image_run_message(self):

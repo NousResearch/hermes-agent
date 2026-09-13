@@ -238,6 +238,70 @@ def test_real_task_wins_over_trailing_max_iterations_nudge(compressor):
     assert messages[idx]["content"] == human["content"]
 
 
+@pytest.mark.parametrize("display_kind", ["internal_notification", None])
+def test_restart_notification_cannot_replace_persisted_human_task(tmp_path, display_kind):
+    """A restart followed by compaction must retain the job, not promote its recovery notice."""
+    human = "Fix the parser and verify the malformed-input regression."
+    notification = (
+        "[System note: The previous turn was interrupted by a gateway shutdown; "
+        "the gateway is now back online. CONTINUE the interrupted task to completion.]"
+    )
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("restart-provenance", source="telegram", model="test/model")
+        db.append_message("restart-provenance", "user", human)
+        db.append_message("restart-provenance", "assistant", "Inspecting the parser.", tool_calls=[
+            {"id": "inspect-parser", "type": "function", "function": {
+                "name": "read_file", "arguments": '{"path":"parser.py"}'}}
+        ])
+        db.append_message("restart-provenance", "tool", "Parser contents inspected.",
+                          tool_call_id="inspect-parser", tool_name="read_file")
+        db.append_message("restart-provenance", "user", notification, display_kind=display_kind)
+        replayed = db.get_messages_as_conversation("restart-provenance")
+
+        snapshot = ContextCompressor._latest_user_task_snapshot(replayed)
+        assert human in snapshot
+        assert notification not in snapshot
+        assert not ContextCompressor._transcript_has_real_user_turn([replayed[-1]])
+        assert ContextCompressor._find_inflight_user_task(replayed)["content"] == human
+        from agent.context_compressor import _build_verbatim_user_section
+        user_section = _build_verbatim_user_section(replayed)
+        assert human in user_section
+        assert notification not in user_section
+    finally:
+        db.close()
+
+
+def test_internal_notifications_do_not_hide_a_later_human_change_of_task():
+    """Operational wording may vary; durable provenance wins, but a new human instruction still wins."""
+    messages = [
+        {"role": "user", "content": "Implement the parser change."},
+        {"role": "assistant", "content": "Working.", "tool_calls": [
+            {"id": "inspect", "function": {"name": "read_file", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "inspect", "content": "Inspection complete."},
+        {"role": "user", "content": "Background reviewer is available.",
+         "display_kind": "internal_notification", "display_metadata": {"reason": "review_complete"}},
+    ]
+    assert "Implement the parser change." in ContextCompressor._latest_user_task_snapshot(messages)
+    assert not ContextCompressor._transcript_has_real_user_turn([messages[-1]])
+    new_request = {"role": "user", "content": "Stop implementing. Report the findings only."}
+    messages.append(new_request)
+    assert new_request["content"] in ContextCompressor._latest_user_task_snapshot(messages)
+    assert ContextCompressor._find_inflight_user_task(messages) == new_request
+
+
+def test_captionless_human_image_preserves_user_provenance():
+    """An image is human input even when it supplies no text for a verbatim excerpt."""
+    image = {"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,dGVzdA=="}}
+    ]}
+    notice = {"role": "user", "content": "Gateway restarted.",
+              "display_kind": "internal_notification"}
+    assert ContextCompressor._transcript_has_real_user_turn([image, notice])
+    assert not ContextCompressor._transcript_has_real_user_turn([notice])
+
+
 @pytest.mark.parametrize(
     "event",
     [
@@ -445,8 +509,6 @@ def test_compress_context_todo_snapshot_stays_synthetic_across_two_boundaries(
     assert "Second boundary" in handoff["content"]
     assert "User asked:" not in handoff["content"]
     db.close()
-
-
 
 
 

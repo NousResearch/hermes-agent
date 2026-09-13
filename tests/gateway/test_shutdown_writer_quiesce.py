@@ -117,7 +117,7 @@ async def test_stuck_cron_writer_skips_the_session_db_close():
     gw.cron_count = 1
 
     with mock.patch("gateway.run_shutdown.resolve_cron_drain_budget", return_value=0.0):
-        await gw_mod.GatewayRunner.stop(gw)
+        await gw_mod.GatewayRunner.stop(gw)  # ty: ignore[invalid-argument-type]
 
     assert "close:session_db" not in events, "SessionDB closed despite stuck cron worker"
 
@@ -129,7 +129,7 @@ async def test_stuck_deferred_worker_skips_the_session_db_close():
     gw.deferred_count = 1
 
     with mock.patch("gateway.run_shutdown.resolve_cron_drain_budget", return_value=0.0):
-        await gw_mod.GatewayRunner.stop(gw)
+        await gw_mod.GatewayRunner.stop(gw)  # ty: ignore[invalid-argument-type]
 
     assert "close:session_db" not in events, "SessionDB closed despite stuck deferred worker"
 
@@ -149,6 +149,6 @@ async def test_writers_finish_before_timeout_allows_session_db_close():
     threading.Thread(target=finish_work, daemon=True).start()
 
     with mock.patch("gateway.run_shutdown.resolve_cron_drain_budget", return_value=1.0):
-        await gw_mod.GatewayRunner.stop(gw)
+        await gw_mod.GatewayRunner.stop(gw)  # ty: ignore[invalid-argument-type]
 
     assert "close:session_db" in events, "SessionDB was not closed even though writers finished"

@@ -684,7 +684,10 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     else:
         print(f"\nRestore with: hermes import {out_path.name}")
     keep = getattr(args, "keep", 0)  # 0 / absent: never prune (non-CLI callers)
-    if keep and out_path.name.startswith(_RUN_BACKUP_PREFIX):
+    # A partial archive must not displace the last known-good backup.  The
+    # warning path is intentionally still published for inspection, but it is
+    # not a successful rotation candidate.
+    if keep and not errors and out_path.name.startswith(_RUN_BACKUP_PREFIX):
         pruned = _prune_prefixed_zips(out_path.parent, _RUN_BACKUP_PREFIX, keep, "backup")
         if pruned:
             print(f"  Pruned {pruned} older {_RUN_BACKUP_PREFIX}*.zip (keeping {keep}).")

@@ -97,10 +97,9 @@ class TestLoadResumeTarget:
         finally:
             db.close()
 
-    def test_resume_reopens_ended_session_row(self, tmp_path):
-        # The previous run stamped ended_at; without reopen_session() the resumed turn is
-        # recorded under a row that stays closed and end_session() cannot stamp the new
-        # boundary (it only writes rows whose ended_at is null) — review on #105957.
+    def test_loader_does_not_reopen_ended_session_row(self, tmp_path):
+        # Loading is read-only.  Reopening here would leave an ended session falsely active
+        # when provider, MCP, or skill setup fails before an agent exists.
         db = _db_with_session(tmp_path, "s1", messages=[("user", "hi")])
         db.end_session("s1", "agent_close")
         row = db.get_session("s1")
@@ -108,9 +107,9 @@ class TestLoadResumeTarget:
         try:
             sid, _history, _meta = _load_resume_target(db, "s1")
             assert sid == "s1"
-            reopened = db.get_session("s1")
-            assert reopened["ended_at"] is None
-            assert reopened["end_reason"] is None
+            still_closed = db.get_session("s1")
+            assert still_closed["ended_at"] is not None
+            assert still_closed["end_reason"] == "agent_close"
         finally:
             db.close()
 

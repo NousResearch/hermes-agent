@@ -2485,3 +2485,26 @@ def test_run_backup_prunes_older_default_named_zips_but_not_others(tmp_path, mon
     kept = sorted(p.name for p in tmp_path.glob("hermes-backup-*.zip"))
     assert len(kept) == 2 and kept[0] == "hermes-backup-2026-01-04-000000.zip"
     assert (tmp_path / "my-archive.zip").exists()
+
+
+def test_run_backup_keeps_previous_zip_when_new_archive_is_incomplete(tmp_path, monkeypatch):
+    """An incomplete replacement must not prune the last known-good backup."""
+    from argparse import Namespace
+    from hermes_cli import backup as backup_mod
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: x\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    previous = tmp_path / "hermes-backup-2026-01-01-000000.zip"
+    previous.write_bytes(b"known-good")
+
+    def incomplete(_zf, _files, _output, *, on_error, **_kwargs):
+        on_error(Path("config.yaml"), RuntimeError("simulated read failure"))
+        return 0
+
+    monkeypatch.setattr(backup_mod, "_write_zip_entries", incomplete)
+    backup_mod.run_backup(Namespace(output=None, keep=1))
+
+    assert previous.exists()

@@ -356,11 +356,9 @@ def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str
     --create-if-missing`` must fill the titled session it created, not mint a fresh id
     (same contract as the interactive /resume of an empty session).
 
-    The resolved row is also reopened (best effort): the previous run stamped ``ended_at``,
-    the existing-row upsert never clears the end fields, and ``end_session()`` only writes
-    rows whose ``ended_at`` is null — so without this step the resumed turn would be recorded
-    under a session that stays closed and its new lifecycle boundary would be lost (same
-    reason the interactive resume calls ``reopen_session()`` before continuing).
+    The resolved row is reopened immediately before agent construction, after provider and
+    skill setup has succeeded.  Keeping that mutation out of this loader prevents a failed
+    pre-agent setup from leaving an ended session falsely active.
     """
     if not resume:
         return None, [], None
@@ -373,10 +371,6 @@ def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str
     session_db.assert_resume_safe(resolved, tip_only=True)
     restored, _display = session_db.get_resume_conversations(resolved)
     history = [m for m in restored if m.get("role") != "session_meta"]
-    try:
-        session_db.reopen_session(resolved)
-    except Exception:
-        logging.debug("reopen_session failed for resumed one-shot session %s", resolved, exc_info=True)
     return resolved, history, session_meta
 
 
@@ -458,7 +452,11 @@ def _run_agent(
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = None
+    reopened_resume = False
     try:
+        if resume_sid:
+            session_db.reopen_session(resume_sid)
+            reopened_resume = True
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
@@ -487,6 +485,9 @@ def _run_agent(
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
         return (result.get("final_response") or "", result)
     finally:
+        if agent is None and reopened_resume and session_db is not None:
+            _quietly("failed resumed session cleanup", lambda: session_db.end_session(
+                resume_sid, "oneshot_setup_failed"))
         _close_agent(agent, session_db)
 
 

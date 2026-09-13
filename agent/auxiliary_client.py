@@ -3888,6 +3888,7 @@ def _call_fallback_candidate_sync(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    stream: bool = False, stream_options: Optional[dict] = None,
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery: on an auth error refresh its
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
@@ -3905,6 +3906,10 @@ def _call_fallback_candidate_sync(
     )
 
     def _send(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
+        if stream:
+            from agent.auxiliary_egress_recovery import send_stream
+            return send_stream(client, request_kwargs, dest.provider, dest.api_mode,
+                               task=task, stream_options=stream_options)
         return _validate_llm_response(
             _relay_sync_completion(
                 client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode,

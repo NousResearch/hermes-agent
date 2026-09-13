@@ -100,22 +100,14 @@ def stream_with_local_recovery(req, retry_kwargs, candidate_kwargs, *, task,
     from agent import auxiliary_client as auxiliary
     from agent.llm_egress_firewall import EgressBlocked
 
-    def send(client, kwargs, provider, api_mode):
-        kwargs = dict(kwargs, stream=True)
-        if stream_options:
-            kwargs["stream_options"] = stream_options
-        if task == "moa_aggregator" and isinstance(client, auxiliary.CodexAuxiliaryClient):
-            return client.chat.completions.create(**kwargs)
-        return auxiliary._relay_sync_stream(client, kwargs, provider=provider, api_mode=api_mode)
 
     try:
-        return send(req.client, req.kwargs, req.request_provider, req.resolved_api_mode)
+        return send_stream(req.client, req.kwargs, req.request_provider, req.resolved_api_mode,
+                           task=task, stream_options=stream_options)
     except EgressBlocked as first_err:
         def perform(step):
-            client, model, label = step.args
-            destination, kwargs, _ = auxiliary._plan_fallback_candidate(
-                client, model, label, apply_fast_lane=True, **candidate_kwargs)
-            return send(client, kwargs, destination.provider, destination.api_mode)
+            return auxiliary._call_fallback_candidate_sync(
+                *step.args, **candidate_kwargs, stream=True, stream_options=stream_options)
 
         result = auxiliary._drive_ladder(
             auxiliary._start_recovery_ladder(
@@ -125,3 +117,15 @@ def stream_with_local_recovery(req, retry_kwargs, candidate_kwargs, *, task,
         if result is auxiliary._RERAISE_ORIGINAL:
             raise
         return result
+
+
+def send_stream(client, kwargs, provider, api_mode, *, task, stream_options=None):
+    """Preserve the stream contract for both primary and refreshed candidates."""
+    from agent import auxiliary_client as auxiliary
+
+    kwargs = dict(kwargs, stream=True)
+    if stream_options:
+        kwargs["stream_options"] = stream_options
+    if task == "moa_aggregator" and isinstance(client, auxiliary.CodexAuxiliaryClient):
+        return client.chat.completions.create(**kwargs)
+    return auxiliary._relay_sync_stream(client, kwargs, provider=provider, api_mode=api_mode)

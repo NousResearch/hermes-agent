@@ -5531,3 +5531,32 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_streaming_local_fallback_refreshes_or_skips_stale_candidate(monkeypatch, refresh):
+    import agent.auxiliary_client as auxiliary
+
+    primary = MagicMock(base_url="https://chatgpt.com/backend-api/codex")
+    stale = MagicMock(base_url="http://127.0.0.1:11434/v1")
+    stale.chat.completions.create.side_effect = _AuxAuth401("expired")
+    healthy = MagicMock(base_url="http://127.0.0.1:11435/v1")
+    expected = iter(["local chunk"])
+    healthy.chat.completions.create.return_value = expected
+    monkeypatch.setattr(auxiliary, "_get_cached_client",
+                        lambda provider, *a, **kw: (healthy if provider == "custom" else primary, "model"))
+    candidates = iter([(stale, "model", "custom"), (healthy, "model", "custom")])
+    monkeypatch.setattr(auxiliary, "_try_configured_fallback_chain", lambda *a, **kw: next(candidates))
+    monkeypatch.setattr(auxiliary, "_refresh_provider_credentials", lambda *a, **kw: refresh)
+    quarantined = MagicMock()
+    monkeypatch.setattr(auxiliary, "_mark_provider_unhealthy", quarantined)
+    result = call_llm(
+        task="compression", provider="openai-codex", model="gpt-5.4", stream=True,
+        messages=[{"role": "user", "content": "token=super-secret-value"}],
+    )
+    assert result is expected
+    assert list(result) == ["local chunk"]
+    primary.chat.completions.create.assert_not_called()
+    assert stale.chat.completions.create.call_count == 1
+    assert healthy.chat.completions.create.call_count == 1
+    assert quarantined.call_count == (0 if refresh else 1)

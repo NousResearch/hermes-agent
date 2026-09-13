@@ -552,3 +552,92 @@ class TestKeylessFailover:
         out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
         assert out == partial
         assert not called
+
+
+# ---------------------------------------------------------------------------
+# mcp_call charset handling (SSE bodies without a charset declaration)
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    """Mimics requests.Response decoding semantics.
+
+    requests only honors an explicit charset; otherwise it falls back to
+    ISO-8859-1 for text/* types, so ``.text`` mangles UTF-8 multibyte
+    content while ``.content`` keeps the raw bytes.
+    """
+
+    def __init__(self, content: bytes, content_type: str, status: int = 200):
+        self.content = content
+        self.status_code = status
+        self.headers = {"content-type": content_type}
+
+    @property
+    def text(self) -> str:
+        if "charset" in self.headers["content-type"].lower():
+            return self.content.decode("utf-8")
+        return self.content.decode("iso-8859-1")
+
+
+def _sse_bytes(payload_text: str) -> bytes:
+    payload = {"result": {"content": [{"type": "text", "text": payload_text}]}}
+    # ensure_ascii=False: real endpoints (mcp.exa.ai) emit raw UTF-8 in the
+    # SSE data line; \u escapes would make the body pure ASCII and hide the
+    # ISO-8859-1 mangling this regression test exists to catch.
+    return (
+        "event: message\ndata: "
+        + json.dumps(payload, ensure_ascii=False)
+        + "\n\n"
+    ).encode("utf-8")
+
+
+class _TextOnlyResponse:
+    """Declares a charset; ``.text`` carries the decoded body directly.
+
+    ``.content`` is deliberately invalid UTF-8: if mcp_call wrongly reads
+    raw bytes on the declared-charset path, decoding raises and the test
+    fails.
+    """
+
+    def __init__(self, text: str, content_type: str = "text/event-stream; charset=utf-8"):
+        self.text = text
+        self.status_code = 200
+        self.headers = {"content-type": content_type}
+        self.content = b"\xff\xfe invalid utf-8 \x85"
+
+
+class TestMcpCallCharset:
+    def _call(self, monkeypatch, fake) -> str:
+        def fake_post(url, json=None, headers=None, timeout=None):
+            return fake
+
+        monkeypatch.setattr("requests.post", fake_post)
+        return keyless_mcp.mcp_call("https://example.test/mcp", "web_fetch", {})
+
+    def test_utf8_sse_without_charset_declaration(self, monkeypatch):
+        # Real shape from mcp.exa.ai: SSE, no charset, CJK + emoji payload.
+        cjk = "帮我安装 \U0001f6e1\ufe0f Agent"
+        fake = _FakeResponse(_sse_bytes(cjk), "text/event-stream")
+        assert self._call(monkeypatch, fake) == cjk
+
+    def test_declared_charset_uses_requests_text_path(self, monkeypatch):
+        payload_text = "declared charset path"
+        body = "event: message\ndata: " + json.dumps(
+            {"result": {"content": [{"type": "text", "text": payload_text}]}}
+        ) + "\n\n"
+        fake = _TextOnlyResponse(body)
+        assert self._call(monkeypatch, fake) == payload_text
+
+    def test_plain_json_without_charset(self, monkeypatch):
+        cjk = "雪球行情"  # Parallel-style direct JSON response
+        payload = {"result": {"content": [{"type": "text", "text": cjk}]}}
+        fake = _FakeResponse(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            "application/json",
+        )
+        assert self._call(monkeypatch, fake) == cjk
+
+    def test_http_error_still_raises(self, monkeypatch):
+        fake = _FakeResponse(b"boom", "text/plain", status=503)
+        with pytest.raises(keyless_mcp.KeylessMCPError, match="HTTP 503"):
+            self._call(monkeypatch, fake)

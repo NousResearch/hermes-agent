@@ -104,6 +104,13 @@ _BOARD_SPECS = [
     ], aliases=["remove", "delete"], help="Archive (default) or delete a board"),
     _cmd("switch", [_SLUG], aliases=["use"], help="Set the active board for subsequent CLI calls"),
     _cmd("show", aliases=["current"], help="Print the currently-active board slug"),
+    _cmd("hold", [
+        _SLUG,
+        _arg("--reason", required=True, help="Reason shown while automation is held"),
+        _arg("--set-by", default="operator", help="Audit label for who set the hold"),
+        _arg("--allow-reclaim", action="store_true", help="Allow reclaim-only automation while held"),
+    ], help="Durably pause board automation before dispatch/decompose"),
+    _cmd("resume", [_SLUG], help="Clear a board automation hold"),
     _cmd("rename", [_SLUG, _arg("name", help="New display name")],
          help="Change a board's human-readable display name (slug is immutable)"),
     _cmd("set-default-workdir", [

@@ -106,6 +106,10 @@ class DispatchResult:
     Code terminal like ``orion-cc``), not a Hermes profile. Expected steady-state
     on multi-lane setups, NOT operator-actionable; tracked apart so health
     telemetry can tell "stuck" from "correctly idle"."""
+    skipped_board_hold: bool = False
+    """True when the whole board is under a durable automation hold."""
+    skipped_board_hold_reason: Optional[str] = None
+    """Human-readable board hold reason, when available."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
@@ -1768,6 +1772,11 @@ def _dispatch_once_locked(
     the PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`."""
     result = DispatchResult()
+    hold = _kb.board_automation_hold(board)
+    if hold is not None and not bool(hold.get("allow_reclaim")):
+        result.skipped_board_hold = True
+        result.skipped_board_hold_reason = str(hold.get("reason") or "board automation hold")
+        return result
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,

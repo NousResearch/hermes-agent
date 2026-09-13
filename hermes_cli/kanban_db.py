@@ -541,6 +541,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "project_id": None,
         "created_at": None,
         "archived": False,
+        "automation_hold": None,
     }
     try:
         p = board_metadata_path(slug)
@@ -553,6 +554,58 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
                 meta.update(raw)
     except (OSError, json.JSONDecodeError):
         pass
+    meta["db_path"] = str(kanban_db_path(slug))
+    return meta
+
+
+def board_automation_hold(board: Optional[str] = None) -> Optional[dict]:
+    """Return the enabled board-level automation hold, if any."""
+    hold = read_board_metadata(board).get("automation_hold")
+    if not isinstance(hold, dict) or not hold.get("enabled"):
+        return None
+    return hold
+
+
+def board_automation_held(board: Optional[str] = None) -> bool:
+    """Whether automation must skip this board before mutating tasks."""
+    return board_automation_hold(board) is not None
+
+
+def set_board_automation_hold(
+    board: Optional[str] = None, *, reason: str, set_by: str = "operator",
+    allow_reclaim: bool = False,
+) -> dict:
+    """Persist a durable board-level automation hold in ``board.json``."""
+    _assert_not_delegated_child_mutation()
+    if not str(reason or "").strip():
+        raise ValueError("automation hold reason is required")
+    slug = _slug_or_default(board)
+    meta = read_board_metadata(slug)
+    meta.pop("db_path", None)
+    meta["automation_hold"] = {
+        "enabled": True,
+        "reason": str(reason).strip(),
+        "set_at": int(time.time()),
+        "set_by": str(set_by or "operator").strip() or "operator",
+        "allow_reclaim": bool(allow_reclaim),
+    }
+    path = board_metadata_path(slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    meta["db_path"] = str(kanban_db_path(slug))
+    return meta
+
+
+def clear_board_automation_hold(board: Optional[str] = None) -> dict:
+    """Clear the durable board-level automation hold from ``board.json``."""
+    _assert_not_delegated_child_mutation()
+    slug = _slug_or_default(board)
+    meta = read_board_metadata(slug)
+    meta.pop("db_path", None)
+    meta["automation_hold"] = None
+    path = board_metadata_path(slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
 

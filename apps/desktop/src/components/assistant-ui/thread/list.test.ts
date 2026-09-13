@@ -102,6 +102,11 @@ describe('transcriptPaneBudget', () => {
     expect(transcriptPaneBudget(4, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
     expect(transcriptPaneBudget(1, false)).toBeGreaterThan(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
   })
+
+  it('shares the visible page budget across five and six mounted panes', () => {
+    expect(transcriptPaneBudget(5, false)).toBe(120)
+    expect(transcriptPaneBudget(6, false)).toBe(100)
+  })
 })
 
 describe('shouldClampTranscriptBudget', () => {

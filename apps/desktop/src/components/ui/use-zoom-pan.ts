@@ -3,6 +3,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState
 } from 'react'
@@ -19,6 +20,9 @@ const MIN_SCALE = 0.25
 const MAX_SCALE = 8
 const WHEEL_STEP = 1.1
 const BUTTON_STEP = 1.25
+// A fitted diagram can shrink far below the interactive zoom-out floor, so
+// surfaces that fit content (see `setContentEl`) pass this via `minScale`.
+export const FIT_MIN_SCALE = 0.05
 // Pointer travel (px) below which a single-pointer gesture counts as a click
 // rather than a pan. Lets consumers (e.g. an image lightbox) close on a clean
 // click while still panning after a real drag.
@@ -33,7 +37,9 @@ interface UseZoomPanOptions {
 /**
  * Headless pan/zoom transform shared by every zoomable surface (image lightbox,
  * diagram/artifact viewer, …). Wheel zooms toward the cursor, drag pans,
- * two-finger pinch zooms + pans, and the +/- buttons zoom toward centre.
+ * two-finger pinch zooms + pans, and the +/- buttons zoom toward centre. When
+ * a content element is registered via `setContentEl`, the initial view fits
+ * the content into the stage (never upscaling).
  *
  * The wheel listener is attached natively (non-passive) so `preventDefault`
  * actually stops the page/dialog from scrolling underneath, which a React
@@ -51,7 +57,8 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
   // `enabled` flips (the lightbox img renders inside a dialog portal, a commit
   // later than the open flag). An effect keyed on [enabled] alone would capture
   // a null ref and never attach the native wheel listener. Re-rendering on
-  // mount re-runs that effect with the node in hand.
+  // mount re-runs that effect with the node in hand. It doubles as the fit
+  // stage when a content element is registered.
   const [node, setNode] = useState<T | null>(null)
 
   const refCallback = useCallback((instance: T | null) => {
@@ -69,6 +76,11 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
   const pointers = useRef(new Map<number, { x: number; y: number }>())
   const pinch = useRef<{ dist: number; midX: number; midY: number } | null>(null)
 
+  // The content wrapper the fit path measures (see fit). Null on surfaces
+  // that zoom their only child directly (image lightbox), which opt out of
+  // fitting.
+  const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null)
+
   // Zoom toward (cx, cy), measured from the surface centre, keeping that point fixed.
   const zoomAt = useCallback(
     (factor: number, cx = 0, cy = 0) => {
@@ -82,19 +94,78 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
     [clamp]
   )
 
+  // Shrink the content so it fits the stage, never upscale it. The stage grid
+  // centers the content, so the fit transform needs no translation. Content
+  // with no measurable size yet (async render, e.g. mermaid) stays as-is — a
+  // zero scale would blank the overlay instead of waiting for geometry.
+  const fit = useCallback(() => {
+    if (!node || !contentEl) {
+      return
+    }
+
+    const availableW = node.clientWidth
+    const availableH = node.clientHeight
+    const contentW = contentEl.scrollWidth
+    const contentH = contentEl.scrollHeight
+
+    if (availableW <= 0 || availableH <= 0 || contentW <= 0 || contentH <= 0) {
+      return
+    }
+
+    const scale = Math.min(availableW / contentW, availableH / contentH, 1)
+
+    setTransform({ scale: clamp(scale), x: 0, y: 0 })
+  }, [clamp, contentEl, node])
+
+  // Manual zoom/pan opts out of refitting until reset; while the view is still
+  // the fitted one, stage or content resizes (dialog resize, async SVG
+  // appearing, window resize) re-fit instead of stranding a zoomed view.
+  const fittedRef = useRef(true)
+
+  const fitIfFitted = useCallback(() => {
+    if (fittedRef.current) {
+      fit()
+    }
+  }, [fit])
+
+  // The overlay lives in a portal that mounts its DOM in a later commit than
+  // the hook consumer, so node state (not object refs) drives the
+  // subscription: attaching the nodes re-runs this effect and the fit rides
+  // the observer's spec-guaranteed first delivery once geometry exists.
+  useLayoutEffect(() => {
+    if (!node || !contentEl || typeof ResizeObserver === 'undefined') {
+      return
+    }
+
+    const observer = new ResizeObserver(fitIfFitted)
+
+    observer.observe(node)
+    observer.observe(contentEl)
+
+    return () => observer.disconnect()
+  }, [contentEl, fitIfFitted, node])
+
   const reset = useCallback(() => {
     setTransform({ scale: 1, x: 0, y: 0 })
     setMoved(false)
     setPanning(false)
-  }, [])
+    fittedRef.current = true
+    // Refit when a content element is registered; surfaces without one (the
+    // image lightbox) keep the identity view.
+    fit()
+  }, [fit])
 
   const zoomIn = useCallback(() => {
+    fittedRef.current = false
+
     const node = ref.current
     const rect = node?.getBoundingClientRect()
     zoomAt(BUTTON_STEP, rect ? rect.width / 2 : 0, rect ? rect.height / 2 : 0)
   }, [zoomAt])
 
   const zoomOut = useCallback(() => {
+    fittedRef.current = false
+
     const node = ref.current
     const rect = node?.getBoundingClientRect()
     zoomAt(1 / BUTTON_STEP, rect ? rect.width / 2 : 0, rect ? rect.height / 2 : 0)
@@ -111,13 +182,14 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
     const onWheel = (event: WheelEvent) => {
       event.preventDefault()
 
-      // macOS smart zoom (two-finger double-tap) → reset, not zoom-in.
+      // macOS smart zoom (two-finger double-tap) → fitted view, not zoom-in.
       if (isSmartZoomWheel(event)) {
-        setTransform({ scale: 1, x: 0, y: 0 })
-        setMoved(false)
+        reset()
 
         return
       }
+
+      fittedRef.current = false
 
       const rect = node.getBoundingClientRect()
       const cx = event.clientX - rect.left - rect.width / 2
@@ -129,7 +201,7 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
     node.addEventListener('wheel', onWheel, { passive: false })
 
     return () => node.removeEventListener('wheel', onWheel)
-  }, [enabled, node, zoomAt])
+  }, [enabled, node, reset, zoomAt])
 
   const endPan = useCallback(() => {
     drag.current = null
@@ -140,6 +212,7 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
     event.currentTarget.setPointerCapture?.(event.pointerId)
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
     setMoved(false)
+    fittedRef.current = false
 
     if (pointers.current.size === 1) {
       drag.current = { x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY }
@@ -259,6 +332,7 @@ export function useZoomPan<T extends HTMLElement = HTMLElement>(options: UseZoom
     ref: refCallback,
     reset,
     scale: transform.scale,
+    setContentEl,
     stageProps: {
       onPointerCancel,
       onPointerDown,

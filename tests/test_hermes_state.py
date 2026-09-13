@@ -1280,6 +1280,13 @@ class TestDeleteAndExport:
         assert result["errors"][0]["error"] == "messages exceeds the per-session import limit"
         assert db.get_session("too-many-messages") is None
 
+    @pytest.mark.parametrize("bad_id", ["../escape", "a/b", "a\\b", "..", "*", "req?_dump"])
+    def test_import_sessions_rejects_unsafe_ids(self, db, bad_id):
+        result = db.import_sessions([{"id": bad_id, "messages": []}])
+        assert result["ok"] is False
+        assert result["errors"][0]["error"] == "session id is not a safe filename"
+        assert db.get_session(bad_id) is None
+
 
 # =========================================================================
 # Prune
@@ -1603,6 +1610,35 @@ class TestBulkDeleteSessions:
         assert deleted == 2
         assert not (tmp_path / "s1.jsonl").exists()
         assert not (tmp_path / "s2.json").exists()
+
+    def test_traversal_id_never_leaves_sessions_dir(self, db, tmp_path):
+        """A ``..``-shaped session id must not unlink files outside sessions_dir;
+        the DB row is still deleted, only the file sweep is skipped."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        outside = tmp_path / "keep-me.json"
+        outside.write_text("{}")
+        db.create_session(session_id="../keep-me", source="cli")
+        db.create_session(session_id="s1", source="cli")
+        (sessions_dir / "s1.json").write_text("{}")
+
+        deleted = db.delete_sessions(["../keep-me", "s1"], sessions_dir=sessions_dir)
+        assert deleted == 2
+        assert outside.exists()
+        assert not (sessions_dir / "s1.json").exists()
+
+    def test_glob_metachar_id_does_not_widen_request_dump_sweep(self, db, tmp_path):
+        """A ``*`` in the id would turn ``request_dump_<id>_*.json`` into a
+        match-everything pattern; the sweep must skip it."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        other_dump = sessions_dir / "request_dump_aaaa_1.json"
+        other_dump.write_text("{}")
+        db.create_session(session_id="*", source="cli")
+
+        deleted = db.delete_sessions(["*"], sessions_dir=sessions_dir)
+        assert deleted == 1
+        assert other_dump.exists()
 
 
 class TestDeleteEmptySessions:

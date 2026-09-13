@@ -24,6 +24,24 @@ from hermes_state_common import (
 logger = logging.getLogger("hermes_state")
 
 
+def _is_safe_session_file_id(session_id: object) -> bool:
+    """True when *session_id* is a single safe path component under ``sessions/``.
+
+    The id is interpolated into ``<id>.json``/``<id>.jsonl`` paths and the
+    ``request_dump_<id>_*.json`` glob, so it must reject ``..``, separators,
+    absolute/drive prefixes AND glob metacharacters (``*?[``) that would widen
+    the pattern to other sessions' files. Same rule as the cron job-id check in
+    ``cron/jobs.py`` plus the glob characters.
+    """
+    sid = str(session_id or "").strip()
+    if not sid or ".." in sid or "/" in sid or "\\" in sid:
+        return False
+    if any(c in sid for c in "*?["):
+        return False
+    p = Path(sid)
+    return not p.is_absolute() and not p.drive
+
+
 def workspace_key(row: Dict[str, Any]) -> Optional[str]:
     """Workspace grouping key: git repo root, else cwd, else None (branch excluded: a checkout must not
     fragment history)."""
@@ -1439,6 +1457,11 @@ class SessionSessionsMixin:
         """Remove ``<id>.json``/``.jsonl`` and gateway ``request_dump_<id>_*.json``; OSError is swallowed
         so a filesystem hiccup never blocks a DB operation."""
         if sessions_dir is None:
+            return
+        # The id is interpolated into file paths AND a glob pattern below; an unsafe
+        # id (``..``, separators, drive letters, glob metacharacters) must never reach
+        # the filesystem. Skip file cleanup but let the DB delete proceed.
+        if not _is_safe_session_file_id(session_id):
             return
         targets = [sessions_dir / f"{session_id}{suffix}" for suffix in (".json", ".jsonl")]
         try:

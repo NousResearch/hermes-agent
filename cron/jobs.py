@@ -34,6 +34,7 @@ from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Colle
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
+from hermes_time import get_timezone
 from utils import atomic_replace, atomic_write_text
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
@@ -1120,7 +1121,21 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
                 "reinstall hermes-agent or run 'pip install croniter' in your runtime env.",
                 expr)
             return None
-        return croniter(expr, base_time).get_next(datetime).isoformat()
+        # Anchor cron matching to the CONFIGURED IANA timezone's WALL CLOCK, not
+        # to the UTC offset carried by ``base_time``. croniter ignores the
+        # tzinfo on its start time and uses the start's UTC *offset* as its
+        # working offset, so a base stored at another offset (a UTC
+        # ``last_run_at``) fires at that offset's wall clock, and a fixed
+        # offset cannot track DST: transition days land one hour off (08:00 /
+        # 10:00 instead of 09:00). Render the base as the configured zone's
+        # naive wall clock for croniter, then re-attach the zone to the result,
+        # so the wall-clock hour is right on every calendar day including DST
+        # boundaries (#DST-bug, morning-routine 09:00 America/Toronto).
+        # Falls back to the base's own zone when no timezone is configured.
+        zone = get_timezone() or base_time.tzinfo
+        base_wall = base_time.astimezone(zone).replace(tzinfo=None)
+        return (croniter(expr, base_wall).get_next(datetime)
+                .replace(tzinfo=zone).isoformat())
     return None
 
 

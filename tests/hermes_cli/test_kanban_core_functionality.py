@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -1422,9 +1423,12 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 def _spawn_stand_in_worker():
-    """A genuine long-lived child process to stand in for a worker pid."""
+    """A genuine long-lived, portable child process to stand in for a worker
+    pid -- ``sys.executable`` rather than the Unix ``sleep`` binary so this
+    helper (used from unmarked, cross-platform tests) works on Windows too."""
     return subprocess.Popen(
-        ["sleep", "300"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        [sys.executable, "-c", "import time; time.sleep(300)"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
 
@@ -1541,6 +1545,7 @@ def test_respawn_guard_survives_deleted_spawned_claimed_events_via_run_metadata(
             info = kbd._prev_worker_alive_guard_info(conn, tid)
             assert info == {
                 "pid": proc.pid, "host": _kb._host_prefix().rstrip(":"), "run_id": run_id,
+                "reason": "prev_worker_alive",
             }
 
             spawned: list[int] = []
@@ -1869,7 +1874,7 @@ def test_respawn_guard_consults_latest_ended_run_not_an_older_one(
 
     def _dead_pid() -> int:
         p = subprocess.Popen(
-            ["true"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            [sys.executable, "-c", "pass"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         p.wait(timeout=5)

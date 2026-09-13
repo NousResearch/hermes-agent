@@ -1512,6 +1512,8 @@ def _post_stream_transform_output(response: str, result: dict | None) -> str:
         return ""
 
     original = result.get("pre_transform_response") or ""
+    if not original and result.get("free_tier_notice"):
+        return "\n\n" + result["free_tier_notice"]
     if original and response.startswith(original):
         return response[len(original):]
 
@@ -3425,7 +3427,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         while not self._should_exit:
             try:
                 try:
-                    user_input = self._pending_input.get(timeout=0.1)
+                    user_input = self._get_pending_input()
                 except queue.Empty:
                     if not self._agent_running:
                         self._tui_idle_tick()
@@ -3441,6 +3443,19 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
     def _tui_idle_tick(self):
         """Idle housekeeping between inputs (agent not running)."""
         self._check_config_mcp_changes()  # auto-reload MCP on mcp_servers change
+        if ((getattr(self, "_last_turn_result", None) or {}).get("free_tier") or {}).get("capped"):
+            from agent.free_tier import refusal
+            from types import SimpleNamespace
+            if not self._ensure_runtime_credentials():
+                self._check_termios_drift()
+                return
+            route = self.agent
+            if route is None:
+                route = SimpleNamespace(**self._resolve_turn_agent_config("")["runtime"])
+            if refusal(route) is not None:
+                self._check_termios_drift()
+                return
+            self._last_turn_result = None  # Real sign-in or /model changed the selected route.
         # Termios drift heal first: a drifted tty makes the CLI look dead while the loop is healthy.
         for step in (
             self._check_termios_drift,
@@ -3454,6 +3469,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
         from tools.process_registry_notifications import SubagentNotification
+        submitted_input = user_input
         notification_preview = user_input if isinstance(user_input, SubagentNotification) else None
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
@@ -3497,6 +3513,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                     user_input = self._tui_run_slash_input(user_input)
                     if user_input is None:
                         return
+                    submitted_input = user_input  # Retain the seed, not a command that would re-run while gated.
 
         if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):
             user_input = self._expand_paste_references(user_input)
@@ -3511,9 +3528,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
         self._app.invalidate()
+        self._submitted_input = submitted_input
         try:
             self.chat(notification_preview or user_input, images=submit_images or None, voice_input=is_voice_input)
         finally:
+            del self._submitted_input
             self._tui_after_turn()
 
     def _tui_run_slash_input(self, user_input: str):
@@ -3552,6 +3571,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # rationale. Regression of #17666 / #18760 — the drain block from the original PR #17939 was
         # deferred as "worth its own review" and never re-landed (#20271).
         self._drain_interrupt_queue_to_pending_input()
+
+        if ((getattr(self, "_last_turn_result", None) or {}).get("free_tier") or {}).get("capped"):
+            self._voice_continuous = False
+            return
 
         # /goal continuation (queued user input still preempts), then /loop tick completion.
         for hook, what in (
@@ -4043,6 +4066,10 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         resp = result.get("final_response", "") if isinstance(result, dict) else str(result)
         if resp:
             print(resp)
+        if isinstance(result, dict):
+            cli._last_turn_result = result
+            if (result.get("free_tier") or {}).get("capped"):
+                raise RuntimeError("free_tier_limit")  # loop stops before its auxiliary judge
         return resp or ""
 
     def _task_status() -> "str | None":
@@ -4085,6 +4112,7 @@ def _run_quiet_single_query(cli, effective_query):
     # The exit line below reports session_id to stderr for automation wrappers;
     # without this sync it would point at the ended parent after compression.
     _sync_cli_session_id_from_agent(cli)
+    cli._last_turn_result = result
     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
     # Surface backend errors that produced no visible output (e.g. invalid model slug
     # -> provider 4xx) on stderr so piped stdout stays clean.
@@ -4098,12 +4126,15 @@ def _run_quiet_single_query(cli, effective_query):
 
     # Kanban goal_mode: keep working in THIS session until a judge agrees the card is
     # done, the worker terminates it, or the turn budget runs out (sticky block).
-    if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
+    if (os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1"
+            and not (isinstance(result, dict) and (
+                result.get("failed") or (result.get("free_tier") or {}).get("capped")))):
         try:
             _run_kanban_goal_loop_q(cli, response)
         except Exception as _goal_exc:
             logger.debug("kanban goal loop failed: %s", _goal_exc)
 
+    result = cli._last_turn_result
     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
     # Exit code 0/1 for automation wrappers. Kanban workers that failed purely on
@@ -4414,10 +4445,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
             # Quiet mode: suppress banner, spinner, tool previews.
             cli.tool_progress_mode = "off"
             if cli._ensure_runtime_credentials():
-                effective_query: Any = _route_single_query_images(
-                    cli, query, query, single_query_images, single_query_image_urls
-                )
-                turn_route = cli._resolve_turn_agent_config(effective_query)
+                effective_query: Any = query
+                turn_route = cli._resolve_turn_agent_config(query)
                 if turn_route["signature"] != cli._active_agent_route_signature:
                     cli.agent = None
                 if cli._init_agent(
@@ -4425,6 +4454,11 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
                 ):
+                    from agent.free_tier import refusal
+                    if refusal(cli.agent) is None:
+                        effective_query = _route_single_query_images(
+                            cli, query, query, single_query_images, single_query_image_urls
+                        )
                     _configure_quiet_agent(cli.agent)
                     _run_quiet_single_query(cli, effective_query)
 
@@ -4436,6 +4470,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         cli._show_security_advisories()
         cli.chat(query, images=single_query_images or None)
         cli._print_exit_summary(clear_screen=False)
+        if (getattr(cli, "_last_turn_result", None) or {}).get("failure_reason") == "free_tier_limit":
+            sys.exit(1)
     finally:
         _finalize_single_query(cli)
 

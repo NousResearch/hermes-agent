@@ -75,7 +75,7 @@ def _metadata_mirror(session: dict | None) -> dict:
 
 
 def _compute_host_session_info(session: dict) -> dict:
-    return _session_info(session.get("agent"), session)
+    return _session_info(None, session)
 
 
 def _compute_host_adopt_frame_meta(session: dict, frame: dict) -> None:
@@ -91,6 +91,16 @@ def _compute_host_adopt_frame_meta(session: dict, frame: dict) -> None:
 def _relay_compute_host_rpc(message: dict) -> bool:
     """Relay host events while retaining the clarify snapshot needed on resume."""
     params = message.get("params") if isinstance(message, dict) else None
+    if isinstance(message, dict) and message.get("method") == "compute_host.runtime":
+        if isinstance(params, dict) and isinstance(params.get("runtime"), dict):
+            session = _sessions.get(str(params.get("session_id") or ""))
+            if session is not None:
+                with _history_lock(session):
+                    if (session.get("running") and params.get("turn_id")
+                            and session.get("_compute_host_turn_id") == params["turn_id"]):
+                        session["_metadata_mirror"] = {
+                            **_metadata_mirror(session), "runtime": dict(params["runtime"])}
+        return True  # Routing metadata stays internal; no credentials or second agent.
     if isinstance(message, dict) and message.get("method") == "compute_host.activity":
         if isinstance(params, dict):
             session = _sessions.get(str(params.get("session_id") or ""))
@@ -193,12 +203,21 @@ def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> No
         session["_metadata_mirror_updated_at"] = time.time()
 
 
-def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -> None:
+def _on_compute_host_turn_done(
+    rid: str, sid: str, session: dict, frame: dict, queued_envelope: dict | None = None) -> None:
+    refused = frame.get("code") == "free_tier_limit"
     with session["history_lock"]:
         _compute_host_adopt_frame_meta(session, frame)
         session["running"] = False
         session["last_active"] = time.time()
-        _clear_inflight_turn(session)
+        if refused:
+            session["inflight_turn"] = dict(frame.get("inflight_turn") or {})
+            if queued_envelope is not None:
+                advanced = session.get("queued_prompt")
+                _ac_set_queue(session, [queued_envelope, *([advanced] if advanced else []),
+                                       *(session.get("queued_prompts") or [])])
+        else:
+            _clear_inflight_turn(session)
         session.pop("_compute_host_pending_clarify", None)
     if frame.get("type") == "turn.error":
         message = str(frame.get("message") or "compute host turn failed")
@@ -207,16 +226,22 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
     info = _compute_host_session_info(session)
     if not frame.get("session_info_emitted"):
         _emit("session.info", sid, info)
-    _drain_queued_prompt(rid, sid, session)
+    if not refused and not frame.get("continuation_required"):
+        _drain_queued_prompt(rid, sid, session)
 
 
 def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None,
+    queued_envelope: dict | None = None) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
                                      display_kind=display_kind)
+    # Keep the exact envelope in this process; live transport references cannot
+    # cross line-JSON. Only the authored message data travels to the child.
+    if queued_envelope is not None and queued_envelope.get("turn_author"):
+        frame["turn_author"] = queued_envelope["turn_author"]
     # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
     # dispatch lifetime token, installed before a fast child can send activity.
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex
@@ -233,7 +258,7 @@ def _submit_prompt_to_compute_host(
                     return
                 session.pop("_compute_host_turn_id", None)
                 session.pop("_compute_host_activity_ns", None)
-            _on_compute_host_turn_done(rid, sid, session, done)
+            _on_compute_host_turn_done(rid, sid, session, done, queued_envelope)
     try:
         _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete)
     except Exception as exc:

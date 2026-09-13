@@ -1,4 +1,5 @@
 import { usageBarsText } from '../../../components/overlayPrimitives.js'
+import { FREE_TIER_LIMIT_KEY } from '../../../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
@@ -15,8 +16,10 @@ import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
+import { freeTierBlockMessage, setFreeTierBlock } from '../../freeTierGate.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
+import { turnController } from '../../turnController.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
@@ -167,6 +170,17 @@ export const sessionCommands: SlashCommand[] = [
 
               ctx.transcript.sys(r.deferred ? `model → ${r.value} (applies next turn)` : `model → ${r.value}`)
               ctx.local.maybeWarn(r)
+
+              if (!r.deferred && !r.credential_warning && freeTierBlockMessage()) {
+                void ctx.gateway.rpc<{ continuation_required?: boolean }>('free_tier.status', { session_id: ctx.sid }).then(
+                  ctx.guarded(status => {
+                    if (status?.continuation_required === false) {
+                      setFreeTierBlock(null)
+                      turnController.clearNotice(FREE_TIER_LIMIT_KEY)
+                    }
+                  })
+                )
+              }
 
               patchUiState(state => ({
                 ...state,

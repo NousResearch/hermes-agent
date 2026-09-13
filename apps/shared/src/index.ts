@@ -46,6 +46,7 @@ export {
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB
 } from './data-url-read-max'
+export { JsonRpcGatewayError } from './json-rpc-error'
 export {
   type ConnectionState,
   type GatewayClientOptions,
@@ -56,7 +57,6 @@ export {
   type JsonRpcErrorPayload,
   type JsonRpcFrame,
   JsonRpcGatewayClient,
-  JsonRpcGatewayError,
   type WebSocketLike
 } from './json-rpc-gateway'
 export { skillInvocationText } from './skill-scaffold'

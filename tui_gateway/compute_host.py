@@ -28,12 +28,15 @@ def now_ns() -> int:
 class _HostTransport:
     def __init__(self, emit: Callable[[dict[str, Any]], None]) -> None:
         self._emit = emit
+        self.completion: dict[str, Any] = {}
 
     def write(self, obj: dict) -> bool:
         sid = ""
         with contextlib.suppress(Exception):
             if obj.get("method") == "event":
                 sid = str(((obj.get("params") or {}).get("session_id")) or "")
+                if obj["params"].get("type") == "message.complete":
+                    self.completion = dict(obj["params"].get("payload") or {})
         self._emit({"type": "rpc", "sid": sid, "message": obj})
         return True
 
@@ -225,7 +228,15 @@ class ComputeHost:
                 session.update(running=True, _turn_cancel_requested=False, last_active=time.time())
                 server._start_inflight_turn(session, inflight)
                 turn_started_at = time.time()
+            # Per-turn capture, not a host-global last result: other sessions may
+            # complete concurrently, and the parent needs the typed refusal.
+            transport = _HostTransport(self.emit)
+            session["transport"] = transport
             self._reply("turn.started", sid, request_id, started_ns=now_ns())
+            if frame.get("turn_id"):
+                transport.write({"jsonrpc": "2.0", "method": "compute_host.runtime", "params": {
+                    "session_id": sid, "turn_id": frame["turn_id"],
+                    "runtime": server._runtime_model_config(session["agent"])}})
             with contextlib.suppress(Exception):
                 server._ensure_session_db_row(session)
             with contextlib.suppress(Exception):
@@ -234,7 +245,8 @@ class ComputeHost:
             with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
             server._run_prompt_submit(
-                request_id, sid, session, text, display_kind=frame.get("display_kind") or None)
+                request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
+                turn_author=frame.get("turn_author"))
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():
@@ -244,7 +256,13 @@ class ComputeHost:
             with session["history_lock"]:
                 meta = _history_meta(session)
                 interrupted = bool(session.get("_turn_cancel_requested"))
+                if transport.completion.get("code") == "free_tier_limit":
+                    meta["inflight_turn"] = dict(session.get("inflight_turn") or {})
+            meta.update({key: transport.completion[key]
+                         for key in ("free_tier", "continuation_required", "code", "retryable")
+                         if key in transport.completion})
             session_info = server._session_info(session.get("agent"), session)
+            session_info["runtime"] = server._runtime_model_config(session["agent"])
             with self._progress_lock:
                 self._progress_counter += 1
             self._reply(
@@ -281,6 +299,8 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         session = server._sessions.get(sid)
         if session is not None:
+            if session.get("running"):
+                return session  # a busy rejection cannot replace the active turn's transport
             session["transport"] = self._transport
             if frame.get("cols") is not None:
                 session["cols"] = int(frame.get("cols") or 80)
@@ -433,6 +453,7 @@ class ComputeHost:
                 messages = server._history_to_messages(list(session.get("history") or []))
                 ack = {"output": output, **_history_meta(session), "messages": messages}
         ack["session_info"] = server._session_info(session.get("agent"), session)
+        ack["session_info"]["runtime"] = server._runtime_model_config(session["agent"])
         return ack
 
     def _live_turns(self) -> list[concurrent.futures.Future]:

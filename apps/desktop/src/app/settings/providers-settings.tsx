@@ -12,7 +12,7 @@ import {
   ProviderRow,
   providerTitle,
   sortProviders
-} from '@/components/onboarding'
+} from '@/components/onboarding/providers'
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'

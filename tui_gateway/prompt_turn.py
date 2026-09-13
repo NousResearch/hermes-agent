@@ -375,6 +375,8 @@ def _run_post_turn_followups(
     prompt wins over every auto follow-up (drain it, skip the rest); a leftover /steer is
     requeued first so it isn't dropped; then goal continuation, then completion
     notifications.  Each nested submit re-checks ``running`` under the lock."""
+    if isinstance(result, dict) and result.get("refusal_reason") == "free_tier_limit":
+        return  # explicit recovery, never an automatic retry of a refused queue head
     steer = result.get("pending_steer") if isinstance(result, dict) else None
     if isinstance(steer, str) and steer.strip():
         with session["history_lock"]:
@@ -568,7 +570,7 @@ def _absorb_turn_result(
 ) -> str | None:
     """Stamp, restore /moa, commit history, re-sync the session key; returns the history warning."""
     result, agent = st.result, st.agent
-    if display_kind and isinstance(text, str):
+    if display_kind and isinstance(text, str) and not result.get("refusal_reason"):
         # Post-turn fallback stamp of a synthesized turn's display kind (DB row + result).
         db = getattr(agent, "_session_db", None)
         current_session_id = getattr(agent, "session_id", None) or session.get("session_key")
@@ -615,7 +617,7 @@ def _absorb_turn_result(
             session["model_override"] = _restore
     status_note = None
     if isinstance(result, dict):
-        if isinstance(result.get("messages"), list):
+        if isinstance(result.get("messages"), list) and not result.get("refusal_reason"):
             status_note = _commit_turn_history(session, result, st.history, st.history_version)
         # Auto-compression may have rotated agent.session_id: sync session_key before
         # title/goal/finalize use it, keep pending_title (user intent), restart the slash
@@ -632,6 +634,12 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     result, agent = st.result, st.agent
     raw, status, last_reasoning = _turn_outcome(result)
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+    if result.get("free_tier"):
+        payload["free_tier"] = result["free_tier"]
+        payload["continuation_required"] = bool(result.get("continuation_required"))
+    if result.get("refusal_reason") == "free_tier_limit":
+        payload["code"] = "free_tier_limit"
+        payload["retryable"] = True
     if last_reasoning:
         payload["reasoning"] = last_reasoning
     if status_note:
@@ -656,11 +664,15 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         except Exception:
             _error_surface = None
     error_value = result.get("error")
+    if result.get("refusal_reason") == "free_tier_limit":
+        _error_surface = {"layer": "runtime", "code": "free_tier_limit", "retryable": True}
     with session["history_lock"]:
+        if result.get("refusal_reason") == "free_tier_limit":
+            _append_inflight_delta(session, raw)
         if status == "error":
             # Retain the failed turn: resume's inflight payload is the only carrier of the
             # failure if this frame is lost to a disconnect.
-            _fail_inflight_turn(session, error_value, error_surface=_error_surface)
+            _fail_inflight_turn(session, raw if result.get("refusal_reason") else error_value, error_surface=_error_surface)
             st.error_retained = True
             st.error_detail = _turn_failure_detail(
                 error_value, result.get("failure_reason"), st.prompt_text)
@@ -791,7 +803,7 @@ def _reopen_routed_session_row(db, sid: str, session: dict) -> None:
 def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None,
+    queued_prompt_generation: int | None = None, queued_envelope: dict | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None) -> bool:
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
@@ -837,6 +849,13 @@ def _run_prompt_submit(
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
                 display_metadata, turn_author)
+            if queued_envelope is not None and st.result.get("refusal_reason") == "free_tier_limit":
+                # The shared counter may cross after queue claim but before core
+                # admission. Keep the exact envelope, including author/media/owner.
+                with session["history_lock"]:
+                    advanced = session.get("queued_prompt")
+                    _ac_set_queue(session, [queued_envelope, *([advanced] if advanced else []),
+                                            *(session.get("queued_prompts") or [])])
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)

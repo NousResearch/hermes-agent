@@ -6,6 +6,7 @@ import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgent
 import { clearClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting, setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
+import { continuationTarget, refreshContinuation } from '@/store/free-tier-continuation'
 import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
@@ -136,6 +137,16 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // which session is focused.
     const notice = event.payload as AgentNoticePayload | undefined
 
+    if (notice?.key === 'free_tier.limit') {
+      const target = continuationTarget(sessionId ?? null)
+
+      if (target && sessionId) {
+        void refreshContinuation(target)
+      }
+
+      return true
+    }
+
     showAgentNotice(notice)
 
     // The urgent pair (access paused / restored) also breaks through as a
@@ -193,7 +204,13 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       title: translateNow('notifications.native.turnErrorTitle')
     })
 
-    if (looksLikeProviderSetup) {
+    if (payload?.code === 'free_tier_limit') {
+      const target = continuationTarget(sessionId ?? null)
+
+      if (target && sessionId) {
+        void refreshContinuation(target)
+      }
+    } else if (looksLikeProviderSetup) {
       requestDesktopOnboarding(errorMessage)
     } else if (isDiskFullErrorMessage(errorMessage)) {
       notifyError(new Error(errorMessage), translateNow('notifications.errors.diskFull'))

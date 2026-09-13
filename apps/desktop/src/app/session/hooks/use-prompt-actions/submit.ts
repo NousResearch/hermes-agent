@@ -18,6 +18,7 @@ import {
   mainComposerScope,
   terminalContextBlocksFromDraft
 } from '@/store/composer'
+import { blockContinuationSend, continuationTarget, recordContinuationRefusal, refreshContinuation } from '@/store/free-tier-continuation'
 import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
@@ -32,6 +33,7 @@ import {
   touchSessionActivity
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import type { FreeTierStatus } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
@@ -484,6 +486,21 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         return false
       }
 
+      const continuationSessionId = (targetStoredSessionId ? getRuntimeIdForStoredSession(targetStoredSessionId) : null)
+        ?? sessionId ?? targetStoredSessionId
+
+      if (await blockContinuationSend(continuationSessionId)) {
+        releaseSubmitLock()
+
+        return false
+      }
+
+      if (sessionDriftReason()) {
+        releaseSubmitLock()
+
+        return false
+      }
+
       // Foreground-only state: a background queue drain must never write the
       // selected view's busy/awaiting flags or clear its notifications.
       if (targetIsCurrentView()) {
@@ -855,6 +872,23 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // "session busy" (4009). Don't surface an error bubble/toast — the entry
         // stays queued and the composer's bounded auto-drain retries when idle.
         if (options?.fromQueue && isSessionBusyError(err)) {
+          return false
+        }
+
+        const refusal = err as { code?: string; data?: { code?: string; reason?: string; free_tier?: FreeTierStatus } }
+
+        if (refusal?.code === 'free_tier_limit' || refusal?.data?.code === 'free_tier_limit' || refusal?.data?.reason === 'free_tier_limit') {
+          dropOptimistic(sessionId)
+          const target = continuationTarget(sessionId)
+
+          if (target) {
+            if (refusal.data?.free_tier) {
+              recordContinuationRefusal(target, refusal.data.free_tier)
+            }
+
+            void refreshContinuation(target)
+          }
+
           return false
         }
 

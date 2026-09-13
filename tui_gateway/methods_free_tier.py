@@ -28,15 +28,34 @@ def _(rid, params: dict) -> dict:
     A pure read. The identity is created by the boot bootstrap (``free_tier_bootstrap``), never as
     a side effect of a client polling this method (NS-845 Q1.2)."""
     try:
-        from hermes_cli import anon_auth
+        from hermes_cli import anon_auth, free_tier_usage
         has_guest = anon_auth.has_guest()
         enabled = anon_auth.guest_enabled()
+        state = free_tier_usage.status()
+        continuation_required = False
+        if params.get("session_id"):
+            session, err = _sess_nowait(params, rid)
+            if err:
+                return err
+            with _session_profile_runtime_scope(session):
+                state = free_tier_usage.status()
+                continuation_required = _free_tier_session_refusal(session) is not None
+        elif state["capped"] and (params.get("provider") or params.get("model")):
+            from types import SimpleNamespace
+            from agent.free_tier import refusal
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            # Only the capped new-chat recovery probe resolves credentials; ordinary
+            # identity polling remains local and never provisions an identity.
+            runtime = resolve_runtime_provider(requested=params.get("provider") or None,
+                                               target_model=params.get("model") or None)
+            continuation_required = refusal(SimpleNamespace(**runtime)) is not None
         return _ok(rid, {
             "has_guest": has_guest, "enabled": enabled, "available": has_guest and enabled,
             "notice_pending": bool(has_guest and enabled and anon_auth.guest_notice_pending()),
-            "model": anon_auth.GUEST_MODEL, "label": anon_auth.FREE_TIER_LABEL})
-    except Exception as e:
-        return _err(rid, 5090, str(e))
+            "model": anon_auth.GUEST_MODEL, "label": anon_auth.FREE_TIER_LABEL,
+            **state, "continuation_required": continuation_required})
+    except Exception:
+        return _err(rid, 5090, "Could not check free-tier continuation. Please retry.")
 
 
 @method("free_tier.provision")
@@ -75,6 +94,91 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"acked": bool(anon_auth.mark_guest_notice_shown())})
     except Exception as e:
         return _err(rid, 5091, str(e))
+
+
+def _free_tier_session_refusal(session):
+    from agent.free_tier import refusal
+    with _hermes_home_scope(_session_home(session)):
+        if session.get("_compute_host_active") or session.get("agent") is None:
+            from types import SimpleNamespace
+            from hermes_cli import free_tier_usage
+            if not free_tier_usage.status()["capped"]:
+                return None
+            runtime = _metadata_mirror(session).get("runtime")
+            if not isinstance(runtime, dict):
+                # A cold lazy session has no host mirror yet. Resolve the same
+                # selected route as construction, never construct a parent agent.
+                with _session_profile_runtime_scope(session):
+                    _, runtime = _resolve_agent_model_runtime(session.get("model_override"), None)
+            return refusal(SimpleNamespace(**runtime), session.get("history"))
+        return refusal(session["agent"], session.get("history"))
+
+
+def _sync_free_tier_notice(sid, session):
+    """Idle-only hydration/recovery; never display the gate in an active tool batch."""
+    if session.get("running"):
+        return
+    blocked = _free_tier_session_refusal(session)
+    if blocked:
+        _emit("notification.show", sid, {
+            "text": blocked["final_response"], "level": "warn", "kind": "sticky",
+            "key": "free_tier.limit", "id": "free_tier.limit", "ttl_ms": None})
+    else:
+        _emit("notification.clear", sid, {"key": "free_tier.limit"})
+
+
+def _settle_free_tier_sessions():
+    from agent.free_tier import rehome_after_sign_in
+    from hermes_cli.anon_auth import route_is_welcome_host
+    for sid, session in list(_sessions.items()):
+        agent = session.get("agent")
+        if agent is None or session.get("running"):
+            continue  # common admission rehomes active turns at the next boundary
+        with _hermes_home_scope(_session_home(session)):
+            if route_is_welcome_host(getattr(agent, "base_url", None)):
+                if rehome_after_sign_in(agent):
+                    session.pop("model_override", None)
+                    _persist_live_session_runtime(session)
+            _sync_free_tier_notice(sid, session)
+
+
+def _start_free_tier_login(sid, session):
+    """Render the canonical flow live, not into slash_worker's already-returned StringIO."""
+    from hermes_cli import anon_auth
+    with _sessions_lock:
+        prior = session.get("_free_tier_login_thread")
+        if prior is not None and prior.is_alive():
+            return anon_auth.UPGRADE_WAITING
+        home = _session_home(session)
+        transport = current_transport() or session.get("transport")
+
+        def run_login():
+            token = bind_transport(transport)
+            try:
+                for state in anon_auth.run_sign_in(
+                    timeout_seconds=8.0, scope=lambda: _hermes_home_scope(home),
+                    cancelled=lambda: bool(session.get("_closing"))):
+                    if isinstance(state, anon_auth.Waiting):
+                        continue
+                    text = (f"{state.link}\n{state.code}\n{state.copy_with_wait}"
+                            if isinstance(state, anon_auth.Code) else state.copy)
+                    if isinstance(state, anon_auth.Completed):
+                        _settle_free_tier_sessions()
+                    _emit("notification.show", sid, {"text": text, "level": "info", "kind": "sticky",
+                          "key": "free_tier.login", "id": "free_tier.login", "ttl_ms": None})
+                    if state.terminal:
+                        break
+            except Exception:
+                logger.exception("Live sign-in failed")
+                _emit("notification.show", sid, {"text": anon_auth.UPGRADE_NOT_COMPLETED,
+                      "level": "warn", "kind": "sticky", "key": "free_tier.login", "id": "free_tier.login"})
+            finally:
+                reset_transport(token)
+
+        thread = threading.Thread(target=run_login, daemon=True, name="tui-sign-in")
+        session["_free_tier_login_thread"] = thread
+        thread.start()
+    return anon_auth.LOGIN_STARTING
 
 
 def register(server) -> None:

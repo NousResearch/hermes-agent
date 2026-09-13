@@ -217,6 +217,8 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     """Answer a slash command from the live session instead of the slash worker; None = not ours."""
     name = (name or "").lstrip("/").lower()
     arg = arg or ""
+    if name == "login":
+        return _start_free_tier_login(sid, session or {})
     if name == "model" and not arg.strip():
         return _format_live_model_output(session or {})
     if name in _ISOLATED_SESSION_READ_COMMANDS and not (session is not None and _session_uses_compute_host(session)):

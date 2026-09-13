@@ -143,6 +143,8 @@ class SessionState:
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    pending_prompt: Any = None  # original ACP blocks; never inserted into history on refusal
+    refresh_runtime: bool = False
 
 
 class SessionManager:

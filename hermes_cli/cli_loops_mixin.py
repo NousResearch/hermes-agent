@@ -377,6 +377,8 @@ class CLILoopsMixin:
                             or not self._pending_input.empty())
                         if busy:
                             continue
+                        if ((getattr(self, "_last_turn_result", None) or {}).get("free_tier") or {}).get("capped"):
+                            continue
                         prompt = mgr.due_prompt()
                         if prompt:
                             self._pending_input.put(prompt)
@@ -392,6 +394,8 @@ class CLILoopsMixin:
         loop resumes WITHOUT waiting for an unrelated turn to re-evaluate it. The barrier used to be
         checked only lazily, on the next turn; a session with nothing else arriving stayed parked
         indefinitely (one run: 3 h 22 min on a grandchild's poller)."""
+        if ((getattr(self, "_last_turn_result", None) or {}).get("free_tier") or {}).get("capped"):
+            return
         now = time.time()
         if now - getattr(self, "_last_goal_barrier_check", 0.0) < 5.0:
             return
@@ -423,6 +427,8 @@ class CLILoopsMixin:
         judge-driven continuations own it; the loop defers to the next poll.
         """
         from cli import _DIM, _RST, _cprint
+        if ((getattr(self, "_last_turn_result", None) or {}).get("free_tier") or {}).get("capped"):
+            return
         mgr = self._get_loop_manager()
         if mgr is None or not mgr.is_due():
             return
@@ -493,6 +499,8 @@ class CLILoopsMixin:
         and schedules the next tick. Mirrors _maybe_continue_goal_after_turn's shape.
         """
         from cli import _DIM, _RST, _cprint
+        if ((getattr(self, "_last_turn_result", None) or {}).get("free_tier") or {}).get("capped"):
+            return
         mgr = self._get_loop_manager()
         if mgr is None:
             return
@@ -523,6 +531,8 @@ class CLILoopsMixin:
         "continue" and would re-queue exactly what was cancelled; pausing is recoverable
         via ``/goal resume``. Empty-response skip mirrors ``gateway/run.py``."""
         from cli import _DIM, _RST, _cprint, _looks_like_slash_command
+        if ((getattr(self, "_last_turn_result", None) or {}).get("free_tier") or {}).get("capped"):
+            return
         mgr = self._get_goal_manager()
         if mgr is None or not mgr.is_active():
             return

@@ -1,3 +1,5 @@
+import { JsonRpcGatewayError } from './json-rpc-error.js'
+
 export type GatewayEventName =
   | 'gateway.ready'
   | 'session.info'
@@ -50,19 +52,6 @@ export interface JsonRpcFrame {
   method?: string
   params?: GatewayEvent
   result?: unknown
-}
-
-/** JSON-RPC error with optional structured `data` from the gateway. */
-export class JsonRpcGatewayError extends Error {
-  readonly code?: number
-  readonly data?: unknown
-
-  constructor(message: string, options?: { code?: number; data?: unknown }) {
-    super(message)
-    this.name = 'JsonRpcGatewayError'
-    this.code = options?.code
-    this.data = options?.data
-  }
 }
 
 export type WebSocketLike = WebSocket

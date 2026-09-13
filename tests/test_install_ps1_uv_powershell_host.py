@@ -47,7 +47,13 @@ def test_astral_uv_installer_invoked_via_resolved_host_variable(source: str):
 
     i.e. ``& $psHostExe -ExecutionPolicy ... irm https://astral.sh/uv...``
     rather than naming a fixed executable.
+
+    #103291 allows an in-process runspace instead: no nested host process
+    at all (AppLocker blocks nested powershell spawns).
     """
+    if "function Invoke-UvInstallerSource" in source and "astral.sh/uv/install.ps1" in source:
+        assert "[powershell]::Create()" in source, "runspace helper must use [powershell]::Create()"
+        return
     lines = [ln for ln in source.splitlines() if "astral.sh/uv/install.ps1 | iex" in ln]
     # Exactly one invocation line carries the astral installer.
     invocation = [ln for ln in lines if "irm https://astral.sh/uv/install.ps1 | iex" in ln]
@@ -61,7 +67,14 @@ def test_astral_uv_installer_invoked_via_resolved_host_variable(source: str):
 
 
 def test_powershell_host_resolver_is_defined_and_portable(source: str):
-    """A host-resolver helper must exist and be PATH-independent + pwsh-aware."""
+    """A host-resolver helper must exist and be PATH-independent + pwsh-aware.
+
+    #103291 alternative: in-process runspace spawns no child process, so no
+    host-exe resolver is needed.
+    """
+    if "function Invoke-UvInstallerSource" in source:
+        assert "[powershell]::Create()" in source, "runspace helper must use [powershell]::Create()"
+        return
     assert "function Get-PowerShellHostExe" in source, (
         "expected a Get-PowerShellHostExe helper that resolves the host exe"
     )

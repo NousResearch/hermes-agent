@@ -69,6 +69,9 @@ def test_astral_installer_output_not_swallowed_by_out_null(source: str):
 
 def test_astral_installer_output_is_captured(source: str):
     body = _install_uv_body(source)
+    # #103291: runspace path captures via return value into $installerOutput.
+    if "Invoke-UvInstallerSource" in body and "$installerOutput" in body:
+        return
     astral_lines = [
         ln
         for ln in body.splitlines()

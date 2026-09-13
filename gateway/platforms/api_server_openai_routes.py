@@ -958,40 +958,19 @@ class OpenAICompatRoutesMixin:
     def _build_response_conversation_history(
         conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any],
         final_response: Any) -> List[Dict[str, Any]]:
-        """Build the stored Responses transcript without duplicating history.
+        from gateway.response_turn_boundary import build_response_conversation_history
 
-        A compressed transcript (``result["_compressed"]``) shares no input-history prefix, so
-        turn-start detection fails; prepending the uncompressed history would bloat the stored
-        context and re-trigger compression every request — it is stored as-is instead.
-        """
-        from gateway.platforms.api_server import APIServerAdapter
-        prior = list(conversation_history)
-        current_user = {"role": "user", "content": user_message}
-        agent_messages = result.get("messages") if isinstance(result, dict) else None
-        if isinstance(agent_messages, list) and agent_messages:
-            turn_start = APIServerAdapter._response_messages_turn_start_index(
-                conversation_history, user_message, result)
-            # turn_start == 0: compression rewrote the transcript or agent_messages is turn-only.
-            if turn_start or result.get("_compressed"):
-                return list(agent_messages)
-            return prior + [current_user] + agent_messages
-        return prior + [current_user, {"role": "assistant", "content": final_response}]
+        return build_response_conversation_history(
+            conversation_history, user_message, result, final_response
+        )
 
     @staticmethod
     def _response_messages_turn_start_index(
         conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any],
     ) -> int:
-        """Detect transcript-shaped result["messages"] and return turn start."""
-        agent_messages = result.get("messages") if isinstance(result, dict) else None
-        if not isinstance(agent_messages, list) or not agent_messages:
-            return 0
-        prior = list(conversation_history)
-        expected_prefix = prior + [{"role": "user", "content": user_message}]
-        if agent_messages[:len(expected_prefix)] == expected_prefix:
-            return len(expected_prefix)
-        if prior and agent_messages[:len(prior)] == prior:
-            return len(prior)
-        return 0
+        from gateway.response_turn_boundary import response_messages_turn_start_index
+
+        return response_messages_turn_start_index(conversation_history, user_message, result)
 
     @classmethod
     def _turn_transcript_messages(

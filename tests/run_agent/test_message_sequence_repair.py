@@ -57,6 +57,66 @@ def test_repair_merges_consecutive_user_messages():
     assert messages[0]["content"] == "first\n\nsecond"
 
 
+def test_repair_reanchors_current_turn_when_merged_into_previous_user():
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "same ask"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "unfinished redirect"},
+        {"role": "user", "content": "same ask"},
+    ]
+    agent._persist_user_message_idx = 3
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert messages[2]["content"] == "unfinished redirect\n\nsame ask"
+    assert agent._persist_user_message_idx == 2
+
+
+def test_repair_reanchors_current_turn_across_three_consecutive_users():
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "first redirect"},
+        {"role": "user", "content": "second redirect"},
+        {"role": "user", "content": "current ask"},
+    ]
+    agent._persist_user_message_idx = 2
+
+    assert AIAgent._repair_message_sequence(agent, messages) == 2
+    assert messages == [
+        {
+            "role": "user",
+            "content": "first redirect\n\nsecond redirect\n\ncurrent ask",
+        }
+    ]
+    assert agent._persist_user_message_idx == 0
+
+
+def test_ghost_filter_rebuild_preserves_current_turn_before_pass2_merge():
+    from agent.agent_runtime_helpers import preserve_current_turn_user_idx
+
+    agent = _bare_agent()
+    current = {"role": "user", "content": "same ask"}
+    before = [
+        {"role": "user", "content": "same ask"},
+        {"role": "assistant", "display_kind": "hidden", "content": "ghost"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "unfinished redirect"},
+        current,
+        {"role": "assistant", "content": "current result"},
+    ]
+    after = [message for message in before if message.get("content") != "ghost"]
+    agent._persist_user_message_idx = 4
+
+    preserve_current_turn_user_idx(agent, before, after)
+    assert agent._persist_user_message_idx == 3
+
+    AIAgent._repair_message_sequence(agent, after)
+    assert agent._persist_user_message_idx == 2
+    assert after[2]["content"] == "unfinished redirect\n\nsame ask"
+
+
 def test_repair_preserves_user_content_when_one_side_empty():
     agent = _bare_agent()
     messages = [

@@ -279,6 +279,28 @@ export const requestComposerAttachImages = (
 export const onComposerAttachImagesRequest = (handler: (detail: AttachImagesDetail) => void) =>
   subscribe<AttachImagesDetail>(ATTACH_IMAGES_EVENT, handler)
 
+interface AttachPathsDetail {
+  /** Absolute paths on THIS machine (decoded from pasted file:// URLs). */
+  paths: string[]
+  target: ComposerTarget
+}
+
+const ATTACH_PATHS_EVENT = 'hermes:composer-attach-paths'
+
+/** Attach local files by absolute path to a composer — the paste twin of
+ *  {@link requestComposerAttachImages}. Pasting a file copied from the OS file
+ *  manager surfaces only a file:// URL string, so the window dispatcher
+ *  (paste-to-focus) decodes it and hands the path over here; the composer
+ *  routes it through the same upload/staging pipeline as an OS drop. */
+export const requestComposerAttachPaths = (paths: string[], { target = 'active' }: { target?: ComposerTarget | 'active' } = {}) => {
+  if (paths.length) {
+    dispatch<AttachPathsDetail>(ATTACH_PATHS_EVENT, { paths, target: resolve(target) })
+  }
+}
+
+export const onComposerAttachPathsRequest = (handler: (detail: AttachPathsDetail) => void) =>
+  subscribe<AttachPathsDetail>(ATTACH_PATHS_EVENT, handler)
+
 /** Insert typed ref chips (carrying a display label) into a composer — the
  * structured cousin of {@link requestComposerInsert}, used for session links. */
 export const requestComposerInsertRefs = (

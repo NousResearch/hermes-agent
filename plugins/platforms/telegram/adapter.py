@@ -142,7 +142,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, classify_send_error,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
@@ -3797,30 +3797,24 @@ class TelegramAdapter(BasePlatformAdapter):
     def _ea_escape(self, text: str) -> str:
         return _html.escape(text)
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
-        """Send an inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
+    _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
         text ``/approve`` flow."""
         def build():
-            text = self._format_exec_approval(command, description, smart_denied)
             # Short monotonic ids in callback_data map back to session_key.
             import itertools
             if not hasattr(self, "_approval_counter"):
                 self._approval_counter = itertools.count(1)
             approval_id = next(self._approval_counter)
-            buttons = [InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}")]
-            if not smart_denied and allow_session:
-                buttons.append(InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"))
-                if allow_permanent:
-                    buttons.append(InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"))
-            buttons.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
-            return text, InlineKeyboardMarkup(
-                self._rows_of_two(buttons)), lambda msg: self._approval_state.__setitem__(approval_id, session_key)
+            buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
+                       for label, choice, _ in prompt.actions]
+            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
+                lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
         return await self._send_prompt(
-            "send_exec_approval", chat_id, metadata, build, parse_mode=ParseMode.HTML,
-            thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
+            "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
+            thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,

@@ -83,7 +83,7 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
@@ -1646,35 +1646,24 @@ class FeishuAdapter(BasePlatformAdapter):
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_CMD_BUDGET = 3000
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
-    ) -> SendResult:
+    _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
+    _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Approval-button card; ``hermes_action`` in each button value lets the click callback
         route to ``resolve_gateway_approval()`` and unblock the waiting agent thread."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
-
         try:
             approval_id = next(self._approval_counter)
-
-            def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
-                return _card_button(label, btn_type, {"hermes_action": action_name, "approval_id": approval_id})
-
-            actions = [_btn("✅ Allow Once", "approve_once", "primary")]
-            if not smart_denied and allow_session:
-                actions.append(_btn("✅ Session", "approve_session"))
-                if allow_permanent:
-                    actions.append(_btn("✅ Always", "approve_always"))
-            actions.append(_btn("❌ Deny", "deny", "danger"))
-            card = _card(
-                "⚠️ Command Approval Required", "orange",
-                self._format_exec_approval(command, description, smart_denied), actions=actions,
-            )
+            actions = [
+                _card_button(label, style or "default",
+                             {"hermes_action": self._EA_CARD_ACTIONS[choice], "approval_id": approval_id})
+                for label, choice, style in prompt.actions]
+            card = _card("⚠️ Command Approval Required", "orange", prompt.text, actions=actions)
             return await self._send_interactive_card(
-                chat_id, card, metadata, "send_exec_approval failed",
-                state_map=self._approval_state, state_id=approval_id, session_key=session_key,
+                prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
+                state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
             )
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)

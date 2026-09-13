@@ -39,7 +39,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import _OPTIN_TRUTHY, WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.media_cache import ext_for_mime
@@ -468,22 +468,19 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             interactive = {"type": "list", "body": {"text": body_text}, "action": {"button": "Choose", "sections": [{"title": "Options", "rows": rows}]}}
         return await self._send_interactive(chat_id, interactive, metadata, self._clarify_state, clarify_id, session_key)
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True,
-        allow_session: bool = True, smart_denied: bool = False,
-    ) -> SendResult:
-        """Approve / Deny buttons; a tap resolves via ``tools.approval.resolve_gateway_approval``."""
-        del allow_permanent, allow_session  # This adapter already offers one-shot Approve / Deny only.
-        # Body caps at 1024; reserve room for the framing prose.
-        cmd_preview = (command or "")[:800] + ("..." if len(command or "") > 800 else "")
-        body_text = self._truncate_body(
-            f"⚠️ *Command Approval Required*\n\n```\n{cmd_preview}\n```\n\nReason: {description}"
-            + ("\n\nSmart DENY: owner override applies to this one operation only." if smart_denied else "")
-        )
+    _EA_HEADER = "⚠️ *Command Approval Required*\n\n"
+    _EA_CODE_CLOSE = "\n```\n\n"
+    _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Approve / Deny buttons only (a 3-button cap leaves no room for the session/always
+        tiers); a tap resolves via ``tools.approval.resolve_gateway_approval``."""
         approval_id = uuid.uuid4().hex[:12]
-        interactive = self._button_interactive(body_text, (f"appr:{approval_id}:approve", "✅ Approve"), (f"appr:{approval_id}:deny", "❌ Deny"))
-        return await self._send_interactive(chat_id, interactive, metadata, self._exec_approval_state, approval_id, session_key)
+        interactive = self._button_interactive(
+            self._truncate_body(prompt.text),
+            (f"appr:{approval_id}:approve", "✅ Approve"), (f"appr:{approval_id}:deny", "❌ Deny"))
+        return await self._send_interactive(
+            prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id, prompt.session_key)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str, metadata: Optional[Dict[str, Any]] = None,

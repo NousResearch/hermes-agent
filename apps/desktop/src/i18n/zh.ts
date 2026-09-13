@@ -3234,6 +3234,7 @@ export const zh = defineLocale({
       noChanges: '没有更改',
       notRepo: '不是 Git 仓库',
       noDiff: '没有可显示的差异',
+      noDiffFolder: '空文件夹，或独立的 git 仓库',
       scopeUncommitted: '未提交',
       scopeBranch: '分支',
       scopeLastTurn: '上一轮',

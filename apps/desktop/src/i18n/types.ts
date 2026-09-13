@@ -2652,6 +2652,7 @@ export interface Translations {
       noChanges: string
       notRepo: string
       noDiff: string
+      noDiffFolder: string
       scopeUncommitted: string
       scopeBranch: string
       scopeLastTurn: string

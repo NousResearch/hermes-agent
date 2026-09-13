@@ -2609,6 +2609,7 @@ export const ja = defineLocale({
       noChanges: '変更なし',
       notRepo: 'Git リポジトリではありません',
       noDiff: '表示する差分がありません',
+      noDiffFolder: '空のフォルダ、または別の git リポジトリです',
       scopeUncommitted: '未コミット',
       scopeBranch: 'ブランチ',
       scopeLastTurn: '前のターン',

@@ -19,6 +19,15 @@ function powerShellCommand(script) {
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedPowerShell(script)}`
 }
 
+function powerShellBufferedStdinCommand() {
+  // PowerShell's `-Command -` reads stdin interactively and does not reliably
+  // preserve multiline here-strings. Use a short encoded bootstrap that reads
+  // the full generated script before compiling it as one script block.
+  return powerShellCommand(
+    '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$payload=[Console]::In.ReadToEnd();$script=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload));& ([scriptblock]::Create($script))'
+  )
+}
+
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
@@ -28,8 +37,7 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     'if([string]::IsNullOrWhiteSpace($candidate)){return}',
     '$current=[IO.Path]::GetFullPath($candidate);$first=$true',
     'while($true){',
-    'try{$item=Get-Item -LiteralPath $current -Force -ErrorAction Stop}',
-    'catch [Management.Automation.ItemNotFoundException]{if(-not $allowMissing -and $first){throw "Path was not found: $candidate"};$parent=[IO.Path]::GetDirectoryName($current);if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false;continue}',
+    'try{$item=Get-Item -LiteralPath $current -Force -ErrorAction Stop} catch [Management.Automation.ItemNotFoundException]{if(-not $allowMissing -and $first){throw "Path was not found: $candidate"};$parent=[IO.Path]::GetDirectoryName($current);if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false;continue}',
     'if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw "Path contains a link or reparse point: $current"}',
     '$parent=$item.Parent.FullName;if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false',
     '}',
@@ -65,10 +73,16 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join(';')
 
-  return JSON.parse((await ssh.exec(powerShellCommand(script))).trim())
+  return JSON.parse(
+    (
+      await ssh.exec(powerShellBufferedStdinCommand(), {
+        stdinData: Buffer.from(script, 'utf8').toString('base64')
+      })
+    ).trim()
+  )
 }
 
-function windowsUpdateMarkerProbeCommand(hermesHome) {
+function windowsUpdateMarkerProbeScript(hermesHome) {
   const script = [
     '$ErrorActionPreference="Stop"',
     `Add-Type -TypeDefinition @'
@@ -91,15 +105,14 @@ public static class HermesMarkerNoFollow {
     'if([string]::IsNullOrWhiteSpace($candidate)){return}',
     '$current=[IO.Path]::GetFullPath($candidate);$first=$true',
     'while($true){',
-    'try{$item=Get-Item -LiteralPath $current -Force -ErrorAction Stop}',
-    'catch [Management.Automation.ItemNotFoundException]{if(-not $allowMissing -and $first){throw "Path was not found: $candidate"};$parent=[IO.Path]::GetDirectoryName($current);if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false;continue}',
+    'try{$item=Get-Item -LiteralPath $current -Force -ErrorAction Stop} catch [Management.Automation.ItemNotFoundException]{if(-not $allowMissing -and $first){throw "Path was not found: $candidate"};$parent=[IO.Path]::GetDirectoryName($current);if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false;continue}',
     'if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw "Path contains a link or reparse point: $current"}',
     '$parent=$item.Parent.FullName;if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false',
     '}',
     '}',
-    `$home=${psLiteral(hermesHome)}`,
-    '$installRoot=$home',
-    '$parent=Split-Path -Parent $home',
+    `$hermesRoot=${psLiteral(hermesHome)}`,
+    '$installRoot=$hermesRoot',
+    '$parent=Split-Path -Parent $hermesRoot',
     'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',
     '$marker=Join-Path $installRoot ".hermes-update-in-progress"',
     '$result="UNCERTAIN"',
@@ -124,12 +137,11 @@ public static class HermesMarkerNoFollow {
     'try{if($process.HasExited){$result="CLEAR"}else{$result="LIVE:"+[string]$ownerPid}}finally{$process.Dispose()}',
     '}catch [ArgumentException]{$result="CLEAR"} catch{$result="UNCERTAIN"}',
     '}',
-    '}',
-    '}}catch [IO.FileNotFoundException]{$result="CLEAR"}catch{$result="UNCERTAIN"}finally{if($memory){$memory.Dispose()};if($stream){$stream.Dispose()}}',
+    '}}}catch [IO.FileNotFoundException]{$result="CLEAR"}catch{$result="UNCERTAIN"}finally{if($memory){$memory.Dispose()};if($stream){$stream.Dispose()}}',
     'Write-Output $result'
   ].join(';')
 
-  return powerShellCommand(script)
+  return script
 }
 
 /**
@@ -141,8 +153,13 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
   let observation = ''
 
   try {
+    const markerScript = windowsUpdateMarkerProbeScript(hermesHome)
     observation =
-      String(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome)))
+      String(
+        await ssh.exec(powerShellBufferedStdinCommand(), {
+          stdinData: Buffer.from(markerScript, 'utf8').toString('base64')
+        })
+      )
         .replace(/^\uFEFF/, '')
         .trim()
         .split(/\r?\n/)
@@ -252,9 +269,12 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
 
   const script = [
     '$ErrorActionPreference="Stop"',
-    `$home=${psLiteral(runtime.hermesHome)}`,
-    '$installRoot=$home',
-    '$parent=Split-Path -Parent $home',
+    '$ProgressPreference="SilentlyContinue"',
+    '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)',
+    '$OutputEncoding=[Text.UTF8Encoding]::new($false)',
+    `$hermesRoot=${psLiteral(runtime.hermesHome)}`,
+    '$installRoot=$hermesRoot',
+    '$parent=Split-Path -Parent $hermesRoot',
     'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',
     '$marker=Join-Path $installRoot ".hermes-update-in-progress"',
     '$mutexPath=$marker+".mutex"',
@@ -277,7 +297,7 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
       : '  if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}',
     reservation.ownershipId
       ? `  $spawned=$spawnLines[-1]|ConvertFrom-Json; $lock=[ordered]@{schemaVersion=2;protocolVersion=1;ownershipId=${psLiteral(reservation.ownershipId)};spawnNonce=${psLiteral(reservation.spawnNonce)};pid=[int]$spawned.pid;creationTimeNs=[string]$spawned.creationTimeNs;port=0;profile=${psLiteral(reservation.profile)};hermesPath=${psLiteral(reservation.hermesPath)};hermesHome=${psLiteral(reservation.hermesHome)};tokenFingerprint=${psLiteral(reservation.tokenFingerprint)};startedAt=${psLiteral(reservation.startedAt)}}|ConvertTo-Json -Compress; ` +
-        `  & ${helper('write-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)} $lock|Out-Null; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; $spawnLines|Write-Output`
+        `  $lock|& ${helper('write-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)}|Out-Null; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; $spawnLines|Write-Output`
       : '',
     '  if([IO.File]::Exists($marker)){throw "remote update marker claimed during backend spawn"}',
     '}finally{try{$mutex.Unlock(0,1)}catch{};$mutex.Dispose()}'

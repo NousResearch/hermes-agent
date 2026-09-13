@@ -800,10 +800,16 @@ def classify_destination(
     remote policy.  Missing or malformed endpoint data is unknown.
     """
 
-    del provider  # Provider labels are not a security boundary.
+    normalized_provider = str(provider or "").strip().lower()
     mode = str(api_mode or "").strip().lower()
     if mode in _LOCAL_PROCESS_MODES:
         return DestinationClass.LOCAL_PROCESS
+    # ACP is a trusted subprocess transport, not an HTTP endpoint. Keep this
+    # narrow to the built-in provider and its declared wire mode; arbitrary
+    # ``acp://`` values remain unknown rather than gaining local trust.
+    if normalized_provider == "copilot-acp" and mode == "chat_completions":
+        if isinstance(base_url, str) and base_url.strip().lower().startswith("acp://"):
+            return DestinationClass.LOCAL_PROCESS
     if not isinstance(base_url, str) or not base_url.strip():
         return DestinationClass.UNKNOWN
     try:

@@ -151,6 +151,11 @@ def test_destination_classification_does_not_trust_dns_or_provider_name():
     assert classify_destination("custom", "http://100.64.0.1:8000", None) == DestinationClass.REMOTE
 
 
+def test_copilot_acp_subprocess_is_local_process():
+    assert classify_destination("copilot-acp", "acp://copilot", "chat_completions") == DestinationClass.LOCAL_PROCESS
+    assert classify_destination("custom", "acp://copilot", "chat_completions") == DestinationClass.UNKNOWN
+
+
 @pytest.mark.parametrize(
     "url",
     [

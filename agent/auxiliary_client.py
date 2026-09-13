@@ -4499,6 +4499,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     from openai import AsyncOpenAI
     if isinstance(sync_client, AsyncOpenAI):
         return sync_client, model
+    if isinstance(sync_client, (
+        AsyncCodexAuxiliaryClient,
+        AsyncAnthropicAuxiliaryClient,
+        AsyncBedrockAuxiliaryClient,
+    )):
+        return sync_client, model
     if isinstance(sync_client, _AuxProbeClientStub):
         return sync_client, model
     if isinstance(sync_client, CodexAuxiliaryClient):
@@ -4509,6 +4515,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncBedrockAuxiliaryClient(sync_client), model
     with contextlib.suppress(ImportError):
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
+        if isinstance(sync_client, AsyncGeminiNativeClient):
+            return sync_client, model
         if isinstance(sync_client, GeminiNativeClient):
             return AsyncGeminiNativeClient(sync_client), model
     # ACP shims (subprocess, not an HTTP pool) are already async-safe and opt out of the wrapper.
@@ -7276,7 +7284,20 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         # their turn), then discovery where the selection policy allows it.
         for _pass in range(2):
             _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
-            fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
+            try:
+                fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
+            except Exception as fallback_error:
+                from agent.llm_egress_firewall import EgressBlocked
+                if not isinstance(fallback_error, EgressBlocked):
+                    raise
+                # A capacity fallback may itself be remote. Reuse the
+                # local-only scanner so a blocked candidate cannot abort
+                # before a later trusted loopback/process candidate is tried.
+                from agent.auxiliary_egress_recovery import local_fallback_steps
+                local_resp = yield from local_fallback_steps(route, _LadderStep)
+                if local_resp is not None:
+                    return local_resp
+                break
             if fb_resp is not None:
                 return fb_resp
             if _pass == 0:

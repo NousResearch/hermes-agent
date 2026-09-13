@@ -40,6 +40,8 @@ hermes profile create mybot
 
 Creates a fresh profile with bundled skills seeded. Run `mybot setup` to configure API keys, model, and gateway tokens.
 
+The name `main` is reserved for the default profile's session namespace. Existing profiles named `main` remain usable and can be renamed to a different name.
+
 If you plan to use this profile as a kanban worker (or want the kanban orchestrator to route work to it), pass `--description "<role>"` at create time so the orchestrator knows what it's good at:
 
 ```bash

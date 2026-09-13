@@ -744,7 +744,7 @@ The short version:
 - The manifest format is YAML with a tiny required schema (`name` only).
 - The installer uses your local `git` binary for cloning, so any auth your shell already handles (SSH keys, credential helpers) works transparently.
 - After clone, `.git/` is stripped — the installed profile isn't itself a git checkout, avoiding "oh my, I accidentally committed my `.env` to the distribution's git history" traps.
-- Reserved profile names (`hermes`, `test`, `tmp`, `root`, `sudo`) are rejected at install time to avoid collisions with common binaries.
+- Reserved profile names (`hermes`, `test`, `tmp`, `root`, `sudo`) are rejected at install time to avoid collisions with common binaries. `main` is reserved for new profiles; existing `main` profiles can still be updated.
 
 ## See also
 

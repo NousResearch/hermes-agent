@@ -116,9 +116,8 @@ _DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
     "plugins", "memories", "knowledge", "preferences",
 })
 
-# Names that cannot be used as profile aliases or as new-profile names.
-# "main" would collide with the default profile's agent:main session namespace.
-_RESERVED_NAMES = frozenset({"hermes", "default", "main", "test", "tmp", "root", "sudo"})
+# Names that cannot be used as profile aliases
+_RESERVED_NAMES = frozenset({"hermes", "default", "test", "tmp", "root", "sudo"})
 
 # Hermes subcommands that cannot be used as profile names/aliases
 _HERMES_SUBCOMMANDS = frozenset({
@@ -219,6 +218,15 @@ def _canon_valid(name: str) -> str:
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
     return canon
+
+
+def _validate_new_profile_target(canon: str) -> None:
+    """Reserve the historical default namespace without locking out legacy profiles."""
+    if canon == "main":
+        raise ValueError(
+            "Profile name 'main' is reserved for the default profile's session namespace. "
+            "Choose a different name."
+        )
 
 
 def _existing_profile_dir(name: str) -> Tuple[str, Path]:
@@ -819,11 +827,9 @@ def create_profile(
             "(cloning explicitly copies skills from the source profile)."
         )
     canon = _canon_valid(name)
-    if canon in _RESERVED_NAMES:
-        raise ValueError(
-            f"Cannot create a profile named {canon!r} — it is reserved. "
-            f"Reserved names: {', '.join(sorted(_RESERVED_NAMES))}."
-        )
+    _validate_new_profile_target(canon)
+    if canon == "default":
+        raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists() and named_profile_is_deleted(profile_dir):
         # Empty shells left by post-delete mkdir may be replaced. Identity files mean the
@@ -1569,6 +1575,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     # Default-profile archives have "default/" at top level; importing as "default" would
     # target ~/.hermes itself.
     canon = _canon_valid(inferred_name)
+    _validate_new_profile_target(canon)
     if canon == "default":
         raise ValueError(
             "Cannot import as 'default' — that is the built-in root profile (~/.hermes). "
@@ -1657,6 +1664,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         print(f"✓ Display name set: {cleaned} (canonical id remains 'default')")
         return _get_default_hermes_home()
     new_canon = _canon_valid(new_name)
+    _validate_new_profile_target(new_canon)
     if new_canon == "default":
         raise ValueError("Cannot rename to 'default' — it is reserved.")
     old_dir = get_profile_dir(old_canon)

@@ -1,6 +1,14 @@
 """Adapters for turning runtime observations into neural events."""
 
 from neural.events import NeuralEvent
+from neural.perception.cells import (
+    ConversationCell,
+    EnvironmentCell,
+    ErrorCell,
+    SensoryCell,
+    TaskCell,
+    TerminalCell,
+)
 
 
 def observe(source: str, event_type: str, payload=None, *, importance=0.5, confidence=1.0) -> NeuralEvent:
@@ -14,4 +22,13 @@ def observe(source: str, event_type: str, payload=None, *, importance=0.5, confi
     )
 
 
-__all__ = ["observe", "NeuralEvent"]
+__all__ = [
+    "observe",
+    "NeuralEvent",
+    "SensoryCell",
+    "ConversationCell",
+    "TaskCell",
+    "TerminalCell",
+    "ErrorCell",
+    "EnvironmentCell",
+]

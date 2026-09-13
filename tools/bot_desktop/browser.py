@@ -3,7 +3,10 @@
 The agent drives Chromium through agent-browser; a human who takes over clicks the dock's Browser
 icon. Both must be THE SAME browser — same binary, same ``--user-data-dir`` — or the human logs in
 to a jar the bot never sees. Chromium's singleton makes a second launch on the same user-data-dir
-open a window in the running instance, which is exactly the hand-over we want.
+open a window in the running instance, which is exactly the hand-over we want — in ONE direction. When the
+human's dock instance is already up, agent-browser's own launch is forwarded to it and dies without a
+DevTools endpoint, so the dock exposes a debugging port and the agent ATTACHES to it (see
+:func:`running_instance_cdp_port`) instead of launching.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ from __future__ import annotations
 import glob
 import os
 import shutil
+import socket
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -47,6 +51,65 @@ def dock_launch() -> Optional[Tuple[str, str]]:
     """``(executable, user_data_dir)`` for the dock's Browser icon, or ``None`` when no Chromium exists."""
     exe = executable()
     return (exe, str(profile_dir())) if exe else None
+
+
+def dock_command(exe: str, user_data_dir: str) -> str:
+    """Shell line the dock's Browser icon runs. ``--remote-debugging-port=0`` makes a human-started
+    instance attachable (Chromium writes the chosen port to ``<user-data-dir>/DevToolsActivePort``);
+    first-run / default-browser dialogs would sit between the human and the bot's tabs."""
+    return f"{exe} --user-data-dir={user_data_dir} --remote-debugging-port=0 --no-first-run --no-default-browser-check"
+
+
+def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[str] = None) -> Optional[int]:
+    """DevTools port of a Chromium currently running on ``user_data_dir``, or ``None``.
+
+    Both files outlive a crashed or closed Chromium: ``SingletonLock`` is a symlink to ``host-pid`` and
+    ``DevToolsActivePort`` keeps the last port, so the pid must be alive AND the port must accept a
+    connection before it is trusted. An instance agent-browser launched for ``exclude_session`` itself is
+    reported as ``None``: its daemon already owns that browser, and handing it ``--cdp`` would make it
+    close the browser as a config change and then attach to the port that just died with it.
+    """
+    try:
+        with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
+            port_line = fh.readline().strip()
+        target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
+    except OSError:
+        return None
+    _host, _, pid_text = target.rpartition("-")
+    if not (port_line.isdigit() and pid_text.isdigit()) or not _pid_alive(int(pid_text)):
+        return None
+    if exclude_session and _launched_by_session(int(pid_text)) == exclude_session:
+        return None
+    port = int(port_line)
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            pass
+    except OSError:
+        return None
+    return port
+
+
+def _launched_by_session(chromium_pid: int) -> Optional[str]:
+    """``AGENT_BROWSER_SESSION`` of the agent-browser daemon that spawned ``chromium_pid``, or ``None``
+    for a human-started (dock) instance. Chromium itself gets a scrubbed environment, so the daemon's
+    ``/proc/<ppid>/environ`` is the marker (Linux-only, same user)."""
+    try:
+        with open(f"/proc/{chromium_pid}/status", encoding="utf-8") as fh:
+            ppid = next((int(line.split()[1]) for line in fh if line.startswith("PPid:")), 0)
+        with open(f"/proc/{ppid}/environ", "rb") as fh:
+            raw = fh.read()
+    except (OSError, ValueError):
+        return None
+    for item in raw.split(b"\0"):
+        key, sep, value = item.partition(b"=")
+        if sep and key == b"AGENT_BROWSER_SESSION":
+            return value.decode("utf-8", "replace") or None
+    return None
+
+
+def _pid_alive(pid: int) -> bool:
+    import psutil
+    return psutil.pid_exists(pid)
 
 
 def env_for_agent(env: dict) -> dict:

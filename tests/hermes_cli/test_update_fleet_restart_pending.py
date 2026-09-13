@@ -665,6 +665,9 @@ def test_pending_restart_rejects_unsupported_receipt_runtime(monkeypatch, kind):
 
 @pytest.mark.parametrize("failure", ["kill", "wait"])
 def test_pending_restart_fails_when_old_gateway_cannot_be_stopped(monkeypatch, failure):
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    marker.write_text(_marker_body(started=1, expected_sha="abc123"), encoding="utf-8")
+    original = marker.read_bytes()
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [42])
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: False)
     monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
@@ -679,10 +682,17 @@ def test_pending_restart_fails_when_old_gateway_cannot_be_stopped(monkeypatch, f
         monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", lambda **_kwargs: 1)
         monkeypatch.setattr("hermes_cli.gateway._wait_for_gateway_exit", lambda **_kwargs: False)
 
-    assert update_cmd._run_pending_fleet_restart() is False
+    with pytest.raises(SystemExit) as excinfo:
+        update_cmd_fleet._apply_pending_fleet_restart_catchup()
+
+    assert excinfo.value.code == 1
+    assert marker.read_bytes() == original
 
 
 def test_pending_restart_fails_when_one_supervisor_scope_fails(monkeypatch):
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    marker.write_text(_marker_body(started=1, expected_sha="abc123"), encoding="utf-8")
+    original = marker.read_bytes()
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [])
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
     monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
@@ -693,7 +703,11 @@ def test_pending_restart_fails_when_one_supervisor_scope_fails(monkeypatch):
     ]
     monkeypatch.setattr(update_cmd_fleet, "_systemd_gateway_unit_listings", lambda: listings)
 
-    assert update_cmd._run_pending_fleet_restart() is False
+    with pytest.raises(SystemExit) as excinfo:
+        update_cmd_fleet._apply_pending_fleet_restart_catchup()
+
+    assert excinfo.value.code == 1
+    assert marker.read_bytes() == original
 
 
 # ---------------------------------------------------------------------------

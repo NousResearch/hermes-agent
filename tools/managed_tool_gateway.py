@@ -40,13 +40,16 @@ def auth_json_path():
 def _read_nous_provider_state() -> Optional[dict]:
     """The profile's Nous state, or None. A free-tier identity counts only while the free tier is on:
     with ``nous.guest: false`` it is invisible here, so no cached or refreshed token of it is ever
-    attached to a request."""
+    attached to a request.
+
+    Resolves through the same profile-then-global-root fallback every other credential reader
+    uses: a profile created with ``share_auth`` has no ``auth.json`` of its own and signs in with
+    the root identity. Reading only ``HERMES_HOME/auth.json`` made that profile look signed out to
+    the connector gate alone, so ``manage_connections`` vanished from its tool list."""
     try:
-        path = auth_json_path()
-        if not path.is_file():
-            return None
-        providers = json.loads(path.read_text(encoding="utf-8-sig")).get("providers", {})
-        nous_provider = providers.get("nous", {}) if isinstance(providers, dict) else None
+        from hermes_cli.auth import get_provider_auth_state
+
+        nous_provider = get_provider_auth_state("nous")
         if not isinstance(nous_provider, dict):
             return None
         from hermes_cli.anon_auth import guest_enabled, is_guest_state

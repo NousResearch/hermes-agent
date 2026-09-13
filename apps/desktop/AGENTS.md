@@ -196,6 +196,14 @@ boundaries, optimistic rollback and stale-response ordering, and both sides of a
 local/remote adapter with its profile routing intact. Match how the suite is
 actually run rather than inventing a command; when in doubt, read the scripts.
 
+## Rehearsing the guided onboarding
+
+From `apps/desktop`, use a fresh temporary directory for each rehearsal and run
+`env -u NODE_ENV HERMES_GUEST_ONBOARDING=1 HERMES_HOME=<tmp>/.hermes HERMES_DESKTOP_USER_DATA_DIR=<tmp>/electron-user-data npm run dev`
+(replace `<tmp>` with that directory). To use the portal stand-in, add
+`HERMES_PORTAL_BASE_URL=http://127.0.0.1:8765 HERMES_ANON_API_SECRET=test-secret HERMES_SHARED_AUTH_DIR=<tmp>/.hermes/shared`
+before `npm run dev`. Stop Electron and its dev server after the run.
+
 ## The taste test before you hand off
 
 - Does every piece of state live with its authority, at the narrowest scope?

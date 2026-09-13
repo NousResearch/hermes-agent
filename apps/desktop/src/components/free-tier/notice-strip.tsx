@@ -6,12 +6,7 @@ import { StatusRow } from '@/components/chat/status-row'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
-import {
-  ackFreeTierNotice,
-  claimFreeTierNotice,
-  freeTierNoticeClaim,
-  releaseFreeTierNotice
-} from '@/store/free-tier'
+import { ackFreeTierNotice, claimFreeTierNotice, freeTierNoticeClaim, releaseFreeTierNotice } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { setModelPickerOpen } from '@/store/session'
 

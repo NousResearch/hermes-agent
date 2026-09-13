@@ -95,6 +95,40 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
 # see `_log_redaction_status()` in gateway/run.py and cli.py.
 _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
 
+# Routed multiplex profiles: the import-time snapshot above is the LAUNCH profile's policy. A profile
+# served under a HERMES_HOME override resolves its own ``security.redact_secrets`` (its ``.env``
+# value first, like the standalone bridge in hermes_cli/main.py), cached per home so the hot path
+# stays a dict lookup. Still not a live ``os.environ`` read, so a shell ``export`` cannot flip it.
+_REDACT_ENABLED_BY_HOME: dict = {}
+_REDACT_ENABLED_LOCK = threading.Lock()
+
+
+def _redact_enabled() -> bool:
+    """Effective redaction switch for the active profile (launch snapshot when no override)."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None:
+        return _REDACT_ENABLED
+    home_key = hermes_home_key()
+    cached = _REDACT_ENABLED_BY_HOME.get(home_key)
+    if cached is not None:
+        return cached
+    enabled = True
+    try:
+        from agent.secret_scope import current_secret_scope
+        scope = current_secret_scope()
+        raw = scope.get("HERMES_REDACT_SECRETS") if scope else None
+        if raw is None:
+            from hermes_cli.config import load_config_readonly
+            cfg_val = (load_config_readonly().get("security") or {}).get("redact_secrets")
+            raw = None if cfg_val is None else str(cfg_val)
+        if raw is not None:
+            enabled = str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        enabled = True  # unreadable policy: keep the secure default
+    with _REDACT_ENABLED_LOCK:
+        _REDACT_ENABLED_BY_HOME[home_key] = enabled
+    return enabled
+
 # Known API key prefixes -- match the prefix + contiguous token chars.
 # Every pattern MUST start with a literal prefix: _PREFIX_SUBSTRINGS (the cheap
 # pre-screen gate) is derived from these literals and must stay false-negative-free.
@@ -125,7 +159,10 @@ _PREFIX_PATTERNS = [
     r"pypi-[A-Za-z0-9_-]{10,}",         # PyPI API token
     r"dop_v1_[A-Za-z0-9]{10,}",         # DigitalOcean PAT
     r"doo_v1_[A-Za-z0-9]{10,}",         # DigitalOcean OAuth
-    r"am_[A-Za-z0-9_-]{10,}",           # AgentMail API key
+    # AgentMail API key: ``am_`` / ``am_org_`` + an opaque alphanumeric body. The body has no ``_``/``-``,
+    # which is what separates it from ``am_example_identifier_123`` (#10983); public docs pin only the
+    # prefix, so the charset stays broad and the length floor does the discriminating.
+    r"am_(?:org_)?[A-Za-z0-9]{20,}",
     r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
     r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
@@ -645,7 +682,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         return text
     # Vault secrets are a hard model-egress boundary: scrubbed regardless of the redact_secrets preference.
     text = redact_registered_vault_values(text)
-    if not (force or _REDACT_ENABLED):
+    if not (force or _redact_enabled()):
         return text
     code_file = code_file or file_read
 
@@ -713,35 +750,100 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 # ``postgresql://{user}`` f-string templates). See issue #43025.
 _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 
-# Commands that read file contents to stdout. A ``.env`` target is a credential
-# dump (per AGENTS.md ``.env`` holds only secrets), so the ENV pass must run.
+# Commands that read file contents to stdout, plus the filter readers (``grep``/``awk``/``sed``)
+# the model reaches for on config files. A secret-bearing target (``.env`` per AGENTS.md,
+# a shell rc/profile, Hermes' own ``config.yaml`` where ``hermes mcp add --env`` writes
+# tokens) is a credential dump, so the ENV/YAML assignment pass must run. Arbitrary
+# ``config.yaml`` / source files stay on the code_file path (``MAX_TOKENS: 100``).
 _FILE_READ_COMMANDS = frozenset({
     "cat", "head", "tail", "type", "bat", "less", "more", "nl",
-    "zcat", "tac", "view", "batcat",
+    "zcat", "tac", "view", "batcat", "grep", "awk", "sed",
 })
+_SHELL_RC_BASENAMES = frozenset({
+    ".bashrc", ".bash_profile", ".bash_login", ".profile",
+    ".zshrc", ".zprofile", ".zlogin", ".zshenv",
+})
+# Filter readers take a PATTERN/program as their first positional; only the operands after
+# it are files, so ``grep .bashrc app.py`` must not gate on the pattern.
+_PATTERN_FIRST_COMMANDS = frozenset({"grep", "awk", "sed"})
+_HERMES_HOME_PREFIXES = ("$HERMES_HOME/", "${HERMES_HOME}/")
+# ``$HOME/.hermes/config.yaml`` keeps the ``.hermes`` segment, so stripping the prefix is
+# enough to gate it; ``~/`` already survives the ``$``-bearing-path bail-out.
+_HOME_PREFIXES = ("$HOME/", "${HOME}/")
 
 
 def _command_segments(command: str) -> list[str]:
-    """Pipeline/sequence segments of a shell command, stripped, empties dropped."""
-    return [seg.strip() for seg in re.split(r"[|;&]+", command) if seg.strip()]
+    """Pipeline/sequence segments, split only on unquoted ``| ; &`` so an
+    ``awk '{print $1; print $2}'`` program or ``grep 'foo|bar'`` pattern stays one
+    segment. Backslash is not an escape (Windows ``C:\\Users\\...``)."""
+    segments: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    for ch in command:
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            continue
+        if ch in "|;&":
+            seg = "".join(buf).strip()
+            if seg:
+                segments.append(seg)
+            buf = []
+            continue
+        buf.append(ch)
+    seg = "".join(buf).strip()
+    if seg:
+        segments.append(seg)
+    return segments
 
 
-def _command_reads_env_file(command: str | None) -> bool:
-    """True if ``command`` reads a ``.env``-style file (by basename) to stdout.
-    Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat
-    .env)``, ``sed``/``awk``) are not detected, matching ``is_env_dump_command``."""
-    if not command:
+def _is_secret_file_arg(arg: str) -> bool:
+    """``.env``-style or shell rc basename anywhere; ``config.yaml`` only under a
+    ``.hermes`` directory or ``$HERMES_HOME`` (never arbitrary YAML)."""
+    path = arg.strip("\"'").replace("\\", "/")
+    hermes_home = False
+    for prefix in _HERMES_HOME_PREFIXES:
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+            hermes_home = True
+            break
+    for prefix in _HOME_PREFIXES:
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+            break
+    if "$" in path:
+        return False
+    parts = [part.lower() for part in path.split("/") if part]
+    if not parts:
+        return False
+    if parts[-1] in _ENV_FILE_BASENAMES or parts[-1] in _SHELL_RC_BASENAMES:
+        return True
+    return parts[-1] == "config.yaml" and (hermes_home or ".hermes" in parts[:-1])
+
+
+def _command_reads_secret_file(command: str | None) -> bool:
+    """True if ``command`` reads a secret-bearing file (see ``_is_secret_file_arg``) to
+    stdout. Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat
+    .env)``, unresolved variable paths) are not detected, matching ``is_env_dump_command``."""
+    if not command or not isinstance(command, str):
         return False
     for seg in _command_segments(command):
         tokens = seg.split()  # not shlex: it mangles Windows paths (``C:\Users\...\.env``)
-        if not tokens or tokens[0] not in _FILE_READ_COMMANDS:
+        if not tokens:
             continue
-        for arg in tokens[1:]:
-            if arg.startswith("-"):
-                continue
-            basename = arg.strip("\"'").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            if basename.lower() in _ENV_FILE_BASENAMES:
-                return True
+        reader = tokens[0].rsplit("/", 1)[-1].lower()
+        if reader not in _FILE_READ_COMMANDS:
+            continue
+        positional = [arg for arg in tokens[1:] if not arg.startswith("-")]
+        if reader in _PATTERN_FIRST_COMMANDS:
+            positional = positional[1:]
+        if any(_is_secret_file_arg(arg) for arg in positional):
+            return True
     return False
 
 
@@ -760,13 +862,36 @@ def is_env_dump_command(command: str | None) -> bool:
     return False
 
 
+REDACTION_UNAVAILABLE = "[redaction-unavailable]"
+# The opaque branch needs a 20-char floor (the floor the gateway/A2A sweeps always had): without it the
+# English word "bearer" turns "the bearer of bad news" into "Bearer [redacted] bad news" on every chat
+# reply. The bracket branch folds an already-masked residue ("Bearer [redacted-jwt]") to one marker.
+_BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+(?:\[[^\]]+\]|[A-Za-z0-9._~+/-]{20,}=*)", re.IGNORECASE)
+
+
+def redact_for_egress(text: str) -> str:
+    """The one scrub for text leaving the process for a remote reader (chat platforms, A2A peers,
+    telemetry). ``redact_sensitive_text(force=True)`` — the only secret-pattern list — plus a bearer
+    sweep, because a ``Bearer <opaque>`` value with no vendor prefix carries no shape the prefix
+    matcher can key on. Fails CLOSED: if the redactor raises, the raw text is never returned."""
+    text = str(text or "")
+    try:
+        text = redact_sensitive_text(text, force=True)
+    except Exception:
+        return REDACTION_UNAVAILABLE
+    if "earer" in text:
+        text = _BEARER_RESIDUE_RE.sub("Bearer [redacted]", text)
+    return text
+
+
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:
-    """Single redaction policy for ALL terminal-output surfaces: the ENV-assignment
-    pass runs only when ``command`` is an env dump or reads a ``.env`` file
-    (otherwise code_file=True avoids false positives on source/config dumps)."""
+    """Single redaction policy for ALL terminal-output surfaces: the ENV/YAML-assignment
+    pass runs only when ``command`` is an env dump or reads a secret-bearing file (``.env``,
+    shell rc, Hermes ``config.yaml``); otherwise code_file=True avoids false positives on
+    source/config dumps."""
     if not output:
         return output
-    code_file = not (is_env_dump_command(command) or _command_reads_env_file(command))
+    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
     return redact_sensitive_text(output, force=force, code_file=code_file)
 
 

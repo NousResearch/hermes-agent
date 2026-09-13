@@ -200,6 +200,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.appActionsDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.appActions}`,
+      keywords: ['titlebar', 'settings gear', 'layout', 'HUD', 'left', 'right', 'tabs'],
+      label: appearance.appActionsTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.appActions, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.embedsDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.embeds}`,

@@ -219,3 +219,21 @@ async def test_auto_tts_short_telegram_reply_keeps_caption_order():
     assert order == ["play"]
     assert captions == ["short spoken reply"]
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_auto_tts_telegram_reply_at_exact_caption_limit_keeps_caption_order():
+    """A Telegram reply of exactly TELEGRAM_CAPTION_LIMIT chars still fits the caption,
+    so it keeps the caption order; one char more flips it to text-first. Pins the
+    predicate and the playback decision to the same shared limit (#109996)."""
+    from gateway.platforms.base import TELEGRAM_CAPTION_LIMIT
+
+    adapter, order, captions = await _run_ordered_auto_tts(
+        Platform.TELEGRAM, "z" * TELEGRAM_CAPTION_LIMIT)
+    assert order == ["play"]
+    assert captions == ["z" * TELEGRAM_CAPTION_LIMIT]
+    assert adapter.sent == []
+
+    _adapter2, order2, _captions2 = await _run_ordered_auto_tts(
+        Platform.TELEGRAM, "z" * (TELEGRAM_CAPTION_LIMIT + 1))
+    assert order2 == ["text", "play"]

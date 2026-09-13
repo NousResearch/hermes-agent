@@ -475,15 +475,28 @@ def _dispatch_quick(rid, params, session, name, arg):
     return _ok(rid, {"type": "alias", "target": qc.get("target", "")}) if qc.get("type") == "alias" else None
 
 
-def _plugin_command_handler(name: str):
+def _plugin_command_handler(name: str, session=None):
     try:
-        return _tools_mod("hermes_cli.plugins").get_plugin_command_handler(name)
+        home = (session or {}).get("profile_home") or _tools_mod("hermes_constants").get_hermes_home()
+        with _tools_mod("hermes_cli.plugins_loader")._plugin_home_scope(home):
+            return _tools_mod("hermes_cli.plugins").get_plugin_command_handler(name)
     except Exception:
         return None
 
 
-def _run_plugin_command(handler, arg: str) -> str:
-    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
+def _run_plugin_command(handler, arg: str, session, runtime_session_id) -> str:
+    session = session or {}
+    home = session.get("profile_home") or _tools_mod("hermes_constants").get_hermes_home()
+    with _tools_mod("hermes_cli.plugins_loader")._plugin_home_scope(home):
+        commands = _tools_mod("hermes_cli.plugins_command")
+        stored_id = session.get("session_key") or None
+        context = commands.plugin_command_context(
+            session_id=getattr(session.get("agent"), "session_id", None) or stored_id,
+            task_id=stored_id, stored_session_id=stored_id,
+            runtime_session_id=runtime_session_id if session else None,
+            surface=session.get("source") or "tui")
+        result = commands.invoke_plugin_command(handler, arg, **context)
+        return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(result) or "")
 
 
 def _is_profile_skill_command(session: dict, base: str) -> bool:
@@ -503,9 +516,12 @@ def _is_profile_skill_command(session: dict, base: str) -> bool:
 
 
 def _dispatch_plugin(rid, params, session, name, arg):
-    if handler := _plugin_command_handler(name):
+    if handler := _plugin_command_handler(name, session):
+        if params.get("session_id") and session is None:
+            return _err(rid, 4001, "session not found")
         with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg)})
+            output = _run_plugin_command(handler, arg, session, params.get("session_id"))
+            return _ok(rid, {"type": "plugin", "output": output})
     return None
 
 
@@ -834,9 +850,10 @@ def _(rid, params: dict) -> dict:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
     if _is_profile_skill_command(session, base):
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
-    if plugin_handler := _plugin_command_handler(base) if base else None:
+    if plugin_handler := _plugin_command_handler(base, session) if base else None:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg) or "(no output)"})
+            output = _run_plugin_command(plugin_handler, arg, session, sid)
+            return _ok(rid, {"output": output or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
@@ -1341,7 +1358,8 @@ def _plugin_rows() -> list[dict]:
         status = pc._plugin_status(name, enabled, disabled, key=key)
         # Bundled backends/platforms/providers run without an explicit enable: report the
         # truthful default instead of "not enabled" (reads as OFF).
-        if status == "not enabled" and source == "bundled" and pc._bundled_default_on(_dir):
+        default_enabled = source == "bundled" and pc._bundled_default_on(_dir)
+        if status == "not enabled" and default_enabled:
             status = "enabled"
         # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
         # ``has_desktop_half``: the package also ships a Desktop UI half (``desktop/plugin.js``). The
@@ -1349,7 +1367,8 @@ def _plugin_rows() -> list[dict]:
         _dir_path = Path(str(_dir)) if _dir else None
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
-            "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir),
+            "source": source, "status": status, "default_enabled": default_enabled,
+            "portable": pc._is_portable_plugin_dir(_dir),
             "install_dir": str(_dir_path) if _dir_path else "",
             "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
             **cat.catalog_row_fields(_dir, pins),
@@ -1369,9 +1388,10 @@ def _plugins_toggle(rid, params):
     if not ident:
         return _err(rid, 4019, "plugins.toggle requires a 'key' or 'name'")
     toggle = _tools_mod("hermes_cli.plugins_cmd").dashboard_set_agent_plugin_enabled
-    result = toggle(ident, enabled=bool(params.get("enable")))
+    result = toggle(ident, enabled=bool(params.get("enable")),
+                    **({"setup_consent": params["setup_consent"]} if "setup_consent" in params else {}))
     if not result.get("ok"):
-        return _err(rid, 5026, result.get("error") or "toggle failed")
+        return _err(rid, 5026, result.get("error") or "toggle failed", data=result)
     row = next((r for r in _plugin_rows() if ident in (r["key"], r["name"])), None)
     return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")), "name": ident, "plugin": row})
 
@@ -1385,8 +1405,9 @@ def _plugins_install(rid, params):
         return _err(rid, 4019, "plugins.install requires 'identifier', 'repo', or 'catalog_name'")
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
         ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None,
-        ref=str(params.get("ref") or "").strip() or None)
-    return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "install failed")
+        ref=str(params.get("ref") or "").strip() or None,
+        **({"setup_consent": params["setup_consent"]} if "setup_consent" in params else {}))
+    return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "install failed", data=result)
 
 
 def _plugins_update(rid, params):

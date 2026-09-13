@@ -2,12 +2,22 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 
-import { activeConnection } from './plugins'
+import { activeConnection, pluginRest } from './plugins'
 
 // desktop.getConnection/getConnectionFor are IPC round-trips into the main
 // process with no timeout of their own (#93454). A wedged main-process
 // round-trip must reject instead of hanging pluginSocket's connect() forever.
 describe('activeConnection connection timeout (#93454)', () => {
+  it('routes explicit plugin REST scope without borrowing the active connection or profile', async () => {
+    setApiRequestConnection('wrong')
+    setApiRequestProfile('wrong')
+    const api = vi.fn(async () => ({ ok: true }))
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
+    await pluginRest('demo', '/status', { scope: { connectionId: 'local', profile: 'worker' } })
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/api/plugins/demo/status', connectionId: 'local', profile: 'worker' })
+    )
+  })
   afterEach(() => {
     setApiRequestConnection(null)
     setApiRequestProfile(null)

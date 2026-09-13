@@ -17,7 +17,9 @@ import { createPluginI18n, type PluginI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
 
+import { createPluginViewerActions, type PluginViewerInput } from './plugin-viewer'
 import { registry } from './registry'
+export type { PluginViewerInput } from './plugin-viewer'
 import type { Contribution } from './types'
 
 export type { PluginRestOptions } from '@/hermes'
@@ -42,6 +44,9 @@ export interface PluginStorage {
  *  capability can't apply (no Electron shell, older desktop build), so
  *  callers branch on the return value rather than sniffing the bridge. */
 export interface PluginOs {
+  /** Open/update an owned sandboxed native URL viewer without focusing it. */
+  openViewer: (input: PluginViewerInput) => Promise<boolean>
+  closeViewer: (id: string) => Promise<boolean>
   /** Native OS notification (Electron), attributed to this plugin. Gated by
    *  Settings ▸ Notifications ▸ "Plugin notifications" and fires only while
    *  the user is away from Hermes — use `host.notify` for the in-app toast.
@@ -144,7 +149,7 @@ function createPluginStorage(pluginId: string): PluginStorage {
 // Never throws for a missing capability: the renderer can outlive an older
 // Electron shell (or run in a plain browser), so every door degrades to a
 // false result the plugin can branch on.
-function createPluginOs(pluginId: string): PluginOs {
+function createPluginOs(pluginId: string, track: (dispose: () => void) => void): PluginOs {
   const attempt = async (run: (bridge: NonNullable<typeof window.hermesDesktop>) => Promise<boolean>) => {
     const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop
 
@@ -175,6 +180,7 @@ function createPluginOs(pluginId: string): PluginOs {
   }
 
   return {
+    ...createPluginViewerActions(pluginId, track),
     notify: input => dispatchPluginNativeNotification(pluginId, input),
     openExternal: url =>
       attempt(async bridge => {
@@ -213,7 +219,7 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     onDispose: fn => void track(fn),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
-    os: createPluginOs(pluginId),
+    os: createPluginOs(pluginId, track),
     storage: createPluginStorage(pluginId),
     i18n: createPluginI18n(pluginId, track)
   }

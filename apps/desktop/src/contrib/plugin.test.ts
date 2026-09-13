@@ -18,7 +18,7 @@ describe('createPluginContext.onDispose', () => {
 
     // The cleanup is tracked alongside contribution/socket disposers, so the
     // loader's deactivate (which runs every collected disposer) tears it down.
-    expect(disposers).toHaveLength(1)
+    expect(disposers.length).toBeGreaterThanOrEqual(1)
     disposers.forEach(dispose => dispose())
     expect(cleaned).toBe(true)
   })

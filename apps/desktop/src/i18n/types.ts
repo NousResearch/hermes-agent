@@ -434,6 +434,14 @@ export interface Translations {
       failed: string
       empty: string
       kinds: { bundled: string; disk: string; runtime: string }
+      agent: {
+        setupInstalled: string
+        reviewSetup: string
+        setupTitle: string
+        setupConfirm: string
+        setupBusy: string
+        setupTrust: string
+      }
       agentHalfMissing: string
       agentHalfMissingTip: string
       installModal: {

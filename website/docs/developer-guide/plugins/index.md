@@ -1191,7 +1191,40 @@ After registration, users can type `/mystatus` in any session. The command appea
 
 **Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
 
-**Async handlers:** The gateway dispatch automatically detects and awaits async handlers, so you can use either sync or async functions:
+**Session-aware handlers:** The first argument stays the raw string. CLI, messaging gateway,
+TUI, and desktop dispatch additionally offer the following keyword fields. Declare just the
+fields you need, or accept `**kwargs` for the full payload; old one-argument callbacks are unchanged.
+
+```python
+def _handle_workspace(raw_args: str, *, session_id=None, task_id=None,
+                      runtime_session_id=None, stored_session_id=None,
+                      profile=None, hermes_home=None, surface=None):
+    if not session_id:
+        return "This command needs an active conversation."
+    return f"Conversation {session_id}, profile {profile}: {raw_args}"
+```
+
+| Keyword | Meaning |
+|---|---|
+| `session_id` | Current agent conversation ID; before lazy agent initialization, the stored conversation ID. Messaging uses the canonical session-store entry. |
+| `task_id` | Execution identity: desktop/TUI's durable session key, messaging's conversation ID, or CLI agent's current/last task ID (`None` before the first turn). Never the desktop runtime UUID. |
+| `runtime_session_id` | Desktop/TUI runtime handle, or `None` elsewhere. |
+| `stored_session_id` | Durable ID used to resume the conversation (may differ from the current agent ID). |
+| `profile` | Owning profile name (`default`, a named profile, or `custom` for an arbitrary home). |
+| `hermes_home` | Owning profile's `pathlib.Path`; use this rather than reading process environment. |
+| `surface` | `cli`, `gateway`, or the desktop/TUI session's source (`desktop`, `tui`, etc.). |
+
+Unavailable identities are `None`. These are invocation snapshots, not mutable agent or session
+objects. Do not guess an owner from a process-global "last session"; commands that mutate
+session-owned resources should refuse missing identity. A messaging command resolves/creates the
+canonical session-store entry before invocation, so an action before the first prompt has the same
+owner as the subsequent conversation. Desktop/TUI lookup and execution use the session's profile,
+not a client-supplied profile override. No prompt, history, or tool schema is changed by dispatch.
+
+**Async handlers:** All surfaces await async results. CLI/desktop/TUI use a helper thread when
+called from an already-running event loop, copying the caller's context (including profile home).
+The existing 30-second bound applies to that helper-thread wait; it is not cancellation of the
+plugin's operation. The messaging gateway awaits on its own loop. You can use sync or async functions:
 
 ```python
 async def _handle_check(raw_args: str) -> str:
@@ -1773,3 +1806,72 @@ def handler(args, **kwargs):
 # Good — model knows exactly when and how
 "description": "Evaluate a mathematical expression. Use for arithmetic, trig, logarithms. Supports: +, -, *, /, **, sqrt, sin, cos, log, pi, e."
 ```
+
+
+## Consented native runtime setup
+
+Native directory plugins may declare `setup: {entrypoint: setup.py}` in
+`plugin.yaml`. This is management-only metadata; discovery, lists, sessions,
+and tool calls **never invoke setup** or refresh cached prompts/toolsets.
+
+The entrypoint must be a regular, non-symlink `setup.py` at the root of a
+trusted installed or bundled package. Traversal, absolute entrypoints, and
+symlinked package paths are refused. This is trusted plugin execution, **not a
+sandbox**. The file provides two functions receiving the owning profile's
+explicit `pathlib.Path` home:
+
+- `describe(hermes_home)` returns `{revision: str, ready: bool, summary: str,
+  details: list[str]}`. It must be read-only: no downloads, processes, or writes.
+  Include exact public URLs, profile destinations, hashes, platform support,
+  and prerequisites. Change the revision whenever the reviewed installation
+  changes. Readiness must attest to a verified runtime and completed setup,
+  not merely enabled configuration or file existence.
+- `run(hermes_home)` performs the consented installation and verifies the actual
+  runtime binary and prerequisites. Raise an actionable error on failure; its
+  return value is ignored. Keep setup idempotent and recoverable. Runtime
+  files are plugin-owned: a failed attempt may leave partial files, which the
+  host does not roll back.
+
+Each function runs in a separate `python -I -B` subprocess, with explicit child
+`HERMES_HOME` and package cwd, without importing the plugin into the gateway.
+Standalone entrypoints should use exact-path imports for package helpers.
+Timeouts are 15 seconds for describe and 300 seconds for run. After run, a fresh
+description must report ready at the same reviewed revision before enablement
+is saved. Failure or declined consent preserves prior enablement. Managed
+enable transactions are serialized per profile. Existing conversations retain
+their startup snapshots; restart the owning gateway to adopt saved changes.
+
+CLI enable shows the full description and asks a separate default-No setup
+question. `install --enable`, packs, and checkbox selection are not setup
+consent. Noninteractive callers must supply the exact JSON object printed by
+a refused attempt using `enable NAME --setup-consent '<JSON>'` (also supported
+by install). The object contains exactly `key` (canonical plugin key),
+`hermes_home` (canonical owning profile path), and `revision`. There is no
+blanket yes grant. Plugins without setup retain ordinary activation behavior.
+
+Desktop uses the existing confirmation dialog to show the reviewed setup,
+profile, and revision, with busy and inline failure/retry states. The switch
+stays off until the backend confirms success.
+
+The existing `plugins.manage` toggle/install actions accept optional
+`setup_consent` containing that reviewed object. Refusals retain JSON-RPC code
+5026 and include the full structured result in `error.data`:
+
+```json
+{
+  "ok": false,
+  "status": "consent_required",
+  "name": "example",
+  "error": "Review native setup and explicitly consent before enabling this plugin.",
+  "setup": {"revision": "reviewed-revision", "ready": false, "summary": "Install runtime", "details": []},
+  "consent": {"key": "example", "hermes_home": "/profile/home", "revision": "reviewed-revision"}
+}
+```
+
+Setup failures use `status: "setup_failed"` and an actionable error.
+Install-and-enable refusals include `installed: true` and `plugin_name`: files
+were installed, but activation was not saved. Retry **enable**, not cloning.
+Selected-profile RPC scope is retained. REST enable/install endpoints accept
+`{"setup_consent": {...}}` and return setup refusals as HTTP 409 with the same
+object in `detail`. Older clients can display the refusal and continue through
+CLI enable; no surface silently runs setup.

@@ -91,7 +91,8 @@ def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, 
                   owner_task_id=task_id or effective_task_id, session_key=session_key)
     if env_type == "local":
         return process_registry.spawn_local(
-            env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty, **common)
+            env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty,
+            **({"execution_context": env.execution_context} if getattr(env, "execution_context", None) else {}), **common)
     return process_registry.spawn_via_env(env=env, **common)
 
 
@@ -130,7 +131,7 @@ def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
     notify_on_complete: bool, watch_patterns: Optional[List[str]], approval_note: Optional[str],
-    pty_disabled_reason: Optional[str],
+    pty_disabled_reason: Optional[str], routed: bool = False,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
@@ -144,6 +145,7 @@ def spawn_background_process(
 
     effective_cwd = _resolve_command_cwd(
         workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
+        routed=routed,
     )
     try:
         proc_session = _spawn(

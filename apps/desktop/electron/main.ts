@@ -92,7 +92,8 @@ import {
   BROWSER_WINDOW_MIN_HEIGHT,
   BROWSER_WINDOW_MIN_WIDTH,
   BROWSER_WINDOW_WIDTH,
-  buildBrowserWindowUrl
+  buildBrowserWindowUrl,
+  registerPluginViewerIpc
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
@@ -292,6 +293,7 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
+import { installViewerGuestPolicy } from './plugin-viewer-policy'
 import { evictPoolEntries } from './pool-eviction'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import {
@@ -15073,6 +15075,11 @@ ipcMain.handle('hermes:window:openInstance', async () => {
 
   return { ok: true }
 })
+registerPluginViewerIpc(
+  ipcMain,
+  options => new BrowserWindow(options),
+  () => (DEV_SERVER ? new URL('/', DEV_SERVER).href : pathToFileURL(resolveRendererIndex()).href)
+)
 ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
   if (typeof tabId !== 'string' || !tabId.trim()) {
     return { ok: false, error: 'invalid-tab-id' }
@@ -18111,6 +18118,7 @@ app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
   }
 
+  installViewerGuestPolicy(app, session)
   installMediaPermissions()
   installDownloadHandling()
   registerMediaProtocol()

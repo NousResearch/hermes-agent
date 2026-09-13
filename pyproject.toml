@@ -125,9 +125,10 @@ dependencies = [
   "websockets==15.0.1",
   # .gitignore-aware file matching for desktop build stamp.
   "pathspec==1.1.1",
-  "fastapi>=0.104.0,<1",
-  # CIDR-aware forwarded_allow_ips requires uvicorn >=0.31.0.
-  "uvicorn[standard]>=0.31.0,<1",
+  # Realms viewer: standalone FastAPI floor and websockets-sansio support.
+  # The core websockets==15.0.1 pin already exceeds its >=14 requirement.
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.35.0,<1",
   # Streaming multipart uploads for the dashboard file manager (NS-501).
   # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
   # by fastapi itself, so the dashboard's multipart upload endpoint would 500
@@ -578,6 +579,9 @@ gateway = ["assets/**/*"]
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.
 plugins = ["**/plugin.yaml", "**/plugin.yml"]
+# Unified optional plugin payload: one source for native discovery, desktop,
+# skill loading and the offline viewer, including every upstream vendor notice.
+"plugins.hermes-realms" = ["LICENSE", "README.md", "desktop/*.js", "desktop/*.md", "dashboard/*.json", "skills/**/*.md", "realms/web/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

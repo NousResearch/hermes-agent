@@ -13,7 +13,9 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _build_artifact(kind: str, tmp_path, *, nix_build: bool) -> subprocess.CompletedProcess[str]:
+def _build_artifact(
+    kind: str, tmp_path, *, nix_build: bool, project_root: Path = PROJECT_ROOT,
+) -> subprocess.CompletedProcess[str]:
     """Invoke the real PEP 517 hook (build_sdist / build_wheel) as a subprocess.
 
     The wheel and sdist guards live in SEPARATE cmdclass entries in setup.py
@@ -47,7 +49,7 @@ def _build_artifact(kind: str, tmp_path, *, nix_build: bool) -> subprocess.Compl
                 kind=kind, out=tmp_path
             ),
         ],
-        cwd=PROJECT_ROOT,
+        cwd=project_root,
         env=env,
         text=True,
         capture_output=True,

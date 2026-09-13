@@ -19,6 +19,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.session_execution import SessionExecutionError
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
@@ -100,22 +101,35 @@ def _computer_use_max_image_dimension() -> Optional[int]:
         dim = 1456
     return dim if dim > 0 else None
 
-def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None, *, execution_context=None) -> Dict[str, str]:
     """Env for spawning cua-driver: ``base_env`` (default ``os.environ``) plus ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0``
     unless the user opted in, plus the native-Wayland bridge (``computer_use.native_wayland`` config opt-in, only when
     the child has a Wayland display). Used by every spawn site (MCP, status, doctor, install) so CLI and gateway
     runtimes share one policy."""
     env = dict(os.environ if base_env is None else base_env)
+    if execution_context is not None:
+        env = execution_context.apply_env(env)
+        # Permission selection belongs exclusively to Hermes' existing mode resolver.
+        env.pop("CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS", None)
+        env.pop("CUA_DRIVER_PERMISSION_MODE", None)
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
     if sys.platform == "linux" and env.get("WAYLAND_DISPLAY") and bool(_computer_use_cfg().get("native_wayland", False)):
         env[_CUA_NATIVE_WAYLAND_ENV_VAR] = "1"
     return env
 
-def sanitized_cua_driver_env() -> Dict[str, str]:
+def sanitize_cua_child_env(env: Dict[str, str], execution_context) -> Dict[str, str]:
+    from tools.environments.local import _sanitize_subprocess_env, _finalize_execution_env
+    return _finalize_execution_env(_sanitize_subprocess_env(env), execution_context,
+                                   authoritative_keys=("CUA_DRIVER_PERMISSION_MODE", "CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"))
+
+
+def sanitized_cua_driver_env(*, execution_context=None) -> Dict[str, str]:
     """``cua_driver_child_env()`` with Hermes provider secrets stripped — cua-driver is a third-party binary and must
     never inherit API keys. Falls back to the unsanitized telemetry env if the sanitizer can't import."""
-    env = cua_driver_child_env()
+    env = cua_driver_child_env(execution_context=execution_context)
+    if execution_context is not None:
+        return sanitize_cua_child_env(env, execution_context)
     with contextlib.suppress(Exception):
         # cua-driver is a third-party binary — never hand it provider API keys via inherited env (same
         # policy as the manifest probe and MCP spawn; #53503/#55709/#58889 lineage).
@@ -137,10 +151,14 @@ def _run_quiet(argv: List[str], *, timeout: float, swallow: Any = (), **kw: Any)
     except swallow:
         return None
 
-def _run_driver(driver_cmd: str, *args: str, timeout: float, swallow: Any = ()) -> Any:
+def _run_driver(driver_cmd: str, *args: str, timeout: float, swallow: Any = (), execution_context=None) -> Any:
     """Run a short cua-driver verb with the sanitized env and hidden window."""
-    return _run_quiet([driver_cmd, *args], timeout=timeout, swallow=swallow, encoding="utf-8",
-                      errors="replace", creationflags=windows_hide_flags(), env=sanitized_cua_driver_env())
+    argv = [driver_cmd, *args]
+    if execution_context is not None:
+        argv = execution_context.wrap_argv(argv, computer_use=True)
+    return _run_quiet(argv, timeout=timeout, swallow=swallow, encoding="utf-8",
+                      errors="replace", creationflags=windows_hide_flags(),
+                      env=sanitized_cua_driver_env(execution_context=execution_context))
 
 def _linux_session_locked() -> Optional[bool]:
     """Is the graphical session locked? (Linux; best-effort.) A locked KDE/GNOME session freezes renderers and
@@ -217,20 +235,30 @@ def _maybe_nudge_update() -> None:
 class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
-    def __init__(self, permission_mode: str = "standard") -> None:
+    def __init__(self, permission_mode: str = "standard", *, execution_context=None) -> None:
         if permission_mode not in {"standard", "bounded", "unrestricted"}:
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
         self.permission_mode = permission_mode
+        self.execution_context = execution_context
+        self.launch_context = execution_context.context.computer_use if execution_context else None
+        if execution_context is not None:
+            execution_context.check()
+            if self.launch_context is None or not self.launch_context.private_daemon:
+                raise SessionExecutionError("computer-use execution context requires explicit private_daemon launch options")
+        self.desktop_only = bool(self.launch_context and self.launch_context.desktop_only)
+        self._driver_command = (self.launch_context.driver_command if self.launch_context else None)
         self._embedded_daemon: Optional[_EmbeddedCuaDaemon] = None
-        if permission_mode != "standard":
+        if permission_mode != "standard" or execution_context is not None:
             # Manifest: mandatory for bounded (the daemon validates it), optional for unrestricted where it still
             # caps what an approval-bypassed run may touch.
             raw = _computer_use_cfg().get("capability_manifest")
             self._embedded_daemon = _EmbeddedCuaDaemon(
-                resolve_cua_driver_cmd() or "", permission_mode,
-                capability_manifest=raw.strip() if isinstance(raw, str) and raw.strip() else None)
+                self._driver_command or resolve_cua_driver_cmd() or "", permission_mode,
+                capability_manifest=raw.strip() if isinstance(raw, str) and raw.strip() else None,
+                **({"execution_context": execution_context} if execution_context else {}))
         self._bridge = _AsyncBridge()
-        self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
+        self._session = _CuaDriverSession(self._bridge, self._embedded_daemon,
+                                         **({"execution_context": execution_context} if execution_context else {}))
         # Sticky target (set by capture()/focus_app(), used by actions): `_active_pid`, `_active_window_id`, `_last_app`,
         # `_last_target` (exact identity for capture_after — Linux app names may be generic, e.g. several unrelated Qt
         # windows all say Qt6Application), `_snapshot_tokens` (element_index -> element_token, attached to actions so
@@ -238,7 +266,8 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._clear_active_target()
         # Public session label (one per Hermes run) sent as `session` on every call: owns the cursor color and
         # gives config/recording state a stable owner across transport restarts. Part of the 0.20 runtime contract.
-        self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
+        self._session_id: str = ((self.launch_context.session_name if self.launch_context else None)
+                                 or f"hermes-{uuid.uuid4().hex[:12]}")
         self._session.set_transport_reset_callback(self._handle_transport_reset)
 
     def _handle_transport_reset(self) -> None:
@@ -246,14 +275,16 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._clear_active_target()
 
     def start(self) -> None:
-        contract = cua_driver_runtime_contract_status()
-        if not contract.get("ready"):
+        contract = (cua_driver_runtime_contract_status(self._driver_command, execution_context=self.execution_context)
+                    if self.execution_context else cua_driver_runtime_contract_status())
+        if not contract.get("ready") and self.execution_context is None:
             contract = _maybe_repair_runtime_contract(contract)
         if not contract.get("ready"):
             raise RuntimeError(f"cua-driver is not ready: {contract.get('reason') or 'runtime contract is incomplete'}. "
                                + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
                                   if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `hermes computer-use install` to repair it."))
-        _maybe_nudge_update()
+        if self.execution_context is None:
+            _maybe_nudge_update()
         # `mcp` is an optional extra: lazy-install on first use (gated by `security.allow_lazy_installs`); failure
         # raises FeatureUnavailable with the exact `uv pip install` hint.
         from tools.lazy_deps import ensure as _lazy_ensure
@@ -265,8 +296,14 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             self._session.start()
             rollback.pop_all()
         # Declare this run's identity. Non-fatal: cua-driver accepts anonymous calls (cursor won't render), so degrade.
-        self._best_effort("start_session failed (continuing anonymous)",
-                          self._session.call_tool, "start_session", {"session": self._session_id})
+        declaration = {"session": self._session_id}
+        if self.launch_context and self.launch_context.theme:
+            declaration["cursor_theme"] = {"theme_id": self.launch_context.theme}
+        if self.execution_context:
+            self._session.call_tool("start_session", declaration)
+        else:
+            self._best_effort("start_session failed (continuing anonymous)",
+                              self._session.call_tool, "start_session", declaration)
         # Post-handshake tuning guards on `_started`: before the handshake flips it, call_tool would re-enter
         # session.start() (stubbed start() recurses).
         if self._session._started:
@@ -274,7 +311,9 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             if max_dim:  # smaller screenshots cost less over the daemon socket and per turn
                 self._best_effort("set_config(max_image_dimension) failed",
                                   self.set_config, max_image_dimension=max_dim)
-            if _cua_no_overlay():  # belt-and-suspenders when --no-overlay is unsupported or ignored
+            no_overlay = (self.launch_context.no_overlay if self.launch_context and self.launch_context.no_overlay is not None
+                          else _cua_no_overlay())
+            if no_overlay:  # belt-and-suspenders when --no-overlay is unsupported or ignored
                 self._best_effort("set_agent_cursor_enabled failed",
                                   self.set_agent_cursor_enabled, False, cursor_id=self._session_id)
 
@@ -303,6 +342,7 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     def _clear_active_target(self) -> None:
         """Forget a capture/focus target so a failed lookup cannot misroute input."""
         self._active_pid = self._active_window_id = self._last_app = self._last_target = None
+        self._desktop_target_ready = False
         # Surface 6 of NousResearch/hermes-agent#47072: per-snapshot `element_index -> element_token` map
         # populated on capture(). Action tools (click/scroll/set_value/...) attach the matching token
         # alongside `element_index` so cua-driver detects "stale" explicitly instead of silently
@@ -363,6 +403,8 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             args.setdefault("session", self._session_id)
         try:
             out = self._session.call_tool(name, args)
+        except SessionExecutionError as e:
+            return ActionResult(ok=False, action=name, message=str(e), code="policy_denied")
         except Exception as e:
             logger.exception("cua-driver %s call failed", name)
             return ActionResult(ok=False, action=name, message=f"cua-driver error: {e}")

@@ -1320,7 +1320,7 @@ function ProfileSquare({
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => void runExportProfileFlow(label)}>
             <Codicon name="package" size="0.875rem" />
-            <span>{p.exportProfile}</span>
+            <span>{p.exportMenu}</span>
           </ContextMenuItem>
           {onConnectRemote && (
             <ContextMenuItem onSelect={onConnectRemote}>

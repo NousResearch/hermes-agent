@@ -854,7 +854,7 @@ export function useTerminalSession({
         // user last `cd`'d; the main side falls back to the launch cwd (then
         // home) if that dir no longer exists.
         .start({ cols: term.cols, cwd: initialRestoreCwdRef.current || cwd, rows: term.rows })
-        .then(session => {
+        .then(async session => {
           if (disposed) {
             void terminalApi.dispose(session.id)
 
@@ -870,8 +870,6 @@ export function useTerminalSession({
           const initial = term.hasSelection() ? term.getSelection() : ''
           selectionRef.current = initial
           selectionLabelRef.current = initial ? terminalSelectionLabel(term, shellNameRef.current, initial) : ''
-
-          setStatus('open')
 
           cleanup.push(
             terminalApi.onData(session.id, data => {
@@ -891,6 +889,14 @@ export function useTerminalSession({
               }
             })
           )
+
+          const attached = await terminalApi.attach(session.id)
+
+          if (!attached) {
+            throw new Error('Terminal session disappeared before its output stream attached')
+          }
+
+          setStatus('open')
 
           window.requestAnimationFrame(() => {
             term.clearSelection() // drop any selection painted over transient boot rows

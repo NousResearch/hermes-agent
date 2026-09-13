@@ -39,7 +39,7 @@ def test_claim_oneshot_cannot_be_double_claimed(temp_home):
     """A one-shot can't be double-claimed (the fresh claim blocks the retry)."""
     from cron.jobs import create_job, claim_job_for_fire
 
-    job = create_job(prompt="x", schedule="30m", name="o")
+    job = create_job(prompt="x", schedule="in 30m", name="o")
     assert claim_job_for_fire(job["id"]) is True
     assert claim_job_for_fire(job["id"]) is False
 
@@ -215,3 +215,146 @@ def test_fire_claim_fence_rejects_stale_owner(temp_home):
 
     with fire_claim_fence(job["id"], expected_owner="stale") as owns_claim:
         assert owns_claim is False
+
+
+def test_same_process_fire_fence_refuses_second_claim_after_timeout(temp_home, monkeypatch):
+    """A wedged local holder must not indefinitely block another claimant."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="local-fence-timeout")
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.1)
+    completed = threading.Event()
+    result = {}
+
+    def second_claimant():
+        result["claimed"] = jobs.claim_job_for_fire(job["id"])
+        completed.set()
+
+    with jobs._fire_job_lock(job["id"]) as acquired:
+        assert acquired is True
+        thread = threading.Thread(target=second_claimant)
+        thread.start()
+        assert completed.wait(timeout=2), "same-process claimant waited past the fire-fence timeout"
+        assert result["claimed"] is False
+
+    thread.join(timeout=2)
+    assert thread.is_alive() is False
+    assert jobs.claim_job_for_fire(job["id"]) is True
+
+
+def test_same_thread_fire_fence_reentrancy_preserves_ownership(temp_home):
+    """Nested same-thread callers retain the existing fire fence."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="local-fence-reentrant")
+    completed = threading.Event()
+    result = {}
+
+    def reentrant_claimant():
+        with jobs._fire_job_lock(job["id"]) as outer_acquired:
+            result["outer"] = outer_acquired
+            with jobs._fire_job_lock(job["id"]) as inner_acquired:
+                result["inner"] = inner_acquired
+        completed.set()
+
+    thread = threading.Thread(target=reentrant_claimant, daemon=True)
+    thread.start()
+    assert completed.wait(timeout=2), "same-thread nested fire fence did not return"
+    assert result == {"outer": True, "inner": True}
+    thread.join(timeout=2)
+    assert thread.is_alive() is False
+
+
+def test_manual_claim_does_not_stamp_a_future_occurrence(temp_home):
+    """An off-tick run-now must not consume the NEXT scheduled slot.
+
+    Outside a scheduler tick ``next_run_at`` is the occurrence that has NOT happened
+    yet, so stamping it as a completed occurrence makes ``_job_is_due`` skip that slot
+    when it arrives — silently, with no error and no dispatch record. ``manual=True``
+    is the caller's declaration that this is an off-tick fire.
+    """
+    from cron.jobs import create_job, claim_job_for_fire, get_job
+
+    job = create_job(prompt="x", schedule="every 5m", name="m")
+    pending = get_job(job["id"])["next_run_at"]
+
+    claimed = claim_job_for_fire(job["id"], manual=True, return_job=True)
+    assert isinstance(claimed, dict)
+    assert claimed["_scheduled_instant"] is None, (
+        f"manual fire stamped the future occurrence {pending}")
+
+
+def test_manual_claim_still_refuses_a_paused_job(temp_home):
+    """``manual=True`` suppresses only the occurrence stamp — unlike ``force=True`` it
+    must not resume a paused job, which the run-now tool relies on to refuse it."""
+    from cron.jobs import create_job, claim_job_for_fire, get_job, pause_job
+
+    job = create_job(prompt="x", schedule="every 5m", name="mp")
+    pause_job(job["id"])
+
+    assert claim_job_for_fire(job["id"], manual=True) is False
+    assert get_job(job["id"]).get("paused_at") is not None
+
+
+def test_fresh_claim_from_a_dead_same_host_owner_is_reclaimable(temp_home):
+    """A claim younger than the TTL whose owner pid (same host) has exited is stale at once: a
+    ``hermes cron run`` killed mid-flight must not block the next manual run for the whole TTL
+    with "already being fired". A live owner's fresh claim still blocks."""
+    import os
+    import socket
+    import subprocess
+    import sys
+
+    from cron.jobs import claim_job_for_fire, create_job, load_jobs, save_jobs
+
+    jid = create_job(prompt="x", schedule="every 5m", name="s")["id"]
+    assert claim_job_for_fire(jid) is True
+
+    # Live same-host owner (this process) → still blocked.
+    jobs = load_jobs()
+    job = next(j for j in jobs if j["id"] == jid)
+    job["fire_claim"]["by"] = f"{socket.gethostname()}:{os.getpid()}:tok"
+    save_jobs(jobs)
+    assert claim_job_for_fire(jid) is False
+
+    # Owner that has provably exited → reclaimable despite the fresh timestamp.
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    jobs = load_jobs()
+    job = next(j for j in jobs if j["id"] == jid)
+    job["fire_claim"]["by"] = f"{socket.gethostname()}:{child.pid}:tok"
+    save_jobs(jobs)
+    assert claim_job_for_fire(jid) is True
+
+
+def test_heartbeat_does_not_wait_on_the_fence_its_own_run_holds(temp_home, monkeypatch):
+    """The run thread holds the per-job fire fence across delivery; the heartbeat thread must
+    refresh the claim without taking it, or every long run reads as a false ownership loss."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="long-run")
+    assert jobs.claim_job_for_fire(job["id"]) is True
+    owner = jobs.get_job(job["id"])["fire_claim"]["by"]
+    # Keep the pre-fix path fast: the heartbeat used to block for the full fence timeout (30s).
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.2)
+
+    fence_held, release, result = threading.Event(), threading.Event(), {}
+
+    def hold_fence():
+        with jobs.fire_claim_fence(job["id"], expected_owner=owner) as owns:
+            result["owns"] = owns
+            fence_held.set()
+            release.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_fence, daemon=True)
+    holder.start()
+    try:
+        assert fence_held.wait(timeout=5)
+        assert jobs.heartbeat_fire_claim(job["id"], expected_owner=owner) is True
+        # A genuine takeover is still detected while the fence is busy.
+        assert jobs.heartbeat_fire_claim(job["id"], expected_owner="replacement-owner") is False
+    finally:
+        release.set()
+        holder.join(timeout=5)
+    assert result == {"owns": True}
+    assert holder.is_alive() is False

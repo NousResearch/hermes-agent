@@ -210,6 +210,17 @@ def _git_env(store: Path, working_dir: str, index_file: Optional[Path] = None) -
     return env
 
 
+def _remove_stale_index_lock(index_file: Optional[Path]) -> None:
+    """Remove a stale .lock file left by a killed git child (#107149)."""
+    if index_file is None:
+        return
+    lock = Path(str(index_file) + ".lock")
+    try:
+        lock.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _git_subprocess(cmd: List[str], env: dict, timeout: int, cwd: Optional[str] = None):
     # creationflags suppresses the per-call conhost flash on Windows (no-op on POSIX).
     # Text mode both replaces undecodable path bytes and normalizes CR/CRLF.
@@ -248,9 +259,11 @@ def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT
         logger.error("Git command skipped: %s (%s)", " ".join(cmd), msg)
         return False, "", msg
 
+    _remove_stale_index_lock(index_file)
     try:
         result = _git_subprocess(cmd, _git_env(store, str(wd), index_file=index_file), timeout, cwd=str(wd))
     except subprocess.TimeoutExpired:
+        _remove_stale_index_lock(index_file)  # killed child may have left a lock
         msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
         logger.error(msg, exc_info=True)
         return False, "", msg

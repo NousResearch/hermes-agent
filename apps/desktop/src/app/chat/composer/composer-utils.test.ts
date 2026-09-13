@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   acceptsTriggerCompletion,
+  CONTINUE_NUDGE_WINDOW_MS,
+  emptyEnterContinueNudge,
   implicitSlashAcceptIndex,
   isPendingDraftPersistCurrent,
   type PendingDraftPersist,
@@ -175,5 +177,48 @@ describe('isPendingDraftPersistCurrent (#54527 integrity guard)', () => {
 
   it('rejects when nothing was ever captured', () => {
     expect(isPendingDraftPersistCurrent(null, null)).toBe(false)
+  })
+})
+
+describe('emptyEnterContinueNudge (#103558)', () => {
+  it('never fires while the setting is off — one empty Enter stays the no-op it has always been', () => {
+    expect(emptyEnterContinueNudge(null, 1_000, false)).toEqual({ fire: false, lastEmptyEnterAt: null })
+    expect(emptyEnterContinueNudge(1_000, 1_100, false)).toEqual({ fire: false, lastEmptyEnterAt: null })
+  })
+
+  it('does not fire on the first empty Enter with the setting on', () => {
+    const first = emptyEnterContinueNudge(null, 1_000, true)
+
+    expect(first.fire).toBe(false)
+    expect(first.lastEmptyEnterAt).toBe(1_000)
+  })
+
+  it('fires on a second empty Enter inside the window', () => {
+    const second = emptyEnterContinueNudge(1_000, 1_000 + CONTINUE_NUDGE_WINDOW_MS, true)
+
+    expect(second.fire).toBe(true)
+  })
+
+  it('treats a slow second press as a fresh first press', () => {
+    const second = emptyEnterContinueNudge(1_000, 1_000 + CONTINUE_NUDGE_WINDOW_MS + 1, true)
+
+    expect(second.fire).toBe(false)
+    expect(second.lastEmptyEnterAt).toBe(1_000 + CONTINUE_NUDGE_WINDOW_MS + 1)
+  })
+
+  it('clears the stamp after firing, so a third Enter needs its own pair', () => {
+    const fired = emptyEnterContinueNudge(1_000, 1_100, true)
+
+    expect(fired.fire).toBe(true)
+    expect(emptyEnterContinueNudge(fired.lastEmptyEnterAt, 1_200, true)).toEqual({
+      fire: false,
+      lastEmptyEnterAt: 1_200
+    })
+  })
+
+  it('drops a stale stamp when the setting is toggled on mid-chat', () => {
+    const off = emptyEnterContinueNudge(1_000, 1_100, false)
+
+    expect(emptyEnterContinueNudge(off.lastEmptyEnterAt, 1_200, true).fire).toBe(false)
   })
 })

@@ -552,6 +552,9 @@ export const ar = defineLocale({
       toolViewDesc: 'تحكم في كيفية عرض نشاط الأدوات داخل المحادثة.',
       reasoningCollapsedTitle: 'طي التفكير افتراضيًا',
       reasoningCollapsedDesc: 'أبقِ التفكير المتدفق متاحًا دون توسيعه حتى تفتحه.',
+      continueOnDoubleEnterTitle: 'المتابعة بالضغط على Enter مرتين',
+      continueOnDoubleEnterDesc:
+        'في حقل الإدخال الفارغ، الضغط على Enter مرة ثانية خلال 600 مللي ثانية يرسل «تابع» لدفع دور متوقف.',
       translucencyTitle: 'شفافية النافذة',
       translucencyDesc: 'إظهار سطح المكتب من خلال النافذة بالكامل، بما في ذلك النص.',
       translucencyGlassDesc: 'زجاج غير لامع: يظهر سطح المكتب كضبابية ناعمة بينما يبقى النص واضحًا.',
@@ -2009,6 +2012,7 @@ export const ar = defineLocale({
   },
   composer: {
     message: 'الرسالة',
+    continueNudge: 'تابع',
     wakingProfile: profile => `جار إيقاظ ${profile}`,
     placeholderStarting: 'جار بدء Hermes...',
     placeholderReconnecting: 'جار إعادة الاتصال...',

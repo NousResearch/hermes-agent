@@ -486,6 +486,9 @@ export const ja = defineLocale({
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
       reasoningCollapsedTitle: '思考ブロックをデフォルトで折りたたむ',
       reasoningCollapsedDesc: 'ストリーミング中の推論を、開くまで折りたたんだまま利用できるようにします。',
+      continueOnDoubleEnterTitle: 'Enter 2回で続行',
+      continueOnDoubleEnterDesc:
+        '入力欄が空のとき、600 ミリ秒以内に Enter をもう一度押すと「続けて」を送信し、停滞したターンを進めます。',
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
@@ -2343,6 +2346,7 @@ export const ja = defineLocale({
 
   composer: {
     message: 'メッセージ',
+    continueNudge: '続けて',
     wakingProfile: profile => `${profile} を起動中…`,
     placeholderStarting: 'Hermes を起動中...',
     placeholderReconnecting: 'Hermes に再接続中…',

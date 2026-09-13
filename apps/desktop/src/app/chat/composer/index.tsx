@@ -20,6 +20,7 @@ import { useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
+import { $continueOnDoubleEnter } from '@/store/composer-continue-nudge'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
@@ -36,6 +37,7 @@ import { AttachmentList } from './attachments'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
+  emptyEnterContinueNudge,
   implicitSlashAcceptIndex,
   type QueueEditState,
   shouldDisableComposerInput,
@@ -226,6 +228,9 @@ export function ChatBar({
   // engine writes it — an explicit shared handle, not a back-reference.
   const queueEditRef = useRef<QueueEditState | null>(null)
   const composingRef = useRef(false) // true during IME composition (CJK input)
+  // Timestamp of the last empty Enter that did nothing, for the opt-in
+  // Continue-on-double-Enter nudge (#103558).
+  const lastEmptyEnterAtRef = useRef<number | null>(null)
 
   const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
@@ -374,7 +379,7 @@ export function ChatBar({
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
-  const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
+  const { dispatchSubmit, queueDraft, steerDraft, submitDraft } = useComposerSubmit({
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
     attachments,
@@ -947,6 +952,31 @@ export function ChatBar({
         }
 
         return
+      }
+
+      // Still a no-op path: an empty Enter on a stopped turn with nothing
+      // queued. Opted in via Settings › Appearance (#103558), a SECOND empty
+      // Enter inside the window nudges the run along with a localized
+      // «Continue» — no typing, just a push for a turn that stalled without
+      // finishing. A single Enter never submits anything, and the setting is
+      // off by default, so the historical no-op is what everyone still gets.
+      //
+      // Only a genuine, consecutive empty press counts: a held Enter (key
+      // repeat) must not machine-gun the agent, a typed send or a queue edit
+      // breaks the pair, and a keyed press while editing a queued turn keeps
+      // saving that edit through submitDraft() below.
+      if (!hasLivePayload && !event.repeat && !queueEdit) {
+        const nudge = emptyEnterContinueNudge(lastEmptyEnterAtRef.current, Date.now(), $continueOnDoubleEnter.get())
+
+        lastEmptyEnterAtRef.current = nudge.lastEmptyEnterAt
+
+        if (nudge.fire) {
+          dispatchSubmit(t.composer.continueNudge)
+
+          return
+        }
+      } else {
+        lastEmptyEnterAtRef.current = null
       }
 
       submitDraft()

@@ -217,3 +217,34 @@ export function isPendingDraftPersistCurrent(
 ): boolean {
   return pending !== null && expected !== null && pending.scope === expected.scope && pending.text === expected.text
 }
+
+/** How long after an empty Enter a second one still counts as the nudge pair. */
+export const CONTINUE_NUDGE_WINDOW_MS = 600
+
+/**
+ * Empty Enter on a turn that has stopped (or is running with nothing queued) is
+ * a deliberate no-op. Opted in via Settings › Appearance, a SECOND empty Enter
+ * inside the window turns that no-op into a nudge: the caller sends a localized
+ * «Continue» so a run that stalled without finishing can be pushed along
+ * without typing — the point of the setting (#103558).
+ *
+ * Returns the stamp to carry into the next empty Enter. It is cleared after a
+ * fire (a third Enter starts a fresh pair, so holding Enter can't machine-gun
+ * the agent) and while disabled (toggling the setting on mid-chat must not fire
+ * off a press from before).
+ */
+export function emptyEnterContinueNudge(
+  lastEmptyEnterAt: number | null,
+  now: number,
+  enabled: boolean
+): { fire: boolean; lastEmptyEnterAt: number | null } {
+  if (!enabled) {
+    return { fire: false, lastEmptyEnterAt: null }
+  }
+
+  if (lastEmptyEnterAt !== null && now - lastEmptyEnterAt <= CONTINUE_NUDGE_WINDOW_MS) {
+    return { fire: true, lastEmptyEnterAt: null }
+  }
+
+  return { fire: false, lastEmptyEnterAt: now }
+}

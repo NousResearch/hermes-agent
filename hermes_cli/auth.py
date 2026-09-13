@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tup
 from urllib.parse import urlparse
 
 from hermes_cli.config import (
-    get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
+    get_hermes_home, get_config_path, load_config_readonly, read_raw_config, require_readable_config_before_write)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
@@ -485,6 +485,28 @@ def _global_auth_file_path() -> Optional[Path]:
     """Global-root auth.json in profile mode; None when profile and global root are the same dir.
 
     Read-only fallback path, so no pytest seat belt here (it lives on ``_auth_file_path()``)."""
+    # Named profiles inherit root credentials by default for backward
+    # compatibility. Security-sensitive/service profiles can opt out in their
+    # own config.yaml:
+    #
+    #   auth:
+    #     global_fallback: false
+    #
+    # Keep this gate at the path resolver so every global read and OAuth
+    # refresh write-through observes the same boundary.
+    try:
+        resolved_config = load_config_readonly()
+        auth_config = (
+            resolved_config.get("auth") if isinstance(resolved_config, dict) else None
+        )
+        if isinstance(auth_config, dict) and not is_truthy_value(
+            auth_config.get("global_fallback"), default=True
+        ):
+            return None
+    except Exception:
+        # A malformed/unreadable config must preserve the historical default.
+        logger.debug("Failed to read auth.global_fallback; preserving fallback", exc_info=True)
+
     try:
         from hermes_constants import get_default_hermes_root
         global_root = get_default_hermes_root()

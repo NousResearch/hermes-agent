@@ -14,6 +14,7 @@ boundary, so they exercise the actual atomic write path.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -88,3 +89,54 @@ def test_write_through_failure_does_not_break_profile_save(profile_and_root, mon
 
     profile = _read_store(profile_path)
     assert profile["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "r"
+
+
+def test_disabled_global_fallback_rejects_root_xai_and_prevents_write_through(
+    tmp_path, monkeypatch
+):
+    """Profile isolation covers both xAI root reads and refresh write-through."""
+    from hermes_cli import managed_scope
+    import hermes_cli.config as config_module
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root_dir = tmp_path / ".hermes"
+    profile_dir = root_dir / "profiles" / "isolated"
+    profile_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+    (profile_dir / "config.yaml").write_text(
+        "auth:\n  global_fallback: false\n", encoding="utf-8"
+    )
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
+    managed_scope.invalidate_managed_cache()
+
+    profile_path = profile_dir / "auth.json"
+    root_path = root_dir / "auth.json"
+    _write_store(profile_path, {"version": 1, "providers": {}})
+    _write_store(root_path, {
+        "version": 1,
+        "providers": {
+            "xai-oauth": {
+                "tokens": {
+                    "access_token": "root-access",
+                    "refresh_token": "root-refresh",
+                }
+            }
+        },
+    })
+
+    with pytest.raises(auth.AuthError, match="No xAI OAuth credentials stored"):
+        auth._read_xai_oauth_tokens()
+
+    auth._save_xai_oauth_tokens({
+        "access_token": "profile-access",
+        "refresh_token": "profile-refresh",
+    })
+    assert _read_store(profile_path)["providers"]["xai-oauth"]["tokens"] == {
+        "access_token": "profile-access",
+        "refresh_token": "profile-refresh",
+    }
+    assert _read_store(root_path)["providers"]["xai-oauth"]["tokens"] == {
+        "access_token": "root-access",
+        "refresh_token": "root-refresh",
+    }

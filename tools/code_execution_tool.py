@@ -758,11 +758,11 @@ def _kill_process_group(proc, escalate: bool = False):
 
 
 def _load_config() -> dict:
-    """``code_execution`` config section via the lightweight raw reader — runs while the
+    """Effective ``code_execution`` section (defaults + user file + managed overlay) — runs while the
     module-level schema is built at tool discovery, so it must not import ``cli``."""
     try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config().get("code_execution", {})
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly().get("code_execution", {})
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}

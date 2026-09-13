@@ -190,12 +190,8 @@ def _router_request(endpoint: Dict[str, Any], path: str, *, timeout: float, payl
         return None if payload is not None else json.loads(r.read())
 
 
-def _load_config() -> dict:
-    return _quiet(config_mod.load_config, {})
-
-
 def _runtime_section() -> dict:
-    return (_load_config() or {}).get("local_runtime") or {}
+    return (config_mod.load_config_readonly() or {}).get("local_runtime") or {}
 
 
 def _set_runtime_enabled(enabled: bool) -> dict:
@@ -445,7 +441,7 @@ def _active_llamacpp_model_id() -> str | None:
     """The active main model when it is one of ours (config authority: the model.provider + model.default
     that /api/model/set writes)."""
     def read() -> str | None:
-        model_section = (_load_config() or {}).get("model") or {}
+        model_section = (config_mod.load_config_readonly() or {}).get("model") or {}
         if str(model_section.get("provider", "")).strip().lower() in _LLAMACPP_PROVIDERS:
             return str(model_section.get("default") or model_section.get("name") or "").strip() or None
         return None
@@ -635,7 +631,7 @@ def _restart_on_new_tag(job: Dict[str, Any], tag: str, previous: list) -> bool:
         return False
     _step(job, "restarting", "Switching the running server to the new build")
     bootstrap.shutdown_local_runtime()
-    bootstrap.ensure_local_runtime(_load_config(), force=True)
+    bootstrap.ensure_local_runtime(config_mod.load_config_readonly(), force=True)
     return True
 
 

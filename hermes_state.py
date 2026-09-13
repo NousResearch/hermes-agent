@@ -27,7 +27,12 @@ from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
-from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
+from hermes_state_common import (
+    _corruption_warned_fingerprints,  # noqa: F401  (re-export: tests reset the per-process dedupe)
+    escape_like as _escape_like,
+    stat_db_file_identity as _stat_db_file_identity,
+    tolerant_decode_bytes as _tolerant_decode_bytes,
+)
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
@@ -73,9 +78,6 @@ logger = logging.getLogger(__name__)
 
 _MAX_SAFE_MESSAGES = 20_000  # resume/export guard default
 
-# One warning per distinct corrupt value per process: repeated reads of the same bad cell stay silent.
-_corruption_warned_fingerprints: set = set()
-
 
 def _tolerant_text_factory(data: bytes) -> str:
     """Decode a TEXT cell strictly when possible; undecodable bytes (e.g. a multi-byte
@@ -85,21 +87,11 @@ def _tolerant_text_factory(data: bytes) -> str:
     Read/display surfaces stay tolerant on every connection (the read pool and the writer,
     which _read_ctx degrades display queries onto when WAL is off or the pool is exhausted).
     Read-modify-write seams instead decode strictly at the seam via BLOB casts
-    (_merge_model_config_json), so a malformed cell aborts the mutation instead of being
-    U+FFFD-rewritten over the original data. The warning is content-free (length + sha256
-    fingerprint, comparable against suspect cells via python) and fires once per distinct
-    bad value per process."""
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        fingerprint = hashlib.sha256(data).hexdigest()[:16]
-        if fingerprint not in _corruption_warned_fingerprints:
-            _corruption_warned_fingerprints.add(fingerprint)
-            logger.warning(
-                "state.db: undecodable UTF-8 stored text (len=%d, sha256[:16]=%s) degraded to U+FFFD on read",
-                len(data), fingerprint,
-            )
-        return data.decode("utf-8", errors="replace")
+    (_merge_model_config_json, set_message_reaction), so a malformed cell aborts the mutation
+    instead of being U+FFFD-rewritten over the original data. The warning is content-free
+    (length + sha256 fingerprint, comparable against suspect cells via python), bounded, and
+    thread-safe — see hermes_state_common.tolerant_decode_bytes."""
+    return _tolerant_decode_bytes(data)
 
 
 def _configured_transcript_limit(key: str, fallback: int = _MAX_SAFE_MESSAGES) -> int:
@@ -436,6 +428,10 @@ class SessionDB(
             resolved = data.pop("_system_prompt_resolved")
             if "system_prompt" in data:
                 data["system_prompt"] = resolved
+        if isinstance(data.get("system_prompt"), bytes):
+            # BLOB storage bypasses text_factory (sqlite3 contract): degrade here so the public
+            # session dict stays a serializable str for BOTH storage classes (#109465 review).
+            data["system_prompt"] = _tolerant_decode_bytes(data["system_prompt"])
         return data
 
     @staticmethod

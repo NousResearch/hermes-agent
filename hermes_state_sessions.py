@@ -49,6 +49,23 @@ def _parse_model_config(raw: Any) -> Dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
+def _parse_model_config_strict(raw: Any, session_id: str) -> Dict[str, Any]:
+    """Fail-closed parse for the read-modify-write seam: a syntactically malformed JSON cell
+    that strict-decoded fine (valid UTF-8) must still abort the patch instead of parsing away
+    to {} and letting the patch overwrite the stored field (#109465 review: a
+    `{"keep":"yes" BROKEN` cell patched to only `{"new":1}`). Legal emptiness (NULL/blank)
+    stays {}, same as the tolerant read path."""
+    if isinstance(raw, str) and raw.strip():
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise sqlite3.OperationalError(
+                f"session '{session_id}': model_config is not valid JSON; aborting the config "
+                f"patch so the stored field is not rewritten (fail closed): {exc}"
+            ) from exc
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
 def _strict_model_config_text(raw: Any, session_id: str) -> Any:
     """Fail-closed decode for the read-modify-write seam: a malformed model_config cell must
     abort the mutation with OperationalError (sqlite3's strict-decode failure type) instead of
@@ -699,7 +716,7 @@ class SessionSessionsMixin:
             if on_missing == "raise":
                 raise ValueError(f"Session not found: {session_id}")
             return _MODEL_CONFIG_ROW_MISSING
-        config = _parse_model_config(_strict_model_config_text(row[0], session_id))
+        config = _parse_model_config_strict(_strict_model_config_text(row[0], session_id), session_id)
         for key, value in patch.items():
             if value is None:
                 config.pop(key, None)

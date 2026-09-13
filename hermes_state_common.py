@@ -3,11 +3,14 @@ the mixin modules can import it without a cycle."""
 
 import contextlib
 import errno
+import hashlib
 import json
 import logging
 import os
 import sys
+import threading
 import time
+from collections import OrderedDict
 from typing import Any
 
 from agent.skill_commands import SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
@@ -981,6 +984,42 @@ _LOCK_BREAK_REACQUIRE_SECONDS = 5.0
 # "Another process holds the lock": flock → EWOULDBLOCK/EAGAIN, msvcrt.locking → EACCES (EDEADLK when its retry
 # gives up).  Anything else (ESTALE, ENOTSUP, ENOLCK, EIO) is a persistent failure polling cannot fix.
 _LOCK_CONTENTION_ERRNOS = {errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK, errno.EDEADLK}
+
+# One warning per distinct corrupt value per process, bounded and thread-safe (#109465 review: an
+# unbounded plain set retained one fingerprint per distinct bad cell — 10k malformed cells kept
+# 10k entries — and check/add raced across reader threads). Oldest fingerprint falls out at the
+# cap and may warn again on a later read: bounded memory beats a silent unbounded leak.
+_CORRUPTION_WARN_FINGERPRINT_CAP = 256
+_corruption_warned_fingerprints: "OrderedDict[str, None]" = OrderedDict()
+_corruption_warned_lock = threading.Lock()
+
+
+def warn_corrupt_cell(data: bytes) -> None:
+    """Content-free corrupt-cell warning: length + sha256[:16] fingerprint, never the raw bytes
+    (cells can hold prompts or accidentally persisted credentials)."""
+    fingerprint = hashlib.sha256(data).hexdigest()[:16]
+    with _corruption_warned_lock:
+        if fingerprint in _corruption_warned_fingerprints:
+            return
+        _corruption_warned_fingerprints[fingerprint] = None
+        if len(_corruption_warned_fingerprints) > _CORRUPTION_WARN_FINGERPRINT_CAP:
+            _corruption_warned_fingerprints.popitem(last=False)
+    logger.warning(
+        "state.db: undecodable UTF-8 stored text (len=%d, sha256[:16]=%s) degraded to U+FFFD on read",
+        len(data), fingerprint)
+
+
+def tolerant_decode_bytes(data: bytes) -> str:
+    """Decode a stored cell strictly when possible; undecodable bytes (e.g. a multi-byte character
+    truncated by a mid-write process death) degrade to U+FFFD in that one cell instead of aborting
+    every session-list/load query with OperationalError (#109450). Shared by ``text_factory``
+    (TEXT storage) and the BLOB hydration seams (BLOB storage bypasses ``text_factory``), so both
+    storage classes degrade identically and no public read surface ever hands out ``bytes``."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        warn_corrupt_cell(data)
+        return data.decode("utf-8", errors="replace")
 
 
 def is_advisory_lock_contention(exc: BaseException) -> bool:

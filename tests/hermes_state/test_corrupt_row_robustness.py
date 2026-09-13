@@ -6,6 +6,7 @@ timestamp column (#102399, #102352, #99959). Never monkeypatch the coercion help
 
 import argparse
 import hashlib
+import json
 import logging
 import sqlite3
 
@@ -17,6 +18,8 @@ from hermes_cli.session_export_html import generate_multi_session_html_export
 from hermes_cli.session_export_md import _iso_timestamp
 from hermes_cli.sessions_cmd import _cmd_list
 from hermes_state import SessionDB, _corruption_warned_fingerprints
+from hermes_state_common import (
+    _CORRUPTION_WARN_FINGERPRINT_CAP, warn_corrupt_cell as _warn_corrupt_cell)
 
 
 @pytest.fixture
@@ -142,28 +145,47 @@ def test_corrupt_model_config_aborts_mutation_instead_of_rewriting(tmp_path):
         db.close()
 
 
-def test_blob_stored_prompt_reads_back_as_bytes(tmp_path):
-    """BLOB storage bypasses text_factory by sqlite3 contract: a value stored as BLOB reads back
-    as ``bytes`` (pre-existing behavior, unchanged by this fix), unlike malformed TEXT which
-    degrades to U+FFFD on read."""
+def test_blob_stored_cells_degrade_to_str_never_escape_as_bytes(tmp_path, caplog):
+    """BLOB storage bypasses text_factory by sqlite3 contract, but NO public read surface may
+    hand out bytes: a BLOB system_prompt/message-content decodes to str (U+FFFD on undecodable
+    bytes), so session dicts and message dicts stay JSON-serializable for BOTH storage classes
+    (#109465 review: bytes escaped the public session API and json.dumps(message) raised
+    TypeError)."""
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         db.create_session("bad", "cli", system_prompt="placeholder tail")
-        raw = b"You are Hermes \xe2\x9c"
+        db.append_message("bad", "user", "msg placeholder tail")
+        undecodable = b"You are Hermes \xe2\x9c"
 
-        def _store_blob(conn):
+        def _store_blobs(conn):
             row = conn.execute(
                 "SELECT hash FROM system_prompts WHERE prompt LIKE '%placeholder tail%'"
             ).fetchone()
             # No CAST: binding bytes stores a BLOB, which text_factory never sees.
-            conn.execute("UPDATE system_prompts SET prompt = ? WHERE hash = ?", (raw, row["hash"]))
+            conn.execute("UPDATE system_prompts SET prompt = ? WHERE hash = ?", (undecodable, row["hash"]))
+            conn.execute("UPDATE messages SET content = ? WHERE session_id = 'bad'", (undecodable,))
 
-        db._execute_write(_store_blob)
+        db._execute_write(_store_blobs)
         assert db._conn.execute(
             "SELECT typeof(sp.prompt) FROM system_prompts sp"
             " JOIN sessions s ON s.system_prompt_hash = sp.hash WHERE s.id = 'bad'"
         ).fetchone()[0] == "blob"
-        assert db.get_session("bad")["system_prompt"] == raw  # bytes in, bytes out
+
+        _corruption_warned_fingerprints.clear()  # module-level dedup: start from a known state
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            session = db.get_session("bad")
+            messages = db.get_messages("bad")
+
+        # Both storage classes degrade identically: str with U+FFFD, never bytes.
+        assert session["system_prompt"] == "You are Hermes \ufffd"
+        assert isinstance(messages[0]["content"], str)
+        assert messages[0]["content"] == "You are Hermes \ufffd"
+        # Stable serializable output contract: json.dumps works on every public dict.
+        assert json.dumps(session) and json.dumps(messages)
+        # The BLOB degrade path shares the content-free fingerprint warning with text_factory.
+        fingerprint = hashlib.sha256(undecodable).hexdigest()[:16]
+        warned = [r for r in caplog.records if "degraded to U+FFFD" in r.getMessage()]
+        assert fingerprint in warned[0].getMessage()
     finally:
         db.close()
 
@@ -201,3 +223,115 @@ def test_bulk_delete_and_prune_stay_below_sqlite_variable_limit(tmp_path):
         assert db._read_one("SELECT COUNT(*) FROM messages WHERE session_id NOT IN (SELECT id FROM sessions)")[0] == 0
     finally:
         db.close()
+
+
+def test_broken_json_model_config_aborts_mutation_instead_of_rewriting(tmp_path):
+    """A syntactically malformed but valid-UTF-8 model_config cell aborts the patch too, not
+    just undecodable bytes: the strict decode alone left `{"keep":"yes" BROKEN` parsing away
+    to {} and letting the patch overwrite the stored field (#109465 review follow-up)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("bad", "cli")
+        raw = '{"keep": "yes" BROKEN'  # decodes fine, parses to nothing
+
+        def _corrupt(conn):
+            conn.execute("UPDATE sessions SET model_config = ? WHERE id = 'bad'", (raw,))
+
+        db._execute_write(_corrupt)
+
+        with pytest.raises(sqlite3.OperationalError):
+            db.patch_session_model_config("bad", {"new": 1})
+
+        stored = db._read_one("SELECT CAST(model_config AS BLOB) FROM sessions WHERE id = 'bad'")[0]
+        assert bytes(stored) == raw.encode("utf-8")  # fail closed: byte-identical, "keep" survived
+    finally:
+        db.close()
+
+
+def test_reaction_write_never_drops_unrelated_display_metadata(tmp_path):
+    """set_message_reaction is a display_metadata read-modify-write seam: a malformed cell
+    (undecodable UTF-8, broken JSON, or a non-object value) aborts the reaction write with
+    OperationalError and the cell is preserved byte-identical; a healthy cell keeps its
+    unrelated keys through the rewrite (#109465 review: the {}-fallback dropped them)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("s", "cli")
+        db.append_message("s", "user", "hello")
+        row_id = db.latest_message_row_id("s", role="user")
+
+        def _undecodable(conn):
+            conn.execute("UPDATE messages SET display_metadata = CAST(? AS TEXT) WHERE id = ?",
+                         (b'{"task_count": 3}\xff', row_id))
+
+        def _broken_json(conn):
+            conn.execute("UPDATE messages SET display_metadata = ? WHERE id = ?",
+                         ('{"task_count": 3 BROKEN', row_id))
+
+        def _non_object(conn):
+            conn.execute("UPDATE messages SET display_metadata = ? WHERE id = ?",
+                         ('["not", "an", "object"]', row_id))
+
+        for label, corrupt, expected in (
+            ("undecodable UTF-8", _undecodable, b'{"task_count": 3}\xff'),
+            ("broken JSON", _broken_json, b'{"task_count": 3 BROKEN'),
+            ("non-object JSON", _non_object, b'["not", "an", "object"]'),
+        ):
+            db._execute_write(corrupt)
+            with pytest.raises(sqlite3.OperationalError):
+                db.set_message_reaction("s", row_id, "\U0001f44d", author="user")
+            stored = db._read_one(
+                "SELECT CAST(display_metadata AS BLOB) FROM messages WHERE id = ?", (row_id,))[0]
+            assert bytes(stored) == expected, f"{label}: cell must stay byte-identical, not rewritten"
+
+        # Healthy cell: the reaction merges and the unrelated key survives the rewrite.
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_metadata = ? WHERE id = ?",
+            ('{"task_count": 3}', row_id)))
+        reactions = db.set_message_reaction("s", row_id, "\U0001f44d", author="user")
+        assert [r["emoji"] for r in reactions] == ["\U0001f44d"]
+        meta = json.loads(db._read_one(
+            "SELECT display_metadata FROM messages WHERE id = ?", (row_id,))[0])
+        assert meta["task_count"] == 3  # unrelated metadata preserved through the seam
+    finally:
+        db.close()
+
+
+def test_corruption_warning_dedupe_is_bounded_and_thread_safe(caplog):
+    """The per-process fingerprint dedupe is bounded and thread-safe: N distinct malformed cells
+    keep at most _CORRUPTION_WARN_FINGERPRINT_CAP entries (#109465 review: an unbounded plain
+    set retained one fingerprint per distinct bad cell and check/add raced across reader
+    threads); the oldest entry falls out at the cap and may warn again on a later read."""
+    import threading
+
+    _corruption_warned_fingerprints.clear()
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        for i in range(_CORRUPTION_WARN_FINGERPRINT_CAP + 50):
+            _warn_corrupt_cell(b"distinct-bad-cell-%d-\xff" % i)
+    assert len(_corruption_warned_fingerprints) == _CORRUPTION_WARN_FINGERPRINT_CAP
+
+    # The oldest fingerprint fell out (warns again on a later read); a retained one stays silent.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        _warn_corrupt_cell(b"distinct-bad-cell-0-\xff")
+        _warn_corrupt_cell(b"distinct-bad-cell-%d-\xff" % (_CORRUPTION_WARN_FINGERPRINT_CAP + 49))
+    warns = [r for r in caplog.records if "degraded to U+FFFD" in r.getMessage()]
+    assert len(warns) == 1
+
+    # Concurrent warners: no exception, and the set never exceeds the cap.
+    errors: list = []
+
+    def _hammer(worker: int) -> None:
+        try:
+            for i in range(200):
+                _warn_corrupt_cell(b"worker-%d-cell-%d-\xff" % (worker, i))
+        except Exception as exc:  # pragma: no cover - only on a locking regression
+            errors.append(exc)
+
+    _corruption_warned_fingerprints.clear()
+    threads = [threading.Thread(target=_hammer, args=(w,)) for w in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    assert len(_corruption_warned_fingerprints) <= _CORRUPTION_WARN_FINGERPRINT_CAP

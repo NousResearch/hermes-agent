@@ -15,10 +15,10 @@ import socket
 import sys
 import threading
 import time
-import urllib.request
 from typing import Any, Optional
 
 from utils import base_url_hostname, normalize_proxy_url
+from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
 
 
 _OPENAI_CLS_CACHE = None
@@ -288,18 +288,18 @@ class _SafeWriter:
 
 def _get_proxy_from_env() -> Optional[str]:
     """First configured proxy URL from HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (any case), or None."""
-    keys = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
-    return next((normalize_proxy_url(v) for k in keys if (v := os.environ.get(k, "").strip())), None)
+    value = first_proxy_env_value()
+    return normalize_proxy_url(value) if value else None
 
 
 def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
-    """Env-configured proxy unless NO_PROXY excludes this base URL."""
+    """Env-configured proxy unless NO_PROXY excludes this base URL (same matcher as the
+    gateway adapters: CIDR, ``*.`` wildcards and host:port entries all count)."""
     proxy = _get_proxy_from_env()
-    host = base_url_hostname(base_url) if proxy and base_url else ""
-    try:
-        return None if host and urllib.request.proxy_bypass_environment(host) else proxy
-    except Exception:
+    if not (proxy and base_url):
         return proxy
+    raw = base_url.strip()
+    return None if should_bypass_proxy(raw if "://" in raw else f"//{raw}") else proxy
 
 
 def _shared_transport_cls():

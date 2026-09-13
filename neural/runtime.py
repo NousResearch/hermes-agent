@@ -10,6 +10,7 @@ from neural.bus import NeuralBus
 from neural.events import NeuralEvent, NeuralSignal
 from neural.guardian import Guardian
 from neural.memory import Memory
+from neural.perception import SensoryCell
 from neural.processing import NeuralProcessor
 from neural.self_model import SelfModel
 
@@ -44,6 +45,25 @@ class NeuralRuntime:
             source=source,
             event_type=event_type,
             payload={} if payload is None else payload,
+            importance=importance,
+            confidence=confidence,
+            correlation_id=correlation_id,
+        )
+        self.bus.publish(event)
+        return event
+
+    def sense(
+        self,
+        cell: SensoryCell,
+        payload: Mapping[str, Any],
+        *,
+        importance: float = 0.5,
+        confidence: float = 1.0,
+        correlation_id: str | None = None,
+    ) -> NeuralEvent:
+        """Normalize and publish an already-observed fact through a sensory cell."""
+        event = cell.observe(
+            payload,
             importance=importance,
             confidence=confidence,
             correlation_id=correlation_id,

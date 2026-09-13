@@ -58,7 +58,7 @@ echo "✅ Done. Log: $LOG_FILE"
 #
 #   --resume                  Resume from checkpoint if interrupted
 #   --verbose                 Enable detailed logging
-#   --max_tokens=63000        Set max response tokens
+
 #   --reasoning_disabled      Disable model thinking/reasoning tokens
 #   --providers_allowed="anthropic,google"  Restrict to specific providers
 #   --prefill_messages_file="configs/prefill.json"  Few-shot priming

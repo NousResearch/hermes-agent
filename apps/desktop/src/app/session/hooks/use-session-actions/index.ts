@@ -91,6 +91,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import { clearSessionControl } from '@/store/session-control'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   beginSessionMutation,
@@ -110,6 +111,7 @@ import {
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
+  focusOpenSession,
   holdSessionOwnerUntilForeground,
   openSessionTile,
   patchSessionTile,
@@ -136,6 +138,7 @@ import type { ClientSessionState, SidebarNavItem } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
+import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import {
   createPersistedDisplayTranscriptProvenance,
@@ -530,7 +533,16 @@ export function useSessionActions({
   )
 
   const createBackendSessionForSend = useCallback(
-    async (preview: string | null = null): Promise<string | null> => {
+    async (
+      preview: string | null = null,
+      seedMessages?: SessionSeedMessage[],
+      // Create the session titled or at a pinned reasoning effort (guided
+      // onboarding mints its welcome chat this way). The owning profile is NOT
+      // an override — point $newChatProfile at it first (selectProfile-style)
+      // so the create lands on that profile's own backend and every later
+      // ambient RPC follows.
+      createOverrides?: SessionCreateOverrides
+    ): Promise<string | null> => {
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
 
@@ -560,7 +572,11 @@ export function useSessionActions({
         // reduce the owner to a bare profile name that later RPCs dial on a
         // different socket than the one that minted the runtime.
         const capturedRoute = resolveNewChatOwnerRoute()
-        const params = await desktopSessionCreateParams(cwd, capturedRoute)
+
+        const params = {
+          ...(await desktopSessionCreateParams(cwd, capturedRoute)),
+          ...sessionCreateOverrideParams(createOverrides, seedMessages)
+        }
 
         // Lease the owner socket for the whole create → owner-publication
         // sequence (#93602 primitive). The per-request lease inside
@@ -835,7 +851,7 @@ export function useSessionActions({
           setWorkspaceCwdOwner(stored)
         }
 
-        revealTreePane(`session-tile:${stored}`)
+        focusOpenSession(stored, workspaceScope)
 
         if (listed) {
           broadcastSessionsChanged()
@@ -2480,6 +2496,7 @@ export function useSessionActions({
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
+          clearSessionControl(closingRuntimeId)
         }
 
         // A tiled copy of this session must not outlive it: collapse the pane

@@ -62,16 +62,6 @@ def _lift_model_capabilities(entry: Dict[str, Any], model: Optional[str], result
         result["capabilities"] = capabilities
 
 
-def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
-    """``max_output_tokens`` or ``max_tokens`` on a provider entry pins its own output limit;
-    gateway/CLI map it onto ``AIAgent.max_tokens`` only when top-level ``model.max_tokens`` is
-    unset, so the documented global key still wins."""
-    for key in ("max_output_tokens", "max_tokens"):
-        value = entry.get(key)
-        if isinstance(value, int) and value > 0:
-            result["max_output_tokens"] = value
-            return
-
 
 def _lift_extra_headers(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
     """Copy a validated ``extra_headers`` dict. SECURITY: values carry credentials — never log."""
@@ -93,7 +83,7 @@ def _lift_common_custom_fields(entry: Dict[str, Any], result: Dict[str, Any], *,
     _lift_extra_headers(entry, result)
     if api_mode:
         result["api_mode"] = api_mode
-    _lift_max_output_tokens(entry, result)
+
     _lift_model_capabilities(entry, None, result)
 
 
@@ -262,16 +252,21 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
                               model: Optional[str] = None) -> Optional[str]:
-    """Recover a routable ``custom:<name>`` identity for a bare custom provider. Every path that
-    persists or restores a session's provider override must run the resolved provider through this
-    so a bare ``"custom"`` is upgraded back to its durable menu key. Sources in priority order:
-    (1) ``base_url`` reverse lookup — the one fact that always survives the round-trip when a URL
-    was recorded; (2) ``model`` reverse lookup (``model``/``default_model``/``models`` catalog);
-    (3) the configured provider (arg, ``model.provider``, ``HERMES_INFERENCE_PROVIDER``) when it
-    names a real entry."""
+    """Recover the durable menu identity for a bare custom provider. Match a configured
+    endpoint first, then the ownership-checked managed server, then a configured model or
+    provider. Every session persistence/restore path shares this lookup."""
     rp = _rp()
-    identity = (find_custom_provider_identity(base_url) if base_url else None) or (
-        find_custom_provider_identity_by_model(model) if model else None)
+    if base_url:
+        identity = find_custom_provider_identity(base_url)
+        if identity:
+            return identity
+        # The managed server has no custom-provider config entry. Recover its menu key
+        # from the ownership-checked endpoint, never from a model name or a fixed port.
+        from hermes_cli.local_runtime.endpoint import _state_endpoint
+        endpoint = _state_endpoint()
+        if endpoint and _normalize_base_url_for_match(base_url) == _normalize_base_url_for_match(endpoint["base_url"]):
+            return "llamacpp"
+    identity = find_custom_provider_identity_by_model(model) if model else None
     if identity:
         return identity
     candidate = str(config_provider or "").strip()
@@ -368,7 +363,7 @@ def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[
 
 
 def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model: Optional[str], result: Dict[str, Any]) -> None:
-    """Copy model / capabilities / max_output_tokens / extra_headers / request_overrides onto a
+    """Copy model / capabilities / extra_headers / request_overrides onto a
     resolved custom runtime. An explicit ``target_model`` wins over the provider's configured
     default (auxiliary slots / background-review resolve a concrete model and must not fall back to
     ``default_model``). ``extra_headers`` may carry credentials — NEVER log them."""
@@ -376,8 +371,7 @@ def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model:
     if model_name:
         result["model"] = model_name
     _lift_model_capabilities(custom_provider, model_name, result)
-    if isinstance(custom_provider.get("max_output_tokens"), int):
-        result["max_output_tokens"] = custom_provider["max_output_tokens"]
+
     if custom_provider.get("extra_headers"):
         result["extra_headers"] = dict(custom_provider["extra_headers"])
     request_overrides = _custom_provider_request_overrides(custom_provider)

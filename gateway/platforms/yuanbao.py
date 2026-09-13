@@ -43,11 +43,12 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult,
+    BasePlatformAdapter, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async, cache_video_from_bytes_async,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms import helpers as _mdchunk
-from gateway.platforms._shared import get_scoped_secret as _yb_secret
+from gateway.platforms._shared import get_scoped_secret as _yb_secret, profile_scoped as _profile_scoped
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.yuanbao_media import (
     download_url as media_download_url, get_cos_credentials, upload_to_cos,
@@ -767,7 +768,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
         if not adapter._auto_sethome_done and adapter._sender_may_designate_home(ctx):
-            _cur_home = os.getenv("YUANBAO_HOME_CHANNEL", "")
+            _cur_home = _yb_secret("YUANBAO_HOME_CHANNEL", "") or ""
             _should_set = not _cur_home or (_cur_home.startswith("group:") and ctx.chat_type == "dm")
             if ctx.chat_type == "dm":
                 adapter._auto_sethome_done = True  # DM seen — no further upgrades needed
@@ -785,7 +786,11 @@ class AutoSetHomeMiddleware(InboundMiddleware):
             user_config: dict = read_user_config_raw(config_path)
             user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
             atomic_config_write(config_path, user_config)
-            os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
+            # The profile's config.yaml (scoped home above) is the durable record. Under a multiplexed
+            # secondary's scope the process env is the DEFAULT profile's; writing there would make this
+            # tenant's chat the default profile's cron/notification home.
+            if not _profile_scoped():
+                os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
             logger.info("[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel", adapter.name, ctx.chat_id, ctx.chat_name)
         except Exception as e:
             logger.warning("[%s] Auto-sethome failed: %s", adapter.name, e)
@@ -2602,14 +2607,31 @@ class YuanbaoAdapter(BasePlatformAdapter):
     MEDIA_MAX_SIZE_MB: int = 50
     DM_MAX_CHARS = 10000
     _active_instance: ClassVar[Optional["YuanbaoAdapter"]] = None
+    # Per Hermes home: a multiplexed gateway runs one Yuanbao adapter per profile, and the tools /
+    # send_message read "the" adapter from inside a profile-scoped turn, so last-wins would route
+    # profile B's sends through profile A's bot. Registration and lookup both key on the ambient
+    # override (connect/reconnect tasks inherit the profile's Context); the slot above serves the
+    # unscoped path.
+    _active_instances: ClassVar[Dict[str, "YuanbaoAdapter"]] = {}
 
     @classmethod
     def get_active(cls) -> Optional["YuanbaoAdapter"]:
-        return cls._active_instance
+        from hermes_constants import get_hermes_home_override, hermes_home_key
+
+        if get_hermes_home_override() is None:
+            return cls._active_instance
+        return cls._active_instances.get(hermes_home_key())
 
     @classmethod
     def set_active(cls, adapter: Optional["YuanbaoAdapter"]) -> None:
-        cls._active_instance = adapter
+        from hermes_constants import get_hermes_home_override, hermes_home_key
+
+        if get_hermes_home_override() is None:
+            cls._active_instance = adapter
+        elif adapter is None:
+            cls._active_instances.pop(hermes_home_key(), None)
+        else:
+            cls._active_instances[hermes_home_key()] = adapter
 
     def __init__(self, config: PlatformConfig, **kwargs: Any) -> None:
         super().__init__(config, Platform.YUANBAO)
@@ -2648,7 +2670,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         self._access_policy = AccessPolicy(*_policy("dm"), *_policy("group"))
         self._inbound_pipeline: InboundPipeline = InboundPipelineBuilder.build()
         # Auto-sethome stays open when no home is set or the home is a group (upgradable by first DM).
-        _existing_home = os.getenv("YUANBAO_HOME_CHANNEL") or (config.home_channel.chat_id if config.home_channel else "")
+        _existing_home = _yb_secret("YUANBAO_HOME_CHANNEL", "") or (config.home_channel.chat_id if config.home_channel else "")
         self._auto_sethome_done: bool = bool(_existing_home) and not _existing_home.startswith("group:")
 
     def _track_task(self, task: asyncio.Task) -> asyncio.Task:
@@ -2692,7 +2714,10 @@ class YuanbaoAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Cancel background tasks and close the WebSocket connection."""
         if YuanbaoAdapter._active_instance is self:
-            YuanbaoAdapter.set_active(None)
+            YuanbaoAdapter._active_instance = None
+        for home_key, active in list(YuanbaoAdapter._active_instances.items()):
+            if active is self:
+                del YuanbaoAdapter._active_instances[home_key]
         self._running = False
         self._mark_disconnected()
         self._release_platform_lock()

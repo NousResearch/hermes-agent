@@ -550,7 +550,7 @@ class TestBridgeDispatch:
     def test_tool_call_bad_args_error(self):
         with patch("model_tools.get_tool_definitions", return_value=[]):
             result = json.loads(handle_function_call("tool_call", {}))
-        assert "requires a 'name'" in result["error"]
+        assert "requires 'calls'" in result["error"]
 
     def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
         import tools.tool_search as ts

@@ -3,7 +3,13 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
 
 import { TRANSLATIONS } from './catalog'
-import { DEFAULT_LOCALE, localeConfigValue, normalizeLocale } from './languages'
+import {
+  DEFAULT_LOCALE,
+  isSupportedLocaleValue,
+  localeConfigValue,
+  normalizeLocale,
+  resolveInitialLocale
+} from './languages'
 import { setRuntimeI18nLocale } from './runtime'
 import type { Locale, Translations } from './types'
 
@@ -20,14 +26,16 @@ const defaultConfigClient: I18nConfigClient = {
       return Promise.resolve({})
     }
 
-    return getHermesConfigRecord()
+    // Merged defaults make an unset language indistinguishable from saved English.
+    // Older backends ignore the option and keep returning English as before.
+    return getHermesConfigRecord(undefined, { includeDefaults: false })
   },
   saveConfig: config => {
     if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
       return Promise.resolve({ ok: true })
     }
 
-    return saveHermesConfig(config)
+    return saveHermesConfig(config, undefined, { preserveLanguage: true })
   }
 }
 
@@ -99,6 +107,9 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   const [configLoadError, setConfigLoadError] = useState<Error | null>(null)
   const [saveError, setSaveError] = useState<Error | null>(null)
   const localeRef = useRef(locale)
+  // Set once the user picks a language through setLocale: a startup read that
+  // resolves (or fails) after that must never overwrite an explicit choice.
+  const userLocaleRef = useRef(false)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -113,31 +124,76 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     }
 
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let retryCount = 0
 
-    setIsLoadingConfig(true)
-    setConfigLoadError(null)
+    // The desktop races its own backend at startup: the renderer mounts before
+    // the backend is ready, so the first /api/config call can time out. We keep
+    // the established permanent-failure contract — a rejected config load
+    // settles on English so the UI stays usable — but bounded retries recover
+    // transient startup failures, applying the persisted display.language once
+    // the backend comes up.
+    const MAX_LOCALE_RETRIES = 10
+    const LOCALE_RETRY_DELAY_MS = 3_000
 
-    configClient
-      .getConfig()
-      .then(config => {
-        if (!cancelled) {
-          setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
-        }
-      })
-      .catch(error => {
-        if (!cancelled) {
+    const loadLocale = () => {
+      setIsLoadingConfig(true)
+      setConfigLoadError(null)
+
+      return configClient
+        .getConfig()
+        .then(async config => {
+          if (cancelled || userLocaleRef.current) {
+            return
+          }
+
+          const saved = getConfigDisplayLanguage(config)
+
+          // A saved choice needs no machine probe and always takes precedence.
+          if (isSupportedLocaleValue(saved)) {
+            setLocaleState(normalizeLocale(saved))
+
+            return
+          }
+
+          // Keep inference unsaved so OS language changes apply on the next boot
+          // until the user explicitly picks a language.
+          const machineProfile = await window.hermesDesktop?.getMachineProfile?.().catch(() => null)
+
+          if (!cancelled && !userLocaleRef.current) {
+            setLocaleState(resolveInitialLocale(undefined, machineProfile?.locale))
+          }
+        })
+        .catch(error => {
+          if (cancelled || userLocaleRef.current) {
+            return
+          }
+
           setConfigLoadError(toError(error))
           setLocaleState(DEFAULT_LOCALE)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsLoadingConfig(false)
-        }
-      })
+
+          if (retryCount < MAX_LOCALE_RETRIES) {
+            retryCount += 1
+            retryTimer = setTimeout(() => {
+              loadLocale()
+            }, LOCALE_RETRY_DELAY_MS)
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setIsLoadingConfig(false)
+          }
+        })
+    }
+
+    loadLocale()
 
     return () => {
       cancelled = true
+
+      if (retryTimer) {
+        clearTimeout(retryTimer)
+      }
     }
   }, [configClient, initialLocale])
 
@@ -145,6 +201,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     async (next: Locale) => {
       const previousLocale = localeRef.current
 
+      userLocaleRef.current = true
       setSaveError(null)
       setLocaleState(next)
 

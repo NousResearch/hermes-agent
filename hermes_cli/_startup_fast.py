@@ -167,7 +167,7 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
         from hermes_cli.banner import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
         from hermes_cli.config import recommended_update_command
 
-        behind = check_for_updates()
+        behind = check_for_updates(passive=True)
         if behind == UPDATE_AVAILABLE_NO_COUNT:
             print(f"Update available — run '{recommended_update_command()}'")
         elif behind and behind > 0:

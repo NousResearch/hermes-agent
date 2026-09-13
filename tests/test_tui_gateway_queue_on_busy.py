@@ -206,6 +206,30 @@ def test_drop_rewrites_merged_inflight_prefix_to_followup_only():
     assert session.get("queued_prompt") == {"text": "Q", "transport": "ws-1"}
 
 
+def test_enqueue_keeps_an_authored_copy_of_the_inflight_text():
+    """A relayed DM with the live prompt's text is another sender's message, not a self-duplicate."""
+    author = {"id": "bot:scout", "name": "scout", "is_bot": True}
+    session = _session()
+    session["inflight_turn"] = {"user": "status?", "assistant": "", "streaming": True, "error": ""}
+
+    server._enqueue_prompt(session, "status?", "ws-1", turn_author=author)
+
+    assert session.get("queued_prompt") == {"text": "status?", "transport": "ws-1", "turn_author": author}
+
+
+def test_drop_leaves_an_authored_entry_that_shares_the_inflight_prefix_intact():
+    """Authored envelopes never went through the text merge, so a shared prefix is the sender's own words."""
+    author = {"id": "bot:scout", "name": "scout", "is_bot": True}
+    text = "P\n\nand the rollback plan"
+    session = _session()
+    session["inflight_turn"] = {"user": "P", "assistant": "", "streaming": True, "error": ""}
+    session["queued_prompt"] = {"text": text, "transport": "ws-1", "turn_author": author}
+
+    server._drop_queued_duplicates_of_inflight_user(session)
+
+    assert session.get("queued_prompt") == {"text": text, "transport": "ws-1", "turn_author": author}
+
+
 def test_hard_interrupt_queue_path_scrubs_stale_inflight_self_duplicate(monkeypatch):
     """#84417: interrupt+queue of Q must not leave P ahead of Q in the FIFO."""
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")

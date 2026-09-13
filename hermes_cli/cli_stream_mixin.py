@@ -17,11 +17,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from rich.markup import escape as _escape
 
+from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
+
 # Model-generated reasoning tags: suppressed during streaming (they'd display as raw XML;
 # the agent strips them from final_response too) unless show_reasoning routes them to the box.
-_OPEN_TAGS = (
-    "<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>", "<thinking>", "<thought>")
-_CLOSE_TAGS = tuple("</" + t[1:] for t in _OPEN_TAGS)
+_OPEN_TAGS = THINK_OPEN_TAGS
+_CLOSE_TAGS = THINK_CLOSE_TAGS
 _MAX_CLOSE_TAG_LEN = max(len(t) for t in _CLOSE_TAGS)
 
 # Ordered (prefix, status) rows for _slow_command_status — first match wins.

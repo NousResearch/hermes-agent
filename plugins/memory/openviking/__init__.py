@@ -35,10 +35,11 @@ from urllib.parse import quote, unquote, urlparse
 from urllib.request import url2pathname
 
 from agent.message_content import flatten_message_text
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, spawn_context_thread
 from agent.secret_scope import get_secret
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from utils import atomic_json_write, env_var_enabled
 
@@ -904,15 +905,6 @@ def _local_openviking_bind(endpoint: str) -> tuple[str, int]:
     return parsed.hostname or "127.0.0.1", parsed.port or 1933
 
 
-def _hermes_home_path() -> Path:
-    try:
-        from hermes_constants import get_hermes_home
-        return get_hermes_home()
-    except Exception:
-        env_home = os.environ.get("HERMES_HOME")
-        return Path(env_home).expanduser() if env_home else Path.home() / ".hermes"
-
-
 def _local_openviking_port_is_open(host: str, port: int) -> bool:
     """Pre-spawn guard: a successful connect proves a listener owns the port (so a
     second openviking-server would lose the data-dir lock); says nothing about health."""
@@ -976,7 +968,7 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
     server_cmd = shutil.which("openviking-server")
     if not server_cmd:
         return _LOCAL_SERVER_FAILED, "openviking-server was not found on PATH. Start it manually, then retry."
-    log_path = _hermes_home_path() / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
+    log_path = get_hermes_home() / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         # Strip PYTHONPATH: the Desktop backend puts the Hermes venv on it, which
@@ -1316,9 +1308,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Caller holds _runtime_start_lock and reserved ownership via _runtime_start_pending.
         if self._runtime_start_thread and self._runtime_start_thread.is_alive():
             return
-        self._runtime_start_thread = threading.Thread(
-            target=self._finish_runtime_openviking_start, daemon=True, name="openviking-runtime-start",
-            kwargs={"endpoint": endpoint, "status_callback": status_callback, "warning_callback": warning_callback})
+        self._runtime_start_thread = spawn_context_thread(
+            lambda: self._finish_runtime_openviking_start(endpoint=endpoint, status_callback=status_callback, warning_callback=warning_callback),
+            name="openviking-runtime-start")
         self._runtime_start_thread.start()
 
     def _settings_tuple(self, endpoint: Optional[str] = None) -> tuple:
@@ -1411,7 +1403,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._env_refresh_enabled = True
         self._session_id = session_id
         self._turn_count = 0
-        self._hermes_home = str(kwargs.get("hermes_home") or "").strip() or str(_hermes_home_path())
+        self._hermes_home = str(kwargs.get("hermes_home") or "").strip() or str(get_hermes_home())
         self._acquire_run_lock()
         self._profile_prefetched_sessions.clear()
 
@@ -2078,7 +2070,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     if after_discard is not None:
                         after_discard()
 
-        thread = threading.Thread(target=_run, daemon=True, name=name)
+        thread = spawn_context_thread(_run, name=name)
         with lock:
             if skip_if is not None and skip_if():
                 return

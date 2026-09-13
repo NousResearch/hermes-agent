@@ -67,9 +67,13 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   (`gateway_timeout`; `terminal.cwd` → `TERMINAL_CWD`). `MESSAGING_CWD` is removed and `TERMINAL_CWD`
   in `.env` is deprecated — the loader warns; canonical is `terminal.cwd`.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
-  (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`); raw
-  YAML (gateway runtime, `gateway/run.py` + `gateway/config.py`). If the CLI sees a key and the
-  gateway doesn't (or vice versa), you're on the wrong loader — check `DEFAULT_CONFIG` coverage.
+  (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
+  `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via
+  `gateway/run.py::_load_gateway_config`, TUI gateway `_load_cfg`, cron, `hermes send`, doctor,
+  `hermes_time`/`hermes_logging`: user file + managed overlay + `${VAR}` expansion + model-key
+  canon, NO defaults — for presence-sensitive readers). If the CLI sees a key and the gateway
+  doesn't (or vice versa), you're on the wrong loader — check `DEFAULT_CONFIG` coverage. Never
+  hand-roll raw-read → overlay → expand; `read_user_config_raw` is for write-back round-trips only.
 - **Working directory:** CLI uses `os.getcwd()`; messaging uses `terminal.cwd`, bridged to
   `TERMINAL_CWD` for child tools.
 

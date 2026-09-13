@@ -42,8 +42,11 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $turnStartedAt,
+  $unlistedSessionOwnerRows,
+  _resetSessionOwnerHintsForTests,
   getSessionOwnerHint,
   knownSessionOwner,
+  ownerLookupSessionRows,
   sessionMatchesStoredId,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -63,11 +66,18 @@ import {
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
   setSessions,
-  setTurnStartedAt
+  setTurnStartedAt,
+  setUnlistedSessionOwnerRows
 } from '@/store/session'
+import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
 import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
-import { $sessionTiles, sessionTileOwnerRoute } from '@/store/session-states'
+import {
+  $sessionTiles,
+  knownOwnerForSession,
+  requestForOwnedSession,
+  sessionTileOwnerRoute
+} from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
@@ -76,6 +86,7 @@ import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
+import { upsertOptimisticSession } from './use-session-actions/utils'
 import { useSessionStateCache } from './use-session-state-cache'
 
 vi.mock('@/hermes', async importOriginal => ({
@@ -4140,6 +4151,297 @@ describe('openNewSessionTile workspace target', () => {
     expect(createParams).not.toHaveProperty('cwd')
   })
 })
+
+describe('openNewSessionTile unlisted owner (#102792)', () => {
+  const STORED_UNLISTED = 'stored-unlisted-102792'
+
+  function createRequestGateway(stored: string = STORED_UNLISTED) {
+    return vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return {
+          info: { cwd: '', model: 'test-model', skills: {}, tools: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: stored
+        } as never
+      }
+
+      return {} as never
+    })
+  }
+
+  async function readyHandle(requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>) {
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    return handle!
+  }
+
+  beforeEach(() => {
+    setSessions([])
+    setMessagingSessions([])
+    setCronSessions([])
+    setUnlistedSessionOwnerRows([])
+    _resetSessionOwnerHintsForTests()
+    $profiles.set(profiles('default', 'omar'))
+    $activeGatewayProfile.set('omar')
+    $sessionTiles.set([])
+  })
+
+  afterEach(() => {
+    cleanup()
+    setSessions([])
+    setMessagingSessions([])
+    setCronSessions([])
+    setUnlistedSessionOwnerRows([])
+    _resetSessionOwnerHintsForTests()
+    $profiles.set([])
+    $activeGatewayProfile.set('default')
+    $newChatProfile.set(null)
+    $sessionTiles.set([])
+    vi.restoreAllMocks()
+  })
+
+  it('records the ambient-profile owner for an unlisted tile created on the null (legacy ambient) route', async () => {
+    const handle = await readyHandle(createRequestGateway())
+
+    await act(async () => {
+      await handle.openNewSessionTile('center', { listed: false, route: null })
+    })
+
+    // The draft stays out of the visible sidebar list ...
+    expect($sessions.get().some(s => sessionMatchesStoredId(s, STORED_UNLISTED))).toBe(false)
+    // ... but its owner still resolves on the row rung (bare ambient profile),
+    // so the tile's immediate session.resume passes the fail-closed gate.
+    const owner = knownSessionOwner(ownerLookupSessionRows(), STORED_UNLISTED)
+    expect(owner).toBe('omar')
+    expect(() =>
+      assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: STORED_UNLISTED })
+    ).not.toThrow()
+    expect($sessionTiles.get().some(t => t.storedSessionId === STORED_UNLISTED)).toBe(true)
+  })
+
+  it('stamps the exact connection tag for an unlisted tile created on a routed connection', async () => {
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({
+      info: { cwd: '', model: 'test-model', skills: {}, tools: {} },
+      session_id: RUNTIME_SESSION_ID,
+      stored_session_id: STORED_UNLISTED
+    } as never)
+    const handle = await readyHandle(createRequestGateway())
+
+    await act(async () => {
+      await handle.openNewSessionTile('center', { listed: false, route: { connectionId: 'conn-1', profile: 'omar' } })
+    })
+
+    expect($sessions.get().some(s => sessionMatchesStoredId(s, STORED_UNLISTED))).toBe(false)
+    expect(knownSessionOwner(ownerLookupSessionRows(), STORED_UNLISTED)).toEqual(
+      expect.objectContaining({ connectionId: 'conn-1', profile: 'omar' })
+    )
+  })
+
+  it('evicts the stub once a real row lists the same id', async () => {
+    const stored = 'stored-unlisted-102792-b'
+    const handle = await readyHandle(createRequestGateway(stored))
+
+    await act(async () => {
+      await handle.openNewSessionTile('center', { listed: false, route: null })
+    })
+
+    expect($unlistedSessionOwnerRows.get()).toHaveLength(1)
+
+    // First send lists the draft through the normal optimistic upsert ...
+    upsertOptimisticSession(
+      {
+        info: { cwd: '', model: 'test-model', skills: {}, tools: {} },
+        session_id: RUNTIME_SESSION_ID,
+        stored_session_id: stored
+      } as never,
+      stored
+    )
+
+    // ... which supersedes the stub instead of leaving a stale double.
+    expect($unlistedSessionOwnerRows.get()).toHaveLength(0)
+    expect($sessions.get().some(s => sessionMatchesStoredId(s, stored))).toBe(true)
+    expect(knownSessionOwner(ownerLookupSessionRows(), stored)).toBe('omar')
+  })
+
+  it('resolves the ephemeral runtime id through the stub for session.control.read without hitting ambient', async () => {
+    const handle = await readyHandle(createRequestGateway())
+
+    await act(async () => {
+      await handle.openNewSessionTile('center', { listed: false, route: null })
+    })
+
+    // The composer banner calls with the ephemeral runtime id, not the stored
+    // id — it must see the same bare ambient profile as the stored-id rung.
+    expect(knownOwnerForSession(RUNTIME_SESSION_ID)).toBe('omar')
+
+    const ambient = vi.fn(async () => ({}) as never)
+    vi.mocked(requestGatewayForProfile).mockResolvedValue({ control: {} } as never)
+
+    await expect(
+      requestForOwnedSession(RUNTIME_SESSION_ID, ambient, 'session.control.read', {
+        session_id: RUNTIME_SESSION_ID
+      })
+    ).resolves.toEqual({ control: {} })
+
+    // Bare profile routes through the profile-pool door, never ambient ...
+    expect(ambient).not.toHaveBeenCalled()
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'omar',
+      'session.control.read',
+      expect.objectContaining({ session_id: RUNTIME_SESSION_ID }),
+      undefined,
+      undefined
+    )
+    // ... and the draft stays out of the sidebar.
+    expect($sessions.get().some(s => sessionMatchesStoredId(s, STORED_UNLISTED))).toBe(false)
+  })
+
+  it('freezes the ambient owner from before the create round-trip (profile switch mid-create)', async () => {
+    // The backend mints the session with params.profile, fixed pre-await to
+    // 'omar'. The user switching to 'default' while session.create is in
+    // flight must not re-stamp the stub.
+    const switchingGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        $activeGatewayProfile.set('default')
+        return {
+          info: { cwd: '', model: 'test-model', skills: {}, tools: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: STORED_UNLISTED
+        } as never
+      }
+
+      return {} as never
+    })
+    const handle = await readyHandle(switchingGateway)
+
+    await act(async () => {
+      await handle.openNewSessionTile('center', { listed: false, route: null })
+    })
+
+    expect(knownSessionOwner(ownerLookupSessionRows(), STORED_UNLISTED)).toBe('omar')
+    expect($sessions.get().some(s => sessionMatchesStoredId(s, STORED_UNLISTED))).toBe(false)
+  })
+
+  it('freezes the ambient owner on the send path too (profile switch mid-create)', async () => {
+    // Same guard as the tile path, for createBackendSessionForSend: the first
+    // send mints with params.profile fixed pre-await to 'omar'; a switch to
+    // 'default' in flight must not re-stamp the listed row.
+    const stored = 'stored-send-102792'
+    const switchingGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        $activeGatewayProfile.set('default')
+        return {
+          info: { cwd: '', model: 'test-model', skills: {}, tools: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: stored
+        } as never
+      }
+
+      return {} as never
+    })
+    const handle = await readyHandle(switchingGateway)
+
+    let created: null | string = null
+
+    await act(async () => {
+      created = await handle.createBackendSessionForSend('hello')
+    })
+
+    expect(created).toBe(RUNTIME_SESSION_ID)
+    expect($sessions.get().some(s => sessionMatchesStoredId(s, stored))).toBe(true)
+    expect(knownSessionOwner(ownerLookupSessionRows(), stored)).toBe('omar')
+  })
+
+  it('restores the stub when delete of an unlisted draft fails', async () => {
+    const handle = await readyHandle(createRequestGateway())
+
+    await act(async () => {
+      await handle.openNewSessionTile('center', { listed: false, route: null })
+    })
+
+    expect($unlistedSessionOwnerRows.get()).toHaveLength(1)
+    vi.mocked(getSession).mockRejectedValue(new Error('404: Session not found'))
+    vi.mocked(deleteSession).mockRejectedValueOnce(new Error('backend down'))
+
+    await act(async () => {
+      await handle.removeSession(STORED_UNLISTED)
+    })
+
+    expect($unlistedSessionOwnerRows.get().some(s => sessionMatchesStoredId(s, STORED_UNLISTED))).toBe(true)
+    expect(knownSessionOwner(ownerLookupSessionRows(), STORED_UNLISTED)).toBe('omar')
+  })
+
+  it('restores the stub when archive of an unlisted draft fails', async () => {
+    const handle = await readyHandle(createRequestGateway())
+
+    await act(async () => {
+      await handle.openNewSessionTile('center', { listed: false, route: null })
+    })
+
+    expect($unlistedSessionOwnerRows.get()).toHaveLength(1)
+    vi.mocked(getSession).mockRejectedValue(new Error('404: Session not found'))
+    vi.mocked(setSessionArchived).mockRejectedValueOnce(new Error('archive failed'))
+
+    await act(async () => {
+      await handle.archiveSession(STORED_UNLISTED)
+    })
+
+    expect($unlistedSessionOwnerRows.get().some(s => sessionMatchesStoredId(s, STORED_UNLISTED))).toBe(true)
+    expect(knownSessionOwner(ownerLookupSessionRows(), STORED_UNLISTED)).toBe('omar')
+  })
+
+  it('prefers the explicit profile over new-chat/active ambient for params and stamp', async () => {
+    // Profile-group drag passes profile:'omar' with a null legacy route while
+    // everything ambient says default: both the create RPC and the stub must
+    // carry omar.
+    $activeGatewayProfile.set('default')
+    $newChatProfile.set('default')
+    let createParams: Record<string, unknown> | undefined
+    const gateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: { cwd: '', model: 'test-model', skills: {}, tools: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: STORED_UNLISTED
+        } as never
+      }
+
+      return {} as never
+    })
+    const handle = await readyHandle(gateway)
+
+    await act(async () => {
+      await handle.openNewSessionTile('center', { listed: false, profile: 'omar', route: null })
+    })
+
+    expect(createParams?.profile).toBe('omar')
+    expect(knownSessionOwner(ownerLookupSessionRows(), STORED_UNLISTED)).toBe('omar')
+  })
+
+  it('routes delete of an unlisted draft from its stub when probes miss', async () => {
+    const handle = await readyHandle(createRequestGateway())
+
+    await act(async () => {
+      await handle.openNewSessionTile('center', { listed: false, route: null })
+    })
+
+    // Active profile moved on; the draft was never persisted, so every
+    // by-id probe 404s and only the stub names the owner.
+    $activeGatewayProfile.set('default')
+    vi.mocked(getSession).mockRejectedValue(new Error('404: Session not found'))
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+    await act(async () => {
+      await handle.removeSession(STORED_UNLISTED)
+    })
+
+    expect(vi.mocked(deleteSession)).toHaveBeenCalledWith(STORED_UNLISTED, 'omar')
+  })
+})
 describe('selectSidebarItem', () => {
   it('fronts the workspace pane when navigating to a sidebar route (issue #72602)', async () => {
     const navigate = vi.fn()
@@ -4289,6 +4591,25 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
 
     expect(mockSetSessionArchived).toHaveBeenCalledWith('tg-arch', true, 'winefox')
     expect($messagingSessions.get()).toEqual([])
+  })
+
+  it('archives a connection-tagged row against its exact connection scope', async () => {
+    // A promoted routed draft says {connectionId: source-a, profile: work}
+    // while source-b is active exposing the same profile name: the PATCH must
+    // ride source-a, never the ambient source.
+    mockSetSessionArchived.mockResolvedValue({ ok: true })
+    setSessions([storedSession({ id: 'desk-routed', connection_id: 'source-a', profile: 'work', source: 'desktop' })])
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.archiveSession('desk-routed')
+    })
+
+    expect(mockSetSessionArchived).toHaveBeenCalledWith('desk-routed', true, {
+      connectionId: 'source-a',
+      profile: 'work'
+    })
+    expect($sessions.get()).toEqual([])
   })
 
   it('restores a failed archive to the messaging slice', async () => {

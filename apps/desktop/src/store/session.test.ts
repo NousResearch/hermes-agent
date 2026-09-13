@@ -1473,4 +1473,33 @@ describe('knownSessionOwner', () => {
 
     expect(knownSessionOwner([], 'hidden-session')).toEqual(owner)
   })
+
+  it('prefers an agreeing full hint over a target-aliased tagged row', () => {
+    // Bot-style route: the creating socket is (source-a, desk) but the row
+    // stamps the backend alias. The collapsed row alone would dial
+    // (source-a, back) — a socket that never held the runtime.
+    const owner = { connectionId: 'source-a', profile: 'desk', targetProfile: 'back' }
+    setSessionOwnerHint('aliased-session', owner)
+
+    expect(
+      knownSessionOwner(
+        [session({ connection_id: 'source-a', id: 'aliased-session', profile: 'back' })],
+        'aliased-session'
+      )
+    ).toEqual(owner)
+  })
+
+  it('ignores a hint from another connection on a tagged row', () => {
+    setSessionOwnerHint('foreign-hint', { connectionId: 'source-b', profile: 'desk', targetProfile: 'back' })
+
+    expect(
+      knownSessionOwner([session({ connection_id: 'source-a', id: 'foreign-hint', profile: 'back' })], 'foreign-hint')
+    ).toEqual({ connectionId: 'source-a', profile: 'back' })
+  })
+
+  it('collapses a tagged row with no hint exactly as before', () => {
+    expect(
+      knownSessionOwner([session({ connection_id: 'source-a', id: 'no-hint', profile: 'back' })], 'no-hint')
+    ).toEqual({ connectionId: 'source-a', profile: 'back' })
+  })
 })

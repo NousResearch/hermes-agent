@@ -156,6 +156,7 @@ import {
   dedupeInflightUserAgainstTranscript,
   dropListedSession,
   findListedSession,
+  findUnlistedSessionOwner,
   goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
@@ -168,11 +169,13 @@ import {
   resolveSessionProfile,
   resolveStoredSession,
   restoreListedSession,
+  restoreUnlistedSessionOwner,
   selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages,
-  upsertOptimisticSession
+  upsertOptimisticSession,
+  upsertUnlistedSessionOwner
 } from './utils'
 
 interface SessionActionsOptions {
@@ -291,7 +294,8 @@ function reconcileAuthoritativeMessages(
 // value is a mirror of Settings → Model and must not pin the new chat.
 async function desktopSessionCreateParams(
   cwd: string,
-  capturedRoute = resolveNewChatOwnerRoute()
+  capturedRoute = resolveNewChatOwnerRoute(),
+  uncapturedProfile?: string
 ): Promise<Record<string, unknown>> {
   // Treat Send as the linearization point for the visible selector state. The
   // profile handshake below can yield long enough for background config/model
@@ -310,7 +314,11 @@ async function desktopSessionCreateParams(
     provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
 
-  const profile = capturedRoute?.profile || $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+  const profile =
+    capturedRoute?.profile ||
+    uncapturedProfile ||
+    $newChatProfile.get() ||
+    normalizeProfileKey($activeGatewayProfile.get())
 
   if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)
@@ -572,6 +580,12 @@ export function useSessionActions({
         // reduce the owner to a bare profile name that later RPCs dial on a
         // different socket than the one that minted the runtime.
         const capturedRoute = resolveNewChatOwnerRoute()
+        // Freeze the ambient owner BEFORE any await: params.profile is fixed
+        // pre-await, but the optimistic row below stamps post-await ambient.
+        // A profile switch during the seconds-long session.create round-trip
+        // would otherwise stamp the wrong owner (same guard as
+        // openNewSessionTile for unlisted drafts).
+        const capturedAmbientProfile = normalizeProfileKey($newChatProfile.get() || $activeGatewayProfile.get())
 
         const params = {
           ...(await desktopSessionCreateParams(cwd, capturedRoute)),
@@ -673,7 +687,16 @@ export function useSessionActions({
           // server later returns its own preview/title and supersedes this.
           // The row carries the create route's exact owner (backend profile +
           // connection), never the ambient profile — see upsertOptimisticSession.
-          upsertOptimisticSession(created, stored, null, preview?.trim() || null, null, undefined, capturedRoute)
+          upsertOptimisticSession(
+            created,
+            stored,
+            null,
+            preview?.trim() || null,
+            null,
+            undefined,
+            capturedRoute,
+            capturedAmbientProfile
+          )
           navigate(sessionRoute(stored), { replace: true })
           // Other windows (e.g. the main window when this is the pop-out) can't
           // see this session until they re-pull the shared list.
@@ -770,11 +793,23 @@ export function useSessionActions({
 
         const workspaceScope = options?.workspaceScope ?? { workspaceMode: 'sessions' }
 
+        // Freeze the ambient owner BEFORE any await: desktopSessionCreateParams
+        // fixes params.profile pre-await, but the row/stub below stamps
+        // post-await ambient. A profile switch during the seconds-long
+        // session.create round-trip would otherwise stamp the wrong owner.
+        // One effective profile for an unrouted create: the caller's explicit
+        // profile (profile-group drag) wins over the new-chat/active ambient,
+        // and it feeds BOTH the create params and the owner stamp.
+        const uncapturedProfile = options?.profile?.trim() || undefined
+        const capturedAmbientProfile = normalizeProfileKey(
+          uncapturedProfile || $newChatProfile.get() || $activeGatewayProfile.get()
+        )
+
         const cwd =
           options?.cwd === null ? '' : typeof options?.cwd === 'string' ? options.cwd.trim() : resolveNewSessionCwd()
 
         const params = {
-          ...(await desktopSessionCreateParams(cwd, capturedRoute)),
+          ...(await desktopSessionCreateParams(cwd, capturedRoute, uncapturedProfile)),
           ...(workspaceScope.workspaceMode === 'bots' ? { hidden: true } : {})
         }
 
@@ -829,9 +864,16 @@ export function useSessionActions({
         // Seed the per-runtime cache so the tile renders immediately without a
         // redundant resume. Only add the row to the SIDEBAR when `listed` — an
         // unlisted (draft) tab stays out of the session list until its first
-        // turn persists and a refresh surfaces it.
+        // turn persists and a refresh surfaces it. An unlisted draft still
+        // records an ownership stub (same stamps, off-list atom): without it a
+        // draft minted on the legacy ambient route (null route) owns NOTHING
+        // the ladder reads — no tile route, no hint, no row — and its
+        // immediate session.resume fails closed on multi-profile installs
+        // (#102792).
         if (listed) {
-          upsertOptimisticSession(created, stored, null, null, null, undefined, capturedRoute)
+          upsertOptimisticSession(created, stored, null, null, null, undefined, capturedRoute, capturedAmbientProfile)
+        } else {
+          upsertUnlistedSessionOwner(created, stored, capturedRoute, capturedAmbientProfile)
         }
 
         // A tile lives in its OWN worktree, so it must not run the full
@@ -2422,6 +2464,11 @@ export function useSessionActions({
       const removed =
         listed?.session ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
+      // An unsent draft lives ONLY in the unlisted stub atom: snapshot it
+      // before the optimistic drop so a failed DELETE can restore the tile's
+      // sole owner record alongside the listed row.
+      const unlistedStub = findUnlistedSessionOwner(storedSessionId)
+
       // Messaging/cron rows frequently arrive without an inline profile; fall
       // back to the stored-session ownership lookup so their DELETE routes to
       // the owning profile instead of the ambient one.
@@ -2455,7 +2502,12 @@ export function useSessionActions({
             connectionId: removed.connection_id,
             profile: removed.profile || 'default'
           }
-        : profile
+        : // An unsent draft has no listed row for cachedSessionRow to find, so
+          // resolveSessionProfile above misses it. Route the DELETE from its
+          // stub (exact connection route when present, else bare profile) —
+          // an unscoped delete hits the wrong backend, fakes already_absent
+          // success, and orphans the live runtime.
+          (sessionOwnerRouteFromRow(unlistedStub) ?? (unlistedStub?.profile?.trim() || undefined) ?? profile)
 
       const previousArchived = $archivedSessions.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
@@ -2515,6 +2567,10 @@ export function useSessionActions({
           restoreListedSession(listed.session, listed.slice)
         }
 
+        if (unlistedStub) {
+          restoreUnlistedSessionOwner(unlistedStub)
+        }
+
         // Restore the archived-view row too (no-op when it wasn't archived).
         $archivedSessions.set(previousArchived)
 
@@ -2569,6 +2625,20 @@ export function useSessionActions({
       const stampedProfile = archived?.profile?.trim()
       const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
 
+      // Same snapshot as removeSession: an unsent draft's sole owner record
+      // lives in the stub atom, so a failed archive must restore it.
+      const unlistedStub = findUnlistedSessionOwner(storedSessionId)
+
+      // Route the PATCH at the exact owner, like removeSession: a connection-
+      // tagged row (or stub) names its backend, so a same-named profile on
+      // the active source can't swallow the archive.
+      const archivedOwner: SessionOwnerScope = archived?.connection_id
+        ? {
+            connectionId: archived.connection_id,
+            profile: archived.profile || 'default'
+          }
+        : (sessionOwnerRouteFromRow(unlistedStub) ?? (unlistedStub?.profile?.trim() || undefined) ?? profile)
+
       if (
         listed &&
         !stampedProfile &&
@@ -2598,7 +2668,7 @@ export function useSessionActions({
       }
 
       try {
-        await setSessionArchived(storedSessionId, true, profile)
+        await setSessionArchived(storedSessionId, true, archivedOwner)
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
         forgetSessionUnread(archivedIds, profile)
@@ -2616,6 +2686,10 @@ export function useSessionActions({
       } catch (err) {
         if (archived) {
           restoreListedSession(archived, listed?.slice)
+        }
+
+        if (unlistedStub) {
+          restoreUnlistedSessionOwner(unlistedStub)
         }
 
         untombstoneSessions(archivedIds)

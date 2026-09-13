@@ -92,6 +92,7 @@ describe('setSessionArchived profile scoping', () => {
     // the body, not only as request.profile (Electron routing), or on a remote
     // gateway the archive lands on the wrong state.db and silently no-ops.
     hermesApi.mockResolvedValue({ ok: true } as never)
+    vi.mocked(client.capabilityScoped).mockReturnValue({ profile: 'tommy' })
 
     await setSessionArchived('sess-a', true, 'tommy')
 
@@ -100,6 +101,24 @@ describe('setSessionArchived profile scoping', () => {
       path: '/api/sessions/sess-a',
       profile: 'tommy',
       body: { archived: true, profile: 'tommy' }
+    })
+  })
+
+  it('pins the exact connection for an object scope, keeping the profile in the body', async () => {
+    // A same-named profile on another source must not swallow the PATCH: the
+    // connection travels as request routing while body.profile still selects
+    // the backend DB.
+    hermesApi.mockResolvedValue({ ok: true } as never)
+    vi.mocked(client.capabilityScoped).mockReturnValue({ profile: 'work', connectionId: 'source-a' })
+
+    await setSessionArchived('sess-c', true, { connectionId: 'source-a', profile: 'work' })
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      path: '/api/sessions/sess-c',
+      connectionId: 'source-a',
+      profile: 'work',
+      body: { archived: true, profile: 'work' }
     })
   })
 

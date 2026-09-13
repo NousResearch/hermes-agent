@@ -37,6 +37,40 @@ describe('session tile optimistic owner metadata', () => {
     $sessionTiles.set([])
   })
 
+  it('carries the unlisted stub owner into the first-send row', async () => {
+    // Draft minted on work, sent after switching to default: the replacement
+    // row must keep work and evict the stub — never re-stamp ambient.
+    const { $activeGatewayProfile } = await import('@/store/profile')
+    const { $unlistedSessionOwnerRows, setUnlistedSessionOwnerRows } = await import('@/store/session')
+    const { upsertUnlistedSessionOwner } = await import('../session/hooks/use-session-actions/utils')
+
+    $activeGatewayProfile.set('work')
+    upsertUnlistedSessionOwner(
+      {
+        info: { cwd: '', model: 'model-a', skills: {}, tools: {} },
+        session_id: 'rt-stub-carry',
+        stored_session_id: 'stored-stub-carry'
+      } as never,
+      'stored-stub-carry',
+      null
+    )
+    $activeGatewayProfile.set('default')
+
+    expect(
+      listTileSessionRow({
+        preview: 'first send',
+        runtimeId: 'rt-stub-carry',
+        sessions: [],
+        storedSessionId: 'stored-stub-carry'
+      })
+    ).toBe(true)
+
+    expect($sessions.get().find(session => session.id === 'stored-stub-carry')).toMatchObject({ profile: 'work' })
+    expect($unlistedSessionOwnerRows.get()).toEqual([])
+    $activeGatewayProfile.set('default')
+    setUnlistedSessionOwnerRows([])
+  })
+
   it('keeps the tile source on its first optimistic sidebar row', () => {
     const storedSessionId = 'stored-tile-owner-metadata'
     const ownerRoute = { connectionId: 'source-a', profile: 'default' }

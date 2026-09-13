@@ -29,6 +29,15 @@ const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
 const ARCHIVED_FETCH_LIMIT = 200
 
+// Registry rows carry their source in connection_id: route the mutation at
+// the exact owner, not the ambient connection. Untagged rows keep the bare
+// profile form.
+function sessionOwnerScope(session: SessionInfo) {
+  return session.connection_id?.trim()
+    ? { connectionId: session.connection_id.trim(), profile: session.profile || 'default' }
+    : session.profile
+}
+
 export function SessionsSettings() {
   const { t } = useI18n()
   const s = t.settings.sessions
@@ -58,7 +67,7 @@ export function SessionsSettings() {
       setBusyId(session.id)
 
       try {
-        await setSessionArchived(session.id, false, session.profile)
+        await setSessionArchived(session.id, false, sessionOwnerScope(session))
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
@@ -90,7 +99,7 @@ export function SessionsSettings() {
       setBusyId(session.id)
 
       try {
-        await deleteSession(session.id, session.profile)
+        await deleteSession(session.id, sessionOwnerScope(session))
         // Permanent delete bypasses removeSession, so retire the persisted
         // unread state here too rather than leaving it to rot.
         forgetSessionUnread([session.id, session._lineage_root_id], session.profile)

@@ -329,20 +329,23 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
   }
 }
 
-// Mutations take the owning `profile` so Electron can route them to the correct
+// Mutations take the owning scope so Electron can route them to the correct
 // remote backend or local profile scope. Omit for the current/default profile.
-export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
+export function setSessionArchived(id: string, archived: boolean, scope?: ProfileScope): Promise<{ ok: boolean }> {
   // Carry the owning profile IN THE PATCH BODY, mirroring renameSession — the
   // backend reads its target DB from body.profile (_open_session_db_for_profile).
   // Passing it only as request.profile (Electron routing) is not enough on a
   // remote gateway with no remoteProfile alias: the archive lands on the wrong
   // (default) state.db, no-ops on a missing row, and the archived/unarchived
   // state silently fails to stick — the same class as the unscoped DELETE.
+  // An exact object scope additionally pins the connection, so a same-named
+  // profile on another source can't swallow the PATCH.
+  const bodyProfile = typeof scope === 'object' ? scope?.profile : scope
   return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+    ...sessionScoped(scope),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { archived, ...(profile ? { profile } : {}) }
+    body: { archived, ...(bodyProfile ? { profile: bodyProfile } : {}) }
   })
 }
 

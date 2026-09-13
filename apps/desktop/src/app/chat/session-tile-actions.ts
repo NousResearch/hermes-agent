@@ -25,6 +25,7 @@ import { clearAllPrompts } from '@/store/prompts'
 import { $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
 import {
   requestForSessionProfile,
+  sessionOwnerRouteFromRow,
   type SessionOwnerScope,
   type SessionProfileRoute
 } from '@/store/session-request-router'
@@ -64,7 +65,7 @@ import {
   type SubmitTextOptions,
   withSessionNotFoundResume
 } from '../session/hooks/use-prompt-actions/utils'
-import { upsertOptimisticSession } from '../session/hooks/use-session-actions/utils'
+import { findUnlistedSessionOwner, upsertOptimisticSession } from '../session/hooks/use-session-actions/utils'
 
 import type { ComposerScope } from './composer/scope'
 
@@ -102,6 +103,13 @@ export function listTileSessionRow(deps: {
   const ownerRoute: SessionProfileRoute | undefined =
     knownOwner && typeof knownOwner === 'object' ? knownOwner : undefined
 
+  // The first send lists the tile: carry the unlisted stub's owner into the
+  // replacement row BEFORE the upsert below removes it. Without this, a draft
+  // minted on one profile and sent after a switch re-stamps to the ambient
+  // profile and destroys its only correct owner record.
+  const stub = findUnlistedSessionOwner(deps.storedSessionId)
+  const stubRoute = stub ? sessionOwnerRouteFromRow(stub) : undefined
+
   upsertOptimisticSession(
     { info: { cwd: deps.cwd, model: deps.model }, session_id: deps.runtimeId, stored_session_id: deps.storedSessionId },
     deps.storedSessionId,
@@ -109,7 +117,8 @@ export function listTileSessionRow(deps: {
     preview,
     null,
     undefined,
-    ownerRoute
+    ownerRoute ?? stubRoute,
+    stub?.profile
   )
   broadcastSessionsChanged()
 

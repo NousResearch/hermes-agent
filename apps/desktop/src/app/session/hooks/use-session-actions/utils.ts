@@ -15,6 +15,7 @@ import {
   $currentCwd,
   $messagingSessions,
   $sessions,
+  $unlistedSessionOwnerRows,
   commitWorkspaceCwdForSelectedSession,
   getSessionOwnerHint,
   knownSessionOwner,
@@ -34,6 +35,7 @@ import {
   setMessagingSessions,
   setSessionOwnerHint,
   setSessions,
+  setUnlistedSessionOwnerRows,
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
@@ -1273,8 +1275,67 @@ export function upsertOptimisticSession(
   preview: string | null = null,
   parentSessionId: string | null = null,
   lastActive?: number,
-  owner?: null | SessionProfileRoute
+  owner?: null | SessionProfileRoute,
+  ambientProfile?: string
 ) {
+  const session = buildOptimisticSession(
+    created,
+    id,
+    title,
+    preview,
+    parentSessionId,
+    lastActive,
+    owner,
+    ambientProfile
+  )
+
+  if (owner) {
+    setSessionOwnerHint(id, owner)
+  }
+
+  // A real row supersedes any unlisted-draft stub for the same id (first send
+  // on a ⌘T tab lists it); drop the stub so the atom stays bounded. The
+  // lookup shadow-filter covers any path that lists without passing here.
+  setUnlistedSessionOwnerRows(prev => (prev.some(s => s.id === id) ? prev.filter(s => s.id !== id) : prev))
+
+  setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+}
+
+/**
+ * Record the owner of an UNLISTED draft tile without touching the visible
+ * sidebar list (see `openNewSessionTile` with `listed: false`, #102792). The
+ * stub carries the same stamps an optimistic row would — ambient profile for
+ * an unrouted create, exact connection tag for a routed one — and rides only
+ * the owner-lookup path, never the sidebar render path. A later real row for
+ * the same id shadows it; the first send replaces it outright.
+ */
+export function upsertUnlistedSessionOwner(
+  created: SessionCreateResponse,
+  id: string,
+  owner?: null | SessionProfileRoute,
+  ambientProfile?: string
+) {
+  const stub = buildOptimisticSession(created, id, null, null, null, undefined, owner, ambientProfile)
+  setSessionOwnerHintForStub(id, owner)
+  setUnlistedSessionOwnerRows(prev => [stub, ...prev.filter(s => s.id !== id)])
+}
+
+function setSessionOwnerHintForStub(id: string, owner?: null | SessionProfileRoute): void {
+  if (owner) {
+    setSessionOwnerHint(id, owner)
+  }
+}
+
+function buildOptimisticSession(
+  created: SessionCreateResponse,
+  id: string,
+  title: string | null = null,
+  preview: string | null = null,
+  parentSessionId: string | null = null,
+  lastActive?: number,
+  owner?: null | SessionProfileRoute,
+  ambientProfile?: string
+): SessionInfo {
   const now = lastActive ?? Date.now() / 1000
   // Stamp the profile the session was just created on so the scoped sidebar
   // shows the new row immediately instead of filtering it out as "default"
@@ -1286,7 +1347,11 @@ export function upsertOptimisticSession(
   // a concurrent source switch can move the active gateway before this row is
   // inserted), so a row stamped `default` then misroutes every session-scoped
   // RPC that resolves its owner off the row ("session not found" on turn two).
-  const profileKey = normalizeProfileKey(owner ? owner.targetProfile || owner.profile : $activeGatewayProfile.get())
+  // Callers pass the pre-create ambient profile so a profile switch during the
+  // seconds-long session.create round-trip cannot stamp the wrong owner.
+  const profileKey = normalizeProfileKey(
+    owner ? owner.targetProfile || owner.profile : ambientProfile || $activeGatewayProfile.get()
+  )
   const connectionId = owner?.connectionId.trim() || ''
 
   const session: SessionInfo = {
@@ -1313,11 +1378,7 @@ export function upsertOptimisticSession(
     ...(connectionId ? { connection_id: connectionId } : {})
   }
 
-  if (owner) {
-    setSessionOwnerHint(id, owner)
-  }
-
-  setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+  return session
 }
 
 export function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
@@ -1365,6 +1426,22 @@ export function dropListedSession(storedSessionId: string): void {
   setSessions(prev => prev.filter(keep))
   setMessagingSessions(prev => prev.filter(keep))
   setCronSessions(prev => prev.filter(keep))
+  setUnlistedSessionOwnerRows(prev => prev.filter(keep))
+}
+
+/**
+ * The unlisted-draft stub for a stored id, if one exists. An unsent draft
+ * lives ONLY in this atom (no listed row), so optimistic delete/archive must
+ * snapshot it before drop and restore it when the backend mutation fails —
+ * otherwise the still-open tile loses its sole owner record.
+ */
+export function findUnlistedSessionOwner(storedSessionId: string): SessionInfo | undefined {
+  return $unlistedSessionOwnerRows.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+}
+
+/** Re-insert a stub snapshotted before an optimistic drop (failed delete/archive rollback). */
+export function restoreUnlistedSessionOwner(stub: SessionInfo): void {
+  setUnlistedSessionOwnerRows(prev => [stub, ...prev.filter(existing => !sessionMatchesStoredId(existing, stub.id))])
 }
 
 export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {

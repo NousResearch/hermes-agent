@@ -79,16 +79,18 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
 
 
 def compose_user_api_content(
-    content: Any, ext_prefetch_cache: str, plugin_user_context: str
+    content: Any, ext_prefetch_cache: str, plugin_user_context: str,
+    budget_hint: str = "",
 ) -> Optional[str]:
     """Compose the API-bound content of the current turn's user message.
 
     Single source for the ``api_content`` sidecar and the wire bytes so they never drift
-    (what turn N sends is what turn N+1 replays). ``None`` when nothing is injected."""
+    (what turn N sends is what turn N+1 replays). ``None`` when nothing is injected.
+    ``budget_hint`` (see :mod:`agent.budget_hint`) rides last when present."""
     if not isinstance(content, str):
         return None
     fenced = build_memory_context_block(ext_prefetch_cache) if ext_prefetch_cache else ""
-    injections = [part for part in (fenced, plugin_user_context) if part]
+    injections = [part for part in (fenced, plugin_user_context, budget_hint) if part]
     if not injections:
         return None
     return content + "\n\n" + "\n\n".join(injections)
@@ -393,6 +395,8 @@ class TurnContext:
     should_review_memory: bool = False  # post-turn memory review should fire
     plugin_user_context: str = ""  # ``pre_llm_call`` context (appended to user message)
     ext_prefetch_cache: str = ""  # external-memory prefetch, reused across iterations
+    # Context-window budget hint (``agent.budget_hint``) for this turn, or "".
+    budget_hint: str = ""
     preflight_compression_blocked: bool = False  # immediate retry proved ineffective
 
 
@@ -787,7 +791,7 @@ def _memory_turn_start_and_prefetch(
 
 def _stamp_api_content_sidecar(
     agent: Any, messages: List[Any], current_turn_user_idx: int, ext_prefetch_cache: str,
-    plugin_user_context: str, *, preflight_compressed: bool,
+    plugin_user_context: str, *, budget_hint: str = "", preflight_compressed: bool,
 ) -> None:
     """api_content sidecar — persist what you send: injected context lives only in the
     API copy, so stamp the exact sent bytes on the live dict for replay."""
@@ -797,7 +801,7 @@ def _stamp_api_content_sidecar(
     # Match the row the flush wrote (persist override = clean transcript), not the live bytes.
     durable_content, _api_content = durable_user_row_content(
         agent, _turn_user_msg, live_content,
-        compose_user_api_content(live_content or "", ext_prefetch_cache, plugin_user_context),
+        compose_user_api_content(live_content or "", ext_prefetch_cache, plugin_user_context, budget_hint),
     )
     if _api_content is None or _api_content == durable_content:
         return
@@ -984,6 +988,46 @@ def build_turn_context(
     _bind_interrupt_scope(agent, ra)
     ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
 
+    # ── Context-window budget hint (adapted from openai/codex) ──
+    # When the estimated request approaches the model's context window, tell
+    # the model how much room remains so it can keep responses focused and
+    # avoid forced truncation or lossy compression. Injected only above the
+    # configured threshold (compression.budget_hint_threshold, default 0.70);
+    # below it the prompt prefix stays byte-stable. The hint rides the same
+    # api_content sidecar as prefetch, so the prompt-cache invariant ("what
+    # turn N sends must be what turn N+1 replays") is preserved by the exact
+    # mechanism that already carries memory context.
+    budget_hint = ""
+    try:
+        from agent.budget_hint import DEFAULT_BUDGET_HINT_THRESHOLD
+    except ImportError:  # pragma: no cover - defensive for partial installs
+        DEFAULT_BUDGET_HINT_THRESHOLD = 0.70
+    _budget_threshold = float(
+        getattr(agent, "_budget_hint_threshold", DEFAULT_BUDGET_HINT_THRESHOLD) or 0.0
+    )
+    if _budget_threshold > 0:
+        try:
+            from agent.budget_hint import build_budget_hint
+
+            _ctx_len = getattr(
+                getattr(agent, "context_compressor", None), "context_length", None
+            )
+            # Semantic note: context_length is the compressor's effective cap,
+            # not necessarily the provider's true window. If the provider
+            # window is larger, "~N tokens remain" understates headroom —
+            # intentionally conservative, so the model never overfills a
+            # window the compressor would shrink anyway.
+            if isinstance(_ctx_len, int) and _ctx_len > 0 and messages:
+                _used_tokens = estimate_messages_tokens_rough(messages)
+                if _used_tokens >= 0:
+                    budget_hint = (
+                        build_budget_hint(_used_tokens, _ctx_len, _budget_threshold)
+                        or ""
+                    )
+        except Exception:
+            logger.debug("budget hint computation failed; skipping", exc_info=True)
+            budget_hint = ""
+
     # Sidecar skipped for codex_app_server/MoA.
     if (
         not moa_active
@@ -993,7 +1037,8 @@ def build_turn_context(
     ):
         _stamp_api_content_sidecar(
             agent, messages, current_turn_user_idx, ext_prefetch_cache,
-            plugin_user_context, preflight_compressed=compaction.compressed,
+            plugin_user_context, budget_hint=budget_hint,
+            preflight_compressed=compaction.compressed,
         )
 
     _persist_turn_start(agent, messages, conversation_history, pending_cli_message)
@@ -1008,6 +1053,7 @@ def build_turn_context(
         effective_task_id=effective_task_id, turn_id=turn_id,
         current_turn_user_idx=current_turn_user_idx, should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context, ext_prefetch_cache=ext_prefetch_cache,
+        budget_hint=budget_hint,
         preflight_compression_blocked=compaction.blocked,
     )
 
@@ -1034,6 +1080,7 @@ def _sanitize_model_for(agent: Any, moa_config: Any) -> Any:
 def build_api_messages(
     agent: Any, messages: List[Dict[str, Any]], *, current_turn_user_idx: Any,
     ext_prefetch_cache: Any, plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
+    budget_hint: str = "",
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Build the wire copy of ``messages`` for one API call plus the effective system
     message. Returns ``(api_messages, effective_system)``.
@@ -1071,7 +1118,8 @@ def build_api_messages(
             else:
                 # Callers that bypass the prologue stamping: compose live.
                 _composed = compose_user_api_content(
-                    api_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
+                    api_msg.get("content", ""), ext_prefetch_cache, plugin_user_context,
+                    budget_hint,
                 )
                 if _composed is not None:
                     api_msg["content"] = _composed

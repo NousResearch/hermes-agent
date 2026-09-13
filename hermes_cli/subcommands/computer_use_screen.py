@@ -4,8 +4,8 @@ headless Linux gateway host, viewable from Hermes Desktop. ``status`` / ``start`
 
 from __future__ import annotations
 
+import getpass
 import json
-import subprocess
 import sys
 
 
@@ -54,7 +54,7 @@ def _screen_stop(args) -> int:
 
 
 def _screen_install(args) -> int:
-    from tools.bot_desktop import runtime
+    from tools.bot_desktop import install, runtime
     if not runtime.is_supported_host():
         print("Bot Desktop screens run on Linux gateway hosts only.")
         return 1
@@ -71,10 +71,16 @@ def _screen_install(args) -> int:
         answer = input("Proceed? [Y/n] ").strip().lower()
         if answer not in ("", "y", "yes"):
             return 1
-    rc = subprocess.run(cmd, shell=True, stdin=None).returncode  # windows-footgun: ok — Linux-only, apt/dnf/pacman
+    # Same runner as the Desktop pane's Install button: one per-profile slot, list-form spawn, sudo password
+    # via stdin (-S) and never on the command line.
+    try:
+        rc = install.install_packages(ask_password=lambda: getpass.getpass("[sudo] password: "), on_line=print)
+    except install.InstallBusy as exc:
+        print(f"Bot Desktop: {exc}")
+        return 1
     if rc != 0:
         print(f"Bot Desktop: installer exited {rc}")
-        return rc
+        return rc or 1
     missing = runtime.missing_binaries()
     if missing:
         print("Bot Desktop: still missing " + ", ".join(missing))

@@ -12,7 +12,17 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.main import cmd_update
+
+from tests.hermes_cli.test_update_autostash import install_update_gateway_isolation
+
+
+@pytest.fixture(autouse=True)
+def _update_gateway_isolation(monkeypatch):
+    install_update_gateway_isolation(monkeypatch)
+    yield
 
 
 def _make_run_side_effect(

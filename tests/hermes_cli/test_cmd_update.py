@@ -2,12 +2,58 @@
 
 import hashlib
 import subprocess
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, patch
 
 import pytest
 
 from hermes_cli.main import cmd_update, PROJECT_ROOT
+
+
+def install_update_gateway_isolation(monkeypatch, **overrides):
+    """Re-bind ``hermes_cli.gateway`` after ``_purge_stale_hermes_modules()``.
+
+    ``hermes update`` evicts cached ``hermes_cli.gateway`` before the restart
+    phase re-imports it. Tests must inject discovery doubles *after* that purge,
+    not only on the pre-purge module object.
+    """
+    import importlib
+    import sys
+
+    import hermes_cli.update_cmd as update_cmd
+
+    real_gw = importlib.import_module("hermes_cli.gateway")
+    injected = {
+        "find_gateway_pids": lambda **_kwargs: [],
+        "find_profile_gateway_processes": lambda **_kwargs: [],
+        "supports_systemd_services": lambda: False,
+    }
+    injected.update(overrides)
+
+    class _GatewayImportProxy(ModuleType):
+        def __init__(self):
+            super().__init__("hermes_cli.gateway")
+            self._real = real_gw
+            for name, value in injected.items():
+                setattr(self, name, value)
+
+        def __getattr__(self, name):
+            if name == "_real":
+                raise AttributeError(name)
+            return getattr(self._real, name)
+
+    def _install_proxy():
+        sys.modules["hermes_cli.gateway"] = _GatewayImportProxy()
+
+    original_purge = update_cmd._purge_stale_hermes_modules
+
+    def purge_with_gateway_rebind():
+        original_purge()
+        _install_proxy()
+
+    monkeypatch.setattr(
+        update_cmd, "_purge_stale_hermes_modules", purge_with_gateway_rebind
+    )
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -72,21 +118,16 @@ def _patch_managed_uv(request):
 
 
 @pytest.fixture(autouse=True)
-def _patch_gateway_discovery():
-    """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
+def _update_gateway_isolation(monkeypatch):
+    """Keep cmd_update's gateway restart phase off this machine's live gateways.
 
-    The restart phase used to swallow every exception at debug level, so these
-    end-to-end tests never noticed it touching real gateway discovery. Since
-    the phase is surfaced (#78574: an aborted restart now fails the update),
-    an unmocked ``find_gateway_pids`` on a box with a live gateway reaches the
-    conftest live-system guard and turns into a spurious ``sys.exit(1)``.
-    Discovery returning nothing makes the phase a clean no-op for every test
-    in this module (none of them assert on gateway restarts).
+    Pre-purge ``patch("hermes_cli.gateway.*")`` is lost once
+    ``_purge_stale_hermes_modules()`` evicts the module. Re-bind a proxy into
+    ``sys.modules`` immediately after the real purge so discovery stays empty
+    for every test in this module (none assert on gateway restarts).
     """
-    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
-         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
-        yield
+    install_update_gateway_isolation(monkeypatch)
+    yield
 
 
 class TestCmdUpdateNpmLockfileCache:

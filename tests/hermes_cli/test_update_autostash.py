@@ -1,12 +1,59 @@
 from pathlib import Path
 from subprocess import CalledProcessError
 from types import SimpleNamespace
+from types import ModuleType
 from unittest.mock import patch
 
 import pytest
 
 from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
+
+
+def install_update_gateway_isolation(monkeypatch, **overrides):
+    """Re-bind ``hermes_cli.gateway`` after ``_purge_stale_hermes_modules()``.
+
+    ``hermes update`` evicts cached ``hermes_cli.gateway`` before the restart
+    phase re-imports it. Tests must inject discovery doubles *after* that purge,
+    not only on the pre-purge module object.
+    """
+    import importlib
+    import sys
+
+    import hermes_cli.update_cmd as update_cmd
+
+    real_gw = importlib.import_module("hermes_cli.gateway")
+    injected = {
+        "find_gateway_pids": lambda **_kwargs: [],
+        "find_profile_gateway_processes": lambda **_kwargs: [],
+        "supports_systemd_services": lambda: False,
+    }
+    injected.update(overrides)
+
+    class _GatewayImportProxy(ModuleType):
+        def __init__(self):
+            super().__init__("hermes_cli.gateway")
+            self._real = real_gw
+            for name, value in injected.items():
+                setattr(self, name, value)
+
+        def __getattr__(self, name):
+            if name == "_real":
+                raise AttributeError(name)
+            return getattr(self._real, name)
+
+    def _install_proxy():
+        sys.modules["hermes_cli.gateway"] = _GatewayImportProxy()
+
+    original_purge = update_cmd._purge_stale_hermes_modules
+
+    def purge_with_gateway_rebind():
+        original_purge()
+        _install_proxy()
+
+    monkeypatch.setattr(
+        update_cmd, "_purge_stale_hermes_modules", purge_with_gateway_rebind
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -18,6 +65,12 @@ from hermes_cli import main as hermes_main
 # fixtures make the managed_uv functions delegate to the patched
 # ``shutil.which`` so the existing test setup keeps working without
 # per-test changes.
+@pytest.fixture(autouse=True)
+def _update_gateway_isolation(monkeypatch):
+    install_update_gateway_isolation(monkeypatch)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _patch_managed_uv(request):
     """Make managed_uv helpers follow shutil.which mocking in tests."""
@@ -256,12 +309,6 @@ def _setup_keep_stash_test(monkeypatch, tmp_path):
     monkeypatch.setattr(
         hermes_main, "_park_stashed_changes",
         lambda *a, **kw: park_calls.append(a) or None,
-    )
-    # Keep the update flow away from the real gateway fleet on this machine —
-    # a live gateway PID would trip the test-suite kill guard and turn the
-    # run into exit 1 (gateway_fleet_restart_incomplete).
-    monkeypatch.setattr(
-        "hermes_cli.gateway.find_gateway_pids", lambda **kw: [], raising=False
     )
     return restore_calls, discard_calls, park_calls
 

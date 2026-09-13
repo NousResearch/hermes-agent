@@ -64,12 +64,21 @@ def _ensure_client_dependency() -> None:
 
 
 def _scoped_setting(name: str, default: str = "") -> str:
-    """Profile-scoped read of a per-profile Hindsight setting, with the provider's own default on a miss.
+    """Profile-scoped read of a retain SHAPING value, with the provider's own default on a miss.
 
     Under ``gateway.multiplex_profiles`` ``os.environ`` holds the DEFAULT profile's ``.env``, so a miss
     is a miss — never ``os.environ`` (same rule as the daemon's key and base URL in ``embedded.py``).
     Single-profile deployments are unchanged: with no scope installed ``get_secret`` still reads the
     process env, where the value IS this profile's own.
+
+    Deliberately narrower than a bare ``get_secret``: this helper is only for presentation shaping
+    (retain source label, speaker prefixes, tags). The isolation-critical values — ``mode``,
+    ``apiKey`` and the ``bankId`` data partition — read through bare ``get_secret`` above and so
+    still fail loud on a scopeless multiplexed read, matching the other scoped credential readers.
+    In ``_load_config`` that read happens FIRST, so a missing scope raises on ``HINDSIGHT_MODE``
+    before this helper is ever reached; swallowing here therefore cannot mask an isolation failure.
+    What it does avoid is losing the whole memory provider (``initialize`` failing, and the manager
+    logging + dropping it) because a speaker prefix could not be resolved.
     """
     try:
         value = get_secret(name, default)

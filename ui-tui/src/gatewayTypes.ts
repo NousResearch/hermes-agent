@@ -274,6 +274,7 @@ export interface SessionUndoResponse {
 }
 
 export interface SessionUsageResponse {
+  /** Unfinished delegation completion units owned by this conversation (a task group counts once). */
   active_subagents?: number
   avg_latency_s?: number
   avg_tps?: number

@@ -8,8 +8,9 @@
  * `sshConnections`. Sticky spawn artifacts (owner-nonce, token file, lockfile)
  * are NOT liveness and must not suppress idle-exit.
  *
- * Fail-open: if the keep-alive cannot connect, backend behavior is unchanged
- * (it may still idle-exit). This module never consults nonce/lock/token files.
+ * If the socket drops the registry reconnects after a delay; while it is down
+ * the backend may idle-exit as before. This module never consults
+ * nonce/lock/token files.
  */
 import { buildGatewayWsUrl } from './connection-config'
 
@@ -94,10 +95,6 @@ export function createSshIsolatedKeepaliveRegistry(options: SshIsolatedKeepalive
       return
     }
 
-    if (typeof WebSocketImpl !== 'function') {
-      return
-    }
-
     entry.generation += 1
     const generation = entry.generation
     clearTimer(entry)
@@ -147,10 +144,6 @@ export function createSshIsolatedKeepaliveRegistry(options: SshIsolatedKeepalive
     }
 
     stop(scope)
-
-    if (typeof WebSocketImpl !== 'function') {
-      return
-    }
 
     const entry: KeepaliveEntry = {
       generation: 0,

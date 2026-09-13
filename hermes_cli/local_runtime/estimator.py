@@ -76,22 +76,36 @@ class HardwareBudget:
 def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
     kv_heads = header.head_counts_kv()
     dk, dv = header.head_dim_k, header.head_dim_v
+    dk_swa = header.key_length_swa or dk
+    dv_swa = header.value_length_swa or dv
+
+    # Priority ladder, highest first: (1) the file's own per-layer pattern — architecture-agnostic
+    # and exact; (2) a known-architecture fraction, for older files that declare `sliding_window`
+    # but no per-layer pattern; (3) no signal at all -> every layer priced as full attention
+    # (overestimate; safe).
+    pattern = header.sliding_window_pattern
+    has_pattern = (pattern is not None and header.sliding_window > 0
+                  and len(pattern) == len(kv_heads))
     swa_fraction = _SWA_LAYER_FRACTION.get(header.architecture, 0.0)
-    has_swa = header.sliding_window > 0 and swa_fraction > 0
+    has_fraction = not has_pattern and header.sliding_window > 0 and swa_fraction > 0
+    n_attn_total = sum(1 for h in kv_heads if h > 0)
+    n_swa = round(n_attn_total * swa_fraction) if has_fraction else 0
 
     layers: list[tuple[LayerKind, int]] = []
     n_attn_seen = 0
-    n_attn_total = sum(1 for h in kv_heads if h > 0)
-    n_swa = round(n_attn_total * swa_fraction) if has_swa else 0
-    for heads in kv_heads:
+    for i, heads in enumerate(kv_heads):
         if heads == 0:
             layers.append((LayerKind.RECURRENT, 0))
             continue
-        per_token = round(heads * (dk + dv) * _F16_BYTES_PER_ELEM)
-        # Distribute the SWA share across the first n_swa attention layers; only the full/SWA
-        # SPLIT matters to the totals, not which indexes.
-        kind = LayerKind.SWA if n_attn_seen < n_swa else LayerKind.FULL
-        layers.append((kind, per_token))
+        if has_pattern:
+            is_swa = bool(pattern[i])
+        else:
+            # Distribute the SWA share across the first n_swa attention layers; only the
+            # full/SWA split matters to the totals, not which indexes.
+            is_swa = n_attn_seen < n_swa
+        layer_dk, layer_dv = (dk_swa, dv_swa) if is_swa else (dk, dv)
+        per_token = round(heads * (layer_dk + layer_dv) * _F16_BYTES_PER_ELEM)
+        layers.append((LayerKind.SWA if is_swa else LayerKind.FULL, per_token))
         n_attn_seen += 1
 
     return ModelProfile(

@@ -110,6 +110,29 @@ export function displayRequest<T>(bot: RosterRow, method: string, params: Record
 }
 
 /**
+ * Hold the bot's pooled gateway socket open across a `display.*` sequence. The
+ * SDK disposes an inactive registry-routed socket once its request count hits
+ * zero, so without this the `display.install.*` / `display.lease` events that
+ * follow the request never arrive. Feature-detected: older hosts (and local
+ * routes, which never close) get a no-op release.
+ */
+export async function retainBotScreen(bot: RosterRow): Promise<() => void> {
+  const noop = () => undefined
+
+  if (typeof host.retainProfile !== 'function') {
+    return noop
+  }
+
+  try {
+    const release = await host.retainProfile(botScreenRoute(bot))
+
+    return typeof release === 'function' ? release : noop
+  } catch {
+    return noop
+  }
+}
+
+/**
  * Resolve the RFB WebSocket URL for `bot`: the bot's gateway `/api/ws` origin
  * (fresh credential for OAuth remotes) with the path swapped for the display
  * bridge and the single-use display ticket attached.

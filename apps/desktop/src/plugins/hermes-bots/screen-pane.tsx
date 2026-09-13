@@ -15,7 +15,7 @@ import type { RpcEvent } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
-import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isEventForBotScreen, leaseHeldBy, resolveScreenWsUrl, viewerHash } from './screen-connection'
+import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isEventForBotScreen, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
 import { ScreenInstallCard } from './screen-install'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenViewer } from './screen-state'
 import type { RosterRow } from './types'
@@ -54,6 +54,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const canvasHost = useRef<HTMLDivElement | null>(null)
   const rfb = useRef<RfbLike | null>(null)
   const socket = useRef<WebSocket | null>(null)
+  // Pins the bot's pooled gateway socket for the attach lifetime so display.lease
+  // events keep arriving for an inactive registry-routed bot.
+  const retention = useRef<(() => void) | null>(null)
   const [conn, setConn] = useState<ConnState>('idle')
   const [error, setError] = useState<null | string>(null)
   const [busy, setBusy] = useState(false)
@@ -94,6 +97,8 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     rfb.current = null
     socket.current?.close()
     socket.current = null
+    retention.current?.()
+    retention.current = null
   }, [])
 
   const attach = useCallback(async () => {
@@ -110,6 +115,15 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       // Load the client BEFORE dialing: noVNC's Websock installs its own `onopen`, so a socket that
       // opened while the dynamic import was still in flight never hands it the open event.
       const Rfb = await loadRfb()
+      const retain = await retainBotScreen(bot)
+
+      if (generation !== attachGeneration.current) {
+        retain()
+
+        return
+      }
+
+      retention.current = retain
       const observe = await displayRequest<DisplayObserveResult>(bot, 'display.observe')
       const minted = { id: observe.viewer_id, hash: await viewerHash(observe.viewer_id) }
       setScreenStatus(bot, observe)

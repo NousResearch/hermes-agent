@@ -6,6 +6,7 @@ import type * as ScreenConnection from './screen-connection'
 import type { RosterRow } from './types'
 
 const sockets = vi.hoisted(() => [] as Array<{ closeCodes: number[]; closed: boolean; close: (code?: number) => void }>)
+const retention = vi.hoisted(() => ({ held: 0 }))
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { useStore } = await import('@nanostores/react')
@@ -19,9 +20,21 @@ vi.mock('@hermes/plugin-sdk', async () => {
     GlyphSpinner: () => null,
     EmptyState: () => null,
     useValue: useStore,
-    host: { onEvent: onGatewayEvent }
+    host: {
+      onEvent: onGatewayEvent,
+      retainProfile: async () => {
+        retention.held += 1
+
+        return () => {
+          retention.held -= 1
+        }
+      }
+    }
   }
 })
+vi.mock('./routing', () => ({
+  botConnectionRoute: () => ({ connectionId: 'host-a', profile: 'default', targetProfile: 'default' })
+}))
 vi.mock('./data', () => ({ botSelectionKey: (bot: RosterRow) => bot.name }))
 vi.mock('./i18n', () => ({
   useBots: () => ({
@@ -85,6 +98,7 @@ const status: DisplayStatus = {
 beforeEach(() => {
   $screenState.set({})
   sockets.length = 0
+  retention.held = 0
   vi.mocked(displayRequest)
     .mockReset()
     .mockResolvedValue({ ...status, ticket: 'test-ticket', viewer_id: 'this-viewer' })
@@ -117,6 +131,18 @@ it('sends an intentional close before noVNC can send its statusless close on pan
   await act(async () => {})
   view.unmount()
   expect(sockets[0].closeCodes).toEqual([1000])
+})
+
+it('pins the bot socket for the attach lifetime and lets go on unmount', async () => {
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+  await act(async () => {})
+  expect(retention.held).toBe(1)
+  fireEvent.click(view.getByTitle('Reconnect'))
+  await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(retention.held).toBe(1)
+  view.unmount()
+  expect(retention.held).toBe(0)
 })
 
 it('does not hand back while replacing a stream to reconnect the same viewer', async () => {

@@ -14,7 +14,7 @@ import type { RpcEvent } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
-import { displayRequest, type DisplayStatus, isEventForBotScreen } from './screen-connection'
+import { displayRequest, type DisplayStatus, isEventForBotScreen, retainBotScreen } from './screen-connection'
 import type { RosterRow } from './types'
 
 const LOG_KEEP = 200
@@ -31,6 +31,16 @@ export function ScreenInstallCard({ bot, status, onInstalled }: ScreenInstallCar
   const [log, setLog] = useState<string[]>([])
   const [error, setError] = useState<null | string>(null)
   const logEnd = useRef<HTMLDivElement>(null)
+  // Keeps the bot's socket open from display.install until done/failed: the log
+  // and done events ride that socket, and the SDK closes an idle one otherwise.
+  const retention = useRef<(() => void) | null>(null)
+
+  const releaseRetention = useCallback(() => {
+    retention.current?.()
+    retention.current = null
+  }, [])
+
+  useEffect(() => releaseRetention, [releaseRetention])
 
   useEffect(() => {
     logEnd.current?.scrollIntoView({ block: 'end' })
@@ -53,6 +63,8 @@ export function ScreenInstallCard({ bot, status, onInstalled }: ScreenInstallCar
         return
       }
 
+      releaseRetention()
+
       if (payload.code === 0 && payload.status?.installed) {
         setPhase('idle')
         onInstalled(payload.status)
@@ -66,7 +78,7 @@ export function ScreenInstallCard({ bot, status, onInstalled }: ScreenInstallCar
       offLog()
       offDone()
     }
-  }, [bot, onInstalled, status.profile_key, t.screen.installCancelled, t.screen.installFailed])
+  }, [bot, onInstalled, releaseRetention, status.profile_key, t.screen.installCancelled, t.screen.installFailed])
 
   const install = useCallback(async () => {
     setPhase('running')
@@ -74,12 +86,14 @@ export function ScreenInstallCard({ bot, status, onInstalled }: ScreenInstallCar
     setError(null)
 
     try {
+      retention.current = await retainBotScreen(bot)
       await displayRequest(bot, 'display.install')
     } catch (err) {
+      releaseRetention()
       setPhase('failed')
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [bot])
+  }, [bot, releaseRetention])
 
   return (
     <div className="grid min-h-48 place-items-center p-6 text-center">

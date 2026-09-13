@@ -53,6 +53,7 @@ import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
 
+import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
   Panel,
@@ -77,7 +78,11 @@ import { BlueprintSlotControl, blueprintSlotHelp, cleanBlueprintFieldError, init
 import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } from './cron-actions'
 import {
   cronEditorUpdates,
+  type CronFleetConfig,
+  cronModelChoiceLabel,
   jobIsScriptOnly,
+  jobModelRouting,
+  MODEL_FLEET_VALUE,
   parseCronDeliveryTargets,
   toggleCronDeliveryTarget,
   validateCronEditor
@@ -796,7 +801,20 @@ function CronJobDetail({
   const isPaused = state === 'paused'
   const deliver = jobDeliver(job)
   const prompt = jobPrompt(job)
-  const modelOverride = jobModel(job)
+
+  // Routing badge: show whether a job's inference model follows its own pin,
+  // the cron-fleet default (cron.model), or the global default (#89513).
+  const { data: cronConfig } = useHermesConfigRecord()
+
+  const fleetConfig = useMemo<CronFleetConfig | null>(() => {
+    const cronBlock = (cronConfig ?? {}) as { cron?: { model?: unknown; model_provider?: unknown } }
+    const model = String(cronBlock.cron?.model ?? '').trim()
+    const provider = String(cronBlock.cron?.model_provider ?? '').trim()
+
+    return model ? { model, provider } : null
+  }, [cronConfig])
+
+  const routing = jobModelRouting(job, fleetConfig)
 
   return (
     <PanelDetail>
@@ -805,6 +823,9 @@ function CronJobDetail({
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{jobTitle(job)}</h3>
             <PanelPill tone={STATE_TONE[state] ?? 'muted'}>{c.states[state] ?? state}</PanelPill>
+            <PanelPill tone={routing.kind === 'pinned' ? 'good' : routing.kind === 'fleet' ? 'warn' : 'muted'}>
+              {routing.kind === 'pinned' ? 'Pinned' : routing.kind === 'fleet' ? 'Fleet default' : 'Global default'}
+            </PanelPill>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
             <PanelAction disabled={busy} icon={isPaused ? 'play' : 'debug-pause'} onClick={onPauseResume}>
@@ -822,7 +843,7 @@ function CronJobDetail({
             { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
             { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
             { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver },
-            ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : [])
+            { label: c.modelLabel, value: routing.label }
           ]}
         />
 
@@ -1032,6 +1053,19 @@ function CronEditorDialog({
   const initial = isEdit ? editor.job : null
   const scriptOnlyJob = initial ? jobIsScriptOnly(initial) : false
 
+  // The cron-fleet default (cron.model / cron.model_provider) routes unpinned
+  // jobs at fire time (#89513). Read it so the model picker can surface it as
+  // a selectable routing choice instead of hiding it behind "Default".
+  const { data: cronConfig } = useHermesConfigRecord()
+
+  const fleetConfig = useMemo<CronFleetConfig | null>(() => {
+    const cronBlock = (cronConfig ?? {}) as { cron?: { model?: unknown; model_provider?: unknown } }
+    const model = String(cronBlock.cron?.model ?? '').trim()
+    const provider = String(cronBlock.cron?.model_provider ?? '').trim()
+
+    return model ? { model, provider } : null
+  }, [cronConfig])
+
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
   const [schedule, setSchedule] = useState('')
@@ -1093,12 +1127,21 @@ function CronEditorDialog({
     setSchedule(initial ? jobScheduleExpr(initial) : (SCHEDULE_OPTIONS[0].expr ?? ''))
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
-    setModelChoice(initial && jobModel(initial) ? `${jobProvider(initial)}:${jobModel(initial)}` : MODEL_DEFAULT_VALUE)
+    // A pinned job shows its pin. Unpinned jobs surface the cron-fleet default
+    // as the routing choice when one is configured (#89513); otherwise the
+    // plain global-default sentinel.
+    setModelChoice(
+      initial && jobModel(initial)
+        ? `${jobProvider(initial)}:${jobModel(initial)}`
+        : fleetConfig
+          ? MODEL_FLEET_VALUE
+          : MODEL_DEFAULT_VALUE
+    )
     setSlotValues({})
     setTemplateChoice(editor.mode === 'create' ? (editor.blueprintKey ?? CUSTOM_TEMPLATE) : CUSTOM_TEMPLATE)
     setError(null)
     setSaving(false)
-  }, [editor, initial, open])
+  }, [editor, fleetConfig, initial, open])
 
   // Seed the typed slots with the blueprint's defaults whenever a blueprint is
   // picked from "Start from" (and reset them when switching back to Custom).
@@ -1136,6 +1179,7 @@ function CronEditorDialog({
   // stored pin visible and re-selectable rather than silently dropping it.
   const modelChoiceKnown =
     modelChoice === MODEL_DEFAULT_VALUE ||
+    modelChoice === MODEL_FLEET_VALUE ||
     modelProviders.some(provider => (provider.models ?? []).some(model => `${provider.slug}:${model}` === modelChoice))
 
   async function handleSubmit(event: React.FormEvent) {
@@ -1161,7 +1205,11 @@ function CronEditorDialog({
 
     // Decode `${providerSlug}:${model}` — the model half may itself contain
     // ':' (e.g. openrouter 'anthropic/claude-sonnet-4:beta'), so split once.
-    const overrideIndex = modelChoice === MODEL_DEFAULT_VALUE ? -1 : modelChoice.indexOf(':')
+    // MODEL_DEFAULT_VALUE / MODEL_FLEET_VALUE both mean "no per-job override";
+    // the fleet sentinel just labels the routing, it does not persist a pin.
+    const overrideIndex =
+      modelChoice === MODEL_DEFAULT_VALUE || modelChoice === MODEL_FLEET_VALUE ? -1 : modelChoice.indexOf(':')
+
     const overrideProvider = overrideIndex >= 0 ? modelChoice.slice(0, overrideIndex) : ''
     const overrideModel = overrideIndex >= 0 ? modelChoice.slice(overrideIndex + 1) : ''
 
@@ -1341,6 +1389,15 @@ function CronEditorDialog({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
+                    {/* The no-per-job-override rows. Both "no override" — the
+                        job simply isn't pinned — but labeled by which default
+                        actually routes it at fire time: cron.model (fleet) if
+                        configured, otherwise the global model. */}
+                    {fleetConfig && (
+                      <SelectItem value={MODEL_FLEET_VALUE}>
+                        {cronModelChoiceLabel(MODEL_FLEET_VALUE, fleetConfig)}
+                      </SelectItem>
+                    )}
                     <SelectItem value={MODEL_DEFAULT_VALUE}>{c.modelDefault}</SelectItem>
                     {!modelChoiceKnown && (
                       <SelectItem className="font-mono" value={modelChoice}>

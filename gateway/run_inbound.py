@@ -1187,6 +1187,36 @@ class GatewayInboundMixin:
             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
             return event, source, is_internal
 
+    async def _handle_telegram_forum_topic_name(self, event: MessageEvent) -> bool:
+        """Persist an authorized Telegram topic create/rename as the canonical session title."""
+        metadata = getattr(event, "metadata", None) or {}
+        name = metadata.get("telegram_forum_topic_name")
+        source = getattr(event, "source", None)
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or source is None
+            or source.platform != Platform.TELEGRAM
+            or not source.thread_id
+        ):
+            return False
+
+        try:
+            session_entry = await self.async_session_store.get_or_create_session(
+                source, touch_activity=False
+            )
+            if self._session_db is None:
+                logger.warning(
+                    "Could not store Telegram forum topic name: session database unavailable"
+                )
+            else:
+                await self._session_db.set_session_title(session_entry.session_id, name)
+        except ValueError as exc:
+            logger.warning("Could not store Telegram forum topic name: %s", exc)
+        except Exception:
+            logger.warning("Could not store Telegram forum topic name", exc_info=True)
+        return True
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
@@ -1203,6 +1233,11 @@ class GatewayInboundMixin:
         # — Discord interaction passthrough builds its own MessageEvent and
         # calls handle_message directly, so a teardown on the relay's inbound
         # handler left those turns muted.
+
+        # Topic service updates carry user metadata, not agent input. Persist
+        # after authorization, then consume without starting an empty turn.
+        if await self._handle_telegram_forum_topic_name(event):
+            return None
 
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:

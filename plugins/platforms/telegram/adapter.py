@@ -2690,6 +2690,11 @@ class TelegramAdapter(BasePlatformAdapter):
         app.add_handler(TelegramMessageHandler(
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
+        app.add_handler(TelegramMessageHandler(
+            filters.StatusUpdate.FORUM_TOPIC_CREATED
+            | filters.StatusUpdate.FORUM_TOPIC_EDITED,
+            self._handle_forum_topic_name_update,
+        ))
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
@@ -5699,6 +5704,36 @@ class TelegramAdapter(BasePlatformAdapter):
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Message-like payload for normal messages and channel posts (``update.channel_post``)."""
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
+    async def _handle_forum_topic_name_update(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Forward an authorized human's forum topic create/rename metadata."""
+        msg = self._effective_update_message(update)
+        actor = getattr(msg, "from_user", None) if msg is not None else None
+        if (
+            msg is None
+            or actor is None
+            or bool(getattr(actor, "is_bot", False))
+            or not self._is_user_authorized_from_message(msg)
+        ):
+            return
+
+        topic = getattr(msg, "forum_topic_edited", None) or getattr(
+            msg, "forum_topic_created", None
+        )
+        name = getattr(topic, "name", None)
+        if not isinstance(name, str) or not name.strip():
+            return
+
+        event = self._build_message_event(
+            msg, MessageType.TEXT, update_id=getattr(update, "update_id", None)
+        )
+        event.text = ""
+        event.allow_gateway_control = False
+        event.source.chat_topic = name
+        event.metadata["telegram_forum_topic_name"] = name
+        await self.handle_message(event)
 
     def _log_blocked_user(self, msg, *, level=logging.WARNING, what: str = "unauthorized user") -> None:
         logger.log(

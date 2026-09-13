@@ -7,7 +7,6 @@ and the delivery-targets listing used by UI pickers.
 """
 
 import subprocess
-import sys
 from unittest import mock
 
 import pytest
@@ -204,7 +203,7 @@ def test_deliver_message_carries_cron_attribution(tmp_path):
     assert "the payload" in captured["message"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="shebang child not executable on win32")
+@pytest.mark.linux_only
 def test_deliver_child_undecodable_stderr_does_not_fail_delivery(tmp_path):
     """A stray non-UTF-8 byte on the delivery child's stderr must not raise
     UnicodeDecodeError inside run() and fail a delivery that completed. Field
@@ -225,7 +224,7 @@ def test_deliver_child_undecodable_stderr_does_not_fail_delivery(tmp_path):
     assert err is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="shebang child not executable on win32")
+@pytest.mark.linux_only
 def test_deliver_failure_tail_decodes_lossily(tmp_path):
     """The exit-1 tail is still surfaced (with U+FFFD for the bad byte) instead
     of aborting at decode time."""

@@ -70,6 +70,7 @@ class _ModelSwitchContext:
     config_path: Any
     persist_global: bool
     one_turn: bool = False
+    reasoning_effort: str = ""  # `--reasoning <level>` riding with the pick (typed path only)
     restore_snapshot: Optional[dict] = None
     current_model: str = ""
     current_provider: str = "openrouter"
@@ -320,7 +321,15 @@ class GatewayModelCommandsMixin:
         if error is not None:
             return error
         await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
-        return await self._model_switch_confirmation(result, ctx, one_turn=one_turn, picker=picker)
+        reply = await self._model_switch_confirmation(result, ctx, one_turn=one_turn, picker=picker)
+        if ctx.reasoning_effort and not one_turn:
+            # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
+            # The record step already evicted the cached agent, so the pin lands on the rebuild.
+            from gateway.run import _platform_config_key
+            reply += "\n" + self._apply_reasoning_selection(
+                ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
+                persist_global=ctx.persist_global)
+        return reply
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
@@ -466,6 +475,7 @@ class GatewayModelCommandsMixin:
                 explicit_provider=request.explicit_provider,
             ),
             one_turn=request.is_once,
+            reasoning_effort=request.reasoning_effort,
             restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
         )
         ctx.read_config()

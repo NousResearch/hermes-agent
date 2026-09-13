@@ -358,7 +358,9 @@ Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short n
 hermes model            # Interactive provider + model picker (the canonical way to switch defaults)
 ```
 
-`hermes model` walks you through picking a provider, authenticating (OAuth flows open a browser; API-key providers prompt for the key), and then choosing a specific model from that provider's curated catalog. The choice is written to `model.provider` and `model.default` in `~/.hermes/config.yaml`.
+`hermes model` walks you through picking a provider, authenticating (OAuth flows open a browser; API-key providers prompt for the key), and then choosing a specific model from that provider's curated catalog. The choice is written to `model.provider` and `model.default` in `~/.hermes/config.yaml`. After a new model is saved, a reasoning-effort step follows (`minimal` … `ultra`, **Disable reasoning**, or **Skip** to keep the current value) and writes `agent.reasoning_effort`; the step is skipped for models the catalog marks as having no reasoning control. The provider list also has a **Reasoning effort for the current model...** row to change only the effort.
+
+**Configure auxiliary models...** opens the per-task side-model picker (vision, compression, approval, delegation, …). Each task's provider → model pick ends with the same effort step, stored as `auxiliary.<task>.reasoning_effort` (or `delegation.reasoning_effort`), with an extra **Provider default** row that leaves the level up to the provider. Tasks whose block has no `reasoning_effort` key by design (MoA slots, memory query rewrite) skip the step.
 
 To list providers/models without launching the picker, use the dashboard or the REST endpoints below. To inspect what the CLI will actually use right now: `hermes config get model --json` and `hermes status`.
 

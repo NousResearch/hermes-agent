@@ -218,7 +218,7 @@ export const draftModelNameFromArg = (value: string) => {
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]!
 
-    if (part === '--provider') {
+    if (part === '--provider' || part === '--reasoning') {
       i++
 
       continue

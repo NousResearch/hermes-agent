@@ -220,3 +220,24 @@ def test_untrusted_adopter_of_a_full_profiles_connection_keeps_its_own_trust_gat
     two_profiles("a")
     assert handlers._trust_gate_check("x", "t") is None and len(asked) == 1
 
+
+def test_parallel_safe_opt_in_is_per_profile(two_profiles):
+    """B's ``supports_parallel_tool_calls`` on its own same-named server never makes A's serial
+    server's tool parallel-safe (the batch planner would run two A calls concurrently)."""
+    from tools import mcp_tool_discovery as disc, mcp_tool_registration as reg
+
+    cfg_a = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer A"}}
+    cfg_b = dict(cfg_a, headers={"Authorization": "Bearer B"}, supports_parallel_tool_calls=True)
+
+    two_profiles("a")
+    disc._select_new_servers({"x": cfg_a})
+    srv_a = _server("x", cfg_a)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+
+    two_profiles("b")
+    disc._select_new_servers({"x": cfg_b})
+    assert disc.is_mcp_tool_parallel_safe("mcp__x__t") is True
+
+    two_profiles("a")
+    assert disc.is_mcp_tool_parallel_safe("mcp__x__t") is False

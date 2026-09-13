@@ -415,6 +415,43 @@ def _recover_format_errors(
         )
         return True
 
+    # 400 ``reasoning `encrypted_content` was not issued to this caller`` on a
+    # chat-completions ``reasoning_details`` replay (#109572): the blob is sealed to
+    # a caller the provider's pool no longer routes to (opencode-free key rotation),
+    # so it is permanently un-replayable. Strip the poisoned carrier from the
+    # persisted history and the in-flight request, retry once.
+    if (
+        classified.reason == FailoverReason.invalid_encrypted_content
+        and not _retry.invalid_encrypted_content_retry_attempted
+        and agent.api_mode == "chat_completions"
+        and any(
+            isinstance(_m, dict)
+            and _m.get("role") == "assistant"
+            and isinstance(_m.get("reasoning_details"), list)
+            and _m.get("reasoning_details")
+            for _m in messages
+        )
+    ):
+        _retry.invalid_encrypted_content_retry_attempted = True
+        _stripped = 0
+        for _m in messages:
+            if isinstance(_m, dict) and _m.get("reasoning_details"):
+                _m.pop("reasoning_details", None)
+                _stripped += 1
+        for _m in api_messages:
+            if isinstance(_m, dict) and "reasoning_details" in _m:
+                _m.pop("reasoning_details", None)
+        _vlines(
+            agent,
+            f"⚠️  Encrypted reasoning replay was rejected by the provider — "
+            f"stripped reasoning_details from {_stripped} message(s), retrying...",
+        )
+        logger.warning(
+            "%sInvalid encrypted reasoning recovery: stripped reasoning_details from %d messages",
+            agent.log_prefix, _stripped,
+        )
+        return True
+
     # Structured 400 naming ``context_management``: disable native compaction for the
     # session, retry once; local compression takes over.
     if (

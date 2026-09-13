@@ -579,6 +579,15 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # ``codex_reasoning_items`` — a genuine block with nothing to strip behaves as before.
     if _is_codex_masked_replay_rejection(c):
         return _v(_R.invalid_encrypted_content, **_ABORT_FALLBACK)
+    # The opencode relay's Console upstream seals replayed reasoning to the caller
+    # that minted it; after its key-rotated free pool changes callers mid-session it
+    # answers ``[invalid_request_error] reasoning `encrypted_content` was not issued
+    # to this caller`` (#109572). That buckets as format_error, so the one-shot strip
+    # in turn_recovery never runs and every retry resends the same poisoned history.
+    # Route it to invalid_encrypted_content — format_error's terminal hints kept —
+    # so turn_recovery's reasoning_details strip can repair the turn.
+    if _is_caller_bound_reasoning_replay_rejection(status, msg):
+        return _v(_R.invalid_encrypted_content, **_ABORT_FALLBACK)
     # Anthropic thinking-block 400s (signature mismatch after transcript
     # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
     if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):
@@ -894,6 +903,18 @@ def _is_codex_masked_replay_rejection(c: "_Ctx") -> bool:
     return (c.code == "invalid_prompt" and body_msg == _CODEX_MASKED_REPLAY_MESSAGE) or (
         c.msg.strip() == f"invalid_prompt: {_CODEX_MASKED_REPLAY_MESSAGE}"
     )
+
+
+_CALLER_BOUND_REPLAY_MARKERS = ("encrypted_content", "not issued to this caller")
+
+
+def _is_caller_bound_reasoning_replay_rejection(status: Optional[int], msg: str) -> bool:
+    """HTTP 400 naming the replayed ``reasoning.encrypted_content`` as "not issued to
+    this caller" — the opencode relay's key-rotated free pool rejects caller-bound
+    reasoning blobs this way (muse-spark on opencode-free, #109572). Not gated on
+    provider: the wording is the Console upstream's and any relay fronting it reports
+    it verbatim; both markers together are too specific for an unrelated 400."""
+    return status == 400 and all(marker in msg for marker in _CALLER_BOUND_REPLAY_MARKERS)
 
 
 def _error_obj(body: Any) -> dict:

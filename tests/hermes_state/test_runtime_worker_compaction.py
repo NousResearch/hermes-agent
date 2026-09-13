@@ -55,3 +55,19 @@ def test_publication_replay_advances_assignment_once_and_keeps_markers(worker):
     assert rows[1]['display_metadata'] == {'_accepted_input_id': 'delivery'}
     assert store.get_compression_lineage('child') == ['owned', 'child']
     assert db.get_session('child')['system_prompt'] == 'prefix'
+
+
+def test_in_place_archive_without_a_lease_persists_from_a_worker(worker):
+    """Micro-compaction and proactive prune archive without a compression lease; the worker RPC
+    must accept the same ``lock_holder=None`` the in-process store does, or the journal sticks in
+    failure and every later persist of that turn raises."""
+    db, store = worker
+    store.append_messages_batch('owned', [{'role': 'user', 'content': 'old'}, {'role': 'assistant', 'content': 'long'}])
+    assert store.archive_and_compact('owned', [{'role': 'assistant', 'content': 'pruned'}],
+                                     tail_count=0, model_config_patch=None) == 1
+    assert store.failure is None and store.journal['pending'] == []
+    rows = store.get_messages_as_conversation('owned')
+    assert [r['content'] for r in rows] == ['pruned']
+    assert db._read_one("SELECT COUNT(*) FROM messages WHERE session_id='owned' AND compacted=1")[0] == 2
+    store.append_messages_batch('owned', [{'role': 'user', 'content': 'after'}])
+    assert [r['content'] for r in store.get_messages_as_conversation('owned')] == ['pruned', 'after']

@@ -79,6 +79,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
   "/api/messaging/whatsapp/onboarding",
+  "/api/messaging/feishu/onboarding",
   // OAuth/account state is profile-owned too: status, login sessions, polling,
   // cancellation, and disconnect must all follow the selected management
   // profile rather than silently targeting the dashboard process's profile.
@@ -952,6 +953,36 @@ export const api = {
   cancelWhatsAppOnboarding: (pairingId: string) =>
     fetchJSON<{ ok: boolean }>(
       `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+      { method: "DELETE" },
+    ),
+  startFeishuOnboarding: (body: {
+    domain?: "feishu" | "lark" | null;
+    profile?: string | null;
+  }) =>
+    fetchJSON<FeishuOnboardingStartResponse>(
+      "/api/messaging/feishu/onboarding/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  getFeishuOnboardingStatus: (bindId: string) =>
+    fetchJSON<FeishuOnboardingStatusResponse>(
+      `/api/messaging/feishu/onboarding/${encodeURIComponent(bindId)}`,
+    ),
+  applyFeishuOnboarding: (bindId: string, body: { profile?: string | null }) =>
+    fetchJSON<FeishuOnboardingApplyResponse>(
+      `/api/messaging/feishu/onboarding/${encodeURIComponent(bindId)}/apply`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  cancelFeishuOnboarding: (bindId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/feishu/onboarding/${encodeURIComponent(bindId)}`,
       { method: "DELETE" },
     ),
 
@@ -2060,6 +2091,45 @@ export type WhatsAppOnboardingStatusResponse = WhatsAppOnboardingStartResponse;
 export interface WhatsAppOnboardingApplyResponse {
   ok: boolean;
   platform: "whatsapp";
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
+}
+
+export interface FeishuOnboardingStartResponse {
+  // Start and status serialize the same payload (the WhatsApp convention
+  // above). The backend names the session id `pairing_id`; the written
+  // contract called it `bind_id` — read whichever is present.
+  pairing_id?: string;
+  bind_id?: string;
+  // The payload carries the session's full vocabulary; GET only returns 200
+  // for the non-terminal ones (expired/denied come back as 410).
+  status:
+    | "pending"
+    | "waiting"
+    | "ready"
+    | "expired"
+    | "denied"
+    | "cancelled"
+    | "error";
+  qr_url: string;
+  user_code: string;
+  domain: "feishu" | "lark";
+  interval: number;
+  expires_in: number;
+  app_id?: string | null;
+  bot_name?: string | null;
+  error?: string | null;
+}
+
+export type FeishuOnboardingStatusResponse = FeishuOnboardingStartResponse;
+
+export interface FeishuOnboardingApplyResponse {
+  ok: boolean;
+  platform: "feishu";
+  app_id: string;
   needs_restart: boolean;
   restart_started?: boolean;
   restart_action?: string;

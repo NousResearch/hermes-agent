@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Bot,
   Check,
   CheckCircle2,
+  Copy,
   ExternalLink,
   Info,
   PlugZap,
@@ -26,7 +27,9 @@ import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { api } from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import type {
+  FeishuOnboardingStartResponse,
   MessagingPlatform,
   MessagingPlatformEnvVar,
   MessagingPlatformUpdate,
@@ -123,6 +126,20 @@ function isTerminalTelegramOnboardingError(error: unknown): boolean {
 function isTerminalWhatsAppOnboardingError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /\b410\b/.test(message) && /\b(expired|gone)\b/i.test(message);
+}
+
+// Feishu authorization is terminal on 410 (expired, or the other side declined
+// the grant) and on 404 (the bind id is gone — e.g. the backend restarted and
+// dropped the in-memory session). Both mean: stop polling, start over.
+function isTerminalFeishuOnboardingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(410|404)\b/.test(message);
+}
+
+// The backend's payload names the session id `pairing_id`; the contract called
+// it `bind_id`. Read either so the panel works against both.
+function feishuBindId(setup: FeishuOnboardingStartResponse): string {
+  return setup.pairing_id ?? setup.bind_id ?? "";
 }
 
 function normalizeWhatsAppMode(mode: unknown): "bot" | "self-chat" | null {
@@ -634,6 +651,15 @@ export default function ChannelsPage() {
                 )}
                 {platform.id === "whatsapp" && (
                   <WhatsAppOnboardingPanel
+                    onChanged={load}
+                    onRestartNeeded={() => setRestartNeeded(true)}
+                    platform={platform}
+                    setRestartNeeded={setRestartNeeded}
+                    showToast={showToast}
+                  />
+                )}
+                {platform.id === "feishu" && (
+                  <FeishuOnboardingPanel
                     onChanged={load}
                     onRestartNeeded={() => setRestartNeeded(true)}
                     platform={platform}
@@ -1454,6 +1480,390 @@ function TelegramOnboardingPanel({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function FeishuOnboardingPanel({
+  onChanged,
+  onRestartNeeded,
+  platform,
+  setRestartNeeded,
+  showToast,
+}: {
+  onChanged: () => Promise<void>;
+  onRestartNeeded: () => void;
+  platform: MessagingPlatform;
+  setRestartNeeded: (needed: boolean) => void;
+  showToast: (message: string, type: "success" | "error") => void;
+}) {
+  const [setup, setSetup] = useState<FeishuOnboardingStartResponse | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState("");
+  const [phase, setPhase] = useState<
+    "idle" | "starting" | "waiting" | "ready" | "applying"
+  >("idle");
+  const [domain, setDomain] = useState<"feishu" | "lark">("feishu");
+  const [appId, setAppId] = useState("");
+  const [botName, setBotName] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [error, setError] = useState("");
+  const [tick, setTick] = useState(0);
+  // Absolute deadline derived from the backend's expires_in. Held in a ref so a
+  // refreshed value never restarts the polling effect.
+  const deadlineRef = useRef(0);
+
+  const updateQr = useCallback(async (payload?: string) => {
+    if (!payload) return;
+    try {
+      const dataUrl = await QRCode.toDataURL(payload, {
+        errorCorrectionLevel: "M",
+        margin: 2,
+        width: 240,
+      });
+      setQrDataUrl(dataUrl);
+    } catch {
+      // The QR image is a convenience; the authorization link below stays the
+      // source of truth and is rendered in full either way.
+      setQrDataUrl("");
+    }
+  }, []);
+
+  const resetSetup = useCallback(() => {
+    setSetup(null);
+    setQrDataUrl("");
+    setPhase("idle");
+    setAppId("");
+    setBotName("");
+    setExpiresAt("");
+    setError("");
+    deadlineRef.current = 0;
+  }, []);
+
+  useEffect(() => {
+    if (!setup || phase !== "waiting") return;
+    const bindId = feishuBindId(setup);
+    let cancelled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const intervalMs = Math.max(1, setup.interval) * 1000;
+
+    const poll = async () => {
+      try {
+        const status = await api.getFeishuOnboardingStatus(bindId);
+        if (cancelled) return;
+        if (status.status === "ready") {
+          setPhase("ready");
+          setAppId(status.app_id ?? "");
+          setBotName(status.bot_name ?? "");
+          setError("");
+          return;
+        }
+        if (status.status === "error" || status.status === "cancelled") {
+          resetSetup();
+          setError(status.error || "飞书授权已结束，请重新开始。");
+          return;
+        }
+        if (typeof status.expires_in === "number") {
+          deadlineRef.current = Date.now() + status.expires_in * 1000;
+        }
+        setError("");
+        timeout = setTimeout(poll, intervalMs);
+      } catch (pollError) {
+        if (cancelled) return;
+        const expired =
+          deadlineRef.current > 0 && Date.now() >= deadlineRef.current;
+        if (isTerminalFeishuOnboardingError(pollError) || expired) {
+          resetSetup();
+          setError("飞书授权已过期或已被拒绝，请重新开始扫码授权。");
+          return;
+        }
+        setError(`仍在等待飞书授权，稍后重试：${pollError}`);
+        timeout = setTimeout(poll, Math.max(2, setup.interval) * 1000);
+      }
+    };
+
+    timeout = setTimeout(poll, 1000);
+    return () => {
+      cancelled = true;
+      if (timeout) clearTimeout(timeout);
+    };
+  }, [phase, resetSetup, setup]);
+
+  useEffect(() => {
+    if (!setup) return;
+    const timer = setInterval(() => setTick((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [setup]);
+
+  const start = async () => {
+    setPhase("starting");
+    setError("");
+    setQrDataUrl("");
+    setAppId("");
+    setBotName("");
+    try {
+      const res = await api.startFeishuOnboarding({ domain, profile: null });
+      if (!feishuBindId(res)) {
+        setPhase("idle");
+        setError("飞书接入会话没有返回会话 ID，请重试。");
+        return;
+      }
+      const deadline = Date.now() + res.expires_in * 1000;
+      deadlineRef.current = deadline;
+      setSetup(res);
+      setExpiresAt(new Date(deadline).toISOString());
+      await updateQr(res.qr_url);
+      setPhase("waiting");
+    } catch (startError) {
+      setPhase("idle");
+      setError(String(startError));
+    }
+  };
+
+  const cancel = async () => {
+    if (setup) {
+      try {
+        await api.cancelFeishuOnboarding(feishuBindId(setup));
+      } catch {
+        /* local cleanup still wins */
+      }
+    }
+    resetSetup();
+  };
+
+  const copyLink = async () => {
+    if (!setup) return;
+    if (await copyTextToClipboard(setup.qr_url)) {
+      showToast("授权链接已复制", "success");
+    } else {
+      showToast("复制失败，请手动选中链接复制", "error");
+    }
+  };
+
+  // restart_started only means the `hermes gateway restart` child spawned — not
+  // that the restart will succeed. Poll the action status briefly and surface a
+  // non-zero exit via the manual-restart banner.
+  const watchRestartOutcome = async () => {
+    for (let i = 0; i < 20; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        const st = await api.getActionStatus("gateway-restart", 5);
+        if (st.running) continue;
+        if (st.exit_code !== 0 && st.exit_code !== null) {
+          onRestartNeeded();
+          showToast(`网关重启失败（退出码 ${st.exit_code}），请手动重启`, "error");
+        }
+        return;
+      } catch {
+        // transient fetch error; keep polling
+      }
+    }
+  };
+
+  const apply = async () => {
+    if (!setup) return;
+    setPhase("applying");
+    setError("");
+    try {
+      const result = await api.applyFeishuOnboarding(feishuBindId(setup), {
+        profile: null,
+      });
+      resetSetup();
+      // The backend always attempts the restart and reports `restart_started`
+      // plus `needs_restart` (= !restart_started) — same shape as WhatsApp.
+      if (result.restart_started) {
+        showToast("飞书凭据已保存，网关正在重启…", "success");
+        setRestartNeeded(false);
+        setTimeout(() => void onChanged(), 4000);
+        void watchRestartOutcome();
+      } else {
+        onRestartNeeded();
+        const detail = result.restart_error ? `：${result.restart_error}` : "";
+        showToast(`飞书凭据已保存，网关重启失败${detail}`, "error");
+      }
+      await onChanged();
+    } catch (applyError) {
+      setPhase("ready");
+      setError(String(applyError));
+    }
+  };
+
+  const expiresIn = useMemo(
+    () => (expiresAt ? formatExpiry(expiresAt) : ""),
+    // tick keeps the memo fresh without recalculating on every render branch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [expiresAt, tick],
+  );
+  const setupHelp =
+    phase === "ready" || phase === "applying"
+      ? "已取得飞书应用凭据。保存并启用后重启网关即可生效。"
+      : "在飞书中打开授权链接并确认授权，页面会自动检测结果。";
+
+  return (
+    <div className="rounded-sm border border-border bg-background/35 p-4">
+      <div className="grid gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            className="uppercase"
+            onClick={() => void start()}
+            disabled={phase !== "idle"}
+            prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
+          >
+            {phase === "starting" ? "正在开始…" : "扫码授权接入"}
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            在飞书中打开授权链接并确认，Hermes 会自动获取应用凭据并写入当前配置。
+          </span>
+        </div>
+
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+          <div className="grid gap-1.5">
+            <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+              授权域名
+            </span>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                outlined={domain !== "feishu"}
+                onClick={() => setDomain("feishu")}
+                disabled={phase !== "idle"}
+              >
+                飞书
+              </Button>
+              <Button
+                size="sm"
+                outlined={domain !== "lark"}
+                onClick={() => setDomain("lark")}
+                disabled={phase !== "idle"}
+              >
+                Lark
+              </Button>
+            </div>
+          </div>
+          {platform.configured && (
+            <span className="text-xs text-muted-foreground">
+              飞书凭据已配置，保存新的授权会覆盖当前凭据。
+            </span>
+          )}
+        </div>
+
+        {error && (
+          <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
+        {setup && (
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+            <div className="grid gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {phase === "ready" || phase === "applying" ? (
+                  <Badge tone="success">已授权</Badge>
+                ) : (
+                  <Badge tone="warning">等待确认</Badge>
+                )}
+                <Badge tone={expiresIn === "expired" ? "destructive" : "outline"}>
+                  {expiresIn}
+                </Badge>
+                {botName && (
+                  <span className="font-courier text-sm text-muted-foreground">
+                    {botName}
+                  </span>
+                )}
+              </div>
+
+              <div className="text-sm text-muted-foreground">{setupHelp}</div>
+
+              <div className="grid gap-2">
+                <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+                  授权链接
+                </span>
+                <code className="block select-all break-all border border-border bg-background/45 p-2 font-courier text-xs text-foreground">
+                  {setup.qr_url}
+                </code>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    outlined
+                    onClick={() => void copyLink()}
+                    prefix={<Copy className="h-4 w-4" />}
+                  >
+                    复制链接
+                  </Button>
+                  <a
+                    className="inline-flex h-8 items-center gap-1 border border-border px-3 text-xs uppercase text-foreground hover:border-foreground/40"
+                    href={setup.qr_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                    打开链接
+                  </a>
+                </div>
+              </div>
+
+              <div className="text-xs text-muted-foreground">
+                授权码{" "}
+                <span className="font-courier text-sm text-foreground">
+                  {setup.user_code}
+                </span>
+              </div>
+
+              {(phase === "ready" || phase === "applying") && (
+                <div className="grid gap-3">
+                  <div className="border border-border bg-background/45 p-3 text-sm">
+                    <div className="font-medium">
+                      {appId ? `应用凭据 ${appId}` : "飞书应用已授权"}
+                    </div>
+                    <div className="mt-1 text-muted-foreground">
+                      凭据只写入当前的 Hermes 配置。保存并启用后重启网关，飞书渠道即可生效。
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      className="uppercase"
+                      onClick={() => void apply()}
+                      disabled={phase === "applying"}
+                      prefix={phase === "applying" ? <Spinner /> : <Save className="h-4 w-4" />}
+                    >
+                      {phase === "applying" ? "保存中…" : "保存并启用"}
+                    </Button>
+                    <Button size="sm" ghost onClick={() => void cancel()}>
+                      取消
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-col items-center justify-center gap-3">
+              {qrDataUrl ? (
+                <img
+                  src={qrDataUrl}
+                  alt="飞书授权二维码"
+                  className="h-60 w-60 bg-white p-2"
+                />
+              ) : (
+                <div className="flex h-60 w-60 flex-col items-center justify-center gap-3 border border-border bg-background/50 p-4 text-center">
+                  <Spinner className="text-2xl" />
+                  <div className="text-xs text-muted-foreground">
+                    正在生成二维码…
+                  </div>
+                </div>
+              )}
+              <span className="text-center text-xs text-muted-foreground">
+                用飞书扫一扫二维码，或直接在浏览器打开这条授权链接。
+              </span>
+              {phase === "waiting" && (
+                <Button size="sm" ghost onClick={() => void cancel()}>
+                  取消
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

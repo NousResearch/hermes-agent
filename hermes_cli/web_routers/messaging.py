@@ -29,11 +29,13 @@ from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_server_messaging import (
-    _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
+    _FeishuOnboardingSession, _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _feishu_onboarding_lock, _feishu_onboarding_payload,
+    _feishu_onboarding_sessions, _messaging_platform_catalog, _prune_feishu_onboarding_sessions, _telegram_onboarding_error_message,
+    _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_models import (
-    MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
+    FeishuOnboardingApply, FeishuOnboardingStart, MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
 )
 
@@ -45,6 +47,7 @@ _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_pro
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
 _restart_gateway_after_whatsapp_onboarding = late("_restart_gateway_after_whatsapp_onboarding", "hermes_cli.web_server_messaging")
+_restart_gateway_after_feishu_onboarding = late("_restart_gateway_after_feishu_onboarding", "hermes_cli.web_server_messaging")
 _telegram_onboarding_request_sync = late("_telegram_onboarding_request_sync", "hermes_cli.web_server_messaging")
 _whatsapp_session_path = late("_whatsapp_session_path", "hermes_cli.web_server_messaging")
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
@@ -52,6 +55,7 @@ load_env = late("load_env", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
 remove_env_value = late("remove_env_value", "hermes_cli.config")
+get_env_value = late("get_env_value", "hermes_cli.config")
 save_env_value = late("save_env_value", "hermes_cli.config")
 _gateway_subcommand = late("_gateway_subcommand", "hermes_cli.web_server_gateway")
 _probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gateway")
@@ -774,6 +778,171 @@ async def apply_telegram_onboarding(pairing_id: str, body: TelegramOnboardingApp
 async def cancel_telegram_onboarding(pairing_id: str):
     with _telegram_onboarding_lock:
         _telegram_onboarding_pairings.pop(pairing_id, None)
+    return {"ok": True}
+
+
+# ── Feishu / Lark scan-to-create onboarding ───────────────────
+#
+# 与 WhatsApp（本地子进程扫 QR）/ Telegram（走中转服务配对）都不同：飞书这条**完全在本地**完成 ——
+# 授权就是飞书账号域的设备码流程（init → begin 拿到授权链接 → 轮询 poll 取凭据），
+# 不依赖第三方服务、也不需要子进程。前端语义与前两者保持一致：start / status / apply / cancel。
+
+
+def _feishu_adapter():
+    """飞书适配器模块（延迟导入：没装飞书依赖的机器不该因为打开面板就报错）。"""
+    from plugins.platforms.feishu import adapter
+    return adapter
+
+
+def _normalize_feishu_domain(value: Optional[str]) -> str:
+    domain = (value or "feishu").strip().lower()
+    return domain if domain in {"feishu", "lark"} else "feishu"
+
+
+def _feishu_begin(domain: str) -> dict:
+    """init + begin（两次 HTTP）。放线程里跑 —— 它们会同步等网络。"""
+    adapter = _feishu_adapter()
+    adapter._init_registration(domain)
+    return adapter._begin_registration(domain)
+
+
+def _feishu_poll_into(record: _FeishuOnboardingSession) -> None:
+    """问平台一次并把结果写回 record（**只问一次**；节流由调用方按 record.interval 控制）。
+
+    与适配器里那条终端流程保持同一套判据：域名可能被平台纠正为 lark（企业品牌为 lark 时），
+    凭据出现的标志是 client_id + client_secret，access_denied / expired_token 是终态。
+    """
+    adapter = _feishu_adapter()
+    res = adapter._post_registration(adapter._accounts_base_url(record.domain), {
+        "action": "poll", "device_code": record.device_code, "tp": "ob_app",
+    })
+    user_info = res.get("user_info") or {}
+    # 用平台给的企业品牌纠正域名：国际版企业扫出来的凭据必须配 lark 域，否则连不上。
+    if user_info.get("tenant_brand") == "lark" and record.domain != "lark":
+        record.domain = "lark"
+    if res.get("client_id") and res.get("client_secret"):
+        record.app_id = str(res["client_id"])
+        record.app_secret = str(res["client_secret"])
+        record.open_id = user_info.get("open_id")
+        record.status = "ready"
+        return
+    error = str(res.get("error") or "")
+    if error == "access_denied":
+        record.status = "denied"
+        record.error = "Feishu / Lark authorization was denied. Start a new setup."
+    elif error == "expired_token":
+        record.status = "expired"
+        record.error = "Feishu / Lark setup expired. Start a new setup."
+    # 其余（authorization_pending 等）保持 pending，等下一次轮询。
+
+
+def _feishu_record_or_404(pairing_id: str) -> _FeishuOnboardingSession:
+    """Call with ``_feishu_onboarding_lock`` held."""
+    _prune_feishu_onboarding_sessions()
+    record = _feishu_onboarding_sessions.get(pairing_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Feishu / Lark setup session not found. Start a new setup.")
+    return record
+
+
+@router.post("/api/messaging/feishu/onboarding/start")
+async def start_feishu_onboarding(body: FeishuOnboardingStart):
+    domain = _normalize_feishu_domain(body.domain)
+    try:
+        begin = await asyncio.to_thread(_feishu_begin, domain)
+    except Exception as exc:  # noqa: BLE001 — 归一到可读错误，别把内部异常抛给前端
+        _log.warning("Feishu onboarding start failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Could not reach Feishu / Lark. Check the network and try again.",
+        ) from exc
+
+    device_code = str(begin.get("device_code") or "").strip()
+    if not device_code:
+        raise HTTPException(status_code=502, detail="Feishu / Lark did not return a setup session. Try again.")
+
+    expires_in = int(begin.get("expire_in") or 600)
+    record = _FeishuOnboardingSession(
+        device_code=device_code, domain=domain, interval=max(1, int(begin.get("interval") or 5)),
+        expires_at_ts=time.time() + expires_in, profile=body.profile,
+        user_code=str(begin.get("user_code") or ""), qr_url=str(begin.get("qr_url") or ""),
+    )
+    pairing_id = secrets.token_urlsafe(16)
+    with _feishu_onboarding_lock:
+        _prune_feishu_onboarding_sessions()
+        _feishu_onboarding_sessions[pairing_id] = record
+        return _feishu_onboarding_payload(pairing_id, record)
+
+
+@router.get("/api/messaging/feishu/onboarding/{pairing_id}")
+async def get_feishu_onboarding_status(pairing_id: str):
+    with _feishu_onboarding_lock:
+        record = _feishu_record_or_404(pairing_id)
+        terminal = record.status in {"ready", "expired", "denied", "cancelled", "error"}
+        # 节流：平台给的 interval 是它对轮询频率的要求（飞书是 5s），问得更勤没有意义，
+        # 还可能被限流。间隔未到就把上次的状态原样回给前端。
+        due = (time.time() - record.last_poll_ts) >= record.interval
+        poll_now = (not terminal) and due
+        if poll_now:
+            record.last_poll_ts = time.time()
+
+    if poll_now:
+        try:
+            await asyncio.to_thread(_feishu_poll_into, record)
+        except Exception as exc:  # noqa: BLE001 — 网络抖动不该把会话判死，下次轮询再试
+            _log.debug("Feishu onboarding poll failed (will retry): %s", exc)
+
+    with _feishu_onboarding_lock:
+        record = _feishu_record_or_404(pairing_id)
+        if record.status in {"expired", "denied"}:
+            # 410：终态，前端据此停止轮询并提示重新开始（与 WhatsApp 同一约定）。
+            raise HTTPException(status_code=410, detail=record.error or "Feishu / Lark setup ended.")
+        return _feishu_onboarding_payload(pairing_id, record)
+
+
+@router.post("/api/messaging/feishu/onboarding/{pairing_id}/apply")
+async def apply_feishu_onboarding(pairing_id: str, body: FeishuOnboardingApply, profile: Optional[str] = None):
+    with _feishu_onboarding_lock:
+        record = _feishu_record_or_404(pairing_id)
+        if record.status != "ready" or not record.app_id or not record.app_secret:
+            raise HTTPException(status_code=409, detail="Feishu / Lark setup is not ready yet.")
+        app_id, app_secret, domain = record.app_id, record.app_secret, record.domain
+        record_profile = record.profile
+
+    effective_profile = body.profile or profile or record_profile
+
+    def _apply():
+        with _config_profile_scope(effective_profile):
+            save_env_value("FEISHU_APP_ID", app_id)
+            save_env_value("FEISHU_APP_SECRET", app_secret)
+            save_env_value("FEISHU_DOMAIN", domain)
+            # ★ 扫码建出来的应用只能走长连接（没有公网回调地址），所以默认写 websocket；
+            #   但**不覆盖**用户已经显式选的 webhook —— 那说明他自己配了回调，别替他改回去。
+            if not (get_env_value("FEISHU_CONNECTION_MODE") or "").strip():
+                save_env_value("FEISHU_CONNECTION_MODE", "websocket")
+            _write_platform_enabled("feishu", True)
+
+    with _onboarding_save_errors("Feishu onboarding apply failed", "Failed to save Feishu / Lark setup."):
+        await asyncio.to_thread(_apply)
+
+    with _feishu_onboarding_lock:
+        _feishu_onboarding_sessions.pop(pairing_id, None)
+
+    restart_result = _restart_gateway_after_feishu_onboarding(effective_profile)
+    return {
+        "ok": True, "platform": "feishu", "app_id": app_id,
+        "needs_restart": not restart_result["restart_started"], **restart_result,
+    }
+
+
+@router.delete("/api/messaging/feishu/onboarding/{pairing_id}")
+async def cancel_feishu_onboarding(pairing_id: str):
+    with _feishu_onboarding_lock:
+        record = _feishu_onboarding_sessions.pop(pairing_id, None)
+    if record:
+        record.status = "cancelled"
+        # 取消就把凭据从内存里抹掉（这是一次真实可用的 bot 密钥，不该留在进程里等 GC）。
+        record.app_secret = None
     return {"ok": True}
 
 

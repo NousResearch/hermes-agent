@@ -6,6 +6,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from fastapi import HTTPException
 from pathlib import Path
@@ -371,6 +372,71 @@ def _whatsapp_onboarding_payload(pairing_id: str, record: _WhatsAppOnboardingSes
 def _restart_gateway_after_whatsapp_onboarding(profile: Optional[str] = None) -> dict[str, Any]:
     from hermes_cli.web_server_gateway import _restart_gateway_after
     return _restart_gateway_after(profile, what="WhatsApp onboarding", label="WhatsApp onboarding")
+
+
+# ── Feishu / Lark scan-to-create onboarding ────────────────────────────────
+#
+# 与 WhatsApp/Telegram 两套不同：飞书这边**没有子进程、也不依赖第三方中转服务** ——
+# 授权就是飞书账号域的设备码流程（本地发三次 HTTP：init → begin → poll），
+# 所以状态全在这一条 record 里，由前端轮询我们的 GET 端点来推动（每次最多问平台一次）。
+
+_FEISHU_TERMINAL_STATUSES = frozenset({"ready", "expired", "denied", "cancelled", "error"})
+
+# 终态在内存里留多久：让界面还能显示「已过期/已拒绝」，超过就回收（防内存里攒垃圾）。
+_FEISHU_SESSION_GRACE_SECONDS = 300.0
+
+
+@dataclass
+class _FeishuOnboardingSession:
+    device_code: str
+    domain: str
+    interval: int
+    expires_at_ts: float
+    profile: str | None = None
+    user_code: str = ""
+    qr_url: str = ""
+    status: str = "pending"
+    # ★ app_id/app_secret 只在这里**短暂**停留，用于「保存并启用」那一步；
+    #   它们不进 `_feishu_onboarding_payload`（见下面的字段白名单）——
+    #   设备码流程拿到的凭据是客户飞书里的真密钥，泄露一次就等于把 bot 交出去。
+    app_id: str | None = None
+    app_secret: str | None = None
+    open_id: str | None = None
+    bot_name: str | None = None
+    last_poll_ts: float = 0.0
+    error: str | None = None
+
+
+_feishu_onboarding_sessions: dict[str, _FeishuOnboardingSession] = {}
+_feishu_onboarding_lock = threading.RLock()
+
+# 对外只暴露这些字段（白名单，不是黑名单）—— 加字段时若忘了分类，默认就是「不暴露」。
+_FEISHU_PAYLOAD_FIELDS = (
+    "status", "qr_url", "user_code", "domain", "interval", "app_id", "bot_name", "error",
+)
+
+
+def _feishu_onboarding_payload(pairing_id: str, record: _FeishuOnboardingSession) -> dict[str, Any]:
+    payload = {"pairing_id": pairing_id, **{f: getattr(record, f) for f in _FEISHU_PAYLOAD_FIELDS}}
+    payload["expires_in"] = max(0, int(record.expires_at_ts - time.time()))
+    return payload
+
+
+def _prune_feishu_onboarding_sessions() -> None:
+    """清掉过期的会话；终态再多留一会儿（界面要能显示为什么结束）。"""
+    now = time.time()
+    for pairing_id, record in list(_feishu_onboarding_sessions.items()):
+        if record.status not in _FEISHU_TERMINAL_STATUSES and record.expires_at_ts <= now:
+            record.status = "expired"
+            record.error = "Feishu / Lark setup expired. Start a new setup."
+            record.app_secret = None
+        if record.status in _FEISHU_TERMINAL_STATUSES and record.expires_at_ts + _FEISHU_SESSION_GRACE_SECONDS <= now:
+            _feishu_onboarding_sessions.pop(pairing_id, None)
+
+
+def _restart_gateway_after_feishu_onboarding(profile: Optional[str] = None) -> dict[str, Any]:
+    from hermes_cli.web_server_gateway import _restart_gateway_after
+    return _restart_gateway_after(profile, what="Feishu onboarding", label="Feishu onboarding")
 
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"

@@ -68,6 +68,14 @@ class WhatsAppOnboardingApply(BaseModel):
     allowed_users: Optional[str] = None
     profile: Optional[str] = None
 
+class FeishuOnboardingStart(BaseModel):
+    # 域名决定找哪个品牌建应用：feishu（中国版）或 lark（国际版）。
+    domain: Optional[str] = None
+    profile: Optional[str] = None
+
+class FeishuOnboardingApply(BaseModel):
+    profile: Optional[str] = None
+
 class AudioTranscriptionRequest(BaseModel):
     data_url: str
     mime_type: Optional[str] = None

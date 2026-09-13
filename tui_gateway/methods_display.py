@@ -174,6 +174,11 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     from tools.bot_desktop import lease as _bd_lease
     viewer_id = str(params.get("viewer_id") or "").strip() or None
+    # lease.release(None) skips the holder check; a client that lost its viewer id must not be able to
+    # yank control from whoever holds it unless it says so explicitly (force).
+    if viewer_id is None and not params.get("force") and _bd_lease.human_holds():
+        return _err(rid, _DISPLAY_ERR, "viewer_id required to release another viewer's lease (or pass force: true)",
+                    data={"code": "viewer_mismatch"})
     lease = _bd_lease.release(viewer_id)
     return _ok(rid, {"lease": lease.as_dict()})
 

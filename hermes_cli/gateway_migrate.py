@@ -664,6 +664,8 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
                 _service_op(kind, system, "install", home)
                 _service_op(kind, system, "start", home)
                 print(f"  ✓ {name}: reinstalled and started its {kind} service")
+            elif rec.get("pid") and _live_gateway_pid(home) is not None:
+                print(f"  ✓ {name}: standalone gateway already running")  # re-run after a partial rollback
             elif rec.get("pid"):
                 if _spawn_detached_gateway(home):
                     print(f"  ✓ {name}: started its standalone gateway (detached)")

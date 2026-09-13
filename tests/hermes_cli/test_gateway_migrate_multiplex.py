@@ -42,9 +42,6 @@ def fleet(tmp_path, monkeypatch):
         refused_at_start={},
     )
 
-    def _name(home: Path) -> str:
-        return hermes_constants.profile_name_for_home(home) or "default"
-
     def _service_op(kind, system, verb, home):
         name = _name(home)
         state.ops.append((name, verb))
@@ -75,6 +72,10 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setattr(gm, "_host_supports_migration", lambda: None)
     state.root = root
     return state
+
+
+def _name(home: Path) -> str:
+    return hermes_constants.profile_name_for_home(home) or "default"
 
 
 def _config_flag(root: Path):
@@ -150,7 +151,7 @@ def test_rollback_with_failed_secondary_still_restarts_default_and_keeps_manifes
     real_op = gm._service_op
 
     def _flaky(kind, system, verb, home):
-        if verb == "start" and _name_of(home) == "coder":
+        if verb == "start" and _name(home) == "coder":
             raise RuntimeError("systemctl start failed")
         real_op(kind, system, verb, home)
 
@@ -163,8 +164,16 @@ def test_rollback_with_failed_secondary_still_restarts_default_and_keeps_manifes
     assert (fleet.root / gm.MANIFEST_NAME).exists()
 
 
-def _name_of(home: Path) -> str:
-    return hermes_constants.profile_name_for_home(home) or "default"
+def test_rollback_rerun_does_not_respawn_a_running_detached_secondary(fleet, monkeypatch):
+    # Manifest of a fleet with no service manager anywhere (detached gateways only).
+    gm._write_manifest(fleet.root, {"version": 1, "flag_was": False, "default": {"service": None}, "secondaries": [
+        {"profile": n, "home": str(fleet.root / "profiles" / n), "pid": 4100, "service": None} for n in ("coder", "ops")]})
+    fleet.services.clear()
+    fleet.pids = {"coder": 4101}  # coder came back up in an earlier, interrupted rollback; ops did not
+    spawned = []
+    monkeypatch.setattr(gm, "_spawn_detached_gateway", lambda home: spawned.append(_name(home)) or True)
+    assert gm.rollback_migration(fleet.root) is True
+    assert spawned == ["ops"]
 
 
 def test_standalone_dry_run_prints_rollback_plan_without_mutation(fleet, capsys):

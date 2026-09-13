@@ -7425,7 +7425,11 @@ function installDownloadHandling() {
 function installMediaPermissions() {
   // Async request handler: the prompt-style path (most platforms).
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-    callback(isMediaCapturePermission(permission, details))
+    // HTML fullscreen (e.g. the native fullscreen button on a <video> in the
+    // transcript) also goes through the permission request handler. Answering
+    // false leaves the renderer's requestFullscreen() promise permanently
+    // pending — the click just does nothing, with no error anywhere.
+    callback(permission === 'fullscreen' || isMediaCapturePermission(permission, details))
   })
 
   // Synchronous check handler: Chromium consults this for getUserMedia on
@@ -7434,6 +7438,7 @@ function installMediaPermissions() {
   // handler ever runs.
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
     return (
+      permission === 'fullscreen' ||
       permission === 'media' ||
       (permission as string) === 'automatic-fullscreen' ||
       permission === ('audioCapture' as any) /* todo: is this needed? */ ||

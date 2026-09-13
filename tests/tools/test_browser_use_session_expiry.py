@@ -51,7 +51,7 @@ def test_live_cloud_session_is_reused(monkeypatch):
         "cdp_url": "ws://browser-use.example/devtools/browser/1",
         "expires_at": "2999-01-01T00:05:00Z",
     }
-    browser_tool._active_sessions["task-1"] = existing
+    browser_tool._active_sessions[browser_tool._home_scoped_key("task-1")] = existing
     provider = Mock()
     monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
 
@@ -63,13 +63,13 @@ def test_live_cloud_session_is_reused(monkeypatch):
 
 def test_expired_cloud_session_is_replaced_without_reusing_dead_cdp(monkeypatch):
     _isolate_browser_state(monkeypatch)
-    browser_tool._active_sessions["task-1"] = {
+    browser_tool._active_sessions[browser_tool._home_scoped_key("task-1")] = {
         "session_name": "expired",
         "bb_session_id": "browser-session-old",
         "cdp_url": "ws://browser-use.example/devtools/browser/old",
         "expires_at": "2020-01-01T00:05:00Z",
     }
-    browser_tool._session_last_activity["task-1"] = 1.0
+    browser_tool._session_last_activity[browser_tool._home_scoped_key("task-1")] = 1.0
 
     provider = Mock()
     provider.create_session.return_value = {
@@ -88,8 +88,8 @@ def test_expired_cloud_session_is_replaced_without_reusing_dead_cdp(monkeypatch)
     session = bt_session._get_session_info("task-1")
 
     assert session["bb_session_id"] == "browser-session-new"
-    assert browser_tool._active_sessions["task-1"] is session
-    assert "task-1" in browser_tool._session_last_activity
+    assert browser_tool._active_sessions[browser_tool._home_scoped_key("task-1")] is session
+    assert browser_tool._home_scoped_key("task-1") in browser_tool._session_last_activity
     provider.close_session.assert_called_once_with("browser-session-old")
     provider.create_session.assert_called_once_with("task-1")
     bt_session._run_browser_command.assert_not_called()

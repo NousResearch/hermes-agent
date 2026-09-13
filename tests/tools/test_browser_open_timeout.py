@@ -101,9 +101,10 @@ class TestCommandTimeoutRecovery:
             "bb_session_id": "cloud-session-1" if cloud else None,
             "cdp_url": "ws://cloud.invalid/devtools/browser/1" if cloud else None,
         }
-        bt._active_sessions[task_id] = session_info
-        bt._session_last_activity[task_id] = 1.0
-        bt._last_active_session_key[task_id] = task_id
+        scoped_key = bt._home_scoped_key(task_id)
+        bt._active_sessions[scoped_key] = session_info
+        bt._session_last_activity[scoped_key] = 1.0
+        bt._last_active_session_key[scoped_key] = task_id
 
         process = Mock()
         process.returncode = 0
@@ -124,13 +125,13 @@ class TestCommandTimeoutRecovery:
 
         bt_session._run_browser_command(task_id, "click", ["@e1"], timeout=1)
 
-        assert task_id not in bt._last_active_session_key
+        assert scoped_key not in bt._last_active_session_key
         assert not (tmp_path / "agent-browser-stuck-session").exists()
         if not cloud:
-            assert task_id not in bt._active_sessions and task_id not in bt._session_last_activity
+            assert scoped_key not in bt._active_sessions and scoped_key not in bt._session_last_activity
             return
 
-        replacement = bt._active_sessions[task_id]
+        replacement = bt._active_sessions[scoped_key]
         assert replacement is not session_info
         assert replacement["session_name"] != "stuck-session"
         assert replacement["bb_session_id"] == "cloud-session-1"
@@ -144,11 +145,12 @@ class TestCommandTimeoutRecovery:
 
     def test_stale_timeout_cannot_remove_concurrent_replacement(self, tmp_path):
         stale, replacement = {"session_name": "stale"}, {"session_name": "replacement"}
-        bt._active_sessions["race"] = replacement
+        scoped_key = bt._home_scoped_key("race")
+        bt._active_sessions[scoped_key] = replacement
 
         bt_session._discard_timed_out_browser_session("race", stale, str(tmp_path))
 
-        assert bt._active_sessions["race"] is replacement
+        assert bt._active_sessions[scoped_key] is replacement
         assert tmp_path.exists()
 
 

@@ -462,21 +462,24 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
 
 class _SupervisorRegistry:
-    """Process-global (task_id → supervisor) map with idempotent start/stop (``SUPERVISOR_REGISTRY``)."""
+    """Process-global ((hermes_home_key, task_id) → supervisor) map with idempotent start/stop
+    (``SUPERVISOR_REGISTRY``). The home is part of the key so a multiplexed process never
+    serves one profile's supervisor state to another (#110032); the inner task id is kept
+    for logs and thread names."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._by_task: Dict[str, CDPSupervisor] = {}
+        self._by_task: Dict[Tuple[str, str], CDPSupervisor] = {}
 
-    def get(self, task_id: str) -> Optional[CDPSupervisor]:
+    def get(self, task_key: Tuple[str, str]) -> Optional[CDPSupervisor]:
         with self._lock:
-            return self._by_task.get(task_id)
+            return self._by_task.get(task_key)
 
-    def _pop(self, task_id: str) -> Optional[CDPSupervisor]:
+    def _pop(self, task_key: Tuple[str, str]) -> Optional[CDPSupervisor]:
         with self._lock:
-            return self._by_task.pop(task_id, None)
+            return self._by_task.pop(task_key, None)
 
-    def get_or_start(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
+    def get_or_start(self, task_id: Tuple[str, str], cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
                      dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
         """Idempotently ensure a supervisor runs for ``(task_id, cdp_url)``; one bound to a
         different ``cdp_url`` or unhealthy (dead thread / stopped loop) is stopped and replaced."""
@@ -491,7 +494,7 @@ class _SupervisorRegistry:
         if existing is not None:
             existing.stop()
 
-        supervisor = CDPSupervisor(task_id=task_id, cdp_url=cdp_url,
+        supervisor = CDPSupervisor(task_id=task_id[1], cdp_url=cdp_url,
                                    dialog_policy=dialog_policy, dialog_timeout_s=dialog_timeout_s)
         supervisor.start(timeout=start_timeout)
         with self._lock:
@@ -503,7 +506,7 @@ class _SupervisorRegistry:
             self._by_task[task_id] = supervisor
         return supervisor
 
-    def stop(self, task_id: str) -> None:
+    def stop(self, task_id: Tuple[str, str]) -> None:
         supervisor = self._pop(task_id)
         if supervisor is not None:
             supervisor.stop()

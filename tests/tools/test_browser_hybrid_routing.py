@@ -75,13 +75,13 @@ class TestSessionKeyHelpers:
 
     def test_last_session_key_drops_mismatched_owner_metadata(self, monkeypatch):
         """Explicit ownership metadata prevents retargeting to another task's session."""
-        last_active = {"default": "other-task::local"}
+        last_active = {browser_tool._home_scoped_key("default"): "other-task::local"}
         monkeypatch.setattr(browser_tool, "_last_active_session_key", last_active)
         monkeypatch.setattr(
             browser_tool,
             "_active_sessions",
             {
-                "other-task::local": {
+                browser_tool._home_scoped_key("other-task::local"): {
                     "session_name": "local_sess",
                     "session_key": "other-task::local",
                     "owner_task_id": "other-task",
@@ -151,19 +151,19 @@ class TestCleanupHybridSessions:
             browser_tool,
             "_active_sessions",
             {
-                "default": {"session_name": "cloud_sess"},
-                "default::local": {"session_name": "local_sess"},
+                browser_tool._home_scoped_key("default"): {"session_name": "cloud_sess"},
+                browser_tool._home_scoped_key("default::local"): {"session_name": "local_sess"},
             },
         )
         monkeypatch.setattr(
-            browser_tool, "_last_active_session_key", {"default": "default::local"}
+            browser_tool, "_last_active_session_key", {browser_tool._home_scoped_key("default"): "default::local"}
         )
 
         bt_lifecycle.cleanup_browser("default")
 
         assert set(reaped) == {"default", "default::local"}
         # last-active pointer dropped
-        assert "default" not in browser_tool._last_active_session_key
+        assert browser_tool._home_scoped_key("default") not in browser_tool._last_active_session_key
 
 
     def test_cleanup_sidecar_directly_keeps_primary(self, monkeypatch):
@@ -178,12 +178,12 @@ class TestCleanupHybridSessions:
             browser_tool,
             "_active_sessions",
             {
-                "default": {"session_name": "cloud_sess"},
-                "default::local": {"session_name": "local_sess"},
+                browser_tool._home_scoped_key("default"): {"session_name": "cloud_sess"},
+                browser_tool._home_scoped_key("default::local"): {"session_name": "local_sess"},
             },
         )
         monkeypatch.setattr(
-            browser_tool, "_last_active_session_key", {"default": "default::local"}
+            browser_tool, "_last_active_session_key", {browser_tool._home_scoped_key("default"): "default::local"}
         )
 
         bt_lifecycle.cleanup_browser("default::local")
@@ -191,4 +191,4 @@ class TestCleanupHybridSessions:
         assert reaped == ["default::local"]
         # The cleaned sidecar must not remain the recorded owner; otherwise a
         # later click/snapshot could resurrect it instead of using the primary.
-        assert "default" not in browser_tool._last_active_session_key
+        assert browser_tool._home_scoped_key("default") not in browser_tool._last_active_session_key

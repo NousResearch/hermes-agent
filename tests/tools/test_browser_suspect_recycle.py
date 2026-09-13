@@ -63,7 +63,7 @@ class TestTimeoutMarksSuspect:
     ):
         """Alive-daemon branch: session stays cached, flagged suspect once."""
         session_info = _local_session()
-        bt._active_sessions[TASK] = session_info
+        bt._active_sessions[bt._home_scoped_key(TASK)] = session_info
 
         process = Mock()
         process.returncode = -9
@@ -92,10 +92,10 @@ class TestTimeoutMarksSuspect:
         assert result["success"] is False
         assert len(marks) == 1  # marked suspect exactly once
         assert bt._suspect_browser_sessions == {
-            TASK: "browser command timed out; session may be poisoned"
+            bt._home_scoped_key(TASK): "browser command timed out; session may be poisoned"
         }
         # Alive branch: session stays cached for the next-use recycle...
-        assert bt._active_sessions[TASK] is session_info
+        assert bt._active_sessions[bt._home_scoped_key(TASK)] is session_info
         # ...and the daemon is NOT tree-killed.
         assert kills == []
 
@@ -103,8 +103,8 @@ class TestTimeoutMarksSuspect:
 class TestNextUseRecycles:
     def test_next_call_after_suspect_recycles_then_succeeds(self, monkeypatch):
         stale = _local_session("stale-session")
-        bt._active_sessions[TASK] = stale
-        bt._suspect_browser_sessions[TASK] = "browser command timed out"
+        bt._active_sessions[bt._home_scoped_key(TASK)] = stale
+        bt._suspect_browser_sessions[bt._home_scoped_key(TASK)] = "browser command timed out"
 
         monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None)
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
@@ -116,8 +116,8 @@ class TestNextUseRecycles:
         def fake_cleanup(task_id):
             cleanups.append(task_id)
             with bt._cleanup_lock:
-                bt._active_sessions.pop(task_id, None)
-                bt._session_last_activity.pop(task_id, None)
+                bt._active_sessions.pop(bt._home_scoped_key(TASK), None)
+                bt._session_last_activity.pop(bt._home_scoped_key(TASK), None)
 
         monkeypatch.setattr(bt_lifecycle, "_cleanup_single_browser_session", fake_cleanup)
         fresh = {"session_name": "fresh-session"}
@@ -127,8 +127,8 @@ class TestNextUseRecycles:
 
         assert cleanups == [TASK]  # suspect session recycled exactly once
         assert session["session_name"] == "fresh-session"
-        assert bt._active_sessions[TASK] is session
-        assert TASK not in bt._suspect_browser_sessions  # flag consumed
+        assert bt._active_sessions[bt._home_scoped_key(TASK)] is session
+        assert bt._home_scoped_key(TASK) not in bt._suspect_browser_sessions  # flag consumed
 
         # A second call reuses the fresh session without another recycle.
         again = bt_session._get_session_info(TASK)
@@ -148,7 +148,7 @@ class TestSuccessfulCallNeverRecycles:
     def test_successful_command_does_not_recycle_or_mark(self, monkeypatch, tmp_path):
         """REQUIRED negative probe: success must not touch the cached session."""
         session_info = _local_session("healthy-session")
-        bt._active_sessions[TASK] = session_info
+        bt._active_sessions[bt._home_scoped_key(TASK)] = session_info
 
         payload = json.dumps({"success": True, "data": {"ok": 1}}).encode()
 
@@ -182,7 +182,7 @@ class TestSuccessfulCallNeverRecycles:
         result = bt_session._run_browser_command(TASK, "click", ["@e1"], timeout=5)
 
         assert result == {"success": True, "data": {"ok": 1}}
-        assert bt._active_sessions[TASK] is session_info  # cache untouched
+        assert bt._active_sessions[bt._home_scoped_key(TASK)] is session_info  # cache untouched
         assert bt._suspect_browser_sessions == {}  # never marked suspect
         assert recycle_calls == []  # never recycled
         assert discard_calls == []
@@ -194,9 +194,9 @@ class TestWedgedDaemonTreeKill:
         self, monkeypatch, tmp_path
     ):
         session_info = _local_session("wedged-session")
-        bt._active_sessions[TASK] = session_info
-        bt._session_last_activity[TASK] = 1.0
-        bt._last_active_session_key[TASK] = TASK
+        bt._active_sessions[bt._home_scoped_key(TASK)] = session_info
+        bt._session_last_activity[bt._home_scoped_key(TASK)] = 1.0
+        bt._last_active_session_key[bt._home_scoped_key(TASK)] = TASK
 
         daemon_pid = 5150
         socket_dir = tmp_path / "agent-browser-wedged-session"
@@ -223,15 +223,15 @@ class TestWedgedDaemonTreeKill:
 
         assert result["success"] is False
         assert kills == [daemon_pid]  # tree-kill hit the daemon PID
-        assert TASK not in bt._active_sessions  # evicted now, not at next use
-        assert TASK not in bt._session_last_activity
-        assert TASK not in bt._last_active_session_key
+        assert bt._home_scoped_key(TASK) not in bt._active_sessions  # evicted now, not at next use
+        assert bt._home_scoped_key(TASK) not in bt._session_last_activity
+        assert bt._home_scoped_key(TASK) not in bt._last_active_session_key
         assert not socket_dir.exists()  # socket dir reclaimed
 
     def test_dead_daemon_skips_kill_but_still_evicts(self, monkeypatch, tmp_path):
         """No PID file → nothing to kill, but the session is still discarded."""
         session_info = _local_session("dead-session")
-        bt._active_sessions[TASK] = session_info
+        bt._active_sessions[bt._home_scoped_key(TASK)] = session_info
         socket_dir = str(tmp_path / "agent-browser-dead-session")
         os.makedirs(socket_dir)
 
@@ -245,16 +245,16 @@ class TestWedgedDaemonTreeKill:
         bt_session._handle_browser_command_timeout(TASK, session_info, socket_dir)
 
         assert kills == []
-        assert TASK not in bt._active_sessions
+        assert bt._home_scoped_key(TASK) not in bt._active_sessions
         # The eviction already removed the poisoned entry, so the flag is
         # dropped too — it must not poison a later session under this key.
-        assert TASK not in bt._suspect_browser_sessions
+        assert bt._home_scoped_key(TASK) not in bt._suspect_browser_sessions
 
 
 class TestFreshSessionClearsStaleFlag:
     def test_new_session_creation_drops_stale_suspect_flag(self, monkeypatch):
         """Wedged path evicts + flags; the fresh session must not inherit it."""
-        bt._suspect_browser_sessions[TASK] = "stale reason"
+        bt._suspect_browser_sessions[bt._home_scoped_key(TASK)] = "stale reason"
 
         monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None)
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
@@ -267,4 +267,4 @@ class TestFreshSessionClearsStaleFlag:
         session = bt_session._get_session_info(TASK)
 
         assert session["session_name"] == "fresh"
-        assert TASK not in bt._suspect_browser_sessions
+        assert bt._home_scoped_key(TASK) not in bt._suspect_browser_sessions

@@ -3,7 +3,7 @@ import json
 import pytest
 
 from agent.context_compressor import ContextCompressor
-from agent.llm_egress_runtime import _project_bound_kanban_show
+from agent.llm_egress_classifier import _project_bound_kanban_show
 
 
 @pytest.mark.parametrize("protected", [False, True])

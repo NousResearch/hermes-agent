@@ -34,7 +34,7 @@ and requested line range, hashes the exact rendered JSON presentation, and
 builds an internal content-free sidecar before provider conversion strips
 private metadata.
 
-`agent/llm_egress_runtime.py` already validates Chat-style tool messages with
+`agent/llm_egress_terminal.py` already validates Chat-style tool messages with
 `_segment_read_file_presentation()`. That validator checks the presentation
 kind, exact content hash, request ID, grant digest, current request identity,
 and the line-numbered rendering reconstructed from the granted source bytes.
@@ -77,10 +77,11 @@ content stays elided.
 
 ### Typing and authorization
 
-In `_typed_payload()`, a structured `read_file` Responses result with valid
-reattached metadata must normalize to its exact scalar presentation and pass
-through `_segment_read_file_presentation()`. The existing source grant and
-request rebinding logic remains the sole authorization decision.
+In `agent/llm_egress_classifier.py`, `_typed_payload()` normalizes a structured
+`read_file` Responses result with valid reattached metadata to its exact scalar
+presentation and passes it through `_segment_read_file_presentation()` in the
+terminal module. The existing source grant and request rebinding logic
+remains the sole authorization decision.
 
 If metadata is missing, stale, forged, ambiguous, mismatched, or malformed,
 the output remains `_READ_FILE_REPLAY_ELISION` or fails closed through the

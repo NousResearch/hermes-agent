@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/i18n'
 
 import type { WorldActionIntent, WorldActionResult } from './world-actions'
 import type { WorldCondition, WorldEvent } from './world-events'
@@ -43,6 +44,7 @@ function actionFor(subject: DialogueSubject, kind: WorldActionIntent['kind']): W
 }
 
 export function DialogueTray({ onAction, onClose, subject }: DialogueTrayProps) {
+  const { t } = useI18n()
   const event = subject.event
   const condition = subject.condition
 
@@ -57,27 +59,29 @@ export function DialogueTray({ onAction, onClose, subject }: DialogueTrayProps) 
     const intent = actionFor(subject, kind)
 
     if (!intent || !onAction) {
-      setActionMessage('This action is not available from the current Hermes state.')
+      setActionMessage(t.lunarCity.dialogue.actionUnavailable)
 
       return
     }
 
     const result = await onAction(intent)
-    setActionMessage(result.ok ? 'Hermes accepted the action.' : result.message)
+    setActionMessage(result.ok ? t.lunarCity.dialogue.actionAccepted : result.message)
   }
 
   return (
     <aside
-      aria-label={`Dialogue: ${subject.title}`}
+      aria-label={t.lunarCity.dialogue.ariaLabel(subject.title)}
       className="rounded-2xl border border-violet-300/30 bg-slate-950/95 p-4 shadow-xl"
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-[0.65rem] font-semibold uppercase tracking-[0.18em] text-violet-300">In-world dialogue</p>
+          <p className="text-[0.65rem] font-semibold uppercase tracking-[0.18em] text-violet-300">
+            {t.lunarCity.dialogue.label}
+          </p>
           <h2 className="mt-1 text-lg font-semibold text-white">{subject.title}</h2>
         </div>
         {onClose && (
-          <Button aria-label="Close dialogue" onClick={onClose} size="icon-xs" variant="ghost">
+          <Button aria-label={t.lunarCity.dialogue.close} onClick={onClose} size="icon-xs" variant="ghost">
             ×
           </Button>
         )}
@@ -85,15 +89,15 @@ export function DialogueTray({ onAction, onClose, subject }: DialogueTrayProps) 
 
       {(event || condition) && (
         <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-          <dt className="text-slate-400">Source</dt>
+          <dt className="text-slate-400">{t.lunarCity.dialogue.source}</dt>
           <dd className="font-mono text-slate-200">{event?.source ?? condition?.source}</dd>
-          <dt className="text-slate-400">State</dt>
+          <dt className="text-slate-400">{t.lunarCity.dialogue.state}</dt>
           <dd className="text-slate-200">{event?.kind ?? condition?.kind}</dd>
-          <dt className="text-slate-400">Severity</dt>
+          <dt className="text-slate-400">{t.lunarCity.dialogue.severity}</dt>
           <dd className="text-slate-200">{event?.severity ?? condition?.severity}</dd>
           {(event?.sourceRef?.taskId || condition?.sourceRef?.taskId) && (
             <>
-              <dt className="text-slate-400">Task</dt>
+              <dt className="text-slate-400">{t.lunarCity.dialogue.task}</dt>
               <dd className="font-mono text-slate-200">{event?.sourceRef?.taskId ?? condition?.sourceRef?.taskId}</dd>
             </>
           )}
@@ -101,14 +105,14 @@ export function DialogueTray({ onAction, onClose, subject }: DialogueTrayProps) 
       )}
 
       <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-slate-200">
-        {event?.detail ?? condition?.detail ?? subject.detail ?? 'No additional source detail is available.'}
+        {event?.detail ?? condition?.detail ?? subject.detail ?? t.lunarCity.dialogue.detailUnavailable}
       </p>
 
       {(typeof event?.facts.role === 'string' || typeof condition?.facts.assignee === 'string') && (
         <p className="mt-2 text-xs text-slate-400">
           {event?.facts.role
-            ? `Role: ${String(event.facts.role)}`
-            : `Assigned to: ${String(condition?.facts.assignee)}`}
+            ? t.lunarCity.dialogue.role(String(event.facts.role))
+            : t.lunarCity.dialogue.assignedTo(String(condition?.facts.assignee))}
         </p>
       )}
 
@@ -131,17 +135,17 @@ export function DialogueTray({ onAction, onClose, subject }: DialogueTrayProps) 
         <div className="mt-4 flex flex-wrap gap-2 border-t border-white/10 pt-3">
           {actions.has('inspect_blocker') && (
             <Button onClick={() => void runAction('inspect_blocker')} size="sm" variant="secondary">
-              Inspect blocker
+              {t.lunarCity.dialogue.inspectBlocker}
             </Button>
           )}
           {actions.has('inspect') && (
             <Button onClick={() => void runAction('inspect')} size="sm" variant="ghost">
-              Inspect
+              {t.lunarCity.dialogue.inspect}
             </Button>
           )}
           {(condition?.kind === 'task.blocked' || event?.kind === 'task.blocked') && (
             <Button onClick={() => void runAction('recover_task')} size="sm">
-              Extinguish / recover
+              {t.lunarCity.dialogue.recover}
             </Button>
           )}
         </div>

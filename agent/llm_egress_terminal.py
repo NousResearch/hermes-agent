@@ -95,6 +95,14 @@ _VERIFIED_DIAGNOSTIC_ATOM = re.compile(
 )
 
 
+def _read_grant_text(grant: SourceGrant) -> str | None:
+    try:
+        lines = Path(grant.canonical_path).read_bytes().splitlines(keepends=True)
+        return b"".join(lines[grant.line_start - 1 : grant.line_end]).decode("utf-8")
+    except (OSError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
 def _approved_sanitized(text: str, *, cap: int) -> SanitizedSegment:
     # Admission is finalized by LLMEgressFirewall so every denial is reported
     # as its content-free EgressBlocked decision. Keep only the local type and

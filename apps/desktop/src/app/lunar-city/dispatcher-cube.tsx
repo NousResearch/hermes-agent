@@ -1,9 +1,10 @@
 import { type FormEvent, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/i18n'
 
 import type { DialogueSubject } from './dialogue-tray'
-import type { WorldActionResult, WorldActionRunner } from './world-actions'
+import type { WorldActionRunner } from './world-actions'
 import type { WorldCondition, WorldEvent } from './world-events'
 
 export interface DispatcherCubeContext {
@@ -17,11 +18,8 @@ interface DispatcherCubeProps {
   onSubjectSelected?: (subject: DialogueSubject) => void
 }
 
-function resultText(result: WorldActionResult): string {
-  return result.ok ? 'Hermes accepted the action.' : result.message
-}
-
 export function DispatcherCube({ context, onSubjectSelected }: DispatcherCubeProps) {
+  const { t } = useI18n()
   const [mode, setMode] = useState<'report' | 'task' | 'session' | null>(null)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
@@ -31,7 +29,7 @@ export function DispatcherCube({ context, onSubjectSelected }: DispatcherCubePro
   const run = async (action: Parameters<WorldActionRunner['run']>[0]) => {
     setPending(true)
     const result = await context.actionRunner.run(action)
-    setFeedback(resultText(result))
+    setFeedback(result.ok ? t.lunarCity.dialogue.actionAccepted : result.message)
     setPending(false)
   }
 
@@ -39,7 +37,7 @@ export function DispatcherCube({ context, onSubjectSelected }: DispatcherCubePro
     event.preventDefault()
 
     if (!title.trim()) {
-      setFeedback('A task title is required.')
+      setFeedback(t.lunarCity.dispatcher.taskRequired)
 
       return
     }
@@ -58,14 +56,16 @@ export function DispatcherCube({ context, onSubjectSelected }: DispatcherCubePro
 
   return (
     <section
-      aria-label="Dispatcher companion"
+      aria-label={t.lunarCity.dispatcher.companion}
       className="rounded-2xl border border-cyan-400/30 bg-slate-950/90 p-4 shadow-xl"
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-[0.65rem] font-semibold uppercase tracking-[0.18em] text-cyan-300">Dispatcher cube</p>
-          <h2 className="mt-1 text-lg font-semibold text-white">Command center</h2>
-          <p className="mt-1 text-xs text-slate-300">Talk to Hermes through the city.</p>
+          <p className="text-[0.65rem] font-semibold uppercase tracking-[0.18em] text-cyan-300">
+            {t.lunarCity.dispatcher.cube}
+          </p>
+          <h2 className="mt-1 text-lg font-semibold text-white">{t.lunarCity.dispatcher.commandCenter}</h2>
+          <p className="mt-1 text-xs text-slate-300">{t.lunarCity.dispatcher.description}</p>
         </div>
         <div
           aria-hidden
@@ -77,18 +77,18 @@ export function DispatcherCube({ context, onSubjectSelected }: DispatcherCubePro
 
       <div className="mt-4 grid grid-cols-2 gap-2">
         <Button onClick={() => setMode(mode === 'task' ? null : 'task')} size="sm" variant="secondary">
-          New task
+          {t.lunarCity.dispatcher.newTask}
         </Button>
         <Button onClick={() => setMode(mode === 'session' ? null : 'session')} size="sm" variant="secondary">
-          New session
+          {t.lunarCity.dispatcher.newSession}
         </Button>
         <Button onClick={() => setMode(mode === 'report' ? null : 'report')} size="sm" variant="secondary">
-          What needs my attention?
+          {t.lunarCity.dispatcher.attention}
         </Button>
         <Button
           onClick={() =>
             showSubject({
-              title: 'Recent Hermes events',
+              title: t.lunarCity.dispatcher.recentEvents,
               events: context.events.slice(-8),
               conditions: context.conditions
             })
@@ -96,18 +96,18 @@ export function DispatcherCube({ context, onSubjectSelected }: DispatcherCubePro
           size="sm"
           variant="ghost"
         >
-          Recent activity
+          {t.lunarCity.dispatcher.recentActivity}
         </Button>
       </div>
 
       {mode === 'task' && (
         <form
-          aria-label="Create Kanban task"
+          aria-label={t.lunarCity.dispatcher.createTask}
           className="mt-4 space-y-2 rounded-xl border border-white/10 bg-white/5 p-3"
           onSubmit={submitTask}
         >
           <label className="block text-xs text-slate-300" htmlFor="dispatcher-task-title">
-            Title
+            {t.lunarCity.dispatcher.title}
           </label>
           <input
             className="w-full rounded-md border border-white/15 bg-black/20 px-2 py-1.5 text-sm text-white outline-none focus:border-cyan-300"
@@ -116,7 +116,7 @@ export function DispatcherCube({ context, onSubjectSelected }: DispatcherCubePro
             value={title}
           />
           <label className="block text-xs text-slate-300" htmlFor="dispatcher-task-body">
-            Brief
+            {t.lunarCity.dispatcher.brief}
           </label>
           <textarea
             className="min-h-16 w-full rounded-md border border-white/15 bg-black/20 px-2 py-1.5 text-sm text-white outline-none focus:border-cyan-300"
@@ -125,33 +125,33 @@ export function DispatcherCube({ context, onSubjectSelected }: DispatcherCubePro
             value={body}
           />
           <Button disabled={pending} size="sm" type="submit">
-            {pending ? 'Sending to Hermes…' : 'Dispatch task'}
+            {pending ? t.lunarCity.dispatcher.sending : t.lunarCity.dispatcher.dispatch}
           </Button>
         </form>
       )}
 
       {mode === 'session' && (
         <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-slate-200">
-          <p>Start a fresh Hermes conversation in the current desktop context?</p>
+          <p>{t.lunarCity.dispatcher.startPrompt}</p>
           <Button
             className="mt-3"
             disabled={pending}
             onClick={() => void run({ kind: 'create_session', params: { source: 'lunar-city' } })}
             size="sm"
           >
-            {pending ? 'Starting…' : 'Start session'}
+            {pending ? t.lunarCity.dispatcher.starting : t.lunarCity.dispatcher.startSession}
           </Button>
         </div>
       )}
 
       {mode === 'report' && (
         <div className="mt-4 space-y-2 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-slate-200">
-          <p>{context.conditions.length} active world conditions</p>
-          <p>{context.events.length} recent source events</p>
+          <p>{t.lunarCity.dispatcher.activeConditions(context.conditions.length)}</p>
+          <p>{t.lunarCity.dispatcher.recentEventsCount(context.events.length)}</p>
           <Button
             onClick={() =>
               showSubject({
-                title: 'Situation report',
+                title: t.lunarCity.dispatcher.report,
                 events: context.events,
                 conditions: context.conditions
               })
@@ -159,7 +159,7 @@ export function DispatcherCube({ context, onSubjectSelected }: DispatcherCubePro
             size="sm"
             variant="ghost"
           >
-            Open report
+            {t.lunarCity.dispatcher.openReport}
           </Button>
         </div>
       )}

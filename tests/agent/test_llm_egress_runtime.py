@@ -10,12 +10,12 @@ import pytest
 
 from agent.llm_egress_firewall import EgressBlocked, SanitizedTextRejected
 from agent.llm_egress_runtime import (
-    _READ_FILE_REPLAY_ELISION,
     _restore_source_provenance_sidecar,
     _typed_payload_violation_locations,
     authorize_agent_sdk_kwargs,
     dispatch_authorized_agent_request,
 )
+from agent.llm_egress_terminal import _READ_FILE_REPLAY_ELISION
 from agent.source_provenance import SourceProvenanceRegistry
 
 
@@ -62,6 +62,27 @@ def test_typed_payload_violation_locations_are_content_free():
     assert locations == (
         ("$.map[0].value.sequence[0]", "SanitizedSegment", 20, ("base64_payload",)),
     )
+
+
+def test_runtime_keeps_classifier_monkeypatch_seam(tmp_path, monkeypatch):
+    import agent.llm_egress_runtime as runtime
+
+    original = runtime._typed_payload
+    calls = 0
+
+    def classify(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "_typed_payload", classify)
+    authorized, _ = runtime.authorize_agent_sdk_kwargs(
+        _agent(tmp_path),
+        {"model": "test-model", "messages": [{"role": "user", "content": "hello"}]},
+    )
+
+    assert calls == 1
+    assert authorized["messages"][0]["content"] == "hello"
 
 
 def test_runtime_authorizes_mixed_exact_source_and_bounded_sanitized_text(tmp_path):

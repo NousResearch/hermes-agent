@@ -1,6 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
-import { AmbientLight, Box3, Color, DirectionalLight, PerspectiveCamera, Raycaster, Scene, Vector2, Vector3, WebGLRenderer } from 'three'
+import {
+  AmbientLight,
+  Box3,
+  Color,
+  DirectionalLight,
+  PerspectiveCamera,
+  Raycaster,
+  Scene,
+  Vector2,
+  Vector3,
+  WebGLRenderer
+} from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+
+import { useI18n } from '@/i18n'
 
 import { LUNAR_CITY_ASSET_MANIFEST } from './world-assets'
 
@@ -27,6 +40,7 @@ function frameCamera(camera: PerspectiveCamera, box: Box3): void {
 }
 
 export function WorldGlbScene({ className, enabled, onSelect }: WorldGlbSceneProps) {
+  const { t } = useI18n()
   const hostRef = useRef<HTMLDivElement | null>(null)
   const [status, setStatus] = useState<'failed' | 'loading' | 'ready'>('loading')
 
@@ -97,7 +111,7 @@ export function WorldGlbScene({ className, enabled, onSelect }: WorldGlbScenePro
     }
 
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
-    renderer.domElement.setAttribute('aria-label', 'Interactive Lunar City 3D scene')
+    renderer.domElement.setAttribute('aria-label', t.lunarCity.glb.canvasAriaLabel)
     renderer.domElement.setAttribute('data-testid', 'lunar-city-glb-canvas')
     host.append(renderer.domElement)
     scene.add(new AmbientLight(0xb8d7ff, 0.95))
@@ -139,13 +153,13 @@ export function WorldGlbScene({ className, enabled, onSelect }: WorldGlbScenePro
       renderer.dispose()
       renderer.domElement.remove()
     }
-  }, [enabled, onSelect])
+  }, [enabled, onSelect, t.lunarCity.glb.canvasAriaLabel])
 
   return (
     <div className={className} data-renderer-status={status} data-testid="lunar-city-glb-host" ref={hostRef}>
       {status !== 'ready' && (
         <img
-          alt="Lunar City Blender baseline with grounded roads and concave terrain"
+          alt={t.lunarCity.glb.imageAlt}
           className="block aspect-[16/9] w-full object-cover"
           src={`${import.meta.env.BASE_URL}lunar-city/lunar-city-baseline.png`}
         />

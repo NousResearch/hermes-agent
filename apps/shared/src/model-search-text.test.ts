@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { fuzzyRank } from './fuzzy.js'
-import { modelSearchText } from './model-search-text.js'
+import { fuzzyRank } from './fuzzy'
+import { modelSearchText } from './model-search-text'
 
 describe('modelSearchText', () => {
   it('keeps ordinary model ids unchanged', () => {

@@ -153,14 +153,16 @@ class TestExchangeRetry:
         assert "invalid_grant" in caplog.text
         assert "grant revoked" in caplog.text
 
-    def test_redaction_strips_token_values(self):
-        redacted = oauth.redact_tokens(
-            "exchange failed for hch-rt-supersecret123 got hch-at-alsosecret456"
+    def test_honcho_token_prefixes_are_registered_with_the_shared_redactor(self):
+        """Importing the plugin registers hch-at-/hch-rt- with agent.redact, so every surface that
+        runs the shared redactor (logs, tool output, chat egress) masks Honcho tokens, not only
+        this module's own error strings."""
+        from agent.redact import redact_sensitive_text
+        redacted = redact_sensitive_text(
+            "exchange failed for hch-rt-supersecret123 got hch-at-alsosecret456", force=True
         )
         assert "supersecret123" not in redacted
         assert "alsosecret456" not in redacted
-        assert "hch-rt-[redacted]" in redacted
-        assert "hch-at-[redacted]" in redacted
 
 
 class TestForceRefreshToken:
@@ -537,7 +539,6 @@ class TestAuthNotice:
         mgr._record_auth_failure(Exception("rejected token hch-at-secretvalue99"))
         notice = mgr.pop_auth_notice()
         assert "secretvalue99" not in notice
-        assert "hch-at-[redacted]" in notice
 
     def test_provider_prefetch_injects_notice_once(self):
         class _FakeManager:

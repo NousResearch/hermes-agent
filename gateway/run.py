@@ -392,14 +392,6 @@ _CONNECTION_ERROR_MARKERS = (
     r"cannot\s+connect", r"failed\s+to\s+establish", r"could\s+not\s+connect")
 _GATEWAY_CONNECTION_ERROR_RE = re.compile("(" + "|".join(_CONNECTION_ERROR_MARKERS) + ")", re.IGNORECASE)
 
-_GATEWAY_SECRET_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), re.compile(r"\bxapp-\d+-[A-Za-z0-9\-]{20,}\b"),
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{20,}\b"), re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
-    re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"))
-
-
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -544,26 +536,11 @@ def _gateway_loop_exception_handler(
 
 
 def _redact_gateway_user_facing_secrets(text: str) -> str:
-    """Secret redaction before text can leave the gateway.
+    """Secret redaction before text can leave the gateway for a chat platform: the shared egress scrub
+    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed). See #23810."""
+    from agent.redact import redact_for_egress
 
-    Shared ``redact_sensitive_text`` with ``force=True`` (holds even when ``security.redact_secrets`` is off);
-    ``_GATEWAY_SECRET_PATTERNS`` is a second pass so redaction degrades gracefully if that import fails.
-
-    Delegates to the authoritative ``agent.redact.redact_sensitive_text`` — the same Tirith-grade redactor
-    already applied to logs, tool output, and approval-command prompts — so the outbound chat path masks the
-    full credential set the startup banner promises ("chat responses are scrubbed before delivery"), not a
-    divergent subset. See #23810.
-    """
-    redacted = str(text or "")
-    try:
-        from agent.redact import redact_sensitive_text
-
-        redacted = redact_sensitive_text(redacted, force=True)
-    except Exception:
-        pass  # fail-soft: the local pattern pass below still runs rather than leaking raw text to chat
-    for pattern in _GATEWAY_SECRET_PATTERNS:
-        redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
-    return redacted
+    return redact_for_egress(text)
 
 
 def _redact_approval_command(cmd: "str | None") -> str:

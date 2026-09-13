@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent.redact import redact_sensitive_text, register_redaction_patterns
+
 logger = logging.getLogger(__name__)
 
 ACCESS_TOKEN_PREFIX = "hch-at-"
@@ -36,12 +38,10 @@ _REFRESH_TOTAL_BUDGET_SECONDS = 20.0
 _REFRESH_FAILURE_COOLDOWN_SECONDS = 30.0
 # OAuth error codes a retry can never fix — the grant itself is dead.
 _PERMANENT_OAUTH_ERRORS = frozenset({"invalid_grant", "invalid_client", "unauthorized_client"})
-# Derived from the canonical prefixes so a prefix change can't silently break redaction.
-_TOKEN_VALUE_RE = re.compile(rf"({re.escape(ACCESS_TOKEN_PREFIX)}|{re.escape(REFRESH_TOKEN_PREFIX)})[A-Za-z0-9._~+/=-]+")
-
-def redact_tokens(text: str) -> str:
-    """Replace any embedded token values with their prefix plus a placeholder."""
-    return _TOKEN_VALUE_RE.sub(lambda m: f"{m.group(1)}[redacted]", text)
+# Registered with the shared redactor so EVERY log/tool-output surface masks Honcho tokens, not only
+# this module's own error strings. Built from the constants so a prefix rename can't split them.
+register_redaction_patterns([f"{p}[A-Za-z0-9._~+/=-]{{8,}}" for p in (ACCESS_TOKEN_PREFIX, REFRESH_TOKEN_PREFIX)],
+                            source="plugin:honcho")
 
 class OAuthRefreshError(Exception):
     """Token endpoint rejected the refresh. ``permanent`` means re-login is required."""
@@ -229,7 +229,7 @@ def _exchange_refresh_token(
     if status >= 400:
         error, description = str(body.get("error") or ""), str(body.get("error_description") or "")
         detail = " — ".join(p for p in (error, description) if p) or "no error body"
-        message = redact_tokens(f"token endpoint returned HTTP {status}: {detail}")
+        message = redact_sensitive_text(f"token endpoint returned HTTP {status}: {detail}", force=True)
         raise OAuthRefreshError(message, error=error, permanent=error in _PERMANENT_OAUTH_ERRORS)
     return OAuthCredential.from_token_response(
         body, now=now, client_id=cred.client_id, token_endpoint=cred.token_endpoint,
@@ -249,7 +249,7 @@ def _exchange_with_retry(cred: OAuthCredential, *, now: float) -> OAuthCredentia
     remaining = deadline - time.monotonic() - _REFRESH_RETRY_DELAY_SECONDS
     if remaining <= 0:
         raise first
-    logger.warning("Honcho OAuth token exchange failed, retrying once: %s", redact_tokens(str(first)))
+    logger.warning("Honcho OAuth token exchange failed, retrying once: %s", redact_sensitive_text(str(first), force=True))
     time.sleep(_REFRESH_RETRY_DELAY_SECONDS)
     return _exchange_refresh_token(cred, now=now, timeout=min(remaining, _REFRESH_TIMEOUT_SECONDS))
 
@@ -267,7 +267,7 @@ def _rotate_and_persist(
                          "run 'hermes honcho setup' to re-authenticate", host, exc)
             return None
         _refresh_failure_at[key] = time.monotonic()
-        logger.warning("Honcho OAuth %s failed for host %s: %s", op_label, host, redact_tokens(str(exc)))
+        logger.warning("Honcho OAuth %s failed for host %s: %s", op_label, host, redact_sensitive_text(str(exc), force=True))
         return None
     _persist_credential(path, host, rotated)
     return rotated

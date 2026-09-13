@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-from plugins.memory.honcho.oauth import redact_tokens as _redact_tokens
+from agent.redact import redact_sensitive_text as _redact_sensitive_text
 
 logger = logging.getLogger("plugins.memory.honcho.session")
 
@@ -48,7 +48,7 @@ _REAUTH_REQUIRED_MESSAGE = (
 
 
 def _auth_error_message(exc: BaseException) -> str:
-    return (f"Honcho rejected our credentials and a forced token refresh did not recover: {_redact_tokens(str(exc))}. "
+    return (f"Honcho rejected our credentials and a forced token refresh did not recover: {_redact_sensitive_text(str(exc), force=True)}. "
             "Re-authenticate with 'hermes honcho setup'.")
 
 
@@ -56,7 +56,7 @@ class SessionAuthMixin:
     """Auth state + ``_authed_call`` for HonchoSessionManager (state lives in __init__)."""
 
     def _record_auth_failure(self, exc: BaseException) -> None:
-        detail = _redact_tokens(str(exc))
+        detail = _redact_sensitive_text(str(exc), force=True)
         if self._auth_failure is None:
             logger.error("Honcho authentication failed and token refresh did not recover; "
                          "memory sync and recall are paused until the user re-authenticates: %s", detail)
@@ -135,7 +135,7 @@ class SessionAuthMixin:
             if not _is_auth_error(e):
                 raise
             logger.warning("Honcho %s hit an auth error; forcing token refresh and retrying once: %s",
-                           op_name, _redact_tokens(str(e)))
+                           op_name, _redact_sensitive_text(str(e), force=True))
             if not self._force_reauth():
                 self._record_auth_failure(e)
                 raise HonchoAuthError(_auth_error_message(e)) from e

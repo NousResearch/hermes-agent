@@ -79,4 +79,29 @@ describe('contrast', () => {
     expect(ensureContrast('#3D2F13', '#ffffff', 3.9)).toBe('#3D2F13')
     expect(ensureContrast('ansi256(245)', '#ffffff', 3.9)).toBe('ansi256(245)')
   })
+
+  it.each([0, -0.3, Number.NaN, Number.POSITIVE_INFINITY])(
+    'ensureContrast normalizes rung size %s to the documented default ladder',
+    step => {
+      const fixed = ensureContrast('#777777', '#ffffff', 4.5, step)
+
+      expect(fixed).toBe('#5f5f5f')
+      expect(fixed).toBe(ensureContrast('#777777', '#ffffff', 4.5))
+      expect(contrastRatio(fixed, '#ffffff')!).toBeGreaterThanOrEqual(4.5)
+    }
+  )
+
+  it('ensureContrast clamps oversized rung sizes to the full-pole rung', () => {
+    // A step > 1 previously failed the loop condition outright (zero rungs);
+    // clamped to 1 it must still reach the pole when that clears the floor.
+    expect(ensureContrast('#777777', '#ffffff', 4.5, 1.05)).toBe('#000000')
+    expect(ensureContrast('#777777', '#ffffff', 4.5, 7)).toBe('#000000')
+  })
+
+  it('ensureContrast keeps the desktop 0.2 and TUI 0.05 ladders byte-identical', () => {
+    expect(ensureContrast('#4f9e5e', '#ffffff', 4.5, 0.2)).toBe('#3f7e4b')
+    // The finer TUI rung stops on an earlier mix than the desktop ladder.
+    expect(ensureContrast('#cba6f7', '#ffffff', 7, 0.05)).toBe('#5b4b6f')
+    expect(ensureContrast('#cba6f7', '#ffffff', 7, 0.2)).toBe('#514263')
+  })
 })

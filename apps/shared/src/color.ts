@@ -133,6 +133,8 @@ export function readableOn(bg: string, inks: readonly [string, ...string[]] = DE
  * and MUST stay: `--dt-primary-solid` for every shipped preset is derived
  * from it and a finer ladder lands visibly different fills (nous `#3b6acb` vs
  * `#3f70d8`). The TUI's chainable form opts into 0.05 for less hue loss.
+ * A non-finite or `<= 0` step falls back to the default; anything above 1 is
+ * clamped to 1 so the ladder always terminates.
  * The accumulating loop (rather than `i * step`) is deliberate — it is the
  * exact float sequence the old desktop ladder produced.
  */
@@ -147,6 +149,17 @@ export function ensureContrast(color: string, bg: string, min: number, step = 0.
 
   if (ratio === null || ratio >= min) {
     return color
+  }
+
+  // The ladder only terminates for a finite rung size in (0, 1]: 0 or a
+  // negative step never advances the loop and NaN skips it entirely, so a
+  // public-API caller can stall the surface. Normalize those to the
+  // documented default and clamp oversized steps so the full-pole rung
+  // still runs instead of zero rungs.
+  if (!Number.isFinite(step) || step <= 0) {
+    step = 0.2
+  } else {
+    step = Math.min(step, 1)
   }
 
   const pole = bgLuminance < 0.5 ? '#ffffff' : '#000000'

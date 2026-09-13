@@ -32,6 +32,7 @@ def _resolve_provider_key(env_var: str, provider_id: str) -> str:
     return resolve_provider_secret(env_var, provider_id)
 
 
+from tools import tts_tool_language
 from tools.tts_command_provider import (
     BUILTIN_TTS_PROVIDERS, _configured_command_tts_output_path, _generate_command_tts,
     _get_command_tts_output_format, _is_command_tts_voice_compatible, _resolve_command_provider_config)
@@ -415,6 +416,8 @@ def text_to_speech_tool(
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
     tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    if provider == "edge":
+        tts_config = tts_tool_language.with_edge_auto_language_voice(tts_config, text)
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
     chunks = _split_text_for_tts(text, max_len)

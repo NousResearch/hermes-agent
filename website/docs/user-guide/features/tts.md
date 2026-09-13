@@ -49,6 +49,8 @@ tts:
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
     speed: 1.0                  # Converted to rate percentage (+/-%)
+    auto_language: false        # Detect the reply language and select a mapped Edge voice
+    voice_by_language: {}       # Language code -> Edge voice; `voice` remains the fallback
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
     model_id: "eleven_multilingual_v2"
@@ -113,6 +115,36 @@ MiniMax TTS selects its region, endpoint, and credential together:
 - An explicitly selected region must have its matching credential. Hermes never borrows the other region's key. A `base_url` override does not change the selected credential, and an override pointing at the other region's official endpoint is rejected.
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+### Automatic Edge voice selection
+
+Edge TTS can select one voice for the dominant language of each complete reply. This mode is opt-in and affects only the Edge provider:
+
+```yaml
+tts:
+  provider: edge
+  edge:
+    voice: en-US-AriaNeural       # Fallback voice
+    auto_language: true
+    voice_by_language:
+      en: en-US-AvaNeural
+      fr: fr-FR-DeniseNeural
+      pt: pt-PT-RaquelNeural
+      pt-br: pt-BR-FranciscaNeural
+      zh-cn: zh-CN-XiaoxiaoNeural
+```
+
+Mapping keys are case-insensitive BCP-47 language codes; underscores are normalized to hyphens. Hermes first looks for the exact detected code, such as `pt-br`, and then its primary language, such as `pt`. The configured `voice` is used when the text is too short, detection is uncertain or unavailable, or no mapping matches. A long reply is detected once before chunking, so every chunk uses the same voice.
+
+The optional `langdetect` dependency is loaded—and, when lazy installation is available, installed—only when `auto_language` is enabled and `voice_by_language` is non-empty. Installation or detection failures do not block speech synthesis. Detection requires at least eight alphabetic characters and 80% confidence.
+
+Mappings can also be added without editing YAML:
+
+```bash
+hermes config set tts.edge.auto_language true
+hermes config set tts.edge.voice_by_language.fr fr-FR-DeniseNeural
+hermes config set tts.edge.voice_by_language.pt-br pt-BR-FranciscaNeural
+```
 
 ### Gemini Persona Prompts
 

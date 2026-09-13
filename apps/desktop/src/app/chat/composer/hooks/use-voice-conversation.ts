@@ -44,6 +44,11 @@ interface VoiceConversationOptions {
 /** How long a barge-triggered interrupt may take to settle before we submit
  *  the captured utterance anyway. */
 const INTERRUPT_SETTLE_TIMEOUT_MS = 5_000
+// Lazy: hands-free conversations end on their own after this many consecutive
+// listen windows with no speech (each window is IDLE_SILENCE_MS). The CLI does
+// the same after three silent cycles; the GUI looped forever until a stop word.
+const MAX_SILENT_LISTENS = 1
+const IDLE_SILENCE_MS = 7_000
 
 export function useVoiceConversation({
   busy,
@@ -63,6 +68,7 @@ export function useVoiceConversation({
   const [status, setStatus] = useState<ConversationStatus>('idle')
   const [muted, setMuted] = useState(false)
   const turnTimeoutRef = useRef<number | null>(null)
+  const silentListensRef = useRef(0)
   const pendingStartRef = useRef(false)
   const turnClosingRef = useRef(false)
   const awaitingSpokenResponseRef = useRef(false)
@@ -149,6 +155,18 @@ export function useVoiceConversation({
         const result = await handle.stop()
 
         if (!result || (!result.heardSpeech && !forceTranscribe) || !onTranscribeAudio) {
+          silentListensRef.current += 1
+
+          if (silentListensRef.current >= MAX_SILENT_LISTENS) {
+            // Nobody spoke: close the conversation and hand the mic back to the wake word.
+            silentListensRef.current = 0
+            dropSpeechSession()
+            setStatus('idle')
+            onStopWordRef.current?.()
+
+            return
+          }
+
           if (enabledRef.current && !mutedRef.current && !busyRef.current && statusRef.current !== 'speaking') {
             pendingStartRef.current = true
           }
@@ -183,6 +201,7 @@ export function useVoiceConversation({
             return
           }
 
+          silentListensRef.current = 0
           awaitingSpokenResponseRef.current = true
           dropSpeechSession()
           await onSubmit(transcript)
@@ -237,7 +256,7 @@ export function useVoiceConversation({
       await handle.start({
         silenceLevel: 0.075,
         silenceMs: 1_250,
-        idleSilenceMs: 12_000,
+        idleSilenceMs: IDLE_SILENCE_MS,
         onError: error => {
           notifyError(error, voiceCopy.microphoneFailed)
           pendingStartRef.current = false

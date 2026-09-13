@@ -30,12 +30,26 @@ const STOP_PHRASES: readonly string[] = [
   'goodbye',
   'good bye',
   'bye',
-  'cancel'
+  'cancel',
+  // Spanish (Lazy)
+  'listo',
+  'listo gracias',
+  'gracias',
+  'gracias lazy',
+  'chau',
+  'chau lazy',
+  'nada más',
+  'nada mas',
+  'eso es todo',
+  'es todo',
+  'cancelar',
+  'pará',
+  'para'
 ]
 
 // Optional address prefixes so "hermes stop" / "ok stop" / "hey hermes, stop"
 // still count. Stripped before matching the core phrase.
-const ADDRESS_PREFIXES: readonly string[] = ['hey hermes', 'hey hermes,', 'hermes', 'hermes,', 'ok', 'okay', 'hey']
+const ADDRESS_PREFIXES: readonly string[] = ['hey hermes', 'hey hermes,', 'hermes', 'hermes,', 'hey lazy', 'hey lazy,', 'lazy', 'lazy,', 'ok', 'okay', 'hey', 'che']
 
 // Normalise: lowercase, strip surrounding punctuation/whitespace, collapse
 // internal runs of spaces. Trailing punctuation (".", "!", "…") is common in

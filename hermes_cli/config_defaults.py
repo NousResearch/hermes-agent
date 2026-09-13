@@ -851,6 +851,8 @@ DEFAULT_CONFIG = {
         # updates; false routes it to reasoning (visible only with show_reasoning).
         "show_commentary": True,
         "tool_progress_command": False,  # enable /verbose command in messaging gateway
+        # Gateway all/new: use a safe first-line comment as the terminal/execute_code label.
+        "tool_progress_comment_descriptions": False,
         # display.tool_progress_overrides is deprecated (use display.platforms); a user-set value is
         # still honored at runtime and folded into platforms by migration.
         "tool_preview_length": 0,  # max chars for tool call previews (0 = no limit)

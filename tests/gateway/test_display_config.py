@@ -1,5 +1,7 @@
 """Tests for gateway.display_config — per-platform display/verbosity resolver."""
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # Resolver: resolution order
@@ -327,3 +329,46 @@ class TestLiveStatusSetting:
         assert resolve_display_setting({}, "slack", "live_status") == "full"
 
 
+
+class TestToolProgressCommentDescriptions:
+    def test_defaults_off_in_resolver_and_generated_config(self):
+        from gateway.display_config import resolve_display_setting
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        setting = "tool_progress_comment_descriptions"
+        assert resolve_display_setting({}, "telegram", setting) is False
+        assert DEFAULT_CONFIG["display"][setting] is False
+
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [(True, True), (False, False), ("true", True), ("false", False)],
+    )
+    def test_global_boolean_values_are_normalized(self, configured, expected):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress_comment_descriptions": configured}}
+        assert (
+            resolve_display_setting(
+                config,
+                "mattermost",
+                "tool_progress_comment_descriptions",
+            )
+            is expected
+        )
+
+    def test_platform_override_is_isolated(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress_comment_descriptions": False,
+                "platforms": {
+                    "mattermost": {"tool_progress_comment_descriptions": True},
+                    "telegram": {"tool_progress_comment_descriptions": "false"},
+                },
+            }
+        }
+        setting = "tool_progress_comment_descriptions"
+        assert resolve_display_setting(config, "mattermost", setting) is True
+        assert resolve_display_setting(config, "telegram", setting) is False
+        assert resolve_display_setting(config, "discord", setting) is False

@@ -208,11 +208,11 @@ class TurnRunner:
         except Exception as err:
             logger.debug("tool-progress onboarding hint failed: %s", err)
 
-    @staticmethod
-    def _preview_cap() -> int:
-        """tool_preview_length (default 40): the one-line preview budget for "all"/"new" modes."""
+    def _preview_cap(self) -> int:
+        """Use the compact turn's frozen budget; retain legacy settings for other modes."""
         from agent.display import get_tool_preview_max_len
-        pl = get_tool_preview_max_len()
+        pl = (self._ctx.tool_preview_max_len if self._ctx.progress_mode in {"all", "new"}
+              else get_tool_preview_max_len())
         return pl if pl > 0 else 40
 
     def _progress_terminal_blocks(self, adapter, tool_name, args, emoji):
@@ -247,6 +247,14 @@ class TurnRunner:
             adapter = self._runner._adapter_for_source(ctx.source)
         except Exception:
             adapter = None
+        if ctx.progress_mode in {"all", "new"} and ctx.tool_progress_comment_descriptions:
+            from agent.display import get_tool_verb, prepare_tool_progress_comment_description
+            description = prepare_tool_progress_comment_description(tool_name, args, max_len=self._preview_cap())
+            if description is not None:
+                label = adapter.format_tool_preview(description) if adapter is not None else description.text
+                ctx.last_was_terminal_block[0] = False
+                verb = get_tool_verb(tool_name, friendly_labels=ctx.friendly_tool_labels)
+                return f"{emoji} {verb}: {label}" if verb else f'{emoji} {tool_name}: "{label}"'
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
         verbose = ctx.progress_mode == "verbose"
         code = code_full if verbose else code_short
@@ -274,7 +282,9 @@ class TurnRunner:
         preview = adapter.format_tool_preview(prepared) if adapter is not None else prepared.text
         # Friendly labels: human-phrased line for built-in tools ("🔍 Searching the web for ...")
         # by prefixing the verb onto the computed preview, so the command/url/query is kept.
-        verb = get_tool_verb(tool_name)
+        verb = get_tool_verb(
+            tool_name, friendly_labels=ctx.friendly_tool_labels if ctx.progress_mode in {"all", "new"} else None,
+        )
         if not verb:
             return f"{emoji} {tool_name}: \"{preview}\""
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"

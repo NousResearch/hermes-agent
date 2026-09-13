@@ -900,6 +900,10 @@ DEFAULT_CONFIG = {
         # CLI-only post-turn line: "⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3
         # commands". Never in quiet/non-interactive or gateway surfaces (own footer).
         "turn_summary": True,
+        # Timing detail on the post-turn line: "off" (no line at all) | "total" (today's
+        # wall-clock line) | "split" (adds model-vs-tool time) | "verbose" (also stamps
+        # turn start → first-token wall clock).
+        "turn_timing": "total",
         # CLI-only: cumulative turn output tokens on the live spinner ("· ↓ 1.2k tok").
         "spinner_token_flow": True,
         # Gateway tool-progress grouping where edits are supported: "accumulate" edits one bubble |

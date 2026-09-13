@@ -14,6 +14,18 @@ class OpenModel(Result):
     model_config = Result.model_config | {"extra": "allow"}
 
 
+class TurnTiming(Result):
+    """Per-turn model-vs-tool split from ``_get_usage`` (``display.turn_timing``).
+
+    Each key is present only when the turn actually measured it: a Codex app-server
+    turn carries no ``api_duration``, so ``model_seconds`` is absent rather than 0.
+    """
+
+    model_seconds: float | None = None
+    started_at: float | None = None
+    first_token_at: float | None = None
+
+
 class Usage(OpenModel):
     """``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``."""
 
@@ -40,6 +52,7 @@ class Usage(OpenModel):
     dev_credits_spent_micros: int | None = None
     cost_usd: float | None = None
     cost_status: str | None = None
+    turn_timing: TurnTiming | None = None
 
 
 class ProjectRef(Result):

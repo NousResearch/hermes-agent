@@ -635,7 +635,14 @@ export interface Usage {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  turn_timing?: TurnTiming | null
   [key: string]: unknown
+}
+/** Per-turn model-vs-tool split from ``_get_usage`` (``display.turn_timing``). Each key is present only when the turn actually measured it: a Codex app-server turn carries no ``api_duration``, so ``model_seconds`` is absent rather than 0. */
+export interface TurnTiming {
+  model_seconds?: number | null
+  started_at?: number | null
+  first_token_at?: number | null
 }
 export interface McpServerStatus {
   name?: string
@@ -2805,6 +2812,7 @@ export interface SessionUsageResult {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  turn_timing?: TurnTiming | null
   credits_lines?: string[] | null
   [key: string]: unknown
 }

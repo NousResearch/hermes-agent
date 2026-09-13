@@ -27331,6 +27331,17 @@
             "default": null,
             "title": "Cost Status"
           },
+          "turn_timing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnTiming"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "credits_lines": {
             "anyOf": [
               {
@@ -31307,6 +31318,50 @@
         "title": "TurnStatus",
         "type": "string"
       },
+      "TurnTiming": {
+        "additionalProperties": false,
+        "description": "Per-turn model-vs-tool split from ``_get_usage`` (``display.turn_timing``).\n\nEach key is present only when the turn actually measured it: a Codex app-server\nturn carries no ``api_duration``, so ``model_seconds`` is absent rather than 0.",
+        "properties": {
+          "model_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Seconds"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "first_token_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "First Token At"
+          }
+        },
+        "title": "TurnTiming",
+        "type": "object"
+      },
       "UiMetaConflict": {
         "additionalProperties": false,
         "properties": {
@@ -31546,6 +31601,17 @@
             ],
             "default": null,
             "title": "Cost Status"
+          },
+          "turn_timing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnTiming"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "Usage",

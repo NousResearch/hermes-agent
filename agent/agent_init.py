@@ -2267,6 +2267,12 @@ _USAGE_STATE: Dict[str, Any] = {
     # Status-bar latency/velocity history (last 10 calls), shared by loop + codex_runtime.
     "_api_latency_history": lambda: deque(maxlen=10),
     "_api_output_history": lambda: deque(maxlen=10),
+    # Per-turn model/tool time split for display.turn_timing (issue #109569).
+    # None means unavailable (e.g. Codex turns report no api_duration). The
+    # turn's own wall-clock start is _current_turn_timestamp, stamped in
+    # _reset_per_turn_agent_state for the replayed-prefix expiry clock.
+    "_turn_model_seconds": None,
+    "_turn_first_token_at": None,
 }
 
 # Constructor params stored verbatim under the same name.

@@ -2167,6 +2167,7 @@ display:
   timestamp_format: "%H:%M"  # strftime format for those timestamps (e.g. "%b-%d %H:%M" for month-day)
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   turn_summary: true      # CLI only: print a one-line post-turn accounting footer after each interactive turn
+  turn_timing: total      # Detail on the post-turn line: off | total | split (model-vs-tool) | verbose (start → first-token stamps)
   spinner_token_flow: true # CLI only: append live cumulative turn tokens to the spinner timer
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
@@ -2195,6 +2196,14 @@ The tally is observed from the tool-progress feed the CLI already receives, so i
 - **Failed tool calls are not counted** — a denied write never renders as a successful edit (see the [file-mutation verifier](#file-mutation-verifier) for the complementary warning).
 - Long turns cap at four verb segments plus a `+N more` tail so the line never wraps.
 - A fast turn with no tool calls prints nothing at all.
+
+`display.turn_timing` (default `"total"`) controls how much timing that line shows: `"off"` prints no line at all, `"total"` keeps today's wall-clock line, `"split"` adds the model-vs-tool split, and `"verbose"` also stamps turn start → first-token wall clock:
+
+```
+⋯ 18.4s · 6.2s model · edited 2 files +18 -3 · start 14:03:02 → first-token 14:03:05
+```
+
+`"split"` and `"verbose"` also show fast tool-less turns that `"total"` would suppress. Turns that report no model time (e.g. Codex app-server turns carry no `api_duration`) omit the model segment rather than printing a misleading `0.0s`. The same per-turn fields ride `usage.turn_timing` (`model_seconds`, `started_at`, `first_token_at`; each key present only when the turn actually measured it) on `message.complete`, so TUI and desktop clients can render them from one insertion point.
 
 `display.spinner_token_flow` (default `true`) appends the running turn's cumulative output tokens to the CLI spinner's live timer:
 

@@ -71,6 +71,8 @@ class CLIInitMixin:
 
         # Per-turn accounting: CLI-only chrome riding the tool-progress feed.
         self._turn_summary_enabled = bool(display.get("turn_summary", True))
+        _ttm = str(display.get("turn_timing", "total") or "total").strip().lower()
+        self._turn_timing_mode = _ttm if _ttm in {"off", "total", "split", "verbose"} else "total"
         self._spinner_token_flow_enabled = bool(display.get("spinner_token_flow", True))
         self._turn_summary_collector = None
         self._turn_summary_start = 0.0

@@ -1991,6 +1991,26 @@ def _get_usage(agent) -> dict:
             for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)
+    # Per-turn model/tool split for display.turn_timing (issue #109569). Omitted,
+    # not fabricated, when the turn reports no timing (e.g. Codex app-server turns
+    # carry no api_duration). Nested so it can never be confused with the
+    # session-level ``turn_started_at`` (a different clock, from inflight_turn).
+    with contextlib.suppress(Exception):
+        _turn_timing: dict = {}
+        _turn_model = getattr(agent, "_turn_model_seconds", None)
+        if _turn_model is not None:
+            _turn_model = float(_turn_model)
+            if _turn_model == _turn_model and 0 <= _turn_model < 1e6:
+                _turn_timing["model_seconds"] = round(_turn_model, 1)
+        for _key, _out in (("_current_turn_timestamp", "started_at"),
+                           ("_turn_first_token_at", "first_token_at")):
+            _ts = getattr(agent, _key, None)
+            if _ts is not None:
+                _ts = float(_ts)
+                if _ts == _ts and _ts > 0:
+                    _turn_timing[_out] = _ts
+        if _turn_timing:
+            usage["turn_timing"] = _turn_timing
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
     with contextlib.suppress(Exception):
         from tools.async_delegation import active_count as _async_active_count

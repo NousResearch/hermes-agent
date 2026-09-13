@@ -110,63 +110,60 @@ export function useModelControls({
   // only fills an EMPTY selection so a user's pick (plain UI state in
   // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
   // draft / session events. A live session owns the footer, so skip entirely.
-  const refreshCurrentModel = useCallback(
-    async (force = false) => {
-      // A forced profile swap opens a new intent epoch; an older in-flight
-      // response for a previous profile must stand down when it resolves.
-      if (force) {
-        profileRefreshEpochRef.current += 1
+  const refreshCurrentModel = useCallback(async (force = false) => {
+    // A forced profile swap opens a new intent epoch; an older in-flight
+    // response for a previous profile must stand down when it resolves.
+    if (force) {
+      profileRefreshEpochRef.current += 1
+    }
+
+    const profileRefreshEpoch = profileRefreshEpochRef.current
+    const profile = $activeGatewayProfile.get()
+
+    try {
+      if ($activeSessionId.get()) {
+        return
       }
 
-      const profileRefreshEpoch = profileRefreshEpochRef.current
-      const profile = $activeGatewayProfile.get()
+      // A manual pick is sticky. It is never diffed against the catalog: rows
+      // are hints, and a custom slug the row lacks is still the user's choice
+      // (the gateway validates it on switch).
+      const keepManualPick = () => !force && Boolean($currentModel.get()) && getCurrentModelSource() === 'manual'
 
-      try {
-        if ($activeSessionId.get()) {
-          return
-        }
-
-        // A manual pick is sticky. It is never diffed against the catalog: rows
-        // are hints, and a custom slug the row lacks is still the user's choice
-        // (the gateway validates it on switch).
-        const keepManualPick = () => !force && Boolean($currentModel.get()) && getCurrentModelSource() === 'manual'
-
-        if (keepManualPick()) {
-          return
-        }
-
-        // Snapshot the selection generation before awaiting so a picker click
-        // that lands while getGlobalModelInfo is in flight wins over this older
-        // default — value comparisons alone miss re-selecting the same row.
-        const selectionGeneration = getComposerSelectionGeneration()
-        const result = await getGlobalModelInfo(profile)
-
-        if (
-          profileRefreshEpochRef.current !== profileRefreshEpoch ||
-          $activeSessionId.get() ||
-          getComposerSelectionGeneration() !== selectionGeneration ||
-          keepManualPick()
-        ) {
-          return
-        }
-
-        if (typeof result.model === 'string') {
-          setCurrentModel(result.model)
-        }
-
-        if (typeof result.provider === 'string') {
-          setCurrentProvider(result.provider)
-        }
-
-        if (typeof result.model === 'string' || typeof result.provider === 'string') {
-          setCurrentModelSource('default')
-        }
-      } catch {
-        // The delayed session.info event still updates this once the agent is ready.
+      if (keepManualPick()) {
+        return
       }
-    },
-    []
-  )
+
+      // Snapshot the selection generation before awaiting so a picker click
+      // that lands while getGlobalModelInfo is in flight wins over this older
+      // default — value comparisons alone miss re-selecting the same row.
+      const selectionGeneration = getComposerSelectionGeneration()
+      const result = await getGlobalModelInfo(profile)
+
+      if (
+        profileRefreshEpochRef.current !== profileRefreshEpoch ||
+        $activeSessionId.get() ||
+        getComposerSelectionGeneration() !== selectionGeneration ||
+        keepManualPick()
+      ) {
+        return
+      }
+
+      if (typeof result.model === 'string') {
+        setCurrentModel(result.model)
+      }
+
+      if (typeof result.provider === 'string') {
+        setCurrentProvider(result.provider)
+      }
+
+      if (typeof result.model === 'string' || typeof result.provider === 'string') {
+        setCurrentModelSource('default')
+      }
+    } catch {
+      // The delayed session.info event still updates this once the agent is ready.
+    }
+  }, [])
 
   // Returns whether the switch was applied so callers can await it before
   // applying follow-up changes. `true` means applied (or deferred/busy-queued

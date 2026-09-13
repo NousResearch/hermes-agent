@@ -109,3 +109,107 @@ def test_browser_console_supervisor_fast_path_is_fenced_while_human_controls_sha
     assert evaluated == [] and commands == [], "human holds the lease, yet the page was evaluated"
     assert "WHAT-THE-HUMAN-TYPED" not in raw
     assert result.get("code") == "human_has_control"
+
+
+class _RecordingSupervisor:
+    """Records every page access made over the CDP supervisor WebSocket."""
+
+    def __init__(self):
+        self.calls: list = []
+
+    def focus_page(self, origin, *, accept=None, timeout=10.0):
+        self.calls.append(("focus_page", origin))
+        return {"ok": True, "url": "https://example.com/login"}
+
+    def evaluate_runtime(self, expression, **_kw):
+        self.calls.append(("evaluate_runtime", expression))
+        return {"ok": True, "result": "https://example.com/login", "result_type": "string"}
+
+
+def _wire_vault(monkeypatch, sup):
+    """Wire a LOCAL browser session with a recording supervisor, as the vault tools see it."""
+    import tools.browser_supervisor as supervisor_mod
+    from tools import browser_tool as browser
+
+    class FakeRegistry:
+        def get(self, task_id):
+            return sup
+
+        def get_or_start(self, task_id, **kw):
+            return sup
+
+    monkeypatch.setattr(supervisor_mod, "SUPERVISOR_REGISTRY", FakeRegistry())
+    local = {"session_name": "review", "cdp_url": None, "features": {"local": True}}
+    browser._active_sessions["review"] = local
+    return browser, local
+
+
+def test_browser_vault_fill_is_fenced_while_human_controls_shared_browser(monkeypatch):
+    """`browser_vault_fill` writes a password into the page over the CDP supervisor, bypassing
+    `_run_browser_command`, so it must consult the same lease fence: the browser lives on the
+    Bot Desktop screen a human who took over is typing into."""
+    from tools import browser_vault_tool as vault
+
+    sup = _RecordingSupervisor()
+    browser, _ = _wire_vault(monkeypatch, sup)
+    lease.acquire("human-viewer")
+    try:
+        raw = vault.browser_vault_fill("vault_anything", task_id="review")
+    finally:
+        browser._active_sessions.pop("review", None)
+    result = json.loads(raw)
+    assert sup.calls == [], f"human holds the lease, yet a vault fill reached the page: {sup.calls}"
+    assert result.get("code") == "human_has_control", result
+
+
+def test_browser_vault_enter_code_is_fenced_while_human_controls_shared_browser(monkeypatch):
+    """`browser_vault_enter_code` writes an OTP into the page over the supervisor, so it too must
+    refuse while the human holds — the person may be typing the same code the bot is about to write."""
+    from tools import browser_vault_tool as vault
+
+    sup = _RecordingSupervisor()
+    browser, _ = _wire_vault(monkeypatch, sup)
+    lease.acquire("human-viewer")
+    try:
+        raw = vault.browser_vault_enter_code(handle="", task_id="review")
+    finally:
+        browser._active_sessions.pop("review", None)
+    result = json.loads(raw)
+    assert sup.calls == [], f"human holds the lease, yet a vault OTP fill reached the page: {sup.calls}"
+    assert result.get("code") == "human_has_control", result
+
+
+def test_browser_vault_save_login_is_fenced_while_human_controls_shared_browser(monkeypatch):
+    """`browser_vault_save_login` focuses a tab and reads its origin before prompting, so the two
+    unfenced supervisor reads must be refused while the human holds the screen."""
+    from tools import browser_vault_tool as vault
+
+    sup = _RecordingSupervisor()
+    browser, _ = _wire_vault(monkeypatch, sup)
+    lease.acquire("human-viewer")
+    try:
+        raw = vault.browser_vault_save_login(task_id="review")
+    finally:
+        browser._active_sessions.pop("review", None)
+    result = json.loads(raw)
+    assert sup.calls == [], f"human holds the lease, yet a vault save-login read reached the page: {sup.calls}"
+    assert result.get("code") == "human_has_control", result
+
+
+def test_vault_eval_result_crossing_a_takeover_is_discarded(monkeypatch):
+    """A vault page read admitted while the agent held must lose its result if a human takes over
+    mid-call (the same epoch fence that discards a browser command's result)."""
+    from tools import browser_vault_tool as vault
+
+    class TakeoverSupervisor:
+        def evaluate_runtime(self, expression, **_kw):
+            lease.acquire("human-viewer")  # a full takeover mid-read
+            return {"ok": True, "result": "https://example.com/login", "result_type": "string"}
+
+    browser, _ = _wire_vault(monkeypatch, TakeoverSupervisor())
+    try:
+        result = vault._eval_js("review", "window.location.href")
+    finally:
+        browser._active_sessions.pop("review", None)
+    assert result.get("code") == "human_has_control", result
+    assert result.get("success") is False

@@ -43,6 +43,27 @@ def message_fingerprint(msg: Any) -> Optional[str]:
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
 
 
+def _priced_prefix_fingerprint(messages: List[Dict[str, Any]], base_count: int) -> Optional[str]:
+    """Stable digest of the whole provider-priced prefix.
+
+    The last priced message fingerprint proves only that one row survived at
+    ``base_count - 1``. A compaction can preserve that row while rewriting the
+    earlier prefix, so the anchor must also bind to the full priced prefix it
+    represents.
+    """
+    if base_count <= 0 or len(messages) < base_count:
+        return None
+    fps = []
+    for msg in messages[:base_count]:
+        fp = message_fingerprint(msg)
+        if not fp:
+            return None
+        role = msg.get("role") if isinstance(msg, dict) else None
+        fps.append((role, fp))
+    raw = json.dumps(fps, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
+
+
 def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Build a usage anchor from provider-reported usage, or None when usage is unusable."""
     try:
@@ -59,6 +80,7 @@ def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: L
         "base_count": len(messages),
         "base_last_role": last.get("role") if isinstance(last, dict) else None,
         "base_last_fp": message_fingerprint(last),
+        "base_prefix_fp": _priced_prefix_fingerprint(messages, len(messages)),
     }
 
 
@@ -73,7 +95,14 @@ def _anchor_matches(messages: List[Dict[str, Any]], anchor: Dict[str, Any]) -> b
     if not isinstance(base_msg, dict) or base_msg.get("role") != anchor.get("base_last_role"):
         return False
     fp = anchor.get("base_last_fp")
-    return isinstance(fp, str) and bool(fp) and message_fingerprint(base_msg) == fp
+    if not isinstance(fp, str) or not fp or message_fingerprint(base_msg) != fp:
+        return False
+    prefix_fp = anchor.get("base_prefix_fp")
+    return (
+        isinstance(prefix_fp, str)
+        and bool(prefix_fp)
+        and _priced_prefix_fingerprint(messages, base_count) == prefix_fp
+    )
 
 
 def anchored_context_tokens(messages: List[Dict[str, Any]], anchor: Optional[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> Optional[int]:
@@ -101,10 +130,19 @@ def _serialize(anchor: Any) -> Optional[Dict[str, Any]]:
     except (TypeError, ValueError):
         return None
     fp, role = anchor.get("base_last_fp"), anchor.get("base_last_role")
-    if pt <= 0 or base_count <= 0 or not isinstance(fp, str) or not fp:
+    prefix_fp = anchor.get("base_prefix_fp")
+    if (
+        pt <= 0
+        or base_count <= 0
+        or not isinstance(fp, str)
+        or not fp
+        or not isinstance(prefix_fp, str)
+        or not prefix_fp
+    ):
         return None
     return {"prompt_tokens": pt, "completion_tokens": max(0, ct), "base_count": base_count,
-            "base_last_role": role if isinstance(role, str) else None, "base_last_fp": fp}
+            "base_last_role": role if isinstance(role, str) else None, "base_last_fp": fp,
+            "base_prefix_fp": prefix_fp}
 
 
 def persist_usage_anchor(agent: Any, anchor: Optional[Dict[str, Any]]) -> None:

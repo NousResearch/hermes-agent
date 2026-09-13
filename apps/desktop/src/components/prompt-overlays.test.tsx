@@ -115,4 +115,25 @@ describe('PromptOverlays', () => {
     expect(request).not.toHaveBeenCalled()
     expect(notifyError).not.toHaveBeenCalled()
   })
+
+  it('shows the command being authorized in the sudo dialog', () => {
+    $activeSessionId.set('s1')
+    $gateway.set({ request: vi.fn() } as never)
+    setSudoRequest({ command: 'sudo pacman -S task', requestId: 'sudo-2', sessionId: 's1' })
+
+    renderPrompts()
+
+    expect(screen.getByText('sudo pacman -S task')).toBeTruthy()
+  })
+
+  it('falls back to the generic description when no command is present', () => {
+    $activeSessionId.set('s1')
+    $gateway.set({ request: vi.fn() } as never)
+    setSudoRequest({ requestId: 'sudo-3', sessionId: 's1' })
+
+    renderPrompts()
+
+    expect(screen.queryByText('sudo pacman -S task')).toBeNull()
+    expect(screen.getByText(/Hermes needs your sudo password/)).toBeTruthy()
+  })
 })

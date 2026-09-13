@@ -3771,6 +3771,7 @@ export const ru = defineLocale({
     sudoTitle: 'Пароль администратора',
     sudoDesc:
       'Hermes нужен ваш пароль sudo, чтобы выполнить команду с повышенными правами. Он отправляется только вашему локальному агенту.',
+    sudoDescCommand: 'Hermes нужен ваш пароль sudo для запуска:',
     sudoPlaceholder: 'пароль sudo',
     secretTitle: 'Требуется секрет',
     secretDesc: 'Hermes нужны учётные данные, чтобы продолжить.',

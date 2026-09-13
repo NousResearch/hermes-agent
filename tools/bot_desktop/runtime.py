@@ -37,16 +37,34 @@ _DISPLAY_MIN, _DISPLAY_MAX = 20, 89
 
 # Binaries the launcher execs; the package hint is per distro family.
 REQUIRED_BINARIES = ("Xvnc", "xfwm4", "xfce4-panel", "xfdesktop", "xfsettingsd", "dbus-run-session",
-                    "xauth", "xdpyinfo", "setxkbmap")
+                     "xauth", "xdpyinfo", "setxkbmap", "xprop")
+
+# Which package in each distro list ships each required binary. Fedora retired the xorg-x11-utils /
+# xorg-x11-server-utils umbrellas (per-binary packages since F35) and dnf5 refuses the whole transaction on
+# one unknown name, so every binary must map to a package that still resolves; the test suite checks that
+# each mapped package is in PACKAGES for its manager.
+BINARY_PACKAGES = {
+    "apt": {"Xvnc": "tigervnc-standalone-server", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
+            "xfdesktop": "xfdesktop4", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-x11",
+            "xauth": "xauth", "xdpyinfo": "x11-utils", "setxkbmap": "x11-xkb-utils", "xprop": "x11-utils"},
+    "dnf": {"Xvnc": "tigervnc-server-minimal", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
+            "xfdesktop": "xfdesktop", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-x11",
+            "xauth": "xorg-x11-xauth", "xdpyinfo": "xdpyinfo", "setxkbmap": "setxkbmap", "xprop": "xprop"},
+    "pacman": {"Xvnc": "tigervnc", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel", "xfdesktop": "xfdesktop",
+               "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus",
+               "xauth": "xorg-xauth", "xdpyinfo": "xorg-xdpyinfo", "setxkbmap": "xorg-setxkbmap", "xprop": "xorg-xprop"},
+}
 
 PACKAGES = {
     "apt": ["tigervnc-standalone-server", "xfce4-panel", "xfwm4", "xfdesktop4", "xfce4-settings",
-            "xfce4-terminal", "dbus-x11", "x11-xserver-utils", "x11-utils", "xauth", "fonts-dejavu-core"],
+            "xfce4-terminal", "dbus-x11", "x11-xserver-utils", "x11-utils", "x11-xkb-utils", "xauth",
+            "fonts-dejavu-core"],
     "dnf": ["tigervnc-server-minimal", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings",
-            "xfce4-terminal", "dbus-x11", "xorg-x11-server-utils", "xorg-x11-utils", "xorg-x11-xauth",
+            "xfce4-terminal", "dbus-x11", "xsetroot", "xset", "xdpyinfo", "xprop", "xorg-x11-xauth", "setxkbmap",
             "dejavu-sans-fonts"],
-    "pacman": ["tigervnc", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings", "xfce4-terminal",
-               "xorg-xsetroot", "xorg-xset", "xorg-xdpyinfo", "xorg-xauth", "xorg-setxkbmap", "ttf-dejavu"],
+    "pacman": ["tigervnc", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings", "xfce4-terminal", "dbus",
+               "xorg-xsetroot", "xorg-xset", "xorg-xdpyinfo", "xorg-xprop", "xorg-xauth", "xorg-setxkbmap",
+               "ttf-dejavu"],
 }
 
 

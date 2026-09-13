@@ -587,13 +587,14 @@ def _(rid, params: dict) -> dict:
     voice_context = params.get("voice_context")
     session["voice_live_context"] = (
         voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
-    # Structured counterpart for pre_llm_call hooks/plugins (#109455). Distinct from
-    # voice_context above (that's the spoken transcript text on the wire; this is the trusted
-    # input_modality/client_surface signal threaded into agent._turn_voice_context). Threaded as
-    # an explicit per-request argument below (turn_voice_context), like turn_author — NOT stashed
-    # on the shared session dict: a session is mutated on every submit, so a value stored there
-    # would misattribute to whichever turn next reads it (a queued/auto-continue/goal-followup
-    # turn that never went through this handler at all).
+    # Structured counterpart for pre_llm_call hooks/plugins (#109455). Distinct from voice_context
+    # above (that's the spoken transcript text on the wire; this is the structured input_modality/
+    # client_surface signal threaded into agent._turn_voice_context) — and, like `surface` itself
+    # right above, client-declared and unauthenticated, NOT gateway-verified the way turn_author is
+    # (see the 4124 check on _turn_author above). Threaded as an explicit per-request argument below
+    # (turn_voice_context), like turn_author — NOT stashed on the shared session dict: a session is
+    # mutated on every submit, so a value stored there would misattribute to whichever turn next
+    # reads it (a queued/auto-continue/goal-followup turn that never went through this handler at all).
     turn_voice_context = (
         {"input_modality": "voice", "voice_session_active": True, "client_surface": "voice-live"}
         if session["client_surface"] == "voice-live" else None)

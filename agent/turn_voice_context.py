@@ -52,8 +52,9 @@ def parse_voice_context(raw: Any) -> Dict[str, Any]:
     Anything that isn't a mapping, or a mapping asserting nothing (default modality, inactive,
     no surface), normalizes to ``{}`` — falsy, so callers can treat "no signal" and "garbage
     input" identically instead of special-casing either. Every field is normalized defensively
-    (an unhashable ``input_modality`` must not raise) since this can carry data from a client's
-    hook payload, not just Hermes' own trusted call sites."""
+    (an unhashable ``input_modality`` must not raise) since callers span the CLI's own trusted
+    ``voice_input`` flag down to a gateway's client-declared, unauthenticated ``surface`` param —
+    see the module docstring's trust note."""
     if not isinstance(raw, Mapping):
         return {}
     modality = raw.get("input_modality")

@@ -1,4 +1,7 @@
-"""Tests for agent.turn_voice_context: the trusted per-turn voice/input-modality signal (#109455)."""
+"""Tests for agent.turn_voice_context: the per-turn voice/input-modality signal (#109455).
+
+Trust varies by entry point (CLI-trusted vs. gateway client-declared) — see the module
+docstring's trust note; these tests exercise normalization only."""
 
 import pytest
 

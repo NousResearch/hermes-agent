@@ -680,8 +680,9 @@ def _collect_pre_llm_call_context(
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
-            # Trusted per-turn signal (#109455): {} on every non-voice turn, never the
-            # previous turn's value — see build_turn_context's reset-first comment.
+            # Per-turn signal (#109455), trust varies by entry point — see turn_voice_context.py's
+            # trust note: {} on every non-voice turn, never the previous turn's value — see
+            # build_turn_context's reset-first comment.
             voice_context=getattr(agent, "_turn_voice_context", None) or {},
         )
         try:

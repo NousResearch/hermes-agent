@@ -3602,6 +3602,23 @@ def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[floa
     return _coerce_positive_timeout(entry.get("timeout") if entry else None)
 
 
+def _fallback_reasoning_config(task: Optional[str], fb_label: str, primary: Optional[dict], client: Any = None) -> Optional[dict]:
+    """Use the selected fallback route's effort, including main-chain candidates."""
+    entry = _fallback_chain_entry(task, fb_label)
+    attached_effort = getattr(client, "_hermes_fallback_reasoning_effort", None)
+    if entry is None and isinstance(attached_effort, str):
+        entry = {"reasoning_effort": attached_effort}
+    if not isinstance(entry, dict) or "reasoning_effort" not in entry:
+        return primary
+    from hermes_constants import parse_reasoning_effort
+    parsed = parse_reasoning_effort(entry["reasoning_effort"])
+    if parsed is None:
+        logger.warning("Auxiliary %s: %s has invalid fallback reasoning_effort %r; retaining primary setting",
+                       task or "call", fb_label, entry["reasoning_effort"])
+        return primary
+    return parsed
+
+
 def _fallback_provider_from_label(label: str) -> str:
     """Recover the provider identifier from a fallback display label."""
     match = re.match(r"(?:fallback_chain\[\d+\]|fallback_providers\[\d+\]|main-agent)\(([^)]+)\)$", label or "")
@@ -3717,6 +3734,7 @@ def _plan_fallback_candidate(
         task=task, effective_timeout=effective_timeout, fallback_entry=fallback_entry,
         task_config=task_config, apply_fast_lane=apply_fast_lane, **request,
     )
+    common["reasoning_config"] = _fallback_reasoning_config(task, fb_label, request.get("reasoning_config"), fb_client)
 
     def _rebuild(provider: str, client: Any, model: Optional[str]) -> Tuple[_FallbackDestination, Dict[str, Any]]:
         retry_destination = _FallbackDestination(
@@ -4136,6 +4154,9 @@ def _try_main_fallback_chain(
                 continue
             logger.info("Auxiliary %s: %s on %s — main fallback chain to %s (%s)",
                         task or "call", reason, failed_provider or "auto", label, resolved_model or fb_model)
+            # Carry the selected main-chain effort with the concrete candidate; do not
+            # re-read a mutable config when building or retrying this request.
+            fb_client._hermes_fallback_reasoning_effort = entry.get("reasoning_effort")
             return fb_client, resolved_model or fb_model, fb_provider
         tried.append(label)
     if tried:

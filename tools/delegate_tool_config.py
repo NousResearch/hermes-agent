@@ -394,8 +394,10 @@ def _load_config() -> dict:
             cfg = load_config_readonly().get("delegation") or {}
             if isinstance(cfg, dict):
                 return cfg
-        except Exception:
-            pass
+        except Exception as exc:
+            from hermes_cli.model_presets import ModelPresetError
+            if isinstance(exc, ModelPresetError):
+                raise
     try:
         from cli import CLI_CONFIG
         cfg = CLI_CONFIG.get("delegation") or {}

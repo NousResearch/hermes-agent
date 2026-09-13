@@ -21,6 +21,58 @@ This page covers configuring both from the dashboard. If you prefer config files
 On a brand-new install the bundled default config has `model: ""` (an empty string sentinel meaning "not configured yet"). The first time you run `hermes setup` or `hermes model`, that key is upgraded in-place to a mapping with `provider`, `default`, `base_url`, and `api_mode` sub-keys — the shape shown throughout this page and in [`profiles.md`](./profiles.md) / [`configuration.md`](./configuration.md). If you ever see an empty string in `config.yaml`, run `hermes model` (or click **Change** in the dashboard) and Hermes will write the dict form for you.
 :::
 
+## Reusing a named route
+
+`model_presets` gives one provider/model route a name and expands it before Hermes creates a
+main agent, delegated child, auxiliary task, fallback, cron job, gateway session, or MoA slot.
+It does not create a provider identity or share credentials: each expanded route still uses the
+normal credential resolver for its own `provider`.
+
+```yaml
+model_presets:
+  coding:
+    provider: openrouter
+    model: anthropic/claude-sonnet-4.6
+    reasoning_effort: high
+    fallbacks:
+      - provider: openai
+        model: gpt-5.4
+        reasoning_effort: medium
+  quick:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+
+model:
+  model_preset: quick
+delegation:
+  model_preset: coding
+auxiliary:
+  compression:
+    model_preset: quick
+fallback_providers:
+  - model_preset: quick
+moa:
+  presets:
+    compare:
+      reference_models:
+        - model_preset: quick
+      aggregator:
+        model_preset: quick
+```
+
+A preset definition is flat: `provider`, `model`, optional `reasoning_effort`, and optional
+ordered `fallbacks` only. Fallback entries are themselves inline flat routes; presets cannot
+reference other presets or inherit from one another. At a reference site, do not combine
+`model_preset` with inline route fields. The exception is `fallbacks: []`, which explicitly
+turns off a preset's fallback chain for main, delegation, and auxiliary consumers. A main preset
+that declares fallbacks cannot also be combined with a top-level fallback chain. Hermes rejects
+unknown names, malformed definitions, route conflicts, and recursive fallback routes with the
+affected config path. Config writes preserve unchanged references; deliberate route edits stay
+inline instead of restoring a conflicting reference.
+
+MoA slots cannot reference presets declaring fallbacks: this upstream configuration does not
+support per-slot fallback chains. Use a preset without fallbacks for those slots.
+
 ## The Models page
 
 Open the dashboard and click **Models** in the sidebar. You get two sections:

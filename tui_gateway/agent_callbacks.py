@@ -249,15 +249,27 @@ def _apply_personality_to_session(
     return False, info
 
 
-def _cfg_max_turns(cfg: dict, default: int) -> int:
+def _cfg_max_turns(
+    cfg: dict,
+    default: int,
+    *,
+    invalid_default: int | None = None,
+) -> int:
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
-    # Env override wins; resolve_turn_limit makes "none"/"unlimited"/0 first-class spellings.
-    if env_val := os.environ.get("HERMES_TUI_MAX_TURNS"):
-        return _resolve_turn_limit(env_val, default=default)
-    raw = (cfg.get("agent") or {}).get("max_turns")
+    explicit_default = default if invalid_default is None else invalid_default
+    # Env var override (highest priority)
+    env_val = os.environ.get("HERMES_TUI_MAX_TURNS")
+    if env_val:
+        return _resolve_turn_limit(env_val, default=explicit_default)
+    # Config file value — route through resolve_turn_limit so that
+    # "none"/"unlimited"/0 are first-class spellings, not int() crashes.
+    agent_cfg = cfg.get("agent") or {}
+    raw = agent_cfg.get("max_turns")
     if raw is None:
         raw = cfg.get("max_turns")
-    return default if raw is None else _resolve_turn_limit(raw, default=default)
+    if raw is not None:
+        return _resolve_turn_limit(raw, default=explicit_default)
+    return default
 
 
 def _parse_tui_skills_env() -> list[str]:

@@ -1890,10 +1890,19 @@ def _end_run(
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
 ) -> Optional[int]:
     """Close the active run (``status`` defaults to ``outcome``) and clear
-    ``current_run_id``; None when no run was active (never-claimed task)."""
+    ``current_run_id``; None when no run was active (never-claimed task).
+
+    When ``current_run_id`` is NULL (cleared by the zombie reaper or a
+    different session), any orphaned ``task_runs`` rows (status='running',
+    ended_at IS NULL) for this task are closed so they don't linger as
+    stale-worker false alerts (#2863)."""
     now = int(time.time())
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
+        # Close orphaned runs left behind when current_run_id was already
+        # cleared (zombie reaper, cross-session completion, crash recovery).
+        _close_orphaned_runs(conn, task_id, outcome=outcome, status=status, summary=summary,
+                             error=error, metadata=metadata, now=now)
         return None
     conn.execute(
         """
@@ -1913,7 +1922,83 @@ def _end_run(
         (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
+    # Also close any *other* orphaned runs for this task (defensive: there
+    # should be only one active run per task, but a race or crash can leave
+    # extras).
+    _close_orphaned_runs(conn, task_id, outcome=outcome, status=status, summary=summary,
+                         error=error, metadata=metadata, now=now, exclude_run_id=run_id)
     return run_id
+
+
+def _close_orphaned_runs(
+    conn: sqlite3.Connection, task_id: str, *, outcome: str, status: Optional[str] = None,
+    summary: Optional[str] = None, error: Optional[str] = None,
+    metadata: Optional[dict] = None, now: Optional[int] = None,
+    exclude_run_id: Optional[int] = None,
+) -> int:
+    """Close all orphaned ``task_runs`` rows (status='running', ended_at IS
+    NULL) for ``task_id``.  Returns the number of rows closed.
+
+    Used by :func:`_end_run` when ``current_run_id`` is already NULL (the
+    zombie reaper cleared it, or the task is being completed from a different
+    session). Without this, the orphaned row stays ``status='running'``
+    forever and triggers false stale-worker alerts (#2863)."""
+    if now is None:
+        now = int(time.time())
+    sql = """
+        UPDATE task_runs
+           SET status        = ?,
+               outcome       = ?,
+               summary       = ?,
+               error         = ?,
+               metadata      = ?,
+               ended_at      = ?,
+               claim_lock    = NULL,
+               claim_expires = NULL,
+               worker_pid    = NULL
+         WHERE task_id = ?
+           AND status = 'running'
+           AND ended_at IS NULL
+    """
+    params: list = [status or outcome, outcome, summary, error, _json_or_null(metadata),
+                    now, task_id]
+    if exclude_run_id is not None:
+        sql += " AND id != ?"
+        params.append(int(exclude_run_id))
+    cur = conn.execute(sql, params)
+    return cur.rowcount or 0
+
+
+def cleanup_orphaned_task_runs(conn: sqlite3.Connection) -> int:
+    """Close all orphaned ``task_runs`` rows across the entire DB.
+
+    A row is orphaned when its ``status='running'`` and ``ended_at IS NULL``
+    but either (a) the parent task is in a terminal status (``done``,
+    ``failed``, or ``blocked``) or (b) the parent task no longer exists
+    (deleted).  Returns the number of rows closed (#2863)."""
+    now = int(time.time())
+    cur = conn.execute(
+        """
+        UPDATE task_runs
+           SET status        = 'completed',
+               outcome       = 'completed',
+               ended_at      = ?,
+               claim_lock    = NULL,
+               claim_expires = NULL,
+               worker_pid    = NULL
+         WHERE status = 'running'
+           AND ended_at IS NULL
+           AND (
+               task_id IN (
+                   SELECT id FROM tasks
+                    WHERE status IN ('done', 'failed', 'blocked')
+               )
+               OR task_id NOT IN (SELECT id FROM tasks)
+           )
+        """,
+        (now,),
+    )
+    return cur.rowcount or 0
 
 
 def _first_line(text: Optional[str], limit: int) -> str:

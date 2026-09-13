@@ -1656,3 +1656,147 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# #2863 — orphaned task_runs rows when current_run_id is NULL
+# ---------------------------------------------------------------------------
+
+
+def _count_orphaned_runs(conn, task_id):
+    """Count task_runs rows that are status='running' and ended_at IS NULL."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM task_runs WHERE task_id = ? AND status = 'running' AND ended_at IS NULL",
+        (task_id,),
+    ).fetchone()[0]
+
+
+def test_end_run_closes_orphaned_rows_when_current_run_id_is_null(kanban_home):
+    """#2863: When current_run_id is NULL (cleared by zombie reaper or
+    cross-session), _end_run must close orphaned task_runs rows instead of
+    leaving them in status='running' forever."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="orphan-test", assignee="worker")
+        kb.claim_task(conn, t, claimer="host:w1")
+        # Simulate the zombie reaper clearing current_run_id (the run is still
+        # 'running' in task_runs but the tasks.current_run_id is NULL).
+        conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (t,))
+        conn.commit()
+
+        assert _count_orphaned_runs(conn, t) == 1, "precondition: orphaned run exists"
+
+        # complete_task calls _end_run internally — it should close the orphan.
+        kb.complete_task(conn, t, result="done")
+
+        assert _count_orphaned_runs(conn, t) == 0, "orphaned run must be closed"
+        assert kb.get_task(conn, t).status == "done"
+
+
+def test_normal_completion_path_still_works(kanban_home):
+    """#2863: The normal completion path (current_run_id IS set) must still
+    close the active run — no regression."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="normal-complete", assignee="worker")
+        kb.claim_task(conn, t, claimer="host:w1")
+
+        run_id = kb.get_task(conn, t).current_run_id
+        assert run_id is not None, "precondition: active run exists"
+
+        kb.complete_task(conn, t, result="done")
+
+        assert _count_orphaned_runs(conn, t) == 0
+        assert kb.get_task(conn, t).status == "done"
+        # The run should be closed with outcome='completed'
+        row = conn.execute(
+            "SELECT status, outcome, ended_at FROM task_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        assert row["status"] == "done"
+        assert row["outcome"] == "completed"
+        assert row["ended_at"] is not None
+
+
+def test_zombie_reaper_then_completion_leaves_no_orphans(kanban_home):
+    """#2863: Simulate the full zombie-reaper + cross-session completion
+    sequence. A worker dies, the reaper clears current_run_id, then a
+    different session completes the task — no orphaned runs remain."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="zombie-seq", assignee="worker")
+        kb.claim_task(conn, t, claimer="host:dead-worker")
+
+        # The zombie reaper clears current_run_id but does NOT close the
+        # task_runs row (that's the bug — _end_run is supposed to do it).
+        conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (t,))
+        conn.commit()
+
+        assert _count_orphaned_runs(conn, t) == 1
+
+        # A different session completes the task (current_run_id is NULL).
+        kb.complete_task(conn, t, result="completed by different session")
+
+        assert _count_orphaned_runs(conn, t) == 0, (
+            "zombie reaper + completion must leave no orphaned runs"
+        )
+        assert kb.get_task(conn, t).status == "done"
+
+
+def test_close_orphaned_runs_helper_closes_all_matching(kanban_home):
+    """#2863: _close_orphaned_runs closes ALL task_runs rows with
+    status='running' and ended_at IS NULL for a given task_id."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="multi-orphan", assignee="worker")
+        now = int(time.time())
+        # Insert 3 orphaned runs for the same task
+        for _ in range(3):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, started_at) VALUES (?, ?, 'running', ?)",
+                (t, "worker", now),
+            )
+        conn.commit()
+
+        assert _count_orphaned_runs(conn, t) == 3
+
+        closed = kb._close_orphaned_runs(conn, t, outcome="completed", status="done", now=now)
+        assert closed == 3, f"should close 3 orphaned runs, got {closed}"
+        assert _count_orphaned_runs(conn, t) == 0
+
+
+def test_cleanup_orphaned_task_runs_closes_terminal_task_orphans(kanban_home):
+    """#2863: cleanup_orphaned_task_runs closes ALL orphaned runs across the
+    entire DB whose parent task is in terminal status (done/failed/blocked)."""
+    with kbc.connect() as conn:
+        # Task 1: done with orphaned run
+        t1 = kb.create_task(conn, title="done-task", assignee="worker")
+        kb.claim_task(conn, t1, claimer="host:w1")
+        kb.complete_task(conn, t1, result="done")
+        # Manually re-open an orphaned run against the done task
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, started_at) VALUES (?, ?, 'running', ?)",
+            (t1, "worker", now),
+        )
+        conn.commit()
+        assert _count_orphaned_runs(conn, t1) == 1
+
+        # Task 2: blocked with orphaned run
+        t2 = kb.create_task(conn, title="blocked-task", assignee="worker")
+        kb.claim_task(conn, t2, claimer="host:w2")
+        conn.execute("UPDATE tasks SET current_run_id = NULL, status = 'blocked' WHERE id = ?", (t2,))
+        conn.commit()
+        assert _count_orphaned_runs(conn, t2) == 1
+
+        # Run the global cleanup
+        closed = kb.cleanup_orphaned_task_runs(conn)
+        assert closed >= 2, f"should close at least 2 orphaned runs, got {closed}"
+        assert _count_orphaned_runs(conn, t1) == 0
+        assert _count_orphaned_runs(conn, t2) == 0
+
+
+def test_end_run_with_null_current_run_id_and_no_orphans_returns_none(kanban_home):
+    """#2863: When current_run_id is NULL and there are NO orphaned runs,
+    _end_run should still return None (never-claimed task) without error."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="never-claimed", assignee="worker")
+        # No claim, no runs — just complete it directly (ready -> done)
+        kb.complete_task(conn, t, result="done")
+        assert kb.get_task(conn, t).status == "done"
+        assert _count_orphaned_runs(conn, t) == 0

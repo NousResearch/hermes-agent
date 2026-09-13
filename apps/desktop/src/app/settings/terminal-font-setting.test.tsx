@@ -40,7 +40,7 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 vi.mock('../hooks/use-config-record', () => ({
-  setHermesConfigCache: (config: Record<string, unknown>) => mocks.cache(config),
+  hermesConfigCacheWriter: () => (config: Record<string, unknown>) => mocks.cache(config),
   useHermesConfigRecord: () => ({ data: mocks.loadedConfig })
 }))
 

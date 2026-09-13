@@ -31,8 +31,8 @@ export function ScopeChip({ active, label, onSelect }: { active: boolean; label:
  *  (Model, Workspace, Safety, Memory & Context, Voice, Tools & Keys) and the
  *  Messaging overlay. Backed by one nanostore ($settingsScopeOverride) so the
  *  selection persists across pages. Hidden with fewer than two profiles, so
- *  single-profile users never see it and every request keeps its unscoped
- *  default shape. */
+ *  single-profile users never see it; request scope still resolves to their
+ *  concrete active profile. */
 export function SettingsProfileScope({ className }: { className?: string }) {
   const { t } = useI18n()
   const scope = t.settings.profileScope

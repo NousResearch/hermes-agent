@@ -17,6 +17,7 @@ const getGlobalModelOptions = vi.fn()
 const getAuxiliaryModels = vi.fn()
 const getMoaModels = vi.fn()
 const setModelAssignment = vi.fn()
+const setModelAssignmentProfile = vi.fn()
 const getRecommendedDefaultModel = vi.fn()
 const saveMoaModels = vi.fn()
 const setEnvVar = vi.fn()
@@ -34,7 +35,11 @@ vi.mock('@/hermes', () => ({
   getApiRequestProfile: () => 'default',
   getMoaModels: (profile?: null | string) => getMoaModels(profile),
   profileScopeKey: (scope?: null | string) => (scope ?? '').trim() || 'default',
-  setModelAssignment: (body: unknown) => setModelAssignment(body),
+  setModelAssignment: (body: unknown, profile?: null | string) => {
+    setModelAssignmentProfile(profile)
+
+    return setModelAssignment(body)
+  },
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
@@ -44,9 +49,9 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/store/onboarding', () => ({
-  startManualLocalEndpoint: () => startManualLocalEndpoint(),
-  startManualOnboarding: () => startManualOnboarding(),
-  startManualProviderOAuth: (slug: string) => startManualProviderOAuth(slug)
+  startManualLocalEndpoint: (reason?: null | string, profile?: string) => startManualLocalEndpoint(reason, profile),
+  startManualOnboarding: (reason?: null | string, profile?: string) => startManualOnboarding(reason, profile),
+  startManualProviderOAuth: (slug: string, profile?: string) => startManualProviderOAuth(slug, profile)
 }))
 
 vi.mock('../hooks/use-on-profile-switch', () => ({
@@ -86,7 +91,10 @@ afterEach(() => {
   profileSwitchHandler = null
 })
 
-async function renderModelSettings(scopeProfile?: string) {
+async function renderModelSettings(
+  scopeProfile?: string,
+  options: { onMainModelChanged?: (provider: string, model: string) => void; scopeOverridden?: boolean } = {}
+) {
   const { ModelSettings } = await import('./model-settings')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
@@ -95,17 +103,18 @@ async function renderModelSettings(scopeProfile?: string) {
     // needs a router context in tests (the app provides HashRouter at root).
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ModelSettings scopeProfile={scopeProfile} />
+        <ModelSettings
+          onMainModelChanged={options.onMainModelChanged}
+          scopeOverridden={options.scopeOverridden}
+          scopeProfile={scopeProfile}
+        />
       </QueryClientProvider>
     </MemoryRouter>
   )
 }
 
 describe('ModelSettings profile scope', () => {
-  // #90549: the API helpers treat `null` as "deliberately target the
-  // primary/default profile". A page following the active profile must pass
-  // `undefined`, or every read repaints the primary's model and the user's
-  // change looks reverted.
+  // Direct callers may omit scope, while ConfigSettings passes a concrete one.
   it('follows the active profile (undefined, never null) when unscoped', async () => {
     await renderModelSettings()
 
@@ -122,6 +131,33 @@ describe('ModelSettings profile scope', () => {
     expect(getGlobalModelOptions).toHaveBeenCalledWith(undefined, 'research')
     expect(getAuxiliaryModels).toHaveBeenCalledWith('research')
     expect(getMoaModels).toHaveBeenCalledWith('research')
+  })
+
+  it('writes the main model through the explicit scope override', async () => {
+    const onMainModelChanged = vi.fn()
+    await renderModelSettings('research', { onMainModelChanged, scopeOverridden: true })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'hermes-4',
+        provider: 'nous',
+        scope: 'main'
+      })
+    )
+    expect(setModelAssignmentProfile).toHaveBeenCalledWith('research')
+    expect(onMainModelChanged).not.toHaveBeenCalled()
+  })
+
+  it('keeps active-profile side effects when request routing is concrete', async () => {
+    const onMainModelChanged = vi.fn()
+    await renderModelSettings('default', { onMainModelChanged })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => expect(onMainModelChanged).toHaveBeenCalledWith('nous', 'hermes-4'))
+    expect(setModelAssignmentProfile).toHaveBeenCalledWith('default')
   })
 })
 
@@ -147,7 +183,7 @@ describe('ModelSettings', () => {
       getGlobalModelInfo.mockResolvedValueOnce({ provider, model: '' })
       getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
 
-      await renderModelSettings()
+      await renderModelSettings('profile-b')
 
       const providerSelect = (await screen.findAllByRole('combobox'))[0]
 
@@ -157,7 +193,7 @@ describe('ModelSettings', () => {
 
       fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
 
-      expect(startManualLocalEndpoint).toHaveBeenCalledOnce()
+      expect(startManualLocalEndpoint).toHaveBeenCalledWith(null, 'profile-b')
       expect(startManualOnboarding).not.toHaveBeenCalled()
       expect(startManualProviderOAuth).not.toHaveBeenCalled()
     }
@@ -167,11 +203,11 @@ describe('ModelSettings', () => {
     getGlobalModelInfo.mockResolvedValueOnce({ provider: 'retired-provider', model: '' })
     getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
 
-    await renderModelSettings()
+    await renderModelSettings('profile-b')
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
 
-    expect(startManualOnboarding).toHaveBeenCalledOnce()
+    expect(startManualOnboarding).toHaveBeenCalledWith(null, 'profile-b')
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualProviderOAuth).not.toHaveBeenCalled()
   })
@@ -190,11 +226,11 @@ describe('ModelSettings', () => {
       ]
     })
 
-    await renderModelSettings()
+    await renderModelSettings('profile-b')
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set up Anthropic' }))
 
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic')
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic', 'profile-b')
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualOnboarding).not.toHaveBeenCalled()
   })

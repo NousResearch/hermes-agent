@@ -35,9 +35,8 @@ const credentialElementId = (key: string) => `credential-key-${key}`
 export function KeysSettings({ view }: KeysSettingsProps) {
   const { t } = useI18n()
   // Shared settings "Applies to" scope: fetch + edit the selected profile's
-  // env store instead of the active one (undefined → active, the default
-  // path — request-shaped so the API helpers never see a primary-targeting
-  // null).
+  // env store without relying on ambient active-profile state. Resolve the
+  // request concretely so API routing and caches cannot drift from the UI.
   const scopeProfile = useStore($settingsRequestProfile)
   const { rowProps, vars } = useEnvCredentials(scopeProfile)
   const [openKey, setOpenKey] = useState<null | string>(null)

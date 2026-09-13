@@ -794,7 +794,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         # Slash commands are text-only; a prompt with media goes to the agent even if it starts with "/".
         if text_only_prompt and isinstance(user_content, str) and user_text.startswith("/"):
-            response_text = self._handle_slash_command(user_text, state)
+            # Off the loop: /model validates through switch_model (network I/O) and /compress
+            # calls the LLM; handlers are sync and hold no loop-bound state.
+            response_text = await asyncio.to_thread(self._handle_slash_command, user_text, state)
             if response_text is not None:
                 if self._conn:
                     await self._conn.session_update(session_id, acp.update_agent_message_text(response_text))
@@ -936,7 +938,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         """Switch the model for a session (called by ACP protocol)."""
         state = self.session_manager.get_session(session_id)
         if state:
-            _old, requested_provider, resolved_model = self._switch_model(state, model_id, keep_endpoint=True)
+            # switch_model() does synchronous network I/O (models.dev, custom-endpoint probes,
+            # ~10 s cold) — off the loop, like the gateway, so other ACP sessions keep flowing.
+            _old, requested_provider, resolved_model = await asyncio.to_thread(
+                self._switch_model, state, model_id, keep_endpoint=True)
             logger.info(
                 "Session %s: model switched to %s via provider %s", session_id, resolved_model, requested_provider
             )

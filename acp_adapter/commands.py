@@ -95,7 +95,7 @@ class SlashCommandsMixin:
             return None
         handler = getattr(self, f"_cmd_{cmd}")
 
-        # Handlers run on the loop thread, outside the per-turn cwd-pinning context. ``/compress``
+        # Handlers run outside the per-turn cwd-pinning context. ``/compress``
         # and ``/model`` REBUILD the system prompt, so unpinned they'd bake the Hermes install tree
         # into the persisted cached prompt. Pin inside a fresh context: no leak, no teardown.
         def _dispatch() -> str | None:

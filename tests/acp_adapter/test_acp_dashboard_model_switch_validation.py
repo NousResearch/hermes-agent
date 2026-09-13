@@ -69,3 +69,30 @@ def test_acp_explicit_provider_prefix_becomes_explicit_provider(monkeypatch):
     assert (seen["explicit_provider"], seen["raw_input"]) == ("anthropic", "claude-sonnet-5")
     assert (old, new_provider, model) == ("anthropic", "anthropic", "claude-sonnet-5")
     assert made["requested_provider"] == "anthropic" and made["base_url"] == "https://api.anthropic.com"
+
+
+def test_acp_set_session_model_runs_switch_model_off_the_event_loop(monkeypatch):
+    """``switch_model`` does ~10 s of sync network I/O on a cold cache; ACP must run it on a
+    worker thread (like the gateway) or every session in the process stalls."""
+    import asyncio
+    import threading
+
+    seen: dict = {}
+
+    def _switch(**kw):
+        seen["thread"] = threading.current_thread()
+        return ModelSwitchResult(success=True, new_model=kw["raw_input"], target_provider="anthropic")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+    agent, _made = _acp_agent()
+    state = _state()
+    agent.session_manager.get_session = lambda sid: state
+
+    async def _run():
+        loop_thread = threading.current_thread()
+        resp = await agent.set_session_model("anthropic:claude-sonnet-5", "s1")
+        return resp, loop_thread
+
+    resp, loop_thread = asyncio.run(_run())
+    assert resp is not None and state.model == "claude-sonnet-5"
+    assert seen["thread"] is not loop_thread

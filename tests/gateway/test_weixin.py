@@ -193,6 +193,20 @@ class TestWeixinStatePersistence:
         assert all(tid != loop_thread for tid in write_threads)
 
     @pytest.mark.asyncio
+    async def test_context_token_file_written_with_owner_only_mode(self, tmp_path):
+        """context_token entries are as credential-like as the account token
+        save_weixin_account() already writes at 0600 (the WeChat context_token
+        must be echoed on every outbound reply) — the sidecar file must not be
+        left group/world-readable via the process umask."""
+        store = ContextTokenStore(str(tmp_path))
+
+        await store.set("acct-1", "user-1", "ctx-token-abc")
+
+        path = tmp_path / "weixin" / "accounts" / "acct-1.context-tokens.json"
+        assert path.exists()
+        assert (path.stat().st_mode & 0o777) == 0o600
+
+    @pytest.mark.asyncio
     async def test_concurrent_context_token_persists_land_in_order(self, tmp_path):
         """Two in-flight set() calls (two concurrent inbound messages) must not
         let an older snapshot overwrite a newer one on disk. Without

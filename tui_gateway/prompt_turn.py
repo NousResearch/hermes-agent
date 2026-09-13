@@ -798,11 +798,26 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None,
+    pre_model_admission: Callable[[], bool] | None = None) -> bool:
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
         return False
     images, agent = admitted
+    # A native source commits only after normal admission has reserved this
+    # session's host slot, but before logging, transcript, prompt-cache, or model
+    # effects.  False/exception leaves the ordinary user path untouched.
+    if pre_model_admission is not None:
+        try:
+            accepted = pre_model_admission() is True
+        except Exception:
+            logger.warning("Native turn pre-model admission failed", exc_info=True)
+            accepted = False
+        if not accepted:
+            with session["history_lock"]:
+                session["running"] = False
+                _clear_inflight_turn(session)
+            return False
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()

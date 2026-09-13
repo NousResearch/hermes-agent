@@ -3448,9 +3448,81 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             lambda: self._drain_process_notifications("cli-idle"),
             self._maybe_fire_loop_tick,
             self._maybe_resume_parked_goal,
+            self._maybe_start_native_turn,
         ):
             with suppress(Exception):
                 step()
+
+    def _native_session_view(self):
+        """Immutable exact identity/ownership snapshot for the CLI session."""
+        from hermes_constants import get_hermes_home
+        from hermes_cli.native_turn_sources import NativeSessionView
+        from hermes_cli.profiles import get_active_profile_name
+
+        session_id = str(getattr(self.agent, "session_id", "") or "")
+        lineage = (session_id,)
+        db = getattr(self.agent, "session_db", None)
+        getter = getattr(db, "get_compression_lineage", None)
+        if callable(getter):
+            with suppress(Exception):
+                lineage = tuple(getter(session_id)) or lineage
+        lease = getattr(self, "_active_session_lease", None)
+        return NativeSessionView(
+            profile=get_active_profile_name(),
+            profile_home=get_hermes_home(),
+            session_id=session_id,
+            surface="cli",
+            compression_lineage=lineage,
+            session_key=session_id,
+            owner_token=str(getattr(lease, "lease_id", "") or "") or None,
+        )
+
+    def _fence_native_turn_sources(self, reason: str) -> None:
+        """Synchronously cancel source events before a CLI session boundary."""
+        from hermes_cli.native_turn_sources import fence_native_turn_sources
+
+        if getattr(self, "_active_session_lease", None) is not None and getattr(self, "agent", None):
+            fence_native_turn_sources(self._native_session_view(), reason)
+
+    def _maybe_start_native_turn(self) -> bool:
+        """Poll and admit one native lease through the ordinary CLI turn path."""
+        from hermes_cli.native_turn_sources import poll_native_turn
+
+        if (
+            self._agent_running
+            or self._should_exit
+            or getattr(self, "_active_session_lease", None) is None
+            or not self._pending_input.empty()
+            or not self._interrupt_queue.empty()
+        ):
+            return False
+        view = self._native_session_view()
+        admission = poll_native_turn(view)
+        if admission is None:
+            return False
+        # Reserve the host slot before the pre-model commit.  Recheck human
+        # queues after reservation because poll is an external call.
+        self._agent_running = True
+        if (
+            self._should_exit
+            or not self._pending_input.empty()
+            or not self._interrupt_queue.empty()
+            or self._native_session_view() != view
+        ):
+            self._agent_running = False
+            admission.abort_if_open("not_sent", "CLI session became busy or changed before host admission")
+            return False
+        if not admission.commit():
+            self._agent_running = False
+            return False
+        try:
+            self._tui_process_one_input(admission.lease.prompt)
+        finally:
+            # The ordinary chat path normally clears this.  This backstop is
+            # only for an exception before that path's own finally block.
+            if self._agent_running:
+                self._agent_running = False
+        return True
 
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
@@ -3939,6 +4011,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
     def _tui_shutdown(self):
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         self._should_exit = True
+        with suppress(Exception):
+            self._fence_native_turn_sources("user_exit")
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):

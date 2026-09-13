@@ -286,6 +286,16 @@ class PluginContext:
             config_mod.read_user_config_raw()
             config_mod.save_config(partial, preserve_keys={full_path}, merge_existing=True)
 
+    def list_profile_homes(self) -> tuple[tuple[str, Path], ...]:
+        """Read-only discovery of existing profile names and canonical homes.
+
+        This intentionally returns identities only: no profile config or secrets
+        are loaded, and no profile is created as a side effect.
+        """
+        from hermes_cli.profiles import get_profile_dir, list_profile_names
+
+        return tuple((name, get_profile_dir(name).resolve()) for name in list_profile_names())
+
     @cached_property
     def state(self) -> PluginState:
         """This plugin's profile-scoped durable JSON state facade."""
@@ -455,6 +465,44 @@ class PluginContext:
         # Duplicate names are rejected above, so there is never a displaced previous entry to restore;
         # tracking makes unload/force-reload remove this transport.
         self._track_mapping_entry("approval_transport", clean, transports, entry, None)
+
+    def register_native_turn_source(
+        self, source: Any, *, surfaces: tuple[str, ...] | list[str]
+    ) -> PluginRegistration:
+        """Register a profile-scoped producer of host-admitted native turns.
+
+        The source only sees immutable session facts and returns an opaque lease;
+        product-specific scheduling and receipt policy stay in the plugin.  The
+        registration is removed automatically on unload/force reload.
+        """
+        from hermes_cli.native_turn_sources import (
+            RegisteredNativeTurnSource,
+            normalize_surfaces,
+            register_profile_source,
+            source_name,
+        )
+
+        name = source_name(source)
+        clean_surfaces = normalize_surfaces(surfaces)
+        if name in self._manager._native_turn_sources:
+            owner = self._manager._native_turn_sources[name].plugin_id
+            raise ValueError(
+                f"native turn source {name!r} is already registered by {owner!r}"
+            )
+        entry = RegisteredNativeTurnSource(
+            source=source, surfaces=clean_surfaces, plugin_id=self.plugin_id
+        )
+        unregister_profile = register_profile_source(self._manager.scope_key, entry)
+        self._manager._native_turn_sources[name] = entry
+
+        def release() -> None:
+            self._manager._restore_mapping(
+                self._manager._native_turn_sources, name, entry, None
+            )
+            unregister_profile()
+
+        logger.debug("Plugin %s registered native turn source: %s", self.manifest.name, name)
+        return self._track("native_turn_source", name, release)
 
     @_serialized_replacement
     def register_tool(
@@ -687,16 +735,38 @@ class PluginContext:
         return self._register_entry("command", clean, self._manager._plugin_commands, entry,
                                     "Plugin %s registered command: /%s", clean)
 
-    def dispatch_tool(self, tool_name: str, args: dict, **kwargs) -> str:
-        """Dispatch a tool call through the registry with the parent agent (when available)
-        resolved automatically; returns the handler's JSON string. ``kwargs`` forward to dispatch."""
-        from tools.registry import registry
+    def dispatch_tool(
+        self, tool_name: str, args: dict, *, profile_home: str | Path | None = None, **kwargs
+    ) -> str | dict:
+        """Dispatch through the host registry, optionally in an explicit profile scope.
+
+        ``profile_home`` is for cross-profile administrative inspection by a
+        trusted plugin. It changes only the task-local Hermes home while the
+        handler runs; it never mutates process environment or plugin enablement.
+        """
+        from hermes_constants import (
+            hermes_home_key,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from tools.registry import discover_builtin_tools, registry
+        # Standalone plugin CLI commands run before an agent exists. Ensure the
+        # same built-in registry is available there so dispatch_tool is a real
+        # supported path rather than an agent-startup side effect.
+        discover_builtin_tools()
         # In gateway mode _cli_ref is None — tools degrade gracefully (no spinner, TERMINAL_CWD).
         if "parent_agent" not in kwargs:
             agent = getattr(self._manager._cli_ref, "agent", None)
             if agent is not None:
                 kwargs["parent_agent"] = agent
-        return registry.dispatch(tool_name, args, scope=self._manager.scope_key, **kwargs)
+        if profile_home is None:
+            return registry.dispatch(tool_name, args, scope=self._manager.scope_key, **kwargs)
+        home = Path(profile_home).expanduser().resolve()
+        token = set_hermes_home_override(home)
+        try:
+            return registry.dispatch(tool_name, args, scope=hermes_home_key(home), **kwargs)
+        finally:
+            reset_hermes_home_override(token)
 
     @_serialized_replacement
     def register_context_engine(self, engine) -> Optional[PluginRegistration]:
@@ -1150,6 +1220,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
         self._approval_transports: Dict[str, Any] = {}
+        self._native_turn_sources: Dict[str, Any] = {}
         self._slack_action_handlers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
         # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps

@@ -491,6 +491,7 @@ class CLISessionMixin:
         from cli import (
             CLI_CONFIG, _parse_reasoning_config, _parse_service_tier_config,
             _sync_process_session_id, datetime)
+        getattr(self, "_fence_native_turn_sources")("new_session")
         old_session_id = self.session_id
         _boundary_snapshot = None
         if self.agent:

@@ -122,6 +122,9 @@ class TestHandleReasoningCommand(unittest.TestCase):
             _resumed=False,
             reasoning_config={"enabled": True, "effort": "high"},
             _notify_session_boundary=MagicMock(),
+            _fence_native_turn_sources=MagicMock(
+                side_effect=lambda _reason: self.assertEqual(stub.session_id, "old-session")
+            ),
         )
 
         with patch.dict(CLI_CONFIG.setdefault("agent", {}), {"reasoning_effort": "medium"}):
@@ -130,6 +133,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
         self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "medium"})
         self.assertEqual(agent.reasoning_config, {"enabled": True, "effort": "medium"})
         agent.reset_session_state.assert_called_once()
+        stub._fence_native_turn_sources.assert_called_once_with("new_session")
 
     def test_new_session_resets_service_tier_and_model_from_config(self):
         """/new re-derives service tier and model from config.yaml — session
@@ -150,6 +154,9 @@ class TestHandleReasoningCommand(unittest.TestCase):
             _resumed=False,
             reasoning_config=None,
             _notify_session_boundary=MagicMock(),
+            _fence_native_turn_sources=MagicMock(
+                side_effect=lambda _reason: self.assertEqual(stub.session_id, "old-session")
+            ),
             # Session had switched to fast + a session-only model.
             service_tier="priority",
             _pending_one_turn_model_restore={"model": "stale"},
@@ -187,6 +194,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
         # Model reset to the config default via the live agent swap.
         self.assertEqual(stub.model, "config-default-model")
         agent.switch_model.assert_called_once()
+        stub._fence_native_turn_sources.assert_called_once_with("new_session")
 
 
 # ---------------------------------------------------------------------------

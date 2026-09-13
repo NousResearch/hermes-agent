@@ -13,6 +13,7 @@ import contextlib
 import json
 from pathlib import Path
 import logging
+import math
 import os
 import random
 import threading
@@ -168,6 +169,82 @@ def _resolve_concurrent_tool_timeout() -> float | None:
         default=_DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
         env_var="HERMES_CONCURRENT_TOOL_TIMEOUT_S",
     )
+
+
+def _valid_explicit_concurrent_timeout(config: dict) -> bool:
+    """Whether the generic resolver has a valid explicit config/env winner."""
+    timeouts = config.get("timeouts") if isinstance(config, dict) else None
+    tools = timeouts.get("tools") if isinstance(timeouts, dict) else None
+    raw = tools.get("concurrent_batch") if isinstance(tools, dict) else None
+    if raw is not None and not isinstance(raw, bool):
+        try:
+            value = float(raw)
+            if value == value:  # Match resolve_timeout's config validation (NaN falls through).
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    env_raw = os.getenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "").strip()
+    if env_raw:
+        try:
+            float(env_raw)
+            return True
+        except ValueError:
+            pass
+    return False
+
+
+def _resolve_concurrent_batch_timeout(parsed_calls) -> float | None:
+    """Extend the default batch deadline for unambiguous configured A2A peer calls."""
+    timeout_s = _resolve_concurrent_tool_timeout()
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+    except Exception:
+        return timeout_s
+    if not isinstance(config, dict) or _valid_explicit_concurrent_timeout(config):
+        return timeout_s
+
+    peers = config.get("a2a_agents")
+    if not isinstance(peers, dict):
+        return timeout_s
+
+    peer_timeouts = []
+    target_keys = {"agent", "agent_name", "name"}
+    argument_aliases = {"agent_name", "name", "text", "task", "contextId"}
+    for call in parsed_calls:
+        if (
+            call.parse_error is not None
+            or call.name != "a2a_call"
+            or getattr(getattr(call.tool_call, "function", None), "name", None) != "a2a_call"
+            or target_keys.intersection(call.args) != {"agent"}
+            or argument_aliases.intersection(call.args)
+        ):
+            continue
+        target = call.args.get("agent")
+        message = call.args.get("message")
+        if not isinstance(target, str) or not isinstance(message, str) or not message.strip():
+            continue
+        target = target.strip()
+        if not target or target.startswith(("http://", "https://")):
+            continue
+        peer = peers.get(target)
+        if not isinstance(peer, dict) or isinstance(peer.get("timeout"), bool):
+            continue
+        peer_url = peer.get("url")
+        if not isinstance(peer_url, str) or not peer_url.strip().startswith(("http://", "https://")):
+            continue
+        try:
+            peer_timeout = float(peer["timeout"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if peer_timeout > 0 and math.isfinite(peer_timeout):
+            peer_timeouts.append(peer_timeout)
+
+    if timeout_s is None or not peer_timeouts:
+        return timeout_s
+    return max(timeout_s, max(peer_timeouts))
 
 
 def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) -> bool:
@@ -1427,7 +1504,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
 
     # Resolved before the batch is built so the start-order gate can clamp under the deadline.
-    timeout_s = _resolve_concurrent_tool_timeout()
+    timeout_s = _resolve_concurrent_batch_timeout(parsed_calls)
     batch = _ConcurrentBatch(agent, messages, effective_task_id, parsed_calls, timeout_s)
     agent._current_tool = tool_names_str
     agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")

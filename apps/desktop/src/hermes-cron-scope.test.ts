@@ -104,4 +104,37 @@ describe('cron helpers are profile-scoped', () => {
     void getCronJobs()
     expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs')
   })
+
+  // Contract: mutations and run-history target ONE per-profile store. The
+  // list aggregator stamps each job's owning profile; passing it here as
+  // ?profile= makes the backend resolve the right store instead of the
+  // caller's ambient profile. Without it, a cross-profile view 404'd on
+  // trigger ("Job not found") and run history read the wrong store (empty).
+  it('threads an explicit job profile into the endpoint query for runs and mutations', () => {
+    const path = () => api.mock.calls.at(-1)?.[0].path
+
+    void getCronJobRuns('job-1', 20, 'tommy')
+    expect(path()).toBe('/api/cron/jobs/job-1/runs?profile=tommy&limit=20')
+
+    void triggerCronJob('job-1', 'tommy')
+    expect(path()).toBe('/api/cron/jobs/job-1/trigger?profile=tommy')
+
+    void pauseCronJob('job-1', 'tommy')
+    expect(path()).toBe('/api/cron/jobs/job-1/pause?profile=tommy')
+
+    void resumeCronJob('job-1', 'tommy')
+    expect(path()).toBe('/api/cron/jobs/job-1/resume?profile=tommy')
+
+    void updateCronJob('job-1', { enabled: false } as never, 'tommy')
+    expect(path()).toBe('/api/cron/jobs/job-1?profile=tommy')
+
+    void deleteCronJob('job-1', 'tommy')
+    expect(path()).toBe('/api/cron/jobs/job-1?profile=tommy')
+
+    // Omitting the job profile keeps the legacy ambient-profile path.
+    void getCronJobRuns('job-1')
+    expect(path()).toBe('/api/cron/jobs/job-1/runs?limit=20')
+    void triggerCronJob('job-1')
+    expect(path()).toBe('/api/cron/jobs/job-1/trigger')
+  })
 })

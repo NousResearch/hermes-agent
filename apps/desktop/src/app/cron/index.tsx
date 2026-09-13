@@ -467,7 +467,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       const isPaused = jobState(job) === 'paused'
 
       const { refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
-        isPaused ? resumeCronJob(job.id) : pauseCronJob(job.id)
+        isPaused ? resumeCronJob(job.id, job.profile) : pauseCronJob(job.id, job.profile)
       )
 
       if (stale) {
@@ -502,7 +502,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     try {
       const run = await controller.run(
         key,
-        () => triggerAndRefreshCronJobs(job.id, viewProfile),
+        () => triggerAndRefreshCronJobs(job.id, viewProfile, job.profile),
         () => notify({ kind: 'info', title: c.triggerNow, message: truncate(jobTitle(job), 60) })
       )
 
@@ -539,7 +539,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       return
     }
 
-    const { refreshError, stale } = await mutateAndRefreshCronJobs(profile, () => deleteCronJob(pendingDelete.id))
+    const { refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
+      deleteCronJob(pendingDelete.id, pendingDelete.profile)
+    )
 
     if (stale) {
       return
@@ -585,7 +587,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         refreshError,
         stale
       } = await mutateAndRefreshCronJobs(profile, () =>
-        updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }))
+        updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }), editor.job.profile)
       )
 
       if (stale || !updated) {
@@ -841,7 +843,7 @@ function CronJobDetail({
         </section>
       ) : null}
 
-      <CronJobRuns c={c} jobId={job.id} onOpenSession={onOpenSession} />
+      <CronJobRuns c={c} jobId={job.id} jobProfile={job.profile} onOpenSession={onOpenSession} />
     </PanelDetail>
   )
 }
@@ -866,10 +868,12 @@ const RUNS_BACKSTOP_INTERVAL_MS = 60_000
 function CronJobRuns({
   c,
   jobId,
+  jobProfile,
   onOpenSession
 }: {
   c: Translations['cron']
   jobId: string
+  jobProfile?: string
   onOpenSession?: (sessionId: string) => void
 }) {
   const [runs, setRuns] = useState<null | SessionInfo[]>(null)
@@ -880,7 +884,7 @@ function CronJobRuns({
     let cancelled = false
 
     const load = () =>
-      getCronJobRuns(jobId)
+      getCronJobRuns(jobId, undefined, jobProfile)
         .then(result => {
           if (!cancelled) {
             setRuns(result)
@@ -917,7 +921,7 @@ function CronJobRuns({
       document.removeEventListener('visibilitychange', onVisible)
     }
     // cronChangeTick: a fired run moves jobs.json bookkeeping → reload now.
-  }, [changeEventsAvailable, cronChangeTick, jobId])
+  }, [changeEventsAvailable, cronChangeTick, jobId, jobProfile])
 
   return (
     <div>

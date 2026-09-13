@@ -23,6 +23,7 @@ import {
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,
+  stripPathOpenAnnotations,
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
@@ -725,6 +726,48 @@ test('resolveRequestedPathForIpc expands ~ to the home directory', () => {
   assert.equal(
     resolveRequestedPathForIpc('~other/secret', { baseDir: os.tmpdir(), purpose: 'Directory read' }),
     path.resolve(os.tmpdir(), '~other/secret')
+  )
+})
+
+// #95713: chat markdown / @url: wrappers must not leak into the OS open path.
+test('stripPathOpenAnnotations drops wrapping markdown and @url: wrappers', () => {
+  assert.equal(stripPathOpenAnnotations('**xyz.pdf**'), 'xyz.pdf')
+  assert.equal(stripPathOpenAnnotations('__xyz.pdf__'), 'xyz.pdf')
+  assert.equal(stripPathOpenAnnotations('C:/docs/xyz.pdf**'), 'C:/docs/xyz.pdf')
+  assert.equal(stripPathOpenAnnotations('@url:`C:/docs/xyz.pdf`'), 'C:/docs/xyz.pdf')
+  assert.equal(stripPathOpenAnnotations('@url:C:/docs/xyz.pdf'), 'C:/docs/xyz.pdf')
+  assert.equal(stripPathOpenAnnotations('report**final.pdf'), 'report**final.pdf')
+  // Dunder directories/modules are real paths, not markdown underline.
+  assert.equal(stripPathOpenAnnotations('__pycache__'), '__pycache__')
+  assert.equal(stripPathOpenAnnotations('__init__'), '__init__')
+  assert.equal(stripPathOpenAnnotations('xyz.pdf__'), 'xyz.pdf')
+  assert.equal(stripPathOpenAnnotations('file:///C:/docs/xyz.pdf**'), 'file:///C:/docs/xyz.pdf')
+  assert.equal(stripPathOpenAnnotations(''), '')
+})
+
+test('resolveRequestedPathForIpc strips markdown wrappers before resolving (#95713)', () => {
+  const baseDir = path.join(os.tmpdir(), 'hermes-desktop-md-open')
+  const clean = resolveRequestedPathForIpc('xyz.pdf', { baseDir, purpose: 'Open external file' })
+
+  assert.equal(
+    resolveRequestedPathForIpc('**xyz.pdf**', { baseDir, purpose: 'Open external file' }),
+    clean
+  )
+  assert.equal(
+    resolveRequestedPathForIpc('xyz.pdf**', { baseDir, purpose: 'Open external file' }),
+    clean
+  )
+
+  const abs = path.join(baseDir, 'xyz.pdf')
+  const dirtyUrl = `${pathToFileURL(abs).toString()}**`
+  assert.equal(
+    resolveRequestedPathForIpc(dirtyUrl, { purpose: 'Open external file' }),
+    path.resolve(abs)
+  )
+
+  assert.throws(
+    () => resolveRequestedPathForIpc(['not', 'a', 'path'] as unknown as string, { purpose: 'Open external file' }),
+    /file path is required/
   )
 })
 

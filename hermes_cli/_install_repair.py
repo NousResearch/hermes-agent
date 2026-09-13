@@ -30,7 +30,12 @@ def _is_termux_env(env: dict | None = None) -> bool:
     """Stdlib Termux probe (hermes_cli.main's version lives behind imports)."""
     env = env if env is not None else os.environ
     try:
-        return bool(env.get("TERMUX_VERSION")) or "com.termux" in env.get("PREFIX", "")
+        if bool(env.get("TERMUX_VERSION")) or "com.termux" in env.get("PREFIX", ""):
+            return True
+        uts = os.uname()
+        return ("PRoot" in uts.release or "PRoot" in uts.version) and os.path.isdir(
+            "/data/data/com.termux"
+        )
     except Exception:
         return False
 

@@ -756,6 +756,15 @@ def _phantom_sibling(container: dict, part: str) -> Optional[str]:
     return next((k for k in container if isinstance(k, str) and k.startswith(prefix)), None)
 
 
+def _numeric_segment(part: str) -> bool:
+    """True when *part* addresses a list index (``0``, ``12``) rather than a mapping key.
+
+    Negative indices are deliberately excluded: ``-1`` in a config path is far more likely a
+    literal key name than an intent to write to the last element.
+    """
+    return isinstance(part, str) and part.isdigit()
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at a dotted key path, creating intermediate dicts on demand.
     Numeric segments index lists; the index must already exist (lists are never grown).
@@ -768,6 +777,13 @@ def _set_nested(config, dotted_key: str, value):
     so ``models.grok-4.6.supports_vision`` lands on the real ``grok-4.6`` entry. And when a write WOULD
     create a new intermediate mapping that shadows an existing dotted sibling (``grok-4`` beside
     ``grok-4.5``), it raises ``ValueError`` instead of silently writing a phantom the runtime never reads.
+
+    Numeric segments against a NON-list container raise ``ValueError`` rather than creating a mapping keyed
+    by the literal string ``"0"``. Such a mapping round-trips through YAML and reads back as a successful
+    write, but list-typed consumers only accept a real list -- e.g. ``moa_config._reference_slots`` wraps a
+    mapping as a single slot, so an edited MoA preset silently reverted to its built-in default model while
+    the CLI reported success. Lists are never grown implicitly, so an out-of-range index is also a loud
+    ``ValueError`` instead of an ``IndexError`` traceback.
     """
     parts = _split_key_path(dotted_key)
     current = config
@@ -777,15 +793,21 @@ def _set_nested(config, dotted_key: str, value):
         at_leaf = len(remaining) == 1
         if isinstance(current, list):
             part = remaining[0]
+            if not _numeric_segment(part):
+                raise ValueError(
+                    f"Cannot navigate into list at key {dotted_key!r}: segment {part!r} is not a "
+                    f"list index. Use a 0-based number (e.g. 0, 1) to address a list entry.")
+            index = int(part)
+            if index >= len(current):
+                raise ValueError(
+                    f"Index {index} is out of range in {dotted_key!r}: the list has "
+                    f"{len(current)} entr{'y' if len(current) == 1 else 'ies'} "
+                    f"(valid indices 0..{len(current) - 1}). Lists are never grown implicitly — set "
+                    f"the whole list at once by passing a JSON array as the value.")
             if at_leaf:
-                current[int(part)] = value
+                current[index] = value
                 return
-            try:
-                current = current[int(part)]
-            except (TypeError, ValueError):
-                raise TypeError(
-                    f"Cannot navigate into list at key {dotted_key!r}: "
-                    f"segment {part!r} is not a numeric index")
+            current = current[index]
             i += 1
         elif isinstance(current, dict):
             match = _greedy_literal_match(current, remaining)
@@ -801,6 +823,15 @@ def _set_nested(config, dotted_key: str, value):
                 i += consumed
                 continue
             part = remaining[0]
+            if _numeric_segment(part):
+                # A numeric segment addresses a list, but this container is a mapping. Writing it as
+                # the string key "0" looks like a successful write and is then ignored by every
+                # list-typed consumer, so refuse instead of corrupting the section silently.
+                raise ValueError(
+                    f"Cannot use numeric index {part!r} in {dotted_key!r}: the value at this position "
+                    f"is {'missing' if not current else 'a mapping, not a list'}. Set the whole list at "
+                    f"once by passing a JSON array as the value, e.g. "
+                    f"hermes config set <key> '[{{\"provider\": \"...\", \"model\": \"...\"}}]'.")
             if at_leaf:
                 current[part] = value
                 return

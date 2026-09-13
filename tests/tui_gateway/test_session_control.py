@@ -113,6 +113,8 @@ def _save_goal(key, **overrides):
         "status": "active",
         "turns_used": 3,
         "max_turns": 12,
+        "total_turns_used": 15,
+        "max_total_turns": 36,
         "created_at": 100.0,
         "last_turn_at": 200.0,
     }
@@ -194,6 +196,9 @@ class TestStructuredRead:
 
         goal = _control(server, sid)["goal"]
         assert goal["title"] == "Finish the desktop control card"
+        assert goal["turns_used"] == 3
+        assert goal["total_turns_used"] == 15
+        assert goal["max_total_turns"] == 36
         assert goal["contract"] == contract.to_dict()
         assert goal["subgoals"] == ["Keep command routing narrow", "Document event hydration seam"]
         assert goal["gates"] == [{

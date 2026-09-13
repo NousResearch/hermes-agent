@@ -21,13 +21,21 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     return cli_obj
 
 
-def _attach_goal(cli_obj, *, active: bool, turns_used: int = 3, max_turns: int = 20):
+def _attach_goal(
+    cli_obj, *, active: bool, turns_used: int = 3, max_turns: int = 20,
+    total_turns_used: int | None = None, max_total_turns: int | None = None,
+):
     """Bind a fake GoalManager the way _get_goal_manager caches one."""
     cli_obj.session_id = "sess-goal-test"
     cli_obj._goal_manager = SimpleNamespace(
         session_id="sess-goal-test",
         is_active=lambda: active,
-        state=SimpleNamespace(turns_used=turns_used, max_turns=max_turns),
+        state=SimpleNamespace(
+            turns_used=turns_used,
+            max_turns=max_turns,
+            total_turns_used=turns_used if total_turns_used is None else total_turns_used,
+            max_total_turns=max_turns if max_total_turns is None else max_total_turns,
+        ),
     )
     return cli_obj
 
@@ -42,6 +50,16 @@ class TestStatusBarGoalSegment:
         assert snapshot["goal_turns_used"] == 3
         assert snapshot["goal_max_turns"] == 20
         assert cli_obj._status_bar_goal_segment(snapshot) == "⊙ goal 3/20"
+
+    def test_goal_segment_shows_cumulative_cap_across_windows(self):
+        cli_obj = _attach_goal(
+            _make_cli(), active=True, turns_used=3, max_turns=20,
+            total_turns_used=23, max_total_turns=100,
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert cli_obj._status_bar_goal_segment(snapshot) == "⊙ goal 3/20 · 23/100 total"
 
 
     def test_goal_segment_absent_when_paused(self):
@@ -74,4 +92,3 @@ class TestStatusBarGoalSegment:
         text = cli_obj._build_status_bar_text(width=50)
 
         assert "⊙ goal" in text
-

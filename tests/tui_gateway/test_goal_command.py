@@ -482,7 +482,9 @@ def test_goal_draft_uses_session_profile_without_blocking_rpc_reader(
     sid, key, record = session
     secondary = tmp_path / "secondary"
     secondary.mkdir()
-    (secondary / "config.yaml").write_text("goals:\n  max_turns: 37\n", encoding="utf-8")
+    (secondary / "config.yaml").write_text(
+        "goals:\n  max_turns: 37\n  max_total_turns: 111\n", encoding="utf-8"
+    )
     record["profile_home"] = str(secondary)
     started, release, returned, replied = (threading.Event() for _ in range(4))
     observed, frames = [], []
@@ -525,6 +527,7 @@ def test_goal_draft_uses_session_profile_without_blocking_rpc_reader(
     with server._session_profile_runtime_scope(record):
         state = goals.load_goal(key)
         assert state.goal == "profile objective"
-        assert state.max_turns == 37 and state.contract.verification == "tests pass"
+        assert state.max_turns == 37 and state.max_total_turns == 111
+        assert state.contract.verification == "tests pass"
     result = next(frame["result"] for frame in frames if frame.get("id") == "draft")
     assert result["type"] == "send" and result["message"] == state.goal

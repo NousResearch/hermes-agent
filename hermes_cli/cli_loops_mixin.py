@@ -325,16 +325,20 @@ class CLILoopsMixin:
     def _get_goal_manager(self):
         """GoalManager bound to the current session_id (see ``_session_bound_manager``)."""
         def load():
-            from hermes_cli.goals import GoalManager
+            from hermes_cli.goals import GoalManager, goal_budget_limits
             from hermes_cli.config import load_config
 
             def make(sid):
                 try:
                     goals_cfg = (load_config() or {}).get("goals") or {}
-                    max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+                    max_turns, max_total_turns = goal_budget_limits(goals_cfg)
                 except Exception:
                     max_turns = 20
-                return GoalManager(session_id=sid, default_max_turns=max_turns)
+                    max_total_turns = 0
+                return GoalManager(
+                    session_id=sid, default_max_turns=max_turns,
+                    default_max_total_turns=max_total_turns,
+                )
             return make
         return self._session_bound_manager("_goal_manager", "goal manager", load)
 

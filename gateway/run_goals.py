@@ -27,9 +27,12 @@ class GatewayGoalsMixin:
     """Goal/heartbeat continuation, post-turn hooks and loop-wakeup watcher methods for GatewayRunner."""
 
     # ── /goal — persistent cross-turn goals (Ralph-style loop) ──────────
-    def _goal_max_turns_from_config(self) -> int:
-        """Configured /goal turn budget. GatewayRunner.config is a GatewayConfig dataclass, so the
-        top-level ``goals`` block is only reachable via hermes_cli.config.load_config()."""
+    def _goal_budget_limits_from_config(self) -> tuple[int, int]:
+        """Configured /goal window and cumulative cap.
+
+        GatewayRunner.config is a GatewayConfig dataclass, so the top-level ``goals`` block may
+        only be reachable via hermes_cli.config.load_config().
+        """
         try:
             goals_cfg = (
                 (self.config or {}).get("goals", {})
@@ -40,9 +43,11 @@ class GatewayGoalsMixin:
                 from hermes_cli.config import load_config
 
                 goals_cfg = (load_config() or {}).get("goals") or {}
-            return int(goals_cfg.get("max_turns", 20) or 20)
+            from hermes_cli.goals import goal_budget_limits
+
+            return goal_budget_limits(goals_cfg)
         except Exception:
-            return 20
+            return 20, 0
 
     async def _warm_goals_session_db(self, label: str) -> None:
         """Warm the goals SessionDB cache off-loop (best-effort): a cold cache runs the state.db
@@ -86,8 +91,11 @@ class GatewayGoalsMixin:
         """Return ``(GoalManager, session_entry)`` for this event, or ``(None, None)``."""
         def _load():
             from hermes_cli.goals import GoalManager
-            max_turns = self._goal_max_turns_from_config()
-            return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
+            max_turns, max_total_turns = self._goal_budget_limits_from_config()
+            return lambda sid: GoalManager(
+                session_id=sid, default_max_turns=max_turns,
+                default_max_total_turns=max_total_turns,
+            )
         return await self._manager_for_event(event, "goal", _load)
 
     async def _get_heartbeat_manager_for_event(self, event: "MessageEvent"):
@@ -266,8 +274,11 @@ class GatewayGoalsMixin:
         continuation through the adapter FIFO so a simultaneous real user message takes priority."""
         def _load():
             from hermes_cli.goals import GoalManager
-            max_turns = self._goal_max_turns_from_config()
-            return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
+            max_turns, max_total_turns = self._goal_budget_limits_from_config()
+            return lambda sid: GoalManager(
+                session_id=sid, default_max_turns=max_turns,
+                default_max_total_turns=max_total_turns,
+            )
 
         mgr = await self._post_turn_manager(session_entry, "goal continuation", "goals", _load)
         if mgr is None or not mgr.is_active():

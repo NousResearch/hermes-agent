@@ -1202,10 +1202,15 @@ When a standing goal is active, Hermes judges whether each assistant response sa
 
 ```yaml
 goals:
-  max_turns: 20   # Max continuation turns before Hermes auto-pauses the goal (default: 20)
+  max_turns: 20         # Turns per continuation window (default: 20)
+  max_total_turns: 0    # Cumulative cap for progress extensions; 0 disables them
 ```
 
-`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](/user-guide/features/goals) for the full feature.
+At a window boundary, an explicitly larger `max_total_turns` lets Hermes grant another window only
+when a fail-closed evidence review verifies meaningful progress. Completion ends the goal; stalled,
+blocked, and failed reviews pause it. Cumulative usage remains visible and cannot exceed the approved
+cap. Leaving the cap at `0` preserves the historical pause-and-`/goal resume` behavior. See
+[Goals](/user-guide/features/goals) for the full feature.
 
 ### API Timeouts
 

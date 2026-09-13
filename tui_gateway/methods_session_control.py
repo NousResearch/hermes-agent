@@ -54,6 +54,8 @@ def _safe_goal_snapshot(state) -> dict | None:
         "status": state.status,
         "turns_used": state.turns_used,
         "max_turns": state.max_turns,
+        "total_turns_used": state.total_turns_used,
+        "max_total_turns": state.max_total_turns,
         "contract": state.contract.to_dict(),
         "subgoals": list(state.subgoals),
         "gates": [

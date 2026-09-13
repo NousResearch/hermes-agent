@@ -1292,11 +1292,15 @@ DEFAULT_CONFIG = {
     "prefill_messages_file": "",
     # Goals — persistent cross-turn /goal loop: after each turn an aux-model judge checks if the
     # goal is satisfied, else a continuation prompt re-enters the session until done, budget
-    # exhausted, or paused. Judge failures fail OPEN; the budget is the backstop.
+    # exhausted, or paused. Per-turn judge failures fail OPEN; checkpoint reviews fail closed.
     "goals": {
         # Max continuation turns before auto-pause (/goal resume) — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,
+        # Optional cumulative cap for progress-based budget extensions. Zero keeps the historical
+        # pause-at-max_turns behavior; setting a larger value explicitly approves automatic spend
+        # up to that total when checkpoint review verifies meaningful progress.
+        "max_total_turns": 0,
     },
     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
     # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially

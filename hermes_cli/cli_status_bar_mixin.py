@@ -230,7 +230,9 @@ class CLIStatusBarMixin:
             "git_branch": "",
             "goal_active": False,
             "goal_turns_used": 0,
-            "goal_max_turns": 0}
+            "goal_max_turns": 0,
+            "goal_total_turns_used": 0,
+            "goal_max_total_turns": 0}
 
         try:
             from hermes_cli.focus_view import focus_statusbar_segment
@@ -290,6 +292,10 @@ class CLIStatusBarMixin:
                 snapshot["goal_active"] = True
                 snapshot["goal_turns_used"] = int(getattr(goal_state, "turns_used", 0) or 0)
                 snapshot["goal_max_turns"] = int(getattr(goal_state, "max_turns", 0) or 0)
+                snapshot["goal_total_turns_used"] = int(
+                    getattr(goal_state, "total_turns_used", snapshot["goal_turns_used"]) or 0)
+                snapshot["goal_max_total_turns"] = int(
+                    getattr(goal_state, "max_total_turns", snapshot["goal_max_turns"]) or 0)
         except Exception:
             pass
 
@@ -979,7 +985,12 @@ class CLIStatusBarMixin:
             return ""
         used = snapshot.get("goal_turns_used") or 0
         max_turns = snapshot.get("goal_max_turns") or 0
-        return f"⊙ goal {used}/{max_turns}" if max_turns else "⊙ goal"
+        if not max_turns:
+            return "⊙ goal"
+        total = snapshot.get("goal_total_turns_used") or used
+        max_total = snapshot.get("goal_max_total_turns") or max_turns
+        cumulative = f" · {total}/{max_total} total" if max_total > max_turns or total != used else ""
+        return f"⊙ goal {used}/{max_turns}{cumulative}"
 
     def _get_status_bar_field_set(self) -> Optional[frozenset]:
         """Visible status-bar fields from ``display.status_bar.fields`` (module-level

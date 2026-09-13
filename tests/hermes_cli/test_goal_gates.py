@@ -242,6 +242,25 @@ def test_gate_continuation_respects_turn_budget():
     assert "turns used" in decision["message"]
 
 
+def test_progress_review_cannot_complete_a_goal_with_a_failing_gate():
+    mgr = GoalManager(
+        session_id="gate-review-done-sid", default_max_turns=1,
+        default_max_total_turns=2,
+    )
+    mgr.set("gated goal")
+    mgr.add_gate("exit 1")
+    with patch("hermes_cli.goals.workspace_fingerprint", return_value=""), \
+         patch(
+             "hermes_cli.goals.review_goal_progress",
+             return_value=("done", "looks complete", False),
+         ):
+        decision = mgr.evaluate_after_turn("claimed completion")
+
+    assert decision["status"] == "paused"
+    assert decision["verdict"] == "stalled"
+    assert "quality gate is still failing" in decision["reason"]
+
+
 def test_no_gates_behaves_exactly_as_before():
     mgr = _mgr_with_goal("gate-none-sid")
     with patch(

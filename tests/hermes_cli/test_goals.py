@@ -137,6 +137,122 @@ class TestGoalManager:
         assert "port goal command to hermes" in prompt
         assert prompt.strip()  # non-empty
 
+    def test_progress_checkpoint_extends_within_cumulative_cap(self, hermes_home):
+        """A positive review grants another window in the same persisted goal, never past cap."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        mgr = GoalManager(
+            session_id="progress-cap-sid", default_max_turns=2,
+            default_max_total_turns=5,
+        )
+        mgr.set("ship the feature", contract=GoalContract(verification="focused tests pass"))
+        mgr.add_subgoal("preserve the public API")
+
+        with patch.object(
+            goals, "judge_goal",
+            return_value=("continue", "work remains", False, None, False),
+        ), patch.object(
+            goals, "review_goal_progress",
+            side_effect=[
+                ("progress", "implementation advanced", False),
+                ("progress", "tests now pass", False),
+            ],
+        ) as review:
+            mgr.evaluate_after_turn("implemented the first half")
+            first_extension = mgr.evaluate_after_turn("implemented the second half")
+
+            assert first_extension["status"] == "active"
+            assert first_extension["should_continue"] is True
+            assert "extended by 2 turns" in first_extension["message"]
+            assert mgr.state.turns_used == 0
+            assert mgr.state.total_turns_used == 2
+
+            # State, criteria and cumulative accounting survive a manager reload in the same
+            # session; no /goal resume or new goal is involved.
+            mgr = GoalManager("progress-cap-sid")
+            assert mgr.state.goal == "ship the feature"
+            assert mgr.state.contract.verification == "focused tests pass"
+            assert mgr.state.subgoals == ["preserve the public API"]
+            assert "2/5 total" in mgr.status_line()
+
+            mgr.evaluate_after_turn("added focused tests")
+            final_extension = mgr.evaluate_after_turn("focused tests pass")
+            assert "extended by 1 turn" in final_extension["message"]
+            assert mgr.state.total_turns_used == 4
+
+            capped = mgr.evaluate_after_turn("one more incomplete step")
+
+        assert review.call_count == 2
+        assert capped["status"] == "paused"
+        assert capped["should_continue"] is False
+        assert mgr.state.total_turns_used == 5
+        assert "overall cap reached" in (mgr.state.paused_reason or "")
+        assert "5/5 total" in capped["message"]
+        mgr.resume()
+        assert mgr.state.turns_used == 0
+        assert mgr.state.total_turns_used == 5
+        assert mgr.state.max_total_turns == 7
+
+    @pytest.mark.parametrize(
+        ("review_result", "expected_status", "expected_verdict"),
+        [
+            (("done", "verification is concrete", False), "done", "done"),
+            (("stalled", "only repeated the same plan", False), "paused", "stalled"),
+            (("blocked", "needs a user credential", False), "paused", "blocked"),
+            (("stalled", "progress reviewer unavailable", True), "paused", "continue"),
+        ],
+    )
+    def test_budget_review_outcomes_fail_closed(
+        self, hermes_home, review_result, expected_status, expected_verdict,
+    ):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager("review-outcome-sid", default_max_turns=1, default_max_total_turns=2)
+        mgr.set("finish the task")
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "not done", False, None, False),
+        ), patch.object(goals, "review_goal_progress", return_value=review_result):
+            decision = mgr.evaluate_after_turn("recent evidence")
+
+        assert decision["status"] == expected_status
+        assert decision["verdict"] == expected_verdict
+        assert decision["should_continue"] is False
+        if expected_status == "paused":
+            assert review_result[1] in (mgr.state.paused_reason or "")
+
+
+def test_progress_review_uses_recent_evidence_and_completion_criteria():
+    from hermes_cli import goals
+    from hermes_cli.goals import GoalContract, GoalState
+
+    captured = {}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return MagicMock(choices=[MagicMock(message=MagicMock(content=(
+            '{"verdict": "progress", "reason": "tests advanced"}'
+        )))])
+
+    state = GoalState(
+        goal="ship it",
+        total_turns_used=20,
+        max_total_turns=60,
+        contract=GoalContract(verification="focused tests pass"),
+        subgoals=["preserve API"],
+        recent_progress_evidence=["implemented parser", "two focused tests now pass"],
+    )
+    with patch("agent.auxiliary_client.call_llm", side_effect=fake_call_llm):
+        verdict, reason, failed = goals.review_goal_progress(state)
+
+    assert (verdict, reason, failed) == ("progress", "tests advanced", False)
+    prompt = captured["messages"][1]["content"]
+    assert "focused tests pass" in prompt
+    assert "preserve API" in prompt
+    assert "implemented parser" in prompt
+    assert "two focused tests now pass" in prompt
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Smoke: CommandDef is wired
@@ -675,6 +791,8 @@ class TestGoalContractSerialization:
         state = GoalState.from_json(legacy)
         assert state.goal == "old goal"
         assert state.turns_used == 2
+        assert state.total_turns_used == 2
+        assert state.max_total_turns == state.max_turns
         assert state.contract.is_empty()
         assert not state.has_contract()
 

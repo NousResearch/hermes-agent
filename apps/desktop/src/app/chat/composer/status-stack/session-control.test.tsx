@@ -73,10 +73,12 @@ const sampleGoal = (overrides?: Partial<SessionControlGoal>): SessionControlGoal
     }
   ],
   max_turns: 20,
+  max_total_turns: 100,
   status: 'active',
   subgoals: ['First criterion', 'Second criterion'],
   title: 'Execute complete work order',
   turns_used: 3,
+  total_turns_used: 23,
   ...overrides
 })
 
@@ -306,11 +308,9 @@ describe('ComposerStatusStack session-control UI', () => {
 
     renderStack(SID, { onSubmit })
 
-    const menuTrigger = screen.getByRole('button', { name: /goal actions/i })
-    fireEvent.click(menuTrigger)
+    fireEvent.click(screen.getByRole('button', { name: /resume goal/i }))
 
-    const resumeItem = await screen.findByRole('menuitem', { name: /resume goal/i })
-    fireEvent.click(resumeItem)
+    expect(mockRunSessionControlAction).toHaveBeenCalledWith(SID, 'goal.resume', undefined)
 
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledWith('Continue toward goal: verify tests', {

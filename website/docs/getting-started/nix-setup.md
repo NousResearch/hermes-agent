@@ -346,6 +346,7 @@ Quick reference for the most common things Nix users want to customize:
 | Enable Discord/Telegram/Slack | `extraDependencyGroups` | `[ "messaging" ]` |
 | Mount host directories into container | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
 | Pass GPU access to container | `container.extraOptions` | `[ "--gpus" "all" ]` |
+| Use a bridge network instead of host | `container.network` / `container.publish` | `network = "hermes"; publish = [ "127.0.0.1:8642:8642" ];` |
 | Use Podman instead of Docker | `container.backend` | `"podman"` |
 | Share state between host CLI and container | `container.hostUsers` | `[ "sidbin" ]` |
 | Make extra tools available to the agent | `extraPackages` | `[ pkgs.pandoc pkgs.imagemagick ]` |
@@ -533,7 +534,7 @@ sudo -u hermes HERMES_HOME=/var/lib/hermes/.hermes \
   hermes mcp add my-oauth-server --url https://mcp.example.com/mcp --auth oauth
 ```
 
-The container uses `--network=host`, so the OAuth callback listener on `127.0.0.1` is reachable from the host browser.
+The default `container.network = "host"` makes the OAuth callback on `127.0.0.1` reachable from the host browser. On `bridge` or a named network, publish the callback port (or use Option B).
 
 **Option B: Pre-seed tokens** — complete the flow on a workstation, then copy tokens:
 
@@ -734,7 +735,7 @@ The Nix-built binary works inside the Ubuntu container because `/nix/store` is b
 | Volume/options change | **Yes** | Persists | Persists | **Lost** |
 | `environment`/`environmentFiles` change | No | Persists | Persists | Persists |
 
-The container is only recreated when its **identity hash** changes. The hash covers: schema version, image, `extraVolumes`, `extraOptions`, and the entrypoint script. Changes to environment variables, settings, documents, or the hermes package itself do **not** trigger recreation.
+The container is only recreated when its **identity hash** changes. The hash covers: schema version, image, `extraVolumes`, `extraOptions`, `network`, `publish`, and the entrypoint script. Changes to environment variables, settings, documents, or the hermes package itself do **not** trigger recreation.
 
 :::warning Writable layer loss
 When the identity hash changes (image upgrade, new volumes, new container options), the container is destroyed and recreated from a fresh pull of `container.image`. Any `apt install`, `pip install`, or `npm install` packages in the writable layer are lost. State in `/data` and `/home/hermes` is preserved (these are bind mounts).
@@ -1084,7 +1085,9 @@ replacement.
 | `container.backend` | `enum ["docker" "podman"]` | `"docker"` | Container runtime |
 | `container.image` | `str` | `"ubuntu:24.04"` | Base image (pulled at runtime) |
 | `container.extraVolumes` | `listOf str` | `[]` | Extra volume mounts (`host:container:mode`) |
-| `container.extraOptions` | `listOf str` | `[]` | Extra args passed to `docker create` |
+| `container.extraOptions` | `listOf str` | `[]` | Extra args passed to `docker create`. Do **not** pass `--network` here. |
+| `container.network` | `str` | `"host"` | Single `--network`: `"host"` (default), `"bridge"`, `"none"`, or a user-defined name (created if missing). |
+| `container.publish` | `listOf str` | `[]` | `--publish` entries (`ip:host:container`). Ignored when `network` is `"host"`. |
 | `container.hostUsers` | `listOf str` | `[]` | Interactive users who get a `~/.hermes` symlink to the service stateDir and are auto-added to the `hermes` group |
 
 ---

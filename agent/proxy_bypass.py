@@ -26,11 +26,12 @@ def first_proxy_env_value() -> str:
 
 
 def split_host_port(value: str) -> tuple[str, int | None]:
-    """``(host, port)`` from a URL, ``[v6]:port``, ``host:port`` or bare host; host lowercased."""
+    """``(host, port)`` from a URL (scheme optional: ``//host/path``), ``[v6]:port``,
+    ``host:port`` or bare host; host lowercased."""
     raw = str(value or "").strip()
     if not raw:
         return "", None
-    if "://" in raw:
+    if "://" in raw or raw.startswith("//"):
         parsed = urlsplit(raw)
         host, port = parsed.hostname or "", parsed.port
     elif raw.startswith("[") and "]" in raw:

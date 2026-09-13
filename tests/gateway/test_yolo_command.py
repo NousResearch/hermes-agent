@@ -80,6 +80,7 @@ async def test_yolo_command_toggles_only_current_session(monkeypatch):
     [
         ("group", None, False, False),
         ("thread", "topic-1", True, False),
+        ("thread", "topic-1", False, True),
     ],
 )
 async def test_shared_session_cannot_enable_yolo_for_another_sender(

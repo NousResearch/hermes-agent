@@ -647,7 +647,7 @@ def is_session_principal_isolated(
     if not _canonical_participant(source):
         return False
     thread_id = source.thread_id or source.prospective_thread_id
-    return thread_sessions_per_user if thread_id else group_sessions_per_user
+    return bool(group_sessions_per_user and not (thread_id and not thread_sessions_per_user))
 
 
 def _session_key_namespace(profile: Optional[str]) -> str:

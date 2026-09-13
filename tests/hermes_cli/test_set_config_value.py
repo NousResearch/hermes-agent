@@ -475,6 +475,34 @@ class TestSchemaValidation:
 
 
 
+    def test_agent_reasoning_effort_is_accepted(self, _isolated_hermes_home, capsys):
+        """The main agent's effort level is read by
+        ``hermes_constants.resolve_reasoning_config`` and written by
+        ``/reasoning --global`` + the TUI/desktop, so it is part of the schema
+        and must not be reported as an unrecognized key."""
+        set_config_value("agent.reasoning_effort", "high")
+        assert "not a recognized config key" not in capsys.readouterr().out
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["agent"]["reasoning_effort"] == "high"
+
+        # The runtime's other accepted spellings keep working: the disable aliases, the
+        # empty "unset" sentinel, and the null sentinel of the null-defaulted sibling leaf.
+        for value in ("none", "disabled", ""):
+            set_config_value("agent.reasoning_effort", value)
+        set_config_value("x_search.reasoning_effort", "null")
+
+    def test_invalid_reasoning_effort_value_is_rejected(self, _isolated_hermes_home, capsys):
+        """A typo'd level fails loudly instead of being saved: the key validates, but the
+        runtime would silently ignore the value and keep the default."""
+        with pytest.raises(SystemExit):
+            set_config_value("agent.reasoning_effort", "ultra-turbo")
+
+        err = capsys.readouterr().err
+        assert "ultra-turbo" in err
+        assert "xhigh" in err  # the message spells out the ladder
+        assert "reasoning_effort" not in _read_config(_isolated_hermes_home)
+
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
         """``--force`` writes unknown keys without the notice (scripted
         forward-compat writes)."""

@@ -15,6 +15,7 @@ an action admitted under one lease can tell that control changed underneath it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -28,6 +29,8 @@ try:
     import fcntl
 except ImportError:  # Windows/macOS without fcntl: computer_use imports this module on every call, and no
     fcntl = None     # multi-process Bot Desktop exists there, so the cross-process lock degrades to a no-op.
+
+logger = logging.getLogger(__name__)
 
 AGENT = "agent"
 HUMAN = "human"
@@ -170,6 +173,9 @@ def release(viewer_id: Optional[str] = None, *, profile_key: Optional[str] = Non
     closing its window must not yank control from the one who took over after it)."""
     def _m(lease: Lease) -> bool:
         if viewer_id is not None and lease.holder == HUMAN and lease.viewer_id != viewer_id:
+            # Ignored, not an error: the returned lease still shows the real holder. Logged so a
+            # caller that never inspects the return value leaves a trace.
+            logger.info("bot-desktop lease: release by %r ignored, another viewer holds", viewer_id)
             return False
         lease.holder, lease.viewer_id, lease.since, lease.reason = AGENT, None, time.time(), ""
         lease.pending_handoff = None  # "hand back" answers an open request even if nobody formally took over

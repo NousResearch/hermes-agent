@@ -121,6 +121,8 @@ class _BoundedPipeReader:
         self._thread.start()
 
     def join(self, timeout: float) -> None:
+        if self._thread.ident is None:
+            return
         self._thread.join(timeout)
         if self._thread.is_alive():
             try:
@@ -189,8 +191,12 @@ class AntigravityWorker:
         self._max_output_bytes = int(max_output_bytes)
         self._run_lock = threading.Lock()
         self._state_lock = threading.Lock()
+        self._cleanup_lock = threading.Lock()
         self._cancel_event = threading.Event()
         self._process: subprocess.Popen[bytes] | None = None
+        self._stdout_reader: _BoundedPipeReader | None = None
+        self._stderr_reader: _BoundedPipeReader | None = None
+        self._workspace: Path | None = None
         self._closed = False
 
     def run(
@@ -235,13 +241,37 @@ class AntigravityWorker:
                 if self._closed:
                     return self._failure(started, "closed", "worker is closed")
                 self._cancel_event.clear()
-            return self._run_locked(
-                started,
-                prompt_bytes,
-                output_schema,
-                schema_bytes,
-                on_process_started,
-            )
+            try:
+                result = self._run_locked(
+                    started,
+                    prompt_bytes,
+                    output_schema,
+                    schema_bytes,
+                    on_process_started,
+                )
+            except Exception:
+                result = self._failure(
+                    started,
+                    "worker_error",
+                    "Antigravity worker failed",
+                )
+            with self._state_lock:
+                teardown_unconfirmed = any(
+                    resource is not None
+                    for resource in (
+                        self._process,
+                        self._stdout_reader,
+                        self._stderr_reader,
+                        self._workspace,
+                    )
+                )
+            if teardown_unconfirmed:
+                return self._failure(
+                    started,
+                    "teardown_unconfirmed",
+                    "Antigravity process teardown unconfirmed",
+                )
+            return result
         finally:
             self._run_lock.release()
 
@@ -250,14 +280,27 @@ class AntigravityWorker:
         self._cancel_event.set()
         with self._state_lock:
             process = self._process
-        if process is not None and process.poll() is None:
-            self._signal_process_group(process, signal.SIGTERM)
+        if process is None:
+            return
+        try:
+            process_running = process.poll() is None
+            if process_running:
+                self._signal_process_group(process, signal.SIGTERM)
+        except Exception:
+            raise RuntimeError(
+                "Antigravity process cancellation could not be confirmed"
+            ) from None
 
     def close(self) -> None:
         """Permanently close this worker and cancel its active run."""
         with self._state_lock:
             self._closed = True
-        self.cancel()
+        try:
+            self.cancel()
+        except Exception:
+            pass
+        if not self._retry_cleanup_resources():
+            raise RuntimeError("Antigravity process teardown unconfirmed") from None
 
     def _run_locked(
         self,
@@ -267,12 +310,15 @@ class AntigravityWorker:
         schema_bytes: bytes | None,
         on_process_started: Callable[[], None] | None,
     ) -> AntigravityResult:
-        workspace = Path(tempfile.mkdtemp(prefix="hermes-antigravity-"))
-        os.chmod(workspace, 0o700)
+        workspace: Path | None = None
         process: subprocess.Popen[bytes] | None = None
         stdout_reader: _BoundedPipeReader | None = None
         stderr_reader: _BoundedPipeReader | None = None
         try:
+            workspace = Path(tempfile.mkdtemp(prefix="hermes-antigravity-"))
+            with self._state_lock:
+                self._workspace = workspace
+            os.chmod(workspace, 0o700)
             argv = [
                 self._command,
                 "--print",
@@ -297,20 +343,23 @@ class AntigravityWorker:
                 os.chmod(schema_path, 0o600)
                 argv.extend(("--json-schema", str(schema_path)))
 
-            try:
-                process = subprocess.Popen(
-                    argv,
-                    cwd=workspace,
-                    env=self._child_env(),
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    start_new_session=True,
-                )
-            except (OSError, ValueError):
-                return self._failure(started, "spawn_error", "could not start agy")
-
             with self._state_lock:
+                if self._closed or self._cancel_event.is_set():
+                    return self._failure(
+                        started, "cancelled", "Antigravity run was cancelled"
+                    )
+                try:
+                    process = subprocess.Popen(
+                        argv,
+                        cwd=workspace,
+                        env=self._child_env(),
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        start_new_session=True,
+                    )
+                except (OSError, ValueError):
+                    return self._failure(started, "spawn_error", "could not start agy")
                 self._process = process
             if on_process_started is not None:
                 try:
@@ -328,6 +377,9 @@ class AntigravityWorker:
             assert process.stderr is not None
             stdout_reader = _BoundedPipeReader(process.stdout, self._max_output_bytes)
             stderr_reader = _BoundedPipeReader(process.stderr, self._max_output_bytes)
+            with self._state_lock:
+                self._stdout_reader = stdout_reader
+                self._stderr_reader = stderr_reader
             stdout_reader.start()
             stderr_reader.start()
             stdin_writer = threading.Thread(
@@ -392,16 +444,71 @@ class AntigravityWorker:
                 started, stdout_reader.data, process.returncode, output_schema
             )
         finally:
-            if process is not None and process.poll() is None:
-                self._terminate_and_drain(process)
-            if stdout_reader is not None:
-                stdout_reader.join(0.2)
-            if stderr_reader is not None:
-                stderr_reader.join(0.2)
+            self._retry_cleanup_resources()
+
+    def _retry_cleanup_resources(self) -> bool:
+        """Release the complete retained run graph only after confirmed cleanup."""
+        with self._cleanup_lock:
+            with self._state_lock:
+                process = self._process
+                readers = (self._stdout_reader, self._stderr_reader)
+                workspace = self._workspace
+
+            process_exited = process is None
+            if process is not None:
+                try:
+                    process_running = process.poll() is None
+                except Exception:
+                    process_running = True
+                if process_running:
+                    try:
+                        self._terminate_and_drain(process)
+                    except Exception:
+                        pass
+                try:
+                    process_exited = process.poll() is not None
+                except Exception:
+                    process_exited = False
+
+            readers_settled = True
+            for reader in readers:
+                if reader is None:
+                    continue
+                try:
+                    reader.join(0.2)
+                    if reader._thread.is_alive():
+                        readers_settled = False
+                except Exception:
+                    readers_settled = False
+
+            if not process_exited or not readers_settled:
+                return False
+
+            if workspace is not None:
+                try:
+                    shutil.rmtree(workspace)
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    return False
+                if workspace.exists():
+                    return False
+
             with self._state_lock:
                 if self._process is process:
                     self._process = None
-            shutil.rmtree(workspace, ignore_errors=True)
+                if self._stdout_reader is readers[0]:
+                    self._stdout_reader = None
+                if self._stderr_reader is readers[1]:
+                    self._stderr_reader = None
+                if self._workspace is workspace:
+                    self._workspace = None
+                return (
+                    self._process is None
+                    and self._stdout_reader is None
+                    and self._stderr_reader is None
+                    and self._workspace is None
+                )
 
     @staticmethod
     def _build_prompt(goal: str, context: str) -> str:
@@ -456,12 +563,17 @@ class AntigravityWorker:
             try:
                 process.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
-                pass
+                raise RuntimeError(
+                    "Antigravity process teardown unconfirmed"
+                ) from None
 
     @staticmethod
     def _signal_process_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
-        if process.poll() is not None:
-            return
+        try:
+            if process.poll() is not None:
+                return
+        except Exception:
+            pass
         killpg = getattr(os, "killpg", None)
         if os.name == "posix" and killpg is not None:
             try:

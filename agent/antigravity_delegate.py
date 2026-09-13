@@ -5,10 +5,12 @@ from __future__ import annotations
 import secrets
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any, Mapping
 
 from agent.antigravity_worker import AntigravityResult, AntigravityWorker
 from agent.gemini_route_receipts import GeminiReceiptStore
+from agent.interrupt_compat import request_hard_interrupt
 
 
 _ERROR_STATUS = {
@@ -21,6 +23,10 @@ _ERROR_STATUS = {
     "input_too_large": "oversized",
     "tool_action_blocked": "denied",
 }
+
+
+class _TerminalCommitCancelled(RuntimeError):
+    """Cancellation won before a terminal receipt transaction committed."""
 
 
 class AntigravityDelegateChild:
@@ -78,6 +84,16 @@ class AntigravityDelegateChild:
         self.session_estimated_cost_usd = 0.0
         self.tool_progress_callback = getattr(fallback_child, "tool_progress_callback", None)
         self._activity_lock = threading.Lock()
+        self._receipt_lock = threading.Lock()
+        self._terminal_commit_lock = threading.Lock()
+        self._terminal_owner: str | None = None
+        self._admission_lock = threading.Lock()
+        self._execution_lock = threading.Lock()
+        self._cancel_event = threading.Event()
+        self._cancel_shutdown_confirmed = threading.Event()
+        self._execution_done = threading.Event()
+        self._execution_done.set()
+        self._execution_thread_id: int | None = None
         self._started = time.monotonic()
         self._status = "ready"
         self._closed = False
@@ -119,19 +135,49 @@ class AntigravityDelegateChild:
         task_id: str | None = None,
         stream_callback=None,
     ) -> dict[str, Any]:
-        del user_message, task_id, stream_callback
-        with self._activity_lock:
-            self._status = "preparing"
+        if not self._execution_lock.acquire(blocking=False):
+            return self._already_running_result()
         try:
-            self.prepare_receipt()
-        except Exception:
+            with self._admission_lock:
+                if self._cancel_event.is_set():
+                    return self._cancelled_result()
+                self._execution_thread_id = threading.get_ident()
+                self._execution_done.clear()
+            try:
+                return self._run_conversation(user_message, task_id, stream_callback)
+            finally:
+                with self._admission_lock:
+                    self._execution_thread_id = None
+                    self._execution_done.set()
+        finally:
+            self._execution_lock.release()
+
+    def _run_conversation(
+        self,
+        user_message: str,
+        task_id: str | None = None,
+        stream_callback=None,
+    ) -> dict[str, Any]:
+        del user_message, task_id, stream_callback
+        receipt_error = False
+        with self._receipt_lock:
+            if self._cancel_event.is_set():
+                return self._cancelled_result()
+            try:
+                self.prepare_receipt()
+            except Exception:
+                receipt_error = True
+        if receipt_error:
             return self._fallback_or_failure(
                 "Gemini route receipt could not be prepared",
                 route="sol_after_receipt_error",
             )
-
-        with self._activity_lock:
-            self._status = "running"
+        with self._admission_lock:
+            if self._cancel_event.is_set():
+                self._record_cancelled_attempt()
+                return self._cancelled_result()
+            with self._activity_lock:
+                self._status = "running"
         try:
             result = self.worker.run(
                 goal=self.goal,
@@ -152,29 +198,42 @@ class AntigravityDelegateChild:
                 error_message=f"Antigravity worker raised {type(exc).__name__}",
             )
 
+        if self._cancel_event.is_set():
+            self._record_cancelled_attempt()
+            return self._cancelled_result()
+
         fallback = result.status != "success" and self.fallback_child is not None
         terminal_status = (
             "completed"
             if result.status == "success"
             else _ERROR_STATUS.get(result.error_code or "", "failed")
         )
+        commit_fence = self._pending_commit_fence if fallback else self._result_commit_fence
         try:
-            self.store.complete_attempt(
-                self.receipt_id,
-                worker_status=terminal_status,
-                response_text=result.response or result.output_excerpt,
-                response_sha256=result.output_sha256,
-                response_bytes=result.output_bytes,
-                process_exit_code=result.exit_code,
-                duration_ms=result.duration_ms,
-                conversation_id=result.conversation_id,
-                usage=result.usage,
-                raw_envelope=result.raw_envelope,
-                fallback_used=fallback,
-                error_code=result.error_code,
-                error_message=result.error_message,
-            )
+            with self._receipt_lock:
+                if self._cancel_event.is_set():
+                    return self._cancelled_result()
+                self.store.complete_attempt(
+                    self.receipt_id,
+                    worker_status=terminal_status,
+                    response_text=result.response or result.output_excerpt,
+                    response_sha256=result.output_sha256,
+                    response_bytes=result.output_bytes,
+                    process_exit_code=result.exit_code,
+                    duration_ms=result.duration_ms,
+                    conversation_id=result.conversation_id,
+                    usage=result.usage,
+                    raw_envelope=result.raw_envelope,
+                    fallback_used=fallback,
+                    error_code=result.error_code,
+                    error_message=result.error_message,
+                    commit_fence=commit_fence,
+                )
+        except _TerminalCommitCancelled:
+            return self._cancelled_result()
         except Exception:
+            if self._cancel_event.is_set():
+                return self._cancelled_result()
             return self._fallback_or_failure(
                 "Gemini route result could not be recorded",
                 route="sol_after_receipt_error",
@@ -212,6 +271,9 @@ class AntigravityDelegateChild:
         error_code: str | None = None,
         worker_route: str | None = None,
     ) -> dict[str, Any]:
+        if self._cancel_event.is_set():
+            self._record_cancelled_attempt()
+            return self._cancelled_result()
         if self.fallback_child is not None:
             with self._activity_lock:
                 self._status = "fallback"
@@ -233,6 +295,10 @@ class AntigravityDelegateChild:
             if error_code:
                 fallback_metadata["gemini_error_code"] = error_code
             self._route_metadata = dict(fallback_metadata)
+            with self._admission_lock:
+                if self._cancel_event.is_set():
+                    self._record_cancelled_attempt()
+                    return self._cancelled_result()
             try:
                 result = self.fallback_child.run_conversation(
                     user_message=self.goal,
@@ -254,6 +320,8 @@ class AntigravityDelegateChild:
                     "messages": [],
                     "error": "Sol fallback returned an invalid result",
                 }
+            if self._cancel_event.is_set():
+                return self._cancelled_result()
             result = dict(result)
             fallback_metadata["worker_provider"] = str(
                 result.get("worker_provider")
@@ -270,24 +338,36 @@ class AntigravityDelegateChild:
             )
             if self.receipt_id:
                 try:
-                    self.store.record_fallback_outcome(
-                        self.receipt_id,
-                        worker_route="sol",
-                        provider=str(fallback_metadata["worker_provider"]),
-                        model=str(fallback_metadata["worker_model_requested"]),
-                        worker_status=fallback_status,
-                        response_text=(
-                            str(result["final_response"])
-                            if isinstance(result.get("final_response"), str)
-                            and result.get("final_response")
-                            else None
-                        ),
-                        error_code=(
-                            None if fallback_status == "completed" else "sol_fallback_failed"
-                        ),
-                    )
+                    with self._receipt_lock:
+                        if self._cancel_event.is_set():
+                            return self._cancelled_result()
+                        self.store.record_fallback_outcome(
+                            self.receipt_id,
+                            worker_route="sol",
+                            provider=str(fallback_metadata["worker_provider"]),
+                            model=str(fallback_metadata["worker_model_requested"]),
+                            worker_status=fallback_status,
+                            response_text=(
+                                str(result["final_response"])
+                                if isinstance(result.get("final_response"), str)
+                                and result.get("final_response")
+                                else None
+                            ),
+                            error_code=(
+                                None
+                                if fallback_status == "completed"
+                                else "sol_fallback_failed"
+                            ),
+                            commit_fence=self._result_commit_fence,
+                        )
+                except _TerminalCommitCancelled:
+                    return self._cancelled_result()
                 except Exception:
+                    if self._cancel_event.is_set():
+                        return self._cancelled_result()
                     result["route_receipt_error"] = "fallback_outcome_not_recorded"
+            if not self._claim_result_publication():
+                return self._cancelled_result()
             self._route_metadata = dict(fallback_metadata)
             result.update(fallback_metadata)
             if self.receipt_id:
@@ -296,6 +376,8 @@ class AntigravityDelegateChild:
                 self._status = "completed" if result.get("final_response") else "failed"
             return result
 
+        if not self._claim_result_publication():
+            return self._cancelled_result()
         with self._activity_lock:
             self._status = "failed"
         return {
@@ -331,21 +413,162 @@ class AntigravityDelegateChild:
             "last_activity_desc": f"Gemini route {status}",
         }
 
+    def _record_cancelled_attempt(self) -> None:
+        if not self._cancel_shutdown_confirmed.is_set():
+            return
+        with self._receipt_lock:
+            if not self.receipt_id:
+                return
+            try:
+                self.store.complete_attempt(
+                    self.receipt_id,
+                    worker_status="cancelled",
+                    duration_ms=max(0, int((time.monotonic() - self._started) * 1000)),
+                    fallback_used=False,
+                    error_code="cancelled",
+                    error_message="Gemini-routed delegation cancelled",
+                    commit_fence=self._cancelled_commit_fence,
+                )
+            except (KeyError, ValueError):
+                pass
+            except Exception:
+                raise RuntimeError(
+                    "delegation cancellation could not be confirmed"
+                ) from None
+
+    def _cancelled_result(self) -> dict[str, Any]:
+        with self._activity_lock:
+            self._status = "failed"
+        return {
+            "final_response": "",
+            "completed": False,
+            "api_calls": 0,
+            "messages": [],
+            "error": "Gemini-routed delegation cancelled",
+            "route": "gemini",
+            "route_reason": self.route_reason,
+            "receipt_id": self.receipt_id or None,
+            "gemini_error_code": "cancelled",
+            "worker_route": "gemini",
+            "worker_provider": self.requested_provider,
+            "worker_model_requested": self.requested_model,
+            "route_receipt_id": self.receipt_id or None,
+            "fallback_used": False,
+        }
+
+    def _already_running_result(self) -> dict[str, Any]:
+        return {
+            "final_response": "",
+            "completed": False,
+            "api_calls": 0,
+            "messages": [],
+            "error": "Gemini-routed delegation already has an active run",
+            "route": "gemini",
+            "route_reason": self.route_reason,
+            "receipt_id": self.receipt_id or None,
+            "gemini_error_code": "already_running",
+            "worker_route": "gemini",
+            "worker_provider": self.requested_provider,
+            "worker_model_requested": self.requested_model,
+            "route_receipt_id": self.receipt_id or None,
+            "fallback_used": False,
+        }
+
+    @contextmanager
+    def _pending_commit_fence(self):
+        """Commit non-final receipt state only while cancellation has not won."""
+        with self._terminal_commit_lock:
+            if self._terminal_owner == "cancelled":
+                raise _TerminalCommitCancelled()
+            yield
+
+    @contextmanager
+    def _result_commit_fence(self):
+        """Atomically claim terminal result ownership at receipt commit."""
+        with self._terminal_commit_lock:
+            if self._terminal_owner == "cancelled":
+                raise _TerminalCommitCancelled()
+            if self._terminal_owner not in {None, "result"}:
+                raise RuntimeError("invalid terminal owner")
+            previous_owner = self._terminal_owner
+            self._terminal_owner = "result"
+            try:
+                yield
+            except BaseException:
+                self._terminal_owner = previous_owner
+                raise
+
+    @contextmanager
+    def _cancelled_commit_fence(self):
+        """Serialize cancelled receipt terminalization with result commits."""
+        with self._terminal_commit_lock:
+            if self._terminal_owner != "cancelled":
+                raise _TerminalCommitCancelled()
+            yield
+
+    def _claim_result_publication(self) -> bool:
+        """Publish only for the terminal owner selected by the shared fence."""
+        with self._terminal_commit_lock:
+            if self._terminal_owner == "cancelled":
+                return False
+            if self._terminal_owner is None:
+                self._terminal_owner = "result"
+            return self._terminal_owner == "result"
+
     def cancel(self) -> None:
-        self.worker.cancel()
+        with self._terminal_commit_lock:
+            cancellation_won = self._terminal_owner != "result"
+            if cancellation_won:
+                self._terminal_owner = "cancelled"
+                self._cancel_event.set()
+        with self._admission_lock:
+            execution_thread_id = self._execution_thread_id
+        shutdown_failed = False
+        try:
+            self.worker.close()
+        except Exception:
+            shutdown_failed = True
         if self.fallback_child is not None:
-            interrupt = getattr(self.fallback_child, "request_hard_interrupt", None)
-            if callable(interrupt):
-                interrupt("Gemini-routed delegation cancelled")
-            elif hasattr(self.fallback_child, "_interrupt_requested"):
-                self.fallback_child._interrupt_requested = True
+            try:
+                request_hard_interrupt(
+                    self.fallback_child, "Gemini-routed delegation cancelled"
+                )
+            except Exception:
+                pass
+        same_execution_thread = execution_thread_id == threading.get_ident()
+        execution_settled = same_execution_thread
+        if not same_execution_thread:
+            execution_settled = self._execution_done.wait(timeout=10.0)
+            if not execution_settled:
+                shutdown_failed = True
+        if self.fallback_child is not None:
+            if same_execution_thread and not self._execution_done.is_set():
+                shutdown_failed = True
+            elif execution_settled:
+                close = getattr(self.fallback_child, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        shutdown_failed = True
+                else:
+                    shutdown_failed = True
+        if shutdown_failed:
+            raise RuntimeError("delegation cancellation could not be confirmed")
+        if cancellation_won:
+            self._cancel_shutdown_confirmed.set()
+            self._record_cancelled_attempt()
+
+    def interrupt(self, message: str | None = None) -> None:
+        del message
+        self.cancel()
+
+    def hard_interrupt(self, message: str | None = None) -> None:
+        del message
+        self.cancel()
 
     def close(self) -> None:
         if self._closed:
             return
+        self.cancel()
         self._closed = True
-        self.worker.close()
-        if self.fallback_child is not None:
-            close = getattr(self.fallback_child, "close", None)
-            if callable(close):
-                close()

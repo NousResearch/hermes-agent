@@ -4,9 +4,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
+import subprocess
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -275,6 +278,417 @@ def test_cancel_terminates_active_run_and_close_is_idempotent(
     assert not Path(workspace).exists()
     worker.close()
     worker.close()
+
+
+def test_close_fails_fixed_and_retains_process_when_teardown_is_unconfirmed():
+    from agent.antigravity_worker import AntigravityWorker
+
+    class StubbornProcess:
+        pid = 424242
+        returncode = None
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            return None
+
+        @staticmethod
+        def kill():
+            return None
+
+        @staticmethod
+        def wait(timeout: float = 0.0):
+            raise subprocess.TimeoutExpired("agy", timeout)
+
+    worker = AntigravityWorker(command="agy")
+    process = StubbornProcess()
+    setattr(worker, "_process", process)
+
+    with (
+        patch("agent.antigravity_worker.os.killpg", return_value=None),
+        pytest.raises(
+            RuntimeError,
+            match="^Antigravity process teardown unconfirmed$",
+        ),
+    ):
+        worker.close()
+
+    assert worker._process is process
+
+
+def test_close_retries_retained_process_after_unconfirmed_teardown():
+    from agent.antigravity_worker import AntigravityWorker
+
+    class RetryableProcess:
+        pid = 12345
+        returncode = None
+
+        def __init__(self):
+            self.can_exit = False
+
+        def poll(self):
+            return 0 if self.can_exit else None
+
+        @staticmethod
+        def terminate():
+            return None
+
+        @staticmethod
+        def kill():
+            return None
+
+        def wait(self, timeout: float = 0.0):
+            if self.can_exit:
+                return 0
+            raise subprocess.TimeoutExpired("agy", timeout)
+
+    worker = AntigravityWorker(command="agy")
+    process = RetryableProcess()
+    setattr(worker, "_process", process)
+
+    with patch("agent.antigravity_worker.os.killpg", return_value=None):
+        with pytest.raises(
+            RuntimeError,
+            match="^Antigravity process teardown unconfirmed$",
+        ):
+            worker.close()
+
+        process.can_exit = True
+        worker.close()
+
+    assert worker._process is None
+
+
+def test_close_redacts_non_timeout_teardown_failure_and_retains_process():
+    from agent.antigravity_worker import AntigravityWorker
+
+    class FailingProcess:
+        pid = 424242
+        returncode = None
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            raise ValueError("private /tmp/process?token=secret")
+
+    worker = AntigravityWorker(command="agy")
+    process = FailingProcess()
+    setattr(worker, "_process", process)
+
+    with (
+        patch("agent.antigravity_worker.os.killpg", side_effect=OSError),
+        pytest.raises(RuntimeError) as exc_info,
+    ):
+        worker.close()
+
+    assert str(exc_info.value) == "Antigravity process teardown unconfirmed"
+    assert "private" not in str(exc_info.value)
+    assert worker._process is process
+
+
+def test_cancel_redacts_process_poll_failure_and_retains_process():
+    from agent.antigravity_worker import AntigravityWorker
+
+    sensitive = "private /tmp/agy.sock?token=worker-secret"
+
+    class FailingPollProcess:
+        @staticmethod
+        def poll():
+            raise RuntimeError(sensitive)
+
+    worker = AntigravityWorker(command="agy")
+    process = FailingPollProcess()
+    setattr(worker, "_process", process)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        worker.cancel()
+
+    assert str(exc_info.value) == "Antigravity process cancellation could not be confirmed"
+    assert sensitive not in str(exc_info.value)
+    assert worker._process is process
+
+
+def test_close_retries_reader_and_workspace_cleanup_after_join_failure(tmp_path: Path):
+    import io
+
+    from agent.antigravity_worker import AntigravityWorker, _BoundedPipeReader
+
+    sensitive = "private /tmp/reader.sock?token=worker-secret"
+    workspace = tmp_path / "retained-workspace"
+    allow_join = threading.Event()
+    original_join = _BoundedPipeReader.join
+    envelope = json.dumps(
+        {"status": "SUCCESS", "response": "done", "usage": {}}
+    ).encode()
+
+    class CompletedProcess:
+        pid = 424242
+        returncode = 0
+
+        def __init__(self):
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(envelope)
+            self.stderr = io.BytesIO()
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait(timeout=None):
+            return 0
+
+    process = CompletedProcess()
+
+    def controlled_join(reader, timeout):
+        if not allow_join.is_set():
+            raise RuntimeError(sensitive)
+        return original_join(reader, timeout)
+
+    worker = AntigravityWorker(command="agy")
+    with (
+        patch("agent.antigravity_worker.tempfile.mkdtemp", return_value=str(workspace)),
+        patch("agent.antigravity_worker.subprocess.Popen", return_value=process),
+        patch.object(_BoundedPipeReader, "join", controlled_join),
+    ):
+        workspace.mkdir()
+        result = worker.run(goal="retry cleanup", context="", output_schema=None)
+
+        assert result.status == "failed"
+        assert result.error_code == "teardown_unconfirmed"
+        assert sensitive not in str(result)
+        assert worker._process is process
+        assert workspace.exists()
+
+        allow_join.set()
+        worker.close()
+
+    assert worker._process is None
+    assert not workspace.exists()
+
+
+@pytest.mark.parametrize("failing_start_index", [1, 2])
+def test_reader_start_failure_treats_unstarted_readers_as_quiescent(
+    tmp_path: Path,
+    failing_start_index: int,
+):
+    import io
+
+    from agent.antigravity_worker import AntigravityWorker, _BoundedPipeReader
+
+    sensitive = "private /tmp/reader-start.sock?token=worker-secret"
+    workspace = tmp_path / f"reader-start-{failing_start_index}"
+    envelope = json.dumps(
+        {"status": "SUCCESS", "response": "done", "usage": {}}
+    ).encode()
+
+    class CompletedProcess:
+        pid = 424242
+        returncode = 0
+
+        def __init__(self):
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(envelope)
+            self.stderr = io.BytesIO()
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait(timeout=None):
+            return 0
+
+    process = CompletedProcess()
+    original_start = _BoundedPipeReader.start
+    start_attempts = 0
+
+    def flaky_start(reader):
+        nonlocal start_attempts
+        start_attempts += 1
+        if start_attempts == failing_start_index:
+            raise RuntimeError(sensitive)
+        original_start(reader)
+
+    worker = AntigravityWorker(command="agy")
+    with (
+        patch("agent.antigravity_worker.tempfile.mkdtemp", return_value=str(workspace)),
+        patch("agent.antigravity_worker.subprocess.Popen", return_value=process),
+        patch.object(_BoundedPipeReader, "start", flaky_start),
+    ):
+        workspace.mkdir()
+        result = worker.run(goal="reader start failure", context="", output_schema=None)
+
+    assert result.status == "failed"
+    assert result.error_code == "worker_error"
+    assert sensitive not in str(result)
+    assert start_attempts == failing_start_index
+    assert worker._process is None
+    assert worker._stdout_reader is None
+    assert worker._stderr_reader is None
+    assert worker._workspace is None
+    assert not workspace.exists()
+    worker.close()
+
+
+def test_chmod_failure_after_workspace_allocation_is_owned_and_cleaned(tmp_path: Path):
+    from agent.antigravity_worker import AntigravityWorker
+
+    workspace = tmp_path / "allocated-before-chmod"
+    workspace.mkdir()
+    worker = AntigravityWorker(command="agy")
+
+    with (
+        patch("agent.antigravity_worker.tempfile.mkdtemp", return_value=str(workspace)),
+        patch(
+            "agent.antigravity_worker.os.chmod",
+            side_effect=RuntimeError("private workspace chmod detail"),
+        ),
+        patch(
+            "agent.antigravity_worker.subprocess.Popen",
+            side_effect=AssertionError("subprocess must not start after chmod failure"),
+        ) as popen,
+    ):
+        result = worker.run(goal="own allocated workspace", context="", output_schema=None)
+
+    assert result.status == "failed"
+    assert result.error_code == "worker_error"
+    assert "private" not in str(result)
+    popen.assert_not_called()
+    assert worker._workspace is None
+    assert not workspace.exists()
+
+
+def test_workspace_only_cleanup_failure_is_unconfirmed_and_retryable(tmp_path: Path):
+    from agent.antigravity_worker import AntigravityWorker
+
+    workspace = tmp_path / "workspace-only-retained"
+    workspace.mkdir()
+    worker = AntigravityWorker(command="agy")
+    original_rmtree = shutil.rmtree
+    removal_attempts = 0
+
+    def flaky_rmtree(path):
+        nonlocal removal_attempts
+        removal_attempts += 1
+        if removal_attempts == 1:
+            raise RuntimeError("private workspace removal detail")
+        original_rmtree(path)
+
+    with (
+        patch("agent.antigravity_worker.tempfile.mkdtemp", return_value=str(workspace)),
+        patch(
+            "agent.antigravity_worker.subprocess.Popen",
+            side_effect=OSError("expected spawn failure"),
+        ),
+        patch("agent.antigravity_worker.shutil.rmtree", side_effect=flaky_rmtree),
+    ):
+        result = worker.run(goal="retry workspace cleanup", context="", output_schema=None)
+
+        assert result.status == "failed"
+        assert result.error_code == "teardown_unconfirmed"
+        assert "private" not in str(result)
+        assert worker._workspace == workspace
+        assert workspace.exists()
+
+        worker.close()
+
+    assert removal_attempts == 2
+    assert worker._workspace is None
+    assert not workspace.exists()
+
+
+def test_run_redacts_unconfirmed_teardown_and_retains_process_for_retry():
+    from agent.antigravity_worker import AntigravityWorker
+
+    sensitive = "private /tmp/agy.sock?token=worker-secret"
+
+    class SpawnedProcess:
+        pid = 424242
+        returncode = None
+        stdin = None
+        stdout = None
+        stderr = None
+
+        @staticmethod
+        def poll():
+            return None
+
+    worker = AntigravityWorker(command="agy")
+    process = SpawnedProcess()
+
+    with (
+        patch("agent.antigravity_worker.subprocess.Popen", return_value=process),
+        patch.object(
+            worker,
+            "_terminate_and_drain",
+            side_effect=RuntimeError(sensitive),
+        ),
+    ):
+        result = worker.run(
+            goal="test teardown containment",
+            context="offline fixture",
+            output_schema=None,
+            on_process_started=lambda: (_ for _ in ()).throw(
+                ValueError("callback failed")
+            ),
+        )
+
+    assert result.status == "failed"
+    assert result.error_code == "teardown_unconfirmed"
+    assert result.error_message == "Antigravity process teardown unconfirmed"
+    assert sensitive not in str(result)
+    assert worker._process is process
+
+
+def test_close_during_prespawn_prevents_late_subprocess_admission(
+    fake_agy: Path, tmp_path: Path
+):
+    worker = make_worker(fake_agy)
+    entered_prespawn = threading.Event()
+    release_prespawn = threading.Event()
+    holder = {}
+    workspace = tmp_path / "blocked-workspace"
+
+    def blocked_mkdtemp(*_args, **_kwargs):
+        workspace.mkdir()
+        entered_prespawn.set()
+        release_prespawn.wait(timeout=3)
+        return str(workspace)
+
+    def run_worker():
+        try:
+            holder["result"] = worker.run(goal="ok", context="", output_schema=None)
+        except BaseException as exc:  # pragma: no cover - assertion reports unexpected escape
+            holder["error"] = exc
+
+    with (
+        patch("agent.antigravity_worker.tempfile.mkdtemp", side_effect=blocked_mkdtemp),
+        patch(
+            "agent.antigravity_worker.subprocess.Popen",
+            side_effect=AssertionError("subprocess admitted after close"),
+        ) as popen,
+    ):
+        thread = threading.Thread(target=run_worker)
+        thread.start()
+        assert entered_prespawn.wait(timeout=1)
+        worker.close()
+        release_prespawn.set()
+        thread.join(timeout=3)
+
+    assert not thread.is_alive()
+    assert "error" not in holder
+    result = holder["result"]
+    assert result.status == "failed"
+    assert result.error_code == "cancelled"
+    popen.assert_not_called()
+    assert not workspace.exists()
 
 
 def test_result_is_frozen(fake_agy: Path):

@@ -332,7 +332,11 @@ class DailyReviewRunner:
                 for item in self.store.list_review_items(batch["batch_id"])
             ):
                 continue
-            attempt = self.store.get_attempt(receipt_id)
+            try:
+                attempt = self.store.get_attempt(receipt_id)
+            except KeyError:
+                pipeline_error = "sampled_receipt_missing"
+                break
             if attempt.get("completed_at_utc") is None:
                 pipeline_error = "stale_started_attempt"
                 try:

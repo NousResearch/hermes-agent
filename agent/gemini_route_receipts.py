@@ -9,10 +9,10 @@ import secrets
 import sqlite3
 import stat
 import time
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -256,16 +256,23 @@ class GeminiReceiptStore:
             conn.close()
 
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Connection]:
+    def _transaction(
+        self,
+        commit_fence: Callable[[], AbstractContextManager[None]] | None = None,
+    ) -> Iterator[sqlite3.Connection]:
         with self._write_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 yield conn
+                if commit_fence is None:
+                    conn.execute("COMMIT")
+                else:
+                    with commit_fence():
+                        conn.execute("COMMIT")
             except BaseException:
-                conn.execute("ROLLBACK")
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
                 raise
-            else:
-                conn.execute("COMMIT")
 
     @staticmethod
     def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -618,6 +625,7 @@ class GeminiReceiptStore:
         response_sha256: str | None = None,
         response_bytes: int | None = None,
         completed_at: datetime | None = None,
+        commit_fence: Callable[[], AbstractContextManager[None]] | None = None,
     ) -> None:
         if worker_status not in _TERMINAL_ATTEMPT_STATUSES:
             raise ValueError(f"worker_status is not terminal: {worker_status}")
@@ -641,7 +649,7 @@ class GeminiReceiptStore:
         error_excerpt, error_sha256, error_bytes = _bounded_text_evidence(
             error_message, max_bytes=_ERROR_EXCERPT_MAX_BYTES
         )
-        with self._transaction() as conn:
+        with self._transaction(commit_fence) as conn:
             current = conn.execute(
                 """SELECT worker_status, requested_provider, requested_model
                    FROM gemini_attempts WHERE receipt_id=?""",
@@ -711,6 +719,7 @@ class GeminiReceiptStore:
         worker_status: str,
         response_text: str | None,
         error_code: str | None,
+        commit_fence: Callable[[], AbstractContextManager[None]] | None = None,
     ) -> None:
         """Persist the actual terminal Sol identity without replacing Gemini audit data."""
         if worker_status not in _TERMINAL_ATTEMPT_STATUSES:
@@ -720,7 +729,7 @@ class GeminiReceiptStore:
         response_excerpt, response_sha256, response_bytes = _bounded_text_evidence(
             response_text, max_bytes=_RESPONSE_EXCERPT_MAX_BYTES
         )
-        with self._transaction() as conn:
+        with self._transaction(commit_fence) as conn:
             cursor = conn.execute(
                 """UPDATE gemini_attempts
                    SET terminal_worker_route=?, terminal_provider=?, terminal_model=?,

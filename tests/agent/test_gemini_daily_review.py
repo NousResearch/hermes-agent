@@ -767,6 +767,47 @@ def test_runner_fail_closes_and_alerts_on_malformed_reviewer_output(tmp_path: Pa
     assert "PIPELINE FAIL — 0/1 reviews completed" in alerts[0]
 
 
+def test_runner_terminalizes_and_alerts_when_sampled_receipt_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    add_attempt(store, "grt_missing")
+    alerts: list[str] = []
+
+    def missing_attempt(_receipt_id: str) -> dict:
+        raise KeyError("receipt disappeared")
+
+    monkeypatch.setattr(store, "get_attempt", missing_attempt)
+    result = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: pytest.fail("missing receipt must not reach reviewer"),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=lambda message: alerts.append(message)
+        or {"success": True, "chat_id": "C_ROUTE_FAILURES", "message_id": "1.2"},
+        alert_channel_id="C_ROUTE_FAILURES",
+        alert_workspace_id="T_ROUTE",
+    ).run(target_day="2026-09-11", seed=bytes.fromhex("54" * 32))
+
+    assert result["status"] == "pipeline_failed"
+    assert result["reviewed_count"] == 0
+    batch = store.get_review_batch("2026-09-11")
+    assert batch is not None
+    expected_alert = (
+        "Gemini daily review 2026-09-11: PIPELINE FAIL — 0/1 reviews completed. "
+        f"Receipt: {store.path} batch {batch['batch_id']}"
+    )
+    assert alerts == [expected_alert]
+    assert batch["status"] == "pipeline_failed"
+    assert batch["pipeline_error"] == "sampled_receipt_missing"
+    assert batch["alert_status"] == "sent"
+    assert batch["slack_channel_id"] == "C_ROUTE_FAILURES"
+    assert batch["slack_workspace_id"] == "T_ROUTE"
+    assert batch["alert_message"] == expected_alert
+    assert store.list_review_items(batch["batch_id"]) == []
+
+
 def test_legacy_pending_pipeline_alert_migrates_exact_persisted_hash_and_delivers(
     tmp_path: Path,
 ):

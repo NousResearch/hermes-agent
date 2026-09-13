@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,10 +15,12 @@ import pytest
 from agent.antigravity_delegate import AntigravityDelegateChild
 from agent.antigravity_worker import AntigravityResult
 from agent.gemini_route_receipts import GeminiReceiptStore
+from run_agent import AIAgent
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _build_antigravity_delegate_child,
     _merge_child_route_metadata,
+    _run_single_child,
     delegate_task,
 )
 
@@ -46,6 +49,16 @@ def parent() -> MagicMock:
     value._memory_manager = None
     value.session_estimated_cost_usd = 0.0
     return value
+
+
+class RemovalTrackingList(list):
+    def __init__(self, *items):
+        super().__init__(items)
+        self.removed = threading.Event()
+
+    def remove(self, item):
+        super().remove(item)
+        self.removed.set()
 
 
 def routing_config(**overrides):
@@ -802,6 +815,918 @@ def test_real_adapter_timeout_keeps_current_gemini_fallback_metadata(tmp_path: P
     assert stops[0]["gemini_error_code"] == "nonzero_exit"
 
 
+def test_parent_timeout_cancels_blocked_gemini_worker_without_late_receipt_mutation(
+    tmp_path: Path,
+):
+    worker = BlockingWorker()
+    routed = make_adapter(tmp_path, worker)
+    assert routed.fallback_child is not None
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config()),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._get_child_timeout", return_value=0.1),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=fake_child()),
+        patch("tools.delegate_tool._build_antigravity_delegate_child", return_value=routed),
+    ):
+        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+
+    try:
+        assert result["results"][0]["status"] == "timeout"
+        assert worker.cancelled.wait(timeout=1)
+        assert worker.finished.wait(timeout=1)
+        assert routed._execution_done.is_set()
+        assert routed.fallback_child.run_conversation.call_count == 0
+        terminal = routed.store.get_attempt(routed.receipt_id)
+        assert terminal["worker_status"] == "cancelled"
+        assert routed.store.get_attempt(routed.receipt_id) == terminal
+    finally:
+        worker.release.set()
+
+
+def test_cancel_admitted_during_receipt_completion_wins_terminal_publication(
+    tmp_path: Path,
+):
+    adapter = make_adapter(
+        tmp_path,
+        FakeWorker(worker_result(ok=True)),
+        fallback=False,
+    )
+    completion_entered = threading.Event()
+    completion_release = threading.Event()
+    original_complete_attempt = adapter.store.complete_attempt
+
+    def blocked_complete_attempt(receipt_id, **kwargs):
+        if kwargs.get("worker_status") == "completed":
+            completion_entered.set()
+            assert completion_release.wait(timeout=3)
+        return original_complete_attempt(receipt_id, **kwargs)
+
+    adapter.store.complete_attempt = blocked_complete_attempt
+    result_holder: dict[str, dict] = {}
+    run_thread = threading.Thread(
+        target=lambda: result_holder.setdefault(
+            "result", adapter.run_conversation("prompt")
+        )
+    )
+    run_thread.start()
+    assert completion_entered.wait(timeout=1)
+
+    cancel_thread = threading.Thread(target=adapter.cancel)
+    cancel_thread.start()
+    assert adapter._cancel_event.wait(timeout=1)
+    completion_release.set()
+    run_thread.join(timeout=3)
+    cancel_thread.join(timeout=3)
+
+    assert not run_thread.is_alive()
+    assert not cancel_thread.is_alive()
+    assert result_holder["result"]["gemini_error_code"] == "cancelled"
+    receipt = adapter.store.get_attempt(adapter.receipt_id)
+    assert receipt["worker_status"] == "cancelled"
+    assert receipt["response_text"] is None
+
+
+def test_cancel_admitted_during_fallback_receipt_wins_result_publication(
+    tmp_path: Path,
+):
+    adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=False)))
+    fallback_completion_entered = threading.Event()
+    fallback_completion_release = threading.Event()
+    original_record_fallback = adapter.store.record_fallback_outcome
+
+    def blocked_record_fallback(receipt_id, **kwargs):
+        fallback_completion_entered.set()
+        assert fallback_completion_release.wait(timeout=3)
+        return original_record_fallback(receipt_id, **kwargs)
+
+    adapter.store.record_fallback_outcome = blocked_record_fallback
+    result_holder: dict[str, dict] = {}
+    run_thread = threading.Thread(
+        target=lambda: result_holder.setdefault(
+            "result", adapter.run_conversation("prompt")
+        )
+    )
+    run_thread.start()
+    assert fallback_completion_entered.wait(timeout=1)
+
+    cancel_thread = threading.Thread(target=adapter.cancel)
+    cancel_thread.start()
+    assert adapter._cancel_event.wait(timeout=1)
+    fallback_completion_release.set()
+    run_thread.join(timeout=3)
+    cancel_thread.join(timeout=3)
+
+    assert not run_thread.is_alive()
+    assert not cancel_thread.is_alive()
+    assert result_holder["result"]["gemini_error_code"] == "cancelled"
+    receipt = adapter.store.get_attempt(adapter.receipt_id)
+    assert receipt["terminal_worker_route"] is None
+    assert receipt["terminal_worker_status"] is None
+
+
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_parent_timeout_retains_child_until_unconfirmed_cancellation_finishes(
+    close_fails: bool,
+):
+    child = fake_child()
+    run_started = threading.Event()
+    run_release = threading.Event()
+    close_attempted = threading.Event()
+    cleanup_done = threading.Event()
+
+    def blocked_run(**_kwargs):
+        run_started.set()
+        run_release.wait(timeout=5)
+        return {"final_response": "", "completed": False, "messages": []}
+
+    child.run_conversation.side_effect = blocked_run
+    def failed_hard_interrupt(_message=None):
+        raise RuntimeError("private /tmp/delegate.sock?token=secret")
+
+    child.hard_interrupt = failed_hard_interrupt
+    def close_child():
+        close_attempted.set()
+        if close_fails:
+            raise RuntimeError("private final close failure")
+        cleanup_done.set()
+
+    child.close.side_effect = close_child
+    parent_agent = parent()
+    parent_agent._active_children = RemovalTrackingList(child)
+
+    try:
+        with patch("tools.delegate_tool._get_child_timeout", return_value=0.1):
+            result = _run_single_child(
+                task_index=0,
+                goal="blocked child",
+                child=child,
+                parent_agent=parent_agent,
+            )
+
+        assert run_started.is_set()
+        assert result["status"] == "error"
+        assert result["exit_reason"] == "cancellation_unconfirmed"
+        assert result["error"] == "delegation cancellation could not be confirmed"
+        assert "private" not in str(result)
+        assert child in parent_agent._active_children
+        assert not cleanup_done.is_set()
+
+        run_release.set()
+        assert close_attempted.wait(timeout=1)
+        if close_fails:
+            assert child in parent_agent._active_children
+            assert not cleanup_done.is_set()
+        else:
+            assert cleanup_done.is_set()
+            assert parent_agent._active_children.removed.wait(timeout=1)
+            assert child not in parent_agent._active_children
+    finally:
+        run_release.set()
+
+
+def test_parent_timeout_does_not_treat_interrupt_request_as_child_quiescence():
+    child = fake_child()
+    run_started = threading.Event()
+    run_release = threading.Event()
+    interrupt_requested = threading.Event()
+    close_attempted = threading.Event()
+
+    def blocked_run(**_kwargs):
+        run_started.set()
+        run_release.wait(timeout=5)
+        return {"final_response": "", "completed": False, "messages": []}
+
+    def request_interrupt(_message=None):
+        interrupt_requested.set()
+        return True
+
+    def close_child():
+        close_attempted.set()
+
+    child.run_conversation.side_effect = blocked_run
+    child.hard_interrupt = request_interrupt
+    child.close.side_effect = close_child
+    parent_agent = parent()
+    parent_agent._active_children = RemovalTrackingList(child)
+
+    try:
+        with patch("tools.delegate_tool._get_child_timeout", return_value=0.1):
+            result = _run_single_child(
+                task_index=0,
+                goal="blocked after interrupt request",
+                child=child,
+                parent_agent=parent_agent,
+            )
+
+        assert run_started.is_set()
+        assert interrupt_requested.is_set()
+        assert result["status"] == "error"
+        assert result["exit_reason"] == "cancellation_unconfirmed"
+        assert result["error"] == "delegation cancellation could not be confirmed"
+        assert child in parent_agent._active_children
+        assert not close_attempted.is_set()
+
+        run_release.set()
+        assert close_attempted.wait(timeout=1)
+        assert parent_agent._active_children.removed.wait(timeout=1)
+        assert child not in parent_agent._active_children
+    finally:
+        run_release.set()
+
+
+def test_parent_timeout_unregisters_relay_after_deferred_future_settles():
+    child = fake_child()
+    run_started = threading.Event()
+    run_release = threading.Event()
+    relay_unregistered = threading.Event()
+    runtime = MagicMock()
+    runtime.unregister_subagent.side_effect = lambda _payload: relay_unregistered.set()
+
+    def blocked_run(**_kwargs):
+        run_started.set()
+        run_release.wait(timeout=5)
+        return {"final_response": "", "completed": False, "messages": []}
+
+    child.run_conversation.side_effect = blocked_run
+    child.hard_interrupt.return_value = True
+    parent_agent = parent()
+    parent_agent._active_children.append(child)
+
+    try:
+        with (
+            patch("tools.delegate_tool._get_child_timeout", return_value=0.1),
+            patch("agent.relay_runtime.get_runtime", return_value=runtime),
+            patch("agent.relay_runtime.current_profile_key", return_value="default"),
+            patch(
+                "agent.relay_runtime.SESSION_COORDINATOR.has_active_turn",
+                return_value=False,
+            ),
+        ):
+            result = _run_single_child(
+                task_index=0,
+                goal="deferred relay cleanup",
+                child=child,
+                parent_agent=parent_agent,
+            )
+
+            assert run_started.is_set()
+            assert result["exit_reason"] == "cancellation_unconfirmed"
+            assert child in parent_agent._active_children
+            runtime.unregister_subagent.assert_not_called()
+
+            run_release.set()
+            assert relay_unregistered.wait(timeout=1)
+
+        assert child not in parent_agent._active_children
+        runtime.unregister_subagent.assert_called_once()
+    finally:
+        run_release.set()
+
+
+def test_deferred_child_cleanup_is_serialized_against_parent_release_clients():
+    child = fake_child()
+    run_started = threading.Event()
+    run_release = threading.Event()
+    close_entered = threading.Event()
+    allow_close = threading.Event()
+    concurrent_close = threading.Event()
+    parent_retry_entered = threading.Event()
+    close_count = 0
+    close_count_lock = threading.Lock()
+
+    def blocked_run(**_kwargs):
+        run_started.set()
+        run_release.wait(timeout=5)
+        return {"final_response": "", "completed": False, "messages": []}
+
+    def blocked_close():
+        nonlocal close_count
+        with close_count_lock:
+            close_count += 1
+            if close_count > 1:
+                concurrent_close.set()
+        close_entered.set()
+        allow_close.wait(timeout=5)
+
+    child.run_conversation.side_effect = blocked_run
+    child.hard_interrupt.return_value = True
+    child.close.side_effect = blocked_close
+    parent_agent = parent()
+    parent_agent._active_children.append(child)
+    parent_agent._codex_session_lock = None
+    parent_agent.client = None
+    release_thread = None
+
+    try:
+        with patch("tools.delegate_tool._get_child_timeout", return_value=0.1):
+            result = _run_single_child(
+                task_index=0,
+                goal="serialize deferred cleanup",
+                child=child,
+                parent_agent=parent_agent,
+            )
+
+        assert run_started.is_set()
+        assert result["exit_reason"] == "cancellation_unconfirmed"
+        assert child in parent_agent._active_children
+        retry_cleanup = getattr(child, "_delegate_release_ownership")
+
+        def observed_parent_retry():
+            parent_retry_entered.set()
+            return retry_cleanup()
+
+        child._delegate_release_ownership = observed_parent_retry
+        run_release.set()
+        assert close_entered.wait(timeout=1)
+
+        release_thread = threading.Thread(
+            target=AIAgent.release_clients,
+            args=(parent_agent,),
+        )
+        release_thread.start()
+        assert parent_retry_entered.wait(timeout=1)
+        assert not concurrent_close.wait(timeout=0.5)
+    finally:
+        run_release.set()
+        allow_close.set()
+        if release_thread is not None:
+            release_thread.join(timeout=2)
+
+    assert release_thread is not None
+    assert not release_thread.is_alive()
+    assert close_count == 1
+    assert child not in parent_agent._active_children
+
+
+@pytest.mark.parametrize("dispatch_accepted", [True, False])
+def test_background_cleanup_failure_retains_parent_retry_ownership(dispatch_accepted: bool):
+    child = fake_child()
+    parent_agent = parent()
+    parent_agent._active_children.append(child)
+    close_attempts = 0
+    close_succeeds_on = 3 if dispatch_accepted else 2
+    captured_runner: dict[str, Any] = {}
+
+    def flaky_close():
+        nonlocal close_attempts
+        close_attempts += 1
+        if close_attempts < close_succeeds_on:
+            raise RuntimeError("cleanup unavailable")
+
+    def dispatch_background(**kwargs):
+        if dispatch_accepted:
+            captured_runner["runner"] = kwargs["runner"]
+            return {"status": "dispatched", "delegation_id": "deleg-test"}
+        return {"status": "rejected", "error": "capacity reached"}
+
+    credentials = {
+        "model": "m",
+        "provider": None,
+        "base_url": None,
+        "api_key": None,
+        "api_mode": None,
+        "request_overrides": {},
+        "max_output_tokens": None,
+        "command": None,
+        "args": [],
+    }
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config(enabled=False)),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value=credentials),
+        patch(
+            "tools.delegate_tool._build_child_preserving_parent_tools",
+            return_value=child,
+        ),
+        patch("gateway.session_context.async_delivery_supported", return_value=True),
+        patch(
+            "tools.async_delegation.dispatch_async_delegation_batch",
+            side_effect=dispatch_background,
+        ),
+    ):
+        child.close.side_effect = flaky_close
+        delegate_task(goal="retain cleanup ownership", background=True, parent_agent=parent_agent)
+        if dispatch_accepted:
+            captured_runner["runner"]()
+
+    assert child in parent_agent._active_children
+    release_ownership = getattr(child, "_delegate_release_ownership")
+    assert release_ownership() is True
+    assert child not in parent_agent._active_children
+    assert close_attempts == close_succeeds_on
+
+
+@pytest.mark.parametrize("dispatch_accepted", [True, False])
+def test_background_timeout_defers_cleanup_until_child_execution_quiesces(
+    dispatch_accepted: bool,
+):
+    child = fake_child()
+    parent_agent = parent()
+    parent_agent._active_children.append(child)
+    run_started = threading.Event()
+    release_run = threading.Event()
+    close_called = threading.Event()
+    premature_close = threading.Event()
+    captured_runner: dict[str, Any] = {}
+
+    def blocked_run(**_kwargs):
+        run_started.set()
+        release_run.wait(timeout=5)
+        return {"final_response": "done", "completed": True, "messages": []}
+
+    def observed_close():
+        if not release_run.is_set():
+            premature_close.set()
+        close_called.set()
+
+    def dispatch_background(**kwargs):
+        if dispatch_accepted:
+            captured_runner["runner"] = kwargs["runner"]
+            return {"status": "dispatched", "delegation_id": "deleg-test"}
+        return {"status": "rejected", "error": "capacity reached"}
+
+    child.run_conversation.side_effect = blocked_run
+    child.hard_interrupt.return_value = True
+    child.close.side_effect = observed_close
+    credentials = {
+        "model": "m",
+        "provider": None,
+        "base_url": None,
+        "api_key": None,
+        "api_mode": None,
+        "request_overrides": {},
+        "max_output_tokens": None,
+        "command": None,
+        "args": [],
+    }
+
+    try:
+        with (
+            patch(
+                "tools.delegate_tool._load_config",
+                return_value=routing_config(enabled=False),
+            ),
+            patch(
+                "tools.delegate_tool._resolve_delegation_credentials",
+                return_value=credentials,
+            ),
+            patch(
+                "tools.delegate_tool._build_child_preserving_parent_tools",
+                return_value=child,
+            ),
+            patch("tools.delegate_tool._get_child_timeout", return_value=0.05),
+            patch("gateway.session_context.async_delivery_supported", return_value=True),
+            patch(
+                "tools.async_delegation.dispatch_async_delegation_batch",
+                side_effect=dispatch_background,
+            ),
+        ):
+            delegate_task(
+                goal="defer cleanup until quiescent",
+                background=True,
+                parent_agent=parent_agent,
+            )
+            if dispatch_accepted:
+                captured_runner["runner"]()
+
+        assert run_started.is_set()
+        assert not premature_close.is_set()
+        assert child in parent_agent._active_children
+    finally:
+        release_run.set()
+
+    assert close_called.wait(timeout=2)
+    deadline = time.monotonic() + 2
+    while child in parent_agent._active_children and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert child not in parent_agent._active_children
+
+
+def test_child_ownership_is_retained_until_credential_release_succeeds():
+    child = fake_child()
+    pool = MagicMock()
+    pool.acquire_lease.return_value = "lease-1"
+    pool.current.return_value = None
+    pool.release_lease.side_effect = [RuntimeError("release unavailable"), None]
+    child._credential_pool = pool
+    parent_agent = parent()
+    parent_agent._active_children.append(child)
+
+    result = _run_single_child(
+        task_index=0,
+        goal="retain complete cleanup graph",
+        child=child,
+        parent_agent=parent_agent,
+    )
+
+    assert result["status"] == "completed"
+    assert child in parent_agent._active_children
+    retry_cleanup = getattr(child, "_delegate_release_ownership", None)
+    assert callable(retry_cleanup)
+
+    assert retry_cleanup() is True
+    assert child not in parent_agent._active_children
+    assert pool.release_lease.call_count == 2
+
+
+def test_child_ownership_is_retained_until_relay_unregistration_succeeds():
+    child = fake_child()
+    pool = MagicMock()
+    pool.acquire_lease.return_value = "lease-1"
+    pool.current.return_value = None
+    child._credential_pool = pool
+    parent_agent = parent()
+    parent_agent._active_children.append(child)
+    runtime = MagicMock()
+    runtime.unregister_subagent.side_effect = [RuntimeError("relay unavailable"), None]
+
+    with (
+        patch("agent.relay_runtime.get_runtime", return_value=runtime),
+        patch("agent.relay_runtime.current_profile_key", return_value="default"),
+        patch(
+            "agent.relay_runtime.SESSION_COORDINATOR.has_active_turn",
+            return_value=False,
+        ),
+    ):
+        result = _run_single_child(
+            task_index=0,
+            goal="retain relay cleanup ownership",
+            child=child,
+            parent_agent=parent_agent,
+        )
+
+        assert result["status"] == "completed"
+        assert child in parent_agent._active_children
+        retry_cleanup = getattr(child, "_delegate_release_ownership", None)
+        assert callable(retry_cleanup)
+
+        assert retry_cleanup() is True
+
+    assert child not in parent_agent._active_children
+    assert runtime.unregister_subagent.call_count == 2
+    pool.release_lease.assert_called_once_with("lease-1")
+
+
+def test_parent_timeout_interrupts_active_sol_fallback_without_late_receipt_mutation(
+    tmp_path: Path,
+):
+    fallback = BlockingFallback()
+    routed = make_adapter(tmp_path, FakeWorker(worker_result(ok=False)))
+    routed.fallback_child = fallback
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config()),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._get_child_timeout", return_value=0.1),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=fake_child()),
+        patch("tools.delegate_tool._build_antigravity_delegate_child", return_value=routed),
+    ):
+        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+
+    try:
+        assert result["results"][0]["status"] == "timeout"
+        assert fallback.interrupted_after_start is True
+        assert fallback.interrupted.wait(timeout=1)
+        assert fallback.finished.wait(timeout=1)
+        assert routed._execution_done.is_set()
+        terminal = routed.store.get_attempt(routed.receipt_id)
+        assert terminal["terminal_worker_status"] is None
+        assert routed.store.get_attempt(routed.receipt_id) == terminal
+    finally:
+        fallback.release.set()
+
+
+@pytest.mark.parametrize("method_name", ["interrupt", "hard_interrupt"])
+def test_adapter_exposes_parent_interrupt_abi(method_name: str, tmp_path: Path):
+    worker = FakeWorker(worker_result(ok=False))
+    fallback = BlockingFallback()
+    adapter = make_adapter(tmp_path, worker)
+    adapter.fallback_child = fallback
+
+    getattr(adapter, method_name)("parent stopped")
+
+    assert worker.cancel_calls == 1
+    assert fallback.interrupted.is_set()
+
+
+def test_cancel_failure_is_surfaced_without_publishing_cancelled_receipt(
+    tmp_path: Path,
+):
+    class FailingCloseWorker(FakeWorker):
+        def close(self):
+            raise RuntimeError("private worker shutdown detail")
+
+    adapter = make_adapter(tmp_path, FailingCloseWorker(worker_result(ok=True)))
+    adapter.prepare_receipt()
+    before = adapter.store.get_attempt(adapter.receipt_id)
+
+    with pytest.raises(RuntimeError, match="cancellation could not be confirmed"):
+        adapter.cancel()
+
+    assert adapter.store.get_attempt(adapter.receipt_id) == before
+
+
+def test_cancel_receipt_failure_is_fixed_and_metadata_only(tmp_path: Path):
+    adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=True)), fallback=False)
+    adapter.prepare_receipt()
+    adapter.store.complete_attempt = MagicMock(
+        side_effect=RuntimeError("private /tmp/receipt.sqlite?token=secret")
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        adapter.close()
+
+    assert str(exc_info.value) == "delegation cancellation could not be confirmed"
+    assert "private" not in str(exc_info.value)
+    assert adapter._closed is False
+
+
+def test_cancel_from_execution_thread_does_not_wait_for_itself(tmp_path: Path):
+    class CancellingWorker(FakeWorker):
+        adapter: Any = None
+        cancel_error = None
+
+        def run(self, **_kwargs):
+            try:
+                self.adapter.cancel()
+            except Exception as exc:
+                self.cancel_error = exc
+            return worker_result(ok=True)
+
+    worker = CancellingWorker(worker_result(ok=True))
+    adapter = make_adapter(tmp_path, worker, fallback=False)
+    worker.adapter = adapter
+    adapter._execution_done.wait = MagicMock(
+        side_effect=AssertionError("execution thread attempted to wait for itself")
+    )
+
+    result = adapter.run_conversation("cancel from callback")
+
+    assert worker.cancel_error is None
+    adapter._execution_done.wait.assert_not_called()
+    assert result["gemini_error_code"] == "cancelled"
+
+
+def test_failed_fallback_interrupt_uses_close_before_confirming_cancel(
+    tmp_path: Path,
+):
+    class InterruptFailureFallback:
+        def __init__(self):
+            self.close_calls = 0
+
+        def hard_interrupt(self, _message=None):
+            raise RuntimeError("private interrupt detail")
+
+        def close(self):
+            self.close_calls += 1
+
+    fallback = InterruptFailureFallback()
+    adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=False)))
+    adapter.fallback_child = fallback
+    adapter.prepare_receipt()
+
+    adapter.cancel()
+
+    assert fallback.close_calls == 1
+    assert adapter.store.get_attempt(adapter.receipt_id)["worker_status"] == "cancelled"
+
+
+def test_close_interrupts_active_fallback_before_returning(tmp_path: Path):
+    fallback = BlockingFallback()
+    adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=False)))
+    adapter.fallback_child = fallback
+    result_holder: dict[str, dict] = {}
+    run_thread = threading.Thread(
+        target=lambda: result_holder.setdefault(
+            "result", adapter.run_conversation("prompt")
+        )
+    )
+    run_thread.start()
+    assert fallback.started.wait(timeout=1)
+    terminal_before_close = adapter.store.get_attempt(adapter.receipt_id)
+
+    adapter.close()
+    run_thread.join(timeout=3)
+
+    assert fallback.interrupted_after_start is True
+    assert fallback.finished.is_set()
+    assert fallback.close_calls == 1
+    assert not run_thread.is_alive()
+    assert result_holder["result"]["gemini_error_code"] == "cancelled"
+    assert adapter.store.get_attempt(adapter.receipt_id) == terminal_before_close
+
+
+def test_close_can_retry_after_unconfirmed_cancellation(tmp_path: Path):
+    class RetryableCloseWorker(FakeWorker):
+        def __init__(self):
+            super().__init__(worker_result(ok=True))
+            self.close_attempts = 0
+
+        def close(self):
+            self.close_attempts += 1
+            if self.close_attempts == 1:
+                raise RuntimeError("first close failed")
+            super().close()
+
+    worker = RetryableCloseWorker()
+    adapter = make_adapter(tmp_path, worker)
+
+    with pytest.raises(RuntimeError, match="cancellation could not be confirmed"):
+        adapter.close()
+    adapter.close()
+
+    assert worker.close_attempts == 2
+    assert adapter._closed is True
+
+
+def test_cancel_waits_for_active_fallback_to_finish(tmp_path: Path):
+    class QuiescenceFallback(BlockingFallback):
+        def __init__(self):
+            super().__init__()
+            self.cleanup_release = threading.Event()
+
+        def run_conversation(self, **_kwargs):
+            self.started.set()
+            self.release.wait(timeout=5)
+            self.cleanup_release.wait(timeout=5)
+            self.finished.set()
+            return {"final_response": "", "completed": False, "messages": []}
+
+    fallback = QuiescenceFallback()
+    adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=False)))
+    adapter.fallback_child = fallback
+    execution_wait_entered = threading.Event()
+    original_execution_wait = adapter._execution_done.wait
+
+    def observed_execution_wait(timeout=None):
+        execution_wait_entered.set()
+        return original_execution_wait(timeout)
+
+    adapter._execution_done.wait = observed_execution_wait
+    run_thread = threading.Thread(target=lambda: adapter.run_conversation("prompt"))
+    run_thread.start()
+    assert fallback.started.wait(timeout=1)
+    cancel_returned = threading.Event()
+    cancel_thread = threading.Thread(
+        target=lambda: (adapter.cancel(), cancel_returned.set())
+    )
+    cancel_thread.start()
+    assert fallback.interrupted.wait(timeout=1)
+
+    assert execution_wait_entered.wait(timeout=1)
+    assert not cancel_returned.is_set()
+    fallback.cleanup_release.set()
+    assert cancel_returned.wait(timeout=1)
+    cancel_thread.join(timeout=1)
+    run_thread.join(timeout=1)
+    assert fallback.finished.is_set()
+
+
+def test_adapter_rejects_overlapping_run_before_replacing_execution_ownership(
+    tmp_path: Path,
+):
+    class SingleRunWorker(FakeWorker):
+        def __init__(self):
+            super().__init__(worker_result(ok=True))
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.calls = 0
+
+        def run(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                self.started.set()
+                self.release.wait(timeout=5)
+                return worker_result(ok=True)
+            return AntigravityResult(
+                status="failed",
+                response=None,
+                conversation_id=None,
+                usage={},
+                raw_envelope=None,
+                exit_code=None,
+                duration_ms=0,
+                error_code="already_running",
+                error_message="worker already has an active run",
+            )
+
+    worker = SingleRunWorker()
+    adapter = make_adapter(tmp_path, worker)
+    first_result: dict[str, dict] = {}
+    first_thread = threading.Thread(
+        target=lambda: first_result.setdefault(
+            "result", adapter.run_conversation("first")
+        )
+    )
+    first_thread.start()
+    assert worker.started.wait(timeout=1)
+
+    try:
+        second = adapter.run_conversation("second")
+
+        assert second["completed"] is False
+        assert second["gemini_error_code"] == "already_running"
+        assert worker.calls == 1
+        assert not adapter._execution_done.is_set()
+    finally:
+        worker.release.set()
+        first_thread.join(timeout=1)
+
+    assert not first_thread.is_alive()
+    assert first_result["result"]["completed"] is True
+    assert adapter._execution_done.is_set()
+
+
+def test_cancel_between_receipt_prep_and_worker_admission_prevents_worker_run(
+    tmp_path: Path,
+):
+    worker = FakeWorker(worker_result(ok=True))
+    adapter = make_adapter(tmp_path, worker)
+    prepared = threading.Event()
+    release_prepare = threading.Event()
+    original_prepare = adapter.prepare_receipt
+    result_holder: dict[str, dict] = {}
+
+    def blocked_prepare():
+        receipt_id = original_prepare()
+        prepared.set()
+        release_prepare.wait(timeout=3)
+        return receipt_id
+
+    adapter.prepare_receipt = blocked_prepare
+    run_thread = threading.Thread(
+        target=lambda: result_holder.setdefault("result", adapter.run_conversation("prompt"))
+    )
+    run_thread.start()
+    assert prepared.wait(timeout=1)
+    cancel_thread = threading.Thread(target=adapter.hard_interrupt)
+    cancel_thread.start()
+    assert adapter._cancel_event.wait(timeout=1)
+    release_prepare.set()
+    run_thread.join(timeout=3)
+    cancel_thread.join(timeout=3)
+
+    assert not run_thread.is_alive()
+    assert not cancel_thread.is_alive()
+    assert worker.run_calls == 0
+    assert result_holder["result"]["gemini_error_code"] == "cancelled"
+
+
+def test_cancel_during_fallback_metadata_prevents_fallback_admission(tmp_path: Path):
+    fallback = AdmissionBlockedFallback()
+    adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=False)))
+    adapter.fallback_child = fallback
+    result_holder: dict[str, dict] = {}
+    run_thread = threading.Thread(
+        target=lambda: result_holder.setdefault("result", adapter.run_conversation("prompt"))
+    )
+    run_thread.start()
+    assert fallback.metadata_started.wait(timeout=1)
+
+    adapter.interrupt("parent stopped")
+    fallback.release_metadata.set()
+    run_thread.join(timeout=3)
+
+    assert not run_thread.is_alive()
+    assert fallback.run_calls == 0
+    assert result_holder["result"]["gemini_error_code"] == "cancelled"
+
+
+def test_cancel_after_fallback_admission_prevents_codex_session_start(tmp_path: Path):
+    fallback = PostAdmissionCodexFallback()
+    adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=False)))
+    adapter.fallback_child = fallback
+    result_holder: dict[str, dict] = {}
+    run_thread = threading.Thread(
+        target=lambda: result_holder.setdefault("result", adapter.run_conversation("prompt"))
+    )
+    run_thread.start()
+    assert fallback.admission_entered.wait(timeout=2)
+
+    adapter.hard_interrupt("parent timed out")
+    assert fallback._interrupt_requested is True
+    fallback.admission_release.set()
+    run_thread.join(timeout=3)
+
+    try:
+        assert not run_thread.is_alive()
+        assert getattr(fallback, "_codex_session", None) is None
+        assert result_holder["result"]["gemini_error_code"] == "cancelled"
+    finally:
+        fallback.admission_release.set()
+        adapter.close()
+
+
 @pytest.mark.parametrize(
     ("task", "role", "reason"),
     [
@@ -847,17 +1772,145 @@ class FakeWorker:
         self.result = result
         self.invoke_started = invoke_started
         self.closed = False
+        self.cancel_calls = 0
+        self.run_calls = 0
 
     def run(self, *, goal, context, output_schema, on_process_started=None):
+        self.run_calls += 1
         if self.invoke_started and on_process_started:
             on_process_started()
         return self.result
 
     def cancel(self):
-        pass
+        self.cancel_calls += 1
 
     def close(self):
         self.closed = True
+        self.cancel()
+
+
+class PostAdmissionCodexFallback(AIAgent):
+    def __init__(self):
+        super().__init__(
+            api_key="stub",
+            base_url="https://stub.invalid",
+            provider="openai",
+            api_mode="codex_app_server",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        self.admission_entered = threading.Event()
+        self.admission_release = threading.Event()
+
+    def __getattribute__(self, name):
+        if name == "run_conversation":
+            entered = object.__getattribute__(self, "admission_entered")
+            release = object.__getattribute__(self, "admission_release")
+            entered.set()
+            if not release.wait(timeout=5):
+                raise TimeoutError("fallback admission was not released")
+        return super().__getattribute__(name)
+
+
+class BlockingWorker(FakeWorker):
+    def __init__(self):
+        super().__init__(worker_result(ok=False))
+        self.cancelled = threading.Event()
+        self.finished = threading.Event()
+        self.release = threading.Event()
+
+    def run(self, *, goal, context, output_schema, on_process_started=None):
+        if on_process_started:
+            on_process_started()
+        self.release.wait(timeout=5)
+        self.finished.set()
+        return AntigravityResult(
+            status="failed",
+            response=None,
+            conversation_id=None,
+            usage={},
+            raw_envelope=None,
+            exit_code=None,
+            duration_ms=1,
+            error_code="cancelled" if self.cancelled.is_set() else "worker_exception",
+            error_message="cancelled" if self.cancelled.is_set() else "released",
+        )
+
+    def cancel(self):
+        self.cancelled.set()
+        self.release.set()
+
+
+class BlockingFallback:
+    def __init__(self):
+        self.session_id = "sol-child"
+        self.provider = "openai-codex"
+        self.model = "gpt-5.6-sol"
+        self._delegate_role = "leaf"
+        self._delegate_saved_tool_names = []
+        self.tool_progress_callback = None
+        self._credential_pool = None
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self.session_estimated_cost_usd = 0.0
+        self.started = threading.Event()
+        self.interrupted = threading.Event()
+        self.finished = threading.Event()
+        self.release = threading.Event()
+        self.interrupted_after_start = False
+        self.close_calls = 0
+
+    def run_conversation(self, **_kwargs):
+        self.started.set()
+        self.release.wait(timeout=5)
+        self.finished.set()
+        return {"final_response": "", "completed": False, "messages": []}
+
+    def hard_interrupt(self, _message=None):
+        self.interrupted_after_start = self.started.is_set()
+        self.interrupted.set()
+        self.release.set()
+
+    def get_activity_summary(self):
+        return {"api_call_count": 1, "max_iterations": 1, "current_tool": None}
+
+    def close(self):
+        self.close_calls += 1
+        self.release.set()
+
+
+class AdmissionBlockedFallback:
+    def __init__(self):
+        self.session_id = "sol-child"
+        self.model = "gpt-5.6-sol"
+        self._delegate_role = "leaf"
+        self._delegate_saved_tool_names = []
+        self.tool_progress_callback = None
+        self._credential_pool = None
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self.session_estimated_cost_usd = 0.0
+        self.metadata_started = threading.Event()
+        self.release_metadata = threading.Event()
+        self.interrupted = threading.Event()
+        self.run_calls = 0
+
+    @property
+    def provider(self):
+        self.metadata_started.set()
+        self.release_metadata.wait(timeout=3)
+        return "openai-codex"
+
+    def run_conversation(self, **_kwargs):
+        self.run_calls += 1
+        return {"final_response": "late", "completed": True, "messages": []}
+
+    def hard_interrupt(self, _message=None):
+        self.interrupted.set()
+
+    def close(self):
+        self.release_metadata.set()
 
 
 def worker_result(*, ok: bool) -> AntigravityResult:

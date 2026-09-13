@@ -248,6 +248,10 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
             fd = os.open(path, flags, 0o600)
         except FileNotFoundError:
             continue
+        except IsADirectoryError:
+            # Not a database file at all; sqlite3.connect() raises the
+            # canonical error for this, and a directory leaks no row data.
+            continue
         try:
             os.fchmod(fd, 0o600)
         finally:

@@ -156,6 +156,7 @@ class HostSupervisor:
         self._late_control_handlers: dict[str, tuple[float, Callable[[dict], None]]] = {}
         self._stderr_tail: list[str] = []
         self._last_progress_counter = 0
+        self._background_work: dict[str, dict] = {}
         if autostart:
             self.start()
 
@@ -167,6 +168,12 @@ class HostSupervisor:
     def is_running(self) -> bool:
         proc = self._proc
         return proc is not None and proc.poll() is None and not self._stopped_respawning
+
+    def has_background_work(self, sid: str, session_token: str, *, include_running: bool = False) -> bool:
+        """Cached host-owned work only; never start a host or wait for IPC from a reaper."""
+        state = self._background_work.get(sid, {})
+        return bool(self.is_running() and state.get("session_token") == session_token
+                    and (state.get("pending") or (include_running and state.get("running"))))
 
     def start(self) -> None:
         with self._lock:
@@ -311,6 +318,7 @@ class HostSupervisor:
             raise RuntimeError("compute host respawn disabled after crash loop")
         self._hello_event.clear()
         self._hello = {}
+        self._background_work = {}
         env = {**hermes_subprocess_env(inherit_credentials=True), **os.environ, **(self.env or {})}
         env["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = str(self.heartbeat_secs)
         root = str(_repo_root())
@@ -378,7 +386,7 @@ class HostSupervisor:
             except json.JSONDecodeError:
                 logger.warning("compute host emitted invalid json: %r", raw[:200])
                 continue
-            if isinstance(frame, dict):
+            if isinstance(frame, dict) and self._proc is proc:
                 self._handle_host_frame(frame)
 
     def _drain_stderr(self, proc: subprocess.Popen[str]) -> None:
@@ -397,12 +405,16 @@ class HostSupervisor:
             self._hello = dict(frame)
             self._hello_event.set()
         elif ftype == "hb":
+            if isinstance(frame.get("background_work"), dict):
+                self._background_work = frame["background_work"]
             self._last_progress_counter = int(frame.get("progress_counter") or self._last_progress_counter)
             logger.debug("compute host heartbeat: %s", frame)
         elif ftype == "rpc":
             if isinstance(frame.get("message"), dict):
                 self.rpc_sink(frame["message"])
         elif ftype in ("turn.end", "turn.error"):
+            if isinstance(frame.get("background_work"), dict):
+                self._background_work = frame["background_work"]
             with self._lock:
                 pending = self._pending_turns.pop(request_id, None)
             if pending is not None and pending[1] is not None:

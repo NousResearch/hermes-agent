@@ -33,6 +33,21 @@ export function hudIgnoresMouse(
     return false
   }
 
+  // Collapsed HUD's resize frame must not keep the window solid. The frame's
+  // thin border strips are invisible chrome around the whole window — when the
+  // transcript is collapsed they hang in transparent space and would otherwise
+  // intercept clicks meant for the app underneath. (#108793)
+  const isResizeHandle = hit !== null && hit.closest('[data-hud-resize]') !== null
+  if (isResizeHandle) {
+    const hudIdle =
+      !root.hasAttribute('data-hud-recent') &&
+      !root.hasAttribute('data-hud-held') &&
+      root.querySelector('[data-slot="composer-rich-input"]:focus') === null
+    if (hudIdle) {
+      return true
+    }
+  }
+
   const overSomething = hit !== null && !hit.contains(root)
 
   const composerFocused =

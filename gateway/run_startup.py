@@ -46,6 +46,34 @@ class GatewayStartupMixin:
         until it finishes, else a user message can race it)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         try:
+            # Scheduling and adapter dispatch are separate event-loop turns. A human/control event or
+            # a reset may have superseded this wake in between, so re-validate before speaking: the
+            # entry must still be resume_pending, its (session_id, marker) unchanged, no human message
+            # waiting for this session, and the slot still held by OUR pre-claimed sentinel. Returning
+            # early lets the finally below release that slot.
+            token = (event.metadata or {}).get("resume_interruption")
+            if token is not None:
+                with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
+                    self.session_store._ensure_loaded_locked()  # noqa: SLF001
+                    entry = self.session_store._entries.get(session_key)  # noqa: SLF001
+                    current = (
+                        (entry.session_id, entry.last_resume_marked_at or entry.updated_at)
+                        if entry is not None else None
+                    )
+                    valid = bool(entry and entry.resume_pending and not entry.suspended)
+                human_waiting = any(
+                    not queued.internal
+                    and self._session_key_for_source(queued.source) == session_key
+                    for queued in getattr(self, "_startup_restore_queue", ())
+                )
+                state = self._peek_session_state(session_key)
+                if (not valid or current != token or human_waiting
+                        or not state or state.turn.agent is not _AGENT_PENDING_SENTINEL):
+                    logger.info(
+                        "Skipping superseded startup resume for %s (valid=%s human_waiting=%s)",
+                        session_key, valid, human_waiting,
+                    )
+                    return
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
             task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
@@ -524,8 +552,20 @@ class GatewayStartupMixin:
             return 0
         now = datetime.now()
         scheduled = 0
+        # Keep the durable marker on failed/interrupted turns, but don't let each adapter reconnect
+        # replay the same interruption in this process. ``_is_session_running`` below only catches a
+        # resume still IN FLIGHT; once one has finished with ``resume_pending`` still set, the
+        # reconnect watcher re-enters here (scoped to that platform) inside the freshness window and
+        # schedules a second turn for the same interruption. Claiming (session_id, marker) makes that
+        # idempotent per boot.
+        claims = getattr(self, "_resume_interruption_claims", None)
+        if claims is None:
+            claims = self._resume_interruption_claims = {}
         for entry in candidates:
             marker = entry.last_resume_marked_at or entry.updated_at
+            token = (entry.session_id, marker)
+            if claims.get(entry.session_key) == token:
+                continue
             if marker is not None and (now - marker).total_seconds() > window:
                 continue
             # Already being resumed (e.g. scheduled at startup, still in-flight) — no second turn.
@@ -544,11 +584,17 @@ class GatewayStartupMixin:
             # Claim the slot *before* spawning so an inbound message arriving before the task's first
             # await queues instead of building a duplicate AIAgent.
             _resume_state = self._session_state(entry.session_key)
+            claims[entry.session_key] = token
             _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
             _resume_state.turn.started_ts = time.time()
             self._persist_active_agents()
             # Empty-text internal event: the _is_resume_pending branch prepends the reason-aware note.
-            event = MessageEvent(text="", message_type=MessageType.TEXT, source=source, internal=True)
+            # The token rides along so the dispatch side can re-check that this wake is still current
+            # (see _run_startup_resume_event) — scheduling and dispatch are separate event-loop turns.
+            event = MessageEvent(
+                text="", message_type=MessageType.TEXT, source=source, internal=True,
+                metadata={"resume_interruption": token},
+            )
             task = self._retain_background_task(
                 asyncio.create_task(self._run_startup_resume_event(adapter, event, entry.session_key))
             )

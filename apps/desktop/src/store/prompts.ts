@@ -98,6 +98,15 @@ interface PendingApprovalPayload {
 
 export interface SudoRequest extends KeyedPrompt {
   requestId: string
+  /** JSON-RPC method that resolves this request; the terminal tool's `sudo.respond` by default,
+   *  `display.install.sudo.respond` for a Bot Screen package install. */
+  respondMethod?: string
+  /** Description override so the card can say WHAT the password is for. */
+  description?: string
+  /** Immutable origin of the request. The reply is sent to THIS socket, never to whichever
+   *  connection happens to be in the foreground when the user presses Send — a password typed for
+   *  host A must not travel to host B. */
+  origin?: { connectionId: null | string; profile: string }
 }
 
 export interface SecretRequest extends KeyedPrompt {
@@ -225,8 +234,10 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
  *  active-session `$*Request` views (same map, fixed key). */
 export const sessionApprovalRequest = (sessionId: string | null) =>
   computed(approval.$all, all => all[keyFor(sessionId)] ?? null)
+/** A session's sudo card, else the app-level one (a Bot Screen package install is raised with no
+ *  session: it belongs to the connection, not to a turn, so whichever chat is focused shows it). */
 export const sessionSudoRequest = (sessionId: string | null) =>
-  computed(sudo.$all, all => all[keyFor(sessionId)] ?? null)
+  computed(sudo.$all, all => all[keyFor(sessionId)] ?? (sessionId ? all[keyFor(null)] ?? null : null))
 export const sessionSecretRequest = (sessionId: string | null) =>
   computed(secret.$all, all => all[keyFor(sessionId)] ?? null)
 

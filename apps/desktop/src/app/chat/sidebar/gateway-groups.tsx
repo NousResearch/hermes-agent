@@ -2,9 +2,10 @@ import type { useSensors } from '@dnd-kit/core'
 import { arrayMove } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
+import { type ProfileGroupHeaderContribution, SIDEBAR_PROFILE_GROUP_HEADER_AREA } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -18,6 +19,8 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
+import { useContributions } from '@/contrib'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -272,6 +275,7 @@ function GatewayProfileGroup({
       {open && (
         <>
           {children}
+          {group.profile ? <ProfileGroupHeaderSlot connectionId={group.connectionId ?? null} profile={group.profile} /> : null}
           {renderRows(sessions.slice(0, visibleCount))}
           {hiddenCount > 0 && (
             <WorkspaceShowMoreButton
@@ -314,4 +318,49 @@ function GatewayProfileGroup({
       </Dialog>
     </SidebarRowStack>
   )
+}
+
+/** Plugin-contributed chrome at the top of one expanded gateway/profile group
+ *  (`sidebar.profileGroup.header`): the Bots plugin mounts its Screen portal
+ *  here so the profile's computer is one click away from its sessions. */
+function ProfileGroupHeaderSlot({ connectionId, profile }: { connectionId: null | string; profile: string }) {
+  const items = useContributions(SIDEBAR_PROFILE_GROUP_HEADER_AREA)
+
+  if (!items.length) {
+    return null
+  }
+
+  return (
+    <div className="flex flex-col gap-1 px-2 pb-1">
+      {items.map(item => {
+        const data = item.data as Partial<ProfileGroupHeaderContribution> | undefined
+
+        if (typeof data?.render !== 'function') {
+          return null
+        }
+
+        return (
+          <ContribBoundary id={item.id} key={item.id} variant="chip">
+            <ProfileGroupHeaderItem connectionId={connectionId} profile={profile} render={data.render} />
+          </ContribBoundary>
+        )
+      })}
+    </div>
+  )
+}
+
+/** One stable render identity per (render, connection, profile): ContribRender mounts whatever
+ *  function it is handed, so an inline closure would remount the contribution on every paint. */
+function ProfileGroupHeaderItem({
+  connectionId,
+  profile,
+  render
+}: {
+  connectionId: null | string
+  profile: string
+  render: ProfileGroupHeaderContribution['render']
+}) {
+  const Row = useMemo(() => () => render({ connectionId, profile }), [connectionId, profile, render])
+
+  return <ContribRender render={Row} />
 }

@@ -42,7 +42,9 @@ def _build_browser_env() -> dict:
 
     env = hermes_subprocess_env(inherit_credentials=False)
     env.update({k: os.environ[k] for k in _BROWSER_PASSTHROUGH_KEYS if k in os.environ})
-    return env
+    # Headed Chromium opens on this profile's Bot Desktop when one is running (human can take it over).
+    from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
+    return _bot_desktop_env(env)
 
 
 try:
@@ -817,7 +819,9 @@ def _json_with_fallback(response: Dict[str, Any], result: Dict[str, Any]) -> str
 
 
 def _failed_response(result: Dict[str, Any], default_error: str) -> str:
-    return _json_with_fallback(_err(result.get("error", default_error)), result)
+    # ``code`` = machine-readable refusal (human_has_control), same shape as computer_use's.
+    extra = {"code": result["code"]} if result.get("code") else {}
+    return _json_with_fallback(_err(result.get("error", default_error), **extra), result)
 
 
 def _tool_response(result: Dict[str, Any], ok: Dict[str, Any], default_error: str) -> str:

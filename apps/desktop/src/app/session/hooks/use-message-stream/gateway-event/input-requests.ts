@@ -12,10 +12,12 @@ import {
 import { $gateway } from '@/store/gateway'
 import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 import {
   $vaultCodeRequests,
   $vaultSaveLoginRequests,
   $vaultUnlockRequests,
+  clearSudoRequest,
   clearVaultCodeRequest,
   clearVaultSaveLoginRequest,
   clearVaultUnlockRequest,
@@ -203,6 +205,14 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
+  if (event.type === 'sudo.expire' || event.type === 'display.install.sudo.expire') {
+    // The backend gave up waiting; tear the card down so a late Send cannot go anywhere.
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    clearSudoRequest(sessionId ?? undefined, requestId || undefined)
+
+    return true
+  }
+
   if (event.type === 'clarify.expire') {
     if (!sessionId) {
       return true
@@ -313,13 +323,20 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (event.type === 'sudo.request') {
-    // Sudo password capture (tools/terminal_tool.py). Blocked on
-    // sudo.respond {request_id, password}.
+  if (event.type === 'sudo.request' || event.type === 'display.install.sudo.request') {
+    // Sudo password capture (tools/terminal_tool.py), or the Bot Screen package install
+    // (tui_gateway/methods_display.py) reusing the same masked card. Blocked on
+    // <method>.respond {request_id, password}.
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    const install = event.type === 'display.install.sudo.request'
 
     if (requestId) {
-      setSudoRequest({ requestId, sessionId: sessionId ?? null })
+      setSudoRequest({
+        requestId,
+        sessionId: sessionId ?? null,
+        origin: { connectionId: event.connectionId ?? null, profile: event.profile ?? $activeGatewayProfile.get() },
+        ...(install ? { respondMethod: 'display.install.sudo.respond', description: translateNow('prompts.sudoInstallDesc') } : {})
+      })
 
       if (sessionId) {
         updateSessionState(sessionId, state => ({ ...state, needsInput: true }))

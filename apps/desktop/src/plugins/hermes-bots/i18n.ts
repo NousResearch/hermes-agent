@@ -223,6 +223,56 @@ type BotsMessages = {
     noMcpServers: string
   }
 
+  /** Bot Screen: the bot's headless desktop on the gateway host, live in a pane. */
+  screen: {
+    title: string
+    menu: string
+    unsupportedTitle: string
+    unsupportedBody: string
+    notInstalledTitle: string
+    notInstalledBody: string
+    installHint: string
+    install: string
+    installing: string
+    installCancelled: string
+    installFailed: string
+    noPackageManager: string
+    portalTitle: string
+    portalOpen: string
+    heroStopped: string
+    heroNotInstalled: string
+    heroConnecting: string
+    heroStale: string
+    heroSuppressed: string
+    heroOpenLive: string
+    heroInstall: string
+    heroStart: string
+    portalWatching: string
+    portalYouControl: string
+    portalOtherControls: string
+    portalStopped: string
+    portalNotInstalled: string
+    portalUnsupported: string
+    portalUnavailable: string
+    unavailableTitle: string
+    stoppedTitle: string
+    stoppedBody: string
+    start: string
+    attaching: string
+    streamLost: string
+    reconnect: string
+    takeOver: string
+    handBack: string
+    handBackForce: string
+    handBackForceHint: string
+    openNeedsUpdate: string
+    youControl: string
+    otherControls: string
+    agentControls: string
+    controlTaken: string
+    handoffRequested: string
+  }
+
   /** Bot-scoped scheduled jobs. Generic scheduling chrome (weekday names,
    *  Daily/Hourly, the job verbs) resolves against core's `cron` section. */
   cron: {
@@ -446,6 +496,54 @@ const en: BotsMessages = {
     searchHub: 'Search the hub (community + well-known sources)…',
     noMcpServers: 'No MCP servers configured or in the catalog.'
   },
+  screen: {
+    title: 'Screen',
+    menu: 'Open Screen',
+    unsupportedTitle: 'No bot screen on this host',
+    unsupportedBody: 'Bot screens run on Linux gateway hosts. This bot uses the host\u2019s own display.',
+    notInstalledTitle: 'Screen packages missing',
+    notInstalledBody: 'The gateway host needs TigerVNC and the Xfce core to give this bot a screen. Run on the host:',
+    installHint: 'Runs on the gateway host as the user Hermes runs as; sudo is asked for once, through Hermes.',
+    install: 'Install on host',
+    installing: 'Installing…',
+    installCancelled: 'Install cancelled: no sudo password was provided.',
+    installFailed: 'Install failed. Read the log above, or run the command on the host yourself.',
+    noPackageManager: 'No supported package manager (apt, dnf, pacman) was found on the gateway host.',
+    portalTitle: 'Screen',
+    portalOpen: 'Open',
+    heroStopped: 'Screen is off',
+    heroNotInstalled: 'Not installed on this host',
+    heroConnecting: 'Checking the screen…',
+    heroStale: 'Last seen — screen unreachable',
+    heroSuppressed: 'Hidden while someone has control',
+    heroOpenLive: 'Open live',
+    heroInstall: 'Install',
+    heroStart: 'Start',
+    portalWatching: 'Live · bot in control',
+    portalYouControl: 'Live · you are in control',
+    portalOtherControls: 'Live · another viewer in control',
+    portalStopped: 'Stopped',
+    portalNotInstalled: 'Not installed on host',
+    portalUnsupported: 'Not available on this host',
+    portalUnavailable: 'Update the bot\u2019s Hermes to use Screen',
+    unavailableTitle: 'Screen needs a newer Hermes',
+    stoppedTitle: 'Screen is off',
+    stoppedBody: 'Start this bot\u2019s desktop to watch what it does and take over when it needs you.',
+    start: 'Start screen',
+    attaching: 'Connecting to the screen\u2026',
+    streamLost: 'Screen stream ended',
+    reconnect: 'Reconnect',
+    takeOver: 'Take over',
+    handBack: 'Hand back',
+    handBackForce: 'Hand back (force)',
+    handBackForceHint: 'Release a lease held by a viewer that is no longer here, e.g. after a reload.',
+    openNeedsUpdate: 'Update Hermes Desktop to open bot screens.',
+    youControl: 'You are in control',
+    otherControls: 'Another viewer is in control',
+    agentControls: 'Bot is in control',
+    controlTaken: 'Another viewer took control. Watching only.',
+    handoffRequested: 'Bot needs you'
+  },
   cron: {
     filterHint:
       'Scheduled jobs exist in this profile but none are tagged for this bot. Name a job "[bot:<name>] …" to show it here, or see them in Cron below.',
@@ -665,6 +763,54 @@ const ja: BotsMessages = {
     searchHub: 'ハブを検索（コミュニティと既知のソース）…',
     noMcpServers: '設定済みまたはカタログ内の MCP サーバーはありません。'
   },
+  screen: {
+    title: '画面',
+    menu: '画面を開く',
+    unsupportedTitle: 'このホストにはボット画面がありません',
+    unsupportedBody: 'ボット画面は Linux のゲートウェイホストで動作します。このボットはホスト自身のディスプレイを使います。',
+    notInstalledTitle: '画面パッケージが不足しています',
+    notInstalledBody: 'このボットに画面を与えるには、ゲートウェイホストに TigerVNC と Xfce コアが必要です。ホストで実行:',
+    installHint: 'Hermes を実行しているユーザーとしてゲートウェイホスト上で実行されます。sudo は Hermes 経由で一度だけ求められます。',
+    install: 'ホストにインストール',
+    installing: 'インストール中…',
+    installCancelled: 'インストールを中止しました: sudo パスワードが入力されませんでした。',
+    installFailed: 'インストールに失敗しました。上のログを確認するか、ホストでコマンドを直接実行してください。',
+    noPackageManager: 'ゲートウェイホストに対応するパッケージマネージャー (apt, dnf, pacman) が見つかりません。',
+    portalTitle: 'スクリーン',
+    portalOpen: '開く',
+    heroStopped: '画面は停止中',
+    heroNotInstalled: 'このホストには未インストール',
+    heroConnecting: '画面を確認中…',
+    heroStale: '最終表示 — 画面に接続できません',
+    heroSuppressed: '他の人が操作中は非表示',
+    heroOpenLive: 'ライブで開く',
+    heroInstall: 'インストール',
+    heroStart: '開始',
+    portalWatching: 'ライブ · ボットが操作中',
+    portalYouControl: 'ライブ · あなたが操作中',
+    portalOtherControls: 'ライブ · 別のビューアーが操作中',
+    portalStopped: '停止中',
+    portalNotInstalled: 'ホストに未インストール',
+    portalUnsupported: 'このホストでは利用できません',
+    portalUnavailable: 'Screen を使うにはボットの Hermes を更新してください',
+    unavailableTitle: 'Screen には新しい Hermes が必要です',
+    stoppedTitle: '画面はオフです',
+    stoppedBody: 'このボットのデスクトップを起動すると、動作を見守り、必要なときに操作を引き継げます。',
+    start: '画面を起動',
+    attaching: '画面に接続中…',
+    streamLost: '画面ストリームが終了しました',
+    reconnect: '再接続',
+    takeOver: '引き継ぐ',
+    handBack: '戻す',
+    handBackForce: '強制的に戻す',
+    handBackForceHint: 'もう存在しないビューア（再読み込み後など）が保持しているリースを解放します。',
+    openNeedsUpdate: 'ボットの画面を開くには Hermes Desktop を更新してください。',
+    youControl: 'あなたが操作中',
+    otherControls: '別のビューアが操作中',
+    agentControls: 'ボットが操作中',
+    controlTaken: '別のビューアが操作を引き継ぎました。閲覧のみ。',
+    handoffRequested: 'ボットが助けを求めています'
+  },
   cron: {
     filterHint:
       'このプロファイルには定期実行ジョブがありますが、このボット向けのタグが付いたものはありません。ジョブ名を「[bot:<名前>] …」にするとここに表示されます。下のCronでも確認できます。',
@@ -879,6 +1025,54 @@ const zh: BotsMessages = {
     searchHub: '搜索技能中心（社区和常见来源）…',
     noMcpServers: '未配置 MCP 服务器，目录中也没有。'
   },
+  screen: {
+    title: '屏幕',
+    menu: '打开屏幕',
+    unsupportedTitle: '此主机没有机器人屏幕',
+    unsupportedBody: '机器人屏幕在 Linux 网关主机上运行。此机器人使用主机自身的显示器。',
+    notInstalledTitle: '缺少屏幕软件包',
+    notInstalledBody: '网关主机需要 TigerVNC 和 Xfce 核心组件才能为此机器人提供屏幕。在主机上运行:',
+    installHint: '在网关主机上以运行 Hermes 的用户身份执行；sudo 只会通过 Hermes 询问一次。',
+    install: '安装到主机',
+    installing: '正在安装…',
+    installCancelled: '安装已取消：未提供 sudo 密码。',
+    installFailed: '安装失败。请查看上方日志，或在主机上手动运行该命令。',
+    noPackageManager: '网关主机上未找到受支持的包管理器（apt、dnf、pacman）。',
+    portalTitle: '屏幕',
+    portalOpen: '打开',
+    heroStopped: '屏幕已关闭',
+    heroNotInstalled: '此主机未安装',
+    heroConnecting: '正在检查屏幕…',
+    heroStale: '最后画面 — 屏幕无法访问',
+    heroSuppressed: '有人控制时隐藏',
+    heroOpenLive: '实时打开',
+    heroInstall: '安装',
+    heroStart: '启动',
+    portalWatching: '直播 · 机器人控制中',
+    portalYouControl: '直播 · 你在控制',
+    portalOtherControls: '直播 · 其他查看者控制中',
+    portalStopped: '已停止',
+    portalNotInstalled: '主机未安装',
+    portalUnsupported: '此主机不可用',
+    portalUnavailable: '更新机器人的 Hermes 以使用屏幕',
+    unavailableTitle: '屏幕需要更新版的 Hermes',
+    stoppedTitle: '屏幕已关闭',
+    stoppedBody: '启动此机器人的桌面，观看它的操作，并在需要时接管。',
+    start: '启动屏幕',
+    attaching: '正在连接屏幕…',
+    streamLost: '屏幕流已结束',
+    reconnect: '重新连接',
+    takeOver: '接管',
+    handBack: '交还',
+    handBackForce: '强制交还',
+    handBackForceHint: '释放已不在场的查看者（例如重新加载后）持有的控制权。',
+    openNeedsUpdate: '更新 Hermes Desktop 以打开机器人屏幕。',
+    youControl: '你正在控制',
+    otherControls: '另一位查看者正在控制',
+    agentControls: '机器人正在控制',
+    controlTaken: '另一位查看者已接管控制。仅可观看。',
+    handoffRequested: '机器人需要你'
+  },
   cron: {
     filterHint:
       '此配置档案中有定时任务，但没有一个标记给这个机器人。将任务命名为“[bot:<名称>] …”即可显示在这里，也可以在下方的 Cron 中查看。',
@@ -1092,6 +1286,54 @@ const zhHant: BotsMessages = {
     filterSkills: '篩選技能…',
     searchHub: '搜尋技能中心（社群和常見來源）…',
     noMcpServers: '未設定 MCP 伺服器，目錄中也沒有。'
+  },
+  screen: {
+    title: '螢幕',
+    menu: '開啟螢幕',
+    unsupportedTitle: '此主機沒有機器人螢幕',
+    unsupportedBody: '機器人螢幕在 Linux 閘道主機上執行。此機器人使用主機自身的顯示器。',
+    notInstalledTitle: '缺少螢幕套件',
+    notInstalledBody: '閘道主機需要 TigerVNC 與 Xfce 核心元件才能為此機器人提供螢幕。在主機上執行:',
+    installHint: '在閘道主機上以執行 Hermes 的使用者身分執行；sudo 只會透過 Hermes 詢問一次。',
+    install: '安裝到主機',
+    installing: '安裝中…',
+    installCancelled: '安裝已取消：未提供 sudo 密碼。',
+    installFailed: '安裝失敗。請查看上方日誌，或在主機上手動執行該指令。',
+    noPackageManager: '閘道主機上找不到受支援的套件管理器（apt、dnf、pacman）。',
+    portalTitle: '螢幕',
+    portalOpen: '開啟',
+    heroStopped: '螢幕已關閉',
+    heroNotInstalled: '此主機未安裝',
+    heroConnecting: '正在檢查螢幕…',
+    heroStale: '最後畫面 — 螢幕無法連線',
+    heroSuppressed: '有人控制時隱藏',
+    heroOpenLive: '即時開啟',
+    heroInstall: '安裝',
+    heroStart: '啟動',
+    portalWatching: '直播 · 機器人控制中',
+    portalYouControl: '直播 · 您在控制',
+    portalOtherControls: '直播 · 其他檢視者控制中',
+    portalStopped: '已停止',
+    portalNotInstalled: '主機未安裝',
+    portalUnsupported: '此主機不可用',
+    portalUnavailable: '更新機器人的 Hermes 以使用螢幕',
+    unavailableTitle: '螢幕需要較新版的 Hermes',
+    stoppedTitle: '螢幕已關閉',
+    stoppedBody: '啟動此機器人的桌面，觀看它的操作，並在需要時接手。',
+    start: '啟動螢幕',
+    attaching: '正在連線至螢幕…',
+    streamLost: '螢幕串流已結束',
+    reconnect: '重新連線',
+    takeOver: '接手',
+    handBack: '交還',
+    handBackForce: '強制交還',
+    handBackForceHint: '釋放已不在場的檢視者（例如重新載入後）持有的控制權。',
+    openNeedsUpdate: '更新 Hermes Desktop 以開啟機器人螢幕。',
+    youControl: '你正在控制',
+    otherControls: '另一位檢視者正在控制',
+    agentControls: '機器人正在控制',
+    controlTaken: '另一位檢視者已接手控制。僅可觀看。',
+    handoffRequested: '機器人需要你'
   },
   cron: {
     filterHint:

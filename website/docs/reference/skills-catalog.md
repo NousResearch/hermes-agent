@@ -53,6 +53,12 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 |-------|-------------|------|
 | [`sdlc-review`](/docs/user-guide/skills/bundled/devops/devops-sdlc-review) | Review Kanban handoffs and route verified outcomes. | `devops\sdlc-review` |
 
+## devops
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`termux-gateway-keepalive`](/docs/user-guide/skills/bundled/devops/devops-termux-gateway-keepalive) | Supervise and resurrect Hermes gateway on Android Termux. | `devops/termux-gateway-keepalive` |
+
 ## email
 
 | Skill | Description | Path |

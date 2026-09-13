@@ -79,6 +79,30 @@ def _load_raw() -> Dict[str, Any]:
     return {"suggestions": []}
 
 
+def _require_self_improvement_allowed(operation: str) -> None:
+    """C9/C15 — provenance guard for cron/suggestion mutations.
+
+    Refuses any disk mutation when the retained self-improvement Decision is not
+    allowed. This is the fail-closed path: a missing or deny Decision raises and the
+    call site propagates the refusal to the user.
+    """
+    try:
+        from agent.self_improvement_decision_context import get_self_improvement_decision
+        decision = get_self_improvement_decision()
+    except Exception as exc:
+        # If the decision module is unavailable for any reason, refuse the mutation
+        # rather than silently allowing it (C9: provenance lookup failure fails closed).
+        raise PermissionError(
+            f"cron.suggestions.{operation}: provenance lookup failed ({exc!r}); "
+            "refusing mutation (fail-closed C9)"
+        ) from exc
+    if not decision.is_allowed():
+        raise PermissionError(
+            f"cron.suggestions.{operation}: denied by retained Decision "
+            f"(source={decision.source!r}, reason={decision.reason!r})"
+        )
+
+
 def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
     _ensure_dir()
     suggestions_file = _current_suggestions_file()
@@ -124,6 +148,7 @@ def add_suggestion(
         raise ValueError(f"unknown suggestion source: {source!r}")
     if not title.strip() or not dedup_key.strip():
         raise ValueError("title and dedup_key are required")
+    _require_self_improvement_allowed("add_suggestion")
 
     with _suggestions_lock:
         suggestions = _load_raw().get("suggestions", [])
@@ -170,6 +195,7 @@ def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
 
 
 def _set_status(suggestion_id: str, status: str) -> bool:
+    _require_self_improvement_allowed("_set_status")
     with _suggestions_lock:
         suggestions = _load_raw().get("suggestions", [])
         for s in suggestions:
@@ -194,6 +220,7 @@ def accept_suggestion(ref: str, *, origin: Optional[Dict[str, Any]] = None) -> O
     s = get_suggestion(ref)
     if not s or s.get("status") != _STATUS_PENDING:
         return None
+    _require_self_improvement_allowed("accept_suggestion")
 
     from cron.scheduler import (
         CronSchedulerRegistrationError, create_job_with_scheduler_registration,
@@ -216,6 +243,7 @@ def accept_suggestion(ref: str, *, origin: Optional[Dict[str, Any]] = None) -> O
 def clear_resolved() -> int:
     """Drop ACCEPTED records from disk (they served their purpose once the job exists); dismissed
     records are RETAINED for their dedup_key. Returns the count removed."""
+    _require_self_improvement_allowed("clear_resolved")
     with _suggestions_lock:
         suggestions = _load_raw().get("suggestions", [])
         kept = [s for s in suggestions if s.get("status") != _STATUS_ACCEPTED]

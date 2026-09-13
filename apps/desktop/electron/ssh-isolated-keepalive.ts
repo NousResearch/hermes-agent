@@ -8,8 +8,8 @@
  * `sshConnections`. Sticky spawn artifacts (owner-nonce, token file, lockfile)
  * are NOT liveness and must not suppress idle-exit.
  *
- * If the socket drops the registry reconnects after a delay; while it is down
- * the backend may idle-exit as before. This module never consults
+ * If the socket drops the registry reconnects with capped exponential backoff;
+ * while it is down the backend may idle-exit as before. This module never consults
  * nonce/lock/token files.
  */
 import { buildGatewayWsUrl } from './connection-config'
@@ -27,7 +27,7 @@ export type SshIsolatedKeepaliveOptions = {
 }
 
 type KeepaliveEntry = {
-  generation: number
+  failures: number
   reconnectTimer: ReturnType<typeof setTimeout> | null
   scope: string
   socket: { close?: () => void; url?: string } | null
@@ -35,6 +35,7 @@ type KeepaliveEntry = {
 }
 
 const DEFAULT_RECONNECT_DELAY_MS = 2_000
+const MAX_RECONNECT_DELAY_MS = 30_000
 
 function addListener(socket: any, type: string, handler: (event?: any) => void) {
   if (typeof socket?.addEventListener === 'function') {
@@ -84,10 +85,13 @@ export function createSshIsolatedKeepaliveRegistry(options: SshIsolatedKeepalive
       return
     }
 
+    // A dead tunnel would otherwise be redialled every 2 s until the scope is torn down.
+    const delay = Math.min(reconnectDelayMs * 2 ** entry.failures, MAX_RECONNECT_DELAY_MS)
+    entry.failures += 1
     entry.reconnectTimer = setTimeout(() => {
       entry.reconnectTimer = null
       connect(entry)
-    }, reconnectDelayMs)
+    }, delay)
   }
 
   function connect(entry: KeepaliveEntry) {
@@ -95,8 +99,6 @@ export function createSshIsolatedKeepaliveRegistry(options: SshIsolatedKeepalive
       return
     }
 
-    entry.generation += 1
-    const generation = entry.generation
     clearTimer(entry)
     closeSocket(entry)
 
@@ -114,18 +116,21 @@ export function createSshIsolatedKeepaliveRegistry(options: SshIsolatedKeepalive
 
     entry.socket = socket
 
+    // Staleness is derivable: stop() removes the entry, connect() replaces entry.socket.
     const abandonIfStale = () => {
-      if (entries.get(entry.scope) !== entry || entry.generation !== generation) {
+      if (entries.get(entry.scope) !== entry || entry.socket !== socket) {
         return
       }
 
-      if (entry.socket === socket) {
-        entry.socket = null
-      }
-
+      entry.socket = null
       scheduleReconnect(entry)
     }
 
+    addListener(socket, 'open', () => {
+      if (entry.socket === socket) {
+        entry.failures = 0
+      }
+    })
     addListener(socket, 'close', abandonIfStale)
     addListener(socket, 'error', abandonIfStale)
   }
@@ -146,7 +151,7 @@ export function createSshIsolatedKeepaliveRegistry(options: SshIsolatedKeepalive
     stop(scope)
 
     const entry: KeepaliveEntry = {
-      generation: 0,
+      failures: 0,
       reconnectTimer: null,
       scope,
       socket: null,
@@ -164,7 +169,6 @@ export function createSshIsolatedKeepaliveRegistry(options: SshIsolatedKeepalive
     }
 
     entries.delete(scope)
-    entry.generation += 1
     clearTimer(entry)
     closeSocket(entry)
   }

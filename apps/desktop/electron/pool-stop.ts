@@ -37,7 +37,7 @@ export interface PoolStopperDeps {
    * Extra per-key work that must finish before a replacement may spawn.
    * Held on the same in-flight promise as child exit (SSH teardown, etc.).
    */
-  afterStop?: (key: string, entry: PoolStopEntry) => Promise<void>
+  afterStop?: (key: string) => Promise<void>
 }
 
 export interface PoolStopper {
@@ -75,7 +75,7 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
       deps.stopChild(entry.process)
       await deps.waitForExit(entry.process)
       if (deps.afterStop) {
-        await deps.afterStop(key, entry)
+        await deps.afterStop(key)
       }
     })().finally(() => {
       stops.delete(key)

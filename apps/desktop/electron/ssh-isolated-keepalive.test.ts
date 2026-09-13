@@ -66,16 +66,29 @@ describe('ssh-isolated keep-alive registry (#106935)', () => {
     instances[0].emit('open')
     expect(registry.openUrl('conn:office::work')).toBe('ws://127.0.0.1:53101/api/ws?token=sess-work')
 
+    // A dropped socket is redialled with backoff (25 → 50 ms), so a dead tunnel is not
+    // hammered every interval until the scope is torn down.
+    vi.useFakeTimers()
+    instances[1].emit('close', { code: 1006 })
+    await vi.advanceTimersByTimeAsync(25)
+    expect(instances).toHaveLength(3)
+    instances[2].emit('close', { code: 1006 })
+    await vi.advanceTimersByTimeAsync(25)
+    expect(instances).toHaveLength(3)
+    await vi.advanceTimersByTimeAsync(25)
+    expect(instances).toHaveLength(4)
+    vi.useRealTimers()
+
     registry.stop('conn:office::work')
     expect(instances[0].closed).toBe(true)
     expect(registry.isArmed('conn:office::work')).toBe(false)
     // Tearing down one sibling must not drop the other owned scope.
-    expect(instances[1].closed).toBe(false)
+    expect(instances[3].closed).toBe(false)
     expect(registry.isArmed('conn:office::less')).toBe(true)
 
     instances[0].emit('close', { code: 1006 })
     await new Promise(resolve => setTimeout(resolve, 50))
-    expect(instances).toHaveLength(2)
+    expect(instances).toHaveLength(4)
     expect(registry.openUrl('conn:office::work')).toBeNull()
   })
 

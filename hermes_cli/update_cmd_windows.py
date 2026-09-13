@@ -740,16 +740,22 @@ def _windows_cold_start_plan() -> dict | None:
     An installed autostart entry is an explicit "I want a gateway" signal; a gateway that died between
     updates would otherwise stay down until next login (resume only relaunches what was running).
     Desktop-owned lifecycle -> ``None`` (spawning ``gateway run`` beside Desktop races ports/state);
-    the skip is ownership, not liveness."""
+    the skip is ownership, not liveness — except when the start attestation reports a vouched-for
+    gateway that died without a clean exit. The Desktop hand-off exits the app before the updater starts
+    and can kill the running gateway in those same seconds, so discovery finds no live PID to pause
+    (#109538) — the dead attestation is the only surviving "a gateway was up" evidence, and the Desktop
+    does not restart the messaging gateway itself. Keep the plan; the spawn-time re-check in
+    ``_cold_start_windows_gateway_after_update`` stays the ownership authority."""
     from hermes_cli.update_cmd import _desktop_owns_gateway_lifecycle
-    with _best_effort('Could not check Desktop gateway-lifecycle ownership before update: %s'):
-        if _desktop_owns_gateway_lifecycle():
-            logger.debug("Skipping Windows gateway cold-start plan: Desktop owns gateway lifecycle")
-            return None
+    from hermes_cli import gateway_windows
     with _best_effort('Could not check Windows gateway autostart state before update: %s'):
-        from hermes_cli import gateway_windows
-        if gateway_windows.is_installed():
-            return {"resume_needed": True, "profiles": {}, "unmapped_pids": [], "unmapped": [], "cold_start_if_installed": True}
+        if not gateway_windows.is_installed():
+            return None
+        with _best_effort('Could not check Desktop gateway-lifecycle ownership before update: %s'):
+            if _desktop_owns_gateway_lifecycle() and not gateway_windows.attested_gateway_died():
+                logger.debug("Skipping Windows gateway cold-start plan: Desktop owns gateway lifecycle")
+                return None
+        return {"resume_needed": True, "profiles": {}, "unmapped_pids": [], "unmapped": [], "cold_start_if_installed": True}
     return None
 
 
@@ -915,6 +921,10 @@ def _cold_start_windows_gateway_after_update() -> bool:
     same post-spawn liveness poll every other ``_spawn_detached`` caller uses
     (``gateway_windows._report_gateway_start``), instead of being printed unconditionally from the returned
     PID.
+
+    Desktop-owned lifecycle suppresses the spawn only while nothing attests a gateway is expected: an
+    attested gateway that died without a clean exit is restored even then (#109538) — the Desktop does
+    not restart the messaging gateway itself.
     """
     from hermes_cli.update_cmd import _desktop_owns_gateway_lifecycle, _m
     if not _m()._is_windows():
@@ -926,7 +936,7 @@ def _cold_start_windows_gateway_after_update() -> bool:
         if list(find_gateway_pids(all_profiles=True)):
             return True
     with _abort_on_error("Could not re-check Desktop gateway-lifecycle ownership before cold-start"):
-        if _desktop_owns_gateway_lifecycle():
+        if _desktop_owns_gateway_lifecycle() and not gateway_windows.attested_gateway_died():
             logger.debug("Skipping Windows gateway cold-start: Desktop owns gateway lifecycle")
             return True
     with _abort_on_error("Could not cold-start Windows gateway after update"):

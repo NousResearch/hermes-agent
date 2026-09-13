@@ -192,7 +192,7 @@ export function SidebarCronJobsSection({
         </button>
       </div>
       {open && (
-        <SidebarGroupContent className="scrollbar-fade flex max-h-72 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
+        <SidebarGroupContent className="flex max-h-none flex-col gap-px overflow-visible pb-1.75">
           {shown.map(job => (
             <CronJobSidebarRow
               busy={triggeringJobIds.has(job.id)}

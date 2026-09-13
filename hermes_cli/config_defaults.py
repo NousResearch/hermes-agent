@@ -1725,6 +1725,13 @@ DEFAULT_CONFIG = {
         # Poll and deliver Kanban subscriptions from this gateway. Disable on profiles that do
         # not own notification subscriptions to avoid an idle five-second board probe.
         "notify_in_gateway": True,
+        # Terminal event kinds allowed to WAKE the originating agent. A wake is a
+        # synthetic turn in the origin's session — the costly leg of a notification —
+        # while the passive ping costs nothing. Empty = every kind that hands a
+        # decision back (completed, blocks, review cycles, failures). Narrow it when
+        # the passive ping is enough and only a block needs the agent to react,
+        # e.g. ["blocked", "block_loop_detected"]. Unknown names are ignored.
+        "wake_event_kinds": [],
         # Run the dispatcher inside the gateway process (~300µs per idle tick). False only if you
         # run it as a separate unit or don't want the gateway spawning workers.
         "dispatch_in_gateway": True,

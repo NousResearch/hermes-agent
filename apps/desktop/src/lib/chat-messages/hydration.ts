@@ -266,6 +266,15 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   }
 
   messages.forEach((message, index) => {
+    // Host-typed developer events remain in model/audit history, not chat bubbles.
+    // Preserve the turn boundary without interpreting user-authored text.
+    if (message.role === 'developer' && message.display_kind === 'internal_notification') {
+      flushPendingTools(index)
+      activeAssistantIndex = null
+
+      return
+    }
+
     if (message.role === 'tool') {
       const updatedPendingToolParts = applyStoredToolResultToParts(pendingToolParts, message)
 

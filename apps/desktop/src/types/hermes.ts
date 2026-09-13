@@ -551,6 +551,7 @@ export type TimelineDisplayMetadata =
       duration_seconds?: number
     }
   | { reactions: MessageReaction[] }
+  | { schema_version: number; event_kind: string; event_id: string; plugin_id: string }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
 export interface MessageReaction {
@@ -586,7 +587,7 @@ export interface SessionMessage {
    * so readers must narrow before indexing into it.
    */
   display_metadata?: string | TimelineDisplayMetadata
-  role: 'assistant' | 'system' | 'tool' | 'user'
+  role: 'assistant' | 'developer' | 'system' | 'tool' | 'user'
   /**
    * Durable `messages.id` from the backend. The renderer's own message ids are
    * ephemeral (derived from timestamp+index, and a different shape for live vs

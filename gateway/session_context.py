@@ -5,10 +5,13 @@ Replaces the old ``os.environ``-based ``HERMES_SESSION_*`` state with task-local
 other's routing ids.  ``get_session_env`` is a drop-in for ``os.getenv``.
 """
 
+import logging
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import Any, Iterator
+
+logger = logging.getLogger(__name__)
 
 # "Never set here" (falls back to os.environ for CLI/cron) vs "" = explicitly cleared (no fallback).
 _UNSET: Any = object()
@@ -185,16 +188,36 @@ def clear_session_vars(tokens: list) -> None:
     "silent leak"."""
     all_vars = _SESSION_VARS + (_SESSION_ASYNC_DELIVERY, _SESSION_HISTORY_DELIVERY)
     expected = len(all_vars)
+    # SRL-4543 Gate B rodada 2 (Kimi): ``tokens`` can arrive as ``None`` (an admission that
+    # raised before `set_session_vars` returned, or a caller that never admitted). `len(None)`
+    # raises TypeError BEFORE any reset runs, leaving every identity ContextVar holding the
+    # PREVIOUS turn's value -- the exact concurrent-identity leak this issue exists to close.
+    # None/empty is therefore a VALID "nothing was admitted" state: reset everything to its
+    # safe baseline first, then log the anomaly. Never silently swallowed -- callers that
+    # relied on the old TypeError as a signal (grep confirms none do; both real call sites
+    # in gateway/run.py and gateway/platforms/api_server.py always pass their own
+    # set_session_vars() tokens) still see the reset happen and can observe the log line.
+    safe_tokens = tokens if tokens else []
+    if not tokens:
+        logger.warning(
+            "clear_session_vars: tokens was %r (falsy) -- resetting every ContextVar to its "
+            "safe baseline anyway. This means a turn admitted no identity or its "
+            "set_session_vars() call failed before returning tokens; investigate the caller.",
+            tokens,
+        )
     for i, var in enumerate(all_vars):
         baseline = "" if i < len(_SESSION_VARS) else _UNSET
-        if i < len(tokens):
-            _restore_or_baseline(var, tokens[i], baseline)
+        if i < len(safe_tokens):
+            _restore_or_baseline(var, safe_tokens[i], baseline)
         else:
             var.set(baseline)
     _runtime_cwd("clear_session_cwd")
-    if len(tokens) != expected:
+    # A falsy tokens (None/[]) is the documented "nothing to unwind" case above -- already
+    # logged and reset -- not a malformed-list bug. Only a genuinely non-empty-but-short list
+    # (a real truncated capture) is worth raising ValueError for.
+    if tokens and len(safe_tokens) != expected:
         raise ValueError(
-            f"clear_session_vars: tokens length mismatch — got {len(tokens)}, expected "
+            f"clear_session_vars: tokens length mismatch \u2014 got {len(safe_tokens)}, expected "
             f"{expected} (the shape set_session_vars always returns). All ContextVars were "
             f"still reset to their safe baseline before this error was raised; this exception "
             f"only flags that the caller's tokens list was malformed, e.g. from a truncated "

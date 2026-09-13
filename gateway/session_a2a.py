@@ -36,6 +36,14 @@ def is_forward_policy(policy):
         return False
 
 
+def forward_author(policy):
+    """The authenticated peer wrote a forwarded turn, not the local principal hosting it."""
+    if not is_forward_policy(policy):
+        return None
+    peer = json.loads(policy.request_json)['a2a_identity'][2]
+    return {'id': peer, 'name': peer, 'is_bot': True}
+
+
 def storage_source(db, source, session_id, fallback):
     """Retain the owner's native label when its transport refreshes peer metadata."""
     from gateway.config import Platform

@@ -299,12 +299,24 @@ class AIAgent(
             return None
 
     def _session_row_model_config(self) -> Any:
-        """``model_config`` for the session row: the init config plus the live YOLO bypass.
+        """Session metadata at publication time, not the constructor's stale runtime.
 
         The row is created lazily on the first turn, so this is the only chance to record a pre-first-turn
         /yolo toggle for ``hermes --resume``.
         """
-        model_config = self._session_init_model_config
+        model_config = dict(self._session_init_model_config or {})
+        # Only persist the resume-safe fields, never credentials or request payloads.
+        for key in ("model", "provider", "reasoning_config", "max_iterations", "max_tokens"):
+            if hasattr(self, key):
+                model_config[key] = getattr(self, key)
+        if model_config.get("provider") == "custom":
+            from hermes_cli.runtime_provider import canonical_custom_identity
+            model_config["provider"] = canonical_custom_identity(
+                base_url=getattr(self, "base_url", None), model=getattr(self, "model", None),
+            ) or "custom"
+        if hasattr(self, "service_tier"):
+            # None is an observed normal mode; missing metadata must stay distinguishable.
+            model_config["service_tier"] = self.service_tier or "normal"
         try:
             from tools.approval import is_session_yolo_enabled
             if is_session_yolo_enabled(self.session_id):

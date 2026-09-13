@@ -99,6 +99,24 @@ def _bang_env() -> dict:
         return os.environ.copy()  # tools package unimportable: run the user's command anyway
 
 
+def _bang_argv(command: str):
+    """Resolve (argv, use_shell) for a bang command.
+
+    On Windows, ``subprocess.Popen(..., shell=True)`` hard-codes ``ComSpec``
+    (cmd.exe), which lacks ``pwd``/``ls`` — so prefer the same Git Bash the
+    terminal tool uses (``HERMES_GIT_BASH_PATH`` / portable Git discovery) and
+    fall back to cmd.exe only when no bash can be found. On POSIX, keep
+    ``shell=True`` so the user's ``$SHELL`` (bash/zsh/sh) is respected.
+    """
+    if os.name == "nt":
+        try:
+            from tools.environments.local import _find_bash
+            return [_find_bash(), "-c", command], False
+        except Exception:
+            pass  # no usable bash: fall through to the historical cmd.exe path
+    return command, True
+
+
 def run_bang_command(command: str, *, cwd: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT, writer=None) -> int:
     """Execute *command*, streaming merged stdout/stderr through *writer* (default ``print``); return the exit code.
 
@@ -114,9 +132,11 @@ def run_bang_command(command: str, *, cwd: Optional[str] = None, timeout: int = 
     except Exception:
         creationflags = 0
     try:
-        # shell=True is intentional (matches quick_commands): the human typed this, not the model.
+        # shell=True is intentional on POSIX (matches quick_commands): the human
+        # typed this, not the model. On Windows we prefer Git Bash over cmd.exe.
+        argv, use_shell = _bang_argv(command)
         proc = subprocess.Popen(
-            command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            argv, shell=use_shell, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             encoding="utf-8", errors="replace", cwd=run_cwd, env=_bang_env(),
             creationflags=creationflags)
     except Exception as exc:

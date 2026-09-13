@@ -642,7 +642,14 @@ Three verdicts, matching Cowork's pass/warn/fail:
 | **dangerous** | Blocked. `--force` does **not** override |
 
 On `hermes plugins update`, a dangerous verdict on the updated tree
-disables the plugin until you review the findings and re-enable it.
+disables the plugin until you review the findings and re-enable it. A
+dangerous block names the critical findings that caused it (e.g.
+`1 critical of 42 findings (destructive_root_rm)`), so a single blocking
+line is not hidden behind the total.
+
+Test trees (`tests/`, `test/`, `testing/`, `spec/`, `specs/`, `fixtures/`)
+are not scanned: their fixtures deliberately hold hostile strings to prove
+the plugin rejects them, and test code never runs inside the agent.
 
 Scanning is on by default; disable it in `config.yaml`:
 

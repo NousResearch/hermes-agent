@@ -70,9 +70,120 @@ class HermesProviderMixin:
         self._coerce_client_secret_post()
         return self._prepare_token_request(await super()._exchange_token_authorization_code(*args, **kwargs))
 
+    # Set while this provider owns the refresh fence; cleared by
+    # _hermes_release_refresh_fence. Never shared across instances.
+    _hermes_fence: Any = None
+
+    async def async_auth_flow(self, request):
+        """Guarantee fence release even if the auth generator is abandoned.
+
+        The SDK drives the refresh as a generator: ``_refresh_token`` yields a
+        request and ``_handle_refresh_response`` consumes the response. If the
+        caller cancels in between (timeout, task cancellation, transport
+        teardown), GeneratorExit/CancelledError is raised at the yield and
+        ``_handle_refresh_response`` never runs. Without this wrapper the fence
+        file would stay locked for the life of the process and every later
+        refresh would fail closed -- trading a race for a deadlock.
+        """
+        inner = super().async_auth_flow(request)
+        try:
+            sent, thrown = None, None
+            while True:
+                try:
+                    if thrown is not None:
+                        exc, thrown = thrown, None
+                        out = await inner.athrow(exc)
+                    else:
+                        out = await inner.asend(sent)
+                except StopAsyncIteration:
+                    return
+                # Full bidirectional delegation: the SDK drives this flow with
+                # asend(response), so `async for` would swallow the response and
+                # feed the inner generator None. Async generators have no
+                # `yield from`, hence the manual pump.
+                try:
+                    sent = yield out
+                except GeneratorExit:
+                    await inner.aclose()
+                    raise
+                except BaseException as exc:
+                    sent, thrown = None, exc
+        finally:
+            self._hermes_release_refresh_fence()
+
     async def _refresh_token(self):
+        """Take the refresh fence, then build the request from the token we own.
+
+        The fence is acquired BEFORE the final read of the refresh token and is
+        released only after _handle_refresh_response has persisted the
+        replacement, so one refresh generation is consumed by exactly one
+        process. See tools.mcp_oauth._refresh_fence for the interleaving this
+        closes.
+
+        Holding a lock across ``yield`` in the SDK's generator-based auth flow
+        is safe here because the SDK already serializes the whole flow under
+        ``self.context.lock``: the generator is always driven to completion (or
+        aborted) by one task, and async_auth_flow cannot interleave two
+        refreshes inside one process.
+        """
         self._coerce_client_secret_post()
-        return self._prepare_token_request(await super()._refresh_token())
+        self._hermes_acquire_refresh_fence()
+        try:
+            # Re-read under the fence: a peer may have rotated while we waited
+            # for it, in which case the token we were about to POST is dead.
+            await self._hermes_adopt_tokens_from_disk()
+            return self._prepare_token_request(await super()._refresh_token())
+        except BaseException:
+            # Never hold the fence when no POST will follow.
+            self._hermes_release_refresh_fence()
+            raise
+
+    def _hermes_acquire_refresh_fence(self) -> None:
+        """Enter the fence, or let RefreshFenceTimeout abort this attempt.
+
+        Fails closed on purpose: a refresh we are not certain we own must not
+        be POSTed. A stale fence from an aborted attempt is replaced rather
+        than stacked, so a crashed generator cannot leak ownership.
+        """
+        from tools.mcp_oauth import _refresh_fence
+
+        self._hermes_release_refresh_fence()
+        storage = self.context.storage
+        tokens_path = getattr(storage, "_tokens_path", None)
+        if tokens_path is None:  # pragma: no cover - non-Hermes storage
+            return
+        fence = _refresh_fence(tokens_path())
+        fence.__enter__()
+        self._hermes_fence = fence
+
+    def _hermes_release_refresh_fence(self) -> None:
+        """Release the fence if held. Idempotent and never raises."""
+        fence, self._hermes_fence = self._hermes_fence, None
+        if fence is None:
+            return
+        try:
+            fence.__exit__(None, None, None)
+        except Exception:  # pragma: no cover - release must never mask the outcome
+            self._hermes_logger.debug("Refresh fence release failed", exc_info=True)
+
+    async def _hermes_adopt_tokens_from_disk(self) -> None:
+        """Adopt a peer's newer tokens before POSTing our own copy.
+
+        Called under the fence. If disk already holds a different token, the
+        peer that held the fence before us won this generation; its value is
+        the only one the provider will still accept.
+        """
+        try:
+            stored = await self.context.storage.get_tokens()
+        except Exception:  # pragma: no cover - unreadable store: keep what we have
+            return
+        if stored is None:
+            return
+        current = self.context.current_tokens
+        if current is not None and getattr(stored, "refresh_token", None) == getattr(current, "refresh_token", None):
+            return
+        self.context.current_tokens = stored
+        self.context.update_token_expiry(stored)
 
     async def _store_tokens(self, token_response) -> None:
         self.context.current_tokens = token_response
@@ -93,9 +204,28 @@ class HermesProviderMixin:
         await self._store_tokens(token_response)
 
     async def _handle_refresh_response(self, response) -> bool:
-        """Accept any 2xx refresh response; never log the body."""
+        """Accept any 2xx refresh response; never log the body.
+
+        Always releases the refresh fence: this is the single exit point of the
+        fenced section, whatever the outcome.
+        """
+        try:
+            return await self._hermes_handle_refresh_response(response)
+        finally:
+            self._hermes_release_refresh_fence()
+
+    async def _hermes_handle_refresh_response(self, response) -> bool:
         if not (200 <= response.status_code < 300):
             self._hermes_logger.warning("Token refresh failed: %s", response.status_code)
+            # A peer process (gateway vs desktop sharing one HERMES_HOME) may have
+            # rotated the refresh token microseconds ago and already persisted the
+            # replacement. Providers issuing single-use refresh tokens reject our
+            # now-stale copy with a 400. Re-read disk before destroying the session.
+            if await self._hermes_reload_tokens_after_refresh_failure():
+                self._hermes_logger.info(
+                    "Recovered a peer-rotated refresh token instead of clearing the session"
+                )
+                return True
             self.context.clear_tokens()
             return False
         from httpx import HTTPError
@@ -119,6 +249,85 @@ class HermesProviderMixin:
                 token_response.scope = prior.scope
         await self._store_tokens(token_response)
         return True
+
+    async def _hermes_reload_tokens_after_refresh_failure(self) -> bool:
+        """Re-read tokens from disk after a rejected refresh.
+
+        Returns True only when disk holds a token that is BOTH different
+        from the one we just failed with AND still valid. That is the
+        signature of a peer process having rotated the refresh token
+        between our read and our POST — a recoverable race, not a dead
+        credential.
+
+        Returns False for the genuinely-expired case (nobody else wrote a
+        newer token), so the caller still clears state and surfaces the
+        reauth prompt. Never raises: a failure to recover must degrade to
+        the pre-existing clear-and-reauth path.
+        """
+        try:
+            storage = getattr(self.context, "storage", None)
+            if storage is None:
+                return False
+
+            stale = getattr(self.context, "current_tokens", None)
+            stale_refresh = getattr(stale, "refresh_token", None)
+
+            fresh = await storage.get_tokens()
+            if fresh is None:
+                return False
+
+            fresh_refresh = getattr(fresh, "refresh_token", None)
+            # Same credential we just failed with: disk has nothing newer.
+            if fresh_refresh is not None and fresh_refresh == stale_refresh:
+                return False
+
+            # No refresh token on the disk entry. The access token may
+            # still be usable right now, but adopting it would trade an
+            # explicit reauth today for a silent one at expiry, with no
+            # way to refresh in between. Treat it as unrecoverable.
+            if fresh_refresh is None:
+                return False
+
+            # Defence-in-depth. Not load-bearing: is_token_valid() below
+            # already rejects an empty access_token, so mutating this
+            # guard away leaves the suite green. Kept because recovering
+            # onto a credential-less token would be a security-relevant
+            # failure if that SDK behaviour ever changed.
+            access = getattr(fresh, "access_token", None)
+            if not access:
+                return False
+
+            # Storage clamps a past-due token to ``expires_in == 0`` on
+            # read (see HermesTokenStorage.get_tokens). The SDK's
+            # is_token_valid() compares ``time.time() <= expiry`` and so
+            # still reports True for that boundary value, which would make
+            # us "recover" onto a token the server will immediately reject.
+            # Require a real, positive TTL.
+            try:
+                if int(getattr(fresh, "expires_in", 0) or 0) <= 0:
+                    return False
+            except (TypeError, ValueError):
+                return False
+
+            # Publish, then restore on rejection. is_token_valid() reads
+            # the context rather than taking a token argument, so the
+            # candidate has to be installed to be tested; keeping the
+            # previous value lets a losing probe leave the context exactly
+            # as it found it instead of stranding a rejected token there
+            # for the caller to clean up.
+            previous_tokens = self.context.current_tokens
+            self.context.current_tokens = fresh
+            self.context.update_token_expiry(fresh)
+
+            if not self.context.is_token_valid():
+                self.context.current_tokens = previous_tokens
+                self.context.update_token_expiry(previous_tokens)
+                return False
+
+            return True
+        except Exception as exc:  # noqa: BLE001 — recovery is best-effort
+            logger.debug("Post-refresh disk reload failed: %s", exc)
+            return False
 
 
 def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict | None) -> tuple[dict, "HermesTokenStorage"]:

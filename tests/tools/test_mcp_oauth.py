@@ -3,7 +3,9 @@
 import json
 import stat
 import sys
+import time
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -20,6 +22,7 @@ from tools.mcp_oauth import (
     _make_callback_handler,
     _make_redirect_handler,
     _paste_callback_reader,
+    _token_store_lock,
 )
 
 
@@ -1161,4 +1164,117 @@ def test_humanize_non_registration_403_passthrough():
             server_url="https://mcp.linear.app/mcp",
         )
         is None
+    )
+
+
+# ---------------------------------------------------------------------------
+# Token-store advisory lock
+#
+# Two Hermes backends share one HERMES_HOME (desktop `serve` + `gateway run`).
+# Providers that issue single-use refresh tokens punish an unserialized
+# read-modify-write: both processes POST the same token and the loser's
+# refresh is rejected. cron/jobs.py guards jobs.json the same way.
+# ---------------------------------------------------------------------------
+
+
+_LOCK_HOLDER_SRC = '''
+import os, sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+os.environ["HERMES_HOME"] = sys.argv[2]
+from tools.mcp_oauth import _token_store_lock
+with _token_store_lock(Path(sys.argv[3])):
+    print("HELD", flush=True)
+    time.sleep(float(sys.argv[4]))
+'''
+
+
+def test_token_store_lock_is_reentrant_within_a_thread(tmp_path):
+    """Nested acquisition must not deadlock the same thread."""
+    target = tmp_path / "srv.json"
+    target.write_text("{}", encoding="utf-8")
+
+    with _token_store_lock(target):
+        with _token_store_lock(target):
+            pass  # would hang if the in-process guard were not re-entrant
+
+
+def test_token_store_lock_survives_unwritable_lock_path(tmp_path, monkeypatch):
+    """A lock that cannot be created must not block token access."""
+    target = tmp_path / "srv.json"
+    target.write_text("{}", encoding="utf-8")
+
+    def _boom(*a, **k):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr("builtins.open", _boom)
+
+    # Degrades to in-process locking rather than raising.
+    with _token_store_lock(target):
+        pass
+
+
+def test_token_store_lock_releases_on_exception(tmp_path):
+    """An exception inside the section must still release the lock."""
+    target = tmp_path / "srv.json"
+    target.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        with _token_store_lock(target):
+            raise ValueError("boom")
+
+    # Reacquire immediately; a leaked lock would stall until the timeout.
+    start = time.monotonic()
+    with _token_store_lock(target):
+        pass
+    assert time.monotonic() - start < 1.0
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, "executable") or not sys.executable,
+    reason="needs a real interpreter to spawn a peer process",
+)
+def test_token_store_lock_excludes_a_separate_process(tmp_path):
+    """The point of an ADVISORY FILE lock: exclude another process.
+
+    An in-process test cannot show this — threading.RLock alone would pass.
+    Spawn a peer that holds the lock and assert we actually wait for it.
+    """
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[2]
+    target = tmp_path / "srv.json"
+    target.write_text("{}", encoding="utf-8")
+
+    holder = tmp_path / "holder.py"
+    holder.write_text(_LOCK_HOLDER_SRC, encoding="utf-8")
+
+    hold_seconds = 2.0
+    proc = subprocess.Popen(
+        [
+            sys.executable, str(holder), str(repo_root), str(tmp_path),
+            str(target), str(hold_seconds),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        ready = proc.stdout.readline().strip()
+        if ready != "HELD":
+            pytest.skip(f"peer process could not take the lock (got {ready!r})")
+
+        start = time.monotonic()
+        with _token_store_lock(target):
+            waited = time.monotonic() - start
+    finally:
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:  # pragma: no cover
+            proc.kill()
+
+    # Allow slack for process startup, but a near-zero wait means the advisory
+    # lock did nothing and only the in-process RLock was involved.
+    assert waited > 0.5, (
+        f"acquired in {waited:.2f}s while a peer held the lock — "
+        "cross-process exclusion is not working"
     )

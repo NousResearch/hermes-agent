@@ -1,0 +1,10 @@
+# Personal identity patterns for history_scan.py — one Python regex per line.
+# Copy to ~/.hermes/personal-patterns.txt (or pass --personal FILE).
+# These catch YOUR identity leaking into a repo that is about to go public:
+# real names, personal emails, usernames, phone prefixes, employer names.
+# Patterns are matched case-sensitively unless you add (?i).
+#
+# (?i)(jane|janedoe|j\.doe)
+# (?i)jane\.doe@gmail\.com
+# \+44[0-9]{7,}
+# (?i)acme-internal

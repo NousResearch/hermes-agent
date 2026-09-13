@@ -167,3 +167,42 @@ def test_notification_owner_gate_resolves_rotated_key_in_the_session_profile_sto
 
     assert server._session_owns_notification_event("ui1", session, evt) is True
     assert server._get_db().get_session("parent") is None  # never looked up through the launch store
+
+
+def test_foreign_profile_poller_requeues_event_owned_through_another_profiles_lineage(launch_db_env, tmp_path):
+    """Two profiles share one completion queue. Profile B's poller dequeues an event keyed on profile
+    A's compressed parent: B cannot resolve A's lineage in its own store, so both of B's ownership
+    checks were false and ``_notif_handle_event`` dropped the event. B must recognise A's live
+    continuation as the owner and hand the event back."""
+    import threading
+    from tools.process_registry import process_registry
+
+    a_home, b_home = tmp_path / "profiles" / "a", tmp_path / "profiles" / "b"
+    a_home.mkdir(parents=True)
+    b_home.mkdir(parents=True)
+    db = registry.acquire(a_home / "state.db")
+    db.create_session("parent", source="tui", model="m")
+    db.end_session("parent", "compression")
+    db.create_session("child", source="tui", model="m", parent_session_id="parent")
+    registry.release(db)
+
+    def _sess(home, key):
+        return {"profile_home": str(home), "session_key": key, "agent": None,
+                "history_lock": threading.RLock(), "running": False}
+    sess_a, sess_b = _sess(a_home, "child"), _sess(b_home, "other")
+    evt = {"type": "async_delegation", "session_key": "parent", "delegation_id": "d1", "results": []}
+    queue = process_registry.completion_queue
+    while not queue.empty():
+        queue.get_nowait()
+    with server._sessions_lock:
+        saved = dict(server._sessions)
+        server._sessions.clear()
+        server._sessions.update({"uiA": sess_a, "uiB": sess_b})
+    try:
+        assert server._notif_handle_event("uiB", sess_b, dict(evt), set(), process_registry, lambda e: "t", None) is True
+        assert queue.qsize() == 1  # requeued for A, not dropped
+        assert server._notification_event_belongs_elsewhere("uiA", sess_a, queue.get_nowait()) is False
+    finally:
+        with server._sessions_lock:
+            server._sessions.clear()
+            server._sessions.update(saved)

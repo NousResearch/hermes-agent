@@ -73,7 +73,8 @@ def _optional_lock(agent: Any, attr: str) -> Iterator[None]:
 def prepare_background_review_run(agent: Any) -> Optional[_BackgroundReviewRun]:
     """Install a unique run token on the parent before ``Thread.start()``."""
     run = _BackgroundReviewRun()
-    run.source_session_id = getattr(agent, "session_id", None)
+    from agent.review_summary import REVIEW_SOURCE_SESSION_ID
+    run.source_session_id = REVIEW_SOURCE_SESSION_ID.get() or getattr(agent, "session_id", None)
     try:
         lock = getattr(agent, "_background_review_lock", None)
         if lock is None:

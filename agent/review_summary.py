@@ -5,12 +5,19 @@ and these receipts are excluded from the model projection on every resume.
 """
 from __future__ import annotations
 
+import contextvars
 import logging
 import time
 import uuid
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Deferred reviews retain their origin across /new and bounded requeues. The
+# idle queue captures this in its Context, not on the reusable parent agent.
+REVIEW_SOURCE_SESSION_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "review_source_session_id", default=None,
+)
 
 
 def publish_review_summary(agent: Any, actions: list[str], *, source_session_id: str | None = None) -> None:

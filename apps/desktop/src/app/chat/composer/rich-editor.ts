@@ -708,6 +708,42 @@ export function placeCaretAtOffset(editor: HTMLElement, offset: number) {
   placeCaretEnd(editor)
 }
 
+/** The live collapsed caret inside `editor`, or `null` when the editor does
+ *  not currently hold it (no selection, multi-range, or the anchor lives in
+ *  another element — a hidden keep-alive composer must not repatriate a
+ *  selection the visible one owns). `node`/`offset` is the boundary itself;
+ *  `textOffset` is the same position in `composerPlainText` coordinates, the
+ *  units `placeCaretAtOffset` restores with. */
+interface ComposerCaretSnapshot {
+  node: Node
+  offset: number
+  textOffset: number
+}
+
+function composerCaretSnapshotIfInside(editor: HTMLElement): ComposerCaretSnapshot | null {
+  const selection = window.getSelection()
+
+  if (!selection || !selection.isCollapsed || selection.rangeCount !== 1) {
+    return null
+  }
+
+  const range = selection.getRangeAt(0)
+
+  if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) {
+    return null
+  }
+
+  const before = range.cloneRange()
+  before.selectNodeContents(editor)
+  before.setEnd(range.startContainer, range.startOffset)
+
+  const container = document.createElement('div')
+  container.dataset.slot = RICH_INPUT_SLOT
+  container.append(before.cloneContents())
+
+  return { node: range.startContainer, offset: range.startOffset, textOffset: composerPlainText(container).length }
+}
+
 /** Nothing but a break / whitespace (recursively) — i.e. no real text or chip. */
 function isBlankNode(node: ChildNode | null): boolean {
   if (!node) {
@@ -737,6 +773,16 @@ function isBlankNode(node: ChildNode | null): boolean {
  *  rendering emits (we use text nodes + <br> + chips). Real <br> line breaks
  *  (Shift+Enter, which sit after actual text) are preserved. */
 export function normalizeComposerEditorDom(editor: HTMLElement) {
+  // Selection is document-global and every path below can delete the node the
+  // caret is anchored in (the #88621 class: the editor stays `activeElement`,
+  // the range points at a detached node, and printable keys stop producing
+  // input events until a click restores the selection). Normalization is
+  // text-preserving, so the caret is snapshotted as a `composerPlainText`
+  // offset — the same coordinates the undo/redo caret save already uses — and
+  // re-established afterwards only when some path actually detached it.
+  // Skipped during IME composition: the preedit caret is Chromium's to move.
+  const caret = document.activeElement === editor ? composerCaretSnapshotIfInside(editor) : null
+
   const selectedContainer = composerCollapsedSelectionContainer(editor)
 
   // Chromium's zero-length text nodes first: every check below reads siblings,
@@ -794,4 +840,30 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
   if (editor.childNodes.length === 0) {
     editor.appendChild(document.createElement('br'))
   }
+
+  if (!caret) {
+    return
+  }
+
+  const selection = window.getSelection()
+
+  // Nothing to do while the caret still sits on its original anchor — the
+  // common case: none of the paths below touched the caret's own node.
+  // Removing that node does NOT reliably lose the caret: the DOM re-anchors
+  // the boundary in the removed node's parent, which reads as "valid" while
+  // the caret has drifted to a container-level position. The anchor node's
+  // presence is what tells the two apart — gone means restore.
+  if (
+    selection?.rangeCount === 1 &&
+    editor.contains(selection.getRangeAt(0).startContainer) &&
+    selection.getRangeAt(0).startContainer === caret.node
+  ) {
+    return
+  }
+
+  // The caret's anchor is gone — re-establish it at the equivalent plain-text
+  // position (never inside a chip: placeCaretAtOffset treats chips as atomic
+  // and stops before them, which is where a caret would sit after the next
+  // backspace anyway).
+  placeCaretAtOffset(editor, Math.min(caret.textOffset, composerPlainText(editor).length))
 }

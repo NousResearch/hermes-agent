@@ -344,6 +344,43 @@ class TestSignalSSEUrlEncoding:
         assert quote("+15551234567", safe="") == "%2B15551234567"
 
 
+class TestSignalSSECleanup:
+    @pytest.mark.asyncio
+    async def test_cancelled_listener_closes_its_response_without_clearing_newer_one(self, monkeypatch):
+        """A cancelled listener must not clear a response installed by a reconnect."""
+        adapter = _make_signal_adapter(monkeypatch)
+        entered = asyncio.Event()
+
+        class OldResponse:
+            async def aiter_text(self):
+                entered.set()
+                await asyncio.Event().wait()
+                yield ""
+
+            aclose = AsyncMock()
+
+        class Stream:
+            async def __aenter__(self):
+                return old_response
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        old_response = OldResponse()
+        newer_response = MagicMock()
+        adapter.client = MagicMock(stream=MagicMock(return_value=Stream()))
+        adapter._running = True
+
+        listener = asyncio.create_task(adapter._sse_listener())
+        await entered.wait()
+        adapter._sse_response = newer_response
+        listener.cancel()
+        await listener
+
+        old_response.aclose.assert_awaited_once()
+        assert adapter._sse_response is newer_response
+
+
 # ---------------------------------------------------------------------------
 # Attachment Fetch (Bug Fix: parameter must be "id" not "attachmentId")
 # ---------------------------------------------------------------------------

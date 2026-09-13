@@ -32,6 +32,7 @@ vi.mock('./i18n', () => ({
       portalOtherControls: 'Other viewer',
       heroOpenLive: 'Open live',
       heroStale: 'Last seen',
+      heroSuppressed: 'Hidden while someone has control',
       heroConnecting: 'Connecting'
     }
   })
@@ -163,5 +164,21 @@ it('discards a late thumbnail from the previous owner and retains a same-owner f
   })
   expect(view.container.querySelector('img')?.getAttribute('src')).toContain('HOST_B')
   expect(view.getByRole('button').getAttribute('aria-label')).toContain('Last seen')
+  view.unmount()
+})
+
+it('captions a suppressed thumbnail as hidden-while-controlled and never ages it into stale', async () => {
+  vi.useFakeTimers()
+  setScreenStatus(botA, status)
+  vi.mocked(host.requestProfile).mockResolvedValue({ data_url: null, suppressed: 'human_has_control' })
+  const view = render(<ScreenHero bot={botA} />)
+  await act(async () => {})
+  expect(view.getByRole('button').getAttribute('aria-label')).toContain('Hidden while someone has control')
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(20_000)
+  })
+  expect(view.getByRole('button').getAttribute('aria-label')).toContain('Hidden while someone has control')
+  expect(view.getByRole('button').getAttribute('aria-label')).not.toContain('Last seen')
   view.unmount()
 })

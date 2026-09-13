@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { botSelectionKey } from './data'
 import { useBots } from './i18n'
-import { displayRequest } from './screen-connection'
+import { displayRequest, type DisplayThumbnail } from './screen-connection'
 import { openBotScreen } from './screen-open'
 import { type PortalTone, useScreenPortalState } from './screen-portal'
 import type { BotMeta, RosterRow } from './types'
@@ -25,12 +25,16 @@ function useLiveThumbnail(bot: RosterRow, running: boolean) {
   // Consecutive failed refreshes; past STALE_AFTER the frame is shown dimmed as "last seen" so a
   // dead gateway never keeps looking live. Success resets it.
   const [misses, setMisses] = useState(0)
+  // The backend withholds frames while a human holds the screen; that is a
+  // deliberate answer, not a failed refresh, so it never ages into "stale".
+  const [suppressed, setSuppressed] = useState(false)
   const boxRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
     if (!running) {
       setDataUrl(null)
       setMisses(0)
+      setSuppressed(false)
 
       return
     }
@@ -61,10 +65,11 @@ function useLiveThumbnail(bot: RosterRow, running: boolean) {
         return
       }
 
-      void displayRequest<{ data_url: string | null }>(bot, 'display.thumbnail')
+      void displayRequest<DisplayThumbnail>(bot, 'display.thumbnail')
         .then(result => {
           if (!cancelled) {
             setDataUrl(result.data_url)
+            setSuppressed(result.suppressed === 'human_has_control')
             setMisses(0)
           }
         })
@@ -92,7 +97,7 @@ function useLiveThumbnail(bot: RosterRow, running: boolean) {
     }
   }, [bot, running])
 
-  return { dataUrl, boxRef, stale: misses >= STALE_AFTER }
+  return { dataUrl, boxRef, stale: misses >= STALE_AFTER, suppressed }
 }
 
 const TONE_RING: Partial<Record<PortalTone, string>> = {
@@ -109,13 +114,13 @@ function ScreenHeroContent({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
   const t = useBots()
   const { tone } = useScreenPortalState(bot)
   const running = tone === 'live' || tone === 'human' || tone === 'other'
-  const { dataUrl, boxRef, stale } = useLiveThumbnail(bot, running)
+  const { dataUrl, boxRef, stale, suppressed } = useLiveThumbnail(bot, running)
 
   if (tone === 'unsupported') {
     return null
   }
 
-  const caption = stale ? t.screen.heroStale : {
+  const caption = suppressed ? t.screen.heroSuppressed : stale ? t.screen.heroStale : {
     live: t.screen.portalWatching,
     human: t.screen.portalYouControl,
     other: t.screen.portalOtherControls,

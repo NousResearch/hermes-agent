@@ -15,7 +15,8 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     if snapshot is None:
         return False
     run_id, status, contract = snapshot
-    if not contract or contract == "local-only":
+    from hermes_cli.kanban_completion_evidence import EVIDENCE_REQUIRED_CONTRACT
+    if not contract or contract in {"local-only", EVIDENCE_REQUIRED_CONTRACT}:
         return None
     if status not in {"running", "ready", "blocked", "review"} or (expected_run_id is not None and run_id != expected_run_id):
         return False

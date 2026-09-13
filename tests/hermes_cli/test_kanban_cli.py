@@ -132,6 +132,17 @@ def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
         assert kb.parent_ids(conn, ready_child) == [parent]
         assert kb.parent_ids(conn, running_child) == []
         assert kb.parent_ids(conn, worker) == [parent]
+def test_cli_complete_persists_evidence_receipt(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="CLI evidence", completion_contract="evidence-required")
+    output = kc.run_slash(
+        f'''complete {task_id} --summary done --evidence '[{{"kind":"test","detail":"CLI targeted test"}}]' '''
+    )
+    assert f"Completed {task_id}" in output
+    with kbc.connect() as conn:
+        assert kb.latest_run(conn, task_id).metadata["completion_evidence"] == [
+            {"kind": "test", "detail": "CLI targeted test"},
+        ]
 
 
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
@@ -242,5 +253,3 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
-

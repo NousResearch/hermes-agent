@@ -54,6 +54,19 @@ def _parse_metadata_flag(raw: Optional[str]) -> tuple[Optional[dict], int]:
     return metadata, 0
 
 
+def _parse_evidence_flag(raw: Optional[str]) -> tuple[Optional[list], int]:
+    """Parse ``--evidence`` JSON without borrowing metadata's object contract."""
+    if not raw:
+        return None, 0
+    try:
+        evidence = json.loads(raw)
+        if not isinstance(evidence, list):
+            raise ValueError("must be a JSON list of {kind, detail} objects")
+    except (ValueError, json.JSONDecodeError) as exc:
+        return None, _err(f"kanban: --evidence: {exc}", 2)
+    return evidence, 0
+
+
 def _run_state_kwargs(args: argparse.Namespace, cmd: str) -> tuple[Optional[dict[str, str]], int]:
     """``--state-type``/``--state-name`` must be given together: ``(kwargs, 0)`` or ``(None, 2)``."""
     st = getattr(args, "state_type", None)
@@ -905,12 +918,15 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return rc
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
-    # Handoff fields are per-run; refuse to copy them across N runs.
-    if len(ids) > 1 and (summary or raw_meta):
-        return _err("kanban: --summary / --metadata are per-task and can't be used "
+    # Handoff fields and evidence are per-run; refuse to copy them across N runs.
+    if len(ids) > 1 and (summary or raw_meta or getattr(args, "evidence", None)):
+        return _err("kanban: --summary / --metadata / --evidence are per-task and can't be used "
                     "with multiple ids (would apply the same handoff to every task). "
                     "Complete tasks one at a time, or drop the flags for the bulk close.", 2)
     metadata, rc = _parse_metadata_flag(raw_meta)
+    if rc:
+        return rc
+    evidence, rc = _parse_evidence_flag(getattr(args, "evidence", None))
     if rc:
         return rc
     fail_msg: dict[str, str] = {}
@@ -927,6 +943,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
+                                        evidence=evidence,
                                         force=bool(getattr(args, "force", False)))
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "

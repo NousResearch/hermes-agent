@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
+from hermes_cli.kanban_completion_evidence import CompletionEvidenceError
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
@@ -658,9 +659,14 @@ def _handle_complete(args: dict, **kw) -> str:
     summary = _redact_opt(args.get("summary"))
     result = _redact_opt(args.get("result"))
     metadata = args.get("metadata")
+    evidence = args.get("evidence")
     if isinstance(metadata, dict):
         # Keep the unredacted dict if the redacted JSON cannot be re-parsed.
         metadata = _redact_metadata(metadata) or metadata
+    if evidence is not None:
+        redacted_evidence = _redact_metadata({"evidence": evidence})
+        if redacted_evidence is not None:
+            evidence = redacted_evidence["evidence"]
     created_cards = _coerce_str_list(
         args.get("created_cards"), "created_cards", "task ids", strip=True)
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
@@ -678,7 +684,11 @@ def _handle_complete(args: dict, **kw) -> str:
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=_worker_run_id(tid), evidence=evidence)
+        except CompletionEvidenceError as evidence_err:
+            return tool_error(
+                f"kanban_complete blocked: {evidence_err}. Your task is still in-flight (no state change). "
+                "Add concrete evidence and retry kanban_complete.")
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the

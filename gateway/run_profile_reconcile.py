@@ -165,11 +165,12 @@ class GatewayProfileReconcileMixin:
         from contextvars import copy_context
         with _log_suppressed(logging.DEBUG, "log routing refresh failed", exc_info=True):
             _enable_multiplex_log_routing(self.config)
+        from tools.mcp_oauth import suppress_interactive_oauth
         loop = asyncio.get_running_loop()
         for profile_name, profile_home in profile_homes:
             try:
                 from tools.mcp_tool_discovery import discover_mcp_tools
-                with _profile_runtime_scope(Path(profile_home)):
+                with _profile_runtime_scope(Path(profile_home)), suppress_interactive_oauth():
                     await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
             except Exception:
                 logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
@@ -209,3 +210,50 @@ class GatewayProfileReconcileMixin:
             from plugins.memory.holographic.store import MemoryStore
             MemoryStore.release_all_under(home)
         logger.info("[MULTIPLEX] Profile '%s' deleted — %d adapter(s) stopped and unrouted", name, len(adapters))
+
+
+def _mcp_config_reconciler(runner=None):
+    """Housekeeping chore keeping live MCP servers in step with ``mcp_servers`` on disk: an entry
+    the user removed (or disabled) after boot must stop — a parked one otherwise self-probes every
+    ``_PARKED_RETRY_INTERVAL`` for the life of the process. One ``stat`` per profile per tick; the
+    reconcile runs when ``config.yaml``'s (mtime, size) changed, and again on the next tick while a
+    dropped server was still mid-connect (``pending``) and could not be torn down yet. Interactive
+    OAuth is suppressed — this runs on a housekeeping thread nobody is watching."""
+    from hermes_cli.config import get_config_path
+    seen: dict = {}
+    retry: set = set()
+
+    def _sig(path) -> tuple:
+        try:
+            st = os.stat(path)
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return (None, None)
+
+    def _reconcile_current(label: str) -> None:
+        from tools.mcp_oauth import suppress_interactive_oauth
+        from tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
+        sig = _sig(get_config_path())
+        prev = seen.get(label)
+        seen[label] = sig
+        if label not in retry and (prev is None or prev == sig):
+            return  # first tick just records the baseline; startup discovery already ran
+        with suppress_interactive_oauth():
+            result = reconcile_mcp_servers_with_config()
+        retry.discard(label)
+        if result["pending"]:
+            retry.add(label)
+        if result["removed"] or result["added"]:
+            logger.info("MCP config changed (%s): removed=%s added=%s", label, result["removed"], result["added"])
+
+    def _tick() -> None:
+        from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+        config = getattr(runner, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            _reconcile_current("default")
+            return
+        for profile_name, profile_home in _multiplex_profile_homes(config):
+            with _profile_runtime_scope(Path(profile_home)):
+                _reconcile_current(str(profile_name))
+
+    return _tick

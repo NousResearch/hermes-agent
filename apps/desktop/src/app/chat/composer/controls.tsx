@@ -13,6 +13,7 @@ import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
+import { ReasoningPill } from './reasoning-pill'
 import { StartVoiceButton } from './start-voice-button'
 import type { ChatBarState, VoiceStatus } from './types'
 import { VoiceMenu } from './voice-menu'
@@ -110,7 +111,12 @@ export function ComposerControls({
     <div className="ml-auto flex min-w-0 shrink items-center gap-(--composer-control-gap)">
       {minimal ? null : (
         <>
-          {hideModelPill ? null : <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />}
+          {hideModelPill ? null : (
+            <>
+              <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+              {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
+            </>
+          )}
           {voiceControls}
         </>
       )}

@@ -36,6 +36,10 @@ _DEFAULT_PORT = 9900
 _ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 60  # seconds: pending task considered orphaned / watchdog period
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
+#: Reply sentinels used to classify a failed dispatch. A deadline expiry is retryable
+#: and is reported as DEADLINE_EXCEEDED so a peer can tell it apart from a real failure.
+REPLY_TIMEOUT_MARKER = "[agent did not reply in time]"
+DISPATCH_FAILED_MARKER = "[agent dispatch failed]"
 _DEFAULT_DESCRIPTION = "Hermes Agent — a general-purpose agent reachable over A2A."
 
 _ok = protocol.jsonrpc_result
@@ -787,7 +791,12 @@ class A2AAdapter(BasePlatformAdapter):
                     state, reply = protocol.STATE_FAILED, "[agent produced no valid profile result]"
                     result_data = self._profile_error(skill, "PROCESSING_FAILED", "Agent processing failed.", rec, state)
             elif state != protocol.STATE_INPUT_REQUIRED:
-                result_data = self._profile_error(skill, "PROCESSING_FAILED", "Agent processing failed.", rec, state)
+                if reply == REPLY_TIMEOUT_MARKER:
+                    result_data = self._profile_error(skill, "DEADLINE_EXCEEDED",
+                                                      "The task exceeded its deadline before a reply was produced.",
+                                                      rec, state, retryable=True)
+                else:
+                    result_data = self._profile_error(skill, "PROCESSING_FAILED", "Agent processing failed.", rec, state)
         self._record_outcome(task_id, context_id, peer, state, reply, started=pending["started"], result_data=result_data,
                              audit_summary=f"profile skill={skill}" if skill else None)
         return state, reply
@@ -808,11 +817,11 @@ class A2AAdapter(BasePlatformAdapter):
                     except Exception:
                         return (protocol.STATE_FAILED, "[client disconnected]")
             except Exception:
-                return on_timeout
+                return (protocol.STATE_FAILED, DISPATCH_FAILED_MARKER)
 
     def _await_reply(self, pending: dict, keepalive=None) -> tuple[str, str]:
         return self._await_future(pending["future"], pending.get("deadline", pending["started"] + _reply_timeout()), keepalive,
-                                  (protocol.STATE_FAILED, "[agent did not reply in time]"))
+                                  (protocol.STATE_FAILED, REPLY_TIMEOUT_MARKER))
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         task, pending = self._prepare_task(params, peer, agent=agent)

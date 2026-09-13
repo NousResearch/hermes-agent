@@ -29,7 +29,10 @@ def _iso(dt: datetime) -> str:
 def test_unreachable_failure_pulls_next_run_earlier_then_ladder_exhausts(tmp_cron_home):
     """Failed-unreachable runs re-fire on the 5/15/30-minute ladder instead of waiting a
     full period, and the ladder stops after its last rung (falls back to the schedule)."""
-    job = create_job("nightly report", "0 3 * * *")  # daily — natural gap is hours
+    # Interval, not a cron expression: the natural next fire is always a full day out. A
+    # fixed clock time ("0 3 * * *") makes the 30-minute rung land past the natural fire
+    # in the half hour before it, and plan_retry rightly yields to the schedule (CI red).
+    job = create_job("nightly report", "every 24h")
     job_id = job["id"]
 
     now = datetime.now(timezone.utc)

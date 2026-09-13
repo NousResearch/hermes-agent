@@ -40,6 +40,28 @@ class TestDetectCodeSkew:
         skew = code_skew.detect_code_skew()
         assert skew == ("abc1234567", "def4567890")
 
+    def test_ref_switch_at_the_same_commit_is_not_skew(self, monkeypatch):
+        """Boot on one branch, disk now on another branch of the SAME commit.
+
+        Every file is byte-identical, so nothing can be stale: a raw-fingerprint
+        compare reported this as skew and 503'd ``/api/model/options`` (the
+        Desktop Models page showed a bogus "running old code" banner).
+        """
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:abc1234567890abcdef")
+        code_skew.record_boot_fingerprint()
+
+        monkeypatch.setattr(
+            code_skew, "_fingerprint", lambda: "git:refs/heads/local/topic:abc1234567890abcdef"
+        )
+        assert code_skew.detect_code_skew() is None
+
+    def test_ref_switch_to_a_different_commit_is_skew(self, monkeypatch):
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:aaa1111111111111111")
+        code_skew.record_boot_fingerprint()
+
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/topic:bbb2222222222222222")
+        assert code_skew.detect_code_skew() == ("aaa1111111", "bbb2222222")
+
 
 
 

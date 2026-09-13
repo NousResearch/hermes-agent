@@ -301,23 +301,40 @@ class TestResolveConfigPath:
         assert _get_default_hermes_home() == default_home
         assert result == default_cfg
 
-    def test_falls_back_to_global_without_hermes_home_env(self, tmp_path):
+    def test_falls_back_to_global_when_no_config_exists_anywhere(self, tmp_path, monkeypatch):
+        """Exercise the REAL resolver chain rather than stubbing it out.
+
+        The earlier version of this test patched `get_hermes_home()` and
+        `_get_default_hermes_home()` directly, so it only demonstrated that the patched values flowed
+        through — it could not have caught a regression in either resolver, nor in the ordering
+        between them (flagged in review).
+        """
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(fake_home))       # Windows platform default home
+        monkeypatch.setattr(Path, "home", lambda: fake_home)     # POSIX home + the ~/.honcho root
 
-        with patch.dict(os.environ, {}, clear=False), \
-             patch.object(Path, "home", return_value=fake_home), \
-             patch(
-                 "plugins.memory.honcho.client.get_hermes_home",
-                 return_value=fake_home / ".hermes",
-             ), \
-             patch(
-                 "plugins.memory.honcho.client._get_default_hermes_home",
-                 return_value=fake_home / ".hermes",
-             ):
-            os.environ.pop("HERMES_HOME", None)
-            result = resolve_config_path()
-        assert result == fake_home / ".honcho" / "config.json"
+        assert resolve_config_path() == fake_home / ".honcho" / "config.json"
+
+    def test_default_profile_config_wins_over_global(self, tmp_path, monkeypatch):
+        """The middle branch of the chain, which the stubbed version could not reach.
+
+        Active (profile) home has no honcho.json but the default profile home does, so the default
+        one is used rather than falling through to the global path.
+        """
+        fake_home = tmp_path / "fakehome"
+        default_home = fake_home / "hermes"
+        profile_home = default_home / "profiles" / "work"
+        profile_home.mkdir(parents=True)
+        (default_home / "honcho.json").write_text(
+            json.dumps({"apiKey": "default-key"}), encoding="utf-8"
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+        assert resolve_config_path() == default_home / "honcho.json"
 
     def test_global_fallback_uses_home_at_call_time(self, tmp_path):
         fake_home = tmp_path / "fakehome"

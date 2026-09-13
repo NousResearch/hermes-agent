@@ -10190,7 +10190,9 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         def update_session_meta(self, _session_id, model_config_json, _model=None):
             self.model_config = model_config_json
 
-        def update_system_prompt(self, _session_id, system_prompt):
+        def update_system_prompt(
+            self, _session_id, system_prompt, global_policy_snapshot=None
+        ):
             self.system_prompt = system_prompt
 
         def append_message(self, session_id, role, content=None, **_kwargs):
@@ -22202,6 +22204,7 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
         provider = "test"
         _cached_system_prompt = None
         _session_db = None
+        _global_policy_snapshot = "frozen TUI policy"
 
         def _build_system_prompt(self, system_message=None):
             from hermes_constants import get_hermes_home
@@ -22215,8 +22218,8 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
             return f"System prompt from {home}\n{soul}"
 
     class FakeDB:
-        def update_system_prompt(self, session_id, prompt):
-            pass
+        def update_system_prompt(self, session_id, prompt, global_policy_snapshot=None):
+            self.persisted = (session_id, prompt, global_policy_snapshot)
 
     agent = FakeAgent()
     agent._session_db = FakeDB()
@@ -22235,6 +22238,9 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
         f"system prompt built with wrong home: {built_homes[0]}"
     )
     assert "Work persona" in agent._cached_system_prompt
+    assert agent._session_db.persisted == (
+        "test-key", agent._cached_system_prompt, "frozen TUI policy"
+    )
 
     # The override must have been reset after the call.
     from hermes_constants import get_hermes_home_override
@@ -22253,7 +22259,7 @@ def test_persist_live_session_system_prompt_no_profile_is_unchanged(monkeypatch)
             return "plain prompt"
 
     class FakeDB:
-        def update_system_prompt(self, session_id, prompt):
+        def update_system_prompt(self, session_id, prompt, global_policy_snapshot=None):
             pass
 
     agent = FakeAgent()
@@ -22298,7 +22304,7 @@ def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_p
             return "inner prompt"
 
     class FakeDB:
-        def update_system_prompt(self, session_id, prompt):
+        def update_system_prompt(self, session_id, prompt, global_policy_snapshot=None):
             pass
 
     agent = FakeAgent()
@@ -22358,7 +22364,7 @@ def test_persist_live_session_system_prompt_binds_session_cwd(monkeypatch, tmp_p
             return f"Current working directory: {resolve_agent_cwd()}"
 
     class FakeDB:
-        def update_system_prompt(self, session_id, prompt):
+        def update_system_prompt(self, session_id, prompt, global_policy_snapshot=None):
             persisted["prompt"] = prompt
 
     agent = FakeAgent()

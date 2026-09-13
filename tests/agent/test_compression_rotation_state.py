@@ -212,6 +212,43 @@ class TestWorkspaceMetadataFollowsRotation:
         assert row["user_id"] == "u1"
 
 
+class TestFrozenPolicySnapshotPersistence:
+    def test_rotation_persists_frozen_policy_snapshot_in_child(self, tmp_path: Path):
+        """The real rotation publish writes the parent's frozen policy to child."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            parent = "PARENT_POLICY_ROTATION"
+            db.create_session(parent, source="cli", system_prompt="old prompt")
+            agent = _build_agent_with_db(db, parent, platform="cli")
+            agent._global_policy_snapshot = "frozen policy A"
+
+            agent._compress_context(_msgs(), "new prompt", approx_tokens=120_000)
+
+            child = db.get_session(agent.session_id)
+            assert child is not None
+            assert child["global_policy_snapshot"] == "frozen policy A"
+        finally:
+            db.close()
+
+    def test_in_place_compression_persists_frozen_policy_snapshot(self, tmp_path: Path):
+        """The real in-place prompt rewrite writes its policy argument too."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            session_id = "PARENT_POLICY_IN_PLACE"
+            db.create_session(session_id, source="cli", system_prompt="old prompt")
+            agent = _build_agent_with_db(db, session_id, platform="cli")
+            agent.compression_in_place = True
+            agent._global_policy_snapshot = "frozen policy A"
+
+            agent._compress_context(_msgs(), "new prompt", approx_tokens=120_000)
+
+            row = db.get_session(session_id)
+            assert row is not None
+            assert row["global_policy_snapshot"] == "frozen policy A"
+        finally:
+            db.close()
+
+
 class TestRotationChildFlushDedup:
     def test_summary_handoff_row_is_persisted_once_in_child(
         self, tmp_path: Path

@@ -2985,7 +2985,8 @@ def _publish_rotated_compaction(
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
         source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"), model=agent.model,
-        model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=compressed,
+        model_config=agent._session_init_model_config, system_prompt=new_system_prompt,
+        global_policy_snapshot=agent._global_policy_snapshot, messages=compressed,
         cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
         compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,
         require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
@@ -3290,7 +3291,11 @@ def _commit_compaction(
                 # re-baseline transcript handling.
                 compacted_in_place = True
                 # In-place still updates the current row's prompt; rotation published it atomically above.
-                agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                agent._session_db.update_system_prompt(
+                    agent.session_id,
+                    new_system_prompt,
+                    global_policy_snapshot=agent._global_policy_snapshot,
+                )
                 agent._last_flushed_db_idx = 0
             else:
                 # Bind old_session_id first: it is the rollback key in the handler below.

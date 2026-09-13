@@ -262,7 +262,7 @@ class AIAgent(
         chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
         gateway_session_key: str = None,
         skip_context_files: bool = False, load_soul_identity: bool = False,
-        skip_memory: bool = False, skip_background_review: bool = False,
+        skip_memory: bool = False, global_policy_snapshot: str = None, skip_background_review: bool = False,
         session_db=None, parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
         fallback_model: Dict[str, Any] = None, credential_pool=None,
@@ -337,6 +337,7 @@ class AIAgent(
             self._session_db.create_session(
                 session_id=self.session_id, source=source, model=self.model,
                 model_config=self._session_row_model_config(), system_prompt=self._cached_system_prompt,
+                global_policy_snapshot=self._global_policy_snapshot,
                 user_id=getattr(self, "_user_id", None), session_key=getattr(self, "_gateway_session_key", None),
                 chat_id=getattr(self, "_chat_id", None), chat_type=getattr(self, "_chat_type", None),
                 thread_id=getattr(self, "_thread_id", None),

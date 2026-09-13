@@ -198,6 +198,9 @@ def _build_child_agent(
     # as auxiliary.review.
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    parent_global_policy = getattr(parent_agent, "_global_policy_snapshot", None)
+    if not isinstance(parent_global_policy, str):
+        parent_global_policy = None
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
@@ -235,7 +238,8 @@ def _build_child_agent(
                 **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
-                skip_context_files=True, skip_memory=True, clarify_callback=None,
+                skip_context_files=True, skip_memory=True,
+                global_policy_snapshot=parent_global_policy, clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                     if child_progress_cb else None

@@ -23,6 +23,7 @@ const mount = () =>
           currentView="chat"
           onArchiveSession={noop}
           onBranchSession={noop}
+          onDeleteAllSessions={noop}
           onDeleteSession={noop}
           onLoadMoreSessions={noop}
           onManageCronJob={noop}

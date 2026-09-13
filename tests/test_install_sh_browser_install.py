@@ -87,6 +87,44 @@ def test_browser_install_timeout_stays_interruptible() -> None:
 import subprocess
 
 
+def _run_strip_stale_browser_override(tmp_path: Path, env_text: str) -> str:
+    import os
+    import re
+
+    source = INSTALL_SH.read_text()
+    match = re.search(r"^strip_stale_browser_override\(\) \{.*?^\}", source, re.MULTILINE | re.DOTALL)
+    assert match, "could not extract strip_stale_browser_override() from install.sh"
+    env_file = tmp_path / ".env"
+    env_file.write_text(env_text)
+    harness = f"""
+set -eu
+HERMES_HOME={str(tmp_path)!r}
+log_warn() {{ :; }}
+log_info() {{ :; }}
+{match.group(0)}
+strip_stale_browser_override
+"""
+    subprocess.run(["bash", "-c", harness], check=True, env=dict(os.environ))
+    return env_file.read_text()
+
+
+def test_strip_stale_browser_override_removes_auto_written_system_chrome(tmp_path: Path) -> None:
+    result = _run_strip_stale_browser_override(
+        tmp_path,
+        "KEEP=value\n"
+        "# Hermes Agent browser tools — use the system Chrome/Chromium binary.\n"
+        "AGENT_BROWSER_EXECUTABLE_PATH=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n",
+    )
+
+    assert result == "KEEP=value\n"
+
+
+def test_strip_stale_browser_override_preserves_user_override_without_legacy_marker(tmp_path: Path) -> None:
+    original = "AGENT_BROWSER_EXECUTABLE_PATH=/opt/my-browser\n"
+
+    assert _run_strip_stale_browser_override(tmp_path, original) == original
+
+
 def _run_install_fn(distro: str, version: str, *, native_fails: bool,
                     arch: str = "x86_64", operator_override: str = "") -> dict:
     """Source the relevant functions from install.sh and drive run_playwright_install.

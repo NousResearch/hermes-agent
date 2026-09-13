@@ -150,7 +150,7 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
     base_args = _session._agent_browser_argv(browser_cmd) + ["--engine", "chrome", "--session", tmp_session, "--json"]
     task_socket_dir = _session._prepare_session_socket_dir(tmp_session)
     # Bypasses _run_browser_command, so apply the same Chromium sandbox policy explicitly.
-    browser_env = _session._agent_browser_command_env(task_socket_dir)
+    browser_env = _session._agent_browser_command_env(task_socket_dir, managed_chromium=True)
     _session._apply_chromium_sandbox_args(browser_env)
 
     def _run_tmp(cmd: str, cmd_args: List[str]) -> Dict[str, Any]:

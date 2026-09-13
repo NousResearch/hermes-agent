@@ -11,6 +11,7 @@ from urllib.parse import quote
 import httpx
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from agent.retry_utils import parse_retry_after_seconds
 from tools.skills_guard import TRUSTED_REPOS
 from tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _dedupe_by_trust,
@@ -431,9 +432,9 @@ class GitHubSource(SkillSource):
                                            "Set GITHUB_TOKEN or install the gh CLI to raise the limit to 5,000/hr.")
                         return resp
                     reset = resp.headers.get("X-RateLimit-Reset", "")
-                    retry_after = resp.headers.get("Retry-After", "")
-                    if retry_after.isdigit():
-                        wait = min(float(retry_after), 60.0)
+                    retry_after = parse_retry_after_seconds(resp.headers)
+                    if retry_after is not None:
+                        wait = min(retry_after, 60.0)
                     elif reset.isdigit():
                         delta = float(reset) - time.time()
                         if 0 < delta <= 60.0:

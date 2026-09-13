@@ -369,6 +369,7 @@ def score_run(atof: Path):
 
 
 def report(models):
+    all_pass = True
     for model in models:
         mdir = ROOT / "results" / model.replace("/", "_")
         print(f"\n================ MODEL: {model} ================")
@@ -465,6 +466,11 @@ def report(models):
                         evaluator_provenance = json.loads(next(iter(evaluator_values)))
                     elif evaluator_provenance != json.loads(next(iter(evaluator_values))):
                         provenance_errors.append("baseline and fixes use different evaluator provenance")
+        if (
+            len(arm_model_provenance) == 2
+            and arm_model_provenance["baseline"] != arm_model_provenance["fixes"]
+        ):
+            provenance_errors.append("baseline and fixes use different model provenance")
         if provenance_errors:
             raise SystemExit("invalid tool-performance provenance: " + "; ".join(provenance_errors))
         observed = {}
@@ -484,12 +490,15 @@ def report(models):
             "metrics": {arm: dict(agg[arm]) for arm in ("baseline", "fixes")},
             "status": "pass" if complete else "fail",
         }
+        if report_data["status"] != "pass":
+            all_pass = False
         errors = validate_toolperf_report(report_data)
         if errors:
             raise SystemExit("invalid tool-performance report: " + ", ".join(errors))
         (mdir / "report.json").write_text(
             json.dumps(report_data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+    return all_pass
 
 
 if __name__ == "__main__":
@@ -504,7 +513,7 @@ if __name__ == "__main__":
         run(arm, model, reps, pythonpath, only)
     elif cmd == "report":
         models = sys.argv[sys.argv.index("--models") + 1].split(",")
-        report(models)
+        sys.exit(0 if report(models) else 1)
     else:
         print(__doc__)
         sys.exit(2)

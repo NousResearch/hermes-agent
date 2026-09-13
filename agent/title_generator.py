@@ -78,6 +78,17 @@ _CONTROL_WRAPPERS = tuple(
                 "local-command-stdout", "task-notification", "system-reminder", "ide_opened_file", "ide_selection")
 )
 
+# Speech-barge-in note prepended to the model-bound user message by the
+# CLI/TUI submit paths when the user interrupts a spoken reply
+# (tools.tts_streaming.SPEECH_INTERRUPTED_NOTE). The note is API-call
+# local and never persisted, but the turn prologue titles from the model
+# input, so it reaches us as the first line. Unlike _MACHINE_PREFIXES it
+# wraps REAL user text (the request typed after the barge), so it is
+# stripped in _summarize_user_message instead of skipping the turn.
+_SPEECH_INTERRUPTED_PREFIX = (
+    "[Note: the user interrupted your previous spoken reply before it finished.]"
+)
+
 # Hermes' own machine-authored openers: a compaction handoff or resumed session must not be titled after them.
 _MACHINE_PREFIXES = (
     "[CONTEXT COMPACTION", LEGACY_SUMMARY_PREFIX, "[Runtime note:", "[System note:", "[SYSTEM]",
@@ -143,13 +154,24 @@ def _summarize_user_message(user_message: str) -> str:
     """Text worth titling: describe a ``/skill`` invocation (it embeds the whole skill body), then strip wrappers."""
     if not user_message:
         return ""
+    # A speech-barge-in note (SPEECH_INTERRUPTED_NOTE) arrives as the first
+    # line of the model-bound message. It is scaffolding, not intent: drop it
+    # FIRST — before the skill-scaffolding parser — because a note-prefixed
+    # message no longer starts with the skill-invocation prefix, so
+    # describe_skill_invocation() returns None and the entire expanded skill
+    # body would flow into the title instead of the user's instruction.
+    text = user_message.lstrip()
+    if text.startswith(_SPEECH_INTERRUPTED_PREFIX):
+        text = text[len(_SPEECH_INTERRUPTED_PREFIX):].lstrip("\n").strip()
     described = None
     try:
         from agent.skill_commands import describe_skill_invocation
-        described = describe_skill_invocation(user_message)
+
+        described = describe_skill_invocation(text)
     except Exception:
         logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
-    return strip_control_wrappers(user_message if described is None else described)
+    text = described if described is not None else text
+    return strip_control_wrappers(text)
 
 
 def is_titleable_user_message(user_message: str) -> bool:
@@ -261,13 +283,35 @@ def generate_title(
         "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
     )
     try:
-        response = call_llm(
-            task="title_generation",
-            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
-            # A title is a handful of tokens; a larger ceiling let chatty models burn seconds.
-            max_tokens=64, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-        )
+        try:
+            response = call_llm(
+                task="title_generation",
+                messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
+                # A title is a handful of tokens; a larger ceiling let chatty models burn seconds.
+                max_tokens=64, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
+                extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            )
+        except Exception as e:
+            # Some providers (e.g. DeepSeek) reject json_schema response_format
+            # with HTTP 400 ("This response_format type is unavailable now").
+            # Fall back to a plain completion — _extract_title_text already
+            # handles prose output — so auto-titling still works.
+            msg = str(e)
+            if "response_format" in msg and any(
+                token in msg
+                for token in ("400", "unavailable", "not supported", "Unsupported")
+            ):
+                logger.warning(
+                    "Provider rejected json_schema response_format; retrying without it: %s",
+                    e,
+                )
+                response = call_llm(
+                    task="title_generation",
+                    messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
+                    max_tokens=64, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
+                )
+            else:
+                raise
         title = _clean_title(_extract_title_text(response.choices[0].message.content or ""))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not

@@ -10,10 +10,12 @@ ten minutes, so the throwaway can be the one that survives.
 from __future__ import annotations
 
 import types
+import weakref
 
 import pytest
 
 from gateway.config import Platform
+from gateway.session import SessionSource
 from gateway.run import GatewayRunner
 from gateway.run_turn_runner import TurnRunner
 
@@ -56,7 +58,7 @@ def test_the_rename_waits_for_the_model_title(lane):
     assert renames == ["Fix flaky auth test"]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_native_thread_rename_passes_only_the_initial_name_guard():
     """The shared rename lane must honor the strict native adapter contract."""
     calls: list[tuple[str, str, str | None]] = []
@@ -102,3 +104,130 @@ async def test_native_thread_rename_passes_only_the_initial_name_guard():
     )
 
     assert calls == [("999", "Semantic Session Title", "Initial words")]
+
+
+def test_title_thread_copy_preserves_transport_adapter_ref(monkeypatch):
+    """Multiplex-routed sources must keep their transport owner for side effects."""
+    captured_sources = []
+
+    class Adapter:
+        pass
+
+    adapter = Adapter()
+
+    async def noop():
+        return None
+
+    def fake_schedule(coro, loop, logger=None, log_message=None):
+        coro.close()
+        return None
+
+    monkeypatch.setattr("gateway.run.safe_schedule_threadsafe", fake_schedule)
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        profile="runtime-profile",
+        auto_thread_created=True,
+        auto_thread_initial_name="Initial words",
+    )
+    setattr(source, "_transport_adapter_ref", weakref.ref(adapter))
+    setattr(source, "_transport_adapter_profile", None)
+
+    runner = types.SimpleNamespace(
+        _gateway_loop=types.SimpleNamespace(is_closed=lambda: False),
+        _schedule_rename_from_title_thread=GatewayRunner._schedule_rename_from_title_thread,
+    )
+
+    runner._schedule_rename_from_title_thread(
+        runner,
+        source,
+        lambda copied: captured_sources.append(copied) or noop(),
+        "Discord semantic thread rename",
+    )
+
+    assert len(captured_sources) == 1
+    copied = captured_sources[0]
+    assert copied is not source
+    assert copied.profile == "runtime-profile"
+    assert copied._transport_adapter_ref() is adapter
+    assert copied._transport_adapter_profile is None
+
+
+class _Adapter:
+    def __init__(self, name):
+        self.name = name
+
+
+def _runner_for_adapter_resolution():
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.adapters = {}
+    runner._profile_adapters = {}
+    runner._profile_failed_platforms = {}
+    runner._primary_profile_name = "default"
+    runner.config = types.SimpleNamespace(multiplex_profiles=True, profile_routes=[])
+    return runner
+
+
+def test_transport_owner_profile_resolves_reconnected_adapter():
+    old_default = _Adapter("old-default")
+    new_default = _Adapter("new-default")
+    runtime_bot = _Adapter("runtime-bot")
+    runner = _runner_for_adapter_resolution()
+    runner.adapters = {Platform.DISCORD: old_default}
+    runner._profile_adapters = {"runtime-profile": {Platform.DISCORD: runtime_bot}}
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        profile="runtime-profile",
+    )
+    setattr(source, "_transport_adapter_ref", weakref.ref(old_default))
+    setattr(source, "_transport_adapter_profile", None)
+
+    assert runner._adapter_for_source(source) is old_default
+
+    runner.adapters = {Platform.DISCORD: new_default}
+
+    assert runner._adapter_for_source(source) is new_default
+
+
+@pytest.mark.anyio
+async def test_thread_rename_resolves_secondary_transport_without_primary_map():
+    calls = []
+
+    class Adapter:
+        async def rename_thread(self, thread_id, name, **kwargs):
+            calls.append((thread_id, name, kwargs))
+            return True
+
+    adapter = Adapter()
+    runner = _runner_for_adapter_resolution()
+    runner.adapters = {}
+    runner._profile_adapters = {"transport-profile": {Platform.DISCORD: adapter}}
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        profile="runtime-profile",
+        auto_thread_created=True,
+        auto_thread_initial_name="Initial words",
+    )
+    setattr(source, "_transport_adapter_ref", weakref.ref(adapter))
+    setattr(source, "_transport_adapter_profile", "transport-profile")
+
+    await runner._rename_discord_auto_thread_for_session_title(
+        source, "session-1", "Semantic Session Title"
+    )
+
+    assert calls == [(
+        "thread-1",
+        "Semantic Session Title",
+        {"only_if_current_name": "Initial words"},
+    )]

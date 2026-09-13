@@ -1529,7 +1529,8 @@ class GatewayAdapterLifecycleMixin:
             ) or {}
             adapter = registry.get(platform)
             if adapter is not None:
-                source._transport_adapter_ref = _weakref.ref(adapter)
+                setattr(source, "_transport_adapter_ref", _weakref.ref(adapter))
+                setattr(source, "_transport_adapter_profile", profile_name)
             if transport_home is None:
                 return self._is_user_authorized(source)
             source._authorization_profile_home = transport_home

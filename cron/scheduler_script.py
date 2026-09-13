@@ -338,7 +338,10 @@ def _run_job_script(
 
     try:
         from tools.environments.local import build_subprocess_env
-        popen_kwargs: dict[str, Any] = {"start_new_session": True}
+        # Lossy decode on every platform: a script that exits 0 but writes a byte its locale cannot
+        # decode (a GBK log line, a truncated CJK write) must not be reported as a failed run. The
+        # exit code decides success; undecodable bytes become U+FFFD in the output we carry (#47393).
+        popen_kwargs: dict[str, Any] = {"start_new_session": True, "errors": "replace"}
         if sys.platform == "win32":
             popen_kwargs = {
                 "creationflags": windows_hide_flags()

@@ -389,6 +389,37 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
     assert get_job(job["id"])["monitor_state"]["last_output_hash"] == stored_hash
 
 
+def test_lossy_monitor_output_is_error_not_silent_suppression(hermes_env):
+    """Undecodable source bytes must never be compared as text.
+
+    The runner decodes with errors="replace", so distinct undecodable byte streams collapse
+    into the same U+FFFD text and hash identically: the job would report "unchanged" forever
+    while the source kept changing — silently suppressing the exact alert the monitor exists
+    for. A lossy comparison is rejected like any other source failure: ERROR, no agent run,
+    stored hash untouched.
+    """
+    from cron.jobs import get_job
+    from cron.monitor import check_monitor
+
+    # Why the guard exists: replacement destroys the distinction between the two byte streams.
+    assert b"state \x80\n".decode("utf-8", "replace") == b"state \x81\n".decode("utf-8", "replace")
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    baselined = check_monitor(get_job(job["id"]))
+    assert baselined.ok is True and baselined.changed is True  # first run always runs
+    stored_hash = get_job(job["id"])["monitor_state"]["last_output_hash"]
+
+    # The source now emits a byte no UTF-8 decoder accepts (printf octal \200).
+    _write_script(hermes_env, "mon.sh", "printf 'state \\200\\n'\n")
+    outcome = check_monitor(get_job(job["id"]))
+
+    assert outcome.ok is False  # source error — never a silent "no change"
+    assert outcome.changed is False
+    assert outcome.error is not None and "U+FFFD" in outcome.error
+    # Stored hash untouched — a recovery to a decodable 'state A' still suppresses.
+    assert get_job(job["id"])["monitor_state"]["last_output_hash"] == stored_hash
+
+
 # ---------------------------------------------------------------------------
 # cronjob tool: API-layer wiring
 # ---------------------------------------------------------------------------

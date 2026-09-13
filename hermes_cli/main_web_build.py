@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable
 from hermes_cli.main_tui_launch import (
     _npm_lifecycle_env, _termux_workspace_install_context, _workspace_root)
+from hermes_cli.npm_winstaller import _is_electron_winstaller_unix_failure
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")
@@ -338,7 +339,18 @@ def _run_npm_install_deterministic(
             ci_result = _run(["ci"])
             if ci_result.returncode == 0:
                 return ci_result
-        return _run(["install", "--no-save"])
+            if "--ignore-scripts" not in extra_args and _is_electron_winstaller_unix_failure(ci_result):
+                ci_retry = _run(["ci", "--ignore-scripts"])
+                if ci_retry.returncode == 0:
+                    return ci_retry
+        install_result = _run(["install", "--no-save"])
+        if (
+            install_result.returncode != 0
+            and "--ignore-scripts" not in extra_args
+            and _is_electron_winstaller_unix_failure(install_result)
+        ):
+            return _run(["install", "--no-save", "--ignore-scripts"])
+        return install_result
 
     result = _attempt(npm)
     if result.returncode == 0:

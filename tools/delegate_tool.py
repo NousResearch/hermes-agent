@@ -411,7 +411,8 @@ def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, action: Optional[str] = None, subagent_id: Optional[str] = None,
-    message: Optional[str] = None, parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
+    message: Optional[str] = None, fork: Optional[bool] = None, parent_agent=None,
+    credentials_cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -489,6 +490,30 @@ def delegate_task(
     )
     if err:
         return tool_error(err)
+    # ── Fork snapshots (kimi-code#3007 port; same mechanism as deepagents fork mode) ──
+    # Top-level fork applies to the single-goal form and acts as the batch default;
+    # per-task {"fork": true/false} overrides it. The parent transcript snapshot is
+    # built ONCE and shared read-only by every forked child (each child's
+    # run_conversation copies it into its own message list). No session DB or an
+    # empty transcript degrades to a blank-context spawn. Prompt-caching-safe: the
+    # parent's context is never mutated.
+    fork_flags = [
+        is_truthy_value(t.get("fork"), default=False)
+        if t.get("fork") is not None
+        else (is_truthy_value(fork, default=False) if fork is not None else False)
+        for t in (task_list or [])
+    ]
+    if any(fork_flags):
+        from tools.delegation_fork import build_fork_snapshot
+
+        fork_snapshot = build_fork_snapshot(parent_agent, cfg=cfg)
+        if fork_snapshot is not None:
+            for i, _t, child in children:
+                if i < len(fork_flags) and fork_flags[i]:
+                    # Read by _run_with_thread_capture in delegate_tool_child_run;
+                    # absent on non-forked tasks.
+                    with _quiet("Could not attach fork snapshot to child %d", i):
+                        child._fork_history = fork_snapshot
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
@@ -641,11 +666,26 @@ DELEGATE_TASK_SCHEMA = {
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
                         ),
+                        "fork": _p(
+                            "boolean",
+                            "Per-task fork override. See top-level 'fork' for semantics.",
+                        ),
                     },
                     "required": ["goal"],
                 },
                 "description": "(rebuilt at get_definitions() time)",
             },
+            "fork": _p(
+                "boolean",
+                "Default false: subagents start with a BLANK context and know nothing of this "
+                "conversation. Set true to fork instead: the child starts from a one-time snapshot of "
+                "this conversation's history (framed as inherited reference material), so work that "
+                "builds on what was already established here needs no re-briefing. Fork workers that "
+                "CONTINUE your current investigation (avoids re-reading files); keep false for "
+                "independent tasks and for verifiers/reviewers whose judgment must not inherit your "
+                "framing. A fork re-sends the parent transcript on the child's first request and costs "
+                "accordingly. Per-task 'fork' in the tasks array overrides this default.",
+            ),
             # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
             # delegations always run in the background. Unadvertised; do not re-add.
             "action": _p(
@@ -699,7 +739,7 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
+        fork=args.get("fork"), parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

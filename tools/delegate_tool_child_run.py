@@ -656,8 +656,23 @@ class _ChildRun:
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                _fork_history = getattr(child, "_fork_history", None)
+                _run_kwargs: Dict[str, Any] = {}
+                _run_goal = self.goal
+                if isinstance(_fork_history, list) and _fork_history:
+                    # Forked spawn (kimi-code#3007 port; deepagents fork mode is the
+                    # same mechanism): seed the parent's sanitized transcript through
+                    # the same conversation_history parameter the gateway uses for
+                    # session restore, and frame the kickoff goal with the inheritance
+                    # notice so the child reads the snapshot as reference material,
+                    # not its own past actions.
+                    from tools.delegation_fork import frame_forked_goal
+
+                    _run_kwargs["conversation_history"] = _fork_history
+                    _run_goal = frame_forked_goal(self.goal)
                 return child.run_conversation(
-                    user_message=self.goal, task_id=self.child_task_id, stream_callback=self.relay_text,
+                    user_message=_run_goal, task_id=self.child_task_id, stream_callback=self.relay_text,
+                    **_run_kwargs,
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)

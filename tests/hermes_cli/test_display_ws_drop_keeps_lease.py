@@ -52,7 +52,9 @@ async def _bridge_once(close_code: int, home: str) -> lease.Lease:
     return lease.get(profile_key=home)
 
 
-@pytest.mark.parametrize(("close_code", "human_keeps_control"), [(1006, True), (1000, False)])
+# 1005 (no status code) is what noVNC's code-less socket.close() AND some proxies produce on a drop, so
+# the server keeps the lease; the Desktop sends an explicit 1000 when the pane is closed on purpose.
+@pytest.mark.parametrize(("close_code", "human_keeps_control"), [(1006, True), (1005, True), (1000, False)])
 def test_only_a_clean_viewer_close_hands_the_screen_back(monkeypatch, close_code, human_keeps_control):
     lease._reset_for_tests()
     with tempfile.TemporaryDirectory() as home:

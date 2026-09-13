@@ -2612,7 +2612,11 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     # offered them — allow those too.
     from hermes_cli.tools_config import _RECENTLY_SHIPPED_TOOLSETS
 
-    result = server._load_enabled_toolsets()
+    # Explicit "cli": these tests pin the env→config fallback path, whose
+    # config row is the cli row below. An unqualified call now resolves the
+    # session's own platform (tui in a bare test env), which has no
+    # platform_toolsets row and expands defaults instead (#89547).
+    result = server._load_enabled_toolsets("cli")
     assert result is not None
     assert {"memory", "project"} <= set(result)
     assert "kanban" not in result
@@ -2639,7 +2643,8 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
 
     from hermes_cli.tools_config import _RECENTLY_SHIPPED_TOOLSETS
 
-    result = server._load_enabled_toolsets()
+    # Same platform pin as the sibling test above (#89547).
+    result = server._load_enabled_toolsets("cli")
     assert result is not None
     assert {"memory", "project"} <= set(result)
     assert "kanban" not in result

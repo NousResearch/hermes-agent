@@ -1673,10 +1673,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return result
 
     def wait(self, session_id: str, timeout: int = None) -> dict:
-        """Block until the process exits, the timeout elapses, or the user interrupts.
+        """Block until the process exits, the timeout elapses, the user interrupts, or a
+        mid-turn user message (steer/redirect → ``request_yield``) releases the wait.
         ``timeout`` defaults to (and is clamped by) TERMINAL_TIMEOUT. Returns a dict
         with status exited|timeout|interrupted|not_found|error and an output snapshot."""
-        from tools.interrupt import is_interrupted as _is_interrupted
+        from tools.interrupt import consume_yield as _consume_yield, is_interrupted as _is_interrupted
 
         try:
             max_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
@@ -1708,6 +1709,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 result = {
                     "status": "interrupted", "command": session.command, "output": _output_tail(session, 1000),
                     "note": "User sent a new message -- wait interrupted"}
+            elif _consume_yield(threading.current_thread().ident):
+                # A steer/redirect landed mid-turn: redirect() asks tool workers to YIELD so
+                # the user's message is delivered instead of parked behind this wait. The
+                # process is untouched and still notify-tracked; the model should read the
+                # steer text and respond, not re-issue the wait (kimi-code#3697 class).
+                result = {
+                    "status": "interrupted", "command": session.command, "output": _output_tail(session, 1000),
+                    "process_running": True,
+                    "note": ("User sent a new message -- wait released; the process is still "
+                             "running and you will be notified on exit. Respond to the user now.")}
             if result is not None:
                 if timeout_note:
                     result["timeout_note"] = timeout_note

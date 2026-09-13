@@ -102,6 +102,32 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('`items[0]`')
   })
 
+  it('keeps citation markers anchored by a numbered source list', () => {
+    const input = [
+      'Ice floats because it is less dense than liquid water.[1][2]',
+      '',
+      '## Sources',
+      '',
+      '[1] https://example.com/a',
+      '[2] https://example.com/b'
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('water.[1][2]')
+    expect(output).toMatch(/\[1\][^\n]*example\.com\/a/)
+    expect(output).toMatch(/\[2\][^\n]*example\.com\/b/)
+  })
+
+  it('strips a citation marker whose number is absent from the source list', () => {
+    const input = 'A claim[1] and another[7].\n\n## Sources\n\n[1] https://example.com/a'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('claim[1]')
+    expect(output).not.toContain('another[7]')
+  })
+
   it('demotes title/url blocks wrapped in malformed inline fences', () => {
     const input = [
       '**🚢 TOMORROW (Fajardo, crystal clear cays, pickup avail):**',

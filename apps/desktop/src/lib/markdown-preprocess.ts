@@ -49,6 +49,13 @@ const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+// Numbered source-list entries — a `[3] url` line at the start of a line
+// (optionally behind a list marker), as the bundled grounded-citations skill
+// renders its `## Sources` block. Such an entry anchors the bare `[3]` marker
+// in prose: the marker cites a listed source, so it must survive the
+// orphan-marker strip. Line-start anchoring keeps mid-prose markers out; a
+// false anchor can only keep a marker, never delete information.
+const SOURCE_LIST_ENTRY_RE = /^[ \t]*(?:[-*+][ \t]+)?\[((?:\d+(?:\s*,\s*\d+)*))\][ \t]+\S/gm
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
@@ -193,11 +200,33 @@ function routeFileLinksToPreview(text: string): string {
   })
 }
 
-function rewriteProseSegment(segment: string): string {
+function collectSourceListIds(text: string): Set<string> {
+  const ids = new Set<string>()
+
+  for (const match of text.matchAll(SOURCE_LIST_ENTRY_RE)) {
+    for (const id of match[1].split(',')) {
+      ids.add(id.trim())
+    }
+  }
+
+  return ids
+}
+
+function rewriteProseSegment(segment: string, sourceListIds: Set<string>): string {
   return linkifySessionRefs(
     autoLinkRawUrls(
       routeFileLinksToPreview(
-        segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+        segment
+          .replace(/`{3,}/g, '')
+          .replace(LOCAL_PREVIEW_URL_RE, '$1')
+          .replace(CITATION_MARKER_RE, marker => {
+            const ids = marker
+              .slice(1, -1)
+              .split(',')
+              .map(id => id.trim())
+
+            return ids.every(id => sourceListIds.has(id)) ? marker : ''
+          })
       )
     )
   )
@@ -216,7 +245,7 @@ function rewriteProseSegment(segment: string): string {
  * `startsWith('$')` test, so a prose segment that merely opens with a stray
  * dollar can't be mistaken for math.
  */
-function normalizeVisibleProse(text: string): string {
+function normalizeVisibleProse(text: string, sourceListIds: Set<string>): string {
   return text
     .split(INLINE_CODE_SPLIT_RE)
     .map(part =>
@@ -224,7 +253,7 @@ function normalizeVisibleProse(text: string): string {
         ? part
         : part
             .split(MATH_SPAN_SPLIT_RE)
-            .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment)))
+            .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment, sourceListIds)))
             .join('')
     )
     .join('')
@@ -628,6 +657,10 @@ export function preprocessMarkdown(text: string): string {
   const scrubbed = scrubBacktickNoise(cleaned)
   const normalizedFences = normalizeFenceBlocks(scrubbed)
   const strippedEmptyFences = stripEmptyFenceBlocks(normalizedFences)
+  // Anchors are collected across the whole message — a fenced listing that
+  // happens to contain a source-list line can only anchor (keep) markers,
+  // never strip them.
+  const sourceListIds = collectSourceListIds(strippedEmptyFences)
 
   return strippedEmptyFences
     .split(CODE_FENCE_SPLIT_RE)
@@ -641,7 +674,7 @@ export function preprocessMarkdown(text: string): string {
       // blocks stay intact. The HTML-depth clamp belongs here for the same
       // reason: a fenced block renders as code and never reaches rehype-raw,
       // so escaping tags inside one would corrupt the listing for nothing.
-      return clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part))))
+      return clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part)), sourceListIds))
     })
     .join('')
 }

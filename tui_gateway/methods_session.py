@@ -1663,34 +1663,21 @@ def _try_get_session(db, key: str) -> dict:
     return {}
 
 
-def _status_dt(value, fallback=None):
-    if value:
-        with contextlib.suppress(Exception):
-            return datetime.fromtimestamp(float(value))
-    return fallback or datetime.now()
-
-
 @_session_method("session.status")
 def _(rid, params: dict, session: dict) -> dict:
-    from hermes_constants import display_hermes_home
+    from hermes_cli.status_report import build_status_fields, status_lines
     key = session.get("session_key") or params.get("session_id") or ""
-    agent = session.get("agent")
-    meta = _status_row(session, params, key)
-    created = _status_dt(meta.get("started_at"))
-    updated = next((_status_dt(meta[f], created) for f in ("updated_at", "last_updated_at", "last_activity_at")
-                    if meta.get(f)), created)
     mirror = _metadata_mirror(session)
-    provider = getattr(agent, "provider", None) or mirror.get("provider") or "unknown"
-    model = getattr(agent, "model", None) or mirror.get("model") or "(unknown)"
+    fields = build_status_fields(
+        key, session.get("agent"), _status_row(session, params, key),
+        model=mirror.get("model"), provider=mirror.get("provider"),
+        tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")),
+    )
     project = _project_info_for_cwd(_display_session_cwd(session))
-    title = (meta.get("title") or "").strip()
     lines = [
-        "Hermes TUI Status", "", f"Session ID: {key}", f"Path: {display_hermes_home()}",
-        *([f"Project: {project['name']}"] if project else []), *([f"Title: {title}"] if title else []),
-        f"Model: {model} ({provider})", f"Created: {created.strftime('%Y-%m-%d %H:%M')}",
-        f"Last Activity: {updated.strftime('%Y-%m-%d %H:%M')}",
-        f"Tokens: {int(_session_usage_snapshot(session).get('total') or 0):,}",
-        f"Agent Running: {'Yes' if session.get('running') else 'No'}"]
+        "Hermes TUI Status", "", *status_lines(fields, "session_id", "path"),
+        *([f"Project: {project['name']}"] if project else []),
+        *status_lines(fields, "title", "model", "created", "last_activity", "tokens", "agent_running")]
     return _ok(rid, {"output": "\n".join(lines)})
 
 

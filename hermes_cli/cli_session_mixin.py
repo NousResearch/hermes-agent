@@ -245,26 +245,18 @@ class CLISessionMixin:
 
     def _show_session_status(self):
         """Show gateway-style status for the current CLI session."""
-        from hermes_constants import display_hermes_home
+        from hermes_cli.status_report import build_status_fields, status_lines
         session_meta = {}
         if self._session_db:
             with contextlib.suppress(Exception):
                 session_meta = self._session_db.get_session(self.session_id) or {}
 
-        title = (session_meta.get("title") or "").strip()
-        created_at = _timestamp_or(session_meta.get("started_at"), self.session_start)
-        updated_at = created_at
-        for field in ("updated_at", "last_updated_at", "last_activity_at"):
-            candidate = _timestamp_or(session_meta.get(field), None)
-            if candidate is not None:
-                updated_at = candidate
-                break
-
         agent = getattr(self, "agent", None)
-        total_tokens = getattr(agent, "session_total_tokens", 0) or 0
-        provider = getattr(self, "provider", None) or "unknown"
-        model = getattr(self, "model", None) or "(unknown)"
-        is_running = bool(getattr(self, "_agent_running", False))
+        fields = build_status_fields(
+            self.session_id, agent, session_meta,
+            model=getattr(self, "model", None), provider=getattr(self, "provider", None),
+            created_fallback=self.session_start, agent_running=bool(getattr(self, "_agent_running", False)),
+        )
 
         reasoning_label = None
         rc = getattr(agent, "reasoning_config", None) or getattr(self, "reasoning_config", None)
@@ -301,12 +293,7 @@ class CLISessionMixin:
         except Exception:
             ctx_label = None
 
-        lines = [
-            "Hermes CLI Status", "", f"Session ID: {self.session_id}", f"Path: {display_hermes_home()}",
-        ]
-        if title:
-            lines.append(f"Title: {title}")
-        lines.append(f"Model: {model} ({provider})")
+        lines = ["Hermes CLI Status", "", *status_lines(fields, "session_id", "path", "title", "model")]
         try:
             from agent.i18n import t
             from hermes_cli.auth import resolve_provider
@@ -320,11 +307,7 @@ class CLISessionMixin:
         for label, value in optional:
             if value:
                 lines.append(f"{label}: {value}")
-        lines.extend([
-            f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",
-            f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
-            f"Tokens: {total_tokens:,}",
-            f"Agent Running: {'Yes' if is_running else 'No'}"])
+        lines.extend(status_lines(fields, "created", "last_activity", "tokens", "agent_running"))
         self._console_print("\n".join(lines), highlight=False, markup=False)
 
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:

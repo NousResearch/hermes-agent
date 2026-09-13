@@ -306,6 +306,38 @@ class TestListNavigation:
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
 
+    @pytest.mark.parametrize("key", [
+        "fallback_providers[1].provider",
+        "custom_providers[0].api_key",
+        "name[0]",
+    ])
+    def test_bracketed_list_index_is_rejected(self, _isolated_hermes_home, key):
+        """Bracket syntax is not part of the dotted-path scheme: writing it produced a dead
+        literal key (``fallback_providers[1]``) plus a success message, and the rewrite
+        silently dropped trailing comments (#109611). Reject before any write instead."""
+        self._write_config(_isolated_hermes_home, (
+            "fallback_providers:\n"
+            "- model: a\n"
+            "  provider: deepseek\n"
+            "\n"
+            "# == Fallback Model ==\n"
+            "# Automatic provider failover when primary is unavailable.\n"
+        ))
+        before = _read_config(_isolated_hermes_home)
+
+        with pytest.raises(SystemExit) as exc:
+            set_config_value(key, "openrouter")
+
+        assert exc.value.code == 1
+        # The file is untouched: no dead bracketed key, no comment loss.
+        assert _read_config(_isolated_hermes_home) == before
+
+    def test_bracketed_error_names_the_dotted_form(self, _isolated_hermes_home, capsys):
+        with pytest.raises(SystemExit):
+            set_config_value("fallback_providers[1].provider", "openrouter")
+        captured = capsys.readouterr()
+        assert "fallback_providers.0.<field>" in captured.err
+
 
 # ---------------------------------------------------------------------------
 # Unpinned-cron notice on a global model change (#59031, #44585)

@@ -3447,6 +3447,15 @@ def set_config_value(key: str, value: str, force: bool = False):
         _exit_invalid(
             f"✗ Invalid config key: {key!r} — contains an empty path segment "
             "(leading, trailing, or doubled '.').")
+    # Bracket list-index syntax (``list[0].field``) is not part of the dotted-path scheme: the
+    # brackets would become literal key characters, writing a dead top-level key the runtime
+    # never reads while reporting success (#109611). The supported form for a list element is a
+    # bare numeric segment (``list.0.field``); _set_nested already navigates it.
+    if "[" in key or "]" in key:
+        _exit_invalid(
+            f"✗ Invalid config key: {key!r} — list-index brackets are not supported. "
+            f"Address a list element with a dotted numeric segment instead: "
+            f"hermes config set {key.split('[')[0].rstrip('.')}.0.<field> <value>")
     _exit_if_key_managed(key, "set")
     if _is_env_config_key(key):
         # Unified lifecycle: also rotates any config.yaml mirror of the old value.

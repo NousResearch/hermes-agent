@@ -8,7 +8,7 @@ import {
   DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
 
-import { type FastControl, ModelEditSubmenu } from './model-edit-submenu'
+import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -20,6 +20,31 @@ beforeAll(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+})
+
+describe('resolveFastControl', () => {
+  const baseId = 'accounts/fireworks/models/kimi-k3'
+  const fastId = 'accounts/fireworks/routers/kimi-k3-fast'
+  const family = { baseId, fastId }
+  const models = [baseId, fastId]
+
+  it('uses a cross-path speed variant for the base model', () => {
+    expect(resolveFastControl(baseId, models, false, false, family)).toEqual({
+      kind: 'variant',
+      baseId,
+      fastId,
+      on: false
+    })
+  })
+
+  it('recognizes the cross-path speed variant as enabled', () => {
+    expect(resolveFastControl(fastId, models, false, false, family)).toEqual({
+      kind: 'variant',
+      baseId,
+      fastId,
+      on: true
+    })
+  })
 })
 
 // Render the submenu inside an open menu/sub so its content (switches) mounts.

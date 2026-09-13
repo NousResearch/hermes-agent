@@ -8,6 +8,7 @@ that language is actually edited.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shutil
@@ -247,6 +248,50 @@ def _spawn_powershell_es(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     )
 
 
+def _spawn_fsautocomplete(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    """Spawn Ionide's fsautocomplete F# language server.
+
+    fsautocomplete is a ``dotnet tool``.  Resolution order: config override,
+    PATH, then :func:`agent.lsp.install.try_install` (Hermes staging dir,
+    PATH, ``~/.dotnet/tools`` / ``$DOTNET_CLI_HOME/tools``, then
+    ``dotnet tool install --tool-path``).  A user-installed global tool
+    already on PATH therefore wins over a staged copy; ``try_install`` only
+    reaches ``~/.dotnet/tools`` when PATH and staging are both empty
+    (``dotnet tool install -g`` often leaves that directory off PATH).
+
+    ``AutomaticWorkspaceInit`` is required: without it the server waits for
+    custom ``fsharp/workspacePeek`` + ``fsharp/workspaceLoad`` requests that
+    Hermes never sends, so diagnostics would stay empty.
+    ``--state-directory`` keeps FSAC's workspace cache out of the user's
+    repo and under ``<HERMES_HOME>/lsp/``.
+    """
+    bin_path = _find_binary(ctx, "fsautocomplete", ("fsautocomplete",), "fsautocomplete")
+    if bin_path is None:
+        return None
+    from hermes_constants import get_hermes_home
+
+    # normcase so Windows paths that differ only by case share one cache dir.
+    digest = hashlib.sha256(
+        os.path.normcase(os.path.abspath(root)).encode("utf-8")
+    ).hexdigest()[:16]
+    state_dir = os.path.join(str(get_hermes_home()), "lsp", "fsautocomplete", digest)
+    os.makedirs(state_dir, exist_ok=True)
+    init: Dict[str, Any] = {"AutomaticWorkspaceInit": True}
+    init.update(ctx.init_overrides.get("fsautocomplete", {}))
+    env = dict(ctx.env_overrides.get("fsautocomplete", {}))
+    if "DOTNET_ROOT" not in env:
+        dotnet = _which("dotnet")
+        if dotnet:
+            try:
+                env["DOTNET_ROOT"] = os.path.dirname(os.path.realpath(dotnet))
+            except OSError:
+                pass
+    return SpawnSpec(
+        [bin_path, "--state-directory", state_dir],
+        root, root, env=env, initialization_options=init,
+    )
+
+
 def hermes_lsp_session_dir() -> str:
     """Return (and create) the dir for PSES session/log scratch files."""
     from hermes_constants import get_hermes_home
@@ -275,6 +320,85 @@ def _server(server_id: str, extensions: Tuple[str, ...], description: str, *,
         build_spawn or _simple_spawn(server_id, which or (server_id,), args, install_pkg, base_init, seed),
         seed_first_push=seed, description=description, multi_root=multi_root,
     )
+
+
+# Strong F# / .NET SDK signals. ``Directory.Build.props`` and
+# ``Directory.Packages.props`` are MSBuild files that also appear in
+# C#-only trees, so they are a best-effort fallback only.
+_FSHARP_STRONG_MARKERS = (
+    "paket.dependencies",
+    "global.json",
+)
+_FSHARP_WEAK_MARKERS = (
+    "Directory.Build.props",
+    "Directory.Packages.props",
+)
+
+
+def _fsharp_dir_markers(directory: str) -> Tuple[bool, bool, bool]:
+    """Return ``(has_sln, has_strong, has_weak)`` for one directory."""
+    has_sln = False
+    has_strong = False
+    has_weak = False
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return False, False, False
+    for name in names:
+        lowered = name.lower()
+        if lowered.endswith(".sln") or lowered.endswith(".slnx"):
+            has_sln = True
+        elif lowered.endswith(".fsproj") or name in _FSHARP_STRONG_MARKERS:
+            has_strong = True
+        elif name in _FSHARP_WEAK_MARKERS:
+            has_weak = True
+        if has_sln and has_strong and has_weak:
+            break
+    return has_sln, has_strong, has_weak
+
+
+def _root_fsharp(file_path: str, workspace: Optional[str]) -> Optional[str]:
+    """Resolve the F# project root for fsautocomplete.
+
+    ``nearest_root`` only matches exact filenames, so ``*.sln`` /
+    ``*.fsproj`` can't go through it. Walk up from the file preferring
+    a solution, then a strong project marker (``.fsproj`` /
+    ``paket.dependencies`` / ``global.json``), then a best-effort
+    MSBuild ``Directory.*.props`` file, then the git workspace.
+    fsautocomplete's AutomaticWorkspaceInit peeks inside whatever root
+    we hand it, so a solution directory is the best starting point.
+
+    The up-walk is always bounded by ``workspace``. If ``workspace`` is
+    empty, return immediately rather than walking toward the filesystem
+    root — a stray ``.sln`` above the file would otherwise become the
+    project root.
+    """
+    if not workspace:
+        return None
+    start = os.path.abspath(file_path)
+    if not os.path.isdir(start):
+        start = os.path.dirname(start)
+    workspace_abs = os.path.abspath(workspace)
+    found_strong: Optional[str] = None
+    found_weak: Optional[str] = None
+    cur = start
+    for _ in range(64):
+        has_sln, has_strong, has_weak = _fsharp_dir_markers(cur)
+        if has_sln:
+            return cur
+        if has_strong and found_strong is None:
+            found_strong = cur
+        if has_weak and found_weak is None:
+            found_weak = cur
+        # Don't walk out of the git workspace — AutomaticWorkspaceInit
+        # peeks downward from whatever root we return.
+        if cur == workspace_abs:
+            break
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return found_strong or found_weak or workspace
 
 
 SERVERS: List[ServerDef] = [
@@ -334,6 +458,8 @@ SERVERS: List[ServerDef] = [
     # No universal PowerShell root marker; nearest_root is exact-name only (no globs).
     _server("powershell", (".ps1", ".psm1", ".psd1"), "PowerShell — PowerShellEditorServices (manual bundle)",
             markers=["PSScriptAnalyzerSettings.psd1"], build_spawn=_spawn_powershell_es),
+    _server("fsautocomplete", (".fs", ".fsi", ".fsx"), "F# — fsautocomplete (Ionide)",
+            resolve_root=_root_fsharp, build_spawn=_spawn_fsautocomplete),
 ]
 
 

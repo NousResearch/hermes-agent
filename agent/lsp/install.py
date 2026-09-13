@@ -60,6 +60,10 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     # PowerShellEditorServices is a release-zip bundle driven by pwsh; we probe
     # the host so `hermes lsp status` reports its presence.
     "powershell": _manual("pwsh"),
+    # F# — fsautocomplete is a .NET global tool. Auto-install via
+    # ``dotnet tool install --tool-path``. Also probed in ``~/.dotnet/tools``
+    # because ``dotnet tool install -g`` often leaves that dir off PATH.
+    "fsautocomplete": _recipe("dotnet", "fsautocomplete", "fsautocomplete"),
 }
 
 _install_locks: Dict[str, threading.Lock] = {}
@@ -79,6 +83,24 @@ def hermes_lsp_bin_dir() -> Path:
     p = get_hermes_home() / "lsp" / "bin"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _dotnet_tools_dir() -> Optional[Path]:
+    """Return the .NET global-tools directory if it exists.
+
+    ``dotnet tool install --global`` installs here, but the installer only
+    prints a PATH hint — it does not always mutate the user's shell rc.
+    Probing the directory directly lets Hermes find fsautocomplete (and
+    future ``dotnet tool`` language servers) even when ``~/.dotnet/tools``
+    is missing from PATH.
+
+    Honours ``DOTNET_CLI_HOME`` the same way the dotnet CLI does: when set,
+    tools live in ``$DOTNET_CLI_HOME/tools`` and the default
+    ``~/.dotnet/tools`` is ignored.
+    """
+    cli_home = os.environ.get("DOTNET_CLI_HOME")
+    candidate = Path(cli_home) / "tools" if cli_home else Path.home() / ".dotnet" / "tools"
+    return candidate if candidate.is_dir() else None
 
 
 def _native_binary_candidates(base: Path) -> list[Path]:
@@ -102,7 +124,17 @@ def _existing_binary(name: str) -> Optional[str]:
         if staged.exists() and os.access(staged, os.X_OK):
             return str(staged)
     suffixes = ("", *_WINDOWS_WRAPPER_SUFFIXES) if _is_windows() else ("",)
-    return next((p for s in suffixes if (p := shutil.which(f"{name}{s}"))), None)
+    on_path = next((p for s in suffixes if (p := shutil.which(f"{name}{s}"))), None)
+    if on_path:
+        return on_path
+    # ``dotnet tool install -g`` lands in ~/.dotnet/tools (or
+    # $DOTNET_CLI_HOME/tools) without always putting that directory on PATH.
+    tools_dir = _dotnet_tools_dir()
+    if tools_dir is not None:
+        found = _first_existing(tools_dir / name)
+        if found is not None and os.access(found, os.X_OK):
+            return str(found)
+    return None
 
 
 def try_install(pkg: str, strategy: str = "auto") -> Optional[str]:
@@ -231,11 +263,30 @@ def _install_pip(pkg: str, bin_name: str) -> Optional[str]:
     return _link_into_bin(found) if found is not None else None
 
 
+def _install_dotnet(pkg: str, bin_name: str) -> Optional[str]:
+    """``dotnet tool install --tool-path <staging>`` into ``lsp/bin/``."""
+    dotnet = shutil.which("dotnet")
+    if dotnet is None:
+        logger.info("[install] cannot install %s: dotnet not on PATH", pkg)
+        return None
+    staging = hermes_lsp_bin_dir()
+    logger.info("[install] dotnet tool install --tool-path %s %s", staging, pkg)
+    cmd = [dotnet, "tool", "install", "--tool-path", str(staging), pkg]
+    if not _run_installer("dotnet", pkg, cmd, timeout=600):
+        return None
+    found = _first_existing(staging / bin_name)
+    if found is not None and os.access(found, os.X_OK):
+        return str(found)
+    logger.warning("[install] dotnet tool install for %s succeeded but bin %s not found", pkg, bin_name)
+    return None
+
+
 # strategy → installer(recipe, bin_name).  ``manual`` is handled before dispatch.
 _INSTALLERS: Dict[str, Callable[[Dict[str, Any], str], Optional[str]]] = {
     "npm": lambda r, b: _install_npm(r["pkg"], b, extra_pkgs=r.get("extra_pkgs") or []),
     "go": lambda r, b: _install_go(r["pkg"], b),
     "pip": lambda r, b: _install_pip(r["pkg"], b),
+    "dotnet": lambda r, b: _install_dotnet(r["pkg"], b),
 }
 
 

@@ -13,6 +13,7 @@ import inspect
 import json
 import os
 import queue
+import re
 import threading
 import time
 from agent.i18n import t
@@ -50,6 +51,8 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
     "request entity too large", "prompt is too long",
     "payload too large", "input is too long",
 )
+# Whole-token 400 only: "Limit 40000" in a rate-limit envelope must not read as a status.
+_HTTP_400_RE = re.compile(r"\b400\b")
 
 
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
@@ -57,13 +60,14 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
     (#1630 skip) and the user-facing reply so the two can never disagree.
 
     Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded" or
-    "invalid authentication token"; a bare 400 only counts on a long session."""
+    "invalid authentication token"; a bare 400 status only counts on a long session."""
     if not agent_result.get("failed"):
         return False
     if agent_result.get("compression_exhausted"):
         return True
     err = str(agent_result.get("error") or "").lower()
-    return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
+    return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or (
+        history_len > 50 and bool(_HTTP_400_RE.search(err)))
 
 
 class GatewayTurnMixin:

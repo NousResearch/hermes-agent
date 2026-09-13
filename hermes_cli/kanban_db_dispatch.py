@@ -256,6 +256,101 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+# A liveness verdict that contradicts the worker's own heartbeat is a failed
+# probe, not a dead worker (``_worker_pid_absent``): a dispatched worker
+# heartbeats every minute or so, so a live one always has a heartbeat inside
+# this window. Sized at three missed beats.
+_LIVENESS_CORROBORATION_SECONDS = 180
+
+
+def _worker_pid_absent(pid: Optional[int]) -> bool:
+    """Tri-state PID probe: True only when the OS positively says ``pid`` is gone.
+
+    ``_pid_alive`` is a *negative* test: it answers False for three different
+    facts — the pid is gone, the pid is a zombie, or **the probe itself failed**
+    (``/proc`` stat/read hitting EACCES/EMFILE/ENOMEM while the host is loaded;
+    psutil's ``pid_exists`` is ``os.path.exists``, which reports *any* OSError as
+    "absent"). Only the first is evidence a reclaim may act on, and treating the
+    third as death is not recoverable: it clears the claim, books the run
+    ``crashed`` and spawns a second worker onto the same card and workspace while
+    the first one is still writing — and that first run's terminal call can never
+    land, because ``complete_task`` pins the row on ``current_run_id``
+    (2026-09-13: nine host-local workers were booked ``crashed`` in one tick at
+    21:57:40Z; all nine were alive, heartbeating, and kept working for 12+
+    minutes afterwards).
+
+    False is deliberately "present **or** unknown", so a caller in the reclaim
+    path can only ever act on a *positive* absence.
+    """
+    if not pid or int(pid) <= 0:
+        return True
+    if sys.platform != "linux":
+        # No /proc to tell "gone" from "unreadable": keep the single-probe
+        # answer rather than refusing every reclaim on this platform.
+        return not _pid_alive(int(pid))
+    try:
+        with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8") as fh:
+            state_line = next(
+                (line for line in fh if line.startswith("State:")), "",
+            )
+    except FileNotFoundError:
+        return True  # no proc entry → the pid is gone
+    except OSError:
+        # Unreadable (EACCES/EMFILE/ENOMEM/…): the probe could not tell. Not
+        # evidence of death, and never a reclaim.
+        return False
+    state = state_line.split(":", 1)[1].strip() if ":" in state_line else ""
+    # A zombie has exited and only awaits its parent's reap: not a live worker.
+    return state.startswith("Z")
+
+
+def _defer_worker_reclaim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    claim_lock: Optional[str],
+    pid: int,
+    *,
+    reason: str,
+    now: int,
+    heartbeat_age_seconds: Optional[int],
+    pid_absent: bool,
+) -> None:
+    """Hold a card whose dead-pid verdict did not corroborate; caller's txn.
+
+    Extends ``claim_expires`` by ``RECLAIM_DEFER_GRACE_SECONDS`` so the card
+    stays ``running`` under the worker it already has — a reclaim here would
+    spawn a duplicate beside a possibly-live worker — and records a
+    ``reclaim_deferred`` event naming which corroboration disagreed, so the
+    deferral is visible on the board instead of reading as a stuck card.
+    Writes inside the caller's transaction (``_reclaim_dead_workers`` already
+    holds the board's write lock).
+    """
+    grace = now + _kb.RECLAIM_DEFER_GRACE_SECONDS
+    conn.execute(
+        "UPDATE tasks SET claim_expires = ? "
+        "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
+        (grace, task_id, claim_lock),
+    )
+    run_id = _kb._current_run_id(conn, task_id)
+    if run_id is not None:
+        conn.execute(
+            "UPDATE task_runs SET claim_expires = ? WHERE id = ?", (grace, run_id),
+        )
+    _kb._append_event(
+        conn, task_id, "reclaim_deferred",
+        {
+            "reason": reason,
+            "claim_lock": claim_lock,
+            "claim_expires_now": grace,
+            "worker_pid": pid,
+            "pid_absent": pid_absent,
+            "heartbeat_age_seconds": heartbeat_age_seconds,
+            "liveness_corroboration_seconds": _LIVENESS_CORROBORATION_SECONDS,
+        },
+        run_id=run_id,
+    )
+
+
 def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
     """``signal_fn`` test hook, else ``os.kill`` when the platform has one."""
     if signal_fn is not None:
@@ -264,9 +359,14 @@ def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
 
 
 def _poll_worker_exit(pid: int) -> bool:
-    """Poll ~5 s (10 x 0.5 s) for ``pid`` to die; True once it is gone."""
+    """Poll ~5 s (10 x 0.5 s) for ``pid`` to be gone; True on positive absence.
+
+    ``not _pid_alive`` is not the question this asks: a probe that *failed*
+    answers False as well, and reading that as "it died" lets the reclaim guard
+    declare a live worker terminated (see ``_worker_pid_absent``).
+    """
     for _ in range(10):
-        if not _kb._pid_alive(pid):
+        if _worker_pid_absent(pid):
             return True
         time.sleep(0.5)
     return False
@@ -320,11 +420,13 @@ def _terminate_reclaimed_worker(
     if _poll_worker_exit(pid):
         info["terminated"] = True
         return info
-    if _kb._pid_alive(pid):
+    if not _worker_pid_absent(pid):
+        # Present or unknown: escalate the kill. A probe that merely failed must
+        # not read as a termination (``_worker_pid_absent``).
         if not _sigkill(kill, pid):
             return info
         info["sigkill"] = True
-    info["terminated"] = not _kb._pid_alive(pid)
+    info["terminated"] = _worker_pid_absent(pid)
     return info
 
 
@@ -622,8 +724,9 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     for row in rows:
         tid = row["id"]
         pid = row["worker_pid"]
-        if pid and _kb._pid_alive(pid):
-            # Never requeue beside a live process. Retry next tick.
+        if pid and not _worker_pid_absent(pid):
+            # Present OR unknown: never requeue beside a process that might be
+            # alive (a failed probe is not a dead worker). Retry next tick.
             _kb._log.debug(
                 "kanban reconcile: task %s has broken claim bookkeeping but "
                 "pid %s is alive on this host — deferring", tid, pid,
@@ -794,6 +897,10 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
+    # Cards whose "pid is dead" verdict did not corroborate (see
+    # ``_worker_pid_absent``). NOT reclaimed: they stay ``running`` with their
+    # worker and are re-probed next tick, so this is a deferral, not an anomaly.
+    deferred_live: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, protocol_violation, error_text)``: accounted
     # after the txn via ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, bool, str]] = field(default_factory=list)
@@ -803,14 +910,22 @@ class _CrashSweep:
 
 
 def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
-    """Release every host-local ``running`` task whose worker PID is dead."""
+    """Release every host-local ``running`` task whose worker PID is dead.
+
+    A dead verdict is only acted on once it corroborates: the OS must
+    positively report the pid gone (not merely unreadable) and the run's own
+    heartbeat must be stale. A disagreement defers the card one tick instead of
+    clearing its claim — see ``_worker_pid_absent``.
+    """
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, claim_lock, started_at, assignee, "
+            "       last_heartbeat_at "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
+        now = int(time.time())
         host_prefix = _kb._host_prefix()
         for row in rows:
             lock = row["claim_lock"] or ""
@@ -825,6 +940,31 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 continue
 
             pid = int(row["worker_pid"])
+            # ``_pid_alive`` said "not alive" — which is also what a *failed*
+            # probe says. Corroborate before booking a worker dead: the pid must
+            # be positively absent, and the run's own heartbeat must be stale
+            # (only the worker's process can write one). Either disagreement
+            # keeps the card running under its current worker and re-probes next
+            # tick, instead of spawning a duplicate beside it.
+            pid_absent = _worker_pid_absent(pid)
+            hb_at = _kb._row_get(row, "last_heartbeat_at")
+            hb_age = (now - int(hb_at)) if hb_at is not None else None
+            if not pid_absent or (
+                hb_age is not None and hb_age < _LIVENESS_CORROBORATION_SECONDS
+            ):
+                _defer_worker_reclaim(
+                    conn, row["id"], row["claim_lock"], pid,
+                    reason=(
+                        "pid_probe_unknown" if not pid_absent
+                        else "heartbeat_fresher_than_pid_probe"
+                    ),
+                    now=now,
+                    heartbeat_age_seconds=hb_age,
+                    pid_absent=pid_absent,
+                )
+                sweep.deferred_live.append(row["id"])
+                continue
+
             dead = _classify_dead_worker(pid, row["claim_lock"])
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
@@ -952,6 +1092,16 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # requeues did NOT count a failure and are NOT crashes.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_deferred_live = sweep.deferred_live  # type: ignore[attr-defined]
+    if sweep.deferred_live:
+        # A card held because its dead-pid verdict did not corroborate. Rare,
+        # and the shape of a liveness probe that is failing: name the cards so
+        # the board does not read this as work in progress.
+        _kb._log.warning(
+            "kanban dispatcher: deferred reclaim of %d card(s) whose worker PID "
+            "the probe could not positively confirm dead: %s",
+            len(sweep.deferred_live), ", ".join(sweep.deferred_live),
+        )
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):

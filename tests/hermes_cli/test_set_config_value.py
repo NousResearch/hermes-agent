@@ -118,6 +118,14 @@ class TestConfigYamlRouting:
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
 
+    def test_agent_system_prompt_is_recognized_and_consumed(self, _isolated_hermes_home, capsys):
+        """The manual overlay is a supported config value, not a custom unknown key."""
+        set_config_value("agent.system_prompt", "Answer like a cartographer.")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        from hermes_cli.config import load_config, resolve_ephemeral_system_prompt_from_config
+        assert resolve_ephemeral_system_prompt_from_config(load_config()) == "Answer like a cartographer."
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)

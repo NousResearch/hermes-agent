@@ -561,7 +561,7 @@ A bundle is just a YAML alias — it doesn't install skills for you. The skills 
 
 ## Agent-Managed Skills (skill_manage tool)
 
-The agent can create, update, and delete its own skills via the `skill_manage` tool. This is the agent's **procedural memory** — when it figures out a non-trivial workflow, it saves the approach as a skill for future reuse.
+The agent can create, update, and delete its own skills via the `skill_manage` tool. This is the agent's **procedural memory** for recurring, specialized workflows that should load only when relevant.
 
 Skills and memory work together in the self-improvement loop: memory stores
 small durable facts that should always be in context, while skills store longer
@@ -571,12 +571,19 @@ below lets you require human review before those changes land.
 
 ### When the Agent Creates Skills
 
-The system prompt asks the agent to record a non-trivial workflow with `skill_manage` for
-future reuse. In practice that covers:
+The foreground agent can create a skill when you request one. The background
+self-improvement review is more selective: it creates a new skill only when all
+of these are true:
 
-- When it worked out a multi-step workflow worth repeating
-- When it hit errors or dead ends and found the working path
-- When the user corrected its approach
+- The skill has a narrow, specific loading trigger.
+- It contains reusable procedural value: repeatable steps, commands, references, or pitfalls.
+- The conversation shows that the workflow recurs, or you identify it as recurring or ongoing.
+- The learning does not belong in config, memory, user or project instructions, code, transient task state, or an existing skill.
+- Unrelated conversations work correctly without loading it.
+
+A successful task, solved failure, or correction is only a candidate; it does
+not require a skill write. When nothing qualifies, taking no skill action is a
+valid review outcome.
 
 ### What a skill entry looks like
 

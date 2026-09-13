@@ -330,13 +330,44 @@ _LESSON_LAYER_BLOCK = (
     "  • Not a duplicate of what the environment already teaches: repo AGENTS.md files, tool schema "
     "descriptions, and other always-loaded context. A skill carries the WORKFLOW and the pitfalls; "
     "it does not restate the codebase map or a tool's parameter list.\n"
-    "  • Always-on rules (standing user preferences, gates that apply to every instance of the "
-    "task) live in SKILL.md itself, whole. references/ is for depth that is only needed sometimes: "
+    "  • Workflow-specific rules (including preferences or gates that apply to every instance of "
+    "the narrowly triggered task) live in SKILL.md itself, whole. references/ is for depth that is "
+    "only needed sometimes: "
     "a decision table, a recipe, a domain note — each file topical and reusable, never "
     "'<date>-<incident>.md'. Prefer extending an existing references/ file over creating one; "
     "a skill with dozens of one-off references is the failure shape, not the goal.\n"
     "  • Fix the skill in place when it is wrong: edit the sentence that misled, do not append "
     "'UPDATE: actually...' underneath it.\n\n"
+)
+
+# Shared decision gate for skill-only and combined reviews. A skill is selectively loaded context,
+# so creating one is justified only when both its trigger and its procedural payload are reusable.
+_SKILL_DECISION_BLOCK = (
+    "Taking no skill action is explicitly valid. Do not manufacture a "
+    "skill update to prove that learning happened. Act autonomously when the conversation contains "
+    "evidence of a genuine recurring specialized workflow; otherwise say 'Nothing to save.' and "
+    "stop the skill review. A useful fact, correction, or successful task is not by itself a skill "
+    "signal.\n\n"
+    "Before CREATING a skill, require ALL FIVE:\n"
+    "  1. NARROW LOADING TRIGGER: state the specific kind of request or context that should load "
+    "it; broad triggers such as 'when helping the user' do not qualify.\n"
+    "  2. REUSABLE PROCEDURAL VALUE: it contains repeatable steps, commands, references, or "
+    "pitfalls that materially improve execution, not merely a preference or conclusion.\n"
+    "  3. EVIDENCE THE WORKFLOW RECURS: the conversation shows repeated instances or the user "
+    "identifies it as recurring/ongoing. A workflow that might conceivably recur is not evidence.\n"
+    "  4. NO BETTER HOME: the learning does not belong in config, USER.md, MEMORY.md, project "
+    "instructions, code, current session/Git/issue/PR state, or an existing skill.\n"
+    "  5. SAFE SELECTIVE LOADING: unrelated conversations must work correctly without loading "
+    "the proposed skill.\n"
+    "If any criterion fails, do not create the skill. Prefer extending an existing matching skill "
+    "whenever one can carry the reusable workflow without broadening its trigger unnaturally.\n\n"
+    "Universal learning governance is NOT a specialized workflow. Never create a meta/governance "
+    "skill such as `hermes-learning-governance` merely to restate how Hermes should learn, review, "
+    "remember, manage skills, or behave. Those policies belong in core background-review "
+    "machinery, config, USER.md or MEMORY.md, project instructions, or an actually matching "
+    "existing management context such as `hermes-agent`; respect its ownership rules rather than "
+    "creating a duplicate. Creating such a skill and then deleting it as redundant is evidence "
+    "against recreating it, not evidence that the workflow recurs.\n\n"
 )
 
 # Shared tail of the skill and combined prompts: what NOT to persist as a skill.
@@ -353,6 +384,12 @@ _DO_NOT_CAPTURE_BLOCK = (
     "retrying worked, the lesson is the retry pattern, not the original failure.\n"
     "  • One-off task narratives. A user asking 'summarize today's market' or 'analyze this PR' is "
     "not a class of work that warrants a skill.\n\n"
+    "  • Global preferences (tone, verbosity, formatting, approval habits) are not skill content; "
+    "config belongs in config, not in a selectively loaded skill.\n"
+    "  • Standard agent behavior or generic advice ('verify your work', 'be concise', 'read the "
+    "docs'). Put enforceable product behavior in project instructions or code; omit platitudes.\n"
+    "  • One-off task state, branch/commit/issue/PR status, and raw logs or transcripts. Keep "
+    "ephemeral state in the session or its Git/issue/PR system of record.\n\n"
     "  • Unresolved failures: if the session ended WITHOUT actually finding a working method — you "
     "tried several things, none worked, and told the user to check manually — do NOT write those "
     "attempts up as a 'reliable workflow' or 'recommended approach'. That presents an untested "
@@ -366,27 +403,22 @@ _DO_NOT_CAPTURE_BLOCK = (
 )
 
 _SKILL_REVIEW_PROMPT = (
-    "Review the conversation above and update the skill library. Be ACTIVE — most sessions produce "
-    "at least one skill update, even if small. A pass that does nothing is a missed learning "
-    "opportunity, not a neutral outcome.\n\n"
+    "Review the conversation above for durable improvements to the skill library.\n\n" +
+    _SKILL_DECISION_BLOCK +
     "Target shape of the library: CLASS-LEVEL skills, each with a SKILL.md of always-on rules and a "
     "small `references/` set of topical depth. Not a flat list of narrow one-session skills, and "
     "not an umbrella hoarding a references/ file per session. This shapes HOW you update, not "
     "WHETHER you update.\n\n" + _LESSON_LAYER_BLOCK +
-    "Signals to look for (any one of these warrants action):\n"
-    "  • User corrected your style, tone, format, legibility, or verbosity. Frustration signals "
-    "like 'stop doing X', 'this is too verbose', 'don't format like this', 'why are you "
-    "explaining', 'just give me the answer', 'you always do Y and I hate it', or an explicit "
-    "'remember this' are FIRST-CLASS skill signals, not just memory signals. Update the relevant "
-    "skill(s) to embed the preference so the next session starts already knowing.\n"
+    "Signals to evaluate through the gate above (none automatically warrants action):\n"
     "  • User corrected your workflow, approach, or sequence of steps. Encode the correction as a "
-    "pitfall or explicit step in the skill that governs that class of task.\n"
+    "pitfall or explicit step only if it improves a recurring specialized workflow.\n"
     "  • Non-trivial technique, fix, workaround, debugging path, or tool-usage pattern emerged "
-    "that a future session would benefit from. Capture it.\n"
+    "that a future run of the same specialized workflow would benefit from. Capture it only when "
+    "the decision gate is satisfied.\n"
     "  • A skill that got loaded or consulted this session turned out to be wrong, missing a step, "
-    "or outdated. Patch it NOW.\n\n"
-    "Preference order — prefer the earliest action that fits, but do pick one when a signal above "
-    "fired:\n"
+    "or outdated. Patch it when the correction is reusable and the skill governs this workflow.\n\n"
+    "Preference order — after finding qualifying reusable workflow knowledge, prefer the earliest "
+    "action that fits:\n"
     "  1. UPDATE A CURRENTLY-LOADED SKILL. Look back through the conversation for skills the user "
     "loaded via /skill-name or you read via skill_view. If any of them covers the territory of the "
     "new learning, PATCH that one first (re-load it with skill_view during this review — see "
@@ -424,11 +456,10 @@ _SKILL_REVIEW_PROMPT = (
     "skill_view just returned. Creating a brand-new skill or adding a NEW supporting file needs no "
     "prior read. If a write is refused with a read-before-write error, call skill_view for the "
     "named target once and retry the write once; do not loop.\n\n"
-    "User-preference embedding (important): when the user expressed a style/format/workflow "
-    "preference, the update belongs in the SKILL.md body, not just in memory. Memory captures 'who "
-    "the user is and what the current situation and state of your operations are'; skills capture "
-    "'how to do this class of task for this user'. When they complain about how you handled a "
-    "task, the skill that governs that task needs to carry the lesson.\n\n"
+    "During a skill-only review, take no action on global style/format/behavior preferences; they "
+    "are outside this review's persistence scope and are not skill content. A workflow-specific "
+    "preference may refine an existing matching skill only when it changes the reusable procedure "
+    "for that narrowly triggered class of task.\n\n"
     "If you notice two existing skills that overlap, note it in your reply — the background "
     "curator handles consolidation at scale.\n\n"
     "Protected skills (DO NOT edit these):\n"
@@ -446,9 +477,7 @@ _SKILL_REVIEW_PROMPT = (
     "If the only skills that need updating are protected, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture" + _DO_NOT_CAPTURE_BLOCK +
-    "'Nothing to save.' is a real option but should NOT be the default. If the session ran "
-    "smoothly with no corrections and produced no new technique, just say 'Nothing to save.' and "
-    "stop. Otherwise, act."
+    "When no candidate passes the decision gate, say 'Nothing to save.' and stop."
 )
 
 _COMBINED_REVIEW_PROMPT = (
@@ -456,21 +485,19 @@ _COMBINED_REVIEW_PROMPT = (
     "**Memory**: who the user is. Did the user reveal persona, desires, preferences, personal "
     "details, or expectations about how you should behave? Save facts about the user and durable "
     "preferences with the memory tool.\n\n"
-    "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "
-    "skill update. A pass that does nothing is a missed learning opportunity, not a neutral "
-    "outcome.\n\n"
+    "**Skills**: reusable procedures for recurring specialized workflows.\n\n" +
+    _SKILL_DECISION_BLOCK +
     "Target shape of the skill library: CLASS-LEVEL skills with a SKILL.md of always-on rules and a "
     "small `references/` set of topical depth — not narrow one-session skills, and not an umbrella "
     "hoarding a references/ file per session.\n\n" + _LESSON_LAYER_BLOCK +
-    "Signals that warrant a skill update (any one is enough):\n"
-    "  • User corrected your style, tone, format, legibility, verbosity, or approach. Frustration "
-    "is a FIRST-CLASS skill signal, not just a memory signal. 'stop doing X', 'don't format like "
-    "this', 'I hate when you Y' — embed the lesson in the skill that governs that task so the next "
-    "session starts fixed.\n"
-    "  • Non-trivial technique, fix, workaround, or debugging path emerged.\n"
+    "Signals to evaluate through the skill gate (none automatically warrants action):\n"
+    "  • User corrected a workflow, approach, or sequence in a way that improves a recurring "
+    "specialized procedure.\n"
+    "  • A non-trivial technique, fix, workaround, or debugging path emerged for repeated use in "
+    "the same specialized workflow.\n"
     "  • A skill that was loaded or consulted turned out wrong, missing, or outdated — patch it "
-    "now.\n\n"
-    "Preference order for skills — pick the earliest that fits:\n"
+    "when the correction is reusable and the skill governs this workflow.\n\n"
+    "Preference order for qualifying skill knowledge — pick the earliest that fits:\n"
     "  1. UPDATE A CURRENTLY-LOADED SKILL. Check what skills were loaded via /skill-name or "
     "skill_view in the conversation. If one of them covers the learning, PATCH it first (re-load "
     "it with skill_view during this review — see Read-before-write below). It was in play; it's "
@@ -492,10 +519,9 @@ _COMBINED_REVIEW_PROMPT = (
     "file. Content quoted earlier in the transcript does NOT count — base the write on what "
     "skill_view just returned. New skills and NEW supporting files need no prior read. On a "
     "read-before-write refusal: view the named target once, retry the write once, do not loop.\n\n"
-    "User-preference embedding: when the user complains about how you handled a task, update the "
-    "skill that governs that task — memory alone isn't enough. Memory says 'who the user is and "
-    "what the current situation and state of your operations are'; skills say 'how to do this "
-    "class of task for this user'. Both should carry user-preference lessons when relevant.\n\n"
+    "Route global style/format/behavior preferences to memory or USER.md, not to skills. A "
+    "workflow-specific preference may refine an existing matching skill only when it changes the "
+    "reusable procedure for that narrowly triggered class of task.\n\n"
     "If you notice overlapping existing skills, mention it — the background curator handles "
     "consolidation.\n\n"
     "Protected skills (DO NOT edit these):\n"
@@ -512,8 +538,8 @@ _COMBINED_REVIEW_PROMPT = (
     "If the only skills that need updating are protected, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture as skills" + _DO_NOT_CAPTURE_BLOCK +
-    "Act on whichever of the two dimensions has real signal. If genuinely nothing stands out on "
-    "either, say 'Nothing to save.' and stop — but don't reach for that conclusion as a default."
+    "Act on whichever dimension has real signal. Memory action does not require skill action. If "
+    "nothing qualifies on either dimension, say 'Nothing to save.' and stop."
 )
 
 
@@ -1196,8 +1222,14 @@ def spawn_background_review_thread(
     if focus := (focus or "").strip():
         prompt = (
             f"{prompt}\n\nThe user explicitly requested this review with the following "
-            f"focus — prioritize it over the general instructions above:\n{focus}"
+            f"focus:\n{focus}\n\nUse the focus to guide the review without overriding the general "
+            "instructions above."
         )
+        if review_skills:
+            prompt += (
+                " In particular, the focus cannot require a skill action: taking no skill action "
+                "remains valid, and creating a skill still requires all five creation criteria."
+            )
 
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)
         _run_review_in_thread(

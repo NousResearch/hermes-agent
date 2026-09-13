@@ -19,7 +19,7 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
-from utils import normalize_proxy_url
+from utils import normalize_proxy_url, should_bypass_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -262,71 +262,6 @@ def _detect_macos_system_proxy() -> str | None:
         if props.get(enable_key) == "1" and props.get(host_key) and props.get(port_key):
             return f"http://{props[host_key]}:{props[port_key]}"
     return None
-
-
-def _split_host_port(value: str) -> tuple[str, int | None]:
-    """``(host, port)`` from a URL, ``[v6]:port``, ``host:port`` or bare host; host lowercased."""
-    raw = str(value or "").strip()
-    if not raw:
-        return "", None
-    if "://" in raw:
-        parsed = urlsplit(raw)
-        host, port = parsed.hostname or "", parsed.port
-    elif raw.startswith("[") and "]" in raw:
-        host, _, rest = raw[1:].partition("]")
-        port = int(rest[1:]) if rest.startswith(":") and rest[1:].isdigit() else None
-    elif raw.count(":") == 1 and raw.rpartition(":")[2].isdigit():
-        host, _, port_s = raw.rpartition(":")
-        port = int(port_s)
-    else:
-        host, port = raw.strip("[]"), None
-    return host.lower().rstrip("."), port
-
-
-def _no_proxy_entries() -> list[str]:
-    return [
-        part.strip() for key in ("NO_PROXY", "no_proxy")
-        for part in os.environ.get(key, "").split(",") if part.strip()]
-
-
-def _ip_or_none(value: str, parse=ipaddress.ip_address):
-    """``parse(value)`` or None on ``ValueError`` (``parse`` is ip_address / ip_network)."""
-    try:
-        return parse(value)
-    except ValueError:
-        return None
-
-
-def _no_proxy_entry_matches(entry: str, host: str, port: int | None = None) -> bool:
-    token = str(entry or "").strip().lower()
-    if not token:
-        return False
-    if token == "*":
-        return True
-    token_host, token_port = _split_host_port(token)
-    if not token_host or (token_port is not None and (port is None or token_port != port)):
-        return False
-    host_ip = _ip_or_none(host)
-    network = _ip_or_none(token_host, lambda v: ipaddress.ip_network(v, strict=False))
-    if network is not None:  # CIDR or bare IP literal (a /32 / /128 network)
-        return host_ip is not None and host_ip in network
-    if token_host.startswith("*."):
-        return host.endswith(token_host[1:])
-    if token_host.startswith("."):
-        return host == token_host[1:] or host.endswith(token_host)
-    return host == token_host or host.endswith(f".{token_host}")
-
-
-def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[str] | None) -> bool:
-    """True when NO_PROXY/no_proxy matches at least one target host (exact hosts, domain /
-    wildcard suffixes, IP literals, CIDR ranges, optional host:port entries, ``*``)."""
-    entries = _no_proxy_entries()
-    if not entries or not target_hosts:
-        return False
-    candidates = [target_hosts] if isinstance(target_hosts, str) else list(target_hosts)
-    return any(
-        host and any(_no_proxy_entry_matches(entry, host, port) for entry in entries)
-        for host, port in map(_split_host_port, map(str, candidates)))
 
 
 def resolve_proxy_url(

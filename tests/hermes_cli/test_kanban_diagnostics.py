@@ -9,6 +9,10 @@ engine works on sqlite3.Row objects as well as dataclasses.
 
 from __future__ import annotations
 
+import argparse
+import inspect
+import re
+import shlex
 import time
 from pathlib import Path
 
@@ -17,6 +21,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_diagnostics as kd
+from hermes_cli.kanban_parser import build_parser
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +124,74 @@ def test_repeated_crashes_truncates_huge_tracebacks():
     assert len(d.title) < 250
     # Detail contains the snippet with ellipsis.
     assert d.detail.endswith("…") or len(d.detail) < 700
+
+
+def _kanban_subcommand_choices() -> set[str]:
+    """Registered ``hermes kanban`` subcommand names (canonical + aliases)."""
+    parent = argparse.ArgumentParser()
+    parent_sub = parent.add_subparsers()
+    build_parser(parent_sub)
+    kanban_parser = parent_sub.choices["kanban"]
+    sub = next(a for a in kanban_parser._actions if isinstance(a, argparse._SubParsersAction))
+    return set(sub.choices)
+
+
+def _assert_command_resolves(command: str) -> None:
+    """Fail if a printed operator-hint command does not resolve against the real
+    kanban parser tree. Drop the leading ``hermes`` program token — build_parser()
+    wires up the ``kanban`` subtree only, and the entry point consumes that token."""
+    tokens = shlex.split(command)[1:]
+    parent = argparse.ArgumentParser()
+    build_parser(parent.add_subparsers())
+    parent.parse_args(tokens)
+
+
+def test_all_diagnostics_hint_verbs_resolve_in_parser():
+    """Guard the whole class: every ``hermes kanban <verb>`` operator hint that
+    the diagnostics module can print must name a subcommand the parser actually
+    defines, so a hint can never again point an operator at a dead verb.
+
+    This scans the module source rather than driving each rule through fixtures,
+    because several hints only fire under config/status combinations that are
+    expensive to reproduce. A static scan still catches the bug class directly:
+    a hint that names a non-existent verb fails here at verb-resolution time.
+    """
+    source = inspect.getsource(kd)
+    commands = re.findall(r"hermes kanban\s+[a-z-]+(?:\s+|$)", source)
+    verbs = sorted({m.split()[-1] for m in commands})
+    assert verbs, "expected at least one 'hermes kanban <verb>' hint to scan"
+    valid = _kanban_subcommand_choices()
+    for verb in verbs:
+        assert verb in valid, (
+            f"operator hint names a non-existent subcommand: 'hermes kanban {verb}'. "
+            f"Valid verbs include: {', '.join(sorted(valid))}"
+        )
+
+
+def test_block_unblock_cycling_hint_resolves_to_real_subcommand():
+    """The cycling rule's suggested CLI hint must name a real ``hermes kanban``
+    subcommand — pasting the printed command should resolve, not error with
+    'invalid choice'. Regression: it used to suggest ``hermes kanban events``,
+    which is not a subcommand (event history lives under ``show``)."""
+    now = int(time.time())
+    task = _task(status="blocked")
+    # 3 block→unblock cycles (4 blocked events: the first opens the cycle
+    # counter, each subsequent blocked-after-unblocked is one cycle) inside
+    # the default 24h window.
+    events = []
+    for i in range(4):
+        events.append(_event("blocked", ts=now - (20 - 2 * i) * 60, reason=f"wall {i}"))
+        events.append(_event("unblocked", ts=now - (19 - 2 * i) * 60))
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    cycling = [d for d in diags if d.kind == "block_unblock_cycling"]
+    assert len(cycling) == 1
+    d = cycling[0]
+    hints = [a for a in d.actions if a.kind == "cli_hint"]
+    assert hints, "cycling diagnostic must carry a suggested CLI hint"
+    for hint in hints:
+        command = hint.payload.get("command", "")
+        assert command.startswith("hermes kanban "), f"unexpected hint: {command!r}"
+        _assert_command_resolves(command)
 
 
 # ---------------------------------------------------------------------------

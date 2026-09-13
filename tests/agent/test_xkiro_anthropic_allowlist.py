@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.anthropic_adapter import build_anthropic_kwargs
-from agent.anthropic_endpoints import _is_xkiro_endpoint, _requires_bearer_auth
+from agent.anthropic_endpoints import _requires_bearer_auth
 from agent.chat_completion_helpers import _build_anthropic_kwargs
 from providers.base import ProviderProfile
 
@@ -26,7 +26,6 @@ def test_bearer_auth_does_not_match_lookalike_hosts():
     assert _requires_bearer_auth("https://api.anthropic.com") is False
     assert _requires_bearer_auth("https://api.xkiro.com.evil.example/v1") is False
     assert _requires_bearer_auth("https://evil.example/api.xkiro.com/v1") is False
-    assert _is_xkiro_endpoint("https://evil.example/api.xkiro.com/v1") is False
 
 
 def test_build_anthropic_kwargs_keeps_provider_declared_vendor_model_id():

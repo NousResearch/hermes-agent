@@ -120,11 +120,6 @@ def _is_nous_portal_endpoint(base_url: str | None) -> bool:
     return bool(override_host) and base_url_hostname(base_url or "") == override_host
 
 
-def _is_xkiro_endpoint(base_url: str | None) -> bool:
-    """xKiro's Anthropic-compatible API (Bearer auth, verbatim ``vendor/model`` ids)."""
-    return base_url_host_matches(base_url or "", "api.xkiro.com")
-
-
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Providers needing ``Authorization: Bearer`` instead of ``x-api-key``: MiniMax, Azure AI
     Foundry, Palantir Foundry's LLM proxy, CommandCode, Nous Portal, xKiro. Palantir/CommandCode/xKiro
@@ -136,7 +131,7 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         or "azure.com" in normalized
         or base_url_host_matches(normalized, "palantirfoundry.com")
         or base_url_host_matches(normalized, "api.commandcode.ai")
-        or _is_xkiro_endpoint(normalized)
+        or base_url_host_matches(normalized, "api.xkiro.com")
     )
 
 

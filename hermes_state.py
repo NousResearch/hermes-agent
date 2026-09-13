@@ -428,10 +428,13 @@ class SessionDB(
             resolved = data.pop("_system_prompt_resolved")
             if "system_prompt" in data:
                 data["system_prompt"] = resolved
-        if isinstance(data.get("system_prompt"), bytes):
-            # BLOB storage bypasses text_factory (sqlite3 contract): degrade here so the public
-            # session dict stays a serializable str for BOTH storage classes (#109465 review).
-            data["system_prompt"] = _tolerant_decode_bytes(data["system_prompt"])
+        # sessions has no legitimate BLOB column: any bytes is a corrupt cell that landed in BLOB
+        # storage and bypassed text_factory (sqlite3 contract). Normalize every field centrally so
+        # the public session dict stays serializable str for BOTH storage classes — not just
+        # system_prompt but also title, model, end_reason, ... (#109465 review, completeness gap 2).
+        for key, value in data.items():
+            if isinstance(value, bytes):
+                data[key] = _tolerant_decode_bytes(value)
         return data
 
     @staticmethod

@@ -335,3 +335,84 @@ def test_corruption_warning_dedupe_is_bounded_and_thread_safe(caplog):
         thread.join()
     assert not errors
     assert len(_corruption_warned_fingerprints) <= _CORRUPTION_WARN_FINGERPRINT_CAP
+
+
+def test_take_unseen_reactions_fails_closed_on_undecodable_metadata(tmp_path):
+    """The take_unseen_reactions read-modify-write seam must abort byte-identically on an
+    undecodable display_metadata cell — for BOTH storage classes — instead of parsing the
+    tolerant U+FFFD text, marking the reaction seen, and rewriting the row's private fields
+    as replacement soup (#109465 review, completeness gap 1)."""
+    for storage in ("blob", "text"):
+        db = SessionDB(db_path=tmp_path / f"state-{storage}.db")
+        try:
+            db.create_session("s", "cli")
+            db.append_message("s", "user", "react to me")
+            row_id = db.latest_message_row_id("s", role="user")
+            db.set_message_reaction("s", row_id, "\U0001f44d", author="user")
+            good_meta = db._conn.execute(
+                "SELECT CAST(display_metadata AS BLOB) FROM messages WHERE id = ?", (row_id,)
+            ).fetchone()[0]
+            assert json.loads(good_meta.decode("utf-8"))["reactions"][0]["emoji"] == "\U0001f44d"
+
+            # One private field carries undecodable bytes; the reaction itself stays valid.
+            undecodable_meta = json.dumps({
+                "private": "secret", "reactions": [
+                    {"emoji": "\U0001f44d", "author": "user", "at": 1.0, "seen": False}],
+            }).encode("utf-8").replace(b"secret", b"secret\xe2\x9c")
+
+            def _damage(conn):
+                if storage == "blob":
+                    conn.execute("UPDATE messages SET display_metadata = ? WHERE id = ?",
+                                 (undecodable_meta, row_id))
+                else:  # TEXT storage: the tolerant text_factory would hide the raw bytes on read
+                    conn.execute("UPDATE messages SET display_metadata = CAST(? AS TEXT) WHERE id = ?",
+                                 (undecodable_meta, row_id))
+
+            db._execute_write(_damage)
+            stored = db._conn.execute(
+                "SELECT CAST(display_metadata AS BLOB) FROM messages WHERE id = ?", (row_id,)
+            ).fetchone()[0]
+            assert stored == undecodable_meta
+
+            # Fail closed: the whole take aborts; the stored cell is byte-identical afterwards.
+            with pytest.raises(sqlite3.OperationalError, match="not valid UTF-8"):
+                db.take_unseen_reactions("s", author="user")
+            assert db._conn.execute(
+                "SELECT CAST(display_metadata AS BLOB) FROM messages WHERE id = ?", (row_id,)
+            ).fetchone()[0] == undecodable_meta
+
+            # With the damaged cell healed, the same take surfaces the reaction exactly once.
+            db._execute_write(lambda conn: conn.execute(
+                "UPDATE messages SET display_metadata = ? WHERE id = ?", (good_meta, row_id)))
+            assert db.take_unseen_reactions("s", author="user") == [{
+                "row_id": row_id, "role": "user", "emoji": "\U0001f44d", "text": "react to me"}]
+            assert db.take_unseen_reactions("s", author="user") == []
+        finally:
+            db.close()
+
+
+def test_blob_stored_title_and_reasoning_stay_serializable(tmp_path):
+    """BLOB-stored sessions.title and messages.reasoning must degrade to str in the public
+    dicts too, not just system_prompt/content: json.dumps(get_session(...)) and
+    json.dumps(get_messages(...)) keep working for BOTH storage classes (#109465 review,
+    completeness gap 2)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("s", "cli")
+        db.append_message("s", "assistant", "answer placeholder head", reasoning="think placeholder head")
+        undecodable = b"why so serious \xe2\x9c"
+
+        def _store_blobs(conn):
+            conn.execute("UPDATE sessions SET title = ? WHERE id = 's'", (undecodable,))
+            conn.execute("UPDATE messages SET reasoning = ? WHERE session_id = 's'", (undecodable,))
+
+        db._execute_write(_store_blobs)
+        session = db.get_session("s")
+        messages = db.get_messages("s")
+        assert session["title"] == "why so serious \ufffd"
+        assert messages[0]["reasoning"] == "why so serious \ufffd"
+        assert json.dumps(session) and json.dumps(messages)
+        # The listing surface shares the same normalization boundary.
+        assert all(json.dumps(s) for s in db.list_recent_sessions_bounded())
+    finally:
+        db.close()

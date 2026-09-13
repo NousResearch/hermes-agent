@@ -193,7 +193,7 @@ _SYNC_FALLBACK_NOTES = {
     "no_async": (
         "background=true is not available in this session — it cannot "
         "receive a detached subagent result after the turn ends (a "
-        "one-shot runner such as `hermes -z`, a cron job, a Kanban "
+        "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a cron job, a Kanban "
         "worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
     ),
     "at_capacity": (
@@ -215,6 +215,14 @@ def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_deliver
 
     API completion only persists a row; this does not authorize a model wake. The
     continuation must read that row, not an authoritative caller-owned snapshot."""
+    from gateway.session_context import get_session_env
+
+    # Finite chat owns no later turn to consume a detached result. Reuse its
+    # approval/lifecycle marker without disabling terminal notify completions:
+    # those have their own bounded exit linger and durable result receipts.
+    if get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1":
+        return None
+
     try:
         # Finite sessions cannot route a detached subagent result back to the agent after their turn/process
         # ends. This includes stateless HTTP requests (#10760) and one-shot Kanban workers (#63169). Fall

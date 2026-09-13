@@ -12,9 +12,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, split_user_originated_turn
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
+from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _legacy_reset_child_sql, _placeholders)
+    _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -54,18 +55,15 @@ def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
 
 
 def _coerce_timestamp(value: Any, default: float) -> float:
-    """Explicit message timestamp (datetime or number) or *default* when invalid."""
-    if value is None:
+    """Explicit message timestamp (datetime or number) or *default* when invalid or outside the sane
+    epoch window — the write-side twin of the readers' ``coerce_epoch``: a bad row is never persisted."""
+    result = coerce_epoch(value, field="message timestamp")
+    if result is None:
         return default
-    try:
-        result = float(value.timestamp()) if hasattr(value, "timestamp") else float(value)
-        # SQLite reads both signed zero spellings back as 0.0. Hash the value
-        # in that stored form so -0.0 and 0.0 retain the historical SQL/Python
-        # identity equality.
-        return 0.0 if result == 0.0 else result
-    except (TypeError, ValueError):
-        logger.debug("Ignoring invalid explicit message timestamp: %r", value)
-        return default
+    # SQLite reads both signed zero spellings back as 0.0. Hash the value
+    # in that stored form so -0.0 and 0.0 retain the historical SQL/Python
+    # identity equality.
+    return 0.0 if result == 0.0 else result
 
 
 def _parse_tool_calls(tool_calls: Any) -> Any:
@@ -458,6 +456,15 @@ class SessionMessagesMixin:
         row = self._read_one("SELECT id FROM messages WHERE session_id = ? AND role = ? "
             f"AND active = 1 {text_filter}ORDER BY id DESC LIMIT 1 OFFSET ?",
             (session_id, role, int(offset)))
+        return row[0] if row else None
+
+    def latest_conversation_role(self, session_id: str) -> Optional[str]:
+        """Role of the newest active user/assistant/tool row, or ``None``. ``session_meta`` /
+        ``system`` rows are transcript bookkeeping stripped before the model sees history, so
+        they must not hide an open user tail from the failed-turn boundary check."""
+        row = self._read_one(
+            "SELECT role FROM messages WHERE session_id = ? AND active = 1 "
+            "AND role NOT IN ('session_meta', 'system') ORDER BY id DESC LIMIT 1", (session_id,))
         return row[0] if row else None
 
     def get_message_role(self, session_id: str, row_id: int) -> Optional[str]:
@@ -868,9 +875,9 @@ class SessionMessagesMixin:
                         best = current
                     child_row = conn.execute(
                         "SELECT id FROM sessions AS child WHERE child.parent_session_id = ? "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL "
+                        f"  AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL "
+                        f"  AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
+                        f"  AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
                         f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
                         "  AND COALESCE(child.source, '') != 'tool' "
                         "ORDER BY child.started_at DESC, child.id DESC LIMIT 1", (current,)).fetchone()

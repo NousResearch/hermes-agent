@@ -446,6 +446,24 @@ class TestPrompt:
 
         assert captured.get("child") == resp.session_id
 
+    @pytest.mark.asyncio
+    async def test_empty_messages_list_replaces_stale_history(self, agent, mock_manager):
+        """``run_conversation`` returning ``messages=[]`` clears the ACP transcript instead of
+        leaving the previous turn's history in place (#10844)."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.history = [{"role": "user", "content": "old"}]
+        state.agent.run_conversation = MagicMock(return_value={"final_response": "done", "messages": []})
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        await agent.prompt(prompt=[TextContentBlock(type="text", text="hi")], session_id=resp.session_id)
+
+        assert state.history == []
+
 
 
 
@@ -531,7 +549,7 @@ class TestSlashCommands:
         original_session_db = object()
         state.agent._session_db = original_session_db
 
-        def _compress_context(messages, system_prompt, *, approx_tokens, task_id, force):
+        def _compress_context(messages, system_prompt, *, approx_tokens, task_id, force, **kwargs):
             assert state.agent._session_db is None
             assert messages == state.history
             assert system_prompt == "system"
@@ -564,8 +582,10 @@ class TestSlashCommands:
             ],
             "system",
             approx_tokens=40,
-            task_id=state.session_id,
+            focus_topic=None,
             force=True,
+            defer_context_engine_notification=True,
+            task_id=state.session_id,
         )
         mock_save.assert_called_once_with(state.session_id)
 

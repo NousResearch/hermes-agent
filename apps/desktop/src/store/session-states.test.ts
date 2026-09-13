@@ -1136,40 +1136,19 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
       title: 'chat'
     })
 
-    // panes ← $sessionTiles (paneMirror stub). Adoption is synchronous on
-    // register, so openSessionTile + focusOpenSession works the same tick.
-    const registered = new Map<string, () => void>()
-
-    const syncTiles = () => {
-      const wanted = new Set(states.$sessionTiles.get().map(t => t.storedSessionId))
-
-      for (const id of wanted) {
-        if (registered.has(id)) {
-          continue
-        }
-
-        registered.set(
-          id,
-          registry.register({
-            area: 'panes',
-            data: { dock: { pane: 'workspace', pos: 'center' }, placement: 'main' },
-            id: tilePane(id),
-            render: () => null,
-            title: id
-          })
-        )
-      }
-
-      for (const [id, dispose] of registered) {
-        if (!wanted.has(id)) {
-          dispose()
-          registered.delete(id)
-          tree.removeTreePane(tilePane(id))
-        }
-      }
-    }
-
-    states.$sessionTiles.listen(syncTiles)
+    const { paneMirror } = await import('@/app/chat/pane-mirror')
+    paneMirror({
+      source: states.$sessionTiles,
+      key: tile => tile.storedSessionId,
+      prefix: 'session-tile',
+      dir: tile => tile.dir,
+      anchor: tile => tile.anchor,
+      before: tile => tile.before,
+      minWidth: '10rem',
+      title: id => id,
+      render: () => null,
+      close: states.closeSessionTile
+    })()
     tree.watchContributedPanes()
     session.$selectedStoredSessionId.set('primary')
     tree.declareDefaultTree(model.group(['workspace'], { active: 'workspace', id: 'grp-main' }))
@@ -1181,6 +1160,32 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
 
     return { states, tree }
   }
+
+  it('restores the live strip slot after reordering and retains the exact owner', async () => {
+    const { states, tree } = await setup()
+    states.openSessionTile('after', 'center', 'workspace')
+    tree.moveTreePane(tilePane('closed'), { groupId: 'grp-main', pos: 'center', before: 'workspace' })
+    const order = findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes
+    const ownerRoute = { connectionId: 'cloud', profile: 'agent' }
+    states.patchSessionTile('closed', { ownerRoute })
+    states.closeSessionTile('closed')
+    tree.noteActiveTreeGroup(null)
+    states.reopenLastClosedTile()
+    expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes).toEqual(order)
+    expect(states.$focusedStoredSessionId.get()).toBe('closed')
+    expect(states.sessionTileOwnerRoute('closed')).toEqual(ownerRoute)
+  })
+
+  it('fronts a palette-opened tab from sidebar focus without replacing main', async () => {
+    const { states, tree } = await setup()
+    const { openSession } = await import('@/app/open-session')
+    const navigate = vi.fn()
+    tree.noteActiveTreeGroup('sidebar')
+    openSession('palette-result', navigate, 'stack')
+    expect(states.$focusedStoredSessionId.get()).toBe('palette-result')
+    expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.active).toBe(tilePane('palette-result'))
+    expect(navigate).not.toHaveBeenCalled()
+  })
 
   it('fronts the restored tab after ⌘⇧T', async () => {
     const { states, tree } = await setup()

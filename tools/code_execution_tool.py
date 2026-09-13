@@ -28,8 +28,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from tools.thread_context import propagate_context_to_thread
 from tools.registry import registry, tool_error
 
+from hermes_time import get_timezone_name
 from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
 from tools.code_execution_rpc import _rpc_poll_loop
+from tools.tool_output_truncate import head_tail_split, truncation_notice
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +63,10 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
                                 "stdout_bytes_total": total, "stdout_bytes_omitted": total - captured}
     if total <= MAX_STDOUT_BYTES:
         return stdout_bytes.decode("utf-8", errors="replace"), metadata
-    head_bytes = int(MAX_STDOUT_BYTES * 0.4)
+    head_bytes, tail_bytes = head_tail_split(MAX_STDOUT_BYTES)
     text = (stdout_bytes[:head_bytes].decode("utf-8", errors="replace")
-            + f"\n\n... [OUTPUT TRUNCATED - {total - captured:,} bytes omitted out of {total:,} total] ...\n\n"
-            + stdout_bytes[head_bytes - MAX_STDOUT_BYTES:].decode("utf-8", errors="replace"))
+            + truncation_notice(total - captured, total, unit="bytes")
+            + stdout_bytes[-tail_bytes:].decode("utf-8", errors="replace"))
     metadata["warning"] = ("execute_code stdout was truncated; the script did run, but only "
                            "the captured head/tail output is included. Re-run only with "
                            "narrower output if the omitted data is required.")
@@ -578,7 +580,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         rpc_thread.start()
         env_prefix = (f"HERMES_RPC_DIR={quoted_rpc_dir} HERMES_RPC_TOKEN={shlex.quote(rpc_token)} "
                       "PYTHONDONTWRITEBYTECODE=1")
-        tz = os.getenv("HERMES_TIMEZONE", "").strip()
+        tz = get_timezone_name()  # routed profile's timezone, not the bridged default's
         if tz:
             env_prefix += f" TZ={shlex.quote(tz)}"
         logger.info("Executing code on %s backend (task %s)...", env_type, effective_task_id[:8])
@@ -757,11 +759,11 @@ def _kill_process_group(proc, escalate: bool = False):
 
 
 def _load_config() -> dict:
-    """``code_execution`` config section via the lightweight raw reader — runs while the
+    """Effective ``code_execution`` section (defaults + user file + managed overlay) — runs while the
     module-level schema is built at tool discovery, so it must not import ``cli``."""
     try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config().get("code_execution", {})
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly().get("code_execution", {})
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}

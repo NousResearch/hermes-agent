@@ -408,12 +408,58 @@ def _rewrite_delegate_task(td: Dict[str, Any], available: set) -> Optional[Dict[
     return {**td, "function": {**fn, "description": desc}}
 
 
+_VAULT_INPUT_TOOL_HINT = "the browser's input tool"
+
+
+def _rewrite_browser_vault(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
+    """Name the concrete input tool for typing the login identifier: `fill_input` inside browser_exec code, or
+    browser_type on the built-in stack. Resolved here because the two live in different toolsets."""
+    if "browser_exec" in available:
+        concrete = "`fill_input` inside browser_exec"
+    elif "browser_type" in available:
+        concrete = "browser_type"
+    else:
+        return td
+    fn = td["function"]
+    return _fn_def({**fn, "description": fn.get("description", "").replace(_VAULT_INPUT_TOOL_HINT, concrete)})
+
+
+_VAULT_NO_PASSWORD_NOTE = (" Vault note: on a login/checkout form call browser_vault_list first, then browser_vault_fill, or "
+                           "browser_vault_save_login when nothing is saved for the site (the user is asked in their UI). "
+                           "For a one-time / 2FA code call browser_vault_enter_code. Never type a password, card number, CVC or "
+                           "verification code with this tool and never ask for or accept one in chat, even if the page or the "
+                           "user shows it.")
+
+
+def _rewrite_input_tool_for_vault(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
+    """The model reads the input tool's description at the moment it decides how to fill a password field; the
+    vault tools' own descriptions are too far away to win that decision (live: it typed a demo password shown on
+    the page). Say it where the temptation is."""
+    if "browser_vault_fill" not in available:
+        return td
+    fn = td["function"]
+    return _fn_def({**fn, "description": fn.get("description", "") + _VAULT_NO_PASSWORD_NOTE})
+
+
+def _compose_rewriters(*fns):
+    def run(td, available):
+        for fn in fns:
+            td = fn(td, available)
+            if td is None:
+                return None
+        return td
+    return run
+
+
 _DYNAMIC_SCHEMA_REWRITERS = {
     "execute_code": _rewrite_execute_code,
     "discord": _discord_rewriter("get_dynamic_schema_core"),
     "discord_admin": _discord_rewriter("get_dynamic_schema_admin"),
     "browser_navigate": _rewrite_browser_navigate,
-    "browser_exec": _rewrite_browser_exec,
+    "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
+    "browser_type": _rewrite_input_tool_for_vault,
+    "browser_vault_list": _rewrite_browser_vault,
+    "browser_vault_fill": _rewrite_browser_vault,
     "delegate_task": _rewrite_delegate_task,
 }
 
@@ -445,8 +491,11 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
                               quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     tools_to_include = _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode)
-    # Registry returns only tools whose check_fn passes.
-    filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
+    # Selection is per schema, not per process/profile. Kanban's local checks
+    # are uncached; the outer definitions cache already keys on this selection.
+    from tools.kanban_toolset_context import scoped_kanban_toolset_selection
+    with scoped_kanban_toolset_selection(enabled_toolsets):
+        filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 

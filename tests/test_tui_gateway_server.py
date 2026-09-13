@@ -841,8 +841,8 @@ def test_profile_scoped_mcp_discovery_uses_target_home(monkeypatch, tmp_path):
 
     seen = []
 
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", False)
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", set())
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
     # ensure_mcp_discovery_started flips this module global; monkeypatch it so
     # the enablement doesn't leak into sibling tests in this file.
     monkeypatch.setattr(entry, "_mcp_discovery_enabled", False)
@@ -854,13 +854,11 @@ def test_profile_scoped_mcp_discovery_uses_target_home(monkeypatch, tmp_path):
 
     try:
         entry.ensure_mcp_discovery_started()
-        thread = mcp_startup._mcp_discovery_thread
+        thread = mcp_startup._current_home_thread()
         assert thread is not None
         thread.join(timeout=2)
     finally:
         reset_hermes_home_override(token)
-        mcp_startup._mcp_discovery_thread = None
-        mcp_startup._mcp_discovery_started = False
 
     assert seen == [str(profile_home)]
 
@@ -2607,17 +2605,18 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    # Sorted: ["kanban", "memory", "project"]. `kanban` is auto-recovered by
-    # _get_platform_tools (a non-configurable platform toolset in hermes-cli's
-    # universe); `project` is GUI-only, folded in by _load_enabled_toolsets.
-    # Toolsets inside their first release (_RECENTLY_SHIPPED_TOOLSETS) are
-    # back-filled onto saved lists that never offered them — allow those too.
+    # Sorted: ["memory", "project"]. `kanban` is a configurable opt-in and is
+    # never recovered onto a saved list; `project` is GUI-only, folded in by
+    # _load_enabled_toolsets. Toolsets inside their first release
+    # (_RECENTLY_SHIPPED_TOOLSETS) are back-filled onto saved lists that never
+    # offered them — allow those too.
     from hermes_cli.tools_config import _RECENTLY_SHIPPED_TOOLSETS
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"kanban", "memory", "project"} <= set(result)
-    assert set(result) - {"kanban", "memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert {"memory", "project"} <= set(result)
+    assert "kanban" not in result
+    assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -2642,8 +2641,9 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"kanban", "memory", "project"} <= set(result)
-    assert set(result) - {"kanban", "memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert {"memory", "project"} <= set(result)
+    assert "kanban" not in result
+    assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 
@@ -4423,7 +4423,7 @@ def test_apply_model_switch_persist_override_false_never_persists(monkeypatch):
         lambda *a: pytest.fail("persist_override must bypass resolve_persist_behavior"),
     )
     monkeypatch.setattr(
-        server, "_persist_model_switch",
+        "hermes_cli.model_switch.persist_model_selection",
         lambda _r: pytest.fail("persist_override=False must not persist"),
     )
     monkeypatch.setattr(
@@ -4547,6 +4547,156 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     assert agent.model == "gpt-5.5"
     assert captured["fallback_model"] == fallback_chain
     assert captured["platform"] == "tui"
+
+
+def _capture_make_agent_kwargs(monkeypatch) -> dict:
+    """Stub AIAgent so ``server._make_agent`` records the kwargs it was built with."""
+    captured = {}
+
+    def fake_agent(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model=kwargs.get("model"))
+
+    _setup_make_agent_mocks(monkeypatch, {})
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    return captured
+
+
+@pytest.mark.parametrize("identity, user_id", [
+    ({"user_id": "oidc|abc123", "provider": "oidc"}, "oidc:oidc|abc123"),
+    ({"user_id": "alice", "provider": "basic"}, "basic:alice"),
+    ({"user_id": "alice", "provider": "oidc"}, "oidc:alice"),
+    (None, None),
+    ({"user_id": "server-internal", "provider": "server-internal"}, None),
+    ({"user_id": "", "provider": "oidc"}, None),
+    ({"user_id": "abc", "provider": ""}, None),
+])
+def test_make_agent_passes_the_authenticated_dashboard_user_as_user_id(monkeypatch, identity, user_id):
+    """WSTransport.auth_identity reaches the agent as ``user_id`` prefixed with the login provider, so a
+    basic-auth ``alice`` and an OIDC ``alice`` stay two memory peers. The legacy token, stdio and the PTY
+    child's server-internal credential name no human, so the agent gets no user id for them."""
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    transport = types.SimpleNamespace(auth_identity=identity)
+    monkeypatch.setitem(server._sessions, "sid-auth", {"session_key": "k", "transport": transport})
+
+    server._make_agent("sid-auth", "k")
+
+    assert captured["user_id"] == user_id
+
+
+def test_make_agent_passes_no_user_id_for_an_unknown_session(monkeypatch):
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    server._sessions.pop("sid-missing", None)
+
+    server._make_agent("sid-missing", "k")
+
+    assert captured["user_id"] is None
+
+
+class _LoginSocket:
+    """A live WS peer carrying the identity the upgrade auth minted."""
+
+    def __init__(self, user_id="alice", provider="basic"):
+        self.auth_identity = {"provider": provider, "user_id": user_id}
+        self._closed = False
+
+    def write(self, frame):
+        return True
+
+
+def _login_session(monkeypatch, sid, key, transport, **extra) -> dict:
+    """A record the way session.create stamps it: the login lives on the record, not the transport slot."""
+    record = {"session_key": key, "transport": transport,
+              "auth_user_id": server._transport_auth_user_id(transport), **extra}
+    monkeypatch.setitem(server._sessions, sid, record)
+    return record
+
+
+def test_make_agent_keeps_the_login_after_a_second_window_attaches_and_detaches(monkeypatch):
+    """A pop-out turns the transport slot into a FanoutTransport, which names no login. The rebuild must read the
+    login the record was created with, before and after the pop-out goes away."""
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    first, popout = _LoginSocket(), _LoginSocket()
+    record = _login_session(monkeypatch, "sid-popout", "k", first)
+
+    assert server._attach_session_transport(record, popout)
+    server._make_agent("sid-popout", "k")
+    assert captured["user_id"] == "basic:alice"
+
+    server._detach_session_transport(record, popout)
+    server._make_agent("sid-popout", "k")
+    assert captured["user_id"] == "basic:alice"
+
+
+def test_build_branch_agent_carries_the_parent_login(monkeypatch, tmp_path):
+    """The branch agent is built before its record exists, so the parent's login is passed to the build and
+    copied onto the new record."""
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    socket = _LoginSocket()
+    parent = _login_session(monkeypatch, "sid-parent", "parent-key", socket, cwd=str(tmp_path), source="desktop")
+
+    def fake_init_session(sid, key, agent, history, **kwargs):
+        monkeypatch.setitem(server._sessions, sid, {"session_key": key, "transport": server._stdio_transport})
+
+    monkeypatch.setattr(server, "_set_session_context", lambda key: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_init_session", fake_init_session)
+    monkeypatch.setattr(server, "_transfer_db_to_agent", lambda *args: False)
+    token = bind_transport(socket)
+    try:
+        server._build_branch_agent(parent, "sid-branch", "branch-key", [], "desktop")
+    finally:
+        reset_transport(token)
+
+    assert captured["user_id"] == "basic:alice"
+    assert server._sessions["sid-branch"]["auth_user_id"] == "basic:alice"
+
+
+def test_deferred_session_record_stamps_the_creating_login():
+    token = bind_transport(_LoginSocket("carol", "oidc"))
+    try:
+        record = server._deferred_session_record(
+            "deferred-key", cols=80, cwd="/tmp", history=[], lease=None)
+    finally:
+        reset_transport(token)
+
+    assert record["auth_user_id"] == "oidc:carol"
+    assert server._session_auth_user_id(record) == "oidc:carol"
+
+
+def test_compute_host_turn_frame_carries_the_session_login(monkeypatch):
+    record = _login_session(monkeypatch, "sid-host", "host-key", _LoginSocket(), history=[],
+                            history_lock=threading.Lock(), cwd="/tmp", cols=80)
+    monkeypatch.setattr(server, "_session_cwd", lambda session: "/tmp")
+
+    frame = server._compute_host_turn_frame("rid", "sid-host", record, "hello")
+
+    assert frame["auth_user_id"] == "basic:alice"
+
+
+def test_attaching_a_different_login_keeps_the_creator_and_warns_once(monkeypatch, caplog):
+    """Ownership is not enforced. The record keeps the creator's login, and the attach is logged once with both
+    ids rather than on every prompt the second client sends."""
+    creator, other = _LoginSocket("alice"), _LoginSocket("bob")
+    record = _login_session(monkeypatch, "sid-shared", "shared-key", creator)
+
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+        assert server._attach_session_transport(record, other)
+        assert server._attach_session_transport(record, other)
+
+    warnings = [rec.getMessage() for rec in caplog.records if "basic:bob" in rec.getMessage()]
+    assert len(warnings) == 1
+    assert "basic:alice" in warnings[0] and "shared-key" in warnings[0]
+    assert server._session_auth_user_id(record) == "basic:alice"
+
+
+def test_attaching_the_same_login_again_does_not_warn(monkeypatch, caplog):
+    record = _login_session(monkeypatch, "sid-same", "same-key", _LoginSocket("alice"))
+
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+        assert server._attach_session_transport(record, _LoginSocket("alice"))
+
+    assert not [rec for rec in caplog.records if "logged in as" in rec.getMessage()]
 
 
 def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
@@ -8974,6 +9124,36 @@ def test_setup_status_reports_provider_config(monkeypatch):
     assert resp["result"]["provider_configured"] is False
 
 
+def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypatch):
+    """Under ``hermes serve`` the boot bootstrap owns the free-tier identity; ``setup.status`` reports
+    its record (blocking for it while it is in flight) instead of re-probing, so a client's first poll
+    sees the identity that exists rather than racing the mint."""
+    import threading
+    from hermes_cli import free_tier_bootstrap as fb
+    fb.reset_for_tests()
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured",
+                        lambda **_kw: pytest.fail("setup.status must read the record, not re-probe"))
+    release = threading.Event()
+
+    def slow_bootstrap():
+        release.wait(5)
+        with fb._lock:
+            fb._record = fb.SetupRecord(provider_configured=True, inference_provider="nous", free_tier=True,
+                                        has_identity=True, other_providers=False)
+            fb._done.set()
+    with fb._lock:
+        fb._started = True
+    threading.Thread(target=slow_bootstrap, daemon=True).start()
+    try:
+        release.set()
+        resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
+        assert resp["result"]["provider_configured"] is True
+        assert resp["result"]["ready"] is True and resp["result"]["free_tier"] is True
+        assert resp["result"]["inference_provider"] == "nous"
+    finally:
+        fb.reset_for_tests()
+
+
 def test_probe_credentials_emits_exact_empty_key_warning():
     agent = types.SimpleNamespace(api_key="", provider="openrouter")
 
@@ -9616,9 +9796,9 @@ def test_config_set_model_global_persists(monkeypatch):
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
-    # _persist_model_switch uses targeted save_config_value writes (#48305) so it
+    # persist_model_selection uses targeted per-key writes (#48305) so it
     # preserves sibling model.* keys instead of rewriting the whole block.
-    monkeypatch.setattr("cli.save_config_value", lambda key, value: saved_values.__setitem__(key, value) or True)
+    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", lambda path, key, value: saved_values.__setitem__(key, value))
 
     resp = server.handle_request(
         {
@@ -19822,77 +20002,6 @@ def test_get_usage_safe_when_active_count_raises(monkeypatch):
     assert usage["model"] == "x"
 
 
-def test_persist_model_switch_preserves_sibling_model_keys(tmp_path, monkeypatch):
-    """#48305: switching models from the TUI must NOT destroy sibling keys under
-    `model:` (model_slots, model_fallback, etc.). _persist_model_switch now uses
-    targeted save_config_value writes instead of rewriting the whole block."""
-    import types
-    import yaml
-    import cli
-
-    cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(
-        "model:\n"
-        "  default: old-model\n"
-        "  provider: openai\n"
-        "  model_slots:\n"
-        "    fast: gpt-5-mini\n"
-        "  model_fallback:\n"
-        "    - claude-haiku\n"
-        "agent:\n"
-        "  system_prompt: keepme\n"
-    )
-    # save_config_value() resolves the config path from get_hermes_home() (live
-    # env var), always targeting HERMES_HOME/config.yaml — point it at tmp_path.
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(cli, "_hermes_home", tmp_path)
-
-    result = types.SimpleNamespace(
-        new_model="new-model", target_provider="anthropic", base_url=None
-    )
-    server._persist_model_switch(result)
-    saved = yaml.safe_load(cfg_path.read_text())
-
-    # The switched fields updated...
-    assert saved["model"]["default"] == "new-model"
-    assert saved["model"]["provider"] == "anthropic"
-    # ...and the sibling keys SURVIVED (the bug was that they got wiped).
-    assert saved["model"]["model_slots"] == {"fast": "gpt-5-mini"}
-    assert saved["model"]["model_fallback"] == ["claude-haiku"]
-    assert saved["agent"]["system_prompt"] == "keepme"
-
-
-def test_persist_model_switch_clears_stale_base_url(tmp_path, monkeypatch):
-    """#48305: switching from a custom endpoint (which set model.base_url) to a
-    provider with no base_url must CLEAR the stale base_url, not leave it
-    pointing at the old host."""
-    import types
-    import yaml
-    import cli
-
-    cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(
-        "model:\n"
-        "  default: local-model\n"
-        "  provider: custom:mylocal\n"
-        "  base_url: http://localhost:1234/v1\n"
-    )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(cli, "_hermes_home", tmp_path)
-
-    # Switch to a native provider with no base_url.
-    result = types.SimpleNamespace(
-        new_model="claude-haiku", target_provider="anthropic", base_url=None
-    )
-    server._persist_model_switch(result)
-    saved = yaml.safe_load(cfg_path.read_text())
-
-    assert saved["model"]["default"] == "claude-haiku"
-    assert saved["model"]["provider"] == "anthropic"
-    # Stale custom base_url must be cleared (null coalesces to absent on read).
-    assert not saved["model"].get("base_url"), saved["model"].get("base_url")
-
-
 # ---------------------------------------------------------------------------
 # _resolve_runtime_with_fallback — init-time provider fallback
 # ---------------------------------------------------------------------------
@@ -20973,6 +21082,7 @@ def test_persist_branch_seed_keeps_reasoning_fields(monkeypatch, tmp_path):
         session_key="branch-key",
         parent_session_id="parent-key",
         history=_branch_history(),
+        seeded=True,  # stamped by session.create: this history exists only in memory
     )
     try:
         db.create_session("branch-key", source="tui")

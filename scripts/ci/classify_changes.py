@@ -91,6 +91,16 @@ _PY_RELEVANT_SITE = (
     "website/docs/",
     "website/scripts/",
 )
+# Cross-language contract files: data committed under a frontend tree that a
+# pytest pins against the Python side (emitter inventory, command registry).
+# Editing only the JSON in an apps/-only PR would otherwise skip the one test
+# that can catch the drift, so these force the Python lane too.
+_PY_RELEVANT_CONTRACT_FILES = {
+    # tests/tui_gateway/test_gateway_event_contract.py
+    "apps/shared/src/gateway-events.json",
+    # tests/hermes_cli/test_desktop_slash_registry.py
+    "apps/desktop/src/lib/desktop-slash-registry.json",
+}
 
 # CI-sensitive files: eslint config, workflow files, composite actions.
 # Changes here can influence what code the autofix job executes and pushes to
@@ -147,7 +157,7 @@ def _is_nix(p: str) -> bool:
 
 
 def _py_irrelevant(p: str) -> bool:
-    if p.startswith(_PY_RELEVANT_SITE):
+    if p.startswith(_PY_RELEVANT_SITE) or p in _PY_RELEVANT_CONTRACT_FILES:
         return False
     return (
         _is_docs(p)

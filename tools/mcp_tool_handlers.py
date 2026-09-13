@@ -41,8 +41,10 @@ _STDIO_OUTCOME_UNCERTAIN_MSG = (
 def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
     else a ``tool_error``. Fail-closed: approval-system errors block."""
-    if (_core._server_trust_levels.get(server_name, _core._TRUST_FULL) != _core._TRUST_UNTRUSTED
-            or _core._tool_read_only_hints.get(server_name, {}).get(tool_name) is True):
+    from tools.mcp_tool_scope import _resolve_server_key
+    key = _resolve_server_key(server_name)
+    if (_core._server_trust_levels.get(key, _core._TRUST_FULL) != _core._TRUST_UNTRUSTED
+            or _core._tool_read_only_hints.get(key, {}).get(tool_name) is True):
         return None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent
@@ -67,12 +69,21 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
 def _check_circuit_breaker(server_name: str) -> Optional[str]:
     """Open-breaker error, or None when calls may proceed. After the cooldown the breaker is
     half-open: the next call probes; success resets, failure re-bumps and re-arms the cooldown."""
-    failures = _core._server_error_counts.get(server_name, 0)
-    age = time.monotonic() - _core._server_breaker_opened_at.get(server_name, 0.0)
+    from tools.mcp_tool_scope import _resolve_server_key
+    key = _resolve_server_key(server_name)
+    failures = _core._server_error_counts.get(key, 0)
+    age = time.monotonic() - _core._server_breaker_opened_at.get(key, 0.0)
     if failures < _core._CIRCUIT_BREAKER_THRESHOLD or age >= _core._CIRCUIT_BREAKER_COOLDOWN_SEC:
         return None
+    retry_in = max(1, int(_core._CIRCUIT_BREAKER_COOLDOWN_SEC - age))
+    if _core._server_errors_all_application.get(key):
+        # The server answered every time; the calls were rejected. Calling it "unreachable" sent the
+        # model to the user instead of to its own arguments (#11113).
+        return tool_error(f"MCP server '{server_name}' rejected the last {failures} calls (it is reachable; see the "
+                          f"error text those calls returned). Paused for ~{retry_in}s. Do NOT repeat the same call — "
+                          f"fix the arguments/URL/target or use a different approach.")
     return tool_error(f"MCP server '{server_name}' is unreachable after {failures} consecutive failures. "
-                      f"Auto-retry available in ~{max(1, int(_core._CIRCUIT_BREAKER_COOLDOWN_SEC - age))}s. Do NOT retry "
+                      f"Auto-retry available in ~{retry_in}s. Do NOT retry "
                       f"this tool yet — use alternative approaches or ask the user to check the MCP server.")
 
 
@@ -102,8 +113,12 @@ def _result_is_error(result) -> bool:
 
 
 def _record_call_outcome(server_name: str, result) -> Any:
-    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike."""
-    (_core._bump_server_error if _result_is_error(result) else _core._reset_server_error)(server_name)
+    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike (#10447),
+    flagged as an application error so the open-breaker message stays truthful."""
+    if _result_is_error(result):
+        _core._bump_server_error(server_name, application=True)
+    else:
+        _core._reset_server_error(server_name)
     return result
 
 
@@ -120,24 +135,23 @@ def _mcp_loop_running() -> bool:
 def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
     """The registered server object when it can be signalled to reconnect, else None.
     With *require_loop*, also None unless the MCP loop is running (nothing to wait on)."""
+    from tools.mcp_tool_scope import _resolve_server_key
     with _core._lock:
-        srv = _core._servers.get(server_name)
+        srv = _core._servers.get(_resolve_server_key(server_name))
     ok = srv is not None and hasattr(srv, "_reconnect_event") and (_mcp_loop_running() or not require_loop)
     return srv if ok else None
 
 
 def _retry_once(server_name: str, retry_call, op_description: str, what: str):
-    """Re-run ``retry_call`` after a recovery step. Returns the result (closing the breaker)
-    when it is not an error payload; None when the retry raised or errored (caller falls through)."""
+    """Re-run ``retry_call`` after a recovery step. Returns the result when the RPC completed
+    (an application error is still the tool's real answer, and still a breaker strike per #10447);
+    None when the retry raised (caller falls through)."""
     try:
         result = retry_call()
     except Exception as retry_exc:
         logger.warning("MCP %s/%s retry after %s failed: %s", server_name, op_description, what, retry_exc)
         return None
-    if _result_is_error(result):
-        return None
-    _core._reset_server_error(server_name)
-    return result
+    return _record_call_outcome(server_name, result)
 
 
 def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
@@ -591,9 +605,12 @@ _make_get_prompt_handler = _make_utility_handler(
 
 def _make_check_fn(server_name: str):
     """Connection-alive check; lazy (schema-cache registered) servers count as available."""
+    from tools.mcp_tool_scope import _resolve_server_key
+
     def _check() -> bool:
         with _core._lock:
-            server = _core._servers.get(server_name)
+            key = _resolve_server_key(server_name)
+            server = _core._servers.get(key)
             return ((server is not None and (server.session is not None or server._is_recycled_stdio()))
-                    or server_name in _core._lazy_server_configs)
+                    or key in _core._lazy_server_configs)
     return _check

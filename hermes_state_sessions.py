@@ -16,8 +16,8 @@ from agent.session_activity import (
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
-    _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
-    _placeholders as _session_ids_placeholders,
+    _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
+    _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
 
 # caplog tests pin the "hermes_state" logger name.
@@ -31,7 +31,7 @@ def workspace_key(row: Dict[str, Any]) -> Optional[str]:
 
 
 def _delegate_from_json(col: str = "model_config") -> str:
-    return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
+    return _sql_json_extract(col, "$._delegate_from")
 
 
 # _merge_model_config_json's "no such row" result — distinct from the legal None
@@ -141,24 +141,29 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     found: set[str] = set(seeds)
     frontier = list(seeds)
     while frontier:
-        ph = _session_ids_placeholders(frontier)
-        cursor = conn.execute(
-            f"SELECT id FROM sessions WHERE {df} IN ({ph}) "
-            f"OR (parent_session_id IN ({ph}) AND {df} IS NOT NULL)", frontier + frontier,
-        )
-        frontier = [row["id"] for row in cursor.fetchall() if row["id"] not in found]
-        found.update(frontier)
+        next_frontier: List[str] = []
+        for chunk in _id_chunks(frontier, _SQL_IN_CHUNK // 2):  # each id is bound twice below
+            ph = _session_ids_placeholders(chunk)
+            cursor = conn.execute(
+                f"SELECT id FROM sessions WHERE {df} IN ({ph}) "
+                f"OR (parent_session_id IN ({ph}) AND {df} IS NOT NULL)", chunk + chunk,
+            )
+            for row in cursor.fetchall():
+                if row["id"] not in found:
+                    found.add(row["id"])
+                    next_frontier.append(row["id"])
+        frontier = next_frontier
     return [sid for sid in found if sid not in seeds]
 
 
 def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     ids = _collect_delegate_child_ids(conn, parent_ids)
-    if ids:
-        ph = _session_ids_placeholders(ids)
-        conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", ids)
+    for chunk in _id_chunks(ids):
+        ph = _session_ids_placeholders(chunk)
+        conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
         # FK safety: orphan any untagged stragglers pointing at a doomed row.
-        conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", ids)
-        conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
+        conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
+        conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
     return ids
 
 
@@ -420,10 +425,9 @@ class SessionSessionsMixin:
     # are bound to the queried parent id: continuations inherit model_config verbatim, so
     # presence-matching misclassified them as delegates.
     _NON_CONTINUATION_CHILD_FILTER_SQL = (
-        "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._branched_from'), '') != ?\n"
-        "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._delegate_from'), '') != ?\n  AND COALESCE({alias}source, '') != 'tool'\n"
+        f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._branched_from')}, '') != ?\n"
+        f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._delegate_from')}, '') != ?\n"
+        "  AND COALESCE({alias}source, '') != 'tool'\n"
     )
 
     def end_session(self, session_id: str, end_reason: str) -> None:
@@ -450,8 +454,7 @@ class SessionSessionsMixin:
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
                 "COALESCE(child.model_config, '{}'), '$._reset_from', child.parent_session_id) "
-                "WHERE child.parent_session_id = ? AND json_extract(COALESCE(child.model_config, '{}'), "
-                "                 '$._reset_from') IS NULL "
+                f"WHERE child.parent_session_id = ? AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
                 f"AND {_legacy_reset_child_sql('child', _session_ids_placeholders(_RESET_END_REASONS))}",
                 (session_id, *_RESET_END_REASONS),
             )
@@ -1231,8 +1234,8 @@ class SessionSessionsMixin:
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
                     WHERE parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND COALESCE(child.source, '') != 'tool'
                 ),
                 chain_max AS (
@@ -1525,19 +1528,19 @@ class SessionSessionsMixin:
             return 0
         removed_ids: list[str] = []
         def _do(conn):
-            existing = [row["id"] for row in conn.execute(
-                f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(unique_ids)})",
-                unique_ids,
+            existing = [row["id"] for chunk in _id_chunks(unique_ids) for row in conn.execute(
+                f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(chunk)})", chunk,
             ).fetchall()]
             if not existing:
                 return 0
-            ph = _session_ids_placeholders(existing)
             removed_ids.extend(_delete_delegate_children(conn, existing))
-            conn.execute(  # orphan children whose parent is in the kill list (FK)
-                f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", existing,
-            )
-            conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", existing)
-            conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", existing)
+            for chunk in _id_chunks(existing):
+                ph = _session_ids_placeholders(chunk)
+                conn.execute(  # orphan children whose parent is in the kill list (FK)
+                    f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk,
+                )
+                conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(existing)
             return len(existing)
@@ -1569,16 +1572,14 @@ class SessionSessionsMixin:
             ).fetchall()}
             if not session_ids:
                 return 0
-            conn.execute(
-                "UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({_session_ids_placeholders(session_ids)})", list(session_ids),
-            )
-            for sid in session_ids:
+            for chunk in _id_chunks(session_ids):
+                ph = _session_ids_placeholders(chunk)
+                conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
                 # DELETE FROM messages: a row inserted between the SELECT and here
                 # would otherwise dangle (clean FK state).
-                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-                removed_ids.append(sid)
+                conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
+                removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)

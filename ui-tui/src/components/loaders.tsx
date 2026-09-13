@@ -1,7 +1,6 @@
 import { Box, Text } from '@hermes/ink'
+import { mix } from '@hermes/shared/color'
 import { useEffect, useState } from 'react'
-
-import { mix } from '../lib/color.js'
 
 /**
  * Animated ASCII loaders — THE loading-state primitives (session panel

@@ -88,7 +88,7 @@ Changing any of these values invalidates only that profile's disk-discovery cach
 
 #### Choosing a model
 
-The model picker lives in the **composer**, just left of the microphone. Click it to switch the model, reasoning effort, and fast mode from one dropdown.
+The model picker lives in the **composer**, just left of the microphone. Click it to switch the model; hover a model row for its options (thinking, effort, fast). Next to it, a **reasoning pill** shows the active model's effort level (`Med`, `High`, …) and opens the same options directly, so you can change effort without finding the model's row. The pill is hidden for models whose catalog reports no reasoning control.
 
 - **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default — with one exception: on a fresh profile that has no `model.default`/`model.provider` configured yet, the first pick is persisted so the app has a real default instead of falling through to a stray API-key env var on restart. Persistence follows the same rule as `/model` (`model.persist_switch_by_default`); use **Settings → Model** to change the default deliberately. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
 - **Set the default in Settings → Model.** That "main" model is your **per-profile global default** — it's what new chats, crons, subagents, and auxiliary tasks start from, and it's the only place that writes it. Each [profile](#sessions--profiles) keeps its own default.
@@ -152,7 +152,7 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 - **Resizing** — drag any edge or corner of the bar; the opposite edge stays anchored. Native Wayland exposes the right and bottom edges because the compositor does not allow apps to position top-level windows themselves.
 - **Reset layout** — the discard control on the bar restores the default size and (on X11 / macOS / Windows) position. Use this if a persisted size leaves the HUD unusable.
 - **Snap to pointer** — **⌘/Ctrl+Shift+G** (a global hotkey, works from any app) jumps the HUD to wherever your cursor is. On native Wayland this is a no-op — the compositor owns placement.
-- **Exiting** — click the exit button on the bar, or press **⌘/Ctrl+Shift+H** again. The app window comes back with your session intact.
+- **Exiting** — click the exit button on the bar, press **⌘/Ctrl+Shift+H** again, or press **⌘/Ctrl+W** while the HUD has focus. The app window comes back in front with your session and the caret in its composer.
 
 #### Linux / Wayland
 
@@ -260,7 +260,7 @@ and the eye shows a dot when a hidden bot has unread activity. Hidden
 state is stored in the bot's profile, so it follows the bot across
 machines.
 
-Don't want it? Flip it off in **Capabilities → Plugins → Desktop plugins → Bots** — the roster,
+Don't want it? Flip its **Desktop** switch off in **Capabilities → Plugins → Bots** — the roster,
 routines pane, and composer middleware unregister live, no restart needed.
 
 Full guide — creating agents (including the multi-machine **Create on**
@@ -451,24 +451,40 @@ See [Desktop Plugin SDK](../developer-guide/desktop-plugin-sdk.md) for the full
 reference. (This is separate from the [web dashboard plugin system](./features/extending-the-dashboard.md).)
 
 **Capabilities → Plugins** is the one place for everything that extends
-Hermes, in two sections on one page:
+Hermes: **one row per plugin**, with two switch columns.
 
-- **Agent plugins** — backend (agent-side) [plugins](./features/plugins.md)
-  you installed for the selected profile: user, git, project, pip, and
-  portable installs, with enable/disable toggles and an **Update** chip when a
-  catalog pin moved. The page's profile selector picks which agent you are
-  configuring (the backend `plugins.manage` RPC takes a `profile` parameter).
-  Repo-bundled built-ins (platform adapters, provider plugins) are not listed:
-  they ship enabled and are configured from their own surfaces.
-- **Desktop plugins** — extensions loaded into this app, the same for every
-  profile. Toggles apply live; the desktop half of a bundled agent+desktop
-  package shows an **agent half missing here** chip when the selected
-  profile's backend does not have its agent half, with a one-click repair.
+- A plugin can extend **this app**, **the agent**, or **both** — the badge on
+  each row says which, inferred from what the package contains (`plugin.yaml`
+  → agent half, `plugin.js` → desktop half). A plugin with both halves is one
+  row, never two.
+- **Desktop column** — the half loaded into this app. It is app-level: the
+  same switch, the same value, whichever profile, gateway, or remote machine
+  the window is looking at. Desktop code loads from exactly one place,
+  `~/.hermes/desktop-plugins/`; the desktop half of a unified agent+desktop
+  package is copied there by the app when the package is installed (and
+  follows its updates and uninstall), so switching profiles never loads,
+  unloads, or re-scopes a pane. Toggles apply live.
+- **Agent column** — the half installed in the selected profile's backend
+  ([agent plugins](./features/plugins.md): user, git, project, pip and
+  portable installs), with an **Update** chip when a catalog pin moved. The
+  profile selector lives in this column's header because it governs only
+  this column; with a single profile there is no selector at all.
+  Repo-bundled built-ins (platform adapters, provider plugins) are not
+  listed: they ship enabled and are configured from their own surfaces.
+- A half the plugin does not ship shows a dash. A desktop half whose agent
+  half is **not** installed in the selected profile shows **Install here**,
+  which pre-fills the install dialog from the package's origin (catalog entry
+  or git remote) for that profile only. Optional extras such as the
+  [Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
+  install from their own repos via **Install from Git**.
 
 Discovery sits underneath: the live [Plugin Catalog](./features/plugin-catalog.md)
 picker installs reviewed entries at their pinned commit into the selected
 profile, and **Install from Git** takes any other repository through the same
-review-then-install dialog. Old `Settings → Plugins` links redirect here.
+review-then-install dialog; its optional **Pin to commit** field installs one
+exact 40-character commit SHA (private repos included), and pinned plugins
+carry a `pinned @ <sha8>` badge in the list. Old `Settings → Plugins` links
+redirect here.
 
 ## Troubleshooting
 

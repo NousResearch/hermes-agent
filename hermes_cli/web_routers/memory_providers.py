@@ -178,7 +178,7 @@ def _write_provider_flat(provider: ProviderConfigSchema, values: Dict[str, str])
 def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
     """Persist submitted fields to Honcho's real config for the active host (partial
     saves touch only submitted keys; blank text clears a key — see ``_apply_field_values``)."""
-    from plugins.memory.honcho.oauth import ACCESS_TOKEN_PREFIX, _config_refresh_lock
+    from plugins.memory.honcho.oauth import ACCESS_TOKEN_PREFIX, _config_refresh_lock, _read_config_strict, _refresh_lock
 
     resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers()
     host = resolve_active_host()
@@ -186,8 +186,9 @@ def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str
     path = resolve_config_path()
 
     # OAuth rotation is single-use; an unlocked RMW here can revoke the grant.
-    with _config_refresh_lock(path):
-        cfg = _read_json_dict(path, "Honcho config")
+    with _refresh_lock, _config_refresh_lock(path):
+        # Strict: a file that exists but does not parse must not be replaced by this host's block alone.
+        cfg = _read_config_strict(path)
         hosts = cfg.get("hosts")
         cfg["hosts"] = hosts = hosts if isinstance(hosts, dict) else {}
         # Update the block reads resolve (legacy dot-form included), never shadow it.

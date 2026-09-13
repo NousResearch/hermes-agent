@@ -939,7 +939,8 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
         elif function_name == "terminal":
             command = function_args.get("command", "")
             if _is_destructive_command(command):
-                cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                from agent.runtime_cwd import scope_terminal_cwd
+                cwd = function_args.get("workdir") or scope_terminal_cwd() or os.getcwd()
                 agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
 
 

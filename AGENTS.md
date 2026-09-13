@@ -138,7 +138,10 @@ Choose the highest (least-footprint) rung that correctly solves the problem:
    `hermes <subcommand>` guided by a skill. Default for subscriptions, scheduled tasks,
    service setup (`hermes webhook`, `hermes cron`, `hermes tools`).
 3. **Service-gated tool (`check_fn`)** — needs structured params/returns AND only appears when
-   a prerequisite is configured (Home Assistant tools, memory-provider tools).
+   a prerequisite is configured (Home Assistant tools, memory-provider tools). This rung gates
+   reachability/opt-in process-wide; a capability that varies per SESSION (who is watching) is
+   a named toolset folded in by the toolset resolver, not a `check_fn` — see "Surface capability
+   is a property of the SESSION" below.
 4. **Plugin** — third-party/niche/user-specific; lives in `~/.hermes/plugins/` or a pip
    package, discovered at runtime.
 5. **MCP server (in the catalog)** — genuinely a tool but not core-fundamental. Zero permanent
@@ -249,7 +252,7 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   (`_SLASH_DISPATCH` in `cli.py`, `_command_handler_table` in the gateway are the shape).
 - **No re-export shims for internal moves** ("keep the old name importable"). Internal paths
   are not API; external compat is handled ONCE by the compat layer, not per PR.
-- **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`, `docs/`,
+- **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`,
   `skills/`, and every `AGENTS.md` for the old `path.py` + symbol (23 doc files went stale
   after the refactor). `evals/codebase_navigability/static_metrics.py <tree> <label>` measures
   file/function/CC/elif distributions before/after a large PR in ~2 min.

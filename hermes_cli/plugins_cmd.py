@@ -446,6 +446,19 @@ def _write_install_metadata(metadata: dict[str, dict[str, object]]) -> None:
         path, json.dumps(metadata, indent=2, sort_keys=True) + "\n", tmp_prefix=f"{path.name}.tmp-")
 
 
+def pinned_revision(name: str, metadata: Optional[dict] = None) -> Optional[str]:
+    """Full SHA a ``--ref`` install of *name* is pinned to, else ``None``."""
+    entry = (metadata if metadata is not None else _read_install_metadata()).get(name)
+    if isinstance(entry, dict) and entry.get("pinned") is True and isinstance(entry.get("revision"), str):
+        return entry["revision"]
+    return None
+
+
+def _pin_annotation(name: str, metadata: dict) -> Optional[str]:
+    sha = pinned_revision(name, metadata)
+    return f"git pinned@{sha[:8]}" if sha else None
+
+
 def _normalize_exact_revision(ref: str) -> str:
     """Lowercase a full 40-hex commit SHA; anything else is a PluginOperationError."""
     if not isinstance(ref, str) or not _EXACT_COMMIT_RE.fullmatch(ref):
@@ -1313,10 +1326,13 @@ def cmd_list(args: Any | None = None) -> None:
     disabled = _get_disabled_set()
     entries = _filter_plugin_entries(entries, args, enabled, disabled)
     from hermes_cli import plugins_cmd_catalog as catalog
-    # Source shows catalog provenance (``catalog:<tier>@<sha8>``); a kill-listed install is flagged.
+    # Source shows catalog provenance (``catalog:<tier>@<sha8>``) or a ``--ref`` pin
+    # (``git pinned@<sha8>``) so a team can eyeball that everyone runs the same commit.
+    pins = _read_install_metadata()
     rows = [
         (name, _plugin_status(name, enabled, disabled, key=key), str(version), description,
-         catalog.catalog_annotation(_dir) or source, catalog.removed_annotation(name, _dir))
+         catalog.catalog_annotation(_dir) or _pin_annotation(name, pins) or source,
+         catalog.removed_annotation(name, _dir))
         for name, version, description, source, _dir, key in entries
     ]
 
@@ -1686,9 +1702,11 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
 
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
+    ref: Optional[str] = None,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
-    pinned SHA (identifier may be empty); every path enforces the kill list (no GUI bypass)."""
+    pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
+    contract as ``--ref``); every path enforces the kill list (no GUI bypass)."""
     from hermes_cli import plugins_cmd_catalog as catalog
     warnings: list[str] = []
     entry = None
@@ -1713,7 +1731,8 @@ def dashboard_install_plugin(
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
                 entry, force=force, allow_removed=True)
         else:
-            target, installed_manifest, installed_name = _install_plugin_core(identifier, force=force)
+            target, installed_manifest, installed_name = _install_plugin_core(
+                identifier, force=force, ref=(ref or "").strip() or None)
     except PluginScanBlocked as exc:
         fields = ("pattern_id", "severity", "category", "file", "line", "description")
         return {

@@ -524,9 +524,10 @@ _HEX32 = set("0123456789abcdef")
 
 
 def _hermes_home_dir() -> Path:
-    """Resolved Hermes home (HERMES_HOME override or ~/.hermes)."""
-    override = os.environ.get("HERMES_HOME", "").strip()
-    return Path(override).expanduser() if override else Path.home() / ".hermes"
+    """The process's Hermes home: remote-backend locks are a process-level asset, so a request scoped
+    to another profile must still see the same lock dir."""
+    from hermes_constants import get_process_hermes_home
+    return get_process_hermes_home()
 
 
 def _is_hex(value: object, length: int) -> bool:

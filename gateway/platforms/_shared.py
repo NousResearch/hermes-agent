@@ -134,9 +134,22 @@ def yaml_env_setter() -> Callable[[str, Any], None]:
     skip = profile_scoped()
 
     def set_env(name: str, value: Any) -> None:
-        if value is None or skip or os.getenv(name):
+        if value is None or skip:
             return
-        os.environ[name] = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
+        rendered = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
+        existing = os.getenv(name)
+        if existing:
+            # First-writer-wins is deliberate (explicit env beats YAML; multiplex safety,
+            # #80099), but a conflicting inherited value silently discards the user's explicit
+            # config — say so instead of failing silently (#110295).
+            if existing != rendered:
+                logger.warning(
+                    "Ignoring config.yaml value for %s (%r): environment variable %s is already "
+                    "set to %r; explicit environment values take precedence over YAML config",
+                    name, rendered, name, existing,
+                )
+            return
+        os.environ[name] = rendered
 
     return set_env
 

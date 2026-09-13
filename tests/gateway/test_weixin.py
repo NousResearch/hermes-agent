@@ -11,7 +11,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
 from gateway.platforms.base import SendResult
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms import weixin
 from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
 from tools.send_message_tool import _send_to_platform

@@ -25,6 +25,7 @@ import requests
 
 from agent.secret_scope import get_secret
 from hermes_cli.config import cfg_get, load_config, read_raw_config
+from hermes_constants import get_hermes_home_override, hermes_home_key
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 
@@ -36,24 +37,33 @@ _DEFAULT_TIMEOUT = 30  # fallback when config is unreadable
 _NO_SESSION_ERROR = "No browser session. Call browser_navigate first."
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
-_cached_cmd_timeout: Optional[int] = None  # browser.command_timeout, resolved lazily like browser_tool
+# Routed profiles (multiplexed gateway) each point CAMOFOX_URL at their own server, so the one-shot
+# slot above would hand the launch profile's VNC address to every other profile: memo per server URL.
+_vnc_url_by_camofox_url: Dict[str, Optional[str]] = {}
+# browser.command_timeout, resolved lazily like browser_tool; keyed by profile home because the
+# multiplexed gateway serves every profile from one process.
+_cached_cmd_timeout: Optional[Dict[str, int]] = None
 _cmd_timeout_resolved = False
 
 
 def _get_command_timeout() -> int:
-    """``browser.command_timeout`` (floor 5s, default 30s), cached after first read."""
+    """``browser.command_timeout`` (floor 5s, default 30s), cached per profile home after first read."""
     global _cached_cmd_timeout, _cmd_timeout_resolved
-    if _cmd_timeout_resolved:
-        return _cached_cmd_timeout  # type: ignore[return-value]
-    _cmd_timeout_resolved = True
-    _cached_cmd_timeout = _DEFAULT_TIMEOUT
+    home = hermes_home_key()
+    if _cached_cmd_timeout is None:
+        _cached_cmd_timeout = {}
+    if _cmd_timeout_resolved and home in _cached_cmd_timeout:
+        return _cached_cmd_timeout[home]
+    timeout = _DEFAULT_TIMEOUT
     try:
         val = cfg_get(read_raw_config(), "browser", "command_timeout")
         if val is not None:
-            _cached_cmd_timeout = max(int(val), 5)
+            timeout = max(int(val), 5)
     except Exception as exc:
         logger.debug("Could not read browser.command_timeout: %s", exc)
-    return _cached_cmd_timeout
+    _cached_cmd_timeout[home] = timeout
+    _cmd_timeout_resolved = True
+    return timeout
 
 
 def _auth_headers() -> Dict[str, str]:
@@ -100,6 +110,16 @@ def is_camofox_mode() -> bool:
     return bool(get_camofox_url())
 
 
+def _vnc_url_from_health(url: str, resp: Any) -> Optional[str]:
+    try:
+        vnc_port = resp.json().get("vncPort")
+        if isinstance(vnc_port, int) and 1 <= vnc_port <= 65535:
+            return f"http://{urlsplit(url).hostname or 'localhost'}:{vnc_port}"
+    except (ValueError, KeyError):
+        pass
+    return None
+
+
 def check_camofox_available() -> bool:
     """Verify the Camofox server is reachable (and cache its VNC URL once)."""
     global _vnc_url, _vnc_url_checked
@@ -110,19 +130,23 @@ def check_camofox_available() -> bool:
         resp = requests.get(f"{url}/health", timeout=5)
     except Exception:
         return False
-    if resp.status_code == 200 and not _vnc_url_checked:
-        try:
-            vnc_port = resp.json().get("vncPort")
-            if isinstance(vnc_port, int) and 1 <= vnc_port <= 65535:
-                _vnc_url = f"http://{urlsplit(url).hostname or 'localhost'}:{vnc_port}"
-        except (ValueError, KeyError):
-            pass
-        _vnc_url_checked = True
+    if resp.status_code == 200:
+        if get_hermes_home_override() is not None:
+            if url not in _vnc_url_by_camofox_url:
+                _vnc_url_by_camofox_url[url] = _vnc_url_from_health(url, resp)
+        elif not _vnc_url_checked:
+            _vnc_url = _vnc_url_from_health(url, resp) or _vnc_url
+            _vnc_url_checked = True
     return resp.status_code == 200
 
 
 def get_vnc_url() -> Optional[str]:
     """Return the VNC URL if the Camofox server exposes one, or None."""
+    if get_hermes_home_override() is not None:
+        url = get_camofox_url()
+        if url not in _vnc_url_by_camofox_url:
+            check_camofox_available()
+        return _vnc_url_by_camofox_url.get(url)
     if not _vnc_url_checked:
         check_camofox_available()
     return _vnc_url

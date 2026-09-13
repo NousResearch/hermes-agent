@@ -21,13 +21,15 @@ from typing import Optional, Union
 
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
-from gateway.platforms.base import EphemeralReply, MessageEvent
+from gateway.platforms.base import EphemeralReply
+from gateway.platforms.event import MessageEvent
 from gateway.session import AsyncSessionStore
 from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
-from gateway.slash_commands_status import GatewayStatusCommandsMixin
+from gateway.slash_commands_login import GatewayLoginCommandsMixin
+from gateway.slash_commands_status import HISTORY_UNREADABLE, GatewayStatusCommandsMixin
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
 
@@ -101,14 +103,17 @@ def _execute(command: str, **ctx_kwargs):
 
 
 def _restart_notify_payload(event: MessageEvent) -> dict:
-    """Requester routing info so the new gateway process can notify them once back online."""
+    """Requester routing info so the new gateway process can notify them once back online.
+    ``profile`` is persisted so the notice leaves through the requester's own profile bot after the
+    restart (a bare platform lookup would resolve the default profile's adapter)."""
     source = event.source
     data = {"platform": source.platform.value if source.platform else None,
             "chat_id": source.chat_id, "chat_type": source.chat_type}
     if source.delivered_via_upstream_relay is True:
         data["delivered_via_upstream_relay"] = True
         data.update({k: getattr(source, k) for k in ("user_id", "scope_id") if getattr(source, k)})
-    optional = (("thread_id", source.thread_id), ("message_id", event.message_id))
+    optional = (("thread_id", source.thread_id), ("message_id", event.message_id),
+                ("profile", getattr(source, "profile", None)))
     data.update({k: v for k, v in optional if v})
     return data
 
@@ -157,6 +162,7 @@ def _home_thread_from_source(source) -> Optional[str]:
 
 
 class GatewaySlashCommandsMixin(
+    GatewayLoginCommandsMixin,
     GatewayModelCommandsMixin,
     GatewaySessionCommandsMixin,
     GatewayStatusCommandsMixin,
@@ -205,10 +211,11 @@ class GatewaySlashCommandsMixin(
         return self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
     def _adapter_and_key_for(self, event: MessageEvent):
-        """``(adapter, session_key)`` for the event's source, either None when no source."""
+        """``(adapter, session_key)`` for the event's source, either None when no source. The source's
+        OWN transport (profile-aware, fail-closed) — ``self.adapters`` is the default profile's map."""
         if not event.source:
             return None, None
-        return self.adapters.get(event.source.platform), self._session_key_for_source(event.source)
+        return self._adapter_for_source(event.source), self._session_key_for_source(event.source)
 
     def _telegramized_command_reply(self, event: MessageEvent, text: str) -> str:
         from gateway.run import _telegramize_command_mentions
@@ -252,7 +259,7 @@ class GatewaySlashCommandsMixin(
         (WeCom msgtype:"stream"), which need it sent directly with control-lane metadata (reliable
         proactive send, not the finalized reply stream). ``is not True``: mocks auto-create attrs."""
         source = event.source
-        adapter = self.adapters.get(source.platform)
+        adapter = self._adapter_for_source(source)  # the receiving bot, not the default profile's
         if adapter:
             adapter.resume_typing_for_chat(source.chat_id)  # agent is about to continue
         if getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
@@ -397,7 +404,7 @@ class GatewaySlashCommandsMixin(
                     # keys the participant on ``user_id_alt or user_id``, so a replayed wake rebuilds
                     # the same session key only when the alt id survives the round-trip.
                     user_id_alt=_field("user_id_alt"),
-                    notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                    notifier_profile=_field("profile") or getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
                     # Subscribing from chat: deliver the passive message and wake the destination agent.
                     delivery_mode="notify+wake", delivery_metadata=delivery_metadata)
             finally:
@@ -432,7 +439,7 @@ class GatewaySlashCommandsMixin(
         # run another user started lives under a different key, yet authorized users must still be
         # able to /stop it: fall back to sibling runs in this thread, gated on authorization.
         sibling_keys = self._sibling_thread_run_keys(source, session_key)
-        if sibling_keys and self._is_user_authorized(source):
+        if sibling_keys and self._is_user_authorized_for_source(source):
             for sibling_key in sibling_keys:
                 await _stop(sibling_key, "stop_command_thread_sibling")
             logger.info("STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
@@ -1174,8 +1181,8 @@ class GatewaySlashCommandsMixin(
         """Handle /debug — upload ONLY the summary (system info + log tails), never full logs, to
         protect privacy; ``hermes debug share`` from the CLI does full uploads."""
         from hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
-                                      _capture_dump, _schedule_auto_delete, collect_debug_report,
-                                      upload_to_pastebin)
+                                      _capture_dump, _is_dpaste_url, _schedule_auto_delete,
+                                      collect_debug_report, upload_to_pastebin)
 
         def _collect_and_upload():  # blocking I/O (dump capture, log reads, uploads) -> thread
             _best_effort_sweep_expired_pastes()
@@ -1184,11 +1191,15 @@ class GatewaySlashCommandsMixin(
                 urls = {"Report": upload_to_pastebin(report)}
             except Exception as exc:
                 return t("gateway.debug.upload_failed", error=exc)
-            _schedule_auto_delete(list(urls.values()))  # auto-deletion after 6 hours
+            _schedule_auto_delete(list(urls.values()))  # paste.rs only; dpaste.com has no delete
             label_width = max(len(k) for k in urls)
+            # The 6-hour line is only true for paste.rs; the privacy notice above already states
+            # the dpaste.com fallback retention, so drop the line rather than contradict it.
+            auto_delete = [] if any(map(_is_dpaste_url, urls.values())) else [
+                t("gateway.debug.auto_delete")]
             return "\n".join([_GATEWAY_PRIVACY_NOTICE, "", t("gateway.debug.header"), "",
                               *(f"`{label:<{label_width}}`  {url}" for label, url in urls.items()),
-                              "", t("gateway.debug.auto_delete"), t("gateway.debug.full_logs_hint"),
+                              "", *auto_delete, t("gateway.debug.full_logs_hint"),
                               t("gateway.debug.share_hint")])
 
         # _run_in_executor_with_context, not a bare hop: this collects the profile's logs/config off
@@ -1227,7 +1238,10 @@ class GatewaySlashCommandsMixin(
             "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
             "user_id": src.user_id, "session_key": self._session_key_for_source(src),
             "timestamp": datetime.now().isoformat()}
-        pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id)) if v})
+        # ``profile``: the update watcher (possibly the NEXT gateway process) must answer through the
+        # requester's own profile bot, not the default profile's adapter for the same platform.
+        pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id),
+                                          ("profile", getattr(src, "profile", None))) if v})
         _tmp_pending = pending_path.with_suffix(".tmp")
         _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
         _tmp_pending.replace(pending_path)
@@ -1252,7 +1266,7 @@ import hashlib  # noqa: F401,E402
 
 _PLUGIN_COMPAT_LAZY = {
     'HISTORY_UNREADABLE': ('gateway.slash_commands_status', 'HISTORY_UNREADABLE'),
-    'MessageType': ('gateway.platforms.base', 'MessageType'),
+    'MessageType': ('gateway.platforms.event', 'MessageType'),
     'SessionSource': ('gateway.session', 'SessionSource'),
     'base_url_host_matches': ('utils', 'base_url_host_matches'),
     'build_session_key': ('gateway.session', 'build_session_key'),

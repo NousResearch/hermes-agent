@@ -2108,6 +2108,80 @@ def test_respawn_guard_cross_host_clean_close_fails_open(
         assert tid in [s[0] for s in res.spawned]
 
 
+def test_respawn_guard_cross_host_claim_lock_fallback_unclean_close_holds_card(
+    kanban_home, all_assignees_spawnable,
+):
+    """(QA pr109491-v2 finding N-2) The SAME F-3 narrowing also guards the
+    claim-lock fallback path in ``_prev_worker_alive_guard_info`` -- the
+    ``if lock and cross_host_holds`` branch used for rows with no
+    ``prev_worker_pid`` run-metadata stamp (older rows, or any row where the
+    durable metadata source was never written). A run closed as a
+    crash/timeout/reclaim/stale misclassification, whose only host evidence
+    is a ``claimed`` event's lock naming a DIFFERENT host, must still hold
+    the card fail-closed via this fallback -- exactly like the
+    metadata-sourced case above, just reached through the older source."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="cross-host-crash-claimlock", assignee="alice")
+        claimed = kb.claim_task(conn, tid, claimer="otherbox:424243")
+        assert claimed is not None
+        kbd._set_worker_pid(conn, tid, 424243)
+        _end_run_as_reclaimed(conn, tid, outcome="crashed")
+        info = kbd._prev_worker_alive_guard_info(conn, tid)
+        assert info == {
+            "pid": 424243, "host": "otherbox", "run_id": claimed.current_run_id,
+            "reason": "prev_worker_cross_host_unknown",
+        }, info
+        assert kbd.check_respawn_guard(conn, tid) == "prev_worker_cross_host_unknown"
+
+        spawned: list[int] = []
+        res = kbd.dispatch_once(
+            conn, spawn_fn=lambda *a, **k: (spawned.append(1), 999)[1],
+        )
+        assert not spawned, (
+            "a crash-closed cross-host run must hold the card via the claim-lock fallback"
+        )
+        assert tid not in [s[0] for s in res.spawned]
+        assert dict(res.respawn_guarded).get(tid) == "prev_worker_cross_host_unknown"
+
+
+@pytest.mark.parametrize("clean_outcome", ["completed", "review_requested"])
+def test_respawn_guard_cross_host_claim_lock_fallback_clean_close_fails_open(
+    kanban_home, all_assignees_spawnable, clean_outcome,
+):
+    """(QA pr109491-v2 finding N-2) The claim-lock fallback counterpart of
+    ``test_respawn_guard_cross_host_clean_close_fails_open``: a run closed
+    CLEANLY on a different host, with no ``prev_worker_pid`` run-metadata
+    stamp so the guard falls back to the ``claimed`` event's lock, must NOT
+    hold the card -- the remote worker is known to have stopped on
+    purpose."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title=f"cross-host-clean-claimlock-{clean_outcome}", assignee="alice",
+        )
+        claimed = kb.claim_task(conn, tid, claimer="otherbox:424243")
+        assert claimed is not None
+        kbd._set_worker_pid(conn, tid, 424243)
+        _end_run_as_reclaimed(conn, tid, outcome=clean_outcome)
+        if clean_outcome == "completed":
+            # Same isolation as the metadata-sourced clean-close test: keep
+            # the unrelated 'recent_success' guard from parking this task
+            # inside its own success window regardless of host.
+            with kb.write_txn(conn):
+                kb._append_event(conn, tid, "status", {"to": "ready"})
+        assert kbd._prev_worker_alive_guard_info(conn, tid) is None, clean_outcome
+        assert kbd.check_respawn_guard(conn, tid) is None, clean_outcome
+
+        spawned: list[int] = []
+        res = kbd.dispatch_once(
+            conn, spawn_fn=lambda *a, **k: (spawned.append(1), 999)[1],
+        )
+        assert spawned, (
+            f"a cleanly-closed ({clean_outcome}) cross-host run (claim-lock fallback) "
+            "must not hold the card"
+        )
+        assert tid in [s[0] for s in res.spawned]
+
+
 @pytest.mark.linux_only
 def test_respawn_guard_identity_mismatch_does_not_block_genuine_match_does(
     kanban_home, all_assignees_spawnable,

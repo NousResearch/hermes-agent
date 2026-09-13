@@ -659,16 +659,15 @@ def interactive_setup() -> None:
     """Guide the user through Mattermost bot setup (URL + token, allowlist, home channel)."""
     from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success
+    from hermes_cli.setup_platforms import declines_reconfigure
 
     def info(*lines: str) -> None:
         for line in lines:
             print_info(line)
 
     print_header("Mattermost")
-    if get_env_value("MATTERMOST_TOKEN"):
-        print_info("Mattermost: already configured")
-        if not prompt_yes_no("Reconfigure Mattermost?", False):
-            return
+    if declines_reconfigure("Mattermost", "Reconfigure Mattermost?", "MATTERMOST_TOKEN"):
+        return
     info("Works with any self-hosted Mattermost instance.",
          "   1. In Mattermost: Integrations → Bot Accounts → Add Bot Account", "   2. Copy the bot token")
     print()

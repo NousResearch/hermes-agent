@@ -639,28 +639,22 @@ _SETUP_PROMPTS = (
 
 
 def interactive_setup() -> None:
-    """Minimal stdin wizard for ``hermes setup gateway`` → SimpleX; writes ``~/.hermes/.env``."""
-    print(
-        "\nSimpleX Chat setup\n------------------\nRequirements:\n"
-        "  1. simplex-chat daemon running (e.g. `simplex-chat -p 5225`).\n"
-        "  2. Python package `websockets` installed (`pip install websockets`).\n")
-    try:
-        from hermes_cli.config import get_env_value, save_env_value
-    except ImportError:
-        print("hermes_cli.config not available; set SIMPLEX_* vars manually in ~/.hermes/.env")
+    """``hermes setup gateway`` → SimpleX wizard (writes ``~/.hermes/.env``); CLI helpers are lazy-imported."""
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import print_header, print_info, prompt
+    from hermes_cli.setup_platforms import declines_reconfigure
+    print_header("SimpleX Chat")
+    if declines_reconfigure("SimpleX", "Reconfigure SimpleX?", "SIMPLEX_WS_URL"):
         return
-
-    for var, prompt in _SETUP_PROMPTS:
-        existing = get_env_value(var) if callable(get_env_value) else None
-        suffix = " [keep current]" if existing else ""
-        try:
-            value = input(f"{prompt}{suffix}: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            continue
+    for line in ("Requirements:", "  1. simplex-chat daemon running (e.g. `simplex-chat -p 5225`).",
+                 "  2. Python package `websockets` installed (`pip install websockets`)."):
+        print_info(line)
+    for var, question in _SETUP_PROMPTS:
+        suffix = " [keep current]" if get_env_value(var) else ""
+        value = prompt(f"{question}{suffix}")
         if value:
             save_env_value(var, value)
-    print("Done. Make sure the simplex-chat daemon is running before starting the gateway.")
+    print_info("Done. Make sure the simplex-chat daemon is running before starting the gateway.")
 
 
 def register(ctx) -> None:

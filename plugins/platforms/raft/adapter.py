@@ -529,13 +529,12 @@ def interactive_setup() -> None:
     CLI helpers are lazy-imported so the plugin stays importable in gateway runtime and tests."""
     from hermes_cli.cli_output import print_header, print_info, print_success, print_warning, prompt, prompt_yes_no
     from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.setup_platforms import declines_reconfigure
     print_header("Raft")
     existing_profile = get_env_value("RAFT_PROFILE")
-    if existing_profile:
-        print_info(f"Raft: already configured (profile: {existing_profile})")
-        if not prompt_yes_no("Reconfigure Raft?", False):
-            print_info(f"Keeping RAFT_PROFILE={existing_profile}.")
-            return
+    if declines_reconfigure("Raft", "Reconfigure Raft?", "RAFT_PROFILE"):
+        print_info(f"Keeping RAFT_PROFILE={existing_profile}.")
+        return
     for line in ("Connect Hermes to Raft as an external agent.", "Create the External Agent in Raft first, then run:",
                  "  raft agent login --server <server-url> --agent <agent-id> --profile-slug <slug>"):
         print_info(line)

@@ -2053,15 +2053,14 @@ def interactive_setup() -> None:
     from hermes_cli.setup import (
         prompt, prompt_yes_no, save_env_value, get_env_value, print_header, print_info, print_warning, print_success,
     )
+    from hermes_cli.setup_platforms import declines_reconfigure
     def ask(label: str, env: str) -> str:
         return prompt(label, default=get_env_value(env) or "")
 
     print_header("Buzz")
     existing_relay = get_env_value("BUZZ_RELAY_URL")
-    if existing_relay:
-        print_info(f"Buzz: already configured (relay: {existing_relay})")
-        if not prompt_yes_no("Reconfigure Buzz?", False):
-            return
+    if declines_reconfigure("Buzz", "Reconfigure Buzz?", "BUZZ_RELAY_URL"):
+        return
     print_info("Connect Hermes to a Buzz community (Block's Nostr-based human+agent platform).")
     print_info("   Requires the buzz CLI binary and a Nostr key that is a community member.")
     print()

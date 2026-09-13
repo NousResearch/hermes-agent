@@ -1579,11 +1579,9 @@ def interactive_setup() -> None:
     """``hermes setup`` wizard: print GCP instructions, prompt for env vars, persist to ``~/.hermes/.env``."""
     from hermes_cli.cli_output import print_info, print_success, print_warning, prompt, prompt_yes_no
     from hermes_cli.config import get_env_value, save_env_value
-    existing_sub = get_env_value("GOOGLE_CHAT_SUBSCRIPTION_NAME")
-    if existing_sub:
-        print_info(f"Google Chat: already configured (subscription: {existing_sub})")
-        if not prompt_yes_no("Reconfigure Google Chat?", False):
-            return
+    from hermes_cli.setup_platforms import declines_reconfigure
+    if declines_reconfigure("Google Chat", "Reconfigure Google Chat?", "GOOGLE_CHAT_SUBSCRIPTION_NAME"):
+        return
     for line in _SETUP_WALKTHROUGH.splitlines():
         print_info(line)
     for question, env_name, required_label, password in (

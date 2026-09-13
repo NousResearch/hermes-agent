@@ -747,11 +747,9 @@ _SETUP_INTRO = (  # "" → blank line
 def interactive_setup() -> None:
     from hermes_cli.config import get_env_value, save_env_value
     from hermes_cli.cli_output import prompt, prompt_yes_no, print_info, print_success, print_warning
-    existing_id = get_env_value("TEAMS_CLIENT_ID")
-    if existing_id:
-        print_info(f"Teams: already configured (app ID: {existing_id})")
-        if not prompt_yes_no("Reconfigure Teams?", False):
-            return
+    from hermes_cli.setup_platforms import declines_reconfigure
+    if declines_reconfigure("Teams", "Reconfigure Teams?", "TEAMS_CLIENT_ID"):
+        return
     for line in _SETUP_INTRO:
         print_info(line) if line else print()
     for label, env_key, prompt_kwargs in _SETUP_CREDENTIALS:

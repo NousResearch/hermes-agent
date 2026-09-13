@@ -950,30 +950,20 @@ _SETUP_PROMPTS = (  # (env var, prompt, masked)
 
 
 def interactive_setup() -> None:
-    """Minimal stdin wizard for ``hermes setup line`` (writes ``~/.hermes/.env``)."""
-    print("\nLINE Messaging API setup\n------------------------\n"
-          "Create a Messaging API channel at https://developers.line.biz/console/\nthen copy the values below.\n")
-    try:
-        from hermes_cli.config import get_env_value as _get_env, save_env_value as _set_env
-    except ImportError:
-        print("hermes_cli.config not available; set LINE_* vars manually in ~/.hermes/.env")
+    """``hermes setup line`` wizard (writes ``~/.hermes/.env``); CLI helpers are lazy-imported."""
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import print_header, print_info, prompt
+    from hermes_cli.setup_platforms import declines_reconfigure
+    print_header("LINE Messaging API")
+    if declines_reconfigure("LINE", "Reconfigure LINE?", "LINE_CHANNEL_ACCESS_TOKEN"):
         return
-
-    for var, prompt, secret in _SETUP_PROMPTS:
-        existing = _get_env(var) if callable(_get_env) else None
-        suffix = " [keep current]" if existing else ""
-        try:
-            if secret:
-                from hermes_cli.secret_prompt import masked_secret_prompt
-                value = masked_secret_prompt(f"{prompt}{suffix}: ")
-            else:
-                value = input(f"{prompt}{suffix}: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            continue
+    print_info("Create a Messaging API channel at https://developers.line.biz/console/ then copy the values below.")
+    for var, question, secret in _SETUP_PROMPTS:
+        suffix = " [keep current]" if get_env_value(var) else ""
+        value = prompt(f"{question}{suffix}", password=secret)
         if value:
-            _set_env(var, value)
-    print("Done. Set the webhook URL in the LINE console to <your-public-url>/line/webhook and enable 'Use webhook'.")
+            save_env_value(var, value)
+    print_info("Done. Set the webhook URL in the LINE console to <your-public-url>/line/webhook and enable 'Use webhook'.")
 
 
 def register(ctx) -> None:

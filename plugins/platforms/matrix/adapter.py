@@ -2923,12 +2923,10 @@ def interactive_setup() -> None:
     """Interactive credential setup (setup_fn); CLI helpers are lazy-imported."""
     from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success, print_warning
+    from hermes_cli.setup_platforms import declines_reconfigure
     print_header("Matrix")
-    existing = get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD")
-    if existing:
-        print_info("Matrix: already configured")
-        if not prompt_yes_no("Reconfigure Matrix?", False):
-            return
+    if declines_reconfigure("Matrix", "Reconfigure Matrix?", "MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"):
+        return
     for line in ("Works with any Matrix homeserver (Synapse, Conduit, Dendrite, or matrix.org).",
                  "   1. Create a bot user on your homeserver, or use your own account",
                  "   2. Get an access token from Element, or provide user ID + password"):

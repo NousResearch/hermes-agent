@@ -757,11 +757,10 @@ def interactive_setup() -> None:
     from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
     from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success, print_warning
+    from hermes_cli.setup_platforms import declines_reconfigure
     print_header("WeCom (Enterprise WeChat)")
-    if get_env_value("WECOM_BOT_ID") and get_env_value("WECOM_SECRET"):
-        print_success("WeCom is already configured.")
-        if not prompt_yes_no("Reconfigure WeCom?", False):
-            return
+    if declines_reconfigure("WeCom", "Reconfigure WeCom?", "WECOM_BOT_ID"):
+        return
     method_idx = prompt_choice("How would you like to set up WeCom?", ["Scan QR code to obtain Bot ID and Secret automatically (recommended)", "Enter existing Bot ID and Secret manually"], 0)
     bot_id = secret = None
     if method_idx == 0:

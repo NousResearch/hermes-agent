@@ -6850,6 +6850,7 @@ def interactive_setup() -> None:
     from hermes_cli.cli_output import (
         prompt, prompt_yes_no, print_header, print_info, print_success,
     )
+    from hermes_cli.setup_platforms import declines_reconfigure
     def _info_lines(*lines: str) -> None:
         for line in lines:
             print_info(line)
@@ -6859,22 +6860,19 @@ def interactive_setup() -> None:
         print_success("Discord allowlist configured")
 
     print_header("Discord")
-    existing = get_env_value("DISCORD_BOT_TOKEN")
-    if existing:
-        print_info("Discord: already configured")
-        if not prompt_yes_no("Reconfigure Discord?", False):
-            if not get_env_value("DISCORD_ALLOWED_USERS"):
-                print_info(
-                    "⚠️  Discord has no user allowlist. With the fail-closed default, "
-                    "messages are denied unless you configure allowed users, roles, "
-                    "or channels, or set DISCORD_ALLOW_ALL_USERS=true."
-                )
-                if prompt_yes_no("Add allowed users now?", True):
-                    print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
-                    allowed_users = prompt("Allowed user IDs (comma-separated)")
-                    if allowed_users:
-                        _save_allowlist(allowed_users)
-            return
+    if declines_reconfigure("Discord", "Reconfigure Discord?", "DISCORD_BOT_TOKEN"):
+        if not get_env_value("DISCORD_ALLOWED_USERS"):
+            print_info(
+                "⚠️  Discord has no user allowlist. With the fail-closed default, "
+                "messages are denied unless you configure allowed users, roles, "
+                "or channels, or set DISCORD_ALLOW_ALL_USERS=true."
+            )
+            if prompt_yes_no("Add allowed users now?", True):
+                print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
+                allowed_users = prompt("Allowed user IDs (comma-separated)")
+                if allowed_users:
+                    _save_allowlist(allowed_users)
+        return
     _info_lines(
         "Create a bot at https://discord.com/developers/applications",
         "On Bot → Privileged Gateway Intents, enable:",

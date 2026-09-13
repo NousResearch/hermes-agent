@@ -338,6 +338,7 @@ def interactive_setup() -> None:
     """`hermes gateway setup` flow (lazy hermes_cli imports keep the plugin importable outside the CLI)."""
     from hermes_cli.setup import (
         prompt, prompt_yes_no, save_env_value, get_env_value, print_header, print_info, print_warning, print_success)
+    from hermes_cli.setup_platforms import declines_reconfigure
 
     def info(*lines: str) -> None:
         for line in lines:
@@ -352,10 +353,8 @@ def interactive_setup() -> None:
         return True
     print_header("IRC")
     existing_server = get_env_value("IRC_SERVER")
-    if existing_server:
-        print_info(f"IRC: already configured (server: {existing_server})")
-        if not prompt_yes_no("Reconfigure IRC?", False):
-            return
+    if declines_reconfigure("IRC", "Reconfigure IRC?", "IRC_SERVER"):
+        return
     info("Connect Hermes to an IRC network. Uses Python stdlib — no extra packages needed.",
          "   Works with Libera.Chat, OFTC, your own ZNC/InspIRCd, etc.")
     print()

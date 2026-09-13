@@ -4162,14 +4162,11 @@ def interactive_setup() -> None:
     from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
     from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success, print_warning
+    from hermes_cli.setup_platforms import declines_reconfigure
 
     print_header("Feishu / Lark")
-    existing_app_id = get_env_value("FEISHU_APP_ID")
-    existing_secret = get_env_value("FEISHU_APP_SECRET")
-    if existing_app_id and existing_secret:
-        print_success("Feishu / Lark is already configured.")
-        if not prompt_yes_no("Reconfigure Feishu / Lark?", False):
-            return
+    if declines_reconfigure("Feishu / Lark", "Reconfigure Feishu / Lark?", "FEISHU_APP_ID"):
+        return
 
     method_idx = prompt_choice(
         "How would you like to set up Feishu / Lark?",

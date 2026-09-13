@@ -659,11 +659,10 @@ def interactive_setup() -> None:
     from hermes_cli.config import get_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
     from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_success, print_warning
+    from hermes_cli.setup_platforms import declines_reconfigure
     print_header("DingTalk")
-    if existing := get_env_value("DINGTALK_CLIENT_ID"):
-        print_success(f"DingTalk is already configured (Client ID: {existing}).")
-        if not prompt_yes_no("Reconfigure DingTalk?", False):
-            return
+    if declines_reconfigure("DingTalk", "Reconfigure DingTalk?", "DINGTALK_CLIENT_ID"):
+        return
     choices = ["QR Code Scan (Recommended, auto-obtain Client ID and Client Secret)", "Manual Input (Client ID and Client Secret)"]
     result = None
     if prompt_choice("Choose setup method", choices, default=0) == 0:
